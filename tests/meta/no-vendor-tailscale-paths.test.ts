@@ -62,7 +62,7 @@ function forbiddenMatches(line: string): string[] {
 // ---------------------------------------------------------------------------
 
 // EMPTY, and it must stay that way. Both former entries — the host's root
-// tailscaled on vendor paths (`team-host/overlay.ts`) and the vendor macOS
+// tailscaled on vendor paths (`team-host/serving.ts`) and the vendor macOS
 // label default (`team-host/system-service.ts`) — came off when C1/C2 moved
 // the host onto the member's unprivileged userspace private-path pattern.
 // Emptying this list IS the mechanical completion signal for C1/C2.

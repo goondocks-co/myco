@@ -35,7 +35,7 @@ Commands:
   open                     Open the dashboard in your browser
   restart                  Restart the daemon
   service <subcommand>     Manage the platform service (install|uninstall|start|stop|restart|status)
-  join <host> --key <k>    Enroll this machine with a Team Host over the overlay
+  join <host> --key <k> --host-url <url>   Enroll this machine with a Team Host
   leave <host>             Detach this machine from a Team Host
   attach <project> --host <h>   Route a project to a Team Host (going-forward)
   detach <project>         Clear a project's Team Host mapping (resolves local again)
@@ -76,25 +76,6 @@ Options:
   --dry-run           Record intended writes without mutating vault state.
   -h, --help          Show this help
 `,
-  join: `Usage: myco join <host> --key <one-time-key> [--server-url <headscale-url>]
-
-Enroll this machine with a Team Host over its overlay: provisions a userspace
-tailscaled as a per-user service (NO root), joins with the single-use key, then
-records the host so attached projects route to it. Re-running converges.
-
-Options:
-  --key <k>            REQUIRED. The single-use pre-auth key the host operator minted.
-  --server-url <url>   Headscale control-plane URL (required unless already on the overlay).
-  --hostname <name>    This member's node name on the tailnet (default: this machine's hostname).
-  --overlay-address <100.64.x.y:port>  Host daemon overlay address (until enrollment ships).
-  --bearer <serve-bearer>              Shared host serve-bearer (until enrollment ships).
-`,
-  leave: `Usage: myco leave <host>
-
-Detach this machine from a Team Host: removes the stored host record + bearer
-(and its attach refs). When no other host remains, the userspace tailscaled
-service is torn down too. Idempotent.
-`,
   attach: `Usage: myco attach <project> --host <hostId>
 
 Records a project's residency mapping so future requests route to the host that
@@ -115,34 +96,26 @@ Clears a project's residency mapping so future requests go back to local-only.
 Detach-only: removes the mapping going forward, pulls back NO data.
 Idempotent — detaching a project that is not attached is a clean no-op.
 `,
-  host: `Usage: myco host <command>
-
-Commands:
-  enable --server-url <https://host:8080> [--hostname <name>] [--listen-addr <addr>]
-                                          [--user <headscale-user>] [--key-expiration <dur>]
-                                          [--designate-default | --designate-fresh [--storage-name <name>]]
-                                          [--emit-join]
-                                          [--team-key <key>] [--team-key-provider <anthropic|openai|openrouter>]
-                                          [--setup-key-expiration <dur>]
-  disable
-  status
-  rotate-key [--expiration <dur>]        Mint a fresh one-time key to hand a joining team member.
-
-enable turns THIS machine into a Team Host: it provisions the pinned overlay
-networking binaries, joins this host to the overlay, and wires the local daemon
-to serve your team over it. The networking stack runs unprivileged and entirely
-in its own space, so it neither sees nor disturbs a Tailscale you already have
-installed. Sudo is needed for one step only — installing the control plane as a
-system service — so you may be prompted for your password.
---server-url is the address teammates dial to reach this host.
-
-disable stops serving your team. status prints whether this machine is
-currently serving. rotate-key runs ONLY here, on this host's localhost.
-`,
 };
 
-function helpForCommand(command: string, args: readonly string[] = []): string {
+/**
+ * Commands whose help lives WITH their parser, not in the map above.
+ *
+ * These commands print their own help on a usage error, so a copy here would be
+ * a second copy of the same text — free to disagree with the flags the parser
+ * actually accepts. Delegating keeps the text a user reads and the flags that
+ * parse it in one file. Any command that owns a help constant belongs here.
+ */
+const DELEGATED_HELP: Record<string, () => Promise<string>> = {
+  join: async () => (await import('./cli/join.js')).JOIN_HELP,
+  leave: async () => (await import('./cli/join.js')).LEAVE_HELP,
+  host: async () => (await import('./cli/host.js')).HOST_HELP,
+};
+
+async function helpForCommand(command: string, args: readonly string[] = []): Promise<string> {
   const nestedCommand = args[0] ? `${command} ${args[0]}` : command;
+  const delegated = DELEGATED_HELP[nestedCommand] ?? DELEGATED_HELP[command];
+  if (delegated) return await delegated();
   if (COMMAND_HELP[nestedCommand]) return COMMAND_HELP[nestedCommand];
   return COMMAND_HELP[command] ?? `Usage: myco ${command} [args]\n\nRun \`myco --help\` for the full command list.\n`;
 }
@@ -154,7 +127,7 @@ async function main(): Promise<void> {
     return;
   }
   if (isHelpRequest(args)) {
-    process.stdout.write(helpForCommand(cmd, args));
+    process.stdout.write(await helpForCommand(cmd, args));
     return;
   }
 

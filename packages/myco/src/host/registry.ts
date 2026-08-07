@@ -143,11 +143,9 @@ export type EnrollmentHostRecord = Omit<HostRecord, 'projects'>;
  * One membership-commit attempt: the generation a join will commit under, and
  * the tokens proving this attempt is the one that reserved it.
  *
- * This used to also carry a loopback CONNECT-proxy port, because a member ran a
- * tailscaled per host and each needed a distinct local port. It reserves only a
- * GENERATION now — the atomic-commit half of the same mechanism, which the
- * bearer files are keyed by and which is what makes a re-join replace a
- * membership rather than half-overwrite one.
+ * It reserves a GENERATION: the atomic-commit half of the mechanism the bearer
+ * files are keyed by, and what makes a re-join replace a membership rather than
+ * half-overwrite one.
  */
 export interface HostEnrollmentReservation {
   hostId: string;
@@ -172,12 +170,9 @@ interface HostEnrollmentClaim {
  * Where a join attempt got to, so a crash mid-enrollment resumes or tears down
  * deterministically rather than leaving a half-membership.
  *
- * The overlay-era phases (`service_preparing`, `service_ready`,
- * `overlay_joining`, `overlay_joined`) tracked provisioning and starting this
- * host's own userspace tailscaled and bringing its node onto the tailnet. A
- * member runs no process for a host now, so those states have nothing to
- * describe: what remains is reserving a generation, being mid-enrollment, and
- * holding a credential not yet committed.
+ * A member runs no process for a host, so the phases describe only the commit
+ * itself: reserving a generation, being mid-enrollment, and holding a
+ * credential not yet committed.
  */
 export type HostEnrollmentPhase =
   | 'reserved'
@@ -961,11 +956,8 @@ export function markHostEnrollmentTeardownPending(
 /**
  * Discard a failed join's reservation.
  *
- * Eligibility used to also require that this attempt OWNED the service it
- * provisioned — automatic cleanup could not be allowed to remove state some
- * earlier, still-live tailscaled depended on. There is no service, so what
- * remains is the part that was never about services: never discard an attempt
- * that has already staged a credential (it may be committed), and never
+ * Eligibility: never discard an attempt that has already staged a credential
+ * (it may be committed), and never
  * discard one layered over an existing membership (`base_generation !== null`)
  * — that is a re-join, and tearing it down silently would take the previous
  * membership with it.
@@ -1178,14 +1170,9 @@ export function retireHostMembership(
     try { record = readHostRecordUnlocked(hostId); } catch (error) {
       if (!(error instanceof HostJoinStateCorruptError)) throw error;
     }
-    // The claim is still read: its generation feeds the ledger high-water below,
-    // which is the atomic bearer-commit mechanism and outlives the overlay.
-    //
-    // What is gone is the proxy-port identity this used to derive and refuse on.
-    // That guard proved the member's tailscaled had released its CONNECT-proxy
-    // port before the reservation was retired; with no tailscaled and no port it
-    // only refused a leave whose record and claim were both missing — so a member
-    // with corrupt state could never leave, for no remaining reason.
+    // The claim's generation feeds the ledger high-water below, which is the
+    // atomic bearer-commit mechanism. A missing claim is NOT a refusal: a member
+    // whose record and claim are both gone still has to be able to leave.
     let claim: HostEnrollmentClaim | null = null;
     try { claim = readHostEnrollmentClaimUnlocked(hostId); } catch (error) {
       if (!(error instanceof HostJoinStateCorruptError)) throw error;

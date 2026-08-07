@@ -1,13 +1,10 @@
 /**
  * Join keys — the admission gate for the public enrollment route.
  *
- * A member proves it was invited by presenting a key the HOST minted. That is
- * the whole reason this module exists, and it is a genuine change of trust
- * model rather than a port of the old one: the overlay-era key was a headscale
- * pre-auth key consumed by the member's `tailscale up`, which the daemon never
- * saw. Admission was really *overlay membership*, and the key only got the
- * member onto the tailnet. With no overlay there is no such gate, so the key
- * has to be in the request and the daemon has to check it.
+ * A member proves it was invited by presenting a key the HOST minted, IN the
+ * request, which this daemon validates. There is no network membership standing
+ * behind that check: the enrollment route is published to the internet, so the
+ * key is the entire admission gate.
  *
  * PROPERTIES, each load-bearing on a route published to the internet:
  *   - 256 bits of entropy. Nothing rate-limits a guess into existence.
@@ -132,6 +129,27 @@ function prune(keys: JoinKeyRecord[], now: number): JoinKeyRecord[] {
     if (settledAt) return now - Date.parse(settledAt) < JOIN_KEY_RETENTION_MS;
     return now - Date.parse(k.expires_at) < JOIN_KEY_RETENTION_MS;
   });
+}
+
+/** Shortest key an operator can mint. Below this the key expires before it can
+ *  be read out of the UI and handed over — `'0m'` mints one that is already
+ *  dead. */
+export const MIN_JOIN_KEY_TTL_MS = 60_000;
+/** Longest. A join key is a bearer credential that mints another credential;
+ *  `'3650d'` is a standing invitation, not an expiring one. */
+export const MAX_JOIN_KEY_TTL_MS = 7 * 86_400_000;
+
+/** Parse the operator's `expiration` (`'30m'`, `'2h'`, `'1d'`) into ms,
+ *  CLAMPED to a usable window. Falls back to the module default rather than
+ *  throwing — an unparseable value should mint a short-lived key, not fail the
+ *  invite. */
+export function parseJoinKeyTtlMs(expiration: string): number {
+  const match = expiration.match(/^(\d+)\s*([mhd])$/i);
+  if (!match) return DEFAULT_JOIN_KEY_TTL_MS;
+  const value = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  const scale = unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000;
+  return Math.min(Math.max(value * scale, MIN_JOIN_KEY_TTL_MS), MAX_JOIN_KEY_TTL_MS);
 }
 
 export interface MintedJoinKey {

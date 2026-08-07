@@ -6,6 +6,7 @@
  */
 
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
@@ -966,6 +967,220 @@ export async function checkUpdateResidue(
   };
 }
 
+/**
+ * Overlay residue — state left by a machine that hosted or joined over the
+ * per-host networking stack.
+ *
+ * A member reaches a host at one public HTTPS URL, so nothing on either side
+ * runs a networking daemon, provisions binaries, or keeps node state. A machine
+ * that did leaves those files behind, and nothing else will ever look at them
+ * again: they are not read, not migrated, and not cleaned by leaving a host.
+ *
+ * SPLIT DELIBERATELY. Myco-owned DATA directories are safe to delete outright
+ * and `--fix` removes them. A SERVICE UNIT is only reported: a plist or unit
+ * file can still be loaded, and unlinking it leaves a running orphan with no
+ * supervisor entry — worse than leaving it alone. The detail names the unit and
+ * what to run.
+ *
+ * Returns null when the machine is clean, so a healthy doctor prints no row.
+ */
+/**
+ * Per-host socket tags for every joined host.
+ *
+ * Uses {@link memberHostTag} rather than recomputing the digest: that function
+ * IS the naming scheme the sockets were created under, and a second copy here
+ * could drift into naming files that never existed — a path in a delete list
+ * with nothing behind it. A `hosts/` entry name is a host_id by construction
+ * (`resolveHostDir` asserts the brand before creating it).
+ */
+async function hostTagsUnder(teamsHome: string): Promise<string[]> {
+  const { memberHostTag } = await import('../grove/paths.js');
+  try {
+    return fs.readdirSync(path.join(teamsHome, 'hosts'), { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => memberHostTag(e.name));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Is a live process still accepting on a socket at (or under) this path?
+ *
+ * Probes by CONNECTING rather than by listing processes: a unix socket whose
+ * owner has exited refuses with ECONNREFUSED, while one being accepted on
+ * connects. That needs no external tool and no permission to inspect other
+ * processes.
+ *
+ * ASYNC because `net.connect` is: it never throws synchronously, so a
+ * try/catch around it catches nothing and reports every socket as live —
+ * which would make any directory holding a dead socket permanently
+ * unfixable, defeating the whole check. The verdict has to come from the
+ * 'connect'/'error' events. The error handler is also what keeps a refused
+ * probe from surfacing as an unhandled 'error' event.
+ */
+async function isLiveSocket(sock: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (live: boolean, probe: net.Socket): void => {
+      if (settled) return;
+      settled = true;
+      probe.destroy();
+      resolve(live);
+    };
+    let probe: net.Socket;
+    try {
+      probe = net.connect(sock);
+    } catch {
+      resolve(false);
+      return;
+    }
+    probe.once('connect', () => finish(true, probe));
+    probe.once('error', () => finish(false, probe));
+    // A socket that neither connects nor refuses is not something to block a
+    // cleanup on; treat it as dead rather than hanging the doctor.
+    const timer = setTimeout(() => finish(false, probe), 250);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+}
+
+/** Sockets at, or directly under, a collected residue path. */
+function socketsUnder(target: string): string[] {
+  try {
+    const stat = fs.lstatSync(target);
+    if (stat.isSocket()) return [target];
+    if (!stat.isDirectory()) return [];
+    return fs.readdirSync(target, { withFileTypes: true })
+      .filter((e) => e.isSocket())
+      .map((e) => path.join(target, e.name));
+  } catch {
+    return [];
+  }
+}
+
+async function containsLiveSocket(target: string): Promise<boolean> {
+  for (const sock of socketsUnder(target)) {
+    if (await isLiveSocket(sock)) return true;
+  }
+  return false;
+}
+
+export async function checkOverlayResidue(opts: {
+  teamsHome?: string;
+  homeDir?: string;
+  serviceUnitDir?: string;
+  tmpDir?: string;
+} = {}): Promise<DoctorCheck | null> {
+  const { resolveTeamsHome } = await import('../grove/paths.js');
+  const teamsHome = opts.teamsHome ?? resolveTeamsHome();
+  const homeDir = opts.homeDir ?? os.homedir();
+
+  // Anchors must be ABSOLUTE and not the filesystem root before anything is
+  // proposed for deletion. `os.homedir()` can return '' on a broken
+  // environment, and `path.join('', '.myco-ts')` is the RELATIVE `.myco-ts` —
+  // which `rmSync` would resolve against the working directory, so a
+  // `doctor --fix` run inside a project could delete a directory there. An
+  // unusable anchor contributes no paths rather than a wrong one.
+  const usableAnchor = (dir: string): boolean =>
+    typeof dir === 'string' && path.isAbsolute(dir) && path.resolve(dir) !== path.parse(path.resolve(dir)).root;
+
+  const dataPaths: string[] = [];
+  if (usableAnchor(homeDir)) {
+    dataPaths.push(path.join(homeDir, '.myco-ts'));
+  }
+  if (usableAnchor(teamsHome)) {
+    dataPaths.push(
+      path.join(teamsHome, 'host', 'headscale'),
+      path.join(teamsHome, 'host', 'tailscaled-state'),
+      // `host/bin` holds the provisioned control-plane binary and its manifest.
+      // Confirmed on a real machine, not inferred: a full teardown of the old
+      // stack left 48 MB here. A source search finds no named resolver for it
+      // (it was joined inline), so grep alone concludes it never existed —
+      // which is why this entry cites the machine instead.
+      path.join(teamsHome, 'host', 'bin'),
+      path.join(teamsHome, 'member', 'bin'),
+    );
+    // Per-host node state, one dir per joined host.
+    try {
+      for (const entry of fs.readdirSync(path.join(teamsHome, 'hosts'), { withFileTypes: true })) {
+        if (entry.isDirectory()) dataPaths.push(path.join(teamsHome, 'hosts', entry.name, 'tailscaled-state'));
+      }
+    } catch { /* no hosts dir — nothing joined */ }
+
+    // The socket paths fell back to the temp dir whenever the HOME-anchored
+    // name would have exceeded the macOS `sun_path` cap, so a machine with a
+    // long home left its sockets there. This is the one SHARED directory in
+    // the list, so it gets the same anchor guard and exact names — never a
+    // glob, and never a bare `myco-*`. The uid is in the name, so a collision
+    // would have to be this user's own file.
+    const tmpDir = opts.tmpDir ?? os.tmpdir();
+    if (usableAnchor(tmpDir)) {
+      const uid = process.getuid?.() ?? 0;
+      const tags = await hostTagsUnder(teamsHome);
+      for (const name of [`myco-td-${uid}-host.sock`, ...tags.map((t) => `myco-td-${uid}-${t}.sock`)]) {
+        dataPaths.push(path.join(tmpDir, name));
+      }
+    }
+  }
+
+  // `existsSync` follows symlinks, so a symlink is reported when its target is
+  // live. Removing it is still safe: `rmSync` unlinks the link itself and
+  // leaves whatever it pointed at (verified — a symlinked directory's contents
+  // survive), so a link planted at one of these names cannot be used to reach
+  // anything else.
+  const present = dataPaths.filter((p) => fs.existsSync(p));
+
+  // A socket someone is still ACCEPTING on means the process that created it is
+  // alive. Unlinking it leaves that process running with no control socket —
+  // the same reason a loaded service unit is reported rather than removed.
+  // Split here so a live leftover is named with what to do about it, and the
+  // rest of the residue is still cleanable in the same run.
+  const live: string[] = [];
+  for (const p of present) {
+    if (await containsLiveSocket(p)) live.push(p);
+  }
+  const foundData = present.filter((p) => !live.includes(p));
+
+  // A unit is Myco's only if its name ties Myco to the networking stack —
+  // never a bare `tailscaled`, which is the user's own Tailscale install and
+  // must not be reported as ours.
+  const unitDir = opts.serviceUnitDir ?? (await import('../service/paths.js')).resolveServiceUnitDir();
+  let foundUnits: string[] = [];
+  try {
+    foundUnits = fs.readdirSync(unitDir)
+      .filter((name) => /myco/i.test(name) && /(tailscaled|headscale)/i.test(name))
+      .map((name) => path.join(unitDir, name));
+  } catch { /* no unit dir on this platform/box */ }
+
+  if (foundData.length === 0 && foundUnits.length === 0 && live.length === 0) return null;
+
+  const parts: string[] = [];
+  if (foundData.length > 0) {
+    parts.push(`${foundData.length} leftover director${foundData.length === 1 ? 'y' : 'ies'} from per-host networking (${foundData.join(', ')})`);
+  }
+  if (live.length > 0) {
+    parts.push(
+      `${live.length} leftover(s) still IN USE by a running process — stop it first, or removing the socket leaves it `
+      + `running with no way to reach it: ${live.join(', ')}`,
+    );
+  }
+  if (foundUnits.length > 0) {
+    parts.push(
+      `${foundUnits.length} leftover service unit(s) — remove by hand so a loaded unit is unloaded first: ${foundUnits.join(', ')}`,
+    );
+  }
+
+  const base = {
+    name: 'Team transport',
+    status: 'warn' as const,
+    detail: `${parts.join('; ')}. Nothing reads these.`,
+  };
+  // Only the data half is fixable. A run with units but no data still reports.
+  return foundData.length > 0
+    ? fixableCheck(base, 'overlay-residue', { paths: foundData })
+    : { ...base, fixable: false };
+}
+
 export async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
   const serviceState = resolveDaemonServiceState(vaultDir, { env: process.env });
   const daemonFile = serviceState.statePath;
@@ -1393,6 +1608,12 @@ export async function runChecks(
   if (pathBinary) checks.push(pathBinary);
   const runtimePin = await checkRuntimePin();
   if (runtimePin) checks.push(runtimePin);
+  // Leftover per-host networking state lives under the machine's home and team
+  // home — nothing about it is project-scoped, and the moment a user is most
+  // likely to run `doctor` after upgrading is from their home directory, which
+  // takes the early return below.
+  const overlayResidue = await checkOverlayResidue();
+  if (overlayResidue) checks.push(overlayResidue);
 
   if (!config) {
     // Vault-dependent checks can't run. These rows are warn, not fail:

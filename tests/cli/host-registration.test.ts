@@ -35,8 +35,12 @@ describe('myco CLI registers `host`', () => {
     const result = runCli(['host', '--help']);
     expect(result.status).toBe(0);
     expect(result.stdout).toMatch(/Usage: myco host <command>/);
-    expect(result.stdout).toMatch(/enable --server-url/);
+    // Flags the parser actually reads. An earlier form of this test pinned
+    // `enable --server-url`, which nothing has ever parsed — so the assertion
+    // held the phantom in place instead of catching it.
+    expect(result.stdout).toMatch(/--designate-fresh/);
     expect(result.stdout).toMatch(/rotate-key/);
+    expect(result.stdout).not.toMatch(/--server-url|headscale/i);
   }, 30_000);
 
   it('`myco host` (bare) exits 2 with usage', () => {

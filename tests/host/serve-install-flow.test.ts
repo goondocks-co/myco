@@ -39,6 +39,7 @@ import {
   checkServedGroveBackupStaleness,
   checkServedGroveKeyHealth as checkServedGroveKeyHealthWith,
 } from '@myco/cli/doctor.js';
+import { consumeJoinKey, listJoinKeys } from '@myco/team-host/join-keys.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
@@ -153,20 +154,11 @@ describe('hostEnableAndEmitJoin', () => {
   }
 
   /**
-   * A fresh deps() bundle whose `runner` records every invocation (so tests
-   * can assert on `preauthkeys create` call counts across TWO composite
-   * calls) and whose `resolveOverlayIp` returns null on the first internal
-   * try (fresh host node join) then the assigned IP thereafter — so a SECOND
-   * call reusing the SAME `deps` object naturally resolves the IP on its
-   * first try too, correctly simulating "host node already on the overlay"
-   * (`hostEnable`'s own re-run idempotence, never re-minting the HOST's own
-   * join key on a re-run — only `mintSetupKey`, Task 6's own step, can
-   * produce a `preauthkeys create` call on that second call).
+   * A deps bundle for the composite: a fake daemon restart, and per-test
+   * overrides for the address wait and the re-mint confirm so a case runs with
+   * no daemon, no network and no TTY.
    */
   function buildDeps(overrides: Partial<ComposeEnableDeps> = {}): { deps: ComposeEnableDeps; calls: string[] } {
-    // The binary/service/overlay fakes this harness carried are gone with the
-    // machinery they doubled. What remains is the team-key write and the
-    // backup-defaults seeding, which is what every surviving case here asserts.
     const calls: string[] = [];
     return {
       calls,
@@ -176,6 +168,10 @@ describe('hostEnableAndEmitJoin', () => {
         restartDaemon: async () => ({ restarted: true, detail: 'restarted (fake)' }),
         logger: () => {},
         lockNamespace: testPerUserLockNamespace,
+        // No address by default: a case that does not override this is
+        // asserting an ENABLE-side effect, and must not sit through the real
+        // publish wait to get there.
+        waitForHostUrl: async () => null,
         ...overrides,
       },
     };
@@ -187,13 +183,67 @@ describe('hostEnableAndEmitJoin', () => {
   // (a) complete join command
   // -------------------------------------------------------------------------
 
+  it('(a) emits a join command carrying the published address and a key that WORKS', async () => {
+    // This is the first-run onboarding path (`--serve`). What matters is not
+    // the string's shape but that a member could actually spend it, so the
+    // emitted key is validated against the store the enrollment route checks.
+    const { deps } = buildDeps({ waitForHostUrl: async () => 'https://box.tail1234.ts.net:8443' });
+    const result = await hostEnableAndEmitJoin(OPTS, deps);
+
+    expect(result.joinCommand).toBeTruthy();
+    expect(result.joinCommand).toContain('--host-url https://box.tail1234.ts.net:8443');
+    expect(result.joinCommand).toContain(result.enable.hostId);
+
+    const key = result.joinCommand!.match(/--key (\S+)/)?.[1];
+    expect(key).toBeTruthy();
+    expect(consumeJoinKey(key!).ok).toBe(true);
+  });
+
+  it('(a2) NO address published → no key is minted, and no half-invitation is emitted', async () => {
+    // A key without an address is half an invitation and the member cannot tell
+    // which half is missing. Minting anyway would also spend an invite the
+    // operator never got to hand over.
+    const { deps } = buildDeps({ waitForHostUrl: async () => null });
+    const result = await hostEnableAndEmitJoin(OPTS, deps);
+
+    expect(result.joinCommand).toBeNull();
+    expect(listJoinKeys()).toEqual([]);
+  });
 
   // -------------------------------------------------------------------------
   // (b) re-run prompts before minting a fresh key
   // -------------------------------------------------------------------------
 
+  it('(b) a re-run PROMPTS, and declining mints nothing', async () => {
+    const url = async () => 'https://box.tail1234.ts.net:8443';
+    const first = buildDeps({ waitForHostUrl: url });
+    await hostEnableAndEmitJoin(OPTS, first.deps);
 
+    const asked: string[] = [];
+    const second = buildDeps({
+      waitForHostUrl: url,
+      confirmRemint: async (message: string) => { asked.push(message); return false; },
+    });
+    const result = await hostEnableAndEmitJoin(OPTS, second.deps);
 
+    expect(asked).toHaveLength(1);
+    expect(result.joinCommand).toBeNull();
+    // Only the FIRST run's key exists — declining is not a silent mint.
+    expect(listJoinKeys()).toHaveLength(1);
+  });
+
+  it('(b2) a re-run that CONFIRMS mints a second, distinct key', async () => {
+    const url = async () => 'https://box.tail1234.ts.net:8443';
+    const first = buildDeps({ waitForHostUrl: url });
+    const one = await hostEnableAndEmitJoin(OPTS, first.deps);
+
+    const second = buildDeps({ waitForHostUrl: url, confirmRemint: async () => true });
+    const two = await hostEnableAndEmitJoin(OPTS, second.deps);
+
+    expect(two.joinCommand).toBeTruthy();
+    expect(two.joinCommand).not.toBe(one.joinCommand);
+    expect(listJoinKeys()).toHaveLength(2);
+  });
 
 
   // -------------------------------------------------------------------------

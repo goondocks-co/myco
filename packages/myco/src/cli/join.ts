@@ -19,7 +19,7 @@
  */
 import { connectToGlobalDaemon, connectToRunningDaemon, daemonErrorMessage, parseFlags } from './shared.js';
 
-const JOIN_HELP = `Usage: myco join <host> --key <one-time-key> --host-url <https://host.tailnet.ts.net:8443>
+export const JOIN_HELP = `Usage: myco join <host> --key <one-time-key> --host-url <https://host.tailnet.ts.net:8443>
 
 Enrolls THIS machine with a Team Host and records it, so attached projects route
 there. Re-running converges.
@@ -39,7 +39,7 @@ This is a fallback surface — joining a host from the Team page (daemon dashboa
 is the primary path; this command drives the same daemon API.
 `;
 
-const LEAVE_HELP = `Usage: myco leave <host>
+export const LEAVE_HELP = `Usage: myco leave <host>
 
 Detaches this machine from a Team Host: removes the stored host record + bearer
 (and its attach refs). Idempotent.

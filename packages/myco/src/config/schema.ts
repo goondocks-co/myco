@@ -533,12 +533,11 @@ const HostServeSchema = z.object({
    * nothing) is the dispatch filter's job, not this config's; this field
    * only carries the designation and (at boot, `resolveHostServeConfig`)
    * validates it names a Grove that actually exists. The disable branch of
-   * `writeHostServeConfig` clears it back to null. Designation is intended
-   * to be stable for a serving instance — the enable/re-designation wiring
-   * that enforces stability outside an explicit disable → re-enable cycle
-   * lands with the designation-lifecycle work; today `writeHostServeConfig`
-   * overwrites rather than merges this field, so that stability is not yet
-   * an enforced invariant.
+   * `writeHostServeConfig` clears it back to null. Designation is IMMUTABLE
+   * for a serving instance: `resolveServedGroveDesignation`
+   * (`team-host/serving.ts`) refuses to re-point an existing designation and
+   * says so, even when the machine's default Grove pointer has since moved
+   * elsewhere. Changing it takes an explicit disable → re-enable.
    */
   served_grove_id: z.string().nullable().default(null),
   /**

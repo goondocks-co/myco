@@ -8,13 +8,10 @@
  * — the listener rides the daemon that is already running, on a socket derived
  * from `MYCO_HOME`.
  *
- * That is the whole point of the transport change. This module used to provision
- * two binaries, render and supervise a Headscale control plane, bring up a
- * userspace tailscaled, mint a pre-auth key, join the host to its own overlay,
- * and wire an inbound `serve --tcp` forward — each step with its own failure,
- * privilege, and convergence story, and a teardown that had to prove every one
- * of them gone before destroying identity. None of it survives, so none of its
- * failure modes do either.
+ * A host provisions nothing and supervises no service of its own, so enable and
+ * disable are config writes plus a daemon restart — every step an independent
+ * disk write that tolerates an already-absent resource, and a retry after a
+ * partial failure converges.
  *
  * IDEMPOTENT / RESUMABLE: a re-run converges. Designation is immutable once set,
  * so a second enable re-affirms the same Grove rather than moving the team's
@@ -261,10 +258,10 @@ export function resolveServedGroveDesignation(
 }
 
 /**
- * The designation mode for this run — EXPLICIT on first designation (rev 6
- * breaking change). The old silent `?? 'default'` designated the machine's
- * existing default Grove as team storage, immutably: on a personal machine
- * that is the user's personal Grove, violating decision-963ca301. A re-run
+ * The designation mode for this run — EXPLICIT on first designation. A silent
+ * default here would designate the machine's existing default Grove as team
+ * storage, immutably; on a personal machine that is the user's PERSONAL Grove
+ * (decision-963ca301). A re-run
  * with a designation on record needs no choice (designation is immutable;
  * the mode only affects the default-pointer drift warn).
  */
@@ -431,12 +428,9 @@ export interface HostDisableResult {
  * Tear down host serving: clear the config, destroy host identity and the serve
  * credential, then restart the daemon so it unbinds the team listener.
  *
- * The old teardown had to stop two services and PROVE them gone before
- * destroying identity, because a failed uninstall left a live tailscaled with
- * in-memory identity and wiped state to converge from. A host owns no processes
- * now, so that ordering hazard does not exist: the steps below are independent
- * disk writes, each tolerating an already-absent resource, and a retry after a
- * partial failure converges.
+ * A host owns no processes, so there is no ordering hazard here: the steps below
+ * are independent disk writes, each tolerating an already-absent resource, and a
+ * retry after a partial failure converges.
  *
  * The restart stays TERMINAL — run in-daemon it SIGTERMs the process executing
  * this teardown, so nothing after it is guaranteed to run.
