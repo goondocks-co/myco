@@ -20,7 +20,7 @@ import {
   resolveTeamKeyProviderFlag,
   TEAM_AGENT_KEY_SECRET,
 } from '../team-host/compose.js';
-import { connectToRunningDaemon, parseFlags } from './shared.js';
+import { connectToRunningDaemon, daemonErrorMessage, parseFlags } from './shared.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 
 function flagMap(args: string[]): Map<string, string> {
@@ -204,19 +204,31 @@ export async function runHostCommand(args: string[]): Promise<void> {
       + 'Start the daemon first (`myco service install`, or `myco daemon` under a supervisor for a\n'
       + 'headless box) and re-run. Nothing has been minted.',
     );
-    const response = await client.post('/api/host-admin/mint-join-key', {
+    // `post` resolves to a TRANSPORT envelope (`{ ok, data }`), never the
+    // response body. Reading fields straight off it type-checks — every field
+    // of the body is optional, so the envelope satisfies the shape — and is
+    // always undefined at runtime, which reports failure on a successful mint
+    // while the key has already been created and persisted host-side.
+    const result = await client.post('/api/host-admin/mint-join-key', {
       expiration: flags.get('expiration'),
-    }) as { key?: string; expires?: string; join_command?: string; error?: string; message?: string };
+    });
+    if (!result.ok) {
+      // The daemon's own refusal (`not_a_host`, `host_not_published`) rather
+      // than a generic failure — each names a different next step.
+      console.error(daemonErrorMessage(result.data) ?? 'Could not mint a join key.');
+      process.exit(1);
+    }
 
-    if (!response.join_command) {
-      // Surfaces the daemon's own refusal (`not_a_host`, `host_not_published`)
-      // rather than a generic failure — each names a different next step.
-      console.error(response.message ?? response.error ?? 'Could not mint a join key.');
+    const body = result.data as { key?: string; expires?: string; join_command?: string };
+    if (!body?.join_command) {
+      // A 200 without the command means the key exists but the invitation
+      // cannot be assembled — say so, rather than implying nothing happened.
+      console.error('The host minted a key but returned no join command — run `myco host status` to check its address.');
       process.exit(1);
     }
     console.log('Join command (hand this to a member — it works once):\n');
-    console.log(`  ${response.join_command}\n`);
-    if (response.expires) console.log(`Expires: ${response.expires}`);
+    console.log(`  ${body.join_command}\n`);
+    if (body.expires) console.log(`Expires: ${body.expires}`);
     return;
   }
 

@@ -5,6 +5,7 @@
  * status. With --fix, attempts to repair issues it can handle automatically.
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -983,6 +984,17 @@ export async function checkUpdateResidue(
  *
  * Returns null when the machine is clean, so a healthy doctor prints no row.
  */
+/** Per-host socket tags, derived the way the socket names were. */
+function hostTagsUnder(teamsHome: string): string[] {
+  try {
+    return fs.readdirSync(path.join(teamsHome, 'hosts'), { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => crypto.createHash('sha256').update(e.name).digest('hex').slice(0, 10));
+  } catch {
+    return [];
+  }
+}
+
 export async function checkOverlayResidue(opts: {
   teamsHome?: string;
   homeDir?: string;
@@ -1005,10 +1017,16 @@ export async function checkOverlayResidue(opts: {
   if (usableAnchor(homeDir)) {
     dataPaths.push(path.join(homeDir, '.myco-ts'));
   }
+  // The socket paths fell back to /tmp whenever the HOME-anchored name would
+  // have exceeded the macOS `sun_path` cap, so a machine with a long home left
+  // its sockets there instead. Named exactly, never globbed: /tmp is shared.
+  const uid = process.getuid?.() ?? 0;
+  for (const name of [`myco-td-${uid}-host.sock`, ...hostTagsUnder(teamsHome).map((t) => `myco-td-${uid}-${t}.sock`)]) {
+    dataPaths.push(path.join(os.tmpdir(), name));
+  }
   if (usableAnchor(teamsHome)) {
     dataPaths.push(
       path.join(teamsHome, 'host', 'headscale'),
-      path.join(teamsHome, 'host', 'bin'),
       path.join(teamsHome, 'host', 'tailscaled-state'),
       path.join(teamsHome, 'member', 'bin'),
     );

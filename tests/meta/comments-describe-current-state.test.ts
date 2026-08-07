@@ -26,12 +26,19 @@
  *   HISTORY — "used to", "no longer", "was removed". Rots quietly. Costs
  *   reading time and misleads whoever trusts it.
  *
- *   DEFERRAL — "unavailable on this build", "until that lands", "returns with".
- *   A promise about the future, recorded where nothing checks it. Three
- *   commands shipped dead behind exactly this: `host rotate-key`,
- *   `host enable --emit-join`, and the `join_unavailable` refusal each waited
- *   on work that had ALREADY shipped, and nothing failed when it did. The
- *   stubs simply sat there. Deferral belongs in a plan, which gets read.
+ *   DEFERRAL — "unavailable on this build", "until that lands". A promise about
+ *   the future, recorded where nothing checks it. Three commands shipped dead
+ *   behind exactly this: `host rotate-key`, `host enable --emit-join`, and the
+ *   `join_unavailable` refusal each waited on work that had ALREADY shipped,
+ *   and nothing failed when it did. Deferral belongs in a plan, which gets read.
+ *
+ *   WHAT THIS IS NOT: a gate on the CONCEPT. It matches known phrasings, and
+ *   an author who writes "left dead for now, wire it up later" sails past. It
+ *   is a cheap tripwire for the wordings that have already cost us, not a
+ *   guarantee. The only thing that actually catches a dead command is a test
+ *   that RUNS it — `tests/cli/host-rotate-key.test.ts` is that test, written
+ *   after `rotate-key` shipped dead a SECOND time, in the very PR that added
+ *   this gate, past both of its static siblings.
  *
  * A term that NAMES something currently true is fine — a `legacySecrets` field
  * really is legacy today, and a compatibility path that still carries
@@ -69,7 +76,7 @@ const HISTORY = new RegExp([
 ].map((r) => r.source).join('|'), 'i');
 
 /** Promises future state from a place nothing checks. */
-const DEFERRAL = /(unavailable on this build|until (that|it|enrollment|the .{0,30}) lands\b|will land\b|lands with the (rebuilt|new|designation)|is being (rebuilt|rewritten)|is not rebuilt|not yet an enforced|temporarily unavailable|not yet implemented|not implemented yet|coming soon)/i;
+const DEFERRAL = /(unavailable on this build|until (that|it|enrollment|the .{0,30}) (lands|ships)\b|will land\b|lands with the (rebuilt|new|designation)|is being (rebuilt|rewritten)|is not rebuilt|not yet an enforced|temporarily unavailable|not yet implemented|not implemented yet|coming soon|stubbed for|placeholder until|arrives in a (later|future) release|pending the new)/i;
 
 /**
  * Files still carrying narration, to be emptied by the repo-wide sweep.
@@ -178,6 +185,25 @@ describe('comments describe the current state', () => {
       + 'work lands the stub stays — three commands shipped dead exactly this way. Record the '
       + 'deferral in a Myco plan and make the code state what it does TODAY (including refusing, '
       + 'if it refuses).\n\n' + hits.join('\n'),
+    ).toEqual([]);
+  });
+
+  it('the allowlist only SHRINKS — every entry must still be dirty', () => {
+    // The docstring claims this list ratchets; nothing enforced that. A file
+    // cleaned by the sweep would keep its exemption forever, and the list would
+    // drift from "work remaining" to decoration. Requiring every entry to still
+    // produce a hit means sweeping a file forces its line out of the list in the
+    // SAME diff — which is the property the ratchet was supposed to have.
+    const stale = [...NOT_YET_SWEPT].filter((rel) => {
+      const abs = path.join(REPO_ROOT, rel);
+      if (!fs.existsSync(abs)) return true;
+      return !commentLines(fs.readFileSync(abs, 'utf8')).some(({ text }) => HISTORY.test(text));
+    });
+    expect(
+      stale,
+      'These files are allowlisted but are already clean (or gone). Delete their lines from '
+      + 'NOT_YET_SWEPT — an exemption that protects nothing hides the next file that needs one.\n\n'
+      + stale.join('\n'),
     ).toEqual([]);
   });
 
