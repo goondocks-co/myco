@@ -27,7 +27,7 @@ describe('host rollback bearer startup contract', () => {
       "externalMcpContainment.containWhile('reconcile'",
     );
     const reconciliation = source.indexOf(
-      'const reconciledHostBearers = reconcileHostRollbackBearers()',
+      'reconciledHostBearers = reconcileHostRollbackBearers()',
     );
     const bootstrapResolution = source.indexOf(
       "await import('../vault/bootstrap.js')",
@@ -36,5 +36,25 @@ describe('host rollback bearer startup contract', () => {
     expect(containment).toBeGreaterThan(-1);
     expect(reconciliation).toBeGreaterThan(containment);
     expect(bootstrapResolution).toBeGreaterThan(reconciliation);
+  });
+
+  test('a reconcile failure cannot abort boot — the call sits in a try that continues', () => {
+    // The other half of the contract. The reconcile must RUN at its ordered
+    // place, and it must not be able to take the daemon down: one corrupt host
+    // directory threw out of this call on the rig and killed the whole daemon,
+    // purely local capture included. The registry quarantines per host now;
+    // this pins the boot-level backstop for what the enumerators cannot
+    // contain (an unreadable hosts dir, an untakeable lock).
+    const source = fs.readFileSync(
+      'packages/myco/src/daemon/main.ts',
+      'utf-8',
+    );
+    const call = source.indexOf('reconciledHostBearers = reconcileHostRollbackBearers()');
+    expect(call).toBeGreaterThan(-1);
+    const windowBefore = source.slice(Math.max(0, call - 400), call);
+    expect(windowBefore).toContain('try {');
+    const windowAfter = source.slice(call, call + 600);
+    expect(windowAfter).toContain('catch');
+    expect(windowAfter).toContain('hostBearerReconcileFailure');
   });
 });

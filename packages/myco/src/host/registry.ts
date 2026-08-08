@@ -206,6 +206,34 @@ export interface HostMembershipSnapshot {
   secrets: Record<string, string>;
 }
 
+/** One host membership the enumerators refused to load, and why. */
+export interface QuarantinedHostMembership {
+  hostId: string;
+  detail: string;
+}
+
+/**
+ * Host memberships skipped by the LAST registry enumeration in this process.
+ *
+ * A corrupt join state (loose permissions, malformed pointer, missing bearer)
+ * fails closed FOR THAT HOST — its membership does not load, so its bearer is
+ * never used and its drains never run — while every other host, and the daemon
+ * itself, keep working. The blast radius of one bad host directory is that
+ * host, not the process: the alternative was measured on the rig, where a
+ * single non-0600 file under `~/.myco-team/hosts/` threw out of the boot-time
+ * bearer reconcile and took the whole daemon down, local capture included.
+ *
+ * Skipping silently would trade a crash for an invisible outage, so the skip
+ * is recorded here and surfaced by `myco doctor`'s Team Host check. Single-host
+ * readers (`getHost`, `getHostMembershipSnapshot`) still throw for the corrupt
+ * host itself — per-host fail-closed is the point, suppression is not.
+ */
+let lastEnumerationQuarantine: QuarantinedHostMembership[] = [];
+
+export function quarantinedHostMemberships(): QuarantinedHostMembership[] {
+  return [...lastEnumerationQuarantine];
+}
+
 export class HostJoinStateCorruptError extends Error {
   readonly code = 'host_join_state_corrupt';
 
@@ -517,11 +545,22 @@ function readHostMembershipSnapshotsFromEntriesUnlocked(
   entries: fs.Dirent[],
 ): HostMembershipSnapshot[] {
   const results: HostMembershipSnapshot[] = [];
+  const quarantined: QuarantinedHostMembership[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith('.myco-remove-')) continue;
-    const snapshot = readHostMembershipSnapshotUnlocked(entry.name);
-    if (snapshot) results.push(snapshot);
+    try {
+      const snapshot = readHostMembershipSnapshotUnlocked(entry.name);
+      if (snapshot) results.push(snapshot);
+    } catch (error) {
+      // One corrupt host must not abort the enumeration: every caller of this
+      // loop — the boot bearer reconcile, drain wiring, the Team page, doctor
+      // itself — would otherwise die on the first bad directory. Fail closed
+      // for the HOST (its membership does not load) and keep going.
+      if (!(error instanceof HostJoinStateCorruptError)) throw error;
+      quarantined.push({ hostId: entry.name, detail: error.message });
+    }
   }
+  lastEnumerationQuarantine = quarantined;
   return results;
 }
 
@@ -560,22 +599,20 @@ export function reconcileHostRollbackBearers(
     for (const snapshot of readHostMembershipSnapshotsStrictUnlocked()) {
       if (snapshot.record.bearer_generation === undefined) continue;
       const hostDir = resolveHostDir(snapshot.record.host_id);
-      try {
-        tightenSecretsPermissions(hostDir, lockNamespace);
-      } catch {
-        throw new HostJoinStateCorruptError(
-          snapshot.record.host_id,
-          'legacy secrets.env is unsafe or malformed',
-        );
-      }
+      // Per-host containment, same rule as the enumerator above: a host whose
+      // legacy secrets are unsafe is quarantined, not fatal — this loop runs at
+      // daemon BOOT, and throwing here took the whole daemon (local capture
+      // included) down over one host's file modes.
       let legacyBearer: string | undefined;
       try {
+        tightenSecretsPermissions(hostDir, lockNamespace);
         legacyBearer = readSecretsFile(hostDir)[HOST_BEARER_SECRET];
       } catch {
-        throw new HostJoinStateCorruptError(
-          snapshot.record.host_id,
-          'legacy secrets.env is malformed',
-        );
+        lastEnumerationQuarantine = [
+          ...lastEnumerationQuarantine,
+          { hostId: snapshot.record.host_id, detail: 'legacy secrets.env is unsafe or malformed' },
+        ];
+        continue;
       }
       if (legacyBearer === snapshot.bearer) continue;
       publishLegacyHostBearerUnlocked(
