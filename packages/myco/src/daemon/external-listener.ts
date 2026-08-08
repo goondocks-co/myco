@@ -751,6 +751,20 @@ export function createFunnelOffRunner(
  * `unix:<abs path>` target, pinned by the live rig validation) is a one-line
  * fix if the vendor CLI renders it differently.
  */
+/**
+ * How `tailscale funnel` is told where to send traffic.
+ *
+ * A socket is named `unix:<path>`; a port is named as a loopback URL, because
+ * that is the form the vendor CLI accepts and the form `proxyMatchesTarget`
+ * parses back out of `funnel status`. Both shapes are live: external MCP serves
+ * a socket, the Team Host serves a loopback port.
+ */
+function funnelProxyArg(target: FunnelTarget): string {
+  return target.kind === 'socket'
+    ? `unix:${target.path}`
+    : `http://127.0.0.1:${target.port}`;
+}
+
 export function createFunnelOnRunner(
   runCommand: TailscaleCommandRunner,
 ): FunnelOnRunner {
@@ -777,7 +791,7 @@ export function createFunnelOnRunner(
           '--yes',
           `--https=${opts.publicPort}`,
           ...mountArgsFor(opts.mount),
-          `unix:${target.path}`,
+          funnelProxyArg(target),
         ]);
       }
       const status = await runCommand(['funnel', 'status', '--json']);

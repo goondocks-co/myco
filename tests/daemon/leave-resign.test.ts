@@ -49,7 +49,7 @@ import { readHostActionLog } from '@myco/host/action-log';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
-import { teamSocketPath } from '../helpers/team-socket.js';
+import { teamTestPort } from '../helpers/team-socket.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
@@ -63,14 +63,14 @@ describeTeamTransport('leave releases the host record', () => {
   let tmp: string;
   let savedTeamHome: string | undefined;
   let HOST_ID: string;
-  let socketPath: string;
+  let teamPort: number;
 
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-leave-resign-'));
     savedTeamHome = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_TEAM_HOME = tmp;
     HOST_ID = createHostId();
-    socketPath = teamSocketPath('leave-host');
+    teamPort = teamTestPort();
   });
 
   afterEach(() => {
@@ -99,12 +99,12 @@ describeTeamTransport('leave releases the host record', () => {
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
-      teamSocketPath: socketPath,
+      teamPort: teamPort,
       hostServe: { bearer: HOST_BEARER, hostId: HOST_ID, label: 'Test host' },
       lockNamespace: testPerUserLockNamespace,
     });
     await server.start(0);
-    const edge = await startFunnelEdge(socketPath);
+    const edge = await startFunnelEdge({ port: teamPort });
 
     try {
       const issued = issueMemberToken(MEMBER_MACHINE);

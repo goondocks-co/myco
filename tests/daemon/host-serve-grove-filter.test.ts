@@ -17,7 +17,7 @@
  * Hermetic: `MYCO_HOME` / `MYCO_TEAM_HOME` are fresh tmpdirs per test.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { teamFetch, teamSocketPath, removeSocket, socketFetch } from '../helpers/team-socket.js';
+import { teamFetch, teamTestPort, portFetch } from '../helpers/team-socket.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -185,7 +185,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
    * knowledge-serving router routes chokepoint 1 protects.
    */
   async function buildHostServer(servedGroveId: string | undefined): Promise<DaemonServer> {
-    teamSock = teamSocketPath();
+    teamSock = teamTestPort();
     const hostServe: HostServeRuntime = {
       bearer: HOST_BEARER,
       servedGroveId,
@@ -199,7 +199,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
       daemonStateAuthority: stubAuthority,
       hostServe,
       lockNamespace: testPerUserLockNamespace,
-      teamSocketPath: teamSock,
+      teamPort: teamSock,
     });
     server.registerRoute('GET', PROBE_ROUTE, async (req) => ({
       body: { ok: true, groveId: req.requestContext?.groveId ?? null },
@@ -313,7 +313,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     const transport = new StreamableHTTPClientTransport(
       new URL('http://myco-team.local/mcp'),
       {
-        fetch: socketFetch(teamSock),
+        fetch: portFetch(teamSock),
         requestInit: {
           headers: overlayHeaders({
             'x-myco-grove-id': servedGrove.id,
@@ -334,7 +334,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
     const transport = new StreamableHTTPClientTransport(
       new URL('http://myco-team.local/mcp'),
       {
-        fetch: socketFetch(teamSock),
+        fetch: portFetch(teamSock),
         requestInit: {
           headers: overlayHeaders({
             'x-myco-grove-id': servedGrove.id,

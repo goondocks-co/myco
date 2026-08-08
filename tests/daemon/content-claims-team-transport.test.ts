@@ -33,7 +33,7 @@ import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import { assertGroveProjectId, createProjectId, createHostId } from '@myco/grove/ids.js';
 import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
-import { teamFetch, teamSocketPath } from '../helpers/team-socket.js';
+import { teamFetch, teamTestPort } from '../helpers/team-socket.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
@@ -73,7 +73,7 @@ describeTeamTransport('content claims over the real member -> host transport', (
   let memberBase: string;
   let memberAuthToken: string;
   let edge: FunnelEdge;
-  let socketPath: string;
+  let teamPort: number;
 
 let memberToken: string;
 
@@ -119,13 +119,13 @@ let memberToken: string;
 
     // --- host daemon: real overlay listener, real content-claim routes ---
     const hostLogger = new DaemonLogger(path.join(tmp, 'host-logs'));
-    socketPath = teamSocketPath('cclaim-host');
+    teamPort = teamTestPort();
     hostServer = new DaemonServer({
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
       logger: hostLogger,
       daemonStateAuthority: stubAuthority,
       lockNamespace: testPerUserLockNamespace,
-      teamSocketPath: socketPath,
+      teamPort: teamPort,
       // servedGroveId designates `grove` as the ONE Grove this host serves —
       // required since Task 2's servedGroveRefusal fail-closed filter now
       // refuses every team request when the designation is absent, even
@@ -137,7 +137,7 @@ let memberToken: string;
 
     // The public edge in front of the host's socket. The member dials THIS,
     // over real TLS, through the production dialer.
-    edge = await startFunnelEdge(socketPath);
+    edge = await startFunnelEdge({ port: teamPort });
 
     // --- attach the project to the host (member's machine-global registry) ---
     const host: HostRecord = {
@@ -304,7 +304,7 @@ let memberToken: string;
     // and a fixture that spoofed the header would be testing something the
     // transport no longer permits.
     const otherToken = issueTestMemberToken('a-different-machine');
-    const second = await teamFetch(socketPath, '/api/content-claims', {
+    const second = await teamFetch(teamPort, '/api/content-claims', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -377,7 +377,7 @@ let memberToken: string;
 
     // A DIFFERENT member picks it up — again as itself, with its own token.
     const otherToken = issueTestMemberToken('a-different-machine');
-    const reclaim = await teamFetch(socketPath, '/api/content-claims', {
+    const reclaim = await teamFetch(teamPort, '/api/content-claims', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

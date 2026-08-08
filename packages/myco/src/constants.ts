@@ -811,6 +811,17 @@ export const ENROLLMENT_RETRY_BACKOFFS_MS = [2000, 4000] as const;
  */
 export const TEAM_FUNNEL_PORT = 8443;
 
+/**
+ * The address the Team Host listener binds — loopback, explicitly.
+ *
+ * Shared by the bind (`daemon/server.ts`) and the Funnel proxy target
+ * (`team-host/funnel.ts`) so the two cannot disagree about what is being
+ * published. An omitted host would bind every interface and put the team
+ * surface on the LAN: a second door beside the Funnel, reachable without the
+ * operator ever publishing one.
+ */
+export const TEAM_LISTEN_ADDRESS = '127.0.0.1';
+
 /** The public port the external read-only MCP Funnel serves on. Shipped at 443
  *  before team hosting needed a public port; kept there so no advertised URL
  *  moves. See {@link TEAM_FUNNEL_PORT} for why the two cannot share one. */

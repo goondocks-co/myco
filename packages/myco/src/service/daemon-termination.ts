@@ -66,7 +66,7 @@ export async function withExternalMcpContainment<T>(
   const [
     { ExternalMcpContainmentAuthority },
     { defaultFunnelOffRunner },
-    { teamFunnelContainmentSockets, teamFunnelIntentFor },
+    { teamFunnelContainmentPorts, teamFunnelIntentFor },
   ] = await Promise.all([
     import('../daemon/external-mcp-containment.js'),
     import('../daemon/external-listener.js'),
@@ -90,7 +90,7 @@ export async function withExternalMcpContainment<T>(
     // where hard kills mean containment must complete before the signal; the
     // daemon's own graceful shutdown on every other platform runs through
     // `main.ts`'s authority, which derives the same intent from the operation.)
-    additionalFunnelSockets: (operation) => teamFunnelContainmentSockets({
+    additionalFunnelPorts: (operation) => teamFunnelContainmentPorts({
       mycoHome,
       intent: teamFunnelIntentFor(operation),
     }),

@@ -9,7 +9,8 @@
 import { DaemonServer } from './server.js';
 import { resolveHostServeConfig } from './host-serve.js';
 import { EXTERNAL_MCP_PATH, ExternalMcpListener, defaultFunnelOffRunner, defaultFunnelOnRunner, resolveExternalMcpSocketPath } from './external-listener.js';
-import { activateTeamFunnel, teamFunnelContainmentSockets, teamFunnelIntentFor } from '@myco/team-host/funnel.js';
+import { activateTeamFunnel, teamFunnelContainmentPorts, teamFunnelIntentFor } from '@myco/team-host/funnel.js';
+import { rememberTeamPort } from '@myco/team-host/daemon-apply.js';
 import { readHostState, writeHostState } from '@myco/team-host/state.js';
 import {
   ExternalMcpContainmentAuthority,
@@ -810,7 +811,7 @@ export async function main(): Promise<void> {
     // withdraws it so nothing answers the public URL while the daemon is down.
     // Deriving the intent from the operation is what keeps them apart — a fixed
     // 'retire' here meant shutdown withdrew nothing.
-    additionalFunnelSockets: (operation) => teamFunnelContainmentSockets({
+    additionalFunnelPorts: (operation) => teamFunnelContainmentPorts({
       mycoHome,
       intent: teamFunnelIntentFor(operation),
     }),
@@ -2740,10 +2741,15 @@ export async function main(): Promise<void> {
   // scheduler. Fire-and-forget, same posture as the module pre-warm below;
   // members simply cannot reach the host until it resolves, which is already
   // true while it is running.
-  if (hostServe && server.teamSocketPath) {
-    const socketPath = server.teamSocketPath;
+  if (hostServe && server.teamPort !== null) {
+    const teamPort = server.teamPort;
     void (async () => {
-      const activation = await activateTeamFunnel(socketPath, { runFunnelOn: defaultFunnelOnRunner });
+      // Remember the bound port BEFORE publishing. It is what containment uses
+      // to name this home's handler, so a crash between bind and publish must
+      // still leave the port recoverable — otherwise the handler this activation
+      // is about to create becomes unattributable residue.
+      rememberTeamPort(teamPort);
+      const activation = await activateTeamFunnel(teamPort, { runFunnelOn: defaultFunnelOnRunner });
       // Read state AFTER the await: activation takes real time, and a
       // concurrent `host enable` may have written it in the meantime.
       //

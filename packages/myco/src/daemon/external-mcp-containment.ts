@@ -164,7 +164,7 @@ export interface FunnelOnResult {
 }
 
 export type FunnelOnRunner = (
-  target: { kind: 'socket'; path: string },
+  target: FunnelTarget,
   opts: { mount: string; publicPort: number },
 ) => Promise<FunnelOnResult>;
 
@@ -195,7 +195,10 @@ export interface ExternalMcpContainmentAuthorityOptions {
    * return makes `requiresContainment` true, which is what reaches the vendor
    * `tailscale` CLI, and a clean machine must never spawn it.
    */
-  additionalFunnelSockets?: (operation: ExternalMcpContainmentOperation) => string[];
+  /** Other Myco Funnel surfaces this authority must also drive off. Ports
+   *  rather than sockets: the Team Host listener is the only other surface and
+   *  it binds a loopback port. */
+  additionalFunnelPorts?: (operation: ExternalMcpContainmentOperation) => number[];
   /** The activation inverse of `runFunnelOff`. Optional: shutdown/termination
    *  authorities never activate. `enable` fails cleanly when absent. */
   runFunnelOn?: FunnelOnRunner;
@@ -594,22 +597,23 @@ export class ExternalMcpContainmentAuthority {
   }
 
   /** The listener's bound loopback port, if any — legacy port-shaped reconcile input. */
-  private listenerPorts(): number[] {
+  /** This listener's own bound port, if it is port-shaped, PLUS any other Myco
+   *  Funnel surface this authority is responsible for (the Team Host listener). */
+  private listenerPorts(operation: ExternalMcpContainmentOperation): number[] {
     const bound = this.options.listener.boundTarget;
-    return bound?.kind === 'loopback' ? [bound.port] : [];
+    const own = bound?.kind === 'loopback' ? [bound.port] : [];
+    return [...new Set([...own, ...this.teamFunnelPorts(operation)])];
   }
 
-  /** The listener's bound socket path, if any — socket-shaped reconcile input,
-   *  PLUS any other Myco Funnel surface this authority is responsible for. */
-  private listenerSockets(operation: ExternalMcpContainmentOperation): string[] {
+  /** The listener's bound socket path, if any — socket-shaped reconcile input. */
+  private listenerSockets(): string[] {
     const bound = this.options.listener.boundTarget;
-    const own = bound?.kind === 'socket' ? [bound.path] : [];
-    return [...new Set([...own, ...this.additionalSockets(operation)])];
+    return bound?.kind === 'socket' ? [bound.path] : [];
   }
 
-  private additionalSockets(operation: ExternalMcpContainmentOperation): string[] {
+  private teamFunnelPorts(operation: ExternalMcpContainmentOperation): number[] {
     try {
-      return this.options.additionalFunnelSockets?.(operation) ?? [];
+      return this.options.additionalFunnelPorts?.(operation) ?? [];
     } catch {
       // A failure to enumerate the other surface must not wedge external-MCP
       // containment — which is the one that owns this authority's config
@@ -834,7 +838,7 @@ export class ExternalMcpContainmentAuthority {
             ports: [
               ...existingIntent.ports,
               ...additionalPorts,
-              ...this.listenerPorts(),
+              ...this.listenerPorts(operation),
               ...(recoverableExternalMcpPort ? [recoverableExternalMcpPort] : []),
             ],
             phase: 'port_recovery_pending',
@@ -856,11 +860,11 @@ export class ExternalMcpContainmentAuthority {
       }
       let activeIntent: ExternalMcpContainmentIntent = {
         ...resumableIntent,
-        sockets: [...new Set([...resumableIntent.sockets, ...this.listenerSockets(operation)])].sort(),
+        sockets: [...new Set([...resumableIntent.sockets, ...this.listenerSockets()])].sort(),
         ports: [
           ...resumableIntent.ports,
           ...additionalPorts,
-          ...this.listenerPorts(),
+          ...this.listenerPorts(operation),
           ...(recoverableExternalMcp ? [recoverableExternalMcp.port] : []),
           ...(recoverableExternalMcpPort ? [recoverableExternalMcpPort] : []),
         ],
@@ -933,9 +937,9 @@ export class ExternalMcpContainmentAuthority {
           fallbackExternalMcp.port,
           ...(recoverableExternalMcpPort ? [recoverableExternalMcpPort] : []),
           ...additionalPorts,
-          ...this.listenerPorts(),
+          ...this.listenerPorts(operation),
         ],
-        sockets: this.listenerSockets(operation),
+        sockets: this.listenerSockets(),
         phase: 'funnel_off_pending',
         requested_at: this.options.now().toISOString(),
       };
@@ -975,7 +979,7 @@ export class ExternalMcpContainmentAuthority {
     // being intended says nothing about the other. Everything about external
     // MCP below is still skipped.
     if (operation === 'reconcile' && explicitExternalMcpConfig && externalMcp.enabled && tokenPresent) {
-      await runTargets([], this.additionalSockets(operation));
+      await runTargets(this.teamFunnelPorts(operation), []);
       return {
         enabled: true,
         port: externalMcp.port,
@@ -996,9 +1000,9 @@ export class ExternalMcpContainmentAuthority {
         ports: [
           externalMcp.port,
           ...additionalPorts,
-          ...this.listenerPorts(),
+          ...this.listenerPorts(operation),
         ],
-        sockets: this.listenerSockets(operation),
+        sockets: this.listenerSockets(),
         phase: 'port_recovery_pending',
         requested_at: this.options.now().toISOString(),
       });
@@ -1018,7 +1022,7 @@ export class ExternalMcpContainmentAuthority {
       || tokenPresent
       || this.options.listener.isBound
       || additionalPorts.length > 0
-      || this.additionalSockets(operation).length > 0;
+      || this.teamFunnelPorts(operation).length > 0;
     if (!requiresContainment) {
       return {
         enabled: false,
@@ -1035,9 +1039,9 @@ export class ExternalMcpContainmentAuthority {
       ports: [
         externalMcp.port,
         ...additionalPorts,
-        ...this.listenerPorts(),
+        ...this.listenerPorts(operation),
       ],
-      sockets: this.listenerSockets(operation),
+      sockets: this.listenerSockets(),
       phase: 'funnel_off_pending',
       requested_at: this.options.now().toISOString(),
     };

@@ -896,7 +896,7 @@ describe('ExternalMcpContainmentAuthority', () => {
   });
 
   // ---------------------------------------------------------------------
-  // The SECOND public surface. `additionalFunnelSockets` is how the team
+  // The SECOND public surface. `additionalFunnelPorts` is how the team
   // Funnel reaches this authority's teardown, and it had no coverage at all —
   // which is how the boot-reconcile hole below shipped green.
   // ---------------------------------------------------------------------
@@ -918,7 +918,7 @@ describe('ExternalMcpContainmentAuthority', () => {
         offCalls.push(portOf(target));
         return { ok: true, detail: 'off' };
       },
-      additionalFunnelSockets: () => ['/tmp/myco-team-residue.sock'],
+      additionalFunnelPorts: () => [9911],
       lockNamespace: testPerUserLockNamespace,
     });
 
@@ -929,8 +929,8 @@ describe('ExternalMcpContainmentAuthority', () => {
     expect(result.enabled).toBe(true);
     expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(true);
     expect(offCalls).not.toContain(8743);
-    // But the team socket IS retired.
-    expect(offCalls).toContain('/tmp/myco-team-residue.sock');
+    // But the team listener's Funnel IS retired.
+    expect(offCalls).toContain(9911);
   });
 
   test('RECONCILE on a machine with NO team residue never reaches the vendor CLI', async () => {
@@ -948,7 +948,7 @@ describe('ExternalMcpContainmentAuthority', () => {
         offCalls.push(portOf(target));
         return { ok: true, detail: 'off' };
       },
-      additionalFunnelSockets: () => [],
+      additionalFunnelPorts: () => [],
       lockNamespace: testPerUserLockNamespace,
     });
 
@@ -957,7 +957,7 @@ describe('ExternalMcpContainmentAuthority', () => {
     expect(offCalls).toEqual([]);
   });
 
-  test('SHUTDOWN quiesces the team socket alongside external MCP', async () => {
+  test('SHUTDOWN quiesces the team listener alongside external MCP', async () => {
     const fixture = containmentFixture({ enabled: true, port: 8743, listenerPort: 8743 });
     const offCalls: Array<number | string> = [];
     const authority = new ExternalMcpContainmentAuthority({
@@ -968,19 +968,19 @@ describe('ExternalMcpContainmentAuthority', () => {
         offCalls.push(portOf(target));
         return { ok: true, detail: 'off' };
       },
-      additionalFunnelSockets: () => ['/tmp/myco-team-quiesce.sock'],
+      additionalFunnelPorts: () => [9922],
       lockNamespace: testPerUserLockNamespace,
     });
 
     await authority.contain('shutdown');
 
     // Nothing answers either public URL while the daemon is down.
-    expect(offCalls).toContain('/tmp/myco-team-quiesce.sock');
+    expect(offCalls).toContain(9922);
     // ...and shutdown does NOT disavow the config, so the next boot republishes.
     expect(loadMachineConfig(fixture.home).daemon.external_mcp.enabled).toBe(true);
   });
 
-  test('the OPERATION reaches the socket source — one authority answers boot and shutdown differently', async () => {
+  test('the OPERATION reaches the port source — one authority answers boot and shutdown differently', async () => {
     // The bug this pins: ONE authority instance serves both the boot reconcile
     // and the daemon's own graceful shutdown, and the two want opposite answers
     // for a serving host. A callback that fixed its intent at construction
@@ -994,7 +994,7 @@ describe('ExternalMcpContainmentAuthority', () => {
       stateDir: fixture.serviceDir,
       listener: fixture.listener,
       runFunnelOff: async () => ({ ok: true, detail: 'off' }),
-      additionalFunnelSockets: (operation) => {
+      additionalFunnelPorts: (operation) => {
         seen.push(operation);
         return [];
       },

@@ -17,7 +17,7 @@
  * Hermetic: MYCO_HOME / MYCO_TEAM_HOME are fresh tmpdirs per test.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { teamFetch, teamSocketPath, removeSocket } from '../helpers/team-socket.js';
+import { teamFetch, teamTestPort } from '../helpers/team-socket.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -100,7 +100,7 @@ describe('host registration-on-ingest (overlay integration)', () => {
 
   async function buildHostServer(servedGroveId: string | undefined): Promise<DaemonServer> {
 
-    teamSock = teamSocketPath();
+    teamSock = teamTestPort();
     const hostServe: HostServeRuntime = {
       bearer: HOST_BEARER,
       servedGroveId,
@@ -113,7 +113,7 @@ describe('host registration-on-ingest (overlay integration)', () => {
       daemonStateAuthority: stubAuthority,
       hostServe,
       lockNamespace: testPerUserLockNamespace,
-      teamSocketPath: teamSock,
+      teamPort: teamSock,
     });
 
     // Two collect-stamped handlers (real ROUTE_RULES stamps) that write a

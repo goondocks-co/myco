@@ -25,8 +25,9 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
-import { teamFetch, teamSocketPath, removeSocket } from '../helpers/team-socket.js';
+import { teamFetch, teamTestPort } from '../helpers/team-socket.js';
 import os from 'node:os';
+import net from 'node:net';
 import path from 'node:path';
 
 import { DaemonServer } from '@myco/daemon/server';
@@ -100,7 +101,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     const logger = new DaemonLogger(path.join(tmp, 'logs'));
     logger.setPersistFn((entry) => logEntries.push(entry));
 
-    teamSock = teamSocketPath();
+    teamSock = teamTestPort();
 
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
@@ -109,7 +110,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
       lockNamespace: testPerUserLockNamespace,
       uiDir,
       hostServe: { bearer: HOST_BEARER, servedGroveId: servedGrove.id },
-      teamSocketPath: teamSock,
+      teamPort: teamSock,
     });
     server.registerRoute('GET', '/api/sessions', async () => {
       sessionsHandlerCalls += 1;
@@ -130,7 +131,6 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
 
   afterEach(async () => {
     await server.stop();
-    removeSocket(teamSock);
     if (savedMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = savedMycoHome;
     if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
@@ -394,14 +394,34 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
 
   // --- bind address: never 0.0.0.0 ---
 
-  test('the team listener binds its socket — no TCP port, so nothing to reach it by', async () => {
-    expect(server.teamSocketPath).toBe(teamSock);
-    expect(fs.existsSync(teamSock)).toBe(true);
-    // A socket has no port: the whole class of "some other local process holds
-    // or reaches this port" is gone, which is why the Host allowlist could be.
-    // Asserted as reachability, not as a field name — the socket's directory is
-    // the boundary, so it must not be group/world accessible.
-    expect(fs.lstatSync(path.dirname(teamSock)).mode & 0o077).toBe(0);
+  test('the team listener binds LOOPBACK ONLY — never a routable interface', async () => {
+    // The listener moved from a unix socket to a TCP port because the default
+    // macOS Tailscale cannot proxy a Funnel to a socket (it publishes and then
+    // 502s). A port brings back the question a socket did not have — WHO can
+    // reach it — so the bind address is the invariant now, and it is asserted
+    // by connecting rather than by reading a field.
+    expect(server.teamPort).toBe(teamSock);
+
+    // Reachable on loopback.
+    const viaLoopback = await teamFetch(teamSock, '/api/health');
+    expect(viaLoopback.status).not.toBe(0);
+
+    // NOT reachable on a routable address of this machine. A bind that omitted
+    // the host would answer here, putting the team surface on the LAN — a second
+    // public door beside the Funnel, never published and never intended.
+    const external = Object.values(os.networkInterfaces())
+      .flatMap((ifaces) => ifaces ?? [])
+      .find((i) => i.family === 'IPv4' && !i.internal);
+    if (external) {
+      const reached = await new Promise<boolean>((resolve) => {
+        const sock = net.connect({ host: external.address, port: teamSock });
+        const done = (value: boolean) => { sock.destroy(); resolve(value); };
+        sock.once('connect', () => done(true));
+        sock.once('error', () => done(false));
+        setTimeout(() => done(false), 1_000).unref?.();
+      });
+      expect(reached).toBe(false);
+    }
   });
 
   // --- loopback byte-identical ---
@@ -487,7 +507,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
     embeddingStatusCalls = 0;
     secretsFile = path.join(tmp, 'secrets.env');
 
-    teamSock = teamSocketPath();
+    teamSock = teamTestPort();
 
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
@@ -495,7 +515,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
       daemonStateAuthority: stubAuthority,
       lockNamespace: testPerUserLockNamespace,
       hostServe: { bearer: HOST_BEARER, servedGroveId: servedGrove.id },
-      teamSocketPath: teamSock,
+      teamPort: teamSock,
     });
 
     // localhost-only — THE credential-hijack moat. This handler is the only writer
@@ -561,7 +581,6 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
 
   afterEach(async () => {
     await server.stop();
-    removeSocket(teamSock);
     if (savedMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = savedMycoHome;
     if (savedTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
@@ -740,13 +759,13 @@ describe('Team Host serve disabled → no second listener', () => {
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-off-'));
-    teamSock = teamSocketPath();
+    teamSock = teamTestPort();
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
       lockNamespace: testPerUserLockNamespace,
-      teamSocketPath: teamSock,
+      teamPort: teamSock,
       // no hostServe → host serving off
     });
     server.registerRoute('GET', '/api/sessions', async () => ({ body: { ok: true } }));
@@ -755,12 +774,11 @@ describe('Team Host serve disabled → no second listener', () => {
 
   afterEach(async () => {
     await server.stop();
-    removeSocket(teamSock);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
   test('no team listener binds and the loopback listener works', async () => {
-    expect(server.teamSocketPath).toBeNull();
+    expect(server.teamPort).toBeNull();
     expect(fs.existsSync(teamSock)).toBe(false);
     const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`);
     expect(res.status).toBe(200);

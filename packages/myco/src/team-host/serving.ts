@@ -31,7 +31,7 @@ import { seedGroveBackupDefaults } from '@myco/backup/service.js';
 import { getServiceManager } from '@myco/service/manager.js';
 import type { ServiceManager } from '@myco/service/types.js';
 import { restartDaemonForHostServe, writeHostServeConfig } from './daemon-apply.js';
-import { deactivateTeamFunnel, teamFunnelContainmentSockets, teamHostingPreflight } from './funnel.js';
+import { deactivateTeamFunnel, teamFunnelContainmentPorts } from './funnel.js';
 import { clearHostState, readHostState, writeHostState } from './state.js';
 
 export interface HostEnableOptions {
@@ -66,11 +66,9 @@ export interface HostEnableOptions {
 export interface HostEnableDeps {
   mycoHome?: string;
   platform?: NodeJS.Platform;
-  /** Test seam: override the Tailscale-build preflight. */
-  preflight?: typeof teamHostingPreflight;
   /** Withdraw the host's public URL (disable only). Default: the vendor
    *  Funnel-off runner against this machine's team socket. */
-  withdrawFunnel?: (socketPath: string) => Promise<{ ok: boolean; detail: string }>;
+  withdrawFunnel?: (port: number) => Promise<{ ok: boolean; detail: string }>;
   serviceManager?: ServiceManager;
   /** Restart THIS machine's Myco daemon so it (un)binds the team listener.
    *  Default: `restartDaemonForHostServe` via the platform manager. The
@@ -338,17 +336,6 @@ export async function hostEnable(options: HostEnableOptions, deps: HostEnableDep
   const label = sanitizeHostname(options.hostname ?? os.hostname());
   const controlDir = resolveHostControlDir();
 
-  // Transport preflight — refuse BEFORE any durable write, for the same reason
-  // the designation checks below do: a machine whose Tailscale cannot serve a
-  // unix socket will never publish a URL, and finding that out after the config
-  // is written and the daemon has restarted turns a clear "install the other
-  // Tailscale" into a half-enabled host the operator has to tear down.
-  //
-  // One-sided by construction — it refuses what it recognizes and stays quiet
-  // otherwise. The activation probe at boot is what actually gates serving.
-  const refusal = (deps.preflight ?? teamHostingPreflight)({ platform });
-  if (refusal) throw new Error(refusal);
-
   // Designation preflight — refuse BEFORE any durable write (E1 §4.1 rev 6):
   // the explicit-choice requirement and a storage-name collision are user
   // errors, and surfacing them after a partial enable converts a typo into a
@@ -460,16 +447,16 @@ export async function hostDisable(deps: HostEnableDeps = {}): Promise<HostDisabl
   // writes that erase the evidence — see `withdrawn` below. Serving stops
   // either way (the daemon restarts and unbinds the socket); what is preserved
   // is the ability to find a URL that outlived its host.
-  const exposedSockets = teamFunnelContainmentSockets({ mycoHome, intent: 'quiesce' });
+  const exposedPorts = teamFunnelContainmentPorts({ mycoHome, intent: 'quiesce' });
   let withdrawn = true;
-  for (const socketPath of exposedSockets) {
+  for (const exposedPort of exposedPorts) {
     await step('withdraw public URL', async () => {
       const withdraw = deps.withdrawFunnel
-        ?? (async (socket: string) => {
+        ?? (async (port: number) => {
           const { defaultFunnelOffRunner } = await import('@myco/daemon/external-listener.js');
-          return await deactivateTeamFunnel(socket, defaultFunnelOffRunner);
+          return await deactivateTeamFunnel({ kind: 'port', port }, defaultFunnelOffRunner);
         });
-      const result = await withdraw(socketPath);
+      const result = await withdraw(exposedPort);
       log(result.detail);
       if (!result.ok) {
         withdrawn = false;

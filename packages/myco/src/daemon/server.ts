@@ -3,9 +3,10 @@ import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs';
 import net from 'node:net';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import type { DaemonLogger } from './logger.js';
-import { isSafeCaptureSegment, resolveTeamSocketPath } from '../grove/paths.js';
+import { isSafeCaptureSegment } from '../grove/paths.js';
 import { getPluginVersion } from '../version.js';
 import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile, resolveEmbeddedAsset } from './static.js';
@@ -28,6 +29,7 @@ import {
 } from '../grove/request-context.js';
 import { isGroveEraId, type GroveProjectId } from '../grove/ids.js';
 import { createAuthThrottle, delay } from '../team-host/auth-throttle.js';
+import { loadMachineConfig } from '../config/loader.js';
 import { consumeJoinKey } from '../team-host/join-keys.js';
 import {
   issueMemberToken,
@@ -68,6 +70,7 @@ import {
   HOST_ENROLL_ROUTE,
   HOST_RESIGN_ROUTE,
   REFUSAL_LOG_THROTTLE_INTERVAL_MS,
+  TEAM_LISTEN_ADDRESS,
 } from '../constants.js';
 import { shouldLogOncePerInterval } from './log-throttle.js';
 import { type DaemonState } from './service-state.js';
@@ -115,8 +118,8 @@ export interface DaemonServerConfig {
    *  takeover-handshake predicate reads it (eviction.ts). Defaults to the
    *  static `retired` value for callers (tests) that never activate. */
   externalMcpPosture?: () => string;
-  /** Override the team listener's socket path (tests inject a short temp path). */
-  teamSocketPath?: string;
+  /** Override the team listener's loopback port (tests pin a known port). */
+  teamPort?: number;
   /**
    * Capability for mutating `daemon.json`. The ONLY way the server
    * writes state. Required for production callers; tests that don't
@@ -262,13 +265,14 @@ export class DaemonServer {
    * ({@link handleTeamRequest}) before dispatch.
    */
   private teamServer: http.Server | null = null;
-  /** The bound team socket path, or null while unbound. */
-  teamSocketPath: string | null = null;
+  /** The bound team loopback port, or null while unbound. */
+  teamPort: number | null = null;
   /** Failed-auth backoff for the team listener. Per-process, global over
-   *  failures — the listener answers a unix socket, so there is no per-source
+   *  failures — every request arrives through the one Funnel edge, so the peer
+   *  address is the edge's, not a member's, and there is no per-source
    *  dimension to key on (see `team-host/auth-throttle.ts`). */
   private readonly teamAuthThrottle = createAuthThrottle();
-  private readonly teamSocketPathOverride: string | null;
+  private readonly teamPortOverride: number | null;
   /**
    * The IPv6-loopback companion listener — the SAME surface as the primary
    * listener, bound to `[::1]` on the same port. It exists so the daemon OWNS
@@ -343,7 +347,7 @@ export class DaemonServer {
     this.runtimeCache = config.runtimeCache ?? new GroveRuntimeCache();
     this.ownsRuntimeCache = config.runtimeCache === undefined;
     this.hostServe = config.hostServe ?? null;
-    this.teamSocketPathOverride = config.teamSocketPath ?? null;
+    this.teamPortOverride = config.teamPort ?? null;
     this.hostProxyDeps = config.hostProxyDeps ?? {};
     this.lockNamespace = config.lockNamespace ?? nativePerUserLockNamespace;
     this.version = getPluginVersion();
@@ -548,23 +552,33 @@ export class DaemonServer {
   }
 
   /**
-   * Bind the Team Host listener on its `AF_UNIX` socket ({@link resolveTeamSocketPath}).
-   * Every request on it passes {@link handleTeamRequest}'s transport-boundary
-   * gate before dispatch. No-op (and never throws) when host serving is off; a
-   * bind failure logs once and leaves host serving off — never a crash.
+   * Bind the Team Host listener on a LOOPBACK TCP port. Every request on it
+   * passes {@link handleTeamRequest}'s transport-boundary gate before dispatch.
+   * No-op (and never throws) when host serving is off; a bind failure logs once
+   * and leaves host serving off — never a crash.
    *
-   * A socket, not a port. The listener this replaces bound a loopback TCP port
-   * that a `tailscale serve --tcp` forward bridged to the overlay, which meant
-   * the port was reachable by every local process and the gate had to tell
-   * members from local callers by comparing a `Host` header string. A socket has
-   * no port to squat and no address to spoof — reachability is filesystem
-   * permission on a `0700` directory — so the Host comparison is gone and
-   * admission rests on the bearer alone.
+   * A port, not a unix socket, and the reason is measured rather than
+   * preferential. The macOS App Store / System Extension Tailscale — the DEFAULT
+   * install — accepts a unix-socket Funnel configuration and then cannot proxy
+   * to it: the edge publishes, nothing answers behind it, and the public URL
+   * 502s with no diagnostic anywhere. Verified on one node with everything else
+   * held constant: Funnel to this listener's socket returned 502 while Funnel to
+   * a loopback port on the same daemon returned 200. Serving a socket therefore
+   * meant hosting simply did not work for most Mac operators unless they
+   * installed a second, standalone tailscaled and logged it into the same
+   * tailnet as a separate node.
    *
-   * A STALE socket file is reclaimed (a bind onto an existing path fails with
-   * EADDRINUSE even when no process holds it), but a LIVE one never is: the
-   * connect probe distinguishes them, and failing toward "live" keeps two
-   * daemons sharing a home from stealing each other's listener.
+   * WHAT THAT COSTS. The socket sat in a `0700` directory, so reachability was
+   * filesystem permission — no local process outside this user could connect. A
+   * loopback port is reachable by any process on the machine. That boundary was
+   * never the admission control: every team route requires a per-member bearer
+   * token bound to a machine id, with a failed-auth throttle
+   * (`team-host/member-tokens.ts`). The socket was defence in depth, and it is
+   * traded for hosting that works on the platform people actually run.
+   *
+   * The port is bound on `127.0.0.1` explicitly — never `0.0.0.0` — so it is not
+   * reachable off the machine, and the public path stays exactly one door: the
+   * Funnel the operator published.
    */
   private startTeamListener(): Promise<void> {
     return new Promise((resolve) => {
@@ -582,40 +596,19 @@ export class DaemonServer {
       }
 
       void (async () => {
-        let socketPath: string;
-        try {
-          // Resolution itself can throw — no short-enough AF_UNIX path exists, or
-          // `physicalPathIdentity` hits EACCES/ELOOP walking the home. It has to
-          // be inside this try: an escaping throw leaves `start()`'s promise
-          // chain unsettled and the daemon never finishes starting, which is a
-          // strictly worse outcome than the degraded one this whole block exists
-          // to produce ("host serving stays off", daemon up).
-          socketPath = this.teamSocketPathOverride ?? resolveTeamSocketPath();
-          const dir = path.dirname(socketPath);
-          fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-          // The directory is the containment boundary, so refuse to serve from
-          // one this user does not own or that anyone else can write. mkdir with
-          // `recursive` silently accepts a pre-existing directory — including a
-          // symlink another local user planted — so verify rather than assume.
-          const dirStat = fs.lstatSync(dir);
-          const uid = process.getuid?.() ?? dirStat.uid;
-          if (!dirStat.isDirectory() || dirStat.uid !== uid) {
-            this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host socket directory is not a directory this user owns — host serving stays off', { dir });
-            resolve();
-            return;
+        // The port remembered from a previous boot, so the published Funnel
+        // handler stays valid and activation has nothing to rewrite. 0 asks the
+        // kernel for any free port — the first-enable path, and the fallback
+        // when the remembered one is taken.
+        let requestedPort = this.teamPortOverride ?? 0;
+        if (requestedPort === 0) {
+          try {
+            const remembered = loadMachineConfig().daemon.host_serve.team_port;
+            if (typeof remembered === 'number') requestedPort = remembered;
+          } catch {
+            // An unreadable state file is not a reason to refuse to serve; fall
+            // through to an ephemeral port and let activation republish.
           }
-          fs.chmodSync(dir, 0o700);
-          if ((fs.lstatSync(dir).mode & 0o077) !== 0) {
-            this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host socket directory is group/world accessible — host serving stays off', { dir });
-            resolve();
-            return;
-          }
-        } catch (err) {
-          this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host socket could not be prepared — host serving stays off', {
-            error: (err as Error).message,
-          });
-          resolve();
-          return;
         }
 
         const team = http.createServer((req, res) => {
@@ -639,47 +632,31 @@ export class DaemonServer {
           team.on('error', (err) => {
             this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host listener socket error', { error: (err as Error).message });
           });
-          try { fs.chmodSync(socketPath, 0o600); } catch { /* best-effort; the 0700 dir is the gate */ }
+          const bound = (team.address() as AddressInfo | null)?.port ?? null;
           this.teamServer = team;
-          this.teamSocketPath = socketPath;
-          this.logger.info(LOG_KINDS.HOST_SERVE, 'Team Host listener bound', { socket: socketPath });
+          this.teamPort = bound;
+          this.logger.info(LOG_KINDS.HOST_SERVE, 'Team Host listener bound', { port: bound });
           resolve();
         };
 
-        // BIND FIRST, reclaim only on EADDRINUSE.
-        //
-        // Probing the path and then unlinking what looks stale is a TOCTOU: two
-        // daemons sharing a MYCO_HOME both probe (nothing bound yet), the first
-        // binds, and the second unlinks the winner's live inode and binds its
-        // own — the listener theft the probe existed to prevent. bind() is the
-        // only atomic claim available, so the probe runs only after the kernel
-        // has told us something already holds the path.
-        //
-        // This NARROWS the race rather than closing it: the window between the
-        // probe returning "stale" and the unlink is still unguarded, so a third
-        // daemon reclaiming in that gap can still have its live inode unlinked.
-        // Reaching that needs a stale socket AND two daemons racing the reclaim.
-        // The fully atomic shape is bind-to-temp then rename() over the target;
-        // not taken here because the remaining window requires a crash to have
-        // left a stale socket in the first place.
-        let reclaimed = false;
+        // A remembered port can be taken by anything on the machine by the time
+        // this daemon boots. Fall back to an ephemeral port ONCE rather than
+        // refusing to serve — activation then republishes the Funnel at the new
+        // port, which is the one case where rewriting the operator's serve
+        // config is the correct move.
+        let retriedEphemeral = false;
         const onBindError = (err: NodeJS.ErrnoException) => {
-          if (err.code === 'EADDRINUSE' && !reclaimed) {
-            reclaimed = true;
-            void (async () => {
-              if (await socketHasLiveOwner(socketPath)) {
-                this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host socket has a live owner — host serving stays off', { socket: socketPath });
-                try { team.close(); } catch { /* never listened */ }
-                resolve();
-                return;
-              }
-              try { fs.unlinkSync(socketPath); } catch { /* raced; the retry reports it */ }
-              team.listen(socketPath, HTTP_LISTEN_BACKLOG, onBound);
-            })();
+          if (err.code === 'EADDRINUSE' && requestedPort !== 0 && !retriedEphemeral) {
+            retriedEphemeral = true;
+            this.logger.info(LOG_KINDS.HOST_SERVE, 'Remembered Team Host port is taken — claiming another', {
+              port: requestedPort,
+            });
+            requestedPort = 0;
+            team.listen(0, TEAM_LISTEN_ADDRESS, HTTP_LISTEN_BACKLOG, onBound);
             return;
           }
           this.logger.warn(LOG_KINDS.HOST_SERVE, 'Team Host listener failed to bind — host serving stays off', {
-            socket: socketPath,
+            port: requestedPort,
             error: err.message,
             code: err.code ?? null,
           });
@@ -689,7 +666,11 @@ export class DaemonServer {
         };
         team.on('error', onBindError);
 
-        team.listen(socketPath, HTTP_LISTEN_BACKLOG, onBound);
+        // 127.0.0.1 EXPLICITLY. An omitted host binds every interface, which
+        // would expose the team surface on the LAN — a second public door
+        // beside the Funnel, admitted by the same bearer but reachable without
+        // it being published.
+        team.listen(requestedPort, TEAM_LISTEN_ADDRESS, HTTP_LISTEN_BACKLOG, onBound);
 
       })();
     });
@@ -699,16 +680,12 @@ export class DaemonServer {
   async stop(): Promise<void> {
     // No daemon.json unlink — see reconcileExistingDaemon for cleanup ownership.
     const team = this.teamServer;
-    const teamSocket = this.teamSocketPath;
     // Claim the fields BEFORE any await, so a concurrent stop() sees them
     // already taken and does not close a second time.
     this.teamServer = null;
-    this.teamSocketPath = null;
+    this.teamPort = null;
     if (team) {
       await gracefullyCloseHttpServer(team, { gracePeriodMs: SERVER_STOP_FORCE_CLOSE_GRACE_MS });
-      // Node removes the socket file on close; sweep defensively so a stale
-      // inode never outlives the bind and blocks the next one.
-      if (teamSocket) { try { fs.unlinkSync(teamSocket); } catch { /* already gone */ } }
     }
     const v6 = this.ipv6Server;
     this.ipv6Server = null;
@@ -2076,29 +2053,6 @@ function isLoopbackOrigin(origin: string, port: number): boolean {
 }
 
 
-/**
- * Probe whether a socket file has a live owner. Fail toward LIVE: only
- * ECONNREFUSED/ENOENT prove staleness — any other error (EACCES, a full
- * backlog, a reset) or a hung connect means we must NOT unlink, because
- * unlinking a socket another daemon is serving silently steals its listener.
- * Bounded so a wedged filesystem cannot hang the bind.
- */
-async function socketHasLiveOwner(socketPath: string): Promise<boolean> {
-  return await new Promise((resolve) => {
-    const probe = net.connect(socketPath);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const done = (alive: boolean) => {
-      if (timer !== undefined) clearTimeout(timer);
-      try { probe.destroy(); } catch { /* already gone */ }
-      resolve(alive);
-    };
-    timer = setTimeout(() => done(true), 2_000);
-    probe.once('connect', () => done(true));
-    probe.once('error', (err: NodeJS.ErrnoException) => {
-      done(!(err.code === 'ECONNREFUSED' || err.code === 'ENOENT'));
-    });
-  });
-}
 
 /**
  * Apply the daemon's protective HTTP server limits.
