@@ -30,16 +30,20 @@ describe('tailscale CLI socket selection', () => {
   /** Sockets exist, root-owned, 0o600 — the healthy shape. */
   const sockets = (paths: string[]) => (p: string) => (paths.includes(p) ? { uid: 0 } : null);
 
-  /** A process table (root-owned unless stated) plus sockets that exist. */
-  const rig = (commands: string[], paths: string[] = []) => ({
-    processes: () => commands.map((command) => ({ uid: 0, command })),
+  /** A process table (root-owned unless stated) plus sockets that exist. A
+   *  daemon with no `--socket` in argv is given `open` as its held sockets,
+   *  standing in for what lsof reports for that pid. */
+  const rig = (commands: string[], paths: string[] = [], open: string[] = paths) => ({
+    processes: () => commands.map((command, i) => ({ uid: 0, pid: 100 + i, command })),
     socketStat: sockets(paths),
+    processSockets: () => open,
     platform: 'darwin' as NodeJS.Platform,
   });
   /** The same, with every process owned by an unprivileged user. */
-  const asUser = (commands: string[], paths: string[] = []) => ({
-    processes: () => commands.map((command) => ({ uid: 501, command })),
+  const asUser = (commands: string[], paths: string[] = [], open: string[] = paths) => ({
+    processes: () => commands.map((command, i) => ({ uid: 501, pid: 200 + i, command })),
     socketStat: sockets(paths),
+    processSockets: () => open,
     platform: 'darwin' as NodeJS.Platform,
   });
 
@@ -70,6 +74,97 @@ describe('tailscale CLI socket selection', () => {
     // The point of reading the process table rather than a hardcoded list.
     const line = '/usr/sbin/tailscaled --socket=/opt/custom/ts.sock';
     expect(resolveTailscaleSocket(rig([line], ['/opt/custom/ts.sock']))).toBe('/opt/custom/ts.sock');
+  });
+
+  test('THE RIG CASE, ROUND 2: a daemon with NO --socket is found via the sockets it holds', () => {
+    // Measured on the same Mac after a restart: the Homebrew daemon runs as bare
+    // `/opt/homebrew/bin/tailscaled`, no arguments at all. Requiring `--socket`
+    // in argv made it invisible, so selection returned null, the CLI default
+    // chose the sandboxed daemon, and the Funnel went back to 502 — the exact
+    // defect this module exists to prevent, with the whole suite green, because
+    // every fixture here spelled `--socket=` into its command string.
+    const bare = '/opt/homebrew/bin/tailscaled';
+    expect(resolveTailscaleSocket(rig([bare], ['/var/run/tailscaled.socket'])))
+      .toBe('/var/run/tailscaled.socket');
+  });
+
+  test('the bare daemon is still disambiguated against the sandboxed build', () => {
+    // The full rig process table: bare standalone + System Extension + GUI app.
+    // Only the first is a `tailscaled`, and only it holds the control socket.
+    const deps = {
+      processes: () => [
+        { uid: 0, pid: 341, command: '/opt/homebrew/bin/tailscaled' },
+        { uid: 501, pid: 502, command: SANDBOXED },
+        { uid: 0, pid: 99, command: '/Library/SystemExtensions/ABC/io.tailscale.ipn.macsys.network-extension.systemextension/Contents/MacOS/io.tailscale.ipn.macsys.network-extension' },
+      ],
+      socketStat: sockets(['/var/run/tailscaled.socket']),
+      processSockets: (pid: number) => (pid === 341 ? ['/var/run/tailscaled.socket'] : []),
+      platform: 'darwin' as NodeJS.Platform,
+    };
+    expect(resolveTailscaleSocket(deps)).toBe('/var/run/tailscaled.socket');
+  });
+
+  test('a bare daemon holding NO unix socket selects nothing', () => {
+    // `lsof` absent, or the daemon shutting down. Nothing to verify, so
+    // deferring to the CLI beats naming a path this module invented.
+    expect(resolveTailscaleSocket(rig(['/usr/sbin/tailscaled'], [], []))).toBeNull();
+  });
+
+  test('a bare daemon holding MORE THAN ONE bound path is unanswerable, not a guess', () => {
+    // Same discipline as two daemons: picking one of two is a silent wrong
+    // answer half the time.
+    const two = ['/var/run/tailscaled.socket', '/var/run/other.sock'];
+    expect(resolveTailscaleSocket(rig(['/usr/sbin/tailscaled'], two, two))).toBeNull();
+  });
+
+  test('a non-default path a bare daemon holds is honoured', () => {
+    // The whole point of asking the process rather than consulting a list: no
+    // vendor location is baked in, so an unusual path resolves like any other.
+    expect(resolveTailscaleSocket(rig(['/usr/sbin/tailscaled'], ['/opt/custom/ts.sock'])))
+      .toBe('/opt/custom/ts.sock');
+  });
+
+  test('SECURITY: a NON-ROOT bare daemon is not consulted at all', () => {
+    // An unprivileged `tailscaled` must not cause Myco to address whatever
+    // socket it happens to hold — including the real daemon's.
+    expect(resolveTailscaleSocket(asUser(['/tmp/evil/tailscaled'], ['/var/run/tailscaled.socket'])))
+      .toBeNull();
+  });
+
+  test('SECURITY: a bare daemon holding a NON-ROOT socket is refused', () => {
+    const deps = {
+      processes: () => [{ uid: 0, pid: 101, command: '/usr/sbin/tailscaled' }],
+      socketStat: () => ({ uid: 501 }),
+      processSockets: () => ['/tmp/planted.sock'],
+      platform: 'darwin' as NodeJS.Platform,
+    };
+    expect(resolveTailscaleSocket(deps)).toBeNull();
+  });
+
+  test('AMBIGUITY still refuses: a bare daemon plus one naming a DIFFERENT socket', () => {
+    // The open-socket lookup must not smuggle a second answer past the guard.
+    const deps = {
+      processes: () => [
+        { uid: 0, pid: 341, command: '/opt/homebrew/bin/tailscaled' },
+        { uid: 0, pid: 342, command: '/usr/sbin/tailscaled --socket=/var/run/other.sock' },
+      ],
+      socketStat: sockets(['/var/run/tailscaled.socket', '/var/run/other.sock']),
+      processSockets: () => ['/var/run/tailscaled.socket'],
+      platform: 'darwin' as NodeJS.Platform,
+    };
+    expect(resolveTailscaleSocket(deps)).toBeNull();
+  });
+
+  test('a daemon NAMING a socket is never asked for its open descriptors', () => {
+    // argv is authoritative when present; an lsof answer that disagreed would
+    // otherwise silently override an explicit operator choice.
+    const deps = {
+      processes: () => [{ uid: 0, pid: 101, command: STANDALONE }],
+      socketStat: sockets(['/var/run/tailscaled.socket']),
+      processSockets: () => { throw new Error('must not be consulted'); },
+      platform: 'darwin' as NodeJS.Platform,
+    };
+    expect(resolveTailscaleSocket(deps)).toBe('/var/run/tailscaled.socket');
   });
 
   test('a daemon whose socket has VANISHED is not selected', () => {
@@ -113,8 +208,8 @@ describe('tailscale CLI socket selection', () => {
     const planted = '/tmp/evil/tailscaled --socket=/tmp/attacker.sock';
     const deps = {
       processes: () => [
-        { uid: 501, command: planted },
-        { uid: 0, command: STANDALONE },
+        { uid: 501, pid: 201, command: planted },
+        { uid: 0, pid: 101, command: STANDALONE },
       ],
       socketStat: sockets(['/tmp/attacker.sock', '/var/run/tailscaled.socket']),
       platform: 'darwin' as NodeJS.Platform,
@@ -133,7 +228,7 @@ describe('tailscale CLI socket selection', () => {
     // so refusing a group/other-writable socket — the rule that guards an
     // EXEC'd runtime pin — rejects every legitimate daemon instead.
     const deps = {
-      processes: () => [{ uid: 0, command: STANDALONE }],
+      processes: () => [{ uid: 0, pid: 101, command: STANDALONE }],
       socketStat: () => ({ uid: 0 }),
       platform: 'darwin' as NodeJS.Platform,
     };
@@ -142,7 +237,7 @@ describe('tailscale CLI socket selection', () => {
 
   test('SECURITY: a root process pointing at a NON-ROOT socket is refused', () => {
     const deps = {
-      processes: () => [{ uid: 0, command: STANDALONE }],
+      processes: () => [{ uid: 0, pid: 101, command: STANDALONE }],
       socketStat: () => ({ uid: 501 }),
       platform: 'darwin' as NodeJS.Platform,
     };

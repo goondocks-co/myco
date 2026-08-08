@@ -34,11 +34,24 @@
  * `tailscale ip -4` both read the wrong tailnet), and the fix recorded then
  * was "one helper owning every invocation".
  *
- * THE SOCKET IS READ FROM THE RUNNING DAEMON, never from a hardcoded list. A
- * standalone `tailscaled` is started with its socket in argv, so asking the
- * process table finds the socket actually in use — including a non-default
- * path — and needs no vendor path baked into this codebase. The sandboxed
- * build runs no such process, which is exactly why it is not selected.
+ * THE SOCKET IS READ FROM THE RUNNING DAEMON, never from a hardcoded list, and
+ * it is read TWO ways because one is not enough. A daemon told `--socket=…`
+ * announces it in argv, so the process table finds it — including a non-default
+ * path. A daemon told nothing runs on its own compiled-in default and argv is
+ * silent, which is the ORDINARY install: a Homebrew `tailscaled` on macOS runs
+ * as bare `/opt/homebrew/bin/tailscaled`, no arguments at all. Requiring argv to
+ * name the socket made that daemon invisible, so selection returned null on
+ * exactly the two-daemon Mac this module exists for, the CLI default chose the
+ * sandboxed build, and the public URL went back to 502 — with every unit test
+ * green, because each fixture spelled `--socket=` into its command string.
+ *
+ * For a daemon that names none, the open unix sockets of that PID are asked for
+ * instead (`lsof -a -p <pid> -U`). That is still reading the socket off the
+ * running daemon rather than guessing a path, so no vendor location is baked in
+ * here — which matters beyond tidiness: pinning `/var/run/tailscale` would make
+ * Myco reference a directory a vendor install owns, the coexistence rule meta
+ * gate X4 enforces. Where `lsof` is absent the answer is null and the CLI
+ * decides, the behaviour before this module existed.
  *
  * ONLY A ROOT-OWNED PROCESS IS TRUSTED, and that is load-bearing rather than
  * tidiness. Every user's processes appear in the process table, so without the
@@ -80,28 +93,63 @@ const SOCKET_ARG = /--socket[= ]([^\s]+)/;
 /** The daemon binary, as it appears in a process listing. */
 const TAILSCALED_PROCESS = /(^|\/)tailscaled$/;
 
+/** An lsof `-F n` name field holding an absolute path. A connected peer prints
+ *  `n->0x…` instead, which is not a path and never matches. */
+const LSOF_SOCKET_PATH = /^n(\/.+)$/;
+
 export interface TailscaleCliDeps {
-  /** Test seam: the process table as `{ uid, command }` per running process. */
-  processes?: () => Array<{ uid: number; command: string }>;
+  /** Test seam: the process table as `{ uid, pid, command }` per running process. */
+  processes?: () => Array<{ uid: number; pid: number; command: string }>;
   /** Test seam: the socket's owner uid, or null if absent. */
   socketStat?: (path: string) => { uid: number } | null;
+  /** Test seam: the absolute unix-socket paths a PID holds open. */
+  processSockets?: (pid: number) => string[];
   platform?: NodeJS.Platform;
 }
 
-function defaultProcesses(): Array<{ uid: number; command: string }> {
+function defaultProcesses(): Array<{ uid: number; pid: number; command: string }> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
-    // `uid=` and `args=` with empty headers, so every line is `<uid> <argv...>`
-    // on both macOS and Linux. `args` must come last — it contains spaces.
-    return execFileSync('ps', ['-A', '-o', 'uid=', '-o', 'args='], { encoding: 'utf-8', timeout: 5_000 })
+    // Empty headers, so every line is `<uid> <pid> <argv...>` on both macOS and
+    // Linux. `args` must come last — it contains spaces.
+    return execFileSync('ps', ['-A', '-o', 'uid=', '-o', 'pid=', '-o', 'args='], { encoding: 'utf-8', timeout: 5_000 })
       .split('\n')
       .map((line) => line.trim())
       .filter(Boolean)
       .flatMap((line) => {
-        const match = /^(\d+)\s+(.*)$/.exec(line);
-        return match ? [{ uid: Number(match[1]), command: match[2]! }] : [];
+        const match = /^(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+        return match ? [{ uid: Number(match[1]), pid: Number(match[2]), command: match[3]! }] : [];
       });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The absolute unix-socket paths `pid` holds open, via `lsof`. Peer ENDPOINTS of
+ * accepted connections print as `n->0x…` rather than a path and are excluded by
+ * {@link LSOF_SOCKET_PATH}, so what survives is the bound path(s) — normally the
+ * one control socket, repeated once per open descriptor.
+ *
+ * An empty array on any failure (no `lsof`, no permission, timeout): the caller
+ * then contributes nothing for that daemon and selection falls back to the CLI
+ * default, which is the safe direction.
+ */
+function defaultProcessSockets(pid: number): string[] {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+    const out = execFileSync('lsof', ['-a', '-p', String(pid), '-U', '-F', 'n'], {
+      encoding: 'utf-8',
+      timeout: 5_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return [...new Set(
+      out.split('\n')
+        .map((line) => LSOF_SOCKET_PATH.exec(line.trim())?.[1])
+        .filter((p): p is string => Boolean(p)),
+    )];
   } catch {
     return [];
   }
@@ -128,16 +176,26 @@ function defaultSocketStat(target: string): { uid: number } | null {
  */
 export function resolveTailscaleSocket(deps: TailscaleCliDeps = {}): string | null {
   const stat = deps.socketStat ?? defaultSocketStat;
-  const posix = (deps.platform ?? process.platform) !== 'win32';
+  const platform = deps.platform ?? process.platform;
+  const posix = platform !== 'win32';
   const found = new Set<string>();
 
-  for (const { uid, command } of (deps.processes ?? defaultProcesses)()) {
+  const openSockets = deps.processSockets ?? defaultProcessSockets;
+
+  for (const { uid, pid, command } of (deps.processes ?? defaultProcesses)()) {
     // Root only — see the module docstring. Existence alone is no defence:
     // whoever planted the path also created the file.
     if (uid !== 0) continue;
     if (!TAILSCALED_PROCESS.test(command.split(/\s+/)[0] ?? '')) continue;
-    const socket = SOCKET_ARG.exec(command)?.[1];
-    if (!socket) continue;
+
+    // A daemon that names no socket in argv is running on its compiled-in
+    // default — the ordinary install, not an edge case — so ask the PROCESS
+    // what it has open rather than guessing a path. A daemon holding more than
+    // one bound path is as unanswerable as two daemons, and is skipped.
+    const named = SOCKET_ARG.exec(command)?.[1];
+    const open = named ? [named] : openSockets(pid);
+    if (open.length !== 1) continue;
+    const socket = open[0]!;
 
     const info = stat(socket);
     if (!info) continue;
