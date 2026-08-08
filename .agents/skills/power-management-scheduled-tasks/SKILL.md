@@ -310,6 +310,21 @@ Threshold validation in `decideColdProjectGate()` enforces reasonable ranges:
 - `1-365`: Valid threshold range for production use
 - Default `14`: Balances cost savings with reactivation responsiveness
 
+### Task-Aware Cold Gate Override (`runWhenCold`)
+
+The cold gate is task-aware, not blanket-applied. In `packages/myco/src/daemon/task-scheduler.ts`, each task's effective schedule config carries a `runWhenCold` flag (`configOverride.schedule.runWhenCold ?? yamlSchedule.runWhenCold`). The per-task dispatch loop checks it before skipping cold projects:
+
+```typescript
+// packages/myco/src/daemon/task-scheduler.ts
+if (!effective.runWhenCold && context.isProjectCold?.(projectScope)) continue;
+```
+
+Catch-up tasks (e.g. `canopy-describe`) set `runWhenCold: true` so their backlog drains even on cold projects, while the rest of the tasks stay paused by the normal cold gate.
+
+### Foreign-Runtime Gate (`projectRuntimeIsForeign`)
+
+`projectRuntimeIsForeign(vaultDir, mycoHome)` in `packages/myco/src/daemon/update-checker.ts` guards against a foreign `MYCO_HOME` project holding the daemon awake. It is checked at canopy scan entry (`packages/myco/src/daemon/jobs/canopy-scan.ts`) and inside the scheduled-task iteration in `packages/myco/src/daemon/task-scheduling.ts` (`if (projectRuntimeIsForeign(scope.projectVaultDir, mycoHome))`), gating both canopy scan entry points and `serviceableProjectIds` construction.
+
 ## Fire-and-Forget Dispatch Patterns for Long-Running Tasks
 
 ### Task Execution Isolation

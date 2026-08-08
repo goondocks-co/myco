@@ -80,6 +80,16 @@ runner.register({
 
 Also verify `runIn` includes all power states where the job should fire — a job registered only for `['active']` won't run in `'idle'` or `'sleep'` states.
 
+### Scheduler — Cold-Project Starvation Masquerading as Embedding Backlog
+
+**Problem:** A backlog of `canopy-describe` catch-up work on a cold (long-inactive) project can look identical in symptoms to an embedding-provider backlog: pending items pile up and never drain, keeping the daemon pinned awake. The two have different fixes and misdiagnosing one as the other wastes a debugging pass.
+
+**Trace:** Check whether the stalled task has `runWhenCold: true` in its YAML (see `packages/myco/src/agent/definitions/tasks/canopy-describe.yaml`) and whether the project is past the cold-project inactivity threshold (`context.isProjectCold(scope)` in `packages/myco/src/daemon/task-scheduler.ts`). The cold gate is task-aware: cold projects skip every task **except** those marked `runWhenCold` — catch-up/backlog-draining tasks must keep running on cold projects or their pending-hold pins the daemon awake on work the gate itself refuses to run.
+
+**Related guard:** `projectRuntimeIsForeign()` (`packages/myco/src/daemon/update-checker.ts`, used in `packages/myco/src/daemon/task-scheduling.ts` and `packages/myco/src/daemon/jobs/canopy-scan.ts`) additionally skips canopy scanning when the project's on-disk runtime doesn't match the daemon's own — a second, independent reason a canopy task can appear stalled that is not an embedding-provider issue.
+
+**Fix pattern:** Set `runWhenCold: true` only on tasks whose backlog must drain regardless of session recency (catch-up/embedding-adjacent work); leave knowledge-generating tasks cold-gated. Don't add ad hoc cold-project exceptions elsewhere — the single `isProjectCold` + `runWhenCold` gate in `packages/myco/src/daemon/task-scheduler.ts` is the source of truth.
+
 ### Scheduler — Task Config Not Grove-Scoped (Stale Bootstrap Memo)
 
 **Problem:** The daemon scheduler compiled task schedules once using the daemon bootstrap config object at registration time. Any task whose YAML default was `enabled: false` was never compiled into the schedule, so later enabling it via a project's grove tier config had no effect — the task simply never re-registered. A related variant used a single-slot config memo to cache the grove config load at registration, so subsequent changes to grove tier config (e.g. re-enabling a task) never propagated between ticks.
@@ -87,6 +97,25 @@ Also verify `runIn` includes all power states where the job should fire — a jo
 **Trace:** Confirm the task's schedule was compiled once at daemon boot rather than being re-resolved per project/tick. Check for any single-slot cache/memo of grove config sitting between the scheduler and `loadMergedConfig()`.
 
 **Fix pattern:** Schedule config must come only from the task YAML plus the current project's grove tier config, resolved per iteration — not memoized once at registration. Do not keep a bootstrap/no-context config path as a fallback; production scheduling always has project iteration context.
+
+### PowerManager — Liveness Signaling Unified Around One Mechanism (Deep Sleep Despite Activity)
+
+**Problem (historical):** `packages/myco/src/daemon/event-dispatch.ts` used to call `powerManager.recordActivity()` only for `event.type === 'user_prompt'`, so tool use, subagent activity, and capture events never re-armed the activity timer. A long agent turn with no new user prompt could let the daemon fall into deep sleep despite active session work.
+
+**Fix — Power Assertions redesign:** activity liveness is no longer event-gated. `packages/myco/src/daemon/server.ts` classifies every inbound HTTP request via `classifyRequest(headers, pathname)` into `probe` / `interaction` / `passive`:
+- `PROBE_PATHS = new Set(['/health', '/ready', '/api/power'])` are unconditionally `probe` — they can never signify work.
+- Fail-open: an unclassified request counts as `interaction` (a stray poller keeps the daemon awake and shows up as a named holder in the power inventory; the alternative — losing liveness silently — is the worse failure).
+- The power-state-reporting route belongs in that probe set, not interaction, because it *reports* the activity clock — classifying it as interaction would make reading the power state reset the value being read (`idle_ms: 0` every sample). This is the general lesson: an observer must never be inside the system it observes.
+
+**providesHold fail-safe direction:** `JobRunner.providesHold()` and `PowerManager.currentAssertions()` (`packages/myco/src/daemon/power.ts`) apply the same fail-safe rule — a probe that throws/cannot answer produces a `sleep`-depth assertion rather than nothing. A probe that cannot answer is not evidence there is nothing to do, and sleeping stops the drains, so the safe direction on probe failure is staying out of deep sleep.
+
+### File Locking — withFileLockSync Nested-Acquire Self-Deadlock
+
+**Problem:** `withFileLockSync()` (`packages/myco/src/utils/lifecycle-lock.ts`) takes a `lockPath` and a callback, opens the lock file, and calls `flock(fd, LOCK_EX)` with **no `LOCK_NB` and no timeout** — it blocks indefinitely waiting for the lock. If code running inside that callback (directly or via a nested call chain) calls `withFileLockSync()` again on the **same** `lockPath`, the second call blocks forever waiting for a lock the first call already holds on the same process/thread — a self-deadlock, not contention between processes.
+
+**Where this is reachable:** Not just deliberate operator/CLI code paths — any per-request code path that transitively calls into a lock-protected function from inside another lock-protected function on the same lock file can trigger it (e.g. project-lease or config-mutation helpers called from within another locked section).
+
+**Fix pattern:** Never call `withFileLockSync()` on a lock path that may already be held by an enclosing call on the same call stack. Keep locked sections leaf-level (no calls to other lock-acquiring helpers inside the callback), or refactor the inner operation to a lock-free variant that the outer holder can call directly.
 
 ### SQLite FK Cascade — Wrong Deletion Order
 
@@ -323,6 +352,8 @@ All mutations require mandatory reason parameters with structured logging (kind=
 
 **Backup and recovery gotcha:** The self-mutation discipline pattern works best when combined with daemon restart resilience — always have recovery code ready in case daemon.json gets corrupted.
 
+**Shared-dependency mutation seam (beyond daemon.json):** The single-authority discipline generalizes past `DaemonStateAuthority`. Daemon-wide dependency bundles handed to many per-project consumers — e.g. `CanopyRunnerSharedDeps` in `packages/myco/src/daemon/jobs/canopy-scan.ts`, injected as a shared field into every per-project `CanopyDeltaScanRunner` — are an implicit shared-mutation seam: any consumer that treats a field on the shared object as local, mutable state (instead of read-only shared config) leaks that mutation across every other project sharing the same reference. Same fix shape as Step 9: pick one owner for writes to the shared object and have all consumers read only.
+
 ---
 
 ## Step 10 — Advanced Daemon Startup Ordering Diagnostics
@@ -366,7 +397,10 @@ When daemon.json exists but daemon won't start, check these four sources in orde
 | Multiple startup attempts with resource conflicts | Startup ordering allows collision between instances | Use coordination locks and resource conflict detection before expensive operations |
 | daemon.json deleted during restart | Third-contender race in concurrent startup | Use DaemonStateAuthority.deleteIfOwnedBy() with ownerPid guard |
 | Task stays disabled/stale after grove tier config change | Scheduler compiled config once at registration (bootstrap config or single-slot memo) instead of per-tick | Resolve schedule config from task YAML + current project's grove tier config on each iteration; remove memoization |
+| Cold-project task backlog never drains, daemon pinned awake | Task lacks `runWhenCold: true` so `isProjectCold` gate skips it entirely | Mark catch-up/backlog-draining tasks (e.g. canopy-describe) `runWhenCold: true`; keep knowledge-generating tasks cold-gated |
+| Nested `withFileLockSync()` call on the same lock path hangs forever | No `LOCK_NB`/timeout — inner call blocks waiting for a lock the outer call already holds | Never call a lock-acquiring helper from inside another locked section on the same lock path |
 | Cortex injection silently stops working | cortex.enabled: false override in machine-local config | Inspect the machine-local local.yaml (gitignored) in the project's .myco/ directory before touching code — this override is only logged at debug level |
+| Daemon enters deep sleep despite active session work (long tool-use turn, no new user prompt) | Activity only recorded on `user_prompt` events (fixed) — verify liveness now flows through `classifyRequest()` in `packages/myco/src/daemon/server.ts`, not event-type gating | Confirm `/health`, `/ready`, and the power-state route are in `PROBE_PATHS`; a probe/assertion-source failure must fail toward staying awake (`providesHold`/`currentAssertions`), never toward silently allowing sleep |
 | Headless daemon can't resolve/auth the Claude Code CLI on a serving box (ssh/nohup, Parallels VM) | Daemon inherits a bare PATH missing `~/.local/bin`, and/or runs without an unlocked login keychain session so CLI credential lookups fail | Ensure the daemon's spawn environment sources the login shell PATH (or sets it explicitly) and that the headless session has an unlocked keychain before the CLI is invoked |
 | MCP client sees stalled/mismatched responses across the CLI, stdio bridge, or an SDK client | Response envelope wasn't echoing the request id | Fix at the shared envelope layer (the single choke point all MCP clients pass through) rather than patching each call site |
 
