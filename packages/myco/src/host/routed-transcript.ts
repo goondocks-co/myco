@@ -24,6 +24,28 @@
  * All line-boundary / chunk-cap semantics live in the MEMBER drain (C1) and the
  * MINER (consume) — the host is byte-agnostic: it appends whatever byte range the
  * member sends at the expected offset, and keeps no line-awareness of its own.
+ *
+ * TWO ADMISSION RULES guard the write, both refused before any byte lands:
+ *
+ *   - IDENTITY IS THE TOKEN'S. The team gate authenticates the member and
+ *     stamps its machine id into the request context, refusing a header that
+ *     claims otherwise — but this body repeats `machine_id` for offset
+ *     bookkeeping, and a body field is invisible to that gate. Unchecked, any
+ *     authenticated member could write into ANY member's cache namespace, and
+ *     because a gap response discloses the current size, it could learn the
+ *     exact append point of another member's LIVE session and extend it — bytes
+ *     the miner would then file as that member's session content. The body id
+ *     must equal the authenticated one.
+ *
+ *   - GROWTH IS BOUNDED PER MEMBER ({@link MAX_ROUTED_TRANSCRIPT_MEMBER_BYTES}).
+ *     A tree whose session row never lands is deliberately never pruned (the
+ *     cache GC keeps anything it cannot prove mined — data preservation), which
+ *     made this cache the one place an authenticated member could grow the
+ *     host's disk without bound. The bound is enforced at ADMISSION, not by a
+ *     janitor: at the cap, fresh APPENDS are refused retry-later while replays
+ *     and gap probes still answer (a drain re-slicing after a restart must
+ *     never wedge), nothing is ever deleted, and the member — who still holds
+ *     the original bytes on its own disk — resumes as the GC frees space.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -31,6 +53,9 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
+import { LOG_KINDS } from '../constants/log-kinds.js';
+import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';
+import type { Logger } from '../daemon/logger.js';
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
 import {
   assertSafeCaptureSegment,
@@ -78,9 +103,12 @@ export function decideChunkAction(currentSize: number, baseOffset: number): Chun
  *  high-water sent offset (and resumes from on `accepted: false`). */
 export interface MaterializeResult {
   /** True when the bytes are now durably present (fresh append OR already-present
-   *  replay); false only for a gap (member must resend from `size`). */
+   *  replay); false for a gap (member resends from `size`) and for an over-cap
+   *  refusal (member retries later, unchanged). */
   accepted: boolean;
-  action: ChunkAction;
+  /** The offset gate's decision — or `over-cap`, when the gate said `append`
+   *  but the member's cache is at its byte bound and the write was refused. */
+  action: ChunkAction | 'over-cap';
   /** Post-attempt authoritative size of the materialized file, in bytes. */
   size: number;
 }
@@ -93,7 +121,15 @@ export interface MaterializeResult {
  * semantics without real disk.
  */
 export interface RoutedTranscriptStore {
-  appendAtOffset(machineId: string, sessionId: string, transcriptId: string, baseOffset: number, bytes: Buffer): MaterializeResult;
+  /**
+   * `maxMachineBytes`, when given, bounds the member's TOTAL materialized bytes:
+   * an append that would push past it returns `over-cap` without writing. The
+   * check lives HERE, not in the handler, because only the store knows the
+   * gate's decision — a pre-check outside would also refuse REPLAYS at the cap,
+   * wedging a drain that is re-slicing from the authoritative size. Only
+   * growth is refused.
+   */
+  appendAtOffset(machineId: string, sessionId: string, transcriptId: string, baseOffset: number, bytes: Buffer, maxMachineBytes?: number): MaterializeResult;
 }
 
 /**
@@ -105,8 +141,54 @@ export interface RoutedTranscriptStore {
  * interface is the seam for disk-free unit tests.
  */
 export function createFsRoutedTranscriptStore(): RoutedTranscriptStore {
+  // Per-machine byte tallies, so the cap check is O(1) per append instead of a
+  // directory walk per POST. Lazily seeded from disk on a machine's first
+  // append after boot. The cache GC prunes trees WITHOUT going through this
+  // store, so a tally can only drift UPWARD of the truth — which is why an
+  // apparent over-cap triggers one recount from disk before anything is
+  // refused: a stale tally may delay a refusal by one recount, never produce
+  // a false one.
+  const tallies = new Map<string, number>();
+
+  function countMachineBytes(machineId: string): number {
+    let total = 0;
+    let sessions: fs.Dirent[];
+    try {
+      sessions = fs.readdirSync(
+        path.join(resolveRoutedTranscriptsDir(), assertSafeCaptureSegment(machineId, 'machine_id')),
+        { withFileTypes: true },
+      );
+    } catch {
+      return 0; // machine dir absent — nothing materialized
+    }
+    for (const session of sessions) {
+      if (!session.isDirectory()) continue;
+      let files: fs.Dirent[];
+      try {
+        files = fs.readdirSync(path.join(session.parentPath, session.name), { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        if (!file.isFile() || !file.name.endsWith('.jsonl')) continue;
+        try {
+          total += fs.statSync(path.join(file.parentPath, file.name)).size;
+        } catch { /* pruned mid-walk */ }
+      }
+    }
+    return total;
+  }
+
+  function machineBytes(machineId: string): number {
+    const cached = tallies.get(machineId);
+    if (cached !== undefined) return cached;
+    const counted = countMachineBytes(machineId);
+    tallies.set(machineId, counted);
+    return counted;
+  }
+
   return {
-    appendAtOffset(machineId, sessionId, transcriptId, baseOffset, bytes): MaterializeResult {
+    appendAtOffset(machineId, sessionId, transcriptId, baseOffset, bytes, maxMachineBytes): MaterializeResult {
       const filePath = resolveRoutedTranscriptPath(machineId, sessionId, transcriptId);
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       const lockPath = `${filePath}.lock`;
@@ -114,7 +196,16 @@ export function createFsRoutedTranscriptStore(): RoutedTranscriptStore {
         const currentSize = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
         const action = decideChunkAction(currentSize, baseOffset);
         if (action === 'append') {
+          if (maxMachineBytes !== undefined && machineBytes(machineId) + bytes.length > maxMachineBytes) {
+            // Recount before refusing — the GC prunes behind this tally's back.
+            const fresh = countMachineBytes(machineId);
+            tallies.set(machineId, fresh);
+            if (fresh + bytes.length > maxMachineBytes) {
+              return { accepted: false, action: 'over-cap', size: currentSize };
+            }
+          }
           fs.appendFileSync(filePath, bytes);
+          tallies.set(machineId, machineBytes(machineId) + bytes.length);
           return { accepted: true, action, size: currentSize + bytes.length };
         }
         // replay (bytes already present) or gap (member is ahead) — never write;
@@ -159,6 +250,22 @@ export function deriveTranscriptId(input: {
  *  `machine_id`/`session_id`/`transcript_id` fails schema validation up front
  *  instead of only being caught deeper by {@link assertSafeCaptureSegment}
  *  inside path resolution (see `grove/paths.ts#resolveRoutedTranscriptPath`). */
+/**
+ * Per-member bound on TOTAL materialized transcript bytes (~1 GiB).
+ *
+ * The one number in the admission story, and deliberately generous: a member's
+ * steady-state cache is only its in-flight sessions (the GC reclaims every tree
+ * it can prove mined), so the working set sits orders of magnitude below this.
+ * What the bound exists for is the tree the GC deliberately never touches — a
+ * session that never lands a row — which is otherwise unbounded growth on the
+ * host's disk from a single authenticated caller. Hitting it refuses fresh
+ * appends retry-later and deletes nothing; the member resumes as space frees.
+ */
+export const MAX_ROUTED_TRANSCRIPT_MEMBER_BYTES = 1024 * 1024 * 1024;
+
+/** Throttle for repeated ingest refusal warnings — a refused drain retries every tick. */
+const INGEST_WARN_INTERVAL_MS = 60_000;
+
 const captureSegmentField = (kind: string) => z.string().min(1).refine(
   isSafeCaptureSegment,
   { message: `Unsafe ${kind} path segment` },
@@ -191,6 +298,7 @@ const TranscriptChunkBody = z.object({
  */
 export function createRoutedTranscriptHandler(
   store: RoutedTranscriptStore = createFsRoutedTranscriptStore(),
+  deps: { logger?: Logger } = {},
 ): (req: RouteRequest) => Promise<RouteResponse> {
   return async (req: RouteRequest): Promise<RouteResponse> => {
     const parsed = TranscriptChunkBody.safeParse(req.body);
@@ -198,6 +306,22 @@ export function createRoutedTranscriptHandler(
       return { status: 400, body: { ok: false, error: 'invalid_body', detail: parsed.error.issues } };
     }
     const { machine_id, session_id, transcript_id, base_offset, bytes } = parsed.data;
+
+    // IDENTITY IS THE TOKEN'S, not the body's. The team gate authenticated the
+    // member and stamped its machine id into the request context (refusing a
+    // header that disagreed) — but it cannot see THIS field, and this field is
+    // the path key. Absent context fails closed: every legitimate caller
+    // arrives through the gate.
+    const authenticatedMachineId = req.requestContext?.machineId ?? null;
+    if (!authenticatedMachineId || machine_id !== authenticatedMachineId) {
+      if (shouldLogOncePerInterval(`routed-transcript.identity:${machine_id}`, INGEST_WARN_INTERVAL_MS)) {
+        deps.logger?.warn(LOG_KINDS.HOST_SERVE, 'Refused a transcript push whose body machine_id is not the authenticated member', {
+          claimed_machine_id: machine_id,
+          authenticated_machine_id: authenticatedMachineId,
+        });
+      }
+      return { status: 403, body: { ok: false, error: 'machine_id_mismatch' } };
+    }
 
     const chunk = Buffer.from(bytes, 'base64');
     if (chunk.length > MAX_TRANSCRIPT_PUSH_BYTES) {
@@ -217,13 +341,29 @@ export function createRoutedTranscriptHandler(
 
     let result: MaterializeResult;
     try {
-      result = store.appendAtOffset(machine_id, session_id, transcript_id, base_offset, chunk);
+      result = store.appendAtOffset(machine_id, session_id, transcript_id, base_offset, chunk, MAX_ROUTED_TRANSCRIPT_MEMBER_BYTES);
     } catch (err) {
       // Thrown only by the safe-segment guard on a traversal-shaped id — refuse
       // rather than 500, so a malformed key is a clean client error.
       return { status: 400, body: { ok: false, error: 'invalid_key', message: (err as Error).message } };
     }
 
+    if (result.action === 'over-cap') {
+      // Retry-later, and the member's drain already treats an unrecognized
+      // status exactly that way — it keeps its bytes and retries next tick, so
+      // the queue resumes by itself once the GC frees space. Deliberately NOT a
+      // 4xx the drain would treat as splittable or terminal.
+      if (shouldLogOncePerInterval(`routed-transcript.cap:${machine_id}`, INGEST_WARN_INTERVAL_MS)) {
+        deps.logger?.warn(LOG_KINDS.HOST_SERVE, 'Refused a transcript append — member cache at its byte bound', {
+          machine_id,
+          limit_bytes: MAX_ROUTED_TRANSCRIPT_MEMBER_BYTES,
+        });
+      }
+      return {
+        status: 429,
+        body: { ok: false, error: 'member_transcript_cache_full', limit_bytes: MAX_ROUTED_TRANSCRIPT_MEMBER_BYTES },
+      };
+    }
     if (result.action === 'gap') {
       // The member is ahead of the host's file (host restart / GC / never got the
       // earlier bytes). Refuse with the authoritative size so it resends from there.
