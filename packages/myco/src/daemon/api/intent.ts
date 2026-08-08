@@ -10,10 +10,9 @@
  * Mirrors the CLI surface (`myco restart`) so an agent has the same
  * daemon-control affordances a human at the terminal does.
  *
- * The `[update]` intent surface (POST/DELETE /api/daemon/intent/update,
- * requestUpdate/cancelUpdate) was removed in the Task 9 refactor. Binary
- * upgrades are now driven directly by `initiateAdopt` paths via
- * `api/upgrade`. Use `myco upgrade [<version>]` from the CLI.
+ * There is no `[update]` intent surface here: binary upgrades are driven
+ * directly by `initiateAdopt` paths via `api/upgrade`. Use
+ * `myco upgrade [<version>]` from the CLI.
  */
 
 import type { RouteHandler } from '../router.js';

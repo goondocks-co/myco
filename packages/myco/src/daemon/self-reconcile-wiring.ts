@@ -35,14 +35,14 @@ export interface SelfReconcileLoopHandle {
  * Start the self-reconcile loop on a dedicated `setInterval`,
  * intentionally decoupled from the PowerManager job queue.
  *
- * History: self-reconcile used to be a PowerManager job. That made it
- * the very safety net most likely to be silenced by the very condition
- * it was designed to heal — when a hot path starved the event loop and
- * PowerManager ticks stopped firing, daemon.json could go missing for
- * the daemon's entire lifetime with no log entry from this job. Running
- * on a plain `setInterval` (with `unref()` so it doesn't keep the
- * process alive on its own) means the tick continues even if every
- * other registered job is wedged.
+ * Deliberately NOT a PowerManager job: a job-queue-scheduled safety net
+ * is the one most likely to be silenced by the very condition it exists
+ * to heal — when a hot path starves the event loop and PowerManager
+ * ticks stop firing, daemon.json could go missing for the daemon's
+ * entire lifetime with no log entry from this job. Running on a plain
+ * `setInterval` (with `unref()` so it doesn't keep the process alive on
+ * its own) means the tick continues even if every other registered job
+ * is wedged.
  *
  * Single-flight guard: a slow reconcile tick must not start a second tick
  * before the first completes.

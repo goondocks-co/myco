@@ -866,10 +866,10 @@ export interface StatelessBatchInsertResult {
  * `prompt_count` to match.
  *
  * The cached counter on `sessions.prompt_count` exists because several
- * MCP / CLI read paths and the Grove importer consult it directly. It
- * USED to be hand-bumped by callers via a follow-up
- * `updateSession({ prompt_count })`, which produced drift whenever a
- * new code path inserted a batch and forgot the second step. The
+ * MCP / CLI read paths and the Grove importer consult it directly. A
+ * caller-side follow-up `updateSession({ prompt_count })` bump would
+ * drift whenever a new code path inserted a batch and forgot the
+ * second step. The
  * "single writer" tenet codified in AGENTS.md applies just as much
  * inside the DB-query layer as it does for `ProjectVault` or the
  * planned `CoTenantJsonWriter`: this function is the single writer

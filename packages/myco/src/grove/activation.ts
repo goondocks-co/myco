@@ -280,7 +280,7 @@ export function activateProjectMigration(
       // Repair re-entry: re-attach the marker-anchored identity through
       // ProjectVault so manifest + binding + gitignore stay in lockstep.
       //
-      // Three sub-cases match the old activation contract exactly:
+      // The activation contract's three sub-cases:
       //   1. No manifest on disk → write both files
       //   2. Manifest present, binding missing → write ONLY the local
       //      manifest. The on-disk manifest may carry user edits the

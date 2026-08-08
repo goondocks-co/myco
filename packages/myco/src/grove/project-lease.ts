@@ -6,12 +6,11 @@
  * already exposes as `pauseProject`/`isProjectPaused`, lifted out of the
  * per-Grove `projects.toml` row and into a file keyed only by project id.
  *
- * WHY IT MOVED. The lease used to live *inside* the registry row it protects.
- * That works for `grove move`, which keeps the row registered throughout, and
- * fails for residency migration, which deregisters the row as its first step —
- * so the lease could not survive the operation it exists to protect, and
- * residency grew its own quiescence mechanism instead of reusing this one.
- * Keyed by project id in a registry-independent location, one lease now covers
+ * WHY REGISTRY-INDEPENDENT. A lease stored *inside* the registry row it
+ * protects works for `grove move`, which keeps the row registered throughout,
+ * and fails for residency migration, which deregisters the row as its first
+ * step — the lease would not survive the operation it exists to protect.
+ * Keyed by project id in a registry-independent location, one lease covers
  * both, and any future operation that moves a project between registries.
  *
  * Two properties the in-row version could not offer:

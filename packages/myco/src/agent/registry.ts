@@ -140,7 +140,7 @@ export function writeUserTask(vaultDir: string, task: AgentTask): string {
  *
  * @param vaultDir — path to the vault root directory.
  * @param taskName — name of the task to delete.
- * @returns true if the file existed and was removed, false if it did not exist.
+ * @returns true if the file existed and was deleted, false if it did not exist.
  */
 export function deleteUserTask(vaultDir: string, taskName: string): boolean {
   const filePath = path.join(vaultDir, USER_TASKS_DIR, `${taskName}.yaml`);

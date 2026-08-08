@@ -232,12 +232,10 @@ export function insertActivityWithBatch(
 ): ActivityRow {
   const db = getDatabase();
 
-  // Wrap the insert + `sessions.tool_count` bump in one transaction. The
-  // cache bump on the session row USED to be a
-  // separate `incrementSessionToolCount` call in `handleToolUse` —
-  // any other call site that inserts an activity (the injection
-  // record path, future helpers) would have silently skipped the
-  // bump and drifted the cached counter. The single-writer tenet
+  // Wrap the insert + `sessions.tool_count` bump in one transaction. A
+  // caller-side bump would drift: any other call site that inserts an
+  // activity (the injection record path, future helpers) could silently
+  // skip it and diverge the cached counter. The single-writer tenet
   // (AGENTS.md) applies here too: this function is THE writer for
   // `activities`, so it also owns the cache the column maintains.
   const myco = resolveMycoToolIdentity(data.tool_name, data.tool_input ?? null);

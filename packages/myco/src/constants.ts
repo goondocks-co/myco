@@ -275,7 +275,7 @@ export const DAEMON_STALE_GRACE_PERIOD_MS = 60_000;
 export const DAEMON_SPAWN_COALESCE_MS = 3_000;
 
 /** Grace period for SIGTERM before escalating to SIGKILL (ms).
- *  Gives the old daemon a chance to shut down cleanly, but force-kills
+ *  Gives the outgoing daemon a chance to shut down cleanly, but force-kills
  *  to guarantee the configured port is reclaimed. */
 export const DAEMON_EVICT_TIMEOUT_MS = 3000;
 /** Poll interval when waiting for an evicted daemon to die (ms). */

@@ -292,8 +292,8 @@ import path from 'node:path';
  *
  * Version discipline lives at the call site: only a SAME-version sibling is
  * a step-aside candidate. A myco daemon on a different version is a stale
- * orphan (e.g. an old binary image that survived a package replacement) —
- * stepping aside from it would leave the old version serving forever while
+ * orphan (e.g. a stale binary image that survived a package replacement) —
+ * stepping aside from it would leave that stale version serving forever while
  * every new boot exits 0.
  */
 export async function isHealthyMycoSibling(port: number): Promise<boolean> {
@@ -2222,8 +2222,8 @@ export async function main(): Promise<void> {
   // the UI drive daemon restart without shelling to the CLI. Reconciler
   // still owns convergence.
   //
-  // Binary upgrade intents ([update]) were removed — use `api/upgrade`
-  // and `myco upgrade [<version>]` instead.
+  // There are no binary-upgrade intents — `api/upgrade` and
+  // `myco upgrade [<version>]` own upgrades.
   const intentHandlers = createIntentHandlers(daemonService);
   server.registerRoute('GET',    '/api/daemon/intent',         intentHandlers.status);
   server.registerRoute('POST',   '/api/daemon/intent/restart', intentHandlers.requestRestart);
@@ -2690,7 +2690,7 @@ export async function main(): Promise<void> {
       if (sibling !== null && bindAttemptsLeft > 0) {
         // A myco daemon on a DIFFERENT version is a stale orphan — e.g. an
         // old binary image that survived a package replacement. Stepping
-        // aside would leave the old version serving forever while every new
+        // aside would leave that stale version serving forever while every new
         // boot exits 0. Evict it and retry the bind once.
         logger.warn(LOG_KINDS.DAEMON_PORT, 'Stale myco daemon (version mismatch) holds the canonical port — evicting', {
           port: canonicalPort,
@@ -2826,7 +2826,7 @@ export async function main(): Promise<void> {
   // tsup compiles `await import('@myco/...')` into a chunk filename with a
   // content hash baked in (e.g. `./executor-ABC123.js`). When the bundle is
   // rebuilt during dev, chunk hashes churn — but the running daemon still
-  // has the OLD filename baked into its code. The first late dynamic import
+  // has the PREVIOUS filename baked into its code. The first late dynamic import
   // at that path then fails with `Cannot find module './executor-<OLD>.js'`.
   // Warming the imports now puts the resolved URLs into Node's ES module
   // cache; every subsequent `import()` at those call sites returns the cached
@@ -2921,7 +2921,7 @@ export async function main(): Promise<void> {
   // below: those ask "is there queued work to flush", this asks "is an agent
   // mid-turn". Capture writes are synchronous, so an agent running tool calls
   // for hours produces no queue depth and every hold correctly reports zero —
-  // which is precisely how the daemon used to deep-sleep through active work.
+  // so without this source the daemon would deep-sleep through active work.
   powerManager.registerAssertionSource(makeAgentLivenessSource({
     cache: runtimeCache,
     logger,

@@ -313,7 +313,7 @@ export const TOPIC_OVERLAP_THRESHOLD = 0.6;
  * The basis is clamped at the ceiling so the floor can never exceed what the
  * ceiling allows — prevents a deadlock when the on-disk description is already
  * over-length (e.g. oldLen 1138 → bare 0.9 × 1024 sits at 921.6, not 1024.2).
- * Hard contamination already present in the old description is discounted so
+ * Hard contamination already present in the prior description is discounted so
  * that mandatory decontamination shortening never trips the gate.
  *
  * Exported so `collectSkillWriteIssues` (skill-write-validator) can compute the

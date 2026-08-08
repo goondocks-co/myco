@@ -457,7 +457,7 @@ export class TranscriptMiner {
       // (walker-classified steering because it isn't at an end_turn boundary)
       // must therefore NOT become a steering child of the human turn — that
       // would diverge from the live row and thread system noise into a human
-      // turn's children. Subsumes the old human-under-nonhuman special case.
+      // turn's children.
       if (origin !== PROMPT_BATCH_ORIGIN.HUMAN) {
         return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
       }

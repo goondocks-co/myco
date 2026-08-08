@@ -426,7 +426,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
     drain: { slice: EMBEDDING_BATCH_SIZE },
     hold: {
       // Read the toggle live each tick — `liveConfig.current` is reassigned
-      // on config save. Equivalent to the old preventsDeepSleep gate:
+      // on config save. Toggle semantics:
       // toggle off → 0 → no hold; else hold iff there is pending work.
       pending: () =>
         liveConfig.current.embedding.prevent_deep_sleep === false ? 0 : totalPendingProbe(),

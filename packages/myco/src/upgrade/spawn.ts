@@ -4,7 +4,7 @@
  *
  * The orchestration itself (sleep → npm install → project fan-out → readiness
  * guard → restart) lives in cross-platform TypeScript (`apply-update.ts`), NOT
- * in a generated `#!/bin/sh` script. The old shell scripts ENOENT'd on Windows
+ * in a generated `#!/bin/sh` script, a shape that ENOENTs on Windows
  * (no `/bin/sh`), so after the daemon SIGTERM'd itself nothing brought it back.
  * Running the binary directly works identically on macOS, Linux, and Windows.
  */

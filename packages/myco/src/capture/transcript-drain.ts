@@ -68,7 +68,7 @@ const NEWLINE = 0x0a;
 /** One persisted work-queue entry: a transcript the member is shipping to a
  *  host, plus the host-acked high-water offset. Keyed `(host_id, session_id,
  *  transcript_id)`; `transcript_id` folds in the file's inode (C3), so a
- *  rotation mints a NEW entry and the old one goes inert. */
+ *  rotation mints a NEW entry and the prior one goes inert. */
 export interface DrainEntry extends FailureTrackedEntry {
   host_id: string;
   session_id: string;

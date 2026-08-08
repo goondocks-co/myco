@@ -6,7 +6,7 @@
  * `spawnRestartScript` in update-installer.ts). The orchestration that used
  * to live in generated `#!/bin/sh` scripts now runs here in TypeScript, so it
  * works identically on macOS, Linux, and Windows — there is no `/bin/sh` on
- * Windows, so the old detached shell child ENOENT'd and stranded the daemon.
+ * Windows, where a detached shell child ENOENTs and strands the daemon.
  *
  * Two paths are supported:
  *
@@ -286,7 +286,7 @@ export function spawnDetached(bin: string, args: string[], cwd?: string): void {
 /**
  * Fan out `<bin> update --all-projects`, capturing combined output to a log so
  * a failure is diagnosable instead of silently discarded. Non-fatal — never
- * throws and never blocks the restart (mirrors the old script's `|| echo …`).
+ * throws and never blocks the restart (the `|| echo …` discipline).
  * Not detached: the orchestrator awaits the sync before it restarts the daemon.
  */
 function runFanout(mycoBinary: string, logPath: string): Promise<void> {
@@ -527,7 +527,7 @@ async function resolvePruneVersions(
 interface HealthWatchResult {
   healthy: boolean;
   /** Last version EITHER signal reported (null = never reachable in the window).
-   *  The adopt-failure discriminator: a window stuck on the OLD version means the
+   *  The adopt-failure discriminator: a window stuck on the PRIOR version means the
    *  restart never brought up the target; null means the daemon stayed down. */
   lastSeenVersion: string | null;
   /** Which signal confirmed the target — for the narration. */
@@ -666,7 +666,7 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
 
   // POSIX: even if stop-not-confirmed, inode-replace is safe (a running process
   // keeps its old inode). Proceed with the adopt. The daemon might be briefly
-  // running on the old inode but the new managed binary path is safe to write.
+  // running on the displaced inode but the new managed binary path is safe to write.
 
   // --- Step 3: adoptStaged (THROWS on any fs/chmod failure) ---
   const adoptStagedFn = await resolveAdoptStaged(deps);
@@ -768,7 +768,7 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
     // does not support (the new binary migrated it, or an agent run did):
     // then the restore is refused and we restart on the new binary, which
     // may still be unhealthy. clearSentinel fires because the restored
-    // daemon comes back on the OLD version — the daemon-startup
+    // daemon comes back on the PRIOR version — the daemon-startup
     // target-version clear won't fire.
     if (await refuseRollbackIfSchemaGap('crash-loop')) {
       clearSentinel();

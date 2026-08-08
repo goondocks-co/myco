@@ -271,7 +271,7 @@ export async function supportsScope(
 
 /**
  * What is ACTUALLY installed for `label`, read across both domains (§13.4:
- * a scope change needs the OLD scope to remove the old unit, and config
+ * a scope change needs the OUTGOING scope to remove its unit, and config
  * alone would convert silent reversion into silent non-realization).
  * File-system reads only — both unit locations are world-readable.
  */
@@ -338,10 +338,10 @@ export async function resolveObservedScope(
  * job SIGTERMs itself mid-bootout; §13.5's sudo requirement makes it
  * CLI/UI-only anyway).
  *
- * Failure of install-new is LOUD and recovers by restoring the old unit's
+ * Failure of install-new is LOUD and recovers by restoring the previous unit's
  * ACTUAL BYTES (captured before uninstall — re-rendering would silently
  * upgrade a hand-edited or older-version unit), then starting it (spec
- * R-M5: §13.13 gate 6 requires the old unit LEFT RUNNING). A rollback into
+ * R-M5: §13.13 gate 6 requires the previous unit LEFT RUNNING). A rollback into
  * the boot domain re-elevates, so it is attempted only while the preflight
  * still passes; a failed rollback reports BOTH errors.
  */
@@ -368,7 +368,7 @@ export async function transitionServiceScope(options: {
   const platform = options.platform ?? process.platform;
   const log = options.log ?? (() => {});
 
-  // Capture the old unit's bytes BEFORE anything destructive. When the
+  // Capture the outgoing unit's bytes BEFORE anything destructive. When the
   // caller's status carried no unitPath, derive it from the scope so a real
   // old unit is never misreported as "no old unit existed to restore".
   const oldUnitPath = from.unitPath || (from.scope.startAt === 'boot'

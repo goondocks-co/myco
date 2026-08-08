@@ -68,6 +68,10 @@ export async function runDetach(args: string[], vaultDir: string): Promise<void>
   const result = await client.post('/api/host-membership/detach', {
     project_root: projectRoot,
     project_id: flags.get('project-id'),
+    // The escape hatch the pull-refusal message points at ("or detach without
+    // pulling your data back"): the API has always accepted it, and without
+    // this flag the CLI left that instruction impossible to follow.
+    allow_no_pull: flags.has('allow-no-pull') || undefined,
   }, { timeoutMs: DETACH_TIMEOUT_MS });
 
   if (!result.ok) {
@@ -81,6 +85,10 @@ export async function runDetach(args: string[], vaultDir: string): Promise<void>
     return;
   }
   console.log(`Disconnect started for ${body.project_id} (from Team Host ${body.detached_from_host_id}).`);
-  console.log("  The project's knowledge is coming back in the background; new work goes local once it lands.");
-  console.log('  Watch progress on the Team page.');
+  if (flags.has('allow-no-pull')) {
+    console.log('  Detached WITHOUT pulling data back — the history stays on the host.');
+  } else {
+    console.log("  The project's knowledge is coming back in the background; new work goes local once it lands.");
+    console.log('  Watch progress on the Team page.');
+  }
 }

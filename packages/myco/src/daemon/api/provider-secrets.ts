@@ -23,7 +23,7 @@ const SECRET_PREVIEW_SUFFIX_CHARS = 4;
 
 type SecretProvider = 'openai' | 'openrouter' | 'github' | 'anthropic';
 // These are machine-level keys stored in `~/.myco/secrets.env`. The only scope
-// is 'machine'; the legacy 'project' scope was removed — project-level provider
+// is 'machine'; there is no 'project' scope — project-level provider
 // secrets were migrated to grove/team scope (which live in their own stores and
 // are managed by other code paths), so 'project' had no live writer and its only
 // remaining effect was leaking reads/deletes to the bootstrap-anchor vault.

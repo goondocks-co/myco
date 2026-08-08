@@ -3,8 +3,8 @@
  *
  * Extracted from `executor.ts` so the section-header constants and the
  * task/phase prompt builders live in one place. `executor.ts` re-exports
- * `composeTaskPrompt` and `composePhasePrompt` for tests that still
- * import them from the old location.
+ * `composeTaskPrompt` and `composePhasePrompt` for tests that import
+ * them from there.
  */
 
 import { PHASE_SUMMARY_MAX_CHARS } from '@myco/constants.js';

@@ -125,7 +125,7 @@ export function detectSymbionts(projectRoot: string): DetectedSymbiont[] {
  * Find the Myco package root (where package.json lives).
  *
  * Resolution order:
- *   1. `import.meta.dirname` — works in dev mode and the old tsup layout.
+ *   1. `import.meta.dirname` — works in dev mode and the legacy tsup layout.
  *   2. `fs.realpathSync(process.execPath)` — needed for the Bun-compiled
  *      binary, whose import.meta is a /$bunfs/ virtual path. The binary
  *      sits at `<pkg-root>/vendor/<target>/myco`, so its real-path parent

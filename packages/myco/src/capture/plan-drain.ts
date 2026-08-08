@@ -643,7 +643,7 @@ export class PlanDrainQueue {
   private async drainEntry(hostTarget: RemoteTarget, entry: PlanDrainEntry): Promise<number> {
     const read = this.fileReader.read(entry.plan_path);
     if (read.state === 'absent') {
-      // The plan file was removed/moved after the write — its content is
+      // The plan file is gone (deleted or moved after the write) — its content is
       // unreachable. Remove the inert entry (bounds the store; nothing to ship).
       this.store.remove(entry.host_id, entry.session_id, entry.plan_ref);
       return 0;

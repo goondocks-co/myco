@@ -369,7 +369,7 @@ export async function applyBinaryUpdate(
       }
     }
   } catch (err) {
-    // The new binary failed to land but we already moved the old one aside.
+    // The new binary failed to land but we already moved the known-good one aside.
     // Restore it immediately so the daemon comes back on the known-good binary.
     rmSafe(tmpAsset);
     try {
@@ -378,7 +378,7 @@ export async function applyBinaryUpdate(
       /* best-effort */
     }
     writeError(`binary swap failed: ${String(err)} — restored prior binary`);
-    // Restored onto the OLD version → the daemon-startup clear won't fire; drop
+    // Restored onto the PRIOR version → the daemon-startup clear won't fire; drop
     // the sentinel here so the next update isn't blocked. The restart is
     // unconditional (post-swap the daemon must always come back); on the service
     // path `restartDaemon` routes through the ServiceManager.
@@ -412,7 +412,7 @@ export async function applyBinaryUpdate(
     writeError(
       `new binary ${params.targetVersion} failed to become healthy after ${params.maxHealthAttempts} attempts — rollback to prior binary applied`,
     );
-    // Rolled back to the OLD version → the daemon-startup clear won't fire; drop
+    // Rolled back to the PRIOR version → the daemon-startup clear won't fire; drop
     // the sentinel so the next update isn't blocked behind a 10-minute window.
     clearSentinel();
     await restartDaemon(params, deps);

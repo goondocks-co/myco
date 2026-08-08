@@ -87,10 +87,10 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   'maintenance': { home: 'grove', overridableBy: ['local'] },
   // backup is a Grove-level resource: the Grove is a DB boundary and one
   // project sets the backup for the ENTIRE Grove, so a per-project/per-machine
-  // Personal override is meaningless. (The old UI's backup.dir
+  // Personal override is meaningless. (A retired UI's backup.dir
   // defaultScope="local" was wrong; grove-only is correct.)
   'backup': { home: 'grove', overridableBy: [] },
-  // project (locked — the old UI used lockScope="project" on every release
+  // project (locked — that UI used lockScope="project" on every release
   // field; project-level overrides are a future opt-in, not now). The
   // reconcile-interval leaf is the one exception below.
   'release_provenance': { home: 'project', overridableBy: [] },

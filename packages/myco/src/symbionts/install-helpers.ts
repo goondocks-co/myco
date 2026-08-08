@@ -116,7 +116,7 @@ export function containsMycoLauncherReference(content: string): boolean {
  *   2. Any canonical launcher-substring reference (project-local guard,
  *      legacy guard, or user-global launcher).
  *   3. The bare `myco-run` prefix used by the published MCP entry
- *      point and the old shell shim.
+ *      point and the legacy shell shim.
  *
  * Both the marker and the launcher paths are exclusive to Myco —
  * third-party tenants have no reason to carry them — so either is an

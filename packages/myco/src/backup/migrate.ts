@@ -4,7 +4,7 @@
  *
  * Why: before `backup.dir` was honored at write time, backups landed in
  * `<groveHome>/backups`. Once the user sets `backup.dir`, the canonical dir
- * moves to `<backup.dir>/<slug>` and the old dumps would appear to vanish
+ * moves to `<backup.dir>/<slug>` and the prior dumps would appear to vanish
  * from the UI. This sweep moves them into the canonical dir so list/restore
  * find them where new backups land.
  *

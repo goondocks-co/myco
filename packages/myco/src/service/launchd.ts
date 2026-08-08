@@ -103,7 +103,7 @@ export class LaunchdServiceManager implements ServiceManager {
       // File already matches. `force` still re-bootstraps so the LOADED unit
       // adopts the on-disk policy — the case where a daemon wrote the corrected
       // (SuccessfulExit=false) plist during self-install but its launchd job is
-      // still looping under the old bare-KeepAlive policy, which a content
+      // still looping under the previously-loaded bare-KeepAlive policy, which a content
       // compare can't see. Safe only because `force` comes solely from the CLI
       // (a separate process); a daemon re-bootstrapping its OWN job would
       // SIGTERM itself mid-bootout.
