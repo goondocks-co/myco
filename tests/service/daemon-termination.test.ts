@@ -15,7 +15,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { terminateDaemonProcess } from '@myco/service/daemon-termination.js';
+import { DaemonTerminationUnconfirmedError, terminateDaemonProcess } from '@myco/service/daemon-termination.js';
 
 describe('terminateDaemonProcess', () => {
   test.each(['SIGTERM', 'SIGKILL'] as const)(
@@ -50,6 +50,33 @@ describe('terminateDaemonProcess', () => {
       ]);
     },
   );
+
+  test('the real Windows confirmation short-circuits on our OWN pid', async () => {
+    // `confirmWindowsTermination` is otherwise reachable only through the stubs
+    // every case above installs, so its two real branches had no coverage at
+    // all. This one exercises the self-pid short-circuit: the daemon asking
+    // whether ITSELF has exited would poll until timeout and then throw, so it
+    // returns immediately instead. No stub — the real function runs.
+    await terminateDaemonProcess(process.pid, 'SIGTERM', {
+      platform: 'win32',
+      withExternalMcpContainment: async (terminate) => { await terminate(); },
+      kill: () => {},
+    });
+  });
+
+  test('an unconfirmed Windows termination THROWS rather than reporting success', async () => {
+    // The other real branch: a process that never exits must surface as a
+    // failure. Driven through the `confirmTermination` seam with the same
+    // outcome the real waiter produces on timeout, because waiting out the real
+    // 10s window in a unit test is what made these cases machine-dependent in
+    // the first place.
+    await expect(terminateDaemonProcess(4242, 'SIGKILL', {
+      platform: 'win32',
+      withExternalMcpContainment: async (terminate) => { await terminate(); },
+      kill: () => {},
+      confirmTermination: async (pid) => { throw new DaemonTerminationUnconfirmedError(pid); },
+    })).rejects.toThrow(/remained alive after hard termination/);
+  });
 
   test('suppresses Windows termination when containment fails', async () => {
     let killCalls = 0;

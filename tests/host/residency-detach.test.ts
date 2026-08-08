@@ -46,6 +46,7 @@ import {
   startResidencyJournal,
   writeResidencyJournal,
   RESIDENCY_MIN_HOST_PROTOCOL,
+  RESIDENCY_MIN_HOST_PROTOCOL_PULL,
 } from '@myco/host/residency-journal.js';
 import {
   countResidencyInFlight,
@@ -77,7 +78,7 @@ function baseDeps(): ResidencyDaemonDeps {
   };
 }
 
-function makeHost(protocol = RESIDENCY_MIN_HOST_PROTOCOL): HostRecord {
+function makeHost(protocol = RESIDENCY_MIN_HOST_PROTOCOL_PULL): HostRecord {
   return {
     host_id: createHostId(),
     label: 'Mac Studio',
@@ -100,7 +101,7 @@ function makeCheckout(projectId: string): string {
 
 const injectedBeginDetach: BeginDetachResidency = (ctx) => beginDetachResidency(ctx, baseDeps());
 
-function targetResolver(protocol = RESIDENCY_MIN_HOST_PROTOCOL): ResolveResidencyTarget {
+function targetResolver(protocol = RESIDENCY_MIN_HOST_PROTOCOL_PULL): ResolveResidencyTarget {
   return (hostId, groveId, projectId): RemoteTarget => ({
     projectId: projectId as GroveProjectId,
     groveId,
@@ -270,9 +271,30 @@ describe('detachCommand — begin path validation', () => {
     expect(readResidencyJournal(projectId)).toBeNull();
   });
 
-  test('a host below the residency protocol refuses with residency_pull_unavailable (ref untouched)', () => {
+  test('a host BELOW THE PUSH FLOOR can still be detached from — the floors are separate', () => {
+    // The push floor rose when the attach carried set widened. Detach names no
+    // tables (it pulls one whole-project artifact), so gating it on the same
+    // constant would strand exactly the people the widening protects: a project
+    // resident on an older host could never come home, and the only escape
+    // (`allow_no_pull`) abandons the history there. A data-loss fix must not
+    // make walking away from your data the supported path.
+    expect(RESIDENCY_MIN_HOST_PROTOCOL_PULL).toBeLessThan(RESIDENCY_MIN_HOST_PROTOCOL);
     const local = createGrove('Local', home);
     const host = makeHost(RESIDENCY_MIN_HOST_PROTOCOL - 1);
+    expect(host.protocol_version).toBeGreaterThanOrEqual(RESIDENCY_MIN_HOST_PROTOCOL_PULL);
+    writeHostRecordFixture(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    attachRef(host, projectId, root, local.id);
+
+    detachCommand({ projectPath: root, projectId, beginDetachResidency: injectedBeginDetach });
+    // A real pull was opened rather than refused.
+    expect(readResidencyJournal(projectId)?.phase).toBe('fetching');
+  });
+
+  test('a host below the residency protocol refuses with residency_pull_unavailable (ref untouched)', () => {
+    const local = createGrove('Local', home);
+    const host = makeHost(RESIDENCY_MIN_HOST_PROTOCOL_PULL - 1);
     writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
@@ -290,7 +312,7 @@ describe('detachCommand — begin path validation', () => {
 
   test('allow_no_pull against an old host runs a plain detach: ref removed, no journal', () => {
     createGrove('Local', home);
-    const host = makeHost(RESIDENCY_MIN_HOST_PROTOCOL - 1);
+    const host = makeHost(RESIDENCY_MIN_HOST_PROTOCOL_PULL - 1);
     writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
@@ -424,7 +446,7 @@ describe('detach drain — transfer contract + failure honesty', () => {
     const { projectId } = beginDetach();
     await runResidencyTransitions({
       ...baseDeps(), detachArtifactClient: artifactServer(projectId, () => {}).client,
-      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(RESIDENCY_MIN_HOST_PROTOCOL - 1),
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(RESIDENCY_MIN_HOST_PROTOCOL_PULL - 1),
     });
     const journal = readResidencyJournal(projectId);
     expect(journal?.phase).toBe('fetching');

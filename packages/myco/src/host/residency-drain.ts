@@ -74,6 +74,7 @@ import {
   ROUTED_DETACH_ARTIFACT_PATH,
   ROUTED_DETACH_COMPLETE_PATH,
   RESIDENCY_MIN_HOST_PROTOCOL,
+  RESIDENCY_MIN_HOST_PROTOCOL_PULL,
   RETIRED_RESIDENCY_PHASES,
   residencyJournalPath,
   advanceResidencyPhase,
@@ -562,10 +563,10 @@ async function runDetachTransition(
       stampResidencyFailure(journal.project_id, residencyTargetFailure(journal.host_id, target || null), teamsHome);
       return;
     }
-    if (target.host.protocol_version < RESIDENCY_MIN_HOST_PROTOCOL) {
+    if (target.host.protocol_version < RESIDENCY_MIN_HOST_PROTOCOL_PULL) {
       stampResidencyFailure(
         journal.project_id,
-        `host is below the residency protocol (${target.host.protocol_version} < ${RESIDENCY_MIN_HOST_PROTOCOL}) — waiting for the host to update`,
+        `host is below the residency protocol (${target.host.protocol_version} < ${RESIDENCY_MIN_HOST_PROTOCOL_PULL}) — waiting for the host to update`,
         teamsHome,
       );
       if (shouldLogOncePerInterval(`residency.proto.${journal.project_id}`, FAILURE_LOG_INTERVAL_MS, Date.now())) {

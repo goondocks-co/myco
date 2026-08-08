@@ -24,16 +24,19 @@ import { createSchema } from '@myco/db/schema.js';
 import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { REBUILD_TABLES } from '@myco/db/queries/team-outbox.js';
+import { HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import {
   RESIDENCY_ALLOWED_TABLES,
   RESIDENCY_APPLY_RULES,
+  RESIDENCY_OUTBOX_TABLES,
+  RESIDENCY_SIDECARS,
   RESIDENCY_TABLE_ORDER,
   applyResidencyRows,
   resetResidencyColumnCache,
 } from '@myco/db/queries/residency-apply.js';
 import { createRoutedResidencyHandler } from '@myco/host/routed-residency.js';
 import { classifyRouteStamp, matchRouteRule, ROUTE_RULES } from '@myco/host/routing.js';
-import { ROUTED_RESIDENCY_ROWS_PATH } from '@myco/host/residency-journal.js';
+import { ROUTED_RESIDENCY_ROWS_PATH, RESIDENCY_MIN_HOST_PROTOCOL } from '@myco/host/residency-journal.js';
 import {
   adoptHostedProjectName,
   hostedProjectName,
@@ -94,7 +97,14 @@ describe('residency route classification', () => {
     // pairs cannot see a seventh.
     const db = new Database(':memory:');
     createSchema(db, 'local');
-    const position = new Map(RESIDENCY_TABLE_ORDER.map((t, i) => [t, i]));
+    // Positions come from the ACTUAL SEND ORDER, not from RESIDENCY_TABLE_ORDER.
+    // The drain ships every outbox table first and every sidecar after, which
+    // already disagrees with the constant's order — `session_myco_tool_calls`
+    // sits mid-list there but ships after the OKF tables. Validating the
+    // constant would bless an order nothing sends, so a future outbox table
+    // FK-ing a sidecar could pass here and 409-loop forever in production.
+    const sendOrder = [...RESIDENCY_OUTBOX_TABLES, ...RESIDENCY_SIDECARS.map((s) => s.table)];
+    const position = new Map(sendOrder.map((t, i) => [t, i]));
     const violations: string[] = [];
     for (const [table, index] of position) {
       const fks = db.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{ table: string }>;
@@ -108,6 +118,8 @@ describe('residency route classification', () => {
     }
     db.close();
     expect(violations).toEqual([]);
+    // Every carried table is in exactly one of the two send lists.
+    expect([...sendOrder].sort()).toEqual([...RESIDENCY_TABLE_ORDER].sort());
     // team_members is excluded from the send order (machine-scoped, no project_id)
     // while remaining allow-listed for members inside the compatibility window.
     expect(RESIDENCY_TABLE_ORDER.indexOf('team_members')).toBe(-1);
@@ -220,6 +232,7 @@ describe('residency registration seam + adoption', () => {
         query: {},
         params: {},
         pathname: ROUTED_RESIDENCY_ROWS_PATH,
+        headers: { [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION) },
         requestContext: reqCtx(servedGrove.id, projectId),
       });
 
@@ -254,6 +267,7 @@ describe('residency registration seam + adoption', () => {
       const res = await handler({
         body: { table: 'sessions', rows: [], adoption: { project_name: 'Empty History Project' } },
         query: {}, params: {}, pathname: ROUTED_RESIDENCY_ROWS_PATH,
+        headers: { [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION) },
         requestContext: reqCtx(servedGrove.id, projectId),
       });
 
@@ -660,13 +674,63 @@ describe('residency ingest handler', () => {
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => { cleanTestDb(); resetResidencyColumnCache(); handler = createRoutedResidencyHandler({}); });
 
-  async function post(body: unknown): Promise<{ status: number; body: Record<string, unknown> }> {
+  /** `memberProtocol` defaults to this build's version — the ordinary case. Pass
+   *  a number to impersonate an older member, or null to send no header at all. */
+  async function post(
+    body: unknown,
+    memberProtocol: number | null = HOST_PROTOCOL_VERSION,
+  ): Promise<{ status: number; body: Record<string, unknown> }> {
     const res = await handler({
       body, query: {}, params: {}, pathname: ROUTED_RESIDENCY_ROWS_PATH,
+      headers: memberProtocol === null ? {} : { [HOST_PROTOCOL_HEADER]: String(memberProtocol) },
       requestContext: reqCtx('grove_x', PROJ),
     });
     return { status: res.status ?? 200, body: res.body as Record<string, unknown> };
   }
+
+  test('SYMMETRY: a member BELOW the residency floor is refused before anything applies', async () => {
+    // The member-side gate protects a new member from an old host and does
+    // nothing in the other direction — yet "hosts update before members" is the
+    // prescribed order, so an old member against a new host is the EXPECTED
+    // configuration. Such a member carries the narrower table set, would have
+    // every one of those tables accepted here, and would then delete the full
+    // project-scoped set locally: the exact silent loss the widened allow-list
+    // exists to end.
+    const res = await post(
+      { table: 'sessions', rows: [sessionRow('s1', PROJ)] },
+      RESIDENCY_MIN_HOST_PROTOCOL - 1,
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('member_protocol_too_old');
+    // Refused BEFORE the apply — nothing landed.
+    expect(count('sessions')).toBe(0);
+  });
+
+  test('SYMMETRY: 400 not 409 — the drain must stop, not bisect and retry forever', async () => {
+    // `isRefusal` in residency-drain.ts treats 400/403 as "stop the ship
+    // wholesale"; a 409 is treated as a possibly-oversized batch and halved,
+    // which would split a protocol refusal down to single rows and loop.
+    const res = await post({ table: 'sessions', rows: [] }, 1);
+    expect(res.status).toBe(400);
+  });
+
+  test('SYMMETRY: a member sending NO protocol header fails closed', async () => {
+    // A member too old to send the header is necessarily too old to carry the
+    // full table set, so absence is treated as below-floor rather than trusted.
+    const res = await post({ table: 'sessions', rows: [sessionRow('s1', PROJ)] }, null);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('member_protocol_too_old');
+    expect(count('sessions')).toBe(0);
+  });
+
+  test('a member AT the floor is admitted', async () => {
+    const res = await post(
+      { table: 'sessions', rows: [sessionRow('s1', PROJ)] },
+      RESIDENCY_MIN_HOST_PROTOCOL,
+    );
+    expect(res.status).toBe(200);
+    expect(count('sessions')).toBe(1);
+  });
 
   test('an unknown table is refused 400, not applied', async () => {
     const res = await post({ table: 'not_a_table', rows: [{ id: 'x' }] });
@@ -796,6 +860,7 @@ describe('residency tenancy admission', () => {
     const res = await handler({
       body: { table: 'spores', rows: [sporeRow('sp_f', FOREIGN)] },
       query: {}, params: {}, pathname: ROUTED_RESIDENCY_ROWS_PATH,
+      headers: { [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION) },
       requestContext: reqCtx('grove_x', PROJ),
     });
     expect(res.status).toBe(403);
@@ -808,6 +873,7 @@ describe('residency tenancy admission', () => {
     const res = await handler({
       body: { table: 'spores', rows: [sporeRow('sp1', PROJ)] },
       query: {}, params: {}, pathname: ROUTED_RESIDENCY_ROWS_PATH,
+      headers: { [HOST_PROTOCOL_HEADER]: String(HOST_PROTOCOL_VERSION) },
       requestContext: undefined,
     });
     expect(res.status).toBe(400);
