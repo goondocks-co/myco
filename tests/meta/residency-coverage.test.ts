@@ -21,11 +21,36 @@ import path from 'node:path';
 import { Database } from 'bun:sqlite';
 
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
-import { BACKUP_TABLES, DETACH_ARTIFACT_TABLES, createBackup, restoreBackup, projectScope } from '@myco/backup/engine.js';
-import { RESIDENCY_TABLE_ORDER } from '@myco/db/queries/residency-apply.js';
+import { DETACH_ARTIFACT_TABLES, createBackup, restoreBackup, projectScope } from '@myco/backup/engine.js';
+import { RESIDENCY_APPLY_RULES, RESIDENCY_SIDECARS, applyResidencyRows } from '@myco/db/queries/residency-apply.js';
+import { backfillProjectForResidency, listSidecarPage } from '@myco/db/queries/residency-backfill.js';
+import { listPendingForProject } from '@myco/db/queries/team-outbox.js';
+import { getDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
+import { setupTestDb, teardownTestDb } from '../helpers/db';
 
 const PROJ = 'proj_cccccccccccccccccccccccccccccccc';
+
+/**
+ * Every table the attach push must carry — the project-scoped set plus
+ * `content_publications`, which has no `project_id` and so is absent from that
+ * constant while still being shipped AND deleted (`deleteAfterAck` removes it via
+ * its own artifact-scoped helper). Asserting only the scoped set would leave the
+ * one table whose structural oddity caused the original bug unchecked.
+ */
+const CARRIED_TABLES: readonly string[] = [...GROVE_PROJECT_SCOPED_TABLES, 'content_publications'];
+
+/**
+ * Columns whose seeded value must MATCH another seeded row rather than be
+ * type-shaped. Both are tables the receiver validates against a parent it looks up
+ * by id (`entity_mentions` -> `entities`, `content_publications` -> the artifact
+ * tables), so an arbitrary value is refused as an absent parent and the table's
+ * carriage would never be exercised.
+ */
+const SEED_OVERRIDES: Readonly<Record<string, Record<string, unknown>>> = {
+  entity_mentions: { entity_id: 'entities_row_1' },
+  content_publications: { artifact_kind: 'skill', artifact_id: 'skill_records_row_1' },
+};
 
 /** A minimally-valid row for `table`: every NOT-NULL-without-DEFAULT column
  *  gets a type-shaped value, `project_id` gets the scoped project, and the
@@ -37,7 +62,9 @@ function seedRow(db: Database, table: string): void {
   }>;
   const cols: string[] = [];
   const vals: unknown[] = [];
+  const overrides = SEED_OVERRIDES[table] ?? {};
   for (const col of info) {
+    if (col.name in overrides) { cols.push(col.name); vals.push(overrides[col.name]); continue; }
     if (col.name === 'project_id') { cols.push(col.name); vals.push(PROJ); continue; }
     if (col.pk > 0) {
       cols.push(col.name);
@@ -53,6 +80,64 @@ function seedRow(db: Database, table: string): void {
   db.prepare(
     `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
   ).run(...(vals as never[]));
+}
+
+/**
+ * A SECOND row for `table` that is a sibling of the seeded one: identical in the
+ * columns that place it (`project_id` and every `*_id` parent reference), and
+ * different in every other NOT-NULL column. Two such rows are distinguishable
+ * only by the discriminating half of a dedupe tuple, so a tuple that shrinks to
+ * its shared leading columns merges them.
+ */
+function seedSibling(db: Database, table: string): void {
+  const info = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string; type: string; notnull: number; dflt_value: unknown; pk: number;
+  }>;
+  const cols: string[] = [];
+  const vals: unknown[] = [];
+  for (const col of info) {
+    // The autoincrement id is omitted so the receiver's counter assigns one, the
+    // same shape the wire carries.
+    if (col.pk > 0 && col.type.toUpperCase().includes('INT')) continue;
+    if (col.name === 'project_id') { cols.push(col.name); vals.push(PROJ); continue; }
+    // Parent references stay identical — that is what makes these siblings, and
+    // what makes a tuple of only parent columns unable to tell them apart.
+    if (col.name.endsWith('_id')) {
+      const seeded = SEED_OVERRIDES[table]?.[col.name];
+      if (seeded !== undefined) { cols.push(col.name); vals.push(seeded); continue; }
+      if (col.pk > 0 || col.notnull === 1) { cols.push(col.name); vals.push(`${table}_row_1`); continue; }
+      continue;
+    }
+    if (col.pk > 0 || (col.notnull === 1 && col.dflt_value == null)) {
+      cols.push(col.name);
+      const t = col.type.toUpperCase();
+      vals.push(t.includes('INT') ? 2 : t.includes('REAL') || t.includes('FLOA') || t.includes('DOUB') ? 2.0 : `${table}_${col.name}_sibling`);
+    }
+  }
+  db.prepare(
+    `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+  ).run(...(vals as never[]));
+}
+
+/**
+ * Run `fn` against an ambient source vault holding exactly one row in every
+ * project-scoped table plus `content_publications`. Ambient rather than a local
+ * handle because the send path (`backfillProjectForResidency`, `listSidecarPage`)
+ * resolves its connection through `getDatabase()` — the same way the drain calls it.
+ */
+function withSeededProject(fn: (source: Database) => void): void {
+  setupTestDb();
+  try {
+    const source = getDatabase();
+    // FKs off for seeding: values are synthetic, so referential order is irrelevant.
+    source.exec('PRAGMA foreign_keys = OFF');
+    for (const table of GROVE_PROJECT_SCOPED_TABLES) seedRow(source, table);
+    // Not project-scoped (no `project_id`), but carried and deleted alongside them.
+    seedRow(source, 'content_publications');
+    fn(source);
+  } finally {
+    teardownTestDb();
+  }
 }
 
 describe('residency per-direction coverage (R2/R5)', () => {
@@ -83,9 +168,165 @@ describe('residency per-direction coverage (R2/R5)', () => {
     }
   });
 
-  test('ATTACH: push ∪ backup covers every project-scoped table', () => {
-    const carriers = new Set<string>([...RESIDENCY_TABLE_ORDER, ...BACKUP_TABLES]);
-    const missing = GROVE_PROJECT_SCOPED_TABLES.filter((t) => !carriers.has(t));
-    expect(missing).toEqual([]);
+  test('ATTACH (behavioral): the push carries EVERY table the post-push delete removes, one row each, by name', () => {
+    // Deliberately NOT the union form (`push ∪ backup ⊇ scoped`) this file's own
+    // docstring calls blind. The union credited BACKUP_TABLES, which in the attach
+    // direction is the member's local pre-attach dump — a file on the departing
+    // machine that never reaches the host. It therefore covered every table by
+    // itself, so RESIDENCY_TABLE_ORDER could have shrunk to nothing and this still
+    // passed. It did pass, for seventeen tables, including `activities`.
+    //
+    // Behavioral for the same reason the detach gate is: membership proves a name is
+    // in a list, not that the row can be enumerated, shipped and applied. This drives
+    // the real send path (`backfillProjectForResidency` + `listSidecarPage`) into the
+    // real receiver (`applyResidencyRows`) and then asserts against the real delete
+    // set (`GROVE_PROJECT_SCOPED_TABLES`, which is what `deleteAfterAck` sweeps).
+    withSeededProject(() => {
+      const target = new Database(':memory:');
+      createSchema(target, 'host_machine');
+      // FK-off on the receiver: the seeded values are synthetic, so parent rows do
+      // not satisfy child references. FK ORDER is a different property with its own
+      // gate (tests/host/routed-residency.test.ts); what is under test here is
+      // whether each table's rows arrive at all.
+      target.exec('PRAGMA foreign_keys = OFF');
+
+      const scope = { expectedProjectId: PROJ };
+      // (1) outbox-riding tables, in the drain's order.
+      backfillProjectForResidency(PROJ, 'member_machine');
+      for (const row of listPendingForProject(PROJ)) {
+        applyResidencyRows(target, row.table_name, [row.payload], scope);
+      }
+      // (2) sidecars, paged exactly as the drain pages them.
+      for (const sidecar of RESIDENCY_SIDECARS) {
+        let cursor: string | null = null;
+        do {
+          const page = listSidecarPage(sidecar, PROJ, cursor);
+          if (page.rows.length > 0) applyResidencyRows(target, sidecar.table, page.rows, scope);
+          cursor = page.nextCursor;
+        } while (cursor !== null);
+      }
+
+      const missing: string[] = [];
+      for (const table of CARRIED_TABLES) {
+        const c = (target.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
+        if (c !== 1) missing.push(`${table} (received ${c} of 1)`);
+      }
+      expect(missing).toEqual([]);
+      target.close();
+    });
+  });
+
+  test('ATTACH is replay-safe: shipping the same rows twice leaves one row per table', () => {
+    // The push is retried on any failed POST, and the local-rowid tables drop their
+    // sender id — so nothing but the declared dedupe key stands between a retry and
+    // a duplicated row. A too-narrow key silently drops rows; a too-wide one
+    // silently doubles them. Both show up here.
+    withSeededProject(() => {
+      const target = new Database(':memory:');
+      createSchema(target, 'host_machine');
+      target.exec('PRAGMA foreign_keys = OFF');
+      const scope = { expectedProjectId: PROJ };
+
+      backfillProjectForResidency(PROJ, 'member_machine');
+      const outbox = listPendingForProject(PROJ);
+      for (const pass of [1, 2]) {
+        void pass;
+        for (const row of outbox) applyResidencyRows(target, row.table_name, [row.payload], scope);
+        for (const sidecar of RESIDENCY_SIDECARS) {
+          let cursor: string | null = null;
+          do {
+            const page = listSidecarPage(sidecar, PROJ, cursor);
+            if (page.rows.length > 0) applyResidencyRows(target, sidecar.table, page.rows, scope);
+            cursor = page.nextCursor;
+          } while (cursor !== null);
+        }
+      }
+
+      const duplicated: string[] = [];
+      for (const table of CARRIED_TABLES) {
+        const c = (target.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
+        if (c !== 1) duplicated.push(`${table} (${c} rows after replay)`);
+      }
+      expect(duplicated).toEqual([]);
+      target.close();
+    });
+  });
+
+  test('SIBLING ROWS: a local-rowid table keeps two rows that differ only in its dedupe columns', () => {
+    // One row per table cannot see a dedupe tuple that SHRANK: any subset of the
+    // declared columns still dedups a replay of a single row, so `log_entries`
+    // narrowed to `['project_id']` — collapsing every log entry of a project into
+    // one row on the host — passes the coverage and replay gates unnoticed. Six
+    // of the eight local-rowid tables have no UNIQUE index to catch it
+    // independently; the id that would have distinguished them is deliberately
+    // dropped in transit.
+    //
+    // So: seed a SIBLING for each — same parent and scope columns (`project_id`,
+    // `run_id`, `session_id`), different discriminating values — and require
+    // both to arrive. A tuple that shrinks to the shared leading columns merges
+    // them and goes red.
+    withSeededProject((source) => {
+      const localRowid = Object.entries(RESIDENCY_APPLY_RULES)
+        .filter(([, rule]) => rule.kind === 'local-rowid')
+        .map(([table]) => table);
+      expect(localRowid.length).toBeGreaterThan(0);
+      for (const table of localRowid) seedSibling(source, table);
+
+      const target = new Database(':memory:');
+      createSchema(target, 'host_machine');
+      target.exec('PRAGMA foreign_keys = OFF');
+      const scope = { expectedProjectId: PROJ };
+
+      backfillProjectForResidency(PROJ, 'member_machine');
+      for (const row of listPendingForProject(PROJ)) {
+        applyResidencyRows(target, row.table_name, [row.payload], scope);
+      }
+
+      const merged: string[] = [];
+      for (const table of localRowid) {
+        const c = (target.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
+        if (c !== 2) merged.push(`${table} (received ${c} of 2 — dedupe tuple too narrow)`);
+      }
+      expect(merged).toEqual([]);
+      target.close();
+    });
+  });
+
+  test('NEGATIVE CONTROL: a carried set missing a table makes the gate\'s own predicate go red', () => {
+    // Skipping a table and asserting zero rows arrive is near-tautological —
+    // `applyResidencyRows` is the only writer. What needs demonstrating is that
+    // the MAIN gate's predicate turns red, so this recomputes that predicate
+    // against a shipping set with `activities` removed and requires it to name
+    // the table. If the gate could ever be satisfied without carriage, this
+    // fails.
+    withSeededProject(() => {
+      const target = new Database(':memory:');
+      createSchema(target, 'host_machine');
+      target.exec('PRAGMA foreign_keys = OFF');
+      const scope = { expectedProjectId: PROJ };
+
+      backfillProjectForResidency(PROJ, 'member_machine');
+      for (const row of listPendingForProject(PROJ)) {
+        if (row.table_name === 'activities') continue; // the simulated regression
+        applyResidencyRows(target, row.table_name, [row.payload], scope);
+      }
+      for (const sidecar of RESIDENCY_SIDECARS) {
+        let cursor: string | null = null;
+        do {
+          const page = listSidecarPage(sidecar, PROJ, cursor);
+          if (page.rows.length > 0) applyResidencyRows(target, sidecar.table, page.rows, scope);
+          cursor = page.nextCursor;
+        } while (cursor !== null);
+      }
+
+      // The MAIN gate's predicate, verbatim.
+      const missing: string[] = [];
+      for (const table of CARRIED_TABLES) {
+        const c = (target.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
+        if (c !== 1) missing.push(`${table} (received ${c} of 1)`);
+      }
+      expect(missing).toEqual(['activities (received 0 of 1)']);
+      target.close();
+    });
   });
 });

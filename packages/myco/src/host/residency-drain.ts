@@ -43,10 +43,13 @@ import {
 } from '../db/queries/team-outbox.js';
 import {
   deleteContentPublicationsForProject,
-  listContentPublicationPages,
-  listEntityMentionPages,
+  listSidecarPage,
 } from '../db/queries/residency-backfill.js';
-import { RESIDENCY_TABLE_ORDER } from '../db/queries/residency-apply.js';
+import {
+  RESIDENCY_SIDECARS,
+  RESIDENCY_TABLE_ORDER,
+  type ResidencySidecar,
+} from '../db/queries/residency-apply.js';
 import { createFsDrainStore } from '../capture/transcript-drain.js';
 import { createFsPlanDrainStore } from '../capture/plan-drain.js';
 import { createFsReplayStore } from '../capture/event-replay-drain.js';
@@ -71,6 +74,7 @@ import {
   ROUTED_DETACH_ARTIFACT_PATH,
   ROUTED_DETACH_COMPLETE_PATH,
   RESIDENCY_MIN_HOST_PROTOCOL,
+  RESIDENCY_MIN_HOST_PROTOCOL_PULL,
   RETIRED_RESIDENCY_PHASES,
   residencyJournalPath,
   advanceResidencyPhase,
@@ -559,10 +563,10 @@ async function runDetachTransition(
       stampResidencyFailure(journal.project_id, residencyTargetFailure(journal.host_id, target || null), teamsHome);
       return;
     }
-    if (target.host.protocol_version < RESIDENCY_MIN_HOST_PROTOCOL) {
+    if (target.host.protocol_version < RESIDENCY_MIN_HOST_PROTOCOL_PULL) {
       stampResidencyFailure(
         journal.project_id,
-        `host is below the residency protocol (${target.host.protocol_version} < ${RESIDENCY_MIN_HOST_PROTOCOL}) — waiting for the host to update`,
+        `host is below the residency protocol (${target.host.protocol_version} < ${RESIDENCY_MIN_HOST_PROTOCOL_PULL}) — waiting for the host to update`,
         teamsHome,
       );
       if (shouldLogOncePerInterval(`residency.proto.${journal.project_id}`, FAILURE_LOG_INTERVAL_MS, Date.now())) {
@@ -947,8 +951,9 @@ async function pushTransition(
   }
 
   // (2) sidecars — page each stream, cursor advancing only after the page ships.
-  if (!(await shipSidecar(journal, deps, shipPlainRows, teamsHome, 'entity_mentions', listEntityMentionPages))) { giveUp(); return; }
-  if (!(await shipSidecar(journal, deps, shipPlainRows, teamsHome, 'content_publications', listContentPublicationPages))) { giveUp(); return; }
+  for (const sidecar of RESIDENCY_SIDECARS) {
+    if (!(await shipSidecar(journal, deps, shipPlainRows, teamsHome, sidecar))) { giveUp(); return; }
+  }
 
   // (3) adoption backstop — a project with a registry row but no sync-eligible
   // rows ships zero batches, so the host never learns its name. Send one
@@ -971,13 +976,13 @@ async function shipSidecar(
   deps: ResidencyDrainDeps,
   shipRows: (table: string, rows: Record<string, unknown>[]) => Promise<boolean>,
   teamsHome: string | undefined,
-  table: 'entity_mentions' | 'content_publications',
-  pager: (projectId: string, cursor: string | null) => { rows: Record<string, unknown>[]; nextCursor: string | null },
+  sidecar: ResidencySidecar,
 ): Promise<boolean> {
+  const table = sidecar.table;
   let cursor = journal.cursors[table];
   while (cursor !== CURSOR_DONE) {
     const startToken = typeof cursor === 'string' && cursor ? cursor : null;
-    const page = deps.withGroveDb(journal.source_grove_id, () => pager(journal.project_id, startToken));
+    const page = deps.withGroveDb(journal.source_grove_id, () => listSidecarPage(sidecar, journal.project_id, startToken));
     if (page.rows.length > 0) {
       if (!(await shipRows(table, page.rows))) return false;
     }

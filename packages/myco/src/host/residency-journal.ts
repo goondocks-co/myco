@@ -42,14 +42,36 @@ export const ROUTED_DETACH_ARTIFACT_PATH = '/routed-capture/residency-detach-art
 export const ROUTED_DETACH_COMPLETE_PATH = '/routed-capture/residency-detach-complete';
 
 /**
- * Minimum host protocol version a with-history residency transition requires.
- * The host row-ingest route (T2) ships at HOST_PROTOCOL_VERSION 3; a member
- * whose joined host records an older version refuses the move up front (nothing
- * has been touched yet) rather than pushing to a route the host cannot serve.
- * Declared here — not `constants.ts` — so the client-safe journal module owns
- * the gate without pulling the host-protocol constant surface.
+ * Minimum host protocol version an ATTACH PUSH requires. A member whose joined
+ * host records an older version refuses the move up front (nothing has been
+ * touched yet) rather than pushing to a route the host cannot serve. Declared
+ * here — not `constants.ts` — so the client-safe journal module owns the gate
+ * without pulling the host-protocol constant surface.
+ *
+ * A host below 5 allow-lists a narrower residency table set than the push sends
+ * and answers 400 `unknown table` for the remainder. That fails the push rather
+ * than losing data, but it fails midway through a transition, so the gate
+ * refuses before the project is parked instead.
  */
-export const RESIDENCY_MIN_HOST_PROTOCOL = 3;
+export const RESIDENCY_MIN_HOST_PROTOCOL = 5;
+
+/**
+ * Minimum host protocol version a DETACH PULL requires — deliberately LOWER
+ * than the push floor, and a separate constant so the two cannot be raised
+ * together by reflex.
+ *
+ * Detach moves the project as one whole-project backup artifact and names no
+ * tables, so nothing about a widened allow-list applies to it. Gating it on the
+ * push floor would strand exactly the people the widening is meant to protect:
+ * a member with a project resident on an older host could not bring it home at
+ * all, and the only way out is `--allow-no-pull`, which abandons the history on
+ * the host. A data-loss fix must not make walking away from your data the
+ * supported path.
+ *
+ * The floor stays at the version that introduced the artifact routes; a host
+ * below it serves no detach endpoint to call.
+ */
+export const RESIDENCY_MIN_HOST_PROTOCOL_PULL = 3;
 
 /** Which way the project is moving. `attach` — local → host; `detach` — host → local. */
 export type ResidencyDirection = 'attach' | 'detach';

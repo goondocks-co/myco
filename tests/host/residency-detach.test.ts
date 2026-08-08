@@ -45,6 +45,8 @@ import {
   readResidencyJournal,
   startResidencyJournal,
   writeResidencyJournal,
+  RESIDENCY_MIN_HOST_PROTOCOL,
+  RESIDENCY_MIN_HOST_PROTOCOL_PULL,
 } from '@myco/host/residency-journal.js';
 import {
   countResidencyInFlight,
@@ -76,7 +78,7 @@ function baseDeps(): ResidencyDaemonDeps {
   };
 }
 
-function makeHost(protocol = 3): HostRecord {
+function makeHost(protocol = RESIDENCY_MIN_HOST_PROTOCOL_PULL): HostRecord {
   return {
     host_id: createHostId(),
     label: 'Mac Studio',
@@ -99,7 +101,7 @@ function makeCheckout(projectId: string): string {
 
 const injectedBeginDetach: BeginDetachResidency = (ctx) => beginDetachResidency(ctx, baseDeps());
 
-function targetResolver(protocol = 3): ResolveResidencyTarget {
+function targetResolver(protocol = RESIDENCY_MIN_HOST_PROTOCOL_PULL): ResolveResidencyTarget {
   return (hostId, groveId, projectId): RemoteTarget => ({
     projectId: projectId as GroveProjectId,
     groveId,
@@ -230,7 +232,7 @@ afterEach(() => {
 /** Begin a detach via the real command; returns ids + local grove. */
 function beginDetach(): { projectId: string; localId: string; host: HostRecord; root: string } {
   const local = createGrove('Local', home);
-  const host = makeHost(3);
+  const host = makeHost();
   writeHostRecordFixture(host);
   const projectId = createProjectId();
   const root = makeCheckout(projectId);
@@ -255,7 +257,7 @@ describe('detachCommand — begin path validation', () => {
 
   test('a rootless legacy ref refuses up-front with residency_detach_needs_root', () => {
     const local = createGrove('Local', home);
-    const host = makeHost(3);
+    const host = makeHost();
     const projectId = createProjectId();
     writeHostRecordFixture({ ...host, projects: [{ grove_id: host.served_grove_id!, project_id: projectId, local_grove_id: local.id }] });
     const root = makeCheckout(projectId);
@@ -269,9 +271,30 @@ describe('detachCommand — begin path validation', () => {
     expect(readResidencyJournal(projectId)).toBeNull();
   });
 
+  test('a host BELOW THE PUSH FLOOR can still be detached from — the floors are separate', () => {
+    // The push floor rose when the attach carried set widened. Detach names no
+    // tables (it pulls one whole-project artifact), so gating it on the same
+    // constant would strand exactly the people the widening protects: a project
+    // resident on an older host could never come home, and the only escape
+    // (`allow_no_pull`) abandons the history there. A data-loss fix must not
+    // make walking away from your data the supported path.
+    expect(RESIDENCY_MIN_HOST_PROTOCOL_PULL).toBeLessThan(RESIDENCY_MIN_HOST_PROTOCOL);
+    const local = createGrove('Local', home);
+    const host = makeHost(RESIDENCY_MIN_HOST_PROTOCOL - 1);
+    expect(host.protocol_version).toBeGreaterThanOrEqual(RESIDENCY_MIN_HOST_PROTOCOL_PULL);
+    writeHostRecordFixture(host);
+    const projectId = createProjectId();
+    const root = makeCheckout(projectId);
+    attachRef(host, projectId, root, local.id);
+
+    detachCommand({ projectPath: root, projectId, beginDetachResidency: injectedBeginDetach });
+    // A real pull was opened rather than refused.
+    expect(readResidencyJournal(projectId)?.phase).toBe('fetching');
+  });
+
   test('a host below the residency protocol refuses with residency_pull_unavailable (ref untouched)', () => {
     const local = createGrove('Local', home);
-    const host = makeHost(2);
+    const host = makeHost(RESIDENCY_MIN_HOST_PROTOCOL_PULL - 1);
     writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
@@ -289,7 +312,7 @@ describe('detachCommand — begin path validation', () => {
 
   test('allow_no_pull against an old host runs a plain detach: ref removed, no journal', () => {
     createGrove('Local', home);
-    const host = makeHost(2);
+    const host = makeHost(RESIDENCY_MIN_HOST_PROTOCOL_PULL - 1);
     writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
@@ -423,7 +446,7 @@ describe('detach drain — transfer contract + failure honesty', () => {
     const { projectId } = beginDetach();
     await runResidencyTransitions({
       ...baseDeps(), detachArtifactClient: artifactServer(projectId, () => {}).client,
-      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(2),
+      detachGoodbyeTransport: goodbyeSink().transport, resolveHostTarget: targetResolver(RESIDENCY_MIN_HOST_PROTOCOL_PULL - 1),
     });
     const journal = readResidencyJournal(projectId);
     expect(journal?.phase).toBe('fetching');
@@ -495,7 +518,7 @@ describe('detach drain — transfer contract + failure honesty', () => {
 describe('detach drain — retired phases + abort', () => {
   test('a pulling journal from an older build is refused with guidance, never progressed', async () => {
     const local = createGrove('Local', home);
-    const host = makeHost(3);
+    const host = makeHost();
     writeHostRecordFixture(host);
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
@@ -595,7 +618,7 @@ describe('detach drain — goodbye durability', () => {
 describe('detach — suppression during the window', () => {
   test('a live fetching journal diverts capture to the host Grove', () => {
     const local = createGrove('Local', home);
-    const host = makeHost(3);
+    const host = makeHost();
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     startResidencyJournal({
@@ -609,7 +632,7 @@ describe('detach — suppression during the window', () => {
 
   test('a rehoming journal does NOT divert — new capture resolves local', () => {
     const local = createGrove('Local', home);
-    const host = makeHost(3);
+    const host = makeHost();
     const projectId = createProjectId();
     const root = makeCheckout(projectId);
     registerProjectInGrove(local.id, { projectId, projectName: 'demo', projectRoot: root }, home);
