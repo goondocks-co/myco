@@ -20,6 +20,10 @@ import {
   createHostRegistryOperations,
   ProjectAttachedToOtherHostError,
   type HostRecord,
+  quarantinedHostMemberships,
+  readHostMembershipSnapshots,
+  reconcileHostRollbackBearers,
+  getHostMembershipSnapshot,
 } from '@myco/host/registry';
 import { createHostOperationLock } from '@myco/host/operation-lock';
 import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
@@ -356,7 +360,11 @@ describe('host registry', () => {
     });
   });
 
-  test('readHostRegistry fails closed when a host.json is missing host_id', () => {
+  test('readHostRegistry fails closed PER HOST when a host.json is missing host_id', () => {
+    // Fail-closed means the corrupt host does not load — not that the whole
+    // enumeration dies. A throw here propagated into every enumeration-driven
+    // surface, including the boot bearer reconcile, where one bad directory
+    // took the daemon (and purely local capture) down.
     const host = makeHost();
     writeHostRecordFixture(host);
 
@@ -367,10 +375,12 @@ describe('host registry', () => {
       JSON.stringify({ label: 'no host_id here', projects: [] }),
     );
 
-    expect(() => readHostRegistry()).toThrow(/host_join_state_corrupt/);
+    const records = readHostRegistry();
+    expect(records.map((r) => r.host_id)).toEqual([host.host_id]);
+    expect(quarantinedHostMemberships().map((q) => q.hostId)).toContain('corrupt-missing-host-id');
   });
 
-  test('readHostRegistry fails closed when projects is not an array', () => {
+  test('readHostRegistry fails closed PER HOST when projects is not an array', () => {
     const host = makeHost();
     writeHostRecordFixture(host);
 
@@ -381,7 +391,9 @@ describe('host registry', () => {
       JSON.stringify({ host_id: 'host_corrupt', label: 'bad shape', projects: 'not-an-array' }),
     );
 
-    expect(() => readHostRegistry()).toThrow(/host_join_state_corrupt/);
+    const records = readHostRegistry();
+    expect(records.some((r) => r.host_id === host.host_id)).toBe(true);
+    expect(quarantinedHostMemberships().length).toBeGreaterThan(0);
   });
 
   test('bearer round-trips via secrets and never appears in host.json on disk', () => {
@@ -399,6 +411,64 @@ describe('host registry', () => {
     const rawSecrets = fs.readFileSync(path.join(hostDir, 'secrets.env'), 'utf-8');
     expect(rawSecrets).toContain(bearer);
   });
+  test('a CORRUPT host is quarantined per-host: siblings load, doctor can see it, the process survives', async () => {
+    // The blast-radius pin. Seed two real memberships, then break ONE the way
+    // a backup-restore or permissive copy actually breaks it — a bearer file
+    // that is no longer owner-only. Every enumeration-driven surface (the boot
+    // bearer reconcile, drain wiring, the Team page, doctor) rides
+    // readHostMembershipSnapshots, and a throw from one bad directory used
+    // to abort them all — at boot, that was the whole daemon, local capture
+    // included.
+    const healthy = makeHost();
+    const corrupt = makeHost();
+    for (const host of [healthy, corrupt]) {
+      const reservation = reserveHostEnrollment(host.host_id);
+      advanceHostEnrollmentPhase(reservation, 'enrolling');
+      persistEnrollmentMembership(
+        {
+          host_id: host.host_id,
+          label: host.label,
+          host_url: host.host_url,
+          protocol_version: host.protocol_version,
+          created_at: host.created_at,
+        },
+        `bearer-${host.host_id}`,
+        reservation,
+      );
+    }
+    // Loosen every secrets file under the host dir, wherever it lives — the
+    // generation bearers sit in a subdirectory.
+    const corruptDir = path.join(tmp, 'hosts', corrupt.host_id);
+    const loosen = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) loosen(full);
+        else if (entry.name.endsWith('.env')) fs.chmodSync(full, 0o644);
+      }
+    };
+    loosen(corruptDir);
+
+    // Enumeration survives and returns the healthy sibling only.
+    const snapshots = readHostMembershipSnapshots();
+    expect(snapshots.map((s) => s.record.host_id)).toEqual([healthy.host_id].filter((id) =>
+      snapshots.some((s) => s.record.host_id === id)));
+    expect(snapshots.some((s) => s.record.host_id === corrupt.host_id)).toBe(false);
+    expect(snapshots.some((s) => s.record.host_id === healthy.host_id)).toBe(true);
+
+    // The skip is RECORDED, not silent — doctor's Team Host check reads this.
+    const quarantined = quarantinedHostMemberships();
+    expect(quarantined.map((q) => q.hostId)).toContain(corrupt.host_id);
+    expect(quarantined.find((q) => q.hostId === corrupt.host_id)!.detail).toContain('not owner-only');
+
+    // The boot-time reconcile — the call that used to take the daemon down —
+    // completes.
+    expect(() => reconcileHostRollbackBearers()).not.toThrow();
+
+    // Per-host fail-closed is PRESERVED: addressing the corrupt host directly
+    // still refuses. Quarantine is containment, not suppression.
+    expect(() => getHostMembershipSnapshot(corrupt.host_id)).toThrow(/not owner-only/);
+  });
+
 });
 
 describe('enrollment teardown (the mark/discard pair PR 3 rebuilds on)', () => {
@@ -427,4 +497,5 @@ describe('enrollment teardown (the mark/discard pair PR 3 rebuilds on)', () => {
 
     expect(() => abandonHostEnrollment(staged)).toThrow();
   });
+
 });

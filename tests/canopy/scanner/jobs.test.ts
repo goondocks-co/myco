@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, setDefaultTimeout } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -14,6 +14,16 @@ import {
   type CanopyRunnerSharedDeps,
 } from '@myco/daemon/jobs/canopy-scan';
 import type { GroveProjectId } from '@myco/grove/ids';
+
+// Every case here does REAL work — a full vault schema (dozens of tables,
+// FTS indexes) is created per test, and the scans read real files. Idle
+// timing is ~0.4 s for the whole suite; a loaded shared CI runner has been
+// measured blowing the 5 s default on a single case (twice, both re-runs
+// green). The clocks these tests care about are injected, so a generous
+// wall-clock budget masks nothing — it only stops runner contention from
+// reading as failure.
+setDefaultTimeout(30_000);
+
 
 function buildLogger() {
   const calls: Array<{ level: string; kind: string; msg: string; meta?: unknown }> = [];
