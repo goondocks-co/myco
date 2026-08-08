@@ -132,8 +132,8 @@ function trustEdgeCert(cert: string): void {
  * request path, so a test can assert what actually crossed the wire rather than
  * what it intended to send.
  */
-export async function startFunnelEdge(target: EdgeTarget | string): Promise<FunnelEdge> {
-  const upstreamTarget: EdgeTarget = typeof target === 'string' ? { socketPath: target } : target;
+export async function startFunnelEdge(target: EdgeTarget): Promise<FunnelEdge> {
+  const upstreamTarget: EdgeTarget = target;
   const { key, cert } = selfSignedCert();
   trustEdgeCert(cert);
   const seenPaths: string[] = [];

@@ -29,7 +29,7 @@ import { HOST_PROTOCOL_VERSION, HOST_PROXY_HEADERS_TIMEOUT_MS } from '@myco/cons
 import { mintJoinKey } from '@myco/team-host/join-keys';
 import { authenticateMemberToken, listMembers, revokeMember } from '@myco/team-host/member-tokens';
 import { realEnrollmentClient } from '@myco/host/member-overlay';
-import { teamFetch, teamSocketPath } from '../helpers/team-socket.js';
+import { teamFetch, teamTestPort } from '../helpers/team-socket.js';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
@@ -48,7 +48,7 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
   let sessionsHandlerCalls: number;
   let savedTeamHome: string | undefined;
   let loopback: string;
-  let socketPath: string;
+  let teamPort: number;
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-enroll-'));
@@ -58,12 +58,12 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
     process.env.MYCO_TEAM_HOME = tmp;
 
     sessionsHandlerCalls = 0;
-    socketPath = teamSocketPath('enroll-host');
+    teamPort = teamTestPort();
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
-      teamSocketPath: socketPath,
+      teamPort: teamPort,
       hostServe: { bearer: HOST_BEARER, hostId: HOST_ID, label: HOST_LABEL },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -86,7 +86,7 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
   const v1 = { 'x-myco-host-protocol': String(HOST_PROTOCOL_VERSION) };
   const enrollHeaders = { 'Content-Type': 'application/json', ...v1 };
   const enroll = (body: Record<string, unknown>, headers: Record<string, string> = enrollHeaders) =>
-    teamFetch(socketPath, '/api/host/enroll', { method: 'POST', headers, body: JSON.stringify(body) });
+    teamFetch(teamPort, '/api/host/enroll', { method: 'POST', headers, body: JSON.stringify(body) });
 
   // -------------------------------------------------------------------------
   // The gate that makes publishing this route safe
@@ -209,7 +209,7 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
     const bob = await enroll({ key: mintJoinKey().key, machine_id: 'bob_99887766' });
     const bobToken = ((await bob.json()) as { bearer: string }).bearer;
 
-    const res = await teamFetch(socketPath, '/api/host/resign', {
+    const res = await teamFetch(teamPort, '/api/host/resign', {
       method: 'POST',
       headers: { Authorization: `Bearer ${aliceToken}`, 'Content-Type': 'application/json', ...v1 },
       body: '{}',
@@ -225,7 +225,7 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
 
   test('RESIGN requires a token — it is NOT bearer-exempt like enrollment', async () => {
     await enroll({ key: mintJoinKey().key, machine_id: MEMBER_MACHINE });
-    const res = await teamFetch(socketPath, '/api/host/resign', {
+    const res = await teamFetch(teamPort, '/api/host/resign', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...v1 },
       body: '{}',
@@ -262,7 +262,7 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
   });
 
   test('SURGICAL exemption: a DIFFERENT team route STILL 401s without a token', async () => {
-    const res = await teamFetch(socketPath, '/api/sessions', { headers: v1 });
+    const res = await teamFetch(teamPort, '/api/sessions', { headers: v1 });
     expect(res.status).toBe(401);
     expect(sessionsHandlerCalls).toBe(0);
   });
@@ -289,7 +289,7 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
   });
 
   test('a non-POST method on the enrollment route → 405', async () => {
-    const res = await teamFetch(socketPath, '/api/host/enroll', { headers: v1 });
+    const res = await teamFetch(teamPort, '/api/host/enroll', { headers: v1 });
     expect(res.status).toBe(405);
   });
 
@@ -299,7 +299,7 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
     const token = ((await enrolled.json()) as { bearer: string }).bearer;
 
     for (const pathname of ['/api/host-admin/mint-join-key', '/api/host-admin/members', '/api/host-admin/revoke']) {
-      const res = await teamFetch(socketPath, pathname, {
+      const res = await teamFetch(teamPort, pathname, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...v1 },
         body: '{}',
@@ -346,17 +346,17 @@ describeTeamTransport('enrollment over the real transport', () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-enroll-real-'));
     savedTeamHome = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_TEAM_HOME = tmp;
-    const socketPath = teamSocketPath('enroll-real');
+    const teamPort = teamTestPort();
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
-      teamSocketPath: socketPath,
+      teamPort: teamPort,
       hostServe: { bearer: HOST_BEARER, hostId: HOST_ID, label: HOST_LABEL },
       lockNamespace: testPerUserLockNamespace,
     });
     await server.start(0);
-    edge = await startFunnelEdge(socketPath);
+    edge = await startFunnelEdge({ port: teamPort });
   });
 
   afterEach(async () => {

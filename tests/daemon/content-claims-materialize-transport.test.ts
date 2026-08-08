@@ -48,7 +48,7 @@ import { assertGroveProjectId, createProjectId, createHostId } from '@myco/grove
 import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
 import { getMachineId } from '@myco/machine-id.js';
-import { teamFetch, teamSocketPath } from '../helpers/team-socket.js';
+import { teamFetch, teamTestPort } from '../helpers/team-socket.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { CANONICAL_PROJECT_SKILLS_DIR } from '@myco/skills/publication.js';
@@ -83,7 +83,7 @@ describeTeamTransport('content claim materialize over the real member -> host tr
   let savedHome: string | undefined;
   let memberBase: string;
   let edge: FunnelEdge;
-  let socketPath: string;
+  let teamPort: number;
 
 // ONE identity for the member, everywhere: the id its routes are registered
 // with, the id its token is bound to, and the id holding the seeded claim.
@@ -168,7 +168,7 @@ let memberToken: string;
 
     // --- host daemon: real overlay listener, real content-claim + skill-record routes ---
     const hostLogger = new DaemonLogger(path.join(tmp, 'host-logs'));
-    socketPath = teamSocketPath('ccm-host');
+    teamPort = teamTestPort();
     hostServer = new DaemonServer({
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
       logger: hostLogger,
@@ -178,7 +178,7 @@ let memberToken: string;
       // required since Task 2's servedGroveRefusal fail-closed filter now
       // refuses every overlay request when the designation is absent, even
       // one naming a real, owned Grove.
-      teamSocketPath: socketPath,
+      teamPort: teamPort,
       hostServe: { bearer: HOST_BEARER, servedGroveId: grove.id },
     });
     registerContentClaimRoutes(hostServer, { machineId: 'host-machine', logger: hostLogger });
@@ -209,7 +209,7 @@ let memberToken: string;
     await hostServer.start(0);
     // The public edge in front of the host's socket: the member dials THIS,
     // over real TLS, through the production dialer.
-    edge = await startFunnelEdge(socketPath);
+    edge = await startFunnelEdge({ port: teamPort });
 
     // --- attach the project to the host (member's machine-global registry) ---
     // Built directly rather than via `attachProject`: that helper refuses to
@@ -532,7 +532,7 @@ let memberToken: string;
   });
 
   test('an overlay-origin hit on the materialize path is refused at the transport boundary — the writers are never reached', async () => {
-    const res = await teamFetch(socketPath, `/api/content-claims/${claimId}/materialize`, {
+    const res = await teamFetch(teamPort, `/api/content-claims/${claimId}/materialize`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -617,7 +617,7 @@ let memberToken: string;
     // `/api/content-claims/file-status` exactly as they do for materialize —
     // the specific `message`/`retryable` fields (not just a bare 404) prove the
     // STAMP-based refusal fired, not merely "no such route registered here".
-    const res = await teamFetch(socketPath, '/api/content-claims/file-status', {
+    const res = await teamFetch(teamPort, '/api/content-claims/file-status', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

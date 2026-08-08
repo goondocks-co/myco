@@ -548,6 +548,27 @@ const HostServeSchema = z.object({
    * should not be possible"). Consumed (nulled) by the next enable.
    */
   last_served_grove_id: z.string().nullable().default(null),
+  /**
+   * The loopback port the team listener binds, remembered across restarts.
+   *
+   * Two jobs, and both require it to live HERE rather than in the
+   * machine-global host state. First, the port is the Funnel's proxy target, so
+   * a port that changed every boot would rewrite the operator's serve config
+   * every boot — the activation runner only mutates that config on a genuine
+   * state change, and a remembered port keeps the ordinary boot a no-op.
+   *
+   * Second, containment (`teamFunnelContainmentPorts`) has to name the
+   * handler belonging to THIS `MYCO_HOME`. The unix socket this replaced was
+   * derivable from `MYCO_HOME`; a port is not, and reading it from the shared
+   * host state would reintroduce exactly the cross-daemon confusion that
+   * function's docstring records — a second daemon concluding it had hosted
+   * because the first one had. This field is mycoHome-scoped, so it identifies
+   * the right handler by construction.
+   *
+   * Null until the first successful bind, and rewritten when a remembered port
+   * is found taken and another is claimed.
+   */
+  team_port: z.number().int().positive().max(65535).nullable().default(null),
 }).strict();
 
 /**

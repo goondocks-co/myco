@@ -34,10 +34,10 @@ export interface HostServeApply {
 /**
  * Persist the host-serve enablement to the machine tier.
  *
- * There is no address or port to validate here any more. The team listener
- * binds a socket path derived from `MYCO_HOME` ({@link resolveTeamSocketPath}),
- * so enablement carries identity and designation only — what a host IS, not
- * where it can be reached.
+ * There is no address to validate here. The team listener claims a loopback
+ * port at bind time and records it separately ({@link rememberTeamPort}), so
+ * enablement carries identity and designation only — what a host IS, not where
+ * it can be reached.
  */
 export function writeHostServeConfig(apply: HostServeApply, mycoHome: string = resolveMycoHome()): void {
   updateTierConfigRaw({ kind: 'machine' }, (raw) => {
@@ -63,7 +63,37 @@ export function writeHostServeConfig(apply: HostServeApply, mycoHome: string = r
         label: apply.enabled ? (apply.label ?? null) : null,
         served_grove_id: apply.enabled ? (apply.servedGroveId ?? null) : null,
         last_served_grove_id: lastServed,
+        // CARRIED THROUGH DISABLE, not cleared with it. The port names this
+        // home's Funnel handler for containment, and the case containment most
+        // needs it for is the crashed disable — hosting off, a handler still
+        // live. Clearing it here would erase the only thing that can identify
+        // that handler as ours.
+        team_port: typeof prior?.team_port === 'number' ? prior.team_port : null,
       },
+    };
+  }, { mycoHome });
+}
+
+/**
+ * Record the loopback port the team listener just bound.
+ *
+ * A narrow write rather than a `writeHostServeConfig` call: this runs at every
+ * boot that binds, and must not disturb the enable/disable fields that flow
+ * owns. Creates the `host_serve` block if a bind somehow precedes an enable.
+ */
+export function rememberTeamPort(port: number, mycoHome: string = resolveMycoHome()): void {
+  updateTierConfigRaw({ kind: 'machine' }, (raw) => {
+    const daemon = raw.daemon;
+    if (daemon !== undefined && (daemon === null || typeof daemon !== 'object' || Array.isArray(daemon))) {
+      throw new Error('daemon must be a mapping');
+    }
+    const prior = (daemon as Record<string, unknown> | undefined)?.host_serve as
+      | Record<string, unknown>
+      | undefined;
+    if (prior?.team_port === port) return;
+    raw.daemon = {
+      ...(daemon as Record<string, unknown> | undefined),
+      host_serve: { ...(prior ?? {}), team_port: port },
     };
   }, { mycoHome });
 }

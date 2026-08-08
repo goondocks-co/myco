@@ -1,11 +1,10 @@
 /**
- * Publishing a Team Host: putting its private socket behind a public HTTPS URL.
+ * Publishing a Team Host: putting its loopback listener behind a public HTTPS URL.
  *
- * The daemon binds the team listener on a unix socket inside a `0700` directory
- * (`daemon/server.ts` `startTeamListener`). That socket is unreachable from off
- * the machine by construction, which is the containment story — and also means a
- * host serves nobody until a Tailscale Funnel fronts it. This module is that
- * step, and its inverse.
+ * The daemon binds the team listener on `127.0.0.1` (`daemon/server.ts`
+ * `startTeamListener`). That port is unreachable from off the machine, so a host
+ * serves nobody until a Tailscale Funnel fronts it. This module is that step,
+ * and its inverse.
  *
  * ROOT MOUNT, {@link TEAM_FUNNEL_PORT}. Both are load-bearing rather than
  * defaults: a non-root mount makes Funnel strip its prefix, rewriting every
@@ -15,89 +14,26 @@
  *
  * THE 401 IS THE SUCCESS SIGNAL. After activation the host probes its OWN public
  * URL with no credentials. A 401 proves the whole path works: the edge routed to
- * the socket, the daemon answered, and its token gate refused an anonymous
- * caller. A 502 means the edge could not reach the socket at all — which is what
- * the sandboxed macOS System-Extension tailscaled does, silently, after
- * accepting the funnel config. Nobody should ever "fix" that 401 into a 200.
+ * the listener, the daemon answered, and its token gate refused an anonymous
+ * caller. A 502 means the edge could not reach the listener at all. Nobody
+ * should ever "fix" that 401 into a 200.
+ *
+ * A LOOPBACK PORT, NOT A UNIX SOCKET, and the reason is measured. The macOS App
+ * Store / System Extension Tailscale — the default install — accepts a
+ * unix-socket Funnel configuration and then cannot proxy to it: the edge
+ * publishes and nothing answers behind it. Verified on one node with everything
+ * else held constant, Funnel to a socket returned 502 while Funnel to a loopback
+ * port on the same daemon returned 200. Serving a socket meant hosting did not
+ * work at all for most Mac operators. See `daemon/server.ts` `startTeamListener`
+ * for what the change costs and why the bearer token, not the socket, is the
+ * admission control.
  */
-import fs from 'node:fs';
-import path from 'node:path';
-
 import { loadMachineConfig } from '@myco/config/loader.js';
-import { resolveTeamSocketPath } from '@myco/grove/paths.js';
 
 import { TEAM_FUNNEL_MOUNT, TEAM_FUNNEL_PORT } from '../constants.js';
-import type { FunnelOffRunner, FunnelOnRunner } from '../daemon/external-mcp-containment.js';
+import type { FunnelOffRunner, FunnelOnRunner, FunnelTarget } from '../daemon/external-mcp-containment.js';
 import { probeHostReachability, type HostProbeDeps } from '../host/host-url.js';
 import { readHostState } from './state.js';
-
-/** What the operator must do when their Tailscale cannot serve a unix socket. */
-export const MACSYS_REMEDY =
-  'This machine runs the sandboxed App Store / System Extension build of Tailscale, which accepts a '
-  + 'unix-socket Funnel and then cannot proxy to it. Install the standalone (open-source) tailscaled '
-  + 'and retry — team hosting needs a Tailscale that can reach a local socket.';
-
-export type TailscaleVariant =
-  /** A Tailscale whose CLI lives outside an app bundle — can serve a socket. */
-  | 'standalone'
-  /** The sandboxed App Store / System Extension build. Cannot serve a socket. */
-  | 'sandboxed'
-  /** No conclusion — the CLI was not found, or its location says nothing. */
-  | 'unknown';
-
-/**
- * Identify the Tailscale build, well enough to refuse the one that cannot work.
- *
- * HEURISTIC, and deliberately one-sided: the sandboxed build installs its CLI as
- * a symlink into `Tailscale.app`, so a CLI resolving inside an app bundle is a
- * positive identification. Anything else returns `'unknown'` rather than
- * asserting `'standalone'` — there is no metadata that distinguishes the builds
- * (`tailscale version` reports the same fields for both), and this check runs on
- * machines this project has no fixture for.
- *
- * That one-sidedness is why it is a preflight and not the gate: it converts the
- * cases it CAN recognize into an actionable refusal before any durable write,
- * and {@link activateTeamFunnel}'s postcondition probe catches the rest by
- * observing the failure directly instead of predicting it.
- */
-export function detectTailscaleVariant(
-  deps: { platform?: NodeJS.Platform; resolveCliPath?: () => string | null } = {},
-): TailscaleVariant {
-  const platform = deps.platform ?? process.platform;
-  if (platform !== 'darwin') return 'unknown';
-  const cliPath = (deps.resolveCliPath ?? resolveTailscaleCliPath)();
-  if (!cliPath) return 'unknown';
-  return cliPath.split(path.sep).some((segment) => segment.endsWith('.app'))
-    ? 'sandboxed'
-    : 'standalone';
-}
-
-/** Where `tailscale` on PATH actually points, following symlinks. Null when it
- *  is not on PATH or cannot be resolved — both "no conclusion". */
-function resolveTailscaleCliPath(): string | null {
-  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
-  for (const dir of dirs) {
-    const candidate = path.join(dir, 'tailscale');
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return fs.realpathSync(candidate);
-    } catch { /* not here, or not executable — keep looking */ }
-  }
-  return null;
-}
-
-/**
- * The hosting preflight: refuse before any durable write when this machine's
- * Tailscale positively cannot serve a socket.
- *
- * Returns the refusal message, or null to proceed. Proceeding is NOT a claim
- * that activation will succeed — see {@link detectTailscaleVariant}.
- */
-export function teamHostingPreflight(
-  deps: { platform?: NodeJS.Platform; resolveCliPath?: () => string | null } = {},
-): string | null {
-  return detectTailscaleVariant(deps) === 'sandboxed' ? MACSYS_REMEDY : null;
-}
 
 export interface TeamFunnelActivation {
   ok: boolean;
@@ -115,26 +51,26 @@ export interface TeamFunnelDeps {
 }
 
 /**
- * Publish the team socket and verify it actually serves.
+ * Publish the team listener's port and verify it actually serves.
  *
  * Two steps that must not be collapsed: activation asks Tailscale to route the
- * public URL to the socket, and the probe checks that it does. Only the second
- * can fail the way the sandboxed build fails — by accepting the request and then
- * not proxying — so an activation that reports success is not evidence the host
- * is reachable, and this returns ok only when the probe agrees.
+ * public URL to the port, and the probe checks that it does. An activation that
+ * reports success is not evidence the host is reachable — the edge can accept a
+ * configuration and still fail to reach what is behind it — so this returns ok
+ * only when the probe agrees.
  */
 export async function activateTeamFunnel(
-  socketPath: string,
+  port: number,
   deps: TeamFunnelDeps,
 ): Promise<TeamFunnelActivation> {
   const activation = await deps.runFunnelOn(
-    { kind: 'socket', path: socketPath },
+    { kind: 'port', port },
     { mount: TEAM_FUNNEL_MOUNT, publicPort: TEAM_FUNNEL_PORT },
   );
   if (!activation.ok || !activation.funnelUrl) {
     return {
       ok: false,
-      detail: activation.detail || 'the public Funnel did not activate for the team socket',
+      detail: activation.detail || 'the public Funnel did not activate for the team listener',
     };
   }
 
@@ -142,16 +78,9 @@ export async function activateTeamFunnel(
   if (reachability.state === 'reachable') {
     return { ok: true, hostUrl: activation.funnelUrl, detail: reachability.detail };
   }
-  // `host_not_serving` after a SUCCESSFUL activation is the macsys signature:
-  // the config took, the edge published, and nothing answers behind it. Say so
-  // with the remedy rather than reporting a generic unreachable host — the
-  // operator is standing at the machine that cannot serve.
-  const remedy = reachability.state === 'unreachable' && reachability.reason === 'host_not_serving'
-    ? ` ${MACSYS_REMEDY}`
-    : '';
   return {
     ok: false,
-    detail: `${activation.funnelUrl} was published but did not verify: ${reachability.detail}${remedy}`,
+    detail: `${activation.funnelUrl} was published but did not verify: ${reachability.detail}`,
   };
 }
 
@@ -178,7 +107,7 @@ export type TeamFunnelContainmentIntent =
  * boot reconcile and the daemon's own graceful shutdown, and a site that picked
  * an intent once — at construction — answered the boot question for both. The
  * shutdown then withdrew nothing and a stopped host kept its public URL. Every
- * `additionalFunnelSockets` wiring derives its intent HERE.
+ * `additionalFunnelPorts` wiring derives its intent HERE.
  */
 export function teamFunnelIntentFor(
   operation: 'retire' | 'reconcile' | 'disable' | 'shutdown',
@@ -190,45 +119,47 @@ export function teamFunnelIntentFor(
 }
 
 /**
- * The team Funnel targets containment must drive off for THIS `MYCO_HOME`, or
+ * The team Funnel ports containment must drive off for THIS `MYCO_HOME`, or
  * NOTHING.
  *
  * The empty return is the important case. A non-empty result makes
  * `requiresContainment` true, and that is what reaches the operator's vendor
  * `tailscale` CLI; a daemon that has never hosted must never spawn it.
  *
- * SCOPING IS THE SUBTLE PART. The socket path is derived from `MYCO_HOME`, so
- * the evidence has to be too, or the two describe different machines. Host
- * state (`~/.myco-team`) is deliberately machine-GLOBAL and shared by every
- * daemon on the box — reading it here made a second daemon (the two-MYCO_HOME
- * dogfood setup) conclude it had hosted because the FIRST one had, then hand
- * back its own unrelated socket path: the vendor CLI spawned on a daemon that
- * never hosted, and the residue it was looking for went unfound. Both signals
- * therefore come from the mycoHome-scoped machine config: `enabled` for what is
- * published now, `last_served_grove_id` (written by disable) for what this home
- * published before.
+ * SCOPING IS THE SUBTLE PART, and it is why the PORT lives in the mycoHome-scoped
+ * machine config rather than the machine-global host state. Host state
+ * (`~/.myco-team`) is shared by every daemon on the box — reading it here made a
+ * second daemon (the two-MYCO_HOME dogfood setup) conclude it had hosted because
+ * the FIRST one had, then hand back its own unrelated target: the vendor CLI
+ * spawned on a daemon that never hosted, and the residue it was looking for went
+ * unfound. Every signal therefore comes from the mycoHome-scoped config —
+ * `enabled` for what is published now, `last_served_grove_id` (written by
+ * disable) for what this home published before, and `team_port` for WHICH
+ * handler is ours.
  */
-export function teamFunnelContainmentSockets(deps: {
+export function teamFunnelContainmentPorts(deps: {
   mycoHome: string;
   intent: TeamFunnelContainmentIntent;
   hostServeEnabled?: () => boolean;
   /** Did THIS `MYCO_HOME` ever host? See the scoping note above. */
   hostedBefore?: () => boolean;
-  resolveSocketPath?: (mycoHome: string) => string;
-}): string[] {
-  const readHostServe = (): { enabled: boolean; hostedBefore: boolean } => {
+  /** Test seam: the port this home published. */
+  resolveTeamPort?: (mycoHome: string) => number | null;
+}): number[] {
+  const readHostServe = (): { enabled: boolean; hostedBefore: boolean; port: number | null } => {
     try {
       const hostServe = loadMachineConfig(deps.mycoHome).daemon.host_serve;
       return {
         enabled: hostServe.enabled === true,
         hostedBefore: typeof hostServe.last_served_grove_id === 'string'
           && hostServe.last_served_grove_id.length > 0,
+        port: typeof hostServe.team_port === 'number' ? hostServe.team_port : null,
       };
     } catch {
       // Unreadable config is not evidence of absence — but it is also not
       // evidence of exposure, and guessing "hosted" here would reach the
       // vendor CLI on a machine mid-edit. Fail toward doing nothing.
-      return { enabled: false, hostedBefore: false };
+      return { enabled: false, hostedBefore: false, port: null };
     }
   };
   const config = readHostServe();
@@ -245,15 +176,19 @@ export function teamFunnelContainmentSockets(deps: {
     // before and may still have a live handler.
     if (enabled || !hostedBefore) return [];
   }
-  return [(deps.resolveSocketPath ?? resolveTeamSocketPath)(deps.mycoHome)];
+  // No remembered port means this home has no handler to name. Returning
+  // nothing keeps `requiresContainment` false rather than spawning the vendor
+  // CLI to remove something that cannot be identified.
+  const port = deps.resolveTeamPort ? deps.resolveTeamPort(deps.mycoHome) : config.port;
+  return port === null ? [] : [port];
 }
 
-/** Withdraw the team socket's public URL. The bounded inverse of
+/** Withdraw the team listener's public URL. The bounded inverse of
  *  {@link activateTeamFunnel}, run when hosting is disabled and at shutdown so
  *  nothing answers the public URL while the daemon is down. */
 export async function deactivateTeamFunnel(
-  socketPath: string,
+  target: FunnelTarget,
   runFunnelOff: FunnelOffRunner,
 ): Promise<{ ok: boolean; detail: string }> {
-  return await runFunnelOff({ kind: 'socket', path: socketPath });
+  return await runFunnelOff(target);
 }

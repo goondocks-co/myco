@@ -1,5 +1,5 @@
 /**
- * Publishing a Team Host: the mount, the port, the macsys preflight, and the
+ * Publishing a Team Host: the mount, the port, the containment scoping, and the
  * postcondition probe.
  *
  * These are the gates for properties that CANNOT be observed end-to-end without
@@ -26,16 +26,13 @@ import { probeHostReachability } from '@myco/host/host-url.js';
 import { startFunnelEdge } from '../helpers/funnel-edge.js';
 import {
   activateTeamFunnel,
-  detectTailscaleVariant,
-  MACSYS_REMEDY,
-  teamFunnelContainmentSockets,
+  teamFunnelContainmentPorts,
   teamFunnelIntentFor,
-  teamHostingPreflight,
 } from '@myco/team-host/funnel.js';
 
 /** A `tailscale` runner that records argv and answers `funnel status` with a
  *  snapshot describing whatever handler the caller just asked for. */
-function fakeTailscale(opts: { hostPort?: string; mount?: string; socketPath: string }) {
+function fakeTailscale(opts: { hostPort?: string; mount?: string; port: number }) {
   const calls: string[][] = [];
   let activated = false;
   const hostPort = opts.hostPort ?? `box.tailnet.ts.net:${TEAM_FUNNEL_PORT}`;
@@ -48,7 +45,7 @@ function fakeTailscale(opts: { hostPort?: string; mount?: string; socketPath: st
       return {
         stdout: JSON.stringify({
           AllowFunnel: { [hostPort]: true },
-          Web: { [hostPort]: { Handlers: { [mount]: { Proxy: `unix+http://${opts.socketPath}` } } } },
+          Web: { [hostPort]: { Handlers: { [mount]: { Proxy: `http://127.0.0.1:${opts.port}` } } } },
           TCP: { [String(port)]: { HTTPS: true } },
         }),
       };
@@ -60,12 +57,13 @@ function fakeTailscale(opts: { hostPort?: string; mount?: string; socketPath: st
   return { run, calls, get activated() { return activated; } };
 }
 
-const SOCKET = '/tmp/myco-team-test/team.sock';
+/** The loopback port a team listener is pretending to have bound. */
+const TEAM_PORT = 45321;
 
 describe('team Funnel activation', () => {
   test('activates at the ROOT mount — no --set-path is ever sent', async () => {
-    const ts = fakeTailscale({ socketPath: SOCKET });
-    const result = await activateTeamFunnel(SOCKET, {
+    const ts = fakeTailscale({ port: TEAM_PORT });
+    const result = await activateTeamFunnel(TEAM_PORT, {
       runFunnelOn: createFunnelOnRunner(ts.run),
       probe: { request: async () => ({ status: 401, protocolVersion: null }) },
     });
@@ -77,12 +75,12 @@ describe('team Funnel activation', () => {
     // rewriting every pathname the member→host route table keys on. Asserting
     // on the ARGV means a change to TEAM_FUNNEL_MOUNT fails here.
     expect(funnelCall!.some((arg) => arg.startsWith('--set-path'))).toBe(false);
-    expect(funnelCall).toContain(`unix:${SOCKET}`);
+    expect(funnelCall).toContain(`http://127.0.0.1:${TEAM_PORT}`);
   });
 
   test('activates on the team port, which is NOT the external-MCP port', async () => {
-    const ts = fakeTailscale({ socketPath: SOCKET });
-    await activateTeamFunnel(SOCKET, {
+    const ts = fakeTailscale({ port: TEAM_PORT });
+    await activateTeamFunnel(TEAM_PORT, {
       runFunnelOn: createFunnelOnRunner(ts.run),
       probe: { request: async () => ({ status: 401, protocolVersion: null }) },
     });
@@ -96,8 +94,8 @@ describe('team Funnel activation', () => {
   });
 
   test('the published URL keeps its port — a team host is not on 443', async () => {
-    const ts = fakeTailscale({ socketPath: SOCKET });
-    const result = await activateTeamFunnel(SOCKET, {
+    const ts = fakeTailscale({ port: TEAM_PORT });
+    const result = await activateTeamFunnel(TEAM_PORT, {
       runFunnelOn: createFunnelOnRunner(ts.run),
       probe: { request: async () => ({ status: 401, protocolVersion: null }) },
     });
@@ -111,17 +109,17 @@ describe('team Funnel activation', () => {
     // at the same mount on another port must not satisfy the idempotence check
     // — skipping activation there would publish that other port to every
     // member as `host_url`.
-    const ts = fakeTailscale({ socketPath: SOCKET, hostPort: 'box.tailnet.ts.net:10000' });
+    const ts = fakeTailscale({ port: TEAM_PORT, hostPort: 'box.tailnet.ts.net:10000' });
     // Pre-activate on 10000, the way a hand-edited serve config would look.
     await createFunnelOnRunner(ts.run)(
-      { kind: 'socket', path: SOCKET },
+      { kind: 'port', port: TEAM_PORT },
       { mount: TEAM_FUNNEL_MOUNT, publicPort: 10000 },
     );
     ts.calls.length = 0;
 
     // Now ask for the team port. It must ACTIVATE rather than short-circuit.
     await createFunnelOnRunner(ts.run)(
-      { kind: 'socket', path: SOCKET },
+      { kind: 'port', port: TEAM_PORT },
       { mount: TEAM_FUNNEL_MOUNT, publicPort: TEAM_FUNNEL_PORT },
     );
 
@@ -131,15 +129,15 @@ describe('team Funnel activation', () => {
   });
 
   test('an off-runner removes a ROOT-mounted handler — the inverse speaks the same argv', async () => {
-    const ts = fakeTailscale({ socketPath: SOCKET });
+    const ts = fakeTailscale({ port: TEAM_PORT });
     await createFunnelOnRunner(ts.run)(
-      { kind: 'socket', path: SOCKET },
+      { kind: 'port', port: TEAM_PORT },
       { mount: TEAM_FUNNEL_MOUNT, publicPort: TEAM_FUNNEL_PORT },
     );
     expect(ts.activated).toBe(true);
 
     ts.calls.length = 0;
-    const off = await createFunnelOffRunner(ts.run)({ kind: 'socket', path: SOCKET });
+    const off = await createFunnelOffRunner(ts.run)({ kind: 'port', port: TEAM_PORT });
 
     expect(off.ok).toBe(true);
     // An off-runner that sent `--set-path=/` against a handler activated
@@ -153,8 +151,8 @@ describe('team Funnel activation', () => {
 
 describe('the postcondition probe', () => {
   test('an unauthenticated 401 is SUCCESS — it proves the daemon answered', async () => {
-    const ts = fakeTailscale({ socketPath: SOCKET });
-    const result = await activateTeamFunnel(SOCKET, {
+    const ts = fakeTailscale({ port: TEAM_PORT });
+    const result = await activateTeamFunnel(TEAM_PORT, {
       runFunnelOn: createFunnelOnRunner(ts.run),
       probe: { request: async () => ({ status: 401, protocolVersion: null }) },
     });
@@ -162,25 +160,25 @@ describe('the postcondition probe', () => {
     expect(result.hostUrl).toBeTruthy();
   });
 
-  test('a 502 fails the activation and names the macsys remedy', async () => {
-    const ts = fakeTailscale({ socketPath: SOCKET });
-    const result = await activateTeamFunnel(SOCKET, {
+  test('a 502 fails the activation — published, but nothing serving behind it', async () => {
+    const ts = fakeTailscale({ port: TEAM_PORT });
+    const result = await activateTeamFunnel(TEAM_PORT, {
       runFunnelOn: createFunnelOnRunner(ts.run),
       probe: { request: async () => ({ status: 502, protocolVersion: null }) },
     });
-    // The macsys signature: the funnel config took, the edge published, and
-    // nothing answers behind it. Reporting a generic unreachable host here
-    // would send the operator to debug a network that is fine.
+    // The funnel config took and the edge published, but nothing answers.
+    // Activation reporting success is therefore not evidence of reachability,
+    // which is the whole reason the probe is a separate step.
     expect(result.ok).toBe(false);
     expect(result.hostUrl).toBeUndefined();
-    expect(result.detail).toContain(MACSYS_REMEDY);
+    expect(result.detail).toContain('did not verify');
   });
 
-  test('a successful ACTIVATION with a dead socket is still a failure', async () => {
+  test('a successful ACTIVATION with a dead listener is still a failure', async () => {
     // The whole reason the probe exists: `funnel status` reporting the handler
     // is not evidence that anything serves it.
-    const ts = fakeTailscale({ socketPath: SOCKET });
-    const result = await activateTeamFunnel(SOCKET, {
+    const ts = fakeTailscale({ port: TEAM_PORT });
+    const result = await activateTeamFunnel(TEAM_PORT, {
       runFunnelOn: createFunnelOnRunner(ts.run),
       probe: {
         request: async () => { throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); },
@@ -191,29 +189,6 @@ describe('the postcondition probe', () => {
   });
 });
 
-describe('the macsys preflight', () => {
-  test('refuses a CLI resolving inside an app bundle', () => {
-    const variant = detectTailscaleVariant({
-      platform: 'darwin',
-      resolveCliPath: () => '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
-    });
-    expect(variant).toBe('sandboxed');
-    expect(teamHostingPreflight({
-      platform: 'darwin',
-      resolveCliPath: () => '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
-    })).toBe(MACSYS_REMEDY);
-  });
-
-  test('allows a standalone CLI, and does not guess when it cannot tell', () => {
-    expect(detectTailscaleVariant({ platform: 'darwin', resolveCliPath: () => '/usr/local/bin/tailscale' }))
-      .toBe('standalone');
-    // No CLI found, and non-darwin, both mean NO CONCLUSION — never a refusal,
-    // because a preflight that guessed wrong would block hosting outright.
-    expect(detectTailscaleVariant({ platform: 'darwin', resolveCliPath: () => null })).toBe('unknown');
-    expect(detectTailscaleVariant({ platform: 'linux', resolveCliPath: () => '/x/Tailscale.app/t' })).toBe('unknown');
-    expect(teamHostingPreflight({ platform: 'linux', resolveCliPath: () => null })).toBeNull();
-  });
-});
 
 describe('containment intent by operation', () => {
   test('ONLY a shutdown quiesces; every other operation retires', () => {
@@ -235,11 +210,11 @@ describe('containment intent by operation', () => {
       mycoHome: '/tmp/h',
       hostServeEnabled: () => true,
       hostedBefore: () => true,
-      resolveSocketPath: () => '/tmp/myco-team-x/team.sock',
+      resolveTeamPort: () => '/tmp/myco-team-x/team.sock',
     };
-    expect(teamFunnelContainmentSockets({ ...serving, intent: teamFunnelIntentFor('shutdown') }))
+    expect(teamFunnelContainmentPorts({ ...serving, intent: teamFunnelIntentFor('shutdown') }))
       .toEqual(['/tmp/myco-team-x/team.sock']);
-    expect(teamFunnelContainmentSockets({ ...serving, intent: teamFunnelIntentFor('reconcile') }))
+    expect(teamFunnelContainmentPorts({ ...serving, intent: teamFunnelIntentFor('reconcile') }))
       .toEqual([]);
   });
 });
@@ -252,12 +227,12 @@ describe('team Funnel containment targets', () => {
     // is what reaches the operator's vendor `tailscale` CLI. A daemon that has
     // never hosted must never spawn it.
     for (const intent of ['retire', 'quiesce'] as const) {
-      expect(teamFunnelContainmentSockets({
+      expect(teamFunnelContainmentPorts({
         mycoHome: '/tmp/none',
         intent,
         hostServeEnabled: () => false,
         hostedBefore: () => false,
-        resolveSocketPath: socketFor,
+        resolveTeamPort: socketFor,
       })).toEqual([]);
     }
   });
@@ -267,62 +242,75 @@ describe('team Funnel containment targets', () => {
       mycoHome: '/tmp/h',
       hostServeEnabled: () => true,
       hostedBefore: () => true,
-      resolveSocketPath: socketFor,
+      resolveTeamPort: socketFor,
     };
     // Down means nothing should answer the public URL. This is the case that
     // shipped broken: the daemon's own shutdown asked with a boot-shaped intent
     // and withdrew nothing.
-    expect(teamFunnelContainmentSockets({ ...serving, intent: 'quiesce' })).toEqual([socketFor()]);
+    expect(teamFunnelContainmentPorts({ ...serving, intent: 'quiesce' })).toEqual([socketFor()]);
     // Boot must NOT drive off an exposure that is intended — activation
     // re-verifies it after the listener binds, and driving it off first would
     // take the URL down and back up on every single boot.
-    expect(teamFunnelContainmentSockets({ ...serving, intent: 'retire' })).toEqual([]);
+    expect(teamFunnelContainmentPorts({ ...serving, intent: 'retire' })).toEqual([]);
   });
 
   test('boot retires a crashed disable — hosting off, but THIS home hosted before', () => {
-    expect(teamFunnelContainmentSockets({
+    expect(teamFunnelContainmentPorts({
       mycoHome: '/tmp/h',
       intent: 'retire',
       hostServeEnabled: () => false,
       hostedBefore: () => true,
-      resolveSocketPath: socketFor,
+      resolveTeamPort: socketFor,
     })).toEqual([socketFor()]);
   });
 
   test('a stopped daemon that was never enabled quiesces nothing', () => {
-    expect(teamFunnelContainmentSockets({
+    expect(teamFunnelContainmentPorts({
       mycoHome: '/tmp/h',
       intent: 'quiesce',
       hostServeEnabled: () => false,
       hostedBefore: () => true,
-      resolveSocketPath: socketFor,
+      resolveTeamPort: socketFor,
     })).toEqual([]);
   });
 
   test('the PRODUCTION defaults read the mycoHome-scoped config, not machine-global host state', () => {
-    // The scoping bug this pins: the socket path is derived from MYCO_HOME, so
-    // the evidence must be too. Host state lives in the machine-global team
-    // home shared by EVERY daemon on the box, so a second daemon (the
-    // two-MYCO_HOME dogfood setup) read the first one's state, concluded it had
-    // hosted, and handed back its own unrelated socket path — spawning the
-    // vendor CLI on a daemon that never hosted while missing the residue it was
-    // looking for. No injected predicates here: the defaults are the subject.
+    // The scoping bug this pins: the port that names this home's Funnel handler
+    // must come from the SAME home as the evidence that it hosted. Host state
+    // lives in the machine-global team home shared by EVERY daemon on the box,
+    // so a second daemon (the two-MYCO_HOME dogfood setup) read the first one's
+    // state, concluded it had hosted, and handed back its own unrelated target
+    // — spawning the vendor CLI on a daemon that never hosted while missing the
+    // residue it was looking for. It is also why `team_port` lives in the
+    // mycoHome-scoped config rather than that shared state. No injected
+    // predicates here: the defaults are the subject.
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-funnel-scope-'));
     try {
       // A home whose config has never hosted contributes nothing, regardless of
       // any host state elsewhere on the machine.
       fs.writeFileSync(path.join(home, 'config.yaml'), 'daemon:\n  host_serve:\n    enabled: false\n', 'utf-8');
-      expect(teamFunnelContainmentSockets({ mycoHome: home, intent: 'retire' })).toEqual([]);
-      expect(teamFunnelContainmentSockets({ mycoHome: home, intent: 'quiesce' })).toEqual([]);
+      expect(teamFunnelContainmentPorts({ mycoHome: home, intent: 'retire' })).toEqual([]);
+      expect(teamFunnelContainmentPorts({ mycoHome: home, intent: 'quiesce' })).toEqual([]);
 
-      // The same home AFTER a disable — `last_served_grove_id` is the
-      // mycoHome-scoped record that this home hosted.
+      // Hosted before, but NO port on record — nothing identifiable to drive
+      // off. Returning a guess here would reach the vendor CLI to remove a
+      // handler this home cannot prove is its own.
       fs.writeFileSync(
         path.join(home, 'config.yaml'),
         'daemon:\n  host_serve:\n    enabled: false\n    last_served_grove_id: grove_' + '0'.repeat(32) + '\n',
         'utf-8',
       );
-      expect(teamFunnelContainmentSockets({ mycoHome: home, intent: 'retire' })).toHaveLength(1);
+      expect(teamFunnelContainmentPorts({ mycoHome: home, intent: 'retire' })).toEqual([]);
+
+      // The same home AFTER a disable, with the port it published on record —
+      // `last_served_grove_id` says this home hosted, `team_port` says which
+      // handler was ours. Both are mycoHome-scoped.
+      fs.writeFileSync(
+        path.join(home, 'config.yaml'),
+        'daemon:\n  host_serve:\n    enabled: false\n    last_served_grove_id: grove_' + '0'.repeat(32) + '\n    team_port: 45871\n',
+        'utf-8',
+      );
+      expect(teamFunnelContainmentPorts({ mycoHome: home, intent: 'retire' })).toEqual([45871]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
@@ -381,7 +369,8 @@ describe('the probe against a SILENT host (the runtime the binary ships on)', ()
   // probe test injects past this seam, and the one code path that touches the
   // runtime is where Bun and Node diverge.
   //
-  // Accept-then-never-answer is the macsys trap this probe exists to catch, and
+  // Accept-then-never-answer is exactly what a published-but-unserved Funnel
+  // does, which is what this probe exists to catch, and
   // it is exactly the shape that hung: the timeout fired but `destroy(err)`
   // emitted no `'error'` under Bun, so the promise was abandoned — stalling
   // boot publication, pinning the Team page on "checking" forever (the

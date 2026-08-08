@@ -69,6 +69,7 @@ describe('writeHostServeConfig', () => {
       label: 'mac',
       served_grove_id: null,
       last_served_grove_id: null,
+      team_port: null,
     });
 
     // There is no address to validate: the listener binds a socket derived from
@@ -92,6 +93,7 @@ describe('writeHostServeConfig', () => {
       served_grove_id: null,
       // No served grove existed, so disable had nothing to remember.
       last_served_grove_id: null,
+      team_port: null,
     });
     expect(resolveHostServeConfig({ machineConfig: machine, mycoHome: process.env.MYCO_HOME })).toBeNull();
   });

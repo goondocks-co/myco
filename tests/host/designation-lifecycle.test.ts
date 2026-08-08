@@ -18,6 +18,7 @@ import {
   type HostEnableDeps,
 } from '@myco/team-host/serving.js';
 import { loadMachineConfig, saveMachineConfig } from '@myco/config/loader.js';
+import { rememberTeamPort } from '@myco/team-host/daemon-apply.js';
 import { readHostState } from '@myco/team-host/state.js';
 import { resolveServedGroveDesignationHealth } from '@myco/daemon/host-serve.js';
 import { checkServedGroveDesignation } from '@myco/cli/doctor.js';
@@ -221,6 +222,11 @@ describe('hostEnable designation wiring', () => {
     // failure would publish a URL forever with no mechanism left to find it.
     await hostEnable({ hostname: 'testhost' }, deps());
     expect(readHostState()).not.toBeNull();
+    // A host that PUBLISHED — the daemon records the bound port before
+    // activation, and that port is what names this home's Funnel handler. A
+    // host that enabled but never bound has no handler to withdraw, so the
+    // property under test only exists once a port is on record.
+    rememberTeamPort(45871, home());
 
     const result = await hostDisable(deps({
       withdrawFunnel: async () => ({ ok: false, detail: 'tailscale is not reachable' }),
