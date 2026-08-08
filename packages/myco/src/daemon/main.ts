@@ -1746,7 +1746,7 @@ export async function main(): Promise<void> {
   // host materializes them to a host-local file the miner reconciles unchanged.
   // Stamped `collect` in host/routing.ts, so it rides the overlay bearer/version
   // gate and is served locally on the host (never re-proxied).
-  server.registerRoute('POST', '/routed-capture/transcript', createRoutedTranscriptHandler());
+  server.registerRoute('POST', '/routed-capture/transcript', createRoutedTranscriptHandler(undefined, { logger }));
   // Team Host — routed plan-content companion push (capture-push §5.5, C7). A
   // routed session's plan FILE is member-local and the proxy is byte-opaque, so the
   // member reads the file and POSTs its content here; the host runs the SAME
