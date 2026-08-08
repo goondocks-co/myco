@@ -18,6 +18,7 @@
  */
 import { z } from 'zod';
 
+import { HOST_PROTOCOL_HEADER } from '../constants.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { getDatabase } from '../db/client.js';
 import { RESIDENCY_ALLOWED_TABLES, ResidencyTenancyError, applyResidencyRows } from '../db/queries/residency-apply.js';
@@ -26,6 +27,7 @@ import type { Logger } from '../daemon/logger.js';
 import type { RouteRequest, RouteResponse } from '../daemon/router.js';
 import { rowProjectIdFromRequestContext } from '../grove/request-context.js';
 import { adoptHostedProjectName } from './hosted-projects.js';
+import { RESIDENCY_MIN_HOST_PROTOCOL } from './residency-journal.js';
 
 /** Throttle window for repeated host-side ingest warnings (unknown table, apply
  *  failure, adoption failure) — a rejecting member re-sends every tick. */
@@ -53,6 +55,42 @@ export function createRoutedResidencyHandler(
       return { status: 400, body: { ok: false, error: 'invalid_body', detail: parsed.error.issues } };
     }
     const { table, rows, adoption } = parsed.data;
+
+    // THE MEMBER'S protocol version, refused BEFORE anything is applied.
+    //
+    // The member has its own floor on the host's version, and on its own that is
+    // half a gate: it protects a new member from an old host and does nothing for
+    // an old member against a new host — which is the configuration the upgrade
+    // order deliberately produces (hosts first, then members). Such a member
+    // carries the narrower table set, would have every one of those tables
+    // accepted here, and would then delete the full project-scoped set locally.
+    // That is the exact silent loss this route's widened allow-list exists to
+    // end, so the host refuses the push rather than acking a partial one.
+    //
+    // 400 rather than 409: the drain treats 400 as a refusal that stops the ship
+    // wholesale (`isRefusal`, residency-drain.ts) instead of bisecting the batch
+    // and retrying forever. Any non-200 already prevents the delete — the code
+    // decides whether the member fails loudly or loops.
+    //
+    // An ABSENT header fails closed for the same reason: a member too old to
+    // send one is necessarily too old to carry the full set.
+    const claimed = Number.parseInt(String(req.headers?.[HOST_PROTOCOL_HEADER] ?? ''), 10);
+    if (!Number.isFinite(claimed) || claimed < RESIDENCY_MIN_HOST_PROTOCOL) {
+      if (shouldLogOncePerInterval('residency.member_protocol_too_old', INGEST_LOG_INTERVAL_MS)) {
+        deps.logger?.warn(LOG_KINDS.RESIDENCY_ATTACH_PUSH, 'Refused a residency push from a member below the residency protocol', {
+          member_protocol: Number.isFinite(claimed) ? claimed : null,
+          required: RESIDENCY_MIN_HOST_PROTOCOL,
+        });
+      }
+      return {
+        status: 400,
+        body: {
+          ok: false,
+          error: 'member_protocol_too_old',
+          required: RESIDENCY_MIN_HOST_PROTOCOL,
+        },
+      };
+    }
 
     if (!RESIDENCY_ALLOWED_TABLES.has(table)) {
       // A permanently-invalid table means member/host version skew the protocol

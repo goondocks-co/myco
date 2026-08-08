@@ -20,6 +20,10 @@ import type { AddressInfo } from 'node:net';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
 import { issueTestMemberToken } from '../helpers/member-token.js';
 import { parseHostUrl } from '@myco/host/host-url.js';
+import {
+  RESIDENCY_MIN_HOST_PROTOCOL,
+  RESIDENCY_MIN_HOST_PROTOCOL_PULL,
+} from '@myco/host/residency-journal.js';
 
 import { JSONRPCMessageSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
@@ -288,8 +292,39 @@ describe('host-proxy forwarder', () => {
     // would WIDEN the range and admit a v3 host — one whose recorded address is
     // an overlay IP that resolves nowhere. A loud refusal beats a silent
     // timeout, and this is the assertion that keeps it loud.
+    //
+    // Stated as a FLOOR, not `MIN_COMPAT === PROTOCOL`. That equality held only
+    // while every shipped bump was breaking; the first additive one after the
+    // transport change (v5, the widened residency table set) makes it false
+    // without admitting a single pre-transport host. The property is that
+    // nothing below the transport change is ever accepted.
     expect(hostProtocolCompatible(3)).toBe(false);
-    expect(HOST_MIN_COMPAT_VERSION).toBe(HOST_PROTOCOL_VERSION);
+    expect(HOST_MIN_COMPAT_VERSION).toBeGreaterThanOrEqual(4);
+    expect(HOST_MIN_COMPAT_VERSION).toBeLessThanOrEqual(HOST_PROTOCOL_VERSION);
+    // ...and the transport-era floor itself stays ACCEPTED. Stated as the
+    // literal 4, not as `hostProtocolCompatible(HOST_MIN_COMPAT_VERSION)` —
+    // that form is a tautology and would go green after raising MIN_COMPAT to 5,
+    // which silently cuts off every joined v4 host: its capture drains skip
+    // permanently and enrollment against it starts failing.
+    expect(hostProtocolCompatible(4)).toBe(true);
+  });
+
+  test('both residency floors sit INSIDE the accepted protocol window', () => {
+    // A floor above the current version can never be satisfied — every
+    // with-history attach would refuse forever. A floor below MIN_COMPAT is
+    // unreachable in the other direction: no host that low is admitted at all,
+    // so the gate would be dead code claiming to protect something.
+    for (const floor of [RESIDENCY_MIN_HOST_PROTOCOL, RESIDENCY_MIN_HOST_PROTOCOL_PULL]) {
+      expect(floor).toBeLessThanOrEqual(HOST_PROTOCOL_VERSION);
+    }
+    // The PUSH floor must be at least the version that widened the allow-list;
+    // dropping it back to 3 would undo the protocol half of the parity fix while
+    // every fixture followed it down, all green.
+    expect(RESIDENCY_MIN_HOST_PROTOCOL).toBeGreaterThanOrEqual(5);
+    // The PULL floor must stay BELOW the push floor. Raising them together
+    // strands a member whose project is resident on an older host: it could not
+    // pull its history home, and the only escape abandons it there.
+    expect(RESIDENCY_MIN_HOST_PROTOCOL_PULL).toBeLessThan(RESIDENCY_MIN_HOST_PROTOCOL);
   });
 
   test('isCanopyMcpCall keys on tool name + op/type selector only', () => {

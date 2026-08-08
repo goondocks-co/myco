@@ -57,7 +57,7 @@ import {
   type AttachRef,
   type HostRecord,
 } from './registry.js';
-import { RESIDENCY_MIN_HOST_PROTOCOL, residencyTransitionInFlight } from './residency-journal.js';
+import { RESIDENCY_MIN_HOST_PROTOCOL_PULL, residencyTransitionInFlight } from './residency-journal.js';
 import {
   nativePerUserLockNamespace,
   type PerUserLockNamespace,
@@ -339,7 +339,7 @@ export function detachCommand(
   // in-process/CLI detach keeps the legacy mapping-flip behavior below.
   if (options.beginDetachResidency) {
     const host = getHost(existing.host.host_id, lockNamespace);
-    if (host && host.protocol_version >= RESIDENCY_MIN_HOST_PROTOCOL) {
+    if (host && host.protocol_version >= RESIDENCY_MIN_HOST_PROTOCOL_PULL) {
       return options.beginDetachResidency({ hostId: existing.host.host_id, host, projectId, ref: existing.ref });
     }
     // Host predates the residency protocol: refuse the pull unless the caller
@@ -348,7 +348,7 @@ export function detachCommand(
       throw codedMembershipError(
         'residency_pull_unavailable',
         `Cannot pull ${projectId} back from host ${existing.host.host_id}: the host predates the residency `
-        + `protocol (needs version ${RESIDENCY_MIN_HOST_PROTOCOL}+). Update the team host first (hosts update `
+        + `protocol (needs version ${RESIDENCY_MIN_HOST_PROTOCOL_PULL}+). Update the team host first (hosts update `
         + 'before members, D-F-5), or detach without pulling your data back.',
       );
     }

@@ -30,7 +30,7 @@ import {
   type ResidencyPostTransport,
   type ResolveResidencyTarget,
 } from '@myco/host/residency-drain.js';
-import { readResidencyJournal } from '@myco/host/residency-journal.js';
+import { RESIDENCY_MIN_HOST_PROTOCOL, readResidencyJournal } from '@myco/host/residency-journal.js';
 import { listPendingForProject } from '@myco/db/queries/team-outbox.js';
 import type { RemoteTarget } from '@myco/host/routing.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
@@ -124,7 +124,7 @@ function targetResolver(): ResolveResidencyTarget {
   return (hostId, groveId, projectId): RemoteTarget => ({
     projectId: projectId as GroveProjectId,
     groveId,
-    host: { host_id: hostId, label: 'h', host_url: 'https://host-a.tailnet.ts.net:8443', protocol_version: 3 },
+    host: { host_id: hostId, label: 'h', host_url: 'https://host-a.tailnet.ts.net:8443', protocol_version: RESIDENCY_MIN_HOST_PROTOCOL },
     bearer: 'bearer',
   });
 }

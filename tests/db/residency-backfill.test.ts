@@ -3,8 +3,8 @@
  *
  * Verifies the project-scoped, membership-free enqueue (only the target
  * project's rows, null team_id, idempotent, sanitize strip preserved) and the
- * two sidecar enumerators (four-column `entity_mentions` paging; the
- * `content_publications` artifact→project join).
+ * generic sidecar pager (composite-key paging; the `content_publications`
+ * artifact→project join).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
@@ -13,9 +13,13 @@ import { listPending, listPendingForProject } from '@myco/db/queries/team-outbox
 import {
   backfillProjectForResidency,
   deleteContentPublicationsForProject,
-  listContentPublicationPages,
-  listEntityMentionPages,
+  listSidecarPage,
 } from '@myco/db/queries/residency-backfill.js';
+import { RESIDENCY_SIDECARS } from '@myco/db/queries/residency-apply.js';
+
+/** The declared sidecar for `table` — the pager is driven by declaration, so a
+ *  test that hand-rolled the key would stop testing what the drain actually sends. */
+const sidecar = (table: string) => RESIDENCY_SIDECARS.find((s) => s.table === table)!;
 
 const PROJ_A = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const PROJ_B = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -106,7 +110,7 @@ describe('residency sidecar enumerators', () => {
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => { cleanTestDb(); });
 
-  test('listEntityMentionPages pages by the four-column key and scopes to the project', () => {
+  test('the pager walks entity_mentions by its four-column key and scopes to the project', () => {
     seedWithoutFk(() => {
       const db = getDatabase();
       const insert = db.prepare(
@@ -119,11 +123,11 @@ describe('residency sidecar enumerators', () => {
       insert.run(PROJ_B, 'ent_9', 'note_9', 'session', 'user'); // other project
     });
 
-    const page1 = listEntityMentionPages(PROJ_A, null, 2);
+    const page1 = listSidecarPage(sidecar('entity_mentions'), PROJ_A, null, 2);
     expect(page1.rows).toHaveLength(2);
     expect(page1.nextCursor).not.toBeNull();
 
-    const page2 = listEntityMentionPages(PROJ_A, page1.nextCursor, 2);
+    const page2 = listSidecarPage(sidecar('entity_mentions'), PROJ_A, page1.nextCursor, 2);
     expect(page2.rows).toHaveLength(1); // 3 rows total for A, none for B
     expect(page2.nextCursor).toBeNull();
 
@@ -131,7 +135,7 @@ describe('residency sidecar enumerators', () => {
     expect(allIds.every((id) => id === 'ent_1' || id === 'ent_2')).toBe(true);
   });
 
-  test('listContentPublicationPages joins publications to the project through their artifacts', () => {
+  test('the pager joins content_publications to the project through their artifacts', () => {
     seedWithoutFk(() => {
       const db = getDatabase();
       db.prepare(
@@ -150,7 +154,7 @@ describe('residency sidecar enumerators', () => {
       pub.run('skill_b');
     });
 
-    const page = listContentPublicationPages(PROJ_A, null, 50);
+    const page = listSidecarPage(sidecar('content_publications'), PROJ_A, null, 50);
     expect(page.rows.map((r) => r.artifact_id)).toEqual(['skill_a']); // only A's artifact
     expect(page.nextCursor).toBeNull();
   });

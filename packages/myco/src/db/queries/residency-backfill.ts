@@ -9,21 +9,24 @@
  * The `sanitizeSyncPayload` strip is preserved: host copies are deliberately
  * free of local-only columns, exactly as team sync always shipped them.
  *
- * The two sidecar tables — `entity_mentions` (id-keyed as of v75 but with no
- * `synced_at` outbox wiring; identity is the four-column UNIQUE) and
- * `content_publications` (no `project_id`, keyed by
- * `(artifact_kind, artifact_id)`) — cannot ride the outbox, whose contract is
- * `id`+`synced_at`. They are paged directly by the drain via the enumerators
- * here and shipped over the same route with journal cursors.
+ * The sidecar tables — those with no `id`, plus `entity_mentions`, which has one the
+ * outbox deliberately does not carry — cannot ride the outbox, whose contract is a
+ * single `id` column. They are paged directly by the drain via {@link listSidecarPage}
+ * and shipped over the same route with journal cursors. Which tables those are, and
+ * the key each pages by, is declared once in `RESIDENCY_SIDECARS`.
  *
  * Every function assumes it runs under `withDatabase(sourceGroveDb, …)`
  * (daemon-owned): `getDatabase()` resolves to the source Grove connection.
  */
 import { epochSeconds } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
-import { PROJECT_ARTIFACT_IDS_SQL } from '@myco/db/queries/residency-apply.js';
 import {
-  REBUILD_TABLES,
+  PROJECT_ARTIFACT_IDS_SQL,
+  RESIDENCY_OUTBOX_TABLES,
+  RESIDENCY_SIDECARS,
+  type ResidencySidecar,
+} from '@myco/db/queries/residency-apply.js';
+import {
   insertOutboxRowsForUpsert,
   sanitizeSyncPayload,
 } from '@myco/db/queries/team-outbox.js';
@@ -32,22 +35,22 @@ import {
 export const RESIDENCY_SIDECAR_PAGE_SIZE = 500;
 
 /**
- * Enqueue every sync-eligible row of `projectId` into `team_outbox` as `upsert`
+ * Enqueue every outbox-eligible row of `projectId` into `team_outbox` as `upsert`
  * records with a null `team_id`. Idempotent: a row already pending (a resumed
  * transition re-running this) is skipped via the outbox NOT-EXISTS guard, so a
  * crash-resume never double-enqueues. Returns the number of rows enqueued.
  *
- * `team_members` (the machine-scoped roster) is skipped — it has no `project_id`
- * and is never part of a single project's residency.
+ * Iterates `RESIDENCY_OUTBOX_TABLES` — the carried set minus the sidecars, which the
+ * drain pages separately. The carried set is itself derived from the tables the
+ * post-push delete sweeps, so a table added to the schema is enqueued here without a
+ * second list to remember.
  */
 export function backfillProjectForResidency(projectId: string, machineId: string): number {
   const db = getDatabase();
   const now = epochSeconds();
   let total = 0;
 
-  for (const table of REBUILD_TABLES) {
-    if (table === 'team_members') continue;
-
+  for (const table of RESIDENCY_OUTBOX_TABLES) {
     const rows = db.prepare(
       `SELECT ${table}.*
          FROM ${table}
@@ -88,67 +91,46 @@ function decodeCursor(cursor: string | null): string[] | null {
 }
 
 /**
- * Page `entity_mentions` for a project by its four-column UNIQUE key
- * `(entity_id, note_id, note_type, agent_id)` — the only stable order available
- * for a table with no `id`. The cursor is the JSON-encoded key of the last row
- * of the previous page; `null` starts from the beginning and comes back `null`
- * once the final (short) page is returned.
+ * Page one sidecar stream for a project, ordered and cursored by the table's declared
+ * `key`. The cursor is the JSON-encoded key tuple of the last row of the previous
+ * page; `null` starts from the beginning and comes back `null` once the final (short)
+ * page is returned.
+ *
+ * ONE pager rather than one per table: the two hand-written enumerators this replaced
+ * differed only in table name, key tuple and scope clause, so every table added to
+ * `RESIDENCY_SIDECARS` would otherwise have been another near-copy to keep in step
+ * with cursor handling. The key tuple is interpolated into SQL, which is safe because
+ * `RESIDENCY_SIDECARS` is a module constant — never a caller-supplied name.
  */
-export function listEntityMentionPages(
+export function listSidecarPage(
+  sidecar: ResidencySidecar,
   projectId: string,
   cursor: string | null,
   pageSize: number = RESIDENCY_SIDECAR_PAGE_SIZE,
 ): ResidencySidecarPage {
   const db = getDatabase();
   const after = decodeCursor(cursor);
+  const key = sidecar.key;
+  const scopeClause = sidecar.scope === 'artifact'
+    ? `artifact_id IN (${PROJECT_ARTIFACT_IDS_SQL})`
+    : 'project_id = ?';
+  // The artifact arm binds the project id once per UNION arm; the project arm once.
+  const scopeParams = sidecar.scope === 'artifact' ? [projectId, projectId] : [projectId];
   const cursorClause = after
-    ? ' AND (entity_id, note_id, note_type, agent_id) > (?, ?, ?, ?)'
+    ? ` AND (${key.join(', ')}) > (${key.map(() => '?').join(', ')})`
     : '';
-  const params: unknown[] = after ? [projectId, ...after] : [projectId];
   const rows = db.prepare(
-    `SELECT * FROM entity_mentions
-      WHERE project_id = ?${cursorClause}
-      ORDER BY entity_id, note_id, note_type, agent_id
+    `SELECT * FROM ${sidecar.table}
+      WHERE ${scopeClause}${cursorClause}
+      ORDER BY ${key.join(', ')}
       LIMIT ?`,
-  ).all(...params, pageSize) as Record<string, unknown>[];
+  ).all(...scopeParams, ...(after ?? []), pageSize) as Record<string, unknown>[];
 
+  const last = rows[rows.length - 1];
   const nextCursor = rows.length < pageSize
     ? null
-    : JSON.stringify([
-        rows[rows.length - 1].entity_id,
-        rows[rows.length - 1].note_id,
-        rows[rows.length - 1].note_type,
-        rows[rows.length - 1].agent_id,
-      ]);
-  return { rows: rows.map((r) => sanitizeSyncPayload('entity_mentions', r)), nextCursor };
-}
-
-/**
- * Page `content_publications` for a project by its PK `(artifact_kind,
- * artifact_id)`. The table has no `project_id`; scope is resolved through the
- * owning artifact (`skill_records` / `okf_pages`). Cursor semantics match
- * {@link listEntityMentionPages}.
- */
-export function listContentPublicationPages(
-  projectId: string,
-  cursor: string | null,
-  pageSize: number = RESIDENCY_SIDECAR_PAGE_SIZE,
-): ResidencySidecarPage {
-  const db = getDatabase();
-  const after = decodeCursor(cursor);
-  const cursorClause = after ? ' AND (cp.artifact_kind, cp.artifact_id) > (?, ?)' : '';
-  const params: unknown[] = [projectId, projectId, ...(after ?? [])];
-  const rows = db.prepare(
-    `SELECT cp.* FROM content_publications cp
-      WHERE cp.artifact_id IN (${PROJECT_ARTIFACT_IDS_SQL})${cursorClause}
-      ORDER BY cp.artifact_kind, cp.artifact_id
-      LIMIT ?`,
-  ).all(...params, pageSize) as Record<string, unknown>[];
-
-  const nextCursor = rows.length < pageSize
-    ? null
-    : JSON.stringify([rows[rows.length - 1].artifact_kind, rows[rows.length - 1].artifact_id]);
-  return { rows: rows.map((r) => sanitizeSyncPayload('content_publications', r)), nextCursor };
+    : JSON.stringify(key.map((c) => last![c]));
+  return { rows: rows.map((r) => sanitizeSyncPayload(sidecar.table, r)), nextCursor };
 }
 
 /**

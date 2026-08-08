@@ -734,8 +734,14 @@ export const HOSTED_PROJECT_PRUNE_TTL_MS = 14 * MS_PER_DAY;
  *         tailnet, so a v3 member holds a dial address that resolves nowhere.
  *         This is the one version step that is not additive, which is why
  *         HOST_MIN_COMPAT_VERSION rises to meet it.
+ *   - v5: residency ingest allow-lists every project-scoped table, not the
+ *         nineteen inherited from team sync. A protocol-4 host answers 400
+ *         `unknown table` for the seventeen added, so a member gates a
+ *         with-history attach on ≥ 5 (RESIDENCY_MIN_HOST_PROTOCOL) — the same
+ *         lockstep as v3: update the host before members. Additive in every
+ *         other direction, so HOST_MIN_COMPAT_VERSION stays at 4.
  */
-export const HOST_PROTOCOL_VERSION = 4;
+export const HOST_PROTOCOL_VERSION = 5;
 /**
  * Oldest host protocol a member still talks to (inclusive window with
  * HOST_PROTOCOL_VERSION).

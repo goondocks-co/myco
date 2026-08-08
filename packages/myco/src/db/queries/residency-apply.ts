@@ -23,6 +23,13 @@
  *     with the other's stub. These merge per field: prefer a non-null incoming
  *     enrichment value, take the NULL-safe max of monotonic counters, and never
  *     regress a terminal status to an in-flight one.
+ *   - **local-rowid** (`activities`, the agent-run child tables, `log_entries`,
+ *     `knowledge_git_provenance`, `digest_extract_revisions`): the row's `id` is an
+ *     `INTEGER PRIMARY KEY AUTOINCREMENT` — a counter private to the machine that
+ *     wrote it, so member A's `activities` row 42 and member B's row 42 are unrelated
+ *     rows that both claim the same key. An id-keyed upsert would silently merge them.
+ *     These ship WITHOUT their id and the receiver assigns its own; identity comes
+ *     from a declared natural key instead.
  *
  * `applyResidencyRows` MUST run inside a caller-owned transaction so any failure rolls
  * the whole batch back. Foreign keys stay ON: a child row that arrives before its
@@ -34,36 +41,88 @@
  */
 import { epochSeconds } from '@myco/constants.js';
 import type { Database } from '@myco/db/client.js';
-import { REBUILD_TABLES } from '@myco/db/queries/team-outbox.js';
+import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import type { Logger } from '@myco/daemon/logger.js';
 import { shouldLogOncePerInterval } from '@myco/daemon/log-throttle.js';
 
-/** The two sidecar tables that ride the residency route but are not in
- *  `REBUILD_TABLES` (no `id`/`synced_at` outbox contract). */
-const RESIDENCY_SIDECAR_TABLES = ['entity_mentions', 'content_publications'] as const;
+/**
+ * The canonical FK-topological table order for a residency transition — the SINGLE
+ * source of truth the attach send/apply path builds against (`residency-backfill.ts`,
+ * `residency-drain.ts`).
+ *
+ * It is DERIVED from `GROVE_PROJECT_SCOPED_TABLES`, the same constant
+ * `residency-drain.ts` `deleteAfterAck` sweeps, because the two lists being separately
+ * maintained is exactly how they diverged: the carried set was inherited from team
+ * sync (a D1 replica with a narrower purpose) while the delete set grew with the
+ * schema, and seventeen tables — `activities` among them — were deleted on attach
+ * having never been sent. Deriving one from the other makes "sent" ⊇ "deleted" hold by
+ * construction; `tests/meta/residency-coverage.test.ts` is the gate that fails if
+ * anything reintroduces a second hand-maintained list.
+ *
+ * `content_publications` is appended rather than derived: it has no `project_id`, so
+ * it is absent from the scoped set and deleted by its own artifact-scoped helper. It
+ * comes last because its tenancy resolves through artifact rows that must land first.
+ */
+export const RESIDENCY_TABLE_ORDER: readonly string[] = [
+  ...GROVE_PROJECT_SCOPED_TABLES,
+  'content_publications',
+];
 
 /**
- * Every table a residency batch may target: the 18 `REBUILD_TABLES` plus the two
- * sidecars. A batch naming anything else is member/host version skew (the protocol
- * gate should have refused it). Exported so the ingest handler can 400 an unknown
- * table and tests can assert the matrix covers the allow-list.
+ * Every table a residency batch may target. A batch naming anything else is
+ * member/host version skew (the protocol gate should have refused it). Exported so the
+ * ingest handler can 400 an unknown table and tests can assert the matrix covers the
+ * allow-list.
+ *
+ * `team_members` is allowed but never sent — a member running the pre-parity protocol
+ * had it in its carried set, and a host inside the compatibility window must recognize
+ * it rather than 400 the whole batch. Its rule is `ignore`.
  */
 export const RESIDENCY_ALLOWED_TABLES: ReadonlySet<string> = new Set<string>([
-  ...REBUILD_TABLES,
-  ...RESIDENCY_SIDECAR_TABLES,
+  ...RESIDENCY_TABLE_ORDER,
+  'team_members',
 ]);
 
 /**
- * The canonical FK-topological table order for a residency transition — the SINGLE
- * source of truth both directions build against: the attach send/apply order
- * (`residency-backfill.ts`, `residency-drain.ts`) and the detach pull order
- * (`residency-pull.ts`). Every child TABLE follows its parent, `team_members` is
- * excluded (machine-scoped roster, no `project_id`), and the two sidecars come last.
+ * A residency table that cannot ride `team_outbox`, whose contract is a single `id`
+ * column used as `row_id`. Two reasons put a table here, and both are structural
+ * rather than a preference: it has no `id` at all (its identity is a composite
+ * natural key), or it has one that the outbox deliberately does not carry
+ * (`entity_mentions`; see the note in `team-outbox.ts`). The drain pages these
+ * directly instead, cursored by `key`.
+ *
+ * `key` must be UNIQUE WITHIN THE PROJECT SCOPE — it is both the page cursor and the
+ * sort order, so a non-unique tuple would silently skip or repeat rows at a page
+ * boundary. `scope: 'artifact'` marks the one table with no `project_id`, whose rows
+ * are reached through the owning artifact instead.
  */
-export const RESIDENCY_TABLE_ORDER: readonly string[] = [
-  ...REBUILD_TABLES.filter((t) => t !== 'team_members'),
-  ...RESIDENCY_SIDECAR_TABLES,
+export interface ResidencySidecar {
+  table: string;
+  key: readonly string[];
+  scope: 'project' | 'artifact';
+}
+
+/** Every sidecar stream, in send order. Consumed by `residency-backfill.ts` (one
+ *  generic pager) and `residency-drain.ts` (one shipping loop) — adding a table here
+ *  is the whole change, which is what keeps this from drifting the way the carried
+ *  set did. `content_publications` is last: its tenancy resolves through artifact
+ *  rows that must land first. */
+export const RESIDENCY_SIDECARS: readonly ResidencySidecar[] = [
+  { table: 'entity_mentions', key: ['entity_id', 'note_id', 'note_type', 'agent_id'], scope: 'project' },
+  { table: 'agent_state', key: ['agent_id', 'key'], scope: 'project' },
+  { table: 'canopy_entries', key: ['path'], scope: 'project' },
+  { table: 'canopy_maps', key: ['machine_id'], scope: 'project' },
+  { table: 'session_myco_tool_calls', key: ['session_id', 'tool_name', 'op'], scope: 'project' },
+  { table: 'session_tombstones', key: ['session_id'], scope: 'project' },
+  { table: 'content_publications', key: ['artifact_kind', 'artifact_id'], scope: 'artifact' },
 ];
+
+const SIDECAR_TABLE_SET: ReadonlySet<string> = new Set(RESIDENCY_SIDECARS.map((s) => s.table));
+
+/** The residency tables that DO ride `team_outbox` — the carried set minus the
+ *  sidecars. `residency-backfill.ts` enqueues exactly these. */
+export const RESIDENCY_OUTBOX_TABLES: readonly string[] =
+  RESIDENCY_TABLE_ORDER.filter((t) => !SIDECAR_TABLE_SET.has(t));
 
 /**
  * SQL selecting the artifact ids that belong to a project across the
@@ -136,10 +195,55 @@ interface EntityMentionsRule {
   kind: 'entity-mentions';
 }
 
+/**
+ * The row's `id` is an `INTEGER PRIMARY KEY AUTOINCREMENT` — a counter private to the
+ * machine that wrote it. Two members' rows both claim id 42 while being unrelated, so
+ * the id is DROPPED on apply and the receiver's own AUTOINCREMENT assigns a fresh one.
+ *
+ * That leaves nothing to make a replay idempotent, which `dedupe` supplies: the
+ * columns that identify the row across machines. A row whose tuple already exists is
+ * skipped. `dedupe` compares NULL-safely (`IS NOT DISTINCT FROM` semantics via `IS`),
+ * because several of these keys include nullable columns and a `=` comparison against
+ * NULL would make every such row look new on every replay.
+ *
+ * `selfRef`, where present, names a column FK-ing this same table by the dropped id.
+ * Rows are emitted parent-first and the parent's freshly-assigned id is substituted;
+ * a parent outside the batch cannot be resolved and the link is nulled. See
+ * `applyLocalRowid`.
+ */
+interface LocalRowidRule {
+  kind: 'local-rowid';
+  dedupe: string[];
+  selfRef?: string;
+}
+
+/**
+ * Upsert on a composite natural PRIMARY KEY rather than `id`. Used by the tables whose
+ * identity IS their key tuple (`canopy_entries` on `(project_id, path)`,
+ * `agent_state` on `(agent_id, project_id, key)`, …) — globally stable, so unlike
+ * {@link LocalRowidRule} these need no id rewriting. `timestamp`, when given, guards
+ * the update so a stale batch never regresses a fresher row; without it the incoming
+ * row wins (correct where the key already pins the writer, e.g. `canopy_maps` keyed by
+ * `machine_id`). `max` columns take the NULL-safe maximum instead of being replaced.
+ */
+interface CompositeKeyRule {
+  kind: 'composite-key';
+  key: string[];
+  timestamp?: string;
+  max?: string[];
+  /** The WHERE clause of a PARTIAL unique index, when the key is enforced by one.
+   *  SQLite matches an upsert's conflict target against the index predicate too, so
+   *  omitting it raises "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE
+   *  constraint" — the project-scoped uniqueness indexes are all partial
+   *  (`WHERE project_id IS NOT NULL`, paired with a legacy `IS NULL` twin). */
+  keyPredicate?: string;
+}
+
 /** A recognized table the residency drain never actually sends (`team_members` is
- *  machine-scoped, has no `project_id`, and is excluded member-side). Allow-listed
- *  for parity with `REBUILD_TABLES`, but applied as a no-op: writing a machine's
- *  roster row into the host would corrupt the host's own roster. */
+ *  machine-scoped, has no `project_id`, and is excluded member-side). Allow-listed so
+ *  a member inside the compatibility window that still sends it is not refused, but
+ *  applied as a no-op: writing a machine's roster row into the host would corrupt the
+ *  host's own roster. */
 interface IgnoreRule {
   kind: 'ignore';
 }
@@ -151,6 +255,8 @@ type ApplyRule =
   | FieldMergeRule
   | PublicationsRule
   | EntityMentionsRule
+  | LocalRowidRule
+  | CompositeKeyRule
   | IgnoreRule;
 
 /**
@@ -191,6 +297,68 @@ export const RESIDENCY_APPLY_RULES: Readonly<Record<string, ApplyRule>> = {
   // -- sidecars --
   content_publications: { kind: 'publications' },
   entity_mentions: { kind: 'entity-mentions' },
+  // -- globally-unique TEXT keys, mutate post-insert --
+  agent_runs: {
+    kind: 'field-merge',
+    prefer: ['task', 'instruction', 'harness', 'provider', 'model', 'session_ref', 'resume_status', 'resume_mode', 'checkpoints', 'usage_data', 'cost_source', 'cost_data', 'actions_taken', 'error', 'reasoning_level', 'execution_overrides', 'run_context'],
+    max: ['completed_at', 'resumed_at', 'tokens_used', 'resume_attempts', 'cost_usd', 'actual_cost_usd', 'estimated_cost_usd'],
+  },
+  content_claims: {
+    kind: 'field-merge',
+    prefer: ['state', 'claimed_by'],
+    max: ['generation', 'expires_at', 'released_at', 'published_at'],
+  },
+  // -- globally-unique TEXT keys, immutable once written --
+  attachments: { kind: 'insert-only' },
+  // A notification's `status` mutates unread -> read LOCALLY. insert-only rather than
+  // a merge so a re-pushed stale copy can never resurrect a notification the
+  // receiver already dismissed.
+  notifications: { kind: 'insert-only' },
+  // `id` is TEXT but not the PRIMARY KEY — uniqueness is the composite index
+  // `(project_id, id)`, which is the conflict target.
+  cortex_instructions: { kind: 'composite-key', key: ['project_id', 'id'], keyPredicate: 'project_id IS NOT NULL', timestamp: 'generated_at' },
+  // -- composite natural keys (globally stable; no id to rewrite) --
+  agent_state: { kind: 'composite-key', key: ['agent_id', 'project_id', 'key'], timestamp: 'updated_at' },
+  canopy_entries: { kind: 'composite-key', key: ['project_id', 'path'], timestamp: 'mechanical_updated_at' },
+  canopy_maps: { kind: 'composite-key', key: ['project_id', 'machine_id'], timestamp: 'generated_at' },
+  // `count` is a monotonic tally, so a replayed page must not reset it downward.
+  session_myco_tool_calls: { kind: 'composite-key', key: ['session_id', 'tool_name', 'op'], max: ['count', 'computed_at'] },
+  session_tombstones: { kind: 'composite-key', key: ['session_id'] },
+  // -- local rowid ids: dropped on apply, identity from a natural key --
+  // A dedupe tuple has to do BOTH jobs: match a replay of the same row, and
+  // separate two rows that merely resemble each other. The probe is NULL-matching,
+  // so a narrow tuple over nullable columns collapses distinct rows — `activities`
+  // keyed on `(project_id, content_hash)` alone (its UNIQUE index, where SQLite
+  // counts NULLs as distinct and this probe does not) would merge every hash-less
+  // tool call in a project into one. Each tuple below therefore leads with the
+  // indexed columns, so the probe stays a range scan, then continues until only a
+  // byte-identical row can match.
+  activities: {
+    kind: 'local-rowid',
+    dedupe: ['project_id', 'content_hash', 'session_id', 'prompt_batch_id', 'tool_name', 'timestamp'],
+  },
+  knowledge_git_provenance: { kind: 'local-rowid', dedupe: ['identity_key'] },
+  // A run numbers its own turns, so this pair is a genuine key rather than a
+  // resemblance test — the one tuple here that needs no widening.
+  agent_turns: { kind: 'local-rowid', dedupe: ['run_id', 'turn_number'] },
+  agent_reports: { kind: 'local-rowid', dedupe: ['run_id', 'created_at', 'action', 'summary', 'details'] },
+  agent_run_write_intents: {
+    kind: 'local-rowid',
+    dedupe: ['run_id', 'recorded_at', 'tool_name', 'tool_input', 'phase_id', 'stub_id'],
+  },
+  agent_run_events: {
+    kind: 'local-rowid',
+    dedupe: ['run_id', 'recorded_at', 'event_type', 'tool_name', 'outcome', 'payload'],
+  },
+  log_entries: {
+    kind: 'local-rowid',
+    dedupe: ['project_id', 'timestamp', 'level', 'component', 'kind', 'message', 'session_id', 'data'],
+  },
+  digest_extract_revisions: {
+    kind: 'local-rowid',
+    dedupe: ['project_id', 'agent_id', 'tier', 'created_at', 'content'],
+    selfRef: 'parent_revision_id',
+  },
   // -- recognized-but-never-sent --
   team_members: { kind: 'ignore' },
 };
@@ -200,6 +368,7 @@ export const RESIDENCY_APPLY_RULES: Readonly<Record<string, ApplyRule>> = {
 const AGENT_REFERENCING_TABLES: ReadonlySet<string> = new Set<string>([
   'spores', 'entities', 'graph_edges', 'resolution_events', 'digest_extracts',
   'skill_candidates', 'skill_records', 'entity_mentions',
+  'agent_runs', 'agent_reports', 'agent_turns', 'agent_state',
 ]);
 
 /**
@@ -492,6 +661,92 @@ function applyEntityMentions(db: Database, rows: Record<string, unknown>[], scop
   }
 }
 
+/**
+ * composite-key: upsert on a natural PRIMARY KEY tuple. Unlike the id-keyed rules the
+ * conflict target is spelled out, so this serves the tables whose identity IS their
+ * key (`canopy_entries`, `agent_state`, …) including the WITHOUT ROWID ones.
+ *
+ * With a `timestamp` the update is guarded by strict freshness, so a stale replay is
+ * skipped rather than clobbering a newer row; without one the incoming row wins,
+ * which is correct only where the key already pins the writer. `max` columns take the
+ * NULL-safe maximum so a monotonic tally never regresses.
+ */
+function applyCompositeKey(db: Database, table: string, rows: Record<string, unknown>[], rule: CompositeKeyRule, logger?: Logger): void {
+  const columns = tableColumns(db, table);
+  const keySet = new Set(rule.key);
+  const maxSet = new Set(rule.max ?? []);
+  const now = epochSeconds();
+  const where = rule.timestamp ? ` WHERE excluded.${rule.timestamp} > ${table}.${rule.timestamp}` : '';
+  for (const raw of rows) {
+    const row = rule.timestamp
+      ? stampAndClampRow(raw, table, rule.timestamp, undefined, columns, now, logger)
+      : raw;
+    const cols = insertableColumns(row, columns);
+    const setParts = cols
+      .filter((c) => !keySet.has(c))
+      .map((c) => (maxSet.has(c)
+        ? `${c} = ${nullSafeMaxSql(c)}`
+        : `${c} = excluded.${c}`));
+    if (setParts.length === 0) { insertRow(db, table, row, cols, true); continue; }
+    db.prepare(
+      `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
+      + ` ON CONFLICT(${rule.key.join(', ')})${rule.keyPredicate ? ` WHERE ${rule.keyPredicate}` : ''}`
+      + ` DO UPDATE SET ${setParts.join(', ')}${where}`,
+    ).run(...cols.map((c) => row[c] as never));
+  }
+}
+
+/**
+ * local-rowid: insert without the sender's `id`, letting the receiver's AUTOINCREMENT
+ * assign one, and dedupe on the declared natural key so a replay is a no-op.
+ *
+ * The dedupe probe uses `IS` rather than `=` for NULL-safety — several of these keys
+ * include nullable columns (`activities.content_hash`, `agent_run_events.tool_name`),
+ * and `= NULL` is never true, so a `=` probe would re-insert those rows on every
+ * replay. The probe and the insert both run inside the caller's transaction, so no
+ * concurrent writer can land between them.
+ *
+ * `selfRef` handles a column FK-ing this same table by the id just dropped: rows are
+ * ordered parent-first and each parent's freshly-assigned id is substituted for the
+ * sender's. A parent outside this batch has no resolvable id and the link is nulled
+ * — a bounded, deliberate residual, since a page carries a whole project's revisions
+ * for one (agent, tier) far more often than it splits one.
+ */
+function applyLocalRowid(db: Database, table: string, rows: Record<string, unknown>[], rule: LocalRowidRule): void {
+  const columns = tableColumns(db, table);
+  const probeSql = `SELECT id FROM ${table} WHERE ${rule.dedupe.map((c) => `${c} IS ?`).join(' AND ')}`;
+  const probe = db.prepare(probeSql);
+  const ordered = rule.selfRef ? topoSortBySelfRef(rows, 'id', rule.selfRef) : rows;
+  // Sender id -> receiver id, for resolving in-batch self references.
+  const remapped = new Map<unknown, number>();
+
+  for (const raw of ordered) {
+    const row: Record<string, unknown> = { ...raw };
+    const senderId = row.id;
+    delete row.id;
+    if (rule.selfRef) {
+      const parent = raw[rule.selfRef];
+      row[rule.selfRef] = parent == null ? null : (remapped.get(parent) ?? null);
+    }
+
+    const existing = probe.get(...rule.dedupe.map((c) => row[c] as never)) as { id: number } | undefined;
+    if (existing) {
+      if (senderId != null) remapped.set(senderId, existing.id);
+      continue;
+    }
+    const cols = insertableColumns(row, columns).filter((c) => c !== 'id');
+    insertRow(db, table, row, cols, false);
+    // Only a self-referencing table needs to learn the id it was just assigned;
+    // re-probing unconditionally would double the query count on the high-volume
+    // append tables (`log_entries`, `agent_run_events`) for a map nobody reads.
+    if (rule.selfRef && senderId != null) {
+      const assigned = db.prepare(`${probeSql} ORDER BY id DESC LIMIT 1`)
+        .get(...rule.dedupe.map((c) => row[c] as never)) as { id: number } | undefined;
+      if (assigned) remapped.set(senderId, assigned.id);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Batch apply (one transaction)
 // ---------------------------------------------------------------------------
@@ -696,6 +951,12 @@ export function applyResidencyRows(
       break;
     case 'entity-mentions':
       applyEntityMentions(db, rows, scope);
+      break;
+    case 'composite-key':
+      applyCompositeKey(db, table, rows, rule, deps.logger);
+      break;
+    case 'local-rowid':
+      applyLocalRowid(db, table, rows, rule);
       break;
     case 'ignore':
       // Recognized but never sent by the drain (team_members is machine-scoped).
