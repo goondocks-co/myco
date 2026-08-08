@@ -200,11 +200,23 @@ interface EntityMentionsRule {
  * machine that wrote it. Two members' rows both claim id 42 while being unrelated, so
  * the id is DROPPED on apply and the receiver's own AUTOINCREMENT assigns a fresh one.
  *
- * That leaves nothing to make a replay idempotent, which `dedupe` supplies: the
- * columns that identify the row across machines. A row whose tuple already exists is
- * skipped. `dedupe` compares NULL-safely (`IS NOT DISTINCT FROM` semantics via `IS`),
- * because several of these keys include nullable columns and a `=` comparison against
- * NULL would make every such row look new on every replay.
+ * That leaves nothing to make a replay idempotent, so identity becomes EVERY OTHER
+ * SHIPPED COLUMN: a row is a duplicate only when it is byte-identical to one already
+ * present, which is the only case where merging loses nothing, because the two are
+ * then indistinguishable.
+ *
+ * Hand-picked identifying tuples were tried first and failed twice, the second time
+ * in production data. `activities` keyed on (scope, parents, `tool_name`, `timestamp`)
+ * looks identifying and is not: capture leaves `content_hash` NULL, timestamps have
+ * one-second resolution, and bursts within one second are its ordinary output — so
+ * eight `Read` calls in one batch arrived at the host as three rows. Any tuple
+ * narrower than the row is a guess about which differences matter, and this data has
+ * no column that reliably carries them.
+ *
+ * The comparison is NULL-safe (`IS`, not `=`), because most of these columns are
+ * nullable and `= NULL` never matches — a `=` probe would re-insert on every replay.
+ * The probe leads with the indexed scope column, so it stays a range scan and then
+ * filters, and it runs once per row during a one-time transition.
  *
  * `selfRef`, where present, names a column FK-ing this same table by the dropped id.
  * Rows are emitted parent-first and the parent's freshly-assigned id is substituted;
@@ -213,7 +225,6 @@ interface EntityMentionsRule {
  */
 interface LocalRowidRule {
   kind: 'local-rowid';
-  dedupe: string[];
   selfRef?: string;
 }
 
@@ -325,40 +336,15 @@ export const RESIDENCY_APPLY_RULES: Readonly<Record<string, ApplyRule>> = {
   session_myco_tool_calls: { kind: 'composite-key', key: ['session_id', 'tool_name', 'op'], max: ['count', 'computed_at'] },
   session_tombstones: { kind: 'composite-key', key: ['session_id'] },
   // -- local rowid ids: dropped on apply, identity from a natural key --
-  // A dedupe tuple has to do BOTH jobs: match a replay of the same row, and
-  // separate two rows that merely resemble each other. The probe is NULL-matching,
-  // so a narrow tuple over nullable columns collapses distinct rows — `activities`
-  // keyed on `(project_id, content_hash)` alone (its UNIQUE index, where SQLite
-  // counts NULLs as distinct and this probe does not) would merge every hash-less
-  // tool call in a project into one. Each tuple below therefore leads with the
-  // indexed columns, so the probe stays a range scan, then continues until only a
-  // byte-identical row can match.
-  activities: {
-    kind: 'local-rowid',
-    dedupe: ['project_id', 'content_hash', 'session_id', 'prompt_batch_id', 'tool_name', 'timestamp'],
-  },
-  knowledge_git_provenance: { kind: 'local-rowid', dedupe: ['identity_key'] },
-  // A run numbers its own turns, so this pair is a genuine key rather than a
-  // resemblance test — the one tuple here that needs no widening.
-  agent_turns: { kind: 'local-rowid', dedupe: ['run_id', 'turn_number'] },
-  agent_reports: { kind: 'local-rowid', dedupe: ['run_id', 'created_at', 'action', 'summary', 'details'] },
-  agent_run_write_intents: {
-    kind: 'local-rowid',
-    dedupe: ['run_id', 'recorded_at', 'tool_name', 'tool_input', 'phase_id', 'stub_id'],
-  },
-  agent_run_events: {
-    kind: 'local-rowid',
-    dedupe: ['run_id', 'recorded_at', 'event_type', 'tool_name', 'outcome', 'payload'],
-  },
-  log_entries: {
-    kind: 'local-rowid',
-    dedupe: ['project_id', 'timestamp', 'level', 'component', 'kind', 'message', 'session_id', 'data'],
-  },
-  digest_extract_revisions: {
-    kind: 'local-rowid',
-    dedupe: ['project_id', 'agent_id', 'tier', 'created_at', 'content'],
-    selfRef: 'parent_revision_id',
-  },
+  // -- local rowid ids: dropped on apply, identity is the whole row --
+  activities: { kind: 'local-rowid' },
+  knowledge_git_provenance: { kind: 'local-rowid' },
+  agent_turns: { kind: 'local-rowid' },
+  agent_reports: { kind: 'local-rowid' },
+  agent_run_write_intents: { kind: 'local-rowid' },
+  agent_run_events: { kind: 'local-rowid' },
+  log_entries: { kind: 'local-rowid' },
+  digest_extract_revisions: { kind: 'local-rowid', selfRef: 'parent_revision_id' },
   // -- recognized-but-never-sent --
   team_members: { kind: 'ignore' },
 };
@@ -714,8 +700,6 @@ function applyCompositeKey(db: Database, table: string, rows: Record<string, unk
  */
 function applyLocalRowid(db: Database, table: string, rows: Record<string, unknown>[], rule: LocalRowidRule): void {
   const columns = tableColumns(db, table);
-  const probeSql = `SELECT id FROM ${table} WHERE ${rule.dedupe.map((c) => `${c} IS ?`).join(' AND ')}`;
-  const probe = db.prepare(probeSql);
   const ordered = rule.selfRef ? topoSortBySelfRef(rows, 'id', rule.selfRef) : rows;
   // Sender id -> receiver id, for resolving in-batch self references.
   const remapped = new Map<unknown, number>();
@@ -729,19 +713,28 @@ function applyLocalRowid(db: Database, table: string, rows: Record<string, unkno
       row[rule.selfRef] = parent == null ? null : (remapped.get(parent) ?? null);
     }
 
-    const existing = probe.get(...rule.dedupe.map((c) => row[c] as never)) as { id: number } | undefined;
+    const cols = insertableColumns(row, columns).filter((c) => c !== 'id');
+    // `project_id` first so the probe opens on the scope index; the rest narrow
+    // it to a byte-identical row. The self-reference is excluded because it was
+    // just rewritten to a receiver id and would never match a stored row.
+    const probeCols = cols
+      .filter((c) => c !== rule.selfRef)
+      .sort((a, b) => Number(b === 'project_id') - Number(a === 'project_id'));
+    const probeSql = `SELECT id FROM ${table} WHERE ${probeCols.map((c) => `${c} IS ?`).join(' AND ')}`;
+    const params = probeCols.map((c) => row[c] as never);
+
+    const existing = db.prepare(probeSql).get(...params) as { id: number } | undefined;
     if (existing) {
       if (senderId != null) remapped.set(senderId, existing.id);
       continue;
     }
-    const cols = insertableColumns(row, columns).filter((c) => c !== 'id');
     insertRow(db, table, row, cols, false);
     // Only a self-referencing table needs to learn the id it was just assigned;
     // re-probing unconditionally would double the query count on the high-volume
     // append tables (`log_entries`, `agent_run_events`) for a map nobody reads.
     if (rule.selfRef && senderId != null) {
       const assigned = db.prepare(`${probeSql} ORDER BY id DESC LIMIT 1`)
-        .get(...rule.dedupe.map((c) => row[c] as never)) as { id: number } | undefined;
+        .get(...params) as { id: number } | undefined;
       if (assigned) remapped.set(senderId, assigned.id);
     }
   }
