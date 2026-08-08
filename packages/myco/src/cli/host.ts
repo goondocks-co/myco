@@ -1,5 +1,5 @@
 /**
- * `myco host <enable|disable|status|rotate-key>` CLI surface.
+ * `myco host <enable|disable|status|rotate-key|members|revoke>` CLI surface.
  *
  * Thin argv parsing + human-readable output over the {@link hostEnable} /
  * {@link hostDisable} orchestration (`../team-host/serving.js`) — except for
@@ -48,6 +48,9 @@ Commands:
   disable
   status
   rotate-key [--expiration <dur>]        Mint a fresh one-time key to hand a joining team member.
+  members                                List the machines enrolled on this host.
+  revoke <member-id>                     Remove one member's access. Use when a machine was
+                                         wiped or replaced and cannot re-join.
 
 enable turns THIS machine into a Team Host: it publishes the daemon's team
 surface at a public HTTPS address and wires the local daemon to serve your team
@@ -229,6 +232,63 @@ export async function runHostCommand(args: string[]): Promise<void> {
     console.log('Join command (hand this to a member — it works once):\n');
     console.log(`  ${body.join_command}\n`);
     if (body.expires) console.log(`Expires: ${body.expires}`);
+    return;
+  }
+
+  if (subcommand === 'members') {
+    const client = await connectToRunningDaemon(
+      resolveVaultDir(),
+      'members needs the local daemon running — the roster lives with it.',
+    );
+    const result = await client.get('/api/host-admin/members');
+    if (!result.ok) {
+      console.error(daemonErrorMessage(result.data) ?? 'Could not read the member roster.');
+      process.exit(1);
+    }
+    const body = result.data as {
+      members?: Array<{ id: string; machine_id: string; label?: string; issued_at?: string; last_seen_at?: string }>;
+    };
+    const members = body?.members ?? [];
+    if (members.length === 0) {
+      console.log('No members enrolled.');
+      return;
+    }
+    console.log(`${members.length} member${members.length === 1 ? '' : 's'}:\n`);
+    for (const m of members) {
+      console.log(`  ${m.id}`);
+      console.log(`    machine:  ${m.machine_id}${m.label ? `  (${m.label})` : ''}`);
+      if (m.issued_at) console.log(`    joined:   ${m.issued_at}`);
+      if (m.last_seen_at) console.log(`    last seen: ${m.last_seen_at}`);
+    }
+    console.log('\nRevoke one with `myco host revoke <member-id>`.');
+    return;
+  }
+
+  if (subcommand === 'revoke') {
+    // The recovery path for a member that vanished without leaving. A machine
+    // is admitted once per machine id, so a member whose Myco state was wiped
+    // (reinstall, disk swap, a torn-down test box) is refused on re-join with
+    // `machine_already_enrolled` and has no way to clear itself: `leave`
+    // resigns from the MEMBER side, and its state is exactly what is gone.
+    // Without this the operator's only option is hand-editing the host's
+    // members.json.
+    const memberId = rest[0];
+    if (!memberId || memberId.startsWith('-')) {
+      console.error('Usage: myco host revoke <member-id>   (list them with `myco host members`)');
+      process.exit(1);
+    }
+    const client = await connectToRunningDaemon(
+      resolveVaultDir(),
+      'revoke needs the local daemon running — it owns the token store.',
+    );
+    const result = await client.post('/api/host-admin/revoke', { member_id: memberId });
+    if (!result.ok) {
+      console.error(daemonErrorMessage(result.data) ?? `Could not revoke ${memberId}.`);
+      process.exit(1);
+    }
+    console.log(`Revoked ${memberId}.`);
+    console.log('  Effective on that member\'s next request — nothing to restart.');
+    console.log('  That machine can join again with a fresh key (`myco host rotate-key`).');
     return;
   }
 

@@ -6,6 +6,7 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderSystemdUnit } from './systemd-unit.js';
 import { spawnCombinedOutput, assertRunSucceeded } from './run-command.js';
 import { SERVICE_UNIT_DIR_ENV } from './paths.js';
+import { ensureServiceLogDirs } from './log-dirs.js';
 import type {
   InstallOptions,
   InstallResult,
@@ -95,6 +96,10 @@ export class SystemdUserServiceManager implements ServiceManager {
   async install(spec: ServiceSpec, _opts: InstallOptions = {}): Promise<InstallResult> {
     const unitPath = this.unitPath(spec.label);
     const rendered = renderSystemdUnit(spec);
+    // Before the unchanged-unit early return: an install over an existing unit
+    // whose log directory has since been removed must still repair it, or the
+    // unit starts and immediately dies on its output redirect.
+    ensureServiceLogDirs(spec);
     let existing: string | null = null;
     try { existing = fs.readFileSync(unitPath, 'utf-8'); } catch { /* ENOENT */ }
     if (existing === rendered) {
@@ -102,8 +107,6 @@ export class SystemdUserServiceManager implements ServiceManager {
     }
 
     fs.mkdirSync(this.unitDir, { recursive: true });
-    fs.mkdirSync(path.dirname(spec.stdoutPath), { recursive: true });
-    fs.mkdirSync(path.dirname(spec.stderrPath), { recursive: true });
     atomicWriteFileSync(unitPath, rendered);
 
     // `daemon-reload` only re-reads unit files; it doesn't restart
