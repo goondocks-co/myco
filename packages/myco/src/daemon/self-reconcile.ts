@@ -29,8 +29,8 @@ export interface ReconcileSelfDeps {
  *       respawn that observes the intent before it is cleared would
  *       trigger an infinite restart loop.
  *
- * Binary upgrade intents ([update]) were removed in the Task 9 refactor.
- * Upgrades are now driven directly via `initiateAdopt` paths.
+ * There are no binary-upgrade intents; upgrades are driven directly via
+ * `initiateAdopt` paths.
  */
 export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
   const expected = deps.currentState();

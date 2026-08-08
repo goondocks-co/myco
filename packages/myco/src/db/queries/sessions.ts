@@ -623,7 +623,7 @@ export interface DeleteCascadeResult {
   /** Attachment file paths that were deleted from DB (needed for disk cleanup). */
   deletedAttachmentPaths: string[];
   /**
-   * Project id of the deleted session, captured before the row was removed.
+   * Project id of the deleted session, captured before the row was deleted.
    * Multi-Grove session-maintenance uses this to look up the registered
    * project's vault dir and clean up the right project's session/spore
    * markdown files; null when the session row was not found.

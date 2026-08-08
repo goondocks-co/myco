@@ -309,12 +309,12 @@ const RegistrationSchema = z.object({
    */
   globalSkillsTarget: z.string().nullable().optional(),
   /**
-   * Global skill dirs this agent USED to be installed into, before its
+   * Legacy global skill dirs for this agent — locations from before its
    * `globalSkillsTarget` moved (e.g. consolidating on the `~/.agents/skills`
    * cross-agent standard). Each entry is swept of Myco's own package-skill
    * symlinks on detection so stale/dangling links don't linger after a target
    * migration. Declarative + co-located: when an agent later adopts a new
-   * standard dir, flip `globalSkillsTarget` and append the old one here — no
+   * standard dir, flip `globalSkillsTarget` and append the outgoing one here — no
    * separate legacy list in code. Only Myco-named symlinks are removed; real
    * user content and other sources' skills are untouched.
    */
@@ -400,7 +400,7 @@ const RegistrationSchema = z.object({
   mcpServersKey: z.string().default('mcpServers'),
   skillsTarget: z.string().optional(),
   /**
-   * Project-local skill dirs this agent USED to be symlinked into, before its
+   * Legacy project-local skill dirs for this agent — locations from before its
    * `skillsTarget` moved (e.g. consolidating on the `.agents/skills` cross-agent
    * standard). Project-scope analog of `retiredGlobalSkillsTargets`: the
    * per-project skill-symlink reconcile sweeps Myco's own skill symlinks out of

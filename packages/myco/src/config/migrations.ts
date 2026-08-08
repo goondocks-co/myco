@@ -243,7 +243,7 @@ export const MIGRATIONS: Migration[] = [
     name: 'rename-full-intelligence-to-vault-evolve',
     migrate(doc: Record<string, unknown>, _vaultDir: string): void {
       // The built-in task `full-intelligence` was renamed to `vault-evolve`.
-      // Move any user overrides stored under the old task key so their
+      // Move any user overrides stored under the prior task key so their
       // schedule, model, and phase settings keep applying.
       const agent = doc.agent as Record<string, unknown> | undefined;
       if (!agent) return;
@@ -519,14 +519,14 @@ export const MIGRATIONS: Migration[] = [
   {
     version: 11,
     name: 'rename-embedding-run-in-deep-sleep-to-prevent-deep-sleep',
-    // Pure rename. The old name promised execution in deep sleep, which the
+    // Pure rename. The prior name promised execution in deep sleep, which the
     // daemon has never done — no power job and no scheduled task declares
     // `deep_sleep` in `runIn`. What the flag actually does is hold the daemon
     // OUT of deep sleep while embedding work is queued, so the queue keeps
     // draining at the sleep tick. Renamed so the config surface states the
     // mechanism instead of contradicting it.
     //
-    // Key-relocation, not a seeder: fires only when the old key is present,
+    // Key-relocation, not a seeder: fires only when the prior key is present,
     // so it never expands a sparse local.yaml. Applies at both the project
     // and Grove tier, which each carry their own `embedding` block.
     migrate(doc: Record<string, unknown>): void {

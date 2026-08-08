@@ -309,10 +309,12 @@ export function attachCommand(
 }
 
 /**
- * Clear a project's residency mapping so future requests resolve local again.
- * Detach-only: it removes the mapping going forward and pulls back NO data
- * (the team → local re-materialization is A2). A no-op with a clear result when
- * the project is not attached anywhere.
+ * Bring a project home from its Team Host. With a residency-capable host this
+ * opens a detach journal and the drain pulls the project's knowledge back into
+ * the local Grove before the mapping clears (`beginDetachResidency`); with
+ * `allowNoPull`, or no injected begin function, it clears the mapping only and
+ * the history stays on the host. A no-op with a clear result when the project
+ * is not attached anywhere.
  */
 export function detachCommand(
   options: DetachOptions,

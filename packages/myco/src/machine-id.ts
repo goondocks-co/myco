@@ -162,7 +162,7 @@ export function getMachineId(): string {
  * migration (plan §5, step "machine_id propagation"): the value the
  * project vault was carrying becomes the machine's canonical id rather
  * than re-deriving and risking divergence from historic capture rows
- * already stamped with the old value.
+ * already stamped with the legacy value.
  *
  * Returns `true` when a value was propagated; `false` when the global
  * cache already exists (so the legacy value is dropped silently — the

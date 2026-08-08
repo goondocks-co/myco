@@ -1462,7 +1462,7 @@ function migrateV21ToV22(db: Database): void {
       // That heuristic assumed missing summary implied mid-turn steering; in
       // practice the missing summaries were a separate capture bug in the
       // opencode plugin (stop events had no buffer fallback). The backfill
-      // was removed before shipping to avoid mass-mislabeling real turns as
+      // was dropped before shipping to avoid mass-mislabeling real turns as
       // steering. Vaults that ran an intermediate build of v22 with the
       // heuristic can be corrected via the historical-repair path (null
       // response_summary recovery + parent/child reclassification run
@@ -1760,7 +1760,7 @@ function migrateV28ToV29(db: Database): void {
  * DLQ semantics; the daemon's outbox shrinks to a thin offline buffer.
  *
  * Steps (in order, inside one transaction):
- *  1. Discard any rows that the old code had marked dead-lettered. Their
+ *  1. Discard any rows that earlier builds had marked dead-lettered. Their
  *     payloads were rejected by the worker before the queue path existed
  *     (typically because they carried local-only columns the worker D1
  *     never had a place for). The source rows still exist locally; if
@@ -3461,7 +3461,7 @@ function migrateV51ToV52(db: Database, machineId: string): void {
  * ALTER TABLE only touches the table, never trigger bodies. Every table in
  * the frozen v53 list carries a `project_id` column, so the recreated
  * triggers use `OLD.project_id` uniformly. We DROP each trigger
- * (CREATE TRIGGER IF NOT EXISTS is a no-op when the old definition is still
+ * (CREATE TRIGGER IF NOT EXISTS is a no-op when a stale definition is still
  * present) and re-CREATE it from the frozen v53 DDL, iterating both lists by
  * index so the trigger name and its DDL stay aligned.
  */
@@ -4304,7 +4304,7 @@ function migrateV70ToV71(db: Database): void {
  *      matches.
  *   2. Clear `team_sync_state.enabled` for coherence. The flag already has
  *      zero readers and zero writers left in src (the corresponding
- *      `setTeamSyncEnabled` call site was removed from `deleteProjectPermanently`
+ *      `setTeamSyncEnabled` call site is gone from `deleteProjectPermanently`
  *      in the prior retirement step) — nothing depends on this beyond making
  *      the row match the vault's new quiesced state.
  *   3. Purge PENDING (`sent_at IS NULL`) outbox rows only, mirroring
@@ -4429,7 +4429,7 @@ function migrateV73RekeyPromptBatches(db: Database): void {
     .filter((c) => c !== 'id' && c !== 'parent_prompt_batch_id');
   const insertCols = ['id', 'parent_prompt_batch_id', ...copyCols];
   const selectExprs = ['m.new_id', 'pm.new_id', ...copyCols.map((c) => `pb."${c}"`)];
-  // ORDER BY the old integer id so the rebuilt table's fresh rowids are assigned
+  // ORDER BY the pre-rebuild integer id so the rebuilt table's fresh rowids are assigned
   // in old-id order — every downstream `ORDER BY rowid` reproduces the pre-rekey
   // `ORDER BY id` insertion order, which SQL does not otherwise guarantee for an
   // unordered INSERT ... SELECT.
@@ -4493,7 +4493,7 @@ function migrateV73RekeyPromptBatches(db: Database): void {
   v73RecreateIndexes(db, 'prompt_batches');
   v73RecreateTeamTrigger(db, 'prompt_batches');
 
-  // The FTS index was bound to the old integer rowid alias; rebind to the table
+  // The FTS index is bound to the pre-rebuild integer rowid alias; rebind to the table
   // rowid and repopulate. CREATE VIRTUAL TABLE IF NOT EXISTS keeps a stale
   // content_rowid, so the shadow table must be dropped first. Only the
   // prompt_batches FTS objects are re-execed — the other tables' FTS DDL would

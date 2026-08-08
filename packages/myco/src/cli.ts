@@ -90,10 +90,13 @@ Options:
 
 The host's team storage is used automatically — there is no id to supply for it.
 `,
-  detach: `Usage: myco detach <project>
+  detach: `Usage: myco detach <project> [--allow-no-pull]
 
-Clears a project's residency mapping so future requests go back to local-only.
-Detach-only: removes the mapping going forward, pulls back NO data.
+Brings a project home from its Team Host: pulls the project's knowledge back
+into the local Grove in the background, then clears the residency mapping so
+future requests resolve locally. Requires a host that serves the residency
+protocol; pass --allow-no-pull to detach WITHOUT pulling data back (the
+history stays on the host).
 Idempotent — detaching a project that is not attached is a clean no-op.
 `,
 };

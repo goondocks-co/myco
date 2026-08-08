@@ -310,7 +310,7 @@ export function migrateProjectToGlobalInstall(
 
   // Step 7 — reconcile project-managed local files: rules guidance plus
   // `.gitignore` for bundled skill dirs, configured plan dirs, and wrangler
-  // cache. The walker that used to keep this in sync was retired; running it
+  // cache. No background walker keeps this in sync; running it
   // here covers the first-event / hot-path entry, while `myco update` has a
   // dedicated variant-scoped managed-file pass for already-migrated projects.
   // /code-review finding C10.
@@ -697,7 +697,7 @@ export function runGlobalInstallMigrationPass(
  * `getMachineId()` writes a brand-new global `machine_id` on first boot,
  * then `propagateLegacyMachineId(vaultDir)` later (from vault-gate's
  * per-event migration) bails because the global file now exists. Result:
- * historic capture rows stamped with the old id are orphaned from the
+ * historic capture rows stamped with the legacy id are orphaned from the
  * live identity.
  *
  * No-op when the global cache already exists (idempotent). Touches only

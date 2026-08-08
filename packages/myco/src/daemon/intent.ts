@@ -4,11 +4,9 @@
  * One intent kind the reconciler drains every tick:
  *   - [restart]  → `<stateDir>/intent.restart.toml`
  *
- * The `[update]` intent surface (writeUpdateIntent / readUpdateIntent /
- * intent.update.toml) was removed in the Task 9 refactor. Binary upgrades
- * are now driven directly by `initiateAdopt` paths (idle-job sentinel,
- * `api/upgrade` apply, `myco upgrade` CLI) — the intent-indirection
- * hop is gone.
+ * There is no `[update]` intent section: binary upgrades are driven
+ * directly by `initiateAdopt` paths (idle-job sentinel, `api/upgrade`
+ * apply, `myco upgrade` CLI) with no intent-indirection hop.
  *
  * Each section is a single file written via atomicWriteFileSync. Concurrent
  * writers never read each other's section, so there is no read-modify-write

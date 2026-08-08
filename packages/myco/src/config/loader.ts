@@ -148,7 +148,7 @@ function recordTierParseFailure(filePath: string, reason: string): void {
 
 /**
  * Remove every `unrecognized_keys` path reported by a Zod error from `doc`.
- * Returns true when at least one key was removed. Used to salvage tier files
+ * Returns true when at least one key was stripped. Used to salvage tier files
  * that carry unknown keys (e.g. written by a newer Myco version): known
  * values are honored instead of silently reverting the whole tier to
  * defaults.

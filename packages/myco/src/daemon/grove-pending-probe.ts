@@ -19,9 +19,9 @@
  *
  * The embedding-reconcile and canopy-describe holds both need the same
  * question answered every PowerManager tick: "is there pending work in any
- * Grove this daemon serves?" Each used to carry its own copy of the
- * Grove-walk + caching + warn-rate-limit scaffolding. This factory unifies
- * that scaffolding; callers supply only a per-Grove count via `countForGrove`.
+ * Grove this daemon serves?" This factory owns the Grove-walk + caching +
+ * warn-rate-limit scaffolding once, rather than each hold carrying a copy;
+ * callers supply only a per-Grove count via `countForGrove`.
  */
 
 import type { DaemonLogger } from './logger.js';

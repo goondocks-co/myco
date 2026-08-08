@@ -117,7 +117,7 @@ const PLUGIN_SHARED_HELPERS_SNIPPET = '_shared/plugin-helpers.ts.snippet';
 /**
  * Placeholder substituted into cursor's hooks.json `command` fields at install
  * time. Keeping the cd-to-project-root prefix in one place avoids the nine-way
- * duplication the template used to carry — a single edit here updates every hook.
+ * duplication a per-hook template would carry — a single edit here updates every hook.
  */
 const CURSOR_PROJECT_ROOT_PLACEHOLDER = '{{projectRootCd}}';
 const CURSOR_PROJECT_ROOT_CD =
@@ -621,7 +621,7 @@ export class SymbiontInstaller {
     if (!guardTemplate) return false;
 
     // Sweep legacy guard file on every install — harmless no-op if absent.
-    // Prevents the old and new guard files coexisting for projects that
+    // Prevents legacy and current guard files coexisting for projects that
     // were last installed under the `myco-hook.cjs` naming.
     try {
       fs.unlinkSync(path.join(this.projectRoot, LEGACY_HOOK_GUARD_PATH));
@@ -647,7 +647,7 @@ export class SymbiontInstaller {
    * module-level helper directly; it makes the project-level scope of
    * the operation explicit in the call site.
    *
-   * Returns true if any file was removed; false otherwise.
+   * Returns true if any file was deleted; false otherwise.
    */
   uninstallHookGuard(): boolean {
     if (this.capabilities.globalLauncher) return false;
@@ -847,7 +847,7 @@ export class SymbiontInstaller {
    * `[shell_environment_policy.set]`), and each symbiont's template
    * permission allowlist listed `myco-run` as a callable command. The
    * env-var pattern is now obsolete — `.myco/runtime.command` is the
-   * hook-side source of truth — while the old allowlist entries remain
+   * hook-side source of truth — while stale allowlist entries remain
    * legacy noise after the permissions refactor.
    *
    * This cleanup runs automatically on every install/update pass so
@@ -1039,7 +1039,7 @@ export class SymbiontInstaller {
     // Apply MCP transform — sweep stale entries under historical
     // server-list keys before writing under the current one, so a
     // shape migration (mcpServersKey rename) doesn't leave behind a
-    // duplicate `myco` registration under the old key.
+    // duplicate `myco` registration under the legacy key.
     const provision = this.shouldProvisionMcpServer();
     const mcpTemplate = reg.mcpTarget && provision ? this.loadMcpTemplate() : null;
     if (mcpTemplate) {
@@ -1376,7 +1376,7 @@ export class SymbiontInstaller {
    * Remove Myco-owned skill symlinks (by `names`) from `dir`. Only symlinks are
    * unlinked — a real file/dir under the same name is user content, and other
    * sources' skills (different names) are never touched. Returns true if any
-   * link was removed.
+   * link was deleted.
    */
   private removeMycoSkillLinks(dir: string, names: Iterable<string>): boolean {
     let removed = false;
@@ -1400,7 +1400,7 @@ export class SymbiontInstaller {
    * Sweep Myco's package-skill symlinks from this agent's RETIRED global skill
    * dirs (`retiredGlobalSkillsTargets`) — dirs it was installed into before its
    * `globalSkillsTarget` moved (e.g. consolidating on `~/.agents/skills`). The
-   * agent reads the new target now; the old links are unread cruft (often
+   * agent reads the new target now; the leftover links are unread cruft (often
    * dangling into a deleted checkout). Removes current AND legacy names so a
    * retired `~/.codex/skills/{myco,myco-curate,rules}` is fully cleaned. Public
    * so the detection chokepoint can call it for EVERY manifest (not only
@@ -1876,7 +1876,7 @@ export class SymbiontInstaller {
    * writes. A contributor-edited file is preserved. Not part of
    * `uninstall()` (which always keeps the file); the global-install
    * migration calls this to clear the orphan after stripping the plugin.
-   * Returns true if the file was removed.
+   * Returns true if the file was deleted.
    */
   removeManagedPluginPackage(): boolean {
     const reg = this.manifest.registration;
@@ -1959,7 +1959,7 @@ export class SymbiontInstaller {
    * MCP-list key (e.g., the previous `mcpServersKey` for this surface)
    * is deleted before the new entry lands under `serversKey`. This is
    * the on-upgrade migration path — without it, renaming a symbiont's
-   * server key would leave the old entry behind and produce duplicate
+   * server key would leave the stale entry behind and produce duplicate
    * (or shape-mismatched) registrations in the agent's MCP picker.
    */
   private installMcpJson(targetPath: string, template: Record<string, unknown>, serversKey: string): boolean {
@@ -2468,7 +2468,7 @@ export class SymbiontInstaller {
     // Sweep every known MCP-list key (the configured one plus any
     // legacy shape this surface may carry from a previous install
     // under a different `serversKey`). Without the sweep, renaming a
-    // symbiont's server-key field would leave the old entry behind.
+    // symbiont's server-key field would leave the stale entry behind.
     // The `serversKey` argument is included in the sweep — it's just
     // the primary target — so this remains the canonical uninstall
     // path for both single-key and post-migration files.

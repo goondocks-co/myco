@@ -23,7 +23,7 @@ import { listGroves, getDefaultGroveId, listRegisteredProjects, loadGroveRecord 
  *     This deliberately ignores both the cwd AND the registry. The cwd is
  *     irrelevant (a hook lazy-spawn from inside an unrelated project must
  *     not bind the daemon to it). The registry is irrelevant too: picking
- *     the *first registered project* as an anchor — the old behavior — is
+ *     the *first registered project* as an anchor is
  *     exactly the bug-attractor every tenant-scope leak we just fixed
  *     leaked *to*. An arbitrary project-shaped anchor has no business
  *     standing in for "the daemon's project" because the global daemon has

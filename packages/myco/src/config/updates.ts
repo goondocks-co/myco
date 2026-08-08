@@ -273,8 +273,7 @@ export function withEmbedding(
   };
 }
 
-// `withContext` was removed in config_version 8 — all Cortex settings
-// (instructions, digest, spores, canopy) now live under `cortex.*`.
-// Use the scoped-settings patch endpoint or `updateConfig` directly to
-// modify any cortex.* field; tests can build patches inline rather than
-// going through a bespoke helper.
+// There is no bespoke Cortex update helper: all Cortex settings
+// (instructions, digest, spores, canopy) live under `cortex.*`. Use the
+// scoped-settings patch endpoint or `updateConfig` directly to modify any
+// cortex.* field; tests build patches inline.
