@@ -38,6 +38,10 @@ const PROJ = 'proj_cccccccccccccccccccccccccccccccc';
  * its own artifact-scoped helper). Asserting only the scoped set would leave the
  * one table whose structural oddity caused the original bug unchecked.
  */
+/** A column that records WHEN, not WHAT. Held fixed between siblings so the
+ *  gate tests two rows written in the same second. */
+const TIMESTAMP_COLUMN = /(^|_)(at|timestamp|time)$/;
+
 const CARRIED_TABLES: readonly string[] = [...GROVE_PROJECT_SCOPED_TABLES, 'content_publications'];
 
 /**
@@ -82,37 +86,77 @@ function seedRow(db: Database, table: string): void {
   ).run(...(vals as never[]));
 }
 
-/**
- * A SECOND row for `table` that is a sibling of the seeded one: identical in the
- * columns that place it (`project_id` and every `*_id` parent reference), and
- * different in every other NOT-NULL column. Two such rows are distinguishable
- * only by the discriminating half of a dedupe tuple, so a tuple that shrinks to
- * its shared leading columns merges them.
- */
-function seedSibling(db: Database, table: string): void {
+/** Columns covered by a single-column UNIQUE index. */
+function uniqueColumns(db: Database, table: string): Set<string> {
+  const out = new Set<string>();
+  const indexes = db.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string; unique: number }>;
+  for (const idx of indexes) {
+    if (!idx.unique) continue;
+    const cols = (db.prepare(`PRAGMA index_info(${idx.name})`).all() as Array<{ name: string }>).map((c) => c.name);
+    if (cols.length === 1 && cols[0]) out.add(cols[0]);
+  }
+  return out;
+}
+
+/** The payload columns of `table`: everything that is not scope, not a parent
+ *  reference, not a timestamp, and not the dropped autoincrement id. These are
+ *  the columns that differ between two capture rows written in the same second. */
+function payloadColumns(db: Database, table: string): string[] {
   const info = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
     name: string; type: string; notnull: number; dflt_value: unknown; pk: number;
   }>;
+  return info
+    .filter((c) => !(c.pk > 0 && c.type.toUpperCase().includes('INT')))
+    .filter((c) => c.name !== 'project_id' && !c.name.endsWith('_id') && !TIMESTAMP_COLUMN.test(c.name))
+    .filter((c) => c.pk > 0 || (c.notnull === 1 && c.dflt_value == null) || c.type.toUpperCase().includes('TEXT'))
+    .map((c) => c.name);
+}
+
+/**
+ * A sibling of the seeded row differing in EXACTLY ONE payload column.
+ *
+ * One column at a time, rather than all of them at once, and that is the whole
+ * design. A sibling that varies every payload column is separated by any ONE of
+ * them appearing in the dedupe tuple — so `activities`, keyed on
+ * (scope, parents, `tool_name`, `timestamp`) with a NULL `content_hash`, passed
+ * a vary-everything gate while merging eight same-second `Read` calls into three
+ * rows on the rig. Those calls shared `tool_name` and differed in `file_path`,
+ * which the tuple did not carry. Varying one column at a time asserts the real
+ * property: ANY single payload difference must survive the trip.
+ *
+ * Scope, parents and timestamps stay identical throughout — two rows from the
+ * same second, which is capture's ordinary output rather than an edge case.
+ */
+function seedSiblingVarying(db: Database, table: string, vary: string, seq: number): void {
+  const info = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string; type: string; notnull: number; dflt_value: unknown; pk: number;
+  }>;
+  // A UNIQUE column is varied ALONGSIDE the target: two genuinely distinct rows
+  // must differ there or the source insert is illegal
+  // (`knowledge_git_provenance.identity_key`). Varying it does not weaken the
+  // test — the question is still whether the RECEIVER keeps both rows.
+  const unique = uniqueColumns(db, table);
   const cols: string[] = [];
   const vals: unknown[] = [];
   for (const col of info) {
-    // The autoincrement id is omitted so the receiver's counter assigns one, the
-    // same shape the wire carries.
     if (col.pk > 0 && col.type.toUpperCase().includes('INT')) continue;
-    if (col.name === 'project_id') { cols.push(col.name); vals.push(PROJ); continue; }
-    // Parent references stay identical — that is what makes these siblings, and
-    // what makes a tuple of only parent columns unable to tell them apart.
-    if (col.name.endsWith('_id')) {
-      const seeded = SEED_OVERRIDES[table]?.[col.name];
-      if (seeded !== undefined) { cols.push(col.name); vals.push(seeded); continue; }
-      if (col.pk > 0 || col.notnull === 1) { cols.push(col.name); vals.push(`${table}_row_1`); continue; }
+    const isFixed = col.name === 'project_id' || col.name.endsWith('_id') || TIMESTAMP_COLUMN.test(col.name);
+    const required = col.pk > 0 || (col.notnull === 1 && col.dflt_value == null);
+    if (col.name !== vary && !required && !isFixed) continue;
+
+    cols.push(col.name);
+    const t = col.type.toUpperCase();
+    if (col.name === vary || unique.has(col.name)) {
+      // `seq` keeps each sibling distinct from the others, not just from the
+      // original — otherwise the second one collides on the UNIQUE column.
+      vals.push(t.includes('INT') ? 90 + seq : t.includes('REAL') || t.includes('FLOA') || t.includes('DOUB') ? 90 + seq : `${table}_${col.name}_varied_${seq}`);
       continue;
     }
-    if (col.pk > 0 || (col.notnull === 1 && col.dflt_value == null)) {
-      cols.push(col.name);
-      const t = col.type.toUpperCase();
-      vals.push(t.includes('INT') ? 2 : t.includes('REAL') || t.includes('FLOA') || t.includes('DOUB') ? 2.0 : `${table}_${col.name}_sibling`);
-    }
+    if (col.name === 'project_id') { vals.push(PROJ); continue; }
+    const seeded = SEED_OVERRIDES[table]?.[col.name];
+    if (seeded !== undefined) { vals.push(seeded); continue; }
+    // Byte-identical to the original row in every non-varied column.
+    vals.push(t.includes('INT') ? 1 : t.includes('REAL') || t.includes('FLOA') || t.includes('DOUB') ? 1.0 : `${table}_${col.name}`);
   }
   db.prepare(
     `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
@@ -252,25 +296,29 @@ describe('residency per-direction coverage (R2/R5)', () => {
     });
   });
 
-  test('SIBLING ROWS: a local-rowid table keeps two rows that differ only in its dedupe columns', () => {
-    // One row per table cannot see a dedupe tuple that SHRANK: any subset of the
-    // declared columns still dedups a replay of a single row, so `log_entries`
-    // narrowed to `['project_id']` — collapsing every log entry of a project into
-    // one row on the host — passes the coverage and replay gates unnoticed. Six
-    // of the eight local-rowid tables have no UNIQUE index to catch it
-    // independently; the id that would have distinguished them is deliberately
-    // dropped in transit.
+  test('SIBLING ROWS: any SINGLE payload difference survives, at identical timestamps', () => {
+    // The gate the rig had to teach. One seeded row per table is blind to a
+    // dedupe tuple that SHRANK, and a sibling varying EVERY payload column is
+    // blind to one that is merely too narrow — any single carried column
+    // separates it. `activities` passed both while merging eight same-second
+    // `Read` calls into three rows on the host: they shared `tool_name` and
+    // differed in `file_path`, which the tuple did not carry.
     //
-    // So: seed a SIBLING for each — same parent and scope columns (`project_id`,
-    // `run_id`, `session_id`), different discriminating values — and require
-    // both to arrive. A tuple that shrinks to the shared leading columns merges
-    // them and goes red.
+    // So: for every payload column, a sibling differing in THAT COLUMN ALONE,
+    // with scope, parents and timestamps held identical. Both rows must arrive.
     withSeededProject((source) => {
       const localRowid = Object.entries(RESIDENCY_APPLY_RULES)
         .filter(([, rule]) => rule.kind === 'local-rowid')
         .map(([table]) => table);
       expect(localRowid.length).toBeGreaterThan(0);
-      for (const table of localRowid) seedSibling(source, table);
+
+      const expected = new Map<string, number>();
+      for (const table of localRowid) {
+        const payload = payloadColumns(source, table);
+        expect(payload.length, `${table} has no payload column to vary`).toBeGreaterThan(0);
+        payload.forEach((col, i) => seedSiblingVarying(source, table, col, i + 1));
+        expected.set(table, 1 + payload.length);
+      }
 
       const target = new Database(':memory:');
       createSchema(target, 'host_machine');
@@ -283,9 +331,11 @@ describe('residency per-direction coverage (R2/R5)', () => {
       }
 
       const merged: string[] = [];
-      for (const table of localRowid) {
-        const c = (target.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
-        if (c !== 2) merged.push(`${table} (received ${c} of 2 — dedupe tuple too narrow)`);
+      for (const [table, want] of expected) {
+        const got = (target.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
+        if (got !== want) {
+          merged.push(`${table} (received ${got} of ${want} — dedupe tuple carries no column that separates these)`);
+        }
       }
       expect(merged).toEqual([]);
       target.close();
