@@ -644,9 +644,9 @@ const MachineDaemonSchema = z.object({
   service_scope: z.enum(['login', 'boot']).default('login'),
 });
 
-// NOTE: the registry block (`grove.default_grove_id`) used to live
-// inside MachineConfigSchema under `.passthrough()`. It now lives in
-// `~/.myco/groves/registry.yaml` (see `resolveGroveRegistryPath`).
+// NOTE: the registry block (`grove.default_grove_id`) lives in
+// `~/.myco/groves/registry.yaml` (see `resolveGroveRegistryPath`), not in
+// this schema.
 // The preprocess below strips the legacy field before strict
 // validation so existing installs keep parsing — the registry value
 // is migrated to the new file the first time `getDefaultGroveId`

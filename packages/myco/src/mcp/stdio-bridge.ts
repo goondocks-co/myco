@@ -35,7 +35,7 @@
  *      active request to surface it.
  *   3. **Active-send self-heal (Bucket J)** — when a forwarded JSON-RPC
  *      message can't reach the daemon (the user's `make build` just replaced
- *      the daemon binary; the old http handle points at a dead socket), the
+ *      the daemon binary; the held http handle points at a dead socket), the
  *      bridge re-resolves daemon.json, rebuilds the upstream transport, and
  *      keeps serving. The failed message is lost (the agent's retry covers
  *      it); the bridge itself doesn't have to die so the agent doesn't have
@@ -340,7 +340,7 @@ export async function main(): Promise<void> {
    * killed the bridge the moment a `make build` cycle restarted the
    * daemon, leaving Claude Code holding a dead bridge that it doesn't
    * auto-respawn (the next tool call hangs indefinitely). The reconnect
-   * path nulls out `onclose` before tearing down the old transport, so
+   * path nulls out `onclose` before tearing down the superseded transport, so
    * any fire we see here is daemon-driven — try the same self-heal
    * sequence the send-error path uses, and only exit if it can't
    * recover. Same single-flight (`reconnectInFlight`) prevents double-
@@ -401,7 +401,7 @@ export async function main(): Promise<void> {
           void rebuilt.transport.close().catch(() => undefined);
           continue;
         }
-        // Daemon is up at `rebuilt.port`. Tear down the old upstream
+        // Daemon is up at `rebuilt.port`. Tear down the superseded upstream
         // (suppress its onclose so it doesn't drag the bridge down),
         // swap, and wire the new one.
         const old = upstream;

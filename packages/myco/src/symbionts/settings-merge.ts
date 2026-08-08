@@ -107,7 +107,7 @@ function mergeWithAuditAt(
 
 /**
  * Strip every leaf the audit claims, IFF the on-disk value still
- * matches what Myco recorded. Returns true when anything was removed.
+ * matches what Myco recorded. Returns true when anything was deleted.
  * Mutates `target` in place. Prunes parent objects that become empty.
  */
 export function removeAuditedSettings(
@@ -154,7 +154,7 @@ function stableKey(v: unknown): string {
  * Remove values from target that match the template structure.
  * Arrays: filter out values present in the template array.
  * Objects: delete keys present in the template object, recurse into nested objects.
- * Returns true if anything was removed.
+ * Returns true if anything was deleted.
  */
 export function deepRemoveSettings(
   target: Record<string, unknown>,

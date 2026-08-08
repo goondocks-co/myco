@@ -52,9 +52,9 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
 
-  // These flags drove the old [update]-intent binary-upgrade path, which
-  // has been superseded by `myco upgrade [<version>]`. Reject them with
-  // a clear redirect so users who relied on the old flags know where to go.
+  // These flags belong to a retired binary-upgrade path; `myco upgrade
+  // [<version>]` owns upgrades. Reject them with a clear redirect so anyone
+  // still passing them knows where to go.
   if (args.some((a) => a === '--target-version' || a === '--cancel-update')) {
     console.error(
       'Binary upgrades have moved to `myco upgrade`.\n'

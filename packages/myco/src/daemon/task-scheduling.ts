@@ -270,7 +270,7 @@ export type ScheduledDispatchGateDecision = 'proceed' | 'missing_key';
  * ahead of any `dispatchAgentRun` call. A cloud provider with no key
  * resolvable from Grove secrets, machine secrets, or the process env is NOT
  * a run failure — it's the expected posture of a served Grove whose team
- * key hasn't been set yet (or was removed). `missing_key` tells the caller
+ * key hasn't been set (or has since been cleared). `missing_key` tells the caller
  * to skip dispatch entirely: log a visible status line and return WITHOUT
  * calling `dispatchAgentRun` or `notifyScheduledRunOutcome`, so a keyless
  * box never spams `agent.task.failure` for work that never ran.

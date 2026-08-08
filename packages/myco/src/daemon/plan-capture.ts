@@ -179,7 +179,7 @@ export interface AuthoredPlanWrite {
  * `event-dispatch` path captures a plan when a write *event* fires; this reuses
  * the SAME `isPlanWriteEvent` predicate against already-recorded activities so a
  * stop-time reconcile can recover authored plans the live path missed — WITHOUT
- * the old mtime-window heuristic that claimed files a session never wrote.
+ * an mtime-window heuristic, which would claim files a session never wrote.
  *
  * Authorship, not temporal proximity, is the association signal. A file is only
  * returned when this session has a plan-dir write activity for it. Per file, the

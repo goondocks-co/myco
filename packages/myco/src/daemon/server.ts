@@ -975,11 +975,10 @@ export class DaemonServer {
     // token gate, because a member obtains its token HERE. The exemption is
     // surgical, and it is only safe because the route carries its OWN gate: a
     // daemon-minted single-use join key, in the request, that this daemon
-    // validates. That is a genuinely new gate rather than a port — the
-    // overlay-era key was a headscale pre-auth key consumed by the member's
-    // `tailscale up`, which this daemon never saw, and the real admission
-    // boundary was tailnet membership. With no tailnet, publishing this route
-    // without the key check would hand a credential to anyone who asked.
+    // validates. The key check is load-bearing: this route is published to the
+    // public internet with no outer network boundary in front of it, so
+    // serving it without the key check would hand a credential to anyone
+    // who asked.
     this.registerRawRoute(HOST_ENROLL_ROUTE, async (req, res) => {
       // TEAM-LISTENER-ONLY. The localhost surface has no business enrolling
       // anyone, and answering there would make the operator's own dashboard an
@@ -1234,9 +1233,9 @@ export class DaemonServer {
           // project (the common case) returns `local` after a single empty-set
           // registry probe, so the path below is byte-identical.
           // E1 §5.3: the EXPLICIT destination-host carrier. A member's Team
-          // page addresses a HOST, not a project — the old attach-ref-as-
-          // carrier scheme left a joined host with zero attached projects
-          // silently unconfigurable (no ref → classifyRoute short-circuits
+          // page addresses a HOST, not a project — carrying the destination
+          // on an attach ref would leave a joined host with zero attached
+          // projects silently unconfigurable (no ref → classifyRoute short-circuits
           // to local). Browser-only by design: `mcp/http.ts` never honors
           // this header. Admitted ONLY for team-write stamps — every other
           // class either answers locally (localhost-only) or has no

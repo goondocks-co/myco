@@ -37,8 +37,8 @@ export const REQUEST_CONTEXT_HEADERS = {
    * Selects the DESTINATION HOST for a member-side team-scoped request
    * (E1 §5.3): the daemon resolves it to a synthetic routing target built
    * from the host record, so a joined host with ZERO attached projects is
-   * still configurable — the old attach-ref-as-carrier scheme silently
-   * routed those writes to the member's own daemon. It never names a
+   * still configurable — carrying the destination on an attach
+   * ref would silently route those writes to the member's own daemon. It never names a
    * Grove: the host derives its served grove itself (`team-config.ts`'s
    * invariant), so the two rules compose. Browser-only; `mcp/http.ts`
    * deliberately does NOT honor it.

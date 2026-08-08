@@ -575,7 +575,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // activities via the same `isPlanWriteEvent` predicate the live path uses
     // (see `selectAuthoredPlanWrites`). This still recovers plans the live
     // capture missed (e.g. a global-daemon projectRoot mismatch) but WITHOUT
-    // the old mtime-window scan, which claimed every plan file merely *touched*
+    // an mtime-window scan, which would claim every plan file merely *touched*
     // during the session's lifetime regardless of author — duplicating a plan
     // into every concurrently-open session and letting the stale copies diverge.
     // The authored-plan backstop reads plan files off THIS machine's disk. For a
@@ -598,7 +598,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         try {
           content = fs.readFileSync(planFile, 'utf-8');
         } catch {
-          // The authored plan file was removed or moved after the write —
+          // The authored plan file is gone (deleted or moved after the write) —
           // nothing on disk to reconcile.
           continue;
         }

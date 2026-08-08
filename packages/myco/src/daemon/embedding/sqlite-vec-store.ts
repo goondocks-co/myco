@@ -99,7 +99,7 @@ const POST_KNN_MAX_OVERFETCH_FACTOR = 64;
  * vec0 has no `ALTER TABLE`. The migration recreates each table with the new
  * layout, copying the stored vectors and backfilling the columns from
  * `embedding_metadata.domain_metadata`. No re-embedding: vectors are read out
- * of the old table and re-inserted, so the migration is fast and provider-free.
+ * of the prior table and re-inserted, so the migration is fast and provider-free.
  */
 const VEC_STORE_SCHEMA_VERSION = 1;
 
