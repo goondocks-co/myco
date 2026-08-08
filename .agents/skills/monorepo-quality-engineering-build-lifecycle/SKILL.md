@@ -595,6 +595,16 @@ for worker_dir in packages/*/worker; do
 done
 ```
 
+### Vendor-src libsqlite3 Provisioning
+
+`packages/myco/vendor-src/` is git-ignored — it is NOT copied by git worktree add and does not exist in a fresh worktree. It holds the compiled `libsqlite3` artifact that Bun-compiled binaries embed via `import ... with { type: "file" }`. Build the host target explicitly before relying on `make dev-build`/`make build`:
+
+```bash
+# Provision vendor-src/libsqlite3 for the host target in a new worktree
+bash packages/myco/scripts/build-libsqlite3-target.sh $(HOST_TARGET)
+# Cached after first run — reuses the fetched sqlite amalgamation tarball
+```
+
 ### Native Vendor Cache Manual Copy
 
 Manually copy native vendor cache for cross-platform compatibility:
@@ -686,6 +696,7 @@ npm install && npm run build && npm test
 
 **Feature branch provisioning checklist**:
 - [ ] Git worktree created successfully: `../myco-feature-name`
+- [ ] Vendor-src libsqlite3 provisioned: `bash packages/myco/scripts/build-libsqlite3-target.sh $(HOST_TARGET)` (git-ignored, not copied by worktree add)
 - [ ] NPM cache isolation configured: `NPM_CONFIG_CACHE`
 - [ ] Dependencies installed: `npm install` completed
 - [ ] Nested UI workspaces installed: UI-specific `npm ci` completed  

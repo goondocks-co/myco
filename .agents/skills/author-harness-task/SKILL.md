@@ -198,6 +198,17 @@ Any task reading session transcripts **must** gate on settled sessions to preven
 
 **Vault read surfaces**: All surfaces automatically honor the gate.
 
+### runWhenCold — catch-up tasks bypass the cold-project gate
+
+```ts
+triggers: {
+  schedule: '*/15 * * * *',
+  runWhenCold: true,   // drains backlog even on long-inactive projects
+}
+```
+
+`runWhenCold` (`packages/myco/src/agent/types.ts`, `packages/myco/src/config/schema.ts`, `packages/myco/src/agent/schemas.ts`) is a real `TaskDefinition`/schedule field, distinct from `requireSettledSessions`. The scheduler's per-project cold gate (`packages/myco/src/daemon/task-scheduler.ts`) skips every task on a cold (long-inactive) project **except** those with `runWhenCold: true`. Design principle: there is no such thing as "cold" for catch-up or backlog-draining work (e.g. `canopy-describe`, see `packages/myco/src/agent/definitions/tasks/canopy-describe.yaml`) — that work must keep draining regardless of session recency, or its pending backlog pins the daemon awake on work the gate itself refuses to run. Cold-gating (the default, `runWhenCold` unset/false) is for knowledge-generating tasks where processing a long-idle project has no value.
+
 **Settlement conditions**: SessionEnd hook OR `last_prompt_at` older than `settledSessionIdleMinutes`.
 
 ## Procedure 6: Design the Tool Surface
@@ -220,6 +231,8 @@ const CONSOLIDATE_TOOLS = {
 ```
 
 **readOnly annotation**: Set `readOnly: true` on non-writing phases for MCP enforcement and safe concurrent execution.
+
+**Allowlist authority is the purpose text, not the tool schema docstring.** When building a deterministic allowlist that lets a call skip an LLM-judgment classifier (e.g. a "provably bookkeeping-only" predicate), derive the allowed key/field set from what the phase's authored prompt actually instructs the model to write — not just the tool's parameter docstring. `packages/myco/src/agent/tools/skill-tools.ts`'s `SKILL_RECORD_BOOKKEEPING_KEYS` allowlist was first built from the `vault_skill_records` tool schema docstring alone and missed `last_assessed_generation` and `file_fingerprints`, which the skill-evolve assess phase prompt also writes — caught only by a live verification run. Cross-check any such allowlist against the union of the tool schema AND every phase prompt that calls it.
 
 ## Procedure 7: Observe and Debug
 
@@ -250,6 +263,12 @@ A clean `exit_reason = 'complete'` only proves the model didn't error — it doe
 ### STOP after terminal tool call
 
 Phases with a single terminal tool (e.g., `write_plan`, `vault_report`) need an explicit "STOP once the tool returns ok" instruction in the system prompt. Without it, the model burns remaining turn budget re-verifying an already-successful write instead of exiting cleanly.
+
+### Terminal call is mandatory — no valid path ends in prose
+
+When a phase's postCondition asserts a specific write happened, that write must be **stored by the current run**, not inherited from a stale prior run — the postcondition fails the entire run if the state wasn't written by THIS run. Write the phase prompt so every reachable outcome ends in the terminal tool call, never in prose: e.g. `packages/myco/src/agent/definitions/tasks/skill-survey.yaml`'s reconciliation phase requires a stored `vault_skill_survey_reconciliation_plan` call even when there is nothing actionable (submit a plan with all candidates Keep/Blocked) or the evidence bundle is unusable (submit a cleanup-only plan) — there is no "nothing to do, stopping" exit.
+
+PostCondition kind names are centralized in `packages/myco/src/agent/phase-postcondition-kinds.ts` (`PHASE_POSTCONDITION_KINDS`), the single source of truth consumed by both the Zod enum in schemas.ts and the runtime dispatch table in `packages/myco/src/agent/phase-postconditions.ts`. Adding a new postCondition means appending the kind literal there AND adding its matching check function in `packages/myco/src/agent/phase-postconditions.ts` — TypeScript's `Record<PhasePostConditionKind, Fn>` enforces the pairing.
 
 ## Procedure 8: Advanced Harness Integration
 
