@@ -140,22 +140,38 @@ export function checkTeamHostHint(
 export async function checkTeamHostReachability(
   lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): Promise<DoctorCheck[]> {
-  const { readHostRegistry } = await import('../host/registry.js');
+  const { readHostRegistry, quarantinedHostMemberships } = await import('../host/registry.js');
   const { probeHostReachability } = await import('../host/host-url.js');
   const hosts = readHostRegistry(lockNamespace);
-  if (hosts.length === 0) return [];
+  // The registry read QUARANTINES a corrupt host rather than throwing (its
+  // membership does not load; every other host keeps working). Quarantine
+  // without a surface would be an invisible outage, and this check is the
+  // surface: each one is a FAIL with the recorded reason.
+  const quarantined = quarantinedHostMemberships();
+  if (hosts.length === 0 && quarantined.length === 0) return [];
 
   // Probed concurrently: a member in several teams should not wait out one
   // slow host serially. Each probe is individually bounded.
   const results = await Promise.all(
     hosts.map(async (host) => ({ host, result: await probeHostReachability(host.host_url) })),
   );
-  return results.map(({ host, result }, index): DoctorCheck => ({
-    name: index === 0 ? 'Team Host' : '',
+  const checks = results.map(({ host, result }): DoctorCheck => ({
+    name: '',
     status: result.state === 'reachable' ? 'ok' : 'warn',
     detail: `${host.label} (${host.host_id}): ${result.detail}`,
     fixable: false,
   }));
+  for (const bad of quarantined) {
+    checks.push({
+      name: '',
+      status: 'fail',
+      detail: `${bad.hostId}: join state quarantined — ${bad.detail}. This host's membership is not loaded; `
+        + 'fix the file (owner-only, regular file) or re-join the host.',
+      fixable: false,
+    });
+  }
+  if (checks.length > 0 && checks[0]) checks[0].name = 'Team Host';
+  return checks;
 }
 
 /**

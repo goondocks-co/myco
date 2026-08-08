@@ -817,7 +817,20 @@ export async function main(): Promise<void> {
     }),
   });
   return await externalMcpContainment.containWhile('reconcile', async (externalMcpBootState) => {
-  const reconciledHostBearers = reconcileHostRollbackBearers();
+  // BACKSTOP, not the primary guard: the registry enumerators quarantine a
+  // corrupt host per-host (`quarantinedHostMemberships`), so this catch exists
+  // for what they cannot contain — an unreadable hosts directory, a lock that
+  // cannot be taken. Team membership degrades; the daemon boots regardless,
+  // because a member's LOCAL capture must never hinge on team state.
+  let reconciledHostBearers = 0;
+  let hostBearerReconcileFailure: string | null = null;
+  try {
+    reconciledHostBearers = reconcileHostRollbackBearers();
+  } catch (err) {
+    // The logger does not exist yet this early in boot; held and logged with
+    // the reconcile outcome below.
+    hostBearerReconcileFailure = (err as Error).message;
+  }
 
   // `bootstrapVaultDir` is a *transitional* concept.
   //
@@ -1038,6 +1051,11 @@ export async function main(): Promise<void> {
   if (reconciledHostBearers > 0) {
     logger.info(LOG_KINDS.DAEMON_START, 'Reconciled rollback-readable host bearers', {
       count: reconciledHostBearers,
+    });
+  }
+  if (hostBearerReconcileFailure !== null) {
+    logger.warn(LOG_KINDS.HOST_SERVE, 'Host bearer reconcile failed at boot — team membership degraded, daemon continuing', {
+      error: hostBearerReconcileFailure,
     });
   }
   logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan watch directories', { dirs: planWatchConfig.watchDirs });
