@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getServiceManager } from '../service/manager.js';
 import { buildServiceSpec, looksLikeDevBuildExecutable } from '../service/spec-builder.js';
+import { ensureServiceLogDirs } from '../service/log-dirs.js';
 import { serviceLabel } from '../service/labels.js';
 import { isDefaultMycoHome, resolveMycoHome, resolveServiceDir, DAEMON_STATE_FILENAME } from '../grove/paths.js';
 
@@ -86,6 +87,28 @@ export function assertSafeServiceMutation(
     `To dogfood, point MYCO_HOME at a separate home (e.g. ~/.myco-dev), or run this command from the installed binary ` +
     `(e.g. /opt/homebrew/lib/node_modules/@goondocks/myco/vendor/<arch>/myco).`
   );
+}
+
+/**
+ * Did a daemon actually come up? Polls its health endpoint briefly.
+ *
+ * The supervisor's own success is not evidence: `systemctl start` reports
+ * success for a unit that launches and dies immediately, so a start could print
+ * "Started" and be followed by an endless restart loop with nothing saying so —
+ * 41 of them on the rig. A short poll suffices; the daemon binds its port early,
+ * and the failure this catches is immediate rather than slow.
+ */
+async function confirmDaemonStarted(mycoHome: string, deadlineMs = 8_000): Promise<boolean> {
+  const { DaemonClient } = await import('../hooks/client.js');
+  const client = new DaemonClient(mycoHome);
+  const started = Date.now();
+  while (Date.now() - started < deadlineMs) {
+    try {
+      if (await client.isHealthy()) return true;
+    } catch { /* not up yet */ }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  return false;
 }
 
 export async function run(args: string[]): Promise<void> {
@@ -211,8 +234,32 @@ export async function run(args: string[]): Promise<void> {
     }
     case 'start': {
       const target = await owning();
+      // Repair the output directories the supervisor redirects into. They are
+      // made at install time, and a home that loses them afterwards leaves the
+      // unit dying on every start before the daemon runs — see
+      // `ensureServiceLogDirs`.
+      try {
+        ensureServiceLogDirs(buildServiceSpec({ mycoHome, executable: resolveServiceExecutable(mycoHome) }));
+      } catch {
+        // A spec that cannot be built (missing executable) is the install
+        // path's problem to report; starting is still worth attempting.
+      }
       await target.start(label);
-      console.log(`Started ${label}`);
+      // "Started" must mean the daemon is RUNNING, not that the supervisor
+      // accepted the request. `systemctl start` succeeds for a unit that
+      // launches and immediately dies, which is exactly what a missing log
+      // directory produces — 41 crash-loops on the rig, every one of them
+      // reported as success.
+      const alive = await confirmDaemonStarted(mycoHome);
+      if (alive) {
+        console.log(`Started ${label}`);
+        return;
+      }
+      console.error(
+        `Started ${label}, but the daemon is not responding.\n`
+        + `  Check: ${target.platformName === 'systemd' ? `journalctl --user -u ${label} -n 20` : `${label} logs`}`,
+      );
+      process.exitCode = 1;
       return;
     }
     case 'stop': {

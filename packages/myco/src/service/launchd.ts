@@ -6,6 +6,7 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderLaunchdPlist } from './launchd-plist.js';
 import { spawnCombinedOutput, assertRunSucceeded } from './run-command.js';
 import { SERVICE_UNIT_DIR_ENV } from './paths.js';
+import { ensureServiceLogDirs } from './log-dirs.js';
 import type {
   InstallOptions,
   InstallResult,
@@ -114,8 +115,7 @@ export class LaunchdServiceManager implements ServiceManager {
     }
 
     fs.mkdirSync(this.agentsDir, { recursive: true });
-    fs.mkdirSync(path.dirname(spec.stdoutPath), { recursive: true });
-    fs.mkdirSync(path.dirname(spec.stderrPath), { recursive: true });
+    ensureServiceLogDirs(spec);
     atomicWriteFileSync(plistPath, rendered);
 
     if (existing === null) {

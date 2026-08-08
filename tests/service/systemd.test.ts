@@ -67,6 +67,28 @@ describe('SystemdUserServiceManager', () => {
     mgr = new SystemdUserServiceManager({ runner, unitDir });
   });
 
+  test('install RE-CREATES a removed log directory, even when the unit is unchanged', async () => {
+    // systemd redirects the daemon's output to an absolute path and will not
+    // create the parent: a missing directory fails the unit with
+    // `status=209/STDOUT` before the daemon runs at all. Install used to make
+    // these dirs only on the write path, so a home that lost them after install
+    // — and any re-install whose unit file was byte-identical, which returns
+    // early — left the service crash-looping. Measured on the rig: 41 restarts,
+    // every one reported as a successful start.
+    const s = spec(home);
+    await mgr.install(s);
+    expect(fs.existsSync(path.dirname(s.stdoutPath))).toBe(true);
+
+    fs.rmSync(path.join(home, 'service'), { recursive: true, force: true });
+    expect(fs.existsSync(path.dirname(s.stdoutPath))).toBe(false);
+
+    // Byte-identical unit -> install takes the early return. The directories
+    // must still come back.
+    await mgr.install(s);
+    expect(fs.existsSync(path.dirname(s.stdoutPath))).toBe(true);
+    expect(fs.existsSync(path.dirname(s.stderrPath))).toBe(true);
+  });
+
   test('install writes <label>.service, daemon-reloads, enables (no auto-start)', async () => {
     const s = spec(home);
     await mgr.install(s);

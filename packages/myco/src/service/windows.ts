@@ -15,6 +15,7 @@ import {
   DAEMON_STATE_FILENAME,
 } from '../grove/paths.js';
 import { withExternalMcpContainment } from './daemon-termination.js';
+import { ensureServiceLogDirs } from './log-dirs.js';
 import type {
   InstallOptions,
   InstallResult,
@@ -420,8 +421,7 @@ export class WindowsTaskServiceManager implements ServiceManager {
     }
 
     fs.mkdirSync(this.scriptDir, { recursive: true });
-    fs.mkdirSync(path.dirname(spec.stdoutPath), { recursive: true });
-    fs.mkdirSync(path.dirname(spec.stderrPath), { recursive: true });
+    ensureServiceLogDirs(spec);
     atomicWriteFileSync(scriptPath, rendered);
 
     assertRunSucceeded(
