@@ -16,7 +16,7 @@
  * Hermetic: MYCO_HOME / MYCO_TEAM_HOME are fresh tmpdirs per test.
  */
 import { writeHostRecordFixture } from '../../helpers/host-registry-fixture.js';
-import { teamFetch, teamSocketPath, removeSocket } from '../../helpers/team-socket.js';
+import { teamFetch, teamTestPort } from '../../helpers/team-socket.js';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -297,9 +297,9 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
     };
     const hostVaultDir = path.join(tmp, 'host-anchor', '.myco');
     const logger = new DaemonLogger(path.join(tmp, 'host-logs'));
-    teamSock = teamSocketPath();
+    teamSock = teamTestPort();
     const server = new DaemonServer({
-      teamSocketPath: teamSock,
+      teamPort: teamSock,
       vaultDir: hostVaultDir,
       logger,
       daemonStateAuthority: stubAuthority,

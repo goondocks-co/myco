@@ -1,33 +1,31 @@
 /**
- * Test transport for the Team Host listener, which binds an `AF_UNIX` socket
- * rather than a loopback TCP port.
+ * Test transport for the Team Host listener, which binds a loopback TCP port.
  *
- * `fetch` cannot address a unix socket, so these tests can no longer dial a
- * URL. {@link teamFetch} issues the request over the socket via `node:http` and
- * returns a `fetch`-shaped result, so a converted test keeps its original
- * assertions (`res.status`, `res.headers.get(...)`, `await res.json()`).
- *
- * Socket paths must stay short: macOS caps `sun_path` at 104 bytes, and a
- * path under a deep temp dir silently fails `bind()`. {@link teamSocketPath}
- * anchors in `/tmp` with a short random segment for that reason.
+ * The listener bound an `AF_UNIX` socket before, which `fetch` cannot address —
+ * hence this helper. It survives the move to a port because the shape it hides
+ * is still worth hiding: tests name an endpoint BEFORE the server starts (they
+ * pass it into the server config), so they need a port reserved up front rather
+ * than read back after bind.
  */
-import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
-import path from 'node:path';
+import net from 'node:net';
+import type { AddressInfo } from 'node:net';
 
-/** A short, unique socket path safe for `bind()` on macOS. */
-export function teamSocketPath(tag = 'test'): string {
-  const uid = process.getuid?.() ?? 0;
-  const rand = Math.random().toString(36).slice(2, 8);
-  // Its OWN directory: the listener chmods the socket's parent to 0700, so the
-  // parent has to be a directory the test owns, never a shared temp root.
-  return path.join(os.tmpdir(), `myco-t-${uid}-${rand}`, `${tag}.sock`);
-}
-
-/** Remove a socket file, ignoring absence. */
-export function removeSocket(socketPath: string): void {
-  try { fs.rmSync(socketPath, { force: true }); } catch { /* already gone */ }
+/**
+ * Reserve a free loopback port.
+ *
+ * Binds :0, reads what the kernel picked, and releases it — so the number is
+ * known before the daemon starts and can be passed into its config. There is a
+ * window between release and the daemon's bind in which something else could
+ * take it; that is acceptable in a test and is why production never does this
+ * (the daemon binds :0 itself and reports what it got).
+ */
+export function teamTestPort(): number {
+  const probe = net.createServer();
+  probe.listen(0, '127.0.0.1');
+  const port = (probe.address() as AddressInfo).port;
+  probe.close();
+  return port;
 }
 
 export interface TeamResponse {
@@ -37,16 +35,17 @@ export interface TeamResponse {
   json(): Promise<unknown>;
 }
 
-/** Issue one HTTP request over the team socket. */
+/** Issue one HTTP request to the team listener. */
 export function teamFetch(
-  socketPath: string,
+  port: number,
   requestPath: string,
   init: { method?: string; headers?: Record<string, string>; body?: string } = {},
 ): Promise<TeamResponse> {
   return new Promise((resolve, reject) => {
     const req = http.request(
       {
-        socketPath,
+        host: '127.0.0.1',
+        port,
         path: requestPath,
         method: init.method ?? 'GET',
         // The listener has no Host allowlist, but node still sends one; keep it
@@ -79,11 +78,11 @@ export function teamFetch(
 }
 
 /**
- * A `fetch`-compatible function bound to a unix socket, for clients that insist
- * on taking a URL and a fetch (the MCP `StreamableHTTPClientTransport`). The URL's
- * host is ignored — only its path and query reach the socket.
+ * A `fetch`-compatible function bound to the team listener, for clients that
+ * insist on taking a URL and a fetch (the MCP `StreamableHTTPClientTransport`).
+ * The URL's host is ignored — only its path and query reach the listener.
  */
-export function socketFetch(socketPath: string): typeof fetch {
+export function portFetch(port: number): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
     const headers: Record<string, string> = {};
@@ -92,7 +91,7 @@ export function socketFetch(socketPath: string): typeof fetch {
     const body = init?.body === undefined || init.body === null
       ? undefined
       : typeof init.body === 'string' ? init.body : String(init.body);
-    const res = await teamFetch(socketPath, `${url.pathname}${url.search}`, {
+    const res = await teamFetch(port, `${url.pathname}${url.search}`, {
       method: init?.method ?? (input instanceof Request ? input.method : 'GET'),
       headers,
       body,

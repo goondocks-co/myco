@@ -12,7 +12,7 @@
  * the web-page exfiltration path; this test guards the last mile.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from 'bun:test';
-import { teamFetch, teamSocketPath, removeSocket } from '../../helpers/team-socket.js';
+import { teamFetch, teamTestPort } from '../../helpers/team-socket.js';
 import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -141,10 +141,10 @@ describe('cross-route API key leak guard', () => {
     logger = new DaemonLogger(path.join(tmpVault, 'logs'));
     setupTestDb();
 
-    teamSock = teamSocketPath();
+    teamSock = teamTestPort();
 
     server = new DaemonServer({
-      teamSocketPath: teamSock,
+      teamPort: teamSock,
       vaultDir: tmpVault,
       logger,
       lockNamespace: testPerUserLockNamespace,
@@ -189,7 +189,6 @@ describe('cross-route API key leak guard', () => {
 
   afterAll(async () => {
     await server.stop();
-    removeSocket(teamSock);
     logger.close();
     teardownTestDb();
     fs.rmSync(tmpVault, { recursive: true, force: true });
@@ -336,9 +335,9 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       bearer: HOST_BEARER,
       servedGroveId: grove.id,
     };
-    teamSock = teamSocketPath();
+    teamSock = teamTestPort();
     overlayServer = new DaemonServer({
-      teamSocketPath: teamSock,
+      teamPort: teamSock,
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
       logger: new DaemonLogger(path.join(tmp, 'host-logs')),
       hostServe,

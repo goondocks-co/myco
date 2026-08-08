@@ -118,9 +118,8 @@ export type HostUnreachableReason =
   | 'port_blocked'
   /** Nothing on this network reaches the edge at all. */
   | 'network_unreachable'
-  /** The edge answered but nothing is serving behind it: the host daemon is
-   *  down, or its Funnel points at a socket it cannot proxy (the macsys
-   *  System-Extension trap). */
+  /** The edge answered but nothing is serving behind it — the host daemon is
+   *  down, or its Funnel points somewhere nothing listens. */
   | 'host_not_serving';
 
 export type HostReachability =
@@ -190,8 +189,8 @@ function defaultCanConnect(hostname: string, port: number, timeoutMs: number): P
  * waits forever.
  *
  * That failure mode is not hypothetical here — accept-then-never-answer is
- * precisely the macsys trap this probe exists to catch, so the shape handled
- * the 502 variant and hung on the silent one. A hung probe stalls whatever
+ * exactly what a published-but-unserved Funnel does, so the shape handled the
+ * 502 variant and hung on the silent one. A hung probe stalls whatever
  * awaits it: the boot publish, the Team page's health read (permanently
  * "checking", never re-probed, because the single-flight map holds the pending
  * promise), and `myco doctor`.
@@ -253,12 +252,11 @@ function defaultRequest(
  * Probe a host's public URL and classify the outcome.
  *
  * **An unauthenticated 401 is a SUCCESS.** It proves the host's daemon answered
- * — the Funnel edge routed to the socket and the team listener's token gate
+ * — the Funnel edge routed to the listener and its token gate
  * refused an anonymous caller, which is precisely the behavior a healthy host
  * has. Anything that "fixes" the 401 into a 200 has widened the public surface.
- * A 502, by contrast, is the edge failing to reach the socket at all: the
- * daemon is down, or the operator is on the sandboxed macsys tailscaled that
- * accepts a unix-socket Funnel config and then cannot proxy to it.
+ * A 502, by contrast, is the edge failing to reach the listener at all — the
+ * daemon is down, or the Funnel handler points at a port nothing holds.
  *
  * When the connection itself fails, a control connect to the Tailscale edge on
  * {@link EXTERNAL_MCP_FUNNEL_PORT} separates a locally-blocked team port from a
