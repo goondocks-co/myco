@@ -815,21 +815,24 @@ export function createFunnelOnRunner(
 }
 
 /**
- * The operator's own Tailscale, addressed EXPLICITLY.
+ * The operator's own Tailscale.
  *
- * Which tailnet is settled (Funnel is a Tailscale-cloud feature, so it must be
- * theirs). Which local daemon is not: a machine can run both a standalone
- * `tailscaled` and the macOS System Extension build, the bare CLI picks the
- * sandboxed one, and that one accepts a unix-socket Funnel and then cannot
- * proxy to it — a 502 with nothing in any log. `withTailscaleSocket` owns that
- * choice for every invocation rather than leaving it to the CLI default.
+ * Which tailnet is settled — Funnel is a Tailscale-cloud feature, so it must be
+ * theirs. WHICH LOCAL DAEMON is left to the CLI, deliberately: a machine can run
+ * more than one (a standalone `tailscaled` beside the macOS System Extension),
+ * and both proxy a Funnel to a loopback port perfectly well. Choosing between
+ * them mattered only while the team listener served a unix socket, which the
+ * System Extension accepts and then cannot proxy to. It serves a port now, so
+ * the operator's own default is the right answer — and it is the daemon they
+ * get when they run `tailscale` themselves, which is the least surprising
+ * outcome and the only one that stays correct when one of the daemons is
+ * logged out.
  */
 const runVendorTailscale = async (args: string[]): Promise<TailscaleCommandResult> => {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
-  const { withTailscaleSocket } = await import('@myco/team-host/tailscale-cli.js');
   const execFileAsync = promisify(execFile);
-  const { stdout } = await execFileAsync('tailscale', withTailscaleSocket(args), {
+  const { stdout } = await execFileAsync('tailscale', args, {
     timeout: 10_000,
     encoding: 'utf-8',
   });
