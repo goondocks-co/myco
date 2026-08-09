@@ -98,12 +98,11 @@ export default function App() {
         <Route index element={<Operations />} />
       </Route>
       {/* Legacy Grove-scoped Settings URL → unified /settings anchored at
-          the backup group (the section with the most Grove-tier fields
-          that the old GroveSettings page surfaced). */}
+          the backup group (the section richest in Grove-tier fields). */}
       <Route path="/g/:groveSlug/settings" element={<LegacyGroveSettingsRedirect />} />
       {/* Phase 4 unifies operations under /operations; /maintenance redirects forward. */}
       <Route path="/g/:groveSlug/maintenance" element={<LegacyMaintenanceRedirect />} />
-      {/* The old Grove-scoped Team URL forwards to the machine-scoped page. */}
+      {/* The Grove-scoped Team URL forwards to the machine-scoped page. */}
       <Route path="/g/:groveSlug/team" element={<GroveTeamRedirect />} />
       <Route path="/g/:groveSlug/team/maintenance" element={<TeamMaintenanceRedirect />} />
       <Route path="/sessions" element={<LegacyProjectRedirect suffix="/sessions" />} />
@@ -229,8 +228,8 @@ function LegacyMaintenanceRedirect() {
 /**
  * Legacy Grove-scoped /g/:slug/settings → unified /settings#backup.
  * The unified page surfaces Grove-tier fields alongside Project and
- * Machine fields; the `#backup` anchor matches the section with the
- * most Grove-tier content from the old GroveSettings page.
+ * Machine fields; the `#backup` anchor matches the section richest in
+ * Grove-tier content.
  */
 function LegacyGroveSettingsRedirect() {
   return <Navigate to="/settings#backup" replace />;

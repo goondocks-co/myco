@@ -18,15 +18,9 @@
  * Team-page-only actions for THIS machine's serving card (E1 §5.2 Tab 1):
  * inviting a member and Stop hosting.
  *
- * Inviting is DISABLED in this build: the one-time key it minted was a headscale
- * pre-auth key the daemon never validated, and the daemon-issued key that
- * replaces it lands with the rebuilt enrollment route. The control stays visible
- * but inert, so the capability is discoverable without appearing to work — a
- * live-looking button that 503s on click is worse than one that says why.
- *
- * The mint mutation, reveal block, and error state below are deliberately kept
- * rather than deleted: the enrollment rebuild re-enables this exact control, and
- * the reveal is the one-time-key surface it needs back.
+ * Inviting is live: minting issues a daemon-validated one-time key and prints
+ * the complete `myco join …` command a teammate pastes on their machine. The key
+ * is shown once (masked in the display, complete in the copy) and works once.
  *
  * Rendered through `TeamHostServingCard`'s `actions` slot — the Machine-dashboard
  * mount passes nothing, so its recorded placement (decision-ef693c71 D2) renders
