@@ -2,6 +2,13 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.3] - 2026-08-09
+
+### Fixed
+
+- **The scheduled intelligence pass can retire out-of-date knowledge again.** When background processing discovered that a saved insight had been invalidated outright — the code it described was deleted, or its finding was retracted — the safety review that vets destructive writes rejected the retirement: the write was legitimate, but the rule it was judged against only allowed replacing knowledge, never retiring it. Affected runs could fail outright and re-attempt the same work later. The rule now matches intended stewardship: replace an insight when a better one supersedes it, retire it with a stated reason when nothing does.
+- **The compiled binary drops 2.2MB of dead weight.** A leftover artifact from an earlier dashboard build — a second, unreferenced copy of the UI bundle — had been riding inside every binary since shortly before 1.4.2. The embedded dashboard now contains only files the UI actually serves, and the build refuses to package anything else, so a stale artifact fails the build instead of silently shipping.
+
 ## [1.4.2] - 2026-08-09
 
 ### Changed
