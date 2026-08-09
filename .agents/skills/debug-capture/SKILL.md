@@ -112,6 +112,14 @@ GROVE_DB=~/.myco/groves/<grove-id>/myco.db
 # Session row exists?
 sqlite3 "$GROVE_DB" "SELECT id, project_id, agent, status, started_at, ended_at FROM sessions WHERE id = '<sid>'"
 
+# Row missing AND you expected an "empty" session? Check for a phantom-reap
+# tombstone first — injection-only phantom sessions (SessionStart fired, agent
+# exited before any prompt, no transcript on disk; the only activity is
+# myco:inject_*) are DELETED BY DESIGN at unregister and by the maintenance
+# sweep (daemon/phantom-reaper.ts). Not capture loss.
+sqlite3 "$GROVE_DB" "SELECT session_id, source, datetime(deleted_at,'unixepoch') FROM session_tombstones WHERE session_id = '<sid>'"
+# source = 'phantom_reap' → working as intended.
+
 # Batches for the session?
 sqlite3 "$GROVE_DB" "SELECT id, prompt_number, status, substr(user_prompt, 1, 60) FROM prompt_batches WHERE session_id = '<sid>' ORDER BY id"
 
