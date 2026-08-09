@@ -27,6 +27,8 @@ import {
 import type { Logger } from '../logger.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import { cleanupAfterSessionCascade } from './session-cleanup.js';
+import { findPhantomCandidates } from '../phantom-reaper.js';
+import { findTranscriptFor } from '@myco/symbionts/transcript-discovery.js';
 import { LOG_KINDS } from '../../constants/log-kinds.js';
 
 /**
@@ -211,6 +213,12 @@ export interface SessionMaintenanceDeps {
    * sweep behaves as before (tests, legacy callers).
    */
   hasUnconvergedBuffer?: (sessionId: string) => boolean;
+  /**
+   * Injectable transcript discovery for the phantom-reap pass. Production
+   * uses manifest-driven `findTranscriptFor`; tests stub it so the veto is
+   * exercised without touching real agent home directories.
+   */
+  findTranscript?: (agent: string, sessionId: string) => string | null;
 }
 
 /**
@@ -237,9 +245,9 @@ export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promi
     logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Completed stale sessions', { count: completed });
   }
 
-  // Task 2: Delete dead sessions
+  // Task 2: Delete dead sessions. No early return — the phantom pass
+  // below must run even when no zero-batch dead sessions exist.
   const deadIds = findDeadSessionIds(registered);
-  if (deadIds.length === 0) return;
 
   let deletedCount = 0;
   for (const sessionId of deadIds) {
@@ -290,5 +298,59 @@ export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promi
 
   if (deletedCount > 0) {
     logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Dead session cleanup complete', { deleted: deletedCount });
+  }
+
+  // Task 3: Reap injection-only phantom sessions. These escape the
+  // dead-session sweep by construction: the SessionStart injection forced
+  // a RECOVERED-sentinel batch into them, so they carry exactly one batch
+  // while DEAD_SESSION_MAX_PROMPTS is zero. Same cascade, same cleanup,
+  // own tombstone source. This pass is also the historical cleanup for
+  // phantoms created before the reaper shipped.
+  const skipPausedForPhantoms = pausedProjectSkipper();
+  const discoverTranscript = deps.findTranscript ?? findTranscriptFor;
+  let reapedCount = 0;
+  for (const candidate of findPhantomCandidates(registered)) {
+    if (skipPausedForPhantoms(candidate.project_id)) continue;
+    if (deps.hasUnconvergedBuffer?.(candidate.id)) {
+      logger.debug(LOG_KINDS.MAINTENANCE_SESSION, 'Deferred phantom reap — unconverged buffer present', {
+        session_id: candidate.id,
+      });
+      continue;
+    }
+    // On-disk transcript veto: discovery success means real content may
+    // exist that mining simply hasn't attached yet — never reap it.
+    try {
+      if (discoverTranscript(candidate.agent, candidate.id)) continue;
+    } catch {
+      continue;
+    }
+
+    const result = deleteSessionCascade(candidate.id, SESSION_TOMBSTONE_SOURCE.PHANTOM_REAP);
+    if (!result.deleted) continue;
+
+    const bufferDir = resolveBufferDirForProjectId(result.projectId);
+    const vaultDir = resolveProjectVaultDir(result.projectId);
+    if (vaultDir) {
+      await cleanupAfterSessionCascade(candidate.id, result, embeddingManager, vaultDir, bufferDir);
+    } else {
+      for (const sporeId of result.deletedSporeIds) {
+        try { embeddingManager.onRemoved('spores', sporeId); } catch { /* best-effort */ }
+      }
+      try { embeddingManager.onRemoved('sessions', candidate.id); } catch { /* best-effort */ }
+      if (bufferDir) {
+        try { fs.unlinkSync(path.join(bufferDir, `${candidate.id}.jsonl`)); } catch { /* best-effort */ }
+        removeBufferLockCompanion(bufferDir, candidate.id);
+      }
+    }
+
+    reapedCount++;
+    logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Reaped injection-only phantom session', {
+      session_id: candidate.id,
+      project_id: result.projectId,
+      counts: result.counts,
+    });
+  }
+  if (reapedCount > 0) {
+    logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Phantom session cleanup complete', { reaped: reapedCount });
   }
 }
