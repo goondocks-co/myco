@@ -40,6 +40,13 @@ export type MembershipErrorCode =
    *  member enrollment client (`host/member-overlay.ts`), likewise body-
    *  sanitized (status only, never the raw response body). */
   | 'host_enroll_failed'
+  /** This machine's on-disk join state for the host is corrupt or half-written
+   *  — most often the residue of a pre-1.4.0 Myco that crashed mid-join (its
+   *  now-retired enrollment intent no longer parses). `reserveHostEnrollment`
+   *  throws `HostJoinStateCorruptError` before any network call; join maps it
+   *  here so the caller learns the fix — `myco leave <host>` clears the residue
+   *  — instead of seeing a raw internal message. */
+  | 'host_join_state_corrupt'
   /** Attach has no Grove source: the joined host's `HostRecord` carries no
    *  `served_grove_id` because it predates served-grove designation (its
    *  enrollment response never included the field). Surfaced by

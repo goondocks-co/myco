@@ -1085,6 +1085,7 @@ export async function checkOverlayResidue(opts: {
   teamsHome?: string;
   homeDir?: string;
   serviceUnitDir?: string;
+  bootServiceUnitDirs?: string[];
   tmpDir?: string;
 } = {}): Promise<DoctorCheck | null> {
   const { resolveTeamsHome } = await import('../grove/paths.js');
@@ -1159,20 +1160,42 @@ export async function checkOverlayResidue(opts: {
 
   // A unit is Myco's only if its name ties Myco to the networking stack —
   // never a bare `tailscaled`, which is the user's own Tailscale install and
-  // must not be reported as ours.
-  const unitDir = opts.serviceUnitDir ?? (await import('../service/paths.js')).resolveServiceUnitDir();
-  let foundUnits: string[] = [];
-  try {
-    foundUnits = fs.readdirSync(unitDir)
-      .filter((name) => /myco/i.test(name) && /(tailscaled|headscale)/i.test(name))
-      .map((name) => path.join(unitDir, name));
-  } catch { /* no unit dir on this platform/box */ }
+  // must not be reported as ours. The retired overlay wrote units in TWO scopes:
+  // the member/dev stack in the user scope, and the host stack (headscale +
+  // tailscaled) at boot scope as root. A scan that reads only the user scope
+  // leaves an upgraded Linux host's root units running forever, invisible.
+  const paths = await import('../service/paths.js');
+  const isOverlayUnit = (name: string): boolean =>
+    /myco/i.test(name) && /(tailscaled|headscale)/i.test(name);
+  const unitsUnder = (dir: string): string[] => {
+    try {
+      return fs.readdirSync(dir).filter(isOverlayUnit).map((name) => path.join(dir, name));
+    } catch { return []; /* no unit dir on this platform/box */ }
+  };
+  const userUnitDir = opts.serviceUnitDir ?? paths.resolveServiceUnitDir();
+  const bootUnitDirs = opts.bootServiceUnitDirs ?? paths.resolveBootServiceUnitDirs();
+  const foundUserUnits = unitsUnder(userUnitDir);
+  const foundBootUnits = bootUnitDirs.flatMap(unitsUnder);
+  const foundUnits = [...foundUserUnits, ...foundBootUnits];
 
   if (foundData.length === 0 && foundUnits.length === 0 && live.length === 0) return null;
 
+  // A boot-scope overlay unit runs as root and OWNS the state dirs below — and
+  // presence is loadedness for it: nothing but the retired installer wrote it,
+  // and only `sudo` removes it. Deleting its state while it runs leaves it
+  // broken with no way back, the same failure the live-socket guard prevents.
+  // So a present boot unit blocks the data fix until the operator stops it;
+  // a user-scope unit does not (its state is already socket-guarded).
+  const ownedByBootService = foundBootUnits.length > 0 && foundData.length > 0;
+
   const parts: string[] = [];
   if (foundData.length > 0) {
-    parts.push(`${foundData.length} leftover director${foundData.length === 1 ? 'y' : 'ies'} from per-host networking (${foundData.join(', ')})`);
+    parts.push(
+      ownedByBootService
+        ? `${foundData.length} leftover director${foundData.length === 1 ? 'y' : 'ies'} still OWNED by an installed boot service — `
+          + `remove that service first (needs sudo) or deleting its state strands it: ${foundData.join(', ')}`
+        : `${foundData.length} leftover director${foundData.length === 1 ? 'y' : 'ies'} from per-host networking (${foundData.join(', ')})`,
+    );
   }
   if (live.length > 0) {
     parts.push(
@@ -1181,8 +1204,9 @@ export async function checkOverlayResidue(opts: {
     );
   }
   if (foundUnits.length > 0) {
+    const bootNote = foundBootUnits.length > 0 ? ' (boot-scope units need sudo)' : '';
     parts.push(
-      `${foundUnits.length} leftover service unit(s) — remove by hand so a loaded unit is unloaded first: ${foundUnits.join(', ')}`,
+      `${foundUnits.length} leftover service unit(s) — remove by hand so a loaded unit is unloaded first${bootNote}: ${foundUnits.join(', ')}`,
     );
   }
 
@@ -1191,8 +1215,9 @@ export async function checkOverlayResidue(opts: {
     status: 'warn' as const,
     detail: `${parts.join('; ')}. Nothing reads these.`,
   };
-  // Only the data half is fixable. A run with units but no data still reports.
-  return foundData.length > 0
+  // The data half is fixable only when no boot service still owns it. A run with
+  // units but no data still reports (units are never auto-unlinked).
+  return foundData.length > 0 && !ownedByBootService
     ? fixableCheck(base, 'overlay-residue', { paths: foundData })
     : { ...base, fixable: false };
 }

@@ -57,6 +57,7 @@ import { listResidencyJournals } from './residency-journal.js';
 import {
   abandonHostEnrollment,
   advanceHostEnrollmentPhase,
+  HostJoinStateCorruptError,
   inspectHostMembershipForLeave,
   persistEnrollmentMembership,
   readHostRegistry,
@@ -548,7 +549,23 @@ export async function joinHost(options: JoinOptions, deps: MemberOverlayDeps = {
   const lockNamespace = deps.lockNamespace ?? nativePerUserLockNamespace;
   const machineId = deps.machineId ?? getMachineId();
 
-  const reservation = reserveHostEnrollment(hostId, lockNamespace);
+  let reservation: ReturnType<typeof reserveHostEnrollment>;
+  try {
+    reservation = reserveHostEnrollment(hostId, lockNamespace);
+  } catch (err) {
+    // A crashed pre-1.4.0 join leaves a retired-phase enrollment intent that no
+    // longer parses; `reserveHostEnrollment` throws before any network call. Map
+    // it to a coded error that names the fix, rather than surfacing the raw
+    // internal message with no way forward.
+    if (err instanceof HostJoinStateCorruptError) {
+      throw codedMembershipError(
+        'host_join_state_corrupt',
+        `This machine's saved join state for ${hostRef} is corrupt — often left by a Myco that `
+          + `crashed mid-join. Run \`myco leave ${hostRef}\` to clear it, then join again.`,
+      );
+    }
+    throw err;
+  }
   try {
     const client = deps.enrollmentClient ?? realEnrollmentClient;
     log(`Enrolling with ${hostUrl}…`);
