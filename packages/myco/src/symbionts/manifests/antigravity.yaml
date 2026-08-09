@@ -124,11 +124,13 @@ capabilities:
       pathField: AbsolutePath
     - tool: write_to_file
       pathField: TargetFile
+      mutates: true
     # Gemini-era surface (snake_case args)
     - tool: read_file
       pathField: file_path
     - tool: replace
       pathField: file_path
+      mutates: true
     - tool: run_shell_command
       pathField: command
       extract: shell-arg

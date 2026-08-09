@@ -344,7 +344,7 @@ describe('CapabilitiesSchema.canopyReadTools', () => {
       },
     });
     expect(m.capabilities?.canopyReadTools).toEqual([
-      { tool: 'Read', pathField: 'file_path', pathKind: 'file' },
+      { tool: 'Read', pathField: 'file_path', pathKind: 'file', mutates: false },
     ]);
   });
 
@@ -418,10 +418,10 @@ describe('CapabilitiesSchema.pathBearingTools', () => {
       },
     });
     expect(m.capabilities?.pathBearingTools).toEqual([
-      { tool: 'Read', pathField: 'file_path', pathKind: 'file' },
-      { tool: 'Write', pathField: 'file_path', pathKind: 'file' },
-      { tool: 'Edit', pathField: 'file_path', pathKind: 'file' },
-      { tool: 'MultiEdit', pathField: 'file_path', pathKind: 'file' },
+      { tool: 'Read', pathField: 'file_path', pathKind: 'file', mutates: false },
+      { tool: 'Write', pathField: 'file_path', pathKind: 'file', mutates: false },
+      { tool: 'Edit', pathField: 'file_path', pathKind: 'file', mutates: false },
+      { tool: 'MultiEdit', pathField: 'file_path', pathKind: 'file', mutates: false },
     ]);
   });
 
@@ -480,7 +480,7 @@ describe('claude-code manifest declares its file-read tool', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'claude-code.yaml'), 'utf-8');
     const m = SymbiontManifestSchema.parse(YAML.parse(raw));
     expect(m.capabilities?.canopyReadTools).toEqual([
-      { tool: 'Read', pathField: 'file_path', pathKind: 'file' },
+      { tool: 'Read', pathField: 'file_path', pathKind: 'file', mutates: false },
     ]);
   });
 
@@ -488,7 +488,14 @@ describe('claude-code manifest declares its file-read tool', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'claude-code.yaml'), 'utf-8');
     const m = SymbiontManifestSchema.parse(YAML.parse(raw));
     const names = (m.capabilities?.pathBearingTools ?? []).map((t) => t.tool);
-    expect(names).toEqual(expect.arrayContaining(['Read', 'Write', 'Edit', 'MultiEdit']));
+    expect(names).toEqual(expect.arrayContaining(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit']));
+    // The mutation vocabulary drives canopy single-file rescans: write-side
+    // entries carry mutates: true, Read must not.
+    const byTool = new Map((m.capabilities?.pathBearingTools ?? []).map((t) => [t.tool, t]));
+    expect(byTool.get('Read')?.mutates).toBe(false);
+    for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+      expect(byTool.get(tool)?.mutates).toBe(true);
+    }
   });
 });
 

@@ -165,10 +165,13 @@ capabilities:
       readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
     - tool: replace_string_in_file
       pathField: filePath
+      mutates: true
     - tool: create_file
       pathField: filePath
+      mutates: true
     - tool: apply_patch
       pathField: filePath
+      mutates: true
     # Copilot CLI shape
     - tool: view
       pathField: path

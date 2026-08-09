@@ -76,6 +76,22 @@ export function extractAnyPath(
   return resolveFromEntries(manifest?.capabilities?.pathBearingTools, toolName, toolInput);
 }
 
+/**
+ * Like {@link extractAnyPath} but restricted to entries declared
+ * `mutates: true` — the manifest's file-MUTATION vocabulary. Canopy's
+ * single-file rescan trigger consults this so a Read never causes a
+ * rescan while every agent's own write vocabulary (Claude Code `Write`,
+ * pi `edit`, codex `apply_patch` envelopes) does.
+ */
+export function extractMutatedPath(
+  manifest: SymbiontManifest | undefined,
+  toolName: string,
+  toolInput: unknown,
+): ResolvedRead | null {
+  const entries = manifest?.capabilities?.pathBearingTools?.filter((e) => e.mutates === true);
+  return resolveFromEntries(entries, toolName, toolInput);
+}
+
 function resolveFromEntries(
   entries: ReadonlyArray<SymbiontCanopyReadTool> | undefined,
   toolName: string,

@@ -46,8 +46,10 @@ capabilities:
       pathField: filePath
     - tool: write
       pathField: filePath
+      mutates: true
     - tool: edit
       pathField: filePath
+      mutates: true
     # apply_patch carries the whole patch envelope on `patchText`
     # ("*** Begin Patch\n*** Add File: /tmp/x\n+…\n*** End Patch") — the
     # path lives in the `*** Add/Update/Delete File:` header, not a field.
@@ -58,6 +60,7 @@ capabilities:
     - tool: apply_patch
       pathField: patchText
       extract: patch
+      mutates: true
     # bash input is `{ command, … }` — extract cat-style reads.
     - tool: bash
       pathField: command

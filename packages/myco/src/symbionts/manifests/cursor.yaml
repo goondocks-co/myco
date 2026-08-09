@@ -89,12 +89,16 @@ capabilities:
       pathField: file_path
     - tool: Write
       pathField: file_path
+      mutates: true
     - tool: Edit
       pathField: file_path
+      mutates: true
     - tool: MultiEdit
       pathField: file_path
+      mutates: true
     - tool: Delete
       pathField: file_path
+      mutates: true
     # Grep carries `file_path` only when scoped to a single file; pattern-only
     # searches have no path to extract and resolve to null.
     - tool: Grep

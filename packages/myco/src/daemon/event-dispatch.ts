@@ -727,6 +727,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
               machineId: requestMachineId,
               projectRoot: requestFilesystemRoot,
               projectId: canopyProjectId,
+              agent: typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME,
               toolName,
               toolInput: event.tool_input,
               defaultExcludePatterns: liveConfig.current.cortex.canopy.exclude.default_patterns,

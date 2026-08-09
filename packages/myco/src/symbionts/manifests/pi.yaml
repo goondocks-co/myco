@@ -51,8 +51,10 @@ capabilities:
       pathField: path
     - tool: write
       pathField: path
+      mutates: true
     - tool: edit
       pathField: path
+      mutates: true
     - tool: bash
       pathField: command
       extract: shell-arg

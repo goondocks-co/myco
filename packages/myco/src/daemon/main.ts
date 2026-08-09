@@ -213,7 +213,7 @@ import { createReconciler } from './reconciliation.js';
 import { EventDedupCache } from './event-dedup-cache.js';
 import { reEnrichSessionFromTranscript } from './session-reenrich.js';
 import { runPendingMigrationTasks } from './migration-tasks.js';
-import { createStopProcessor } from './stop-processing.js';
+import { createStopProcessor, type StopProcessorDeps } from './stop-processing.js';
 import { captureBatchImages } from './capture-images.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createRoutedTranscriptHandler } from '../host/routed-transcript.js';
@@ -1671,7 +1671,10 @@ export async function main(): Promise<void> {
   }
 
   // --- Stop processor (created early so triggerTitleSummary is available to /events route) ---
-  const stopProcessor = createStopProcessor({
+  // Kept as a named object: `canopyRegistry` is populated on it after
+  // registerPowerJobs (deferred-holder pattern), enabling the per-turn
+  // Stop canopy kick.
+  const stopProcessorDeps: StopProcessorDeps = {
     registry,
     sessionBuffers,
     transcriptMiner,
@@ -1689,8 +1692,9 @@ export async function main(): Promise<void> {
     // skip inside reconcileSession makes the matching case a no-op).
     // Recovers wedge-buffered events that arrived mid-turn without
     // waiting for a restart or the 15-minute drain cadence.
-    onStopProcessed: (sessionId) => reconciler.reconcileSession(sessionId),
-  });
+    onStopProcessed: (sessionId: string) => reconciler.reconcileSession(sessionId),
+  };
+  const stopProcessor = createStopProcessor(stopProcessorDeps);
 
   // --- Session routes ---
   // The deps object is mutated after registerPowerJobs so the canopy delta
@@ -3074,6 +3078,11 @@ export async function main(): Promise<void> {
   (sessionLifecycleDeps as {
     canopyRegistry?: typeof powerJobs.canopy.registry;
   }).canopyRegistry = powerJobs.canopy.registry;
+
+  // Same holder for the per-turn Stop kick: end-of-turn delta scans keep
+  // canopy fresh for agents whose tool events arrive via transcript mining
+  // (pi, codex) instead of live per-edit hook events.
+  stopProcessorDeps.canopyRegistry = powerJobs.canopy.registry;
 
   // Initial canopy populate fans out across every registered project. The
   // populate is a no-op for projects that already have canopy rows; on a
