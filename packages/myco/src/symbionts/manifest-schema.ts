@@ -17,6 +17,16 @@ const CaptureRuleSchema = z.object({
       path: z.string(),
       value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
     }).optional(),
+    /**
+     * Fires when a dot-path field on the RAW transcript record equals a
+     * scalar. Mining-path only: live hook events carry no transcript
+     * record, so the predicate never fires there. Used for record-level
+     * structural signals like Claude Code's `isCompactSummary`.
+     */
+    record_field_equals: z.object({
+      path: z.string(),
+      value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+    }).optional(),
     /** Fires when the prompt begins with a `<tag …>` open for one of these tag names (attribute-robust). */
     prompt_envelope_tag_in: z.array(z.string()).optional(),
     /** Fires when the entire prompt is a single balanced/self-closing XML envelope (fail-safe classifier). */

@@ -65,6 +65,12 @@ export interface UserPromptRuleContext {
   transcriptPath?: string;
   /** Parsed first JSON line (session_meta) from the transcript, if available. */
   transcriptMeta?: Record<string, unknown>;
+  /**
+   * The raw transcript record the prompt came from. Present only on the
+   * mining path (the transcript walker); live hook events have no record,
+   * so `record_field_equals` rules are structurally inert there.
+   */
+  record?: Record<string, unknown>;
 }
 
 /** Structured context a rule can match against at SessionStart time. */
@@ -297,6 +303,7 @@ function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {
     transcript_path_missing,
     transcript_meta_field_exists,
     transcript_meta_field_equals,
+    record_field_equals,
     prompt_envelope_tag_in,
     prompt_is_enclosing_envelope,
   } = rule.when;
@@ -309,6 +316,7 @@ function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {
     transcript_path_missing !== undefined ||
     transcript_meta_field_exists !== undefined ||
     transcript_meta_field_equals !== undefined ||
+    record_field_equals !== undefined ||
     prompt_envelope_tag_in !== undefined ||
     prompt_is_enclosing_envelope !== undefined;
   if (!hasAnyCondition) return false;
@@ -330,6 +338,13 @@ function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {
   if (transcript_meta_field_equals !== undefined) {
     if (!ctx.transcriptMeta) return false;
     if (getAtPath(ctx.transcriptMeta, transcript_meta_field_equals.path) !== transcript_meta_field_equals.value) {
+      return false;
+    }
+  }
+
+  if (record_field_equals !== undefined) {
+    if (!ctx.record) return false;
+    if (getAtPath(ctx.record, record_field_equals.path) !== record_field_equals.value) {
       return false;
     }
   }
