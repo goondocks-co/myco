@@ -81,6 +81,7 @@ capabilities:
   pathBearingTools:
     - tool: post_write_code
       pathField: file_path
+      mutates: true
     - tool: post_run_command
       pathField: command
       extract: shell-arg

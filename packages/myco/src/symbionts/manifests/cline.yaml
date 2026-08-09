@@ -59,9 +59,11 @@ capabilities:
       pathField: path
     - tool: editor
       pathField: path
+      mutates: true
     - tool: apply_patch
       pathField: input
       extract: patch
+      mutates: true
     - tool: run_commands
       pathField: command
       extract: shell-arg

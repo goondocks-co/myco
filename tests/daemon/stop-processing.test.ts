@@ -1109,3 +1109,104 @@ describe('createStopProcessor session capture rules', () => {
   });
 
 });
+
+describe('createStopProcessor canopy end-of-turn kick', () => {
+  const PROJ = 'proj_0123456789abcdef0123456789abcdef';
+  let vaultDir: string;
+
+  beforeAll(() => { setupTestDb(); });
+  afterAll(teardownTestDb);
+  beforeEach(() => {
+    cleanTestDb();
+    vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stop-canopy-'));
+  });
+
+  function makeKickHarness() {
+    const run = vi.fn(() => Promise.resolve());
+    const ensureRunner = vi.fn(() => ({ run }));
+    const stopProcessor = createStopProcessor({
+      registry: new SessionRegistry({ gracePeriod: 1, onEmpty: () => {} }),
+      sessionBuffers: new Map(),
+      transcriptMiner: {
+        getAllTurnsWithSource: vi.fn(() => ({ turns: [], source: 'transcript' })),
+        reconcileAndAttributeResponses: vi.fn(() => ({ reclassified: 0, inserted: 0, errors: [], readTranscript: false })),
+      } as never,
+      embeddingManager: { onRemoved: vi.fn() } as never,
+      resolveEmbeddingManager: () => ({ onRemoved: vi.fn() } as never),
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
+      liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+      vaultDir,
+      planTags: [],
+      planWatchConfig: { watchDirs: [], projectRoot: vaultDir },
+      canopyRegistry: { ensureRunner } as never,
+    });
+    return { stopProcessor, ensureRunner, run };
+  }
+
+  function seedStopSession(id: string) {
+    upsertSession({ id, agent: 'claude-code', started_at: 1, created_at: 1, machine_id: 'm' });
+  }
+
+  it('kicks the caller project delta runner on a Grove-bound stop', async () => {
+    seedStopSession('canopy-kick-1');
+    const { stopProcessor, ensureRunner, run } = makeKickHarness();
+    await stopProcessor.handleStopRoute({
+      body: { session_id: 'canopy-kick-1', agent: 'claude-code', last_assistant_message: 'done' },
+      requestContext: {
+        projectRoot: vaultDir,
+        projectId: PROJ,
+        groveId: 'grove_0123456789abcdef0123456789abcdef',
+        machineId: 'm',
+        sessionId: null,
+        projectVaultDir: vaultDir,
+        databasePath: path.join(vaultDir, 'myco.db'),
+        source: 'headers',
+      },
+    } as never);
+    await stopProcessor.getActiveProcessing();
+    expect(ensureRunner).toHaveBeenCalledTimes(1);
+    expect(ensureRunner.mock.calls[0][0]).toMatchObject({ projectId: PROJ, groveId: 'grove_0123456789abcdef0123456789abcdef' });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('never kicks without a resolvable Grove project (no synthesized tenancy)', async () => {
+    seedStopSession('canopy-kick-2');
+    const { stopProcessor, ensureRunner } = makeKickHarness();
+    await stopProcessor.handleStopRoute({
+      body: { session_id: 'canopy-kick-2', agent: 'claude-code', last_assistant_message: 'done' },
+      requestContext: {
+        projectRoot: vaultDir,
+        projectId: null,
+        groveId: null,
+        machineId: 'm',
+        sessionId: null,
+        projectVaultDir: vaultDir,
+        databasePath: path.join(vaultDir, 'myco.db'),
+        source: 'headers',
+      },
+    } as never);
+    await stopProcessor.getActiveProcessing();
+    expect(ensureRunner).not.toHaveBeenCalled();
+  });
+
+  it('skips silently on a non-Grove (legacy/boot) project id', async () => {
+    seedStopSession('canopy-kick-3');
+    const { stopProcessor, ensureRunner } = makeKickHarness();
+    const res = await stopProcessor.handleStopRoute({
+      body: { session_id: 'canopy-kick-3', agent: 'claude-code', last_assistant_message: 'done' },
+      requestContext: {
+        projectRoot: vaultDir,
+        projectId: 'local',
+        groveId: 'grove_0123456789abcdef0123456789abcdef',
+        machineId: 'm',
+        sessionId: null,
+        projectVaultDir: vaultDir,
+        databasePath: path.join(vaultDir, 'myco.db'),
+        source: 'headers',
+      },
+    } as never);
+    expect(res.body).toMatchObject({ ok: true });
+    await stopProcessor.getActiveProcessing();
+    expect(ensureRunner).not.toHaveBeenCalled();
+  });
+});
