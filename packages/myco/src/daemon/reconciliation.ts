@@ -1153,9 +1153,15 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
    * hard-cap option.
    */
   function classifyBufferForCleanup(sessionId: string, identity: BufferIdentity): BufferCleanupDecision {
-    if (hasSessionTombstone(sessionId)) return 'delete';
     const row = getSession(sessionId, ALL_PROJECTS_SCOPE);
-    if (row && row.status !== 'active' && isConverged(sessionId, identity)) return 'age-gated';
+    // A LIVE row outranks any tombstone. A same-id reload after a delete
+    // is a supported flow whose register recreates the row; honoring a
+    // stale tombstone first would let every other session's unregister
+    // (`cleanStaleBuffers`) destroy the live session's wedge-recovery
+    // journal mid-session for the whole tombstone retention window.
+    if (row && row.status === 'active') return 'retain';
+    if (hasSessionTombstone(sessionId)) return 'delete';
+    if (row && isConverged(sessionId, identity)) return 'age-gated';
     return 'retain';
   }
 

@@ -146,6 +146,48 @@ describe('phantom-reaper', () => {
     expect(sessionQualifiesForPhantomReap('ph3', { logger: noopLogger, findTranscript: boom })).toBe(false);
   });
 
+  it('never reaps a sentinel batch that captured a real assistant response', () => {
+    seedSession('resp1');
+    const batchId = seedSentinelBatch('resp1');
+    seedActivity('resp1', batchId, 'myco:inject_cortex');
+    // Stop delivered last_assistant_message onto the sentinel — that is
+    // captured content, not phantom noise.
+    getDatabase().prepare('UPDATE prompt_batches SET response_summary = ? WHERE id = ?')
+      .run('the assistant actually answered here', batchId);
+
+    expect(sessionLooksInjectionOnly('resp1')).toBe(false);
+    expect(findPhantomCandidates([]).map((c) => c.id)).toEqual([]);
+    expect(reapPhantomSession('resp1', { logger: noopLogger, findTranscript: noTranscript })).toBeNull();
+  });
+
+  it('refuses to reap while the session has an unconverged buffer (journal may hold real prompts)', () => {
+    seedPhantom('buf1');
+    const opts = { logger: noopLogger, findTranscript: noTranscript, hasUnconvergedBuffer: () => true };
+    expect(sessionQualifiesForPhantomReap('buf1', opts)).toBe(false);
+    expect(reapPhantomSession('buf1', opts)).toBeNull();
+    expect(getSession('buf1', ALL_PROJECTS_SCOPE)).not.toBeNull();
+  });
+
+  it('refuses to reap when the buffer-convergence probe throws (convergence unproven)', () => {
+    seedPhantom('buf2');
+    const opts = {
+      logger: noopLogger,
+      findTranscript: noTranscript,
+      hasUnconvergedBuffer: () => { throw new Error('probe failed'); },
+    };
+    expect(sessionQualifiesForPhantomReap('buf2', opts)).toBe(false);
+  });
+
+  it('chokepoint re-check: a candidate that gained a real batch after the snapshot is not reaped', () => {
+    seedPhantom('race1');
+    const snapshot = findPhantomCandidates([]).map((c) => c.id);
+    expect(snapshot).toContain('race1');
+    // A register/prompt lands between snapshot and delete.
+    seedRealBatch('race1', 'surprise, I am real work');
+    expect(reapPhantomSession('race1', { logger: noopLogger, findTranscript: noTranscript })).toBeNull();
+    expect(getSession('race1', ALL_PROJECTS_SCOPE)).not.toBeNull();
+  });
+
   it('does not resurrect a reaped session via ensureSessionRowExists (tombstone gate)', () => {
     seedPhantom('ph4');
     reapPhantomSession('ph4', { logger: noopLogger, findTranscript: noTranscript });

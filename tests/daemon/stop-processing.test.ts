@@ -1169,6 +1169,49 @@ describe('createStopProcessor canopy end-of-turn kick', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it('roots the kick at the CANONICAL projectRoot, never a worktree callerRoot', async () => {
+    seedStopSession('canopy-kick-root');
+    const { stopProcessor, ensureRunner } = makeKickHarness();
+    await stopProcessor.handleStopRoute({
+      body: { session_id: 'canopy-kick-root', agent: 'claude-code', last_assistant_message: 'done' },
+      requestContext: {
+        projectRoot: '/registered/canonical-root',
+        callerRoot: '/registered/canonical-root/.claude/worktrees/feature-x',
+        projectId: PROJ,
+        groveId: 'grove_0123456789abcdef0123456789abcdef',
+        machineId: 'm',
+        sessionId: null,
+        projectVaultDir: vaultDir,
+        databasePath: path.join(vaultDir, 'myco.db'),
+        source: 'headers',
+      },
+    } as never);
+    await stopProcessor.getActiveProcessing();
+    expect(ensureRunner).toHaveBeenCalledTimes(1);
+    expect(ensureRunner.mock.calls[0][0]).toMatchObject({ projectRoot: '/registered/canonical-root' });
+  });
+
+  it('never kicks for a host-served (routed) stop — member paths do not exist on this host', async () => {
+    seedStopSession('canopy-kick-routed');
+    const { stopProcessor, ensureRunner } = makeKickHarness();
+    await stopProcessor.handleStopRoute({
+      body: { session_id: 'canopy-kick-routed', agent: 'claude-code', last_assistant_message: 'done' },
+      requestContext: {
+        projectRoot: '/member/only/path',
+        projectId: PROJ,
+        groveId: 'grove_0123456789abcdef0123456789abcdef',
+        machineId: 'member-machine',
+        sessionId: null,
+        projectVaultDir: vaultDir,
+        databasePath: path.join(vaultDir, 'myco.db'),
+        source: 'headers',
+        hostServed: true,
+      },
+    } as never);
+    await stopProcessor.getActiveProcessing();
+    expect(ensureRunner).not.toHaveBeenCalled();
+  });
+
   it('never kicks without a resolvable Grove project (no synthesized tenancy)', async () => {
     seedStopSession('canopy-kick-2');
     const { stopProcessor, ensureRunner } = makeKickHarness();

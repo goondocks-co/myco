@@ -103,6 +103,18 @@ describe('compact-continuation lineage stitch (miner)', () => {
     expect(summaries.length).toBeLessThanOrEqual(2);
   });
 
+  it('never stitches for an agent without a compactContinuation manifest declaration', () => {
+    // Same fixture bytes, mined as a codex transcript: codex declares no
+    // capture.compactContinuation, so a foreign transcript carrying
+    // Claude-shaped fields must not write lineage.
+    new TranscriptMiner().reconcileBatchKinds(NEW_ID, {
+      agent: 'codex',
+      transcriptPath,
+    });
+    const row = getSession(NEW_ID, ALL_PROJECTS_SCOPE)!;
+    expect(row.parent_session_id).toBeNull();
+  });
+
   it('never overwrites existing lineage (NULL-guarded)', () => {
     updateSession(NEW_ID, { parent_session_id: 'someone-else', parent_session_reason: 'resume' }, ALL_PROJECTS_SCOPE);
     reconcile();

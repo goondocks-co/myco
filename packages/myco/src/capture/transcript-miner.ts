@@ -25,6 +25,8 @@ import { getSession, updateSession } from '../db/queries/sessions.js';
 import { assertGroveProjectId, ALL_PROJECTS_SCOPE, type GroveProjectId } from '@myco/grove/ids.js';
 import { readTranscriptMeta } from '../hooks/transcript-meta.js';
 import { evaluateSessionCaptureRules, resolveSubagentThread } from '../hooks/capture-rules.js';
+import { getManifestByName } from '../symbionts/detect.js';
+import { getAtPath } from '../utils/dot-path.js';
 import { stripPlanTagEnvelopes } from '../plans/tag-envelopes.js';
 
 function promptPrefix(text: string | null | undefined): string {
@@ -385,13 +387,15 @@ export class TranscriptMiner {
     // `transcript_meta_*` rules fire at mining time exactly as at hook time.
     const parsed = this.parseAllEvents(input.transcriptPath);
 
-    // Compact-continuation lineage: when Claude Code auto-compacts at the
-    // context ceiling, the continuation is written to a NEW transcript under
-    // a NEW session id whose compact-summary record still carries the OLD
-    // session id (snake_case `session_id`, distinct from the record's own
-    // camelCase `sessionId`). An in-place compaction carries its OWN id
-    // there — the fields differing is the rollover discriminator.
-    this.stitchCompactContinuationLineage(targetSessionId, parsed.events);
+    // Compact-continuation lineage: when an agent rolls a conversation into
+    // a NEW transcript at auto-compact, the continuation's summary record
+    // names its predecessor. Manifest-gated (only agents declaring
+    // `capture.compactContinuation` participate) and never run on a
+    // reattributed sub-agent mine — the target there is the PARENT session,
+    // and a child transcript must not write lineage onto it.
+    if (!reattribute) {
+      this.stitchCompactContinuationLineage(input.agent, targetSessionId, parsed.events);
+    }
     const { records, droppedText, noMaskableDropRuleFound } = extractUserPromptRecordsWithDrops(
       input.agent,
       parsed.events,
@@ -734,22 +738,30 @@ export class TranscriptMiner {
   /**
    * Stitch compact-continuation lineage from the transcript's own records.
    *
-   * The rollover discriminator is structural: a compact-summary user record
-   * (`isCompactSummary: true`) whose snake_case `session_id` differs from
-   * the session being mined names its predecessor. In-place compactions
-   * carry the session's own id there and are skipped. NULL-guarded so a
-   * re-mine (or a later in-place compaction in the same file) never
-   * overwrites lineage already recorded — idempotent by construction.
-   * Re-registration cannot wipe the write: `upsertSession` COALESCEs
-   * lineage columns (additive re-registration semantics).
+   * Manifest-driven: the agent's `capture.compactContinuation` declares
+   * where the rollover flag and the predecessor id live on the summary
+   * record (Claude Code: `isCompactSummary` / snake_case `session_id`).
+   * Agents without the declaration never stitch — the miner is
+   * agent-agnostic and a foreign transcript carrying similar-looking
+   * fields cannot write bogus lineage. The rollover discriminator is the
+   * parent id DIFFERING from the session being mined; in-place
+   * compactions carry the session's own id and are skipped. NULL-guarded
+   * so a re-mine never overwrites lineage already recorded — idempotent
+   * by construction. Re-registration cannot wipe the write:
+   * `upsertSession` COALESCEs lineage columns.
    */
   private stitchCompactContinuationLineage(
+    agent: string,
     sessionId: string,
     events: ReadonlyArray<Record<string, unknown>>,
   ): void {
+    const declaration = getManifestByName(agent)?.capture?.compactContinuation;
+    if (!declaration) return;
     for (const event of events) {
-      if (event.type !== 'user' || event.isCompactSummary !== true) continue;
-      const parentId = typeof event.session_id === 'string' ? event.session_id : null;
+      if (event.type !== 'user') continue;
+      if (getAtPath(event, declaration.recordFlagPath) !== true) continue;
+      const parentValue = getAtPath(event, declaration.parentSessionIdPath);
+      const parentId = typeof parentValue === 'string' ? parentValue : null;
       if (!parentId || parentId === sessionId) continue;
       try {
         const existing = getSession(sessionId, ALL_PROJECTS_SCOPE);
