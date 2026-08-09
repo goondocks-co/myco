@@ -87,12 +87,18 @@ describe('backfillProjectForresidency', () => {
     expect(pending[0].id).toBeLessThan(pending[1].id);
   });
 
-  test('strips local-only columns from the shipped payload (knowledge_release_state.basis_ref)', () => {
+  test('KEEPS every column on the residency push — full fidelity, not the sync strip', () => {
+    // Residency is not team sync. Sync strips local-only columns
+    // (basis_ref/basis_sha/evidence_json) for its narrowed cloud replica;
+    // residency moves your OWN project to a host that holds the single copy and
+    // then deletes the local rows, so a stripped column is GONE on the round
+    // trip. The residency send path uses `residencyEncodeRow` (keeps everything),
+    // NOT `sanitizeSyncPayload`.
     seedWithoutFk(() => {
       getDatabase().prepare(
         `INSERT INTO knowledge_release_state
-           (id, project_id, machine_id, identity_key, namespace, record_id, state, confidence, basis_ref, checked_at, created_at)
-         VALUES ('krel_x', ?, 'local', 'idk', 'ns', 'rid', 'released', 'high', 'feat/secret-branch', 1, 1)`,
+           (id, project_id, machine_id, identity_key, namespace, record_id, state, confidence, basis_ref, basis_sha, evidence_json, checked_at, created_at)
+         VALUES ('krel_x', ?, 'local', 'idk', 'ns', 'rid', 'released', 'high', 'feat/secret-branch', 'deadbeef', '{"k":1}', 1, 1)`,
       ).run(PROJ_A);
     });
 
@@ -100,8 +106,10 @@ describe('backfillProjectForresidency', () => {
 
     const row = listPendingForProject(PROJ_A).find((r) => r.table_name === 'knowledge_release_state');
     expect(row).toBeDefined();
-    expect('basis_ref' in row!.payload).toBe(false);
     expect(row!.payload.id).toBe('krel_x');
+    expect(row!.payload.basis_ref).toBe('feat/secret-branch');
+    expect(row!.payload.basis_sha).toBe('deadbeef');
+    expect(row!.payload.evidence_json).toBe('{"k":1}');
   });
 });
 

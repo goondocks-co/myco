@@ -22,7 +22,7 @@ import { Database } from 'bun:sqlite';
 
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import { DETACH_ARTIFACT_TABLES, createBackup, restoreBackup, projectScope } from '@myco/backup/engine.js';
-import { RESIDENCY_APPLY_RULES, RESIDENCY_SIDECARS, applyResidencyRows } from '@myco/db/queries/residency-apply.js';
+import { RESIDENCY_APPLY_RULES, RESIDENCY_SIDECARS, RESIDENCY_TABLE_ORDER, applyResidencyRows } from '@myco/db/queries/residency-apply.js';
 import { backfillProjectForResidency, listSidecarPage } from '@myco/db/queries/residency-backfill.js';
 import { listPendingForProject } from '@myco/db/queries/team-outbox.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -184,6 +184,65 @@ function withSeededProject(fn: (source: Database) => void): void {
   }
 }
 
+
+/**
+ * A row of `table` where EVERY column carries a value of its DECLARED TYPE,
+ * nullable content columns included — the shape realistic capture produces and
+ * the shape the fidelity gate needs. Returns what it wrote so a round-trip can
+ * be compared value-for-value.
+ *
+ * `seedRow` above only fills NOT-NULL-without-default columns and types every
+ * TEXT-ish value as a string; both blind spots shipped data loss — a BLOB
+ * (`attachments.data`) tested as TEXT, and stripped nullable columns
+ * (`knowledge_release_state.basis_ref/basis_sha/evidence_json`) never populated
+ * so their loss was invisible.
+ */
+function seedRealisticRow(db: Database, table: string): Record<string, unknown> {
+  const info = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string; type: string; notnull: number; dflt_value: unknown; pk: number;
+  }>;
+  const overrides = SEED_OVERRIDES[table] ?? {};
+  const written: Record<string, unknown> = {};
+  for (const col of info) {
+    const t = col.type.toUpperCase();
+    if (col.name in overrides) { written[col.name] = overrides[col.name]; continue; }
+    if (col.name === 'project_id') { written[col.name] = PROJ; continue; }
+    if (col.pk > 0) { written[col.name] = t.includes('INT') ? 1 : `${table}_row_1`; continue; }
+    if (t.includes('BLOB')) { written[col.name] = new Uint8Array([0, 1, 2, 253, 254, 255]); continue; }
+    if (t.includes('INT')) { written[col.name] = 7; continue; }
+    if (t.includes('REAL') || t.includes('FLOA') || t.includes('DOUB')) { written[col.name] = 1.5; continue; }
+    written[col.name] = `${table}_${col.name}_value`;
+  }
+  const cols = Object.keys(written);
+  db.prepare(
+    `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+  ).run(...cols.map((c) => written[c] as never));
+  return written;
+}
+
+/** Columns whose value the RECEIVER legitimately transforms, so a fidelity
+ *  compare must ignore them: the reassigned autoincrement id (local-rowid
+ *  tables only), the receiver clock stamp, and the local-only sync marker. */
+function bookkeepingColumns(table: string): Set<string> {
+  const cols = new Set<string>(['received_at', 'synced_at']);
+  const rule = RESIDENCY_APPLY_RULES[table] as { kind: string; selfRef?: string } | undefined;
+  if (rule?.kind === 'local-rowid') {
+    cols.add('id'); // reassigned by the receiver's AUTOINCREMENT
+    // A self-reference is remapped to the parent's RECEIVER id, or nulled when
+    // the parent is outside this batch — a single-row seed always nulls it.
+    // Its remapping correctness is gated in routed-residency.test.ts, not here.
+    if (rule.selfRef) cols.add(rule.selfRef);
+  }
+  return cols;
+}
+
+function bytesEqual(a: unknown, b: unknown): boolean {
+  const ba = a instanceof Uint8Array ? Buffer.from(a) : Buffer.isBuffer(a) ? a : null;
+  const bb = b instanceof Uint8Array ? Buffer.from(b) : Buffer.isBuffer(b) ? b : null;
+  if (ba && bb) return ba.equals(bb);
+  return false;
+}
+
 describe('residency per-direction coverage (R2/R5)', () => {
   test('DETACH (behavioral): a project-scoped backup restores EVERY project-scoped table, one row each, by name', () => {
     const source = new Database(':memory:');
@@ -258,6 +317,106 @@ describe('residency per-direction coverage (R2/R5)', () => {
       expect(missing).toEqual([]);
       target.close();
     });
+  });
+
+
+  test('DIRECTION PARITY: attach and detach carry the SAME canonical table set', () => {
+    // The one-level-up version of #842. Attach and detach each defined their own
+    // set: attach carries GROVE_PROJECT_SCOPED_TABLES + content_publications, the
+    // detach artifact carries GROVE_PROJECT_SCOPED_TABLES alone — so a project
+    // with published skills attached, then detached, lost content_publications
+    // permanently (it has no project_id, so it fell out of the detach set). Two
+    // directions asserting different sets is exactly the asymmetry the table
+    // parity work was meant to end; assert them equal so neither can drift.
+    const attachCarried = [...RESIDENCY_TABLE_ORDER].sort();
+    const detachCarried = [...DETACH_ARTIFACT_TABLES].sort();
+    expect(detachCarried).toEqual(attachCarried);
+  });
+
+  test('ATTACH FIDELITY: every content column survives send -> apply, at its real type', () => {
+    // Table presence is necessary, not sufficient. `attachments.data` is a BLOB;
+    // the push JSON-encodes it to {"0":..} and the receiver bind THROWS, wedging
+    // attach on any vault with an attachment. `knowledge_release_state`'s
+    // basis_ref/basis_sha/evidence_json are stripped by the team-SYNC sanitizer
+    // the residency push borrowed, then deleted locally — gone on a lossless-by-
+    // contract round trip. Seed a realistic row of each carried table, drive the
+    // REAL send + apply, and assert every content column arrives byte-for-byte
+    // (ignoring the columns the receiver legitimately transforms).
+    setupTestDb();
+    try {
+      const source = getDatabase();
+      source.exec('PRAGMA foreign_keys = OFF');
+      const expected = new Map<string, Record<string, unknown>>();
+      for (const table of GROVE_PROJECT_SCOPED_TABLES) expected.set(table, seedRealisticRow(source, table));
+      expected.set('content_publications', seedRealisticRow(source, 'content_publications'));
+
+      const target = new Database(':memory:');
+      createSchema(target, 'host_machine');
+      target.exec('PRAGMA foreign_keys = OFF');
+      const scope = { expectedProjectId: PROJ };
+
+      backfillProjectForResidency(PROJ, 'member_machine');
+      for (const row of listPendingForProject(PROJ)) {
+        applyResidencyRows(target, row.table_name, [row.payload], scope);
+      }
+      for (const sidecar of RESIDENCY_SIDECARS) {
+        let cursor: string | null = null;
+        do {
+          const page = listSidecarPage(sidecar, PROJ, cursor);
+          if (page.rows.length > 0) applyResidencyRows(target, sidecar.table, page.rows, scope);
+          cursor = page.nextCursor;
+        } while (cursor !== null);
+      }
+
+      const lost: string[] = [];
+      for (const [table, want] of expected) {
+        const ignore = bookkeepingColumns(table);
+        const got = target.prepare(`SELECT * FROM ${table} LIMIT 1`).get() as Record<string, unknown> | undefined;
+        if (!got) { lost.push(`${table}: no row arrived`); continue; }
+        for (const [col, wantVal] of Object.entries(want)) {
+          if (ignore.has(col)) continue;
+          const gotVal = got[col];
+          const ok = wantVal instanceof Uint8Array ? bytesEqual(wantVal, gotVal) : gotVal === wantVal;
+          if (!ok) lost.push(`${table}.${col}: sent ${JSON.stringify(wantVal)}, host has ${JSON.stringify(gotVal)}`);
+        }
+      }
+      expect(lost).toEqual([]);
+      target.close();
+    } finally {
+      teardownTestDb();
+    }
+  });
+
+
+  test('DETACH FIDELITY: content_publications rides the artifact, scoped by its owning skill', () => {
+    // The behavioral lock for the parity fix. content_publications has no
+    // project_id, so a project-scoped detach must reach it through the owning
+    // artifact (skill_records/okf_pages) — the same resolution attach uses.
+    // Also asserts scoping: a DIFFERENT project's publication must NOT ride this
+    // project's artifact.
+    const source = new Database(':memory:');
+    createSchema(source, 'local');
+    source.exec('PRAGMA foreign_keys = OFF');
+    // Two skills: one in PROJ, one in another project; one publication each.
+    source.prepare(`INSERT INTO skill_records (id, project_id, agent_id, name, display_name, description, path, created_at, updated_at) VALUES ('skill_mine', ?, 'user', 'a', 'A', 'd', 'p', 1, 1)`).run(PROJ);
+    source.prepare(`INSERT INTO skill_records (id, project_id, agent_id, name, display_name, description, path, created_at, updated_at) VALUES ('skill_other', 'proj_other0000000000000000000000', 'user', 'b', 'B', 'd', 'p', 1, 1)`).run();
+    const pub = source.prepare(`INSERT INTO content_publications (artifact_kind, artifact_id, published_generation, published_at, published_by, machine_id) VALUES ('skill', ?, 1, 1, 'user', 'local')`);
+    pub.run('skill_mine');
+    pub.run('skill_other');
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-detach-cp-'));
+    try {
+      const dump = createBackup(source, dir, 'machine_test', projectScope(PROJ), 'coverage', DETACH_ARTIFACT_TABLES);
+      const target = new Database(':memory:');
+      createSchema(target, 'local');
+      restoreBackup(target, dump);
+      const rows = target.prepare(`SELECT artifact_id FROM content_publications`).all() as Array<{ artifact_id: string }>;
+      expect(rows.map((r) => r.artifact_id)).toEqual(['skill_mine']);
+      target.close();
+    } finally {
+      source.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('ATTACH is replay-safe: shipping the same rows twice leaves one row per table', () => {

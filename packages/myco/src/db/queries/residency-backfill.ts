@@ -26,10 +26,8 @@ import {
   RESIDENCY_SIDECARS,
   type ResidencySidecar,
 } from '@myco/db/queries/residency-apply.js';
-import {
-  insertOutboxRowsForUpsert,
-  sanitizeSyncPayload,
-} from '@myco/db/queries/team-outbox.js';
+import { insertOutboxRowsForUpsert } from '@myco/db/queries/team-outbox.js';
+import { residencyEncodeRow } from '@myco/db/queries/residency-wire.js';
 
 /** Default rows per sidecar page — comfortably under the 8MB per-request cap. */
 export const RESIDENCY_SIDECAR_PAGE_SIZE = 500;
@@ -67,7 +65,7 @@ export function backfillProjectForResidency(projectId: string, machineId: string
     // insertOutboxRowsForUpsert reads `__myco_team_id` for the team id and
     // defaults null when absent — residency rows carry none, so they enqueue
     // team-id-less, and it applies the same sanitizeSyncPayload strip.
-    insertOutboxRowsForUpsert(db, table, rows, machineId, now);
+    insertOutboxRowsForUpsert(db, table, rows, machineId, now, residencyEncodeRow);
     total += rows.length;
   }
 
@@ -130,7 +128,7 @@ export function listSidecarPage(
   const nextCursor = rows.length < pageSize
     ? null
     : JSON.stringify(key.map((c) => last![c]));
-  return { rows: rows.map((r) => sanitizeSyncPayload(sidecar.table, r)), nextCursor };
+  return { rows: rows.map((r) => residencyEncodeRow(sidecar.table, r)), nextCursor };
 }
 
 /**

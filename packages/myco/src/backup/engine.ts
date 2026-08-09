@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import { SYNC_PROTOCOL_VERSION, epochSeconds } from '@myco/constants.js';
+import { PROJECT_ARTIFACT_IDS_SQL } from '@myco/db/queries/residency-apply.js';
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import {
   ALL_PROJECTS_SCOPE,
@@ -47,8 +48,16 @@ export const BACKUP_TABLES = [
  * project WHERE), so including it would hand every departing member the
  * host's membership records.
  */
-export const DETACH_ARTIFACT_TABLES: readonly string[] =
-  BACKUP_TABLES.filter((t) => t !== 'team_members');
+export const DETACH_ARTIFACT_TABLES: readonly string[] = [
+  ...BACKUP_TABLES.filter((t) => t !== 'team_members'),
+  // `content_publications` has no `project_id`, so it is absent from
+  // GROVE_PROJECT_SCOPED_TABLES — but the attach push carries it (scoped through
+  // its owning artifact), and residency deletes the local copy on attach. It
+  // MUST ride the detach artifact too, or a project with published skills/OKF
+  // pages loses its publication state permanently on a round trip. Scoped by
+  // {@link projectScopeClauseFor}, not by a project_id column it does not have.
+  'content_publications',
+];
 
 /** File extension for backup dumps. */
 const BACKUP_EXTENSION = '.sql';
@@ -101,8 +110,20 @@ function readStampedSchemaVersion(db: Database): number | null {
  * For backup purposes `'global'` and `'all'` are equivalent: both produce a
  * no-op `WHERE` clause so every row of every BACKUP_TABLES table is dumped.
  */
-function projectScopeClause(scope: ProjectScope): { sql: string; params: unknown[] } {
-  if (scope.kind === 'project') {
+/**
+ * The project-scope WHERE clause for ONE table. Most project-scoped tables
+ * filter on their own `project_id`; `content_publications` has none and is
+ * scoped through the artifact it publishes — the SAME resolution the attach
+ * sidecar uses ({@link PROJECT_ARTIFACT_IDS_SQL}), shared so the two directions
+ * cannot scope the table differently. A table this resolver does not recognize
+ * as project-scoped returns an empty clause (dumped whole, all-projects only).
+ */
+function projectScopeClauseFor(table: string, scope: ProjectScope): { sql: string; params: unknown[] } {
+  if (scope.kind !== 'project') return { sql: '', params: [] };
+  if (table === 'content_publications') {
+    return { sql: ` WHERE artifact_id IN (${PROJECT_ARTIFACT_IDS_SQL})`, params: [scope.id, scope.id] };
+  }
+  if (PROJECT_SCOPED_BACKUP_TABLES.has(table)) {
     return { sql: ' WHERE project_id = ?', params: [scope.id] };
   }
   return { sql: '', params: [] };
@@ -202,7 +223,6 @@ export function createBackup(
   fs.mkdirSync(backupDir, { recursive: true });
 
   const timestamp = epochSeconds();
-  const clause = projectScopeClause(scope);
   const scopeLabel = scope.kind === 'project'
     ? `project=${scope.id}`
     : 'all-projects';
@@ -261,8 +281,9 @@ export function createBackup(
     }
 
     for (const table of dumpTables) {
-      const useScope = clause.sql !== '' && PROJECT_SCOPED_BACKUP_TABLES.has(table);
-      const where = useScope ? clause.sql : '';
+      const clause = projectScopeClauseFor(table, scope);
+      const useScope = clause.sql !== '';
+      const where = clause.sql;
       // Row count up front for the table header (the count the restore
       // preview keys on). The scan below is snapshot-consistent within
       // itself (iterate holds a read snapshot); the count is taken

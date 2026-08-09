@@ -532,6 +532,13 @@ export function insertOutboxRowsForUpsert(
   rows: ReadonlyArray<Record<string, unknown>>,
   machineId: string,
   now: number,
+  /**
+   * The row -> wire-payload transform. Defaults to the team-SYNC sanitizer
+   * (strips local-only columns) so the sync path is unchanged; the residency
+   * caller passes a full-fidelity, BLOB-safe codec instead — residency keeps
+   * every column and must not lose a Uint8Array through JSON.
+   */
+  transform: (table: string, row: Record<string, unknown>) => Record<string, unknown> = sanitizeSyncPayload,
 ): void {
   if (rows.length === 0) return;
   db.transaction((batchRows: ReadonlyArray<Record<string, unknown>>) => {
@@ -551,7 +558,7 @@ export function insertOutboxRowsForUpsert(
       stmt.run(
         tableName,
         String(row.id),
-        JSON.stringify(sanitizeSyncPayload(tableName, payloadRow)),
+        JSON.stringify(transform(tableName, payloadRow)),
         machineId,
         teamId,
         projectId,
