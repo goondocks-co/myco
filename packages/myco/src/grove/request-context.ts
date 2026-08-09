@@ -968,11 +968,12 @@ function resolveManifestRequestContext(
 ): MycoRequestContext | null {
   const manifest = cachedManifest ?? readManifest(fallback.projectVaultDir);
   if (!manifest?.grove?.binding_id) return null;
+  const mycoHome = resolveMycoHome();
   const registered = findRegisteredProject({
     projectId: manifest.project.id,
     bindingId: manifest.grove.binding_id,
     projectRoot: fallback.projectRoot,
-  });
+  }, mycoHome);
   if (!registered) return null;
   return buildRegisteredRequestContext({
     fallback,
@@ -982,6 +983,7 @@ function resolveManifestRequestContext(
     projectRoot: registered.project.root,
     projectId: assertGroveProjectId(registered.project.project_id),
     grove: registered.grove,
+    mycoHome,
     machineId: fallback.machineId,
     sessionId: fallback.sessionId,
     manifest,
@@ -1008,11 +1010,12 @@ function resolveManifestHeaderRequestContext(
     throw new Error(`Request context project id ${projectId} does not match project.toml id ${manifest.project.id}`);
   }
 
+  const mycoHome = resolveMycoHome();
   const registered = findRegisteredProject({
     projectId,
     bindingId: manifest.grove.binding_id,
     projectRoot,
-  });
+  }, mycoHome);
   if (!registered) {
     throw new Error(`Project ${projectId} is not registered from request context`);
   }
@@ -1025,6 +1028,7 @@ function resolveManifestHeaderRequestContext(
     projectRoot: registered.project.root,
     projectId: assertGroveProjectId(projectId),
     grove: registered.grove,
+    mycoHome,
     machineId: input.machineId ?? fallback.machineId,
     sessionId: input.sessionId ?? fallback.sessionId,
     manifest,
@@ -1148,6 +1152,7 @@ function resolveRegisteredRequestContext(
   return buildRegisteredRequestContext({
     fallback,
     source,
+    mycoHome,
     tenancySource,
     enforceGroveOwnership,
     projectRoot: registeredRoot,
@@ -1186,11 +1191,23 @@ function buildRegisteredRequestContext(input: {
   projectRoot: string;
   projectId: GroveProjectId;
   grove: GroveRecord;
+  /**
+   * The home the caller RESOLVED `grove` from. Required, never defaulted:
+   * this check re-derives ownership as defense in depth, and defaulting to
+   * `resolveMycoHome()` here made it the one read in a resolution that could
+   * answer against a DIFFERENT home than the one that produced the record —
+   * in a process where the env can shift under async work (the bundled test
+   * runner), the lookup that had just succeeded came back "foreign" and a
+   * request that should have been refused 404 by the served-grove filter was
+   * refused 403 here instead. One home per resolution, resolved once by the
+   * entry point and threaded everywhere that resolution reads.
+   */
+  mycoHome: string;
   machineId: string;
   sessionId: string | null;
   manifest: ProjectManifest | null;
 }): MycoRequestContext {
-  if (input.enforceGroveOwnership && !groveOwnedByThisDaemon(input.grove)) {
+  if (input.enforceGroveOwnership && !groveOwnedByThisDaemon(input.grove, input.mycoHome)) {
     throw new ForeignGroveError(input.grove.id);
   }
   const projectRoot = path.resolve(input.projectRoot);

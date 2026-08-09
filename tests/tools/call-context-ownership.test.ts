@@ -194,6 +194,25 @@ describe('groveOwnedByThisDaemon — home predicate is not a no-op', () => {
     sandbox.restore();
   });
 
+
+  it('every ownership re-check names its home explicitly — one home per resolution', () => {
+    // The regression this pins: `groveOwnedByThisDaemon(record)` with the home
+    // DEFAULTED re-resolves MYCO_HOME at check time, making it the one read in
+    // a resolution that can answer against a different home than the one that
+    // produced the record. In a process where the env shifts under async work
+    // (the bundled test runner), the lookup that had just succeeded came back
+    // "foreign", and a request due a 404 from the served-grove filter got a
+    // 403 here instead — observed exactly once on CI, which is how races
+    // introduce themselves. The entry point resolves the home once and every
+    // read in that resolution uses it.
+    const source = fs.readFileSync('packages/myco/src/grove/request-context.ts', 'utf-8');
+    const calls = source.match(/groveOwnedByThisDaemon\([^)]*\)/g) ?? [];
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect(call.includes(','), `home defaulted in: ${call}`).toBe(true);
+    }
+  });
+
   it('is true for a Grove in this home and false for a Grove that lives in another home', () => {
     const owned = createGrove('Owned', sandbox.mycoHome);
     const foreign = createGrove('Foreign', foreignHome);
