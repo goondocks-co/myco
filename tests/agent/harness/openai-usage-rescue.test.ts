@@ -46,6 +46,12 @@ function loopingToolCallModelProvider(perTurnTokens: number) {
               inputTokens: perTurnTokens,
               outputTokens: perTurnTokens,
               totalTokens: perTurnTokens * 2,
+              // agents-core ≥0.14 tracing snapshots reduce over these arrays
+              // unguarded (runner/tracing.js sumUsageDetail); the SDK's own
+              // Usage class always normalizes them to [], so a Model
+              // implementation's response usage must carry them too.
+              inputTokensDetails: [],
+              outputTokensDetails: [],
             },
           };
         },
