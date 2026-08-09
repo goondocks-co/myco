@@ -406,6 +406,12 @@ export class WindowsTaskServiceManager implements ServiceManager {
   async install(spec: ServiceSpec, _opts: InstallOptions = {}): Promise<InstallResult> {
     const scriptPath = this.scriptPath(spec.label);
     const rendered = `${WINDOWS_POWERSHELL_UTF8_BOM}${renderWindowsServiceScript(spec)}`;
+    // Before the unchanged-registration early return: an install over an existing
+    // task whose log directory has since been removed must still repair it, or the
+    // task starts and immediately dies on its output redirect. Shared precondition
+    // with systemd/launchd — every manager ensures log dirs before deciding the
+    // on-disk unit is unchanged.
+    ensureServiceLogDirs(spec);
     let existing: string | null = null;
     try { existing = fs.readFileSync(scriptPath, 'utf-8'); } catch { /* ENOENT */ }
     const installed = existing === rendered
@@ -421,7 +427,6 @@ export class WindowsTaskServiceManager implements ServiceManager {
     }
 
     fs.mkdirSync(this.scriptDir, { recursive: true });
-    ensureServiceLogDirs(spec);
     atomicWriteFileSync(scriptPath, rendered);
 
     assertRunSucceeded(

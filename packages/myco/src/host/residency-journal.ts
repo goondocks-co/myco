@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { HOST_MIN_COMPAT_VERSION } from '../constants.js';
 import { isGroveEraId } from '../grove/ids.js';
 import { ABSENT, present, readDirPresence, readFilePresence, type Presence } from '@myco/utils/presence.js';
 import { resolveTeamsHome } from '../grove/paths.js';
@@ -56,22 +57,30 @@ export const ROUTED_DETACH_COMPLETE_PATH = '/routed-capture/residency-detach-com
 export const RESIDENCY_MIN_HOST_PROTOCOL = 5;
 
 /**
- * Minimum host protocol version a DETACH PULL requires — deliberately LOWER
- * than the push floor, and a separate constant so the two cannot be raised
- * together by reflex.
+ * Minimum host protocol version a DETACH PULL requires. It is `HOST_MIN_COMPAT_VERSION`
+ * — the compatibility floor itself — because detach has no floor ABOVE it, and a
+ * floor BELOW it is a dead promise.
  *
  * Detach moves the project as one whole-project backup artifact and names no
- * tables, so nothing about a widened allow-list applies to it. Gating it on the
- * push floor would strand exactly the people the widening is meant to protect:
- * a member with a project resident on an older host could not bring it home at
- * all, and the only way out is `--allow-no-pull`, which abandons the history on
- * the host. A data-loss fix must not make walking away from your data the
- * supported path.
+ * tables, so nothing about the attach push's widened allow-list applies to it:
+ * every host a member can still talk to (protocol ≥ `HOST_MIN_COMPAT_VERSION`)
+ * serves the artifact route, so there is no additional floor to impose. Detach
+ * must never be the direction that strands you — the only escape from a refusal
+ * here is `--allow-no-pull`, which abandons the history on the host, and a
+ * data-loss fix must not make walking away from your data the supported path.
  *
- * The floor stays at the version that introduced the artifact routes; a host
- * below it serves no detach endpoint to call.
+ * This constant used to sit at 3 ("the version that introduced the artifact
+ * routes"), meaning to promise a wider reach than push. But the extra reach was
+ * a fiction: the detach precheck admitted a recorded-v3 host, and then the dial
+ * hit `hostProtocolCompatible`, which refuses anything below `HOST_MIN_COMPAT_VERSION`
+ * (4) — so a v3 host was never actually detachable, it just failed later, at the
+ * transport, with a mismatch error instead of the actionable
+ * `residency_pull_unavailable` this precheck raises. Pinning the floor to the
+ * compat floor refuses a v3 host HERE, up front, and states the honest reachable
+ * window: `[HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION]`, the same window
+ * every other host call already accepts. The two now cannot drift.
  */
-export const RESIDENCY_MIN_HOST_PROTOCOL_PULL = 3;
+export const RESIDENCY_MIN_HOST_PROTOCOL_PULL = HOST_MIN_COMPAT_VERSION;
 
 /** Which way the project is moving. `attach` — local → host; `detach` — host → local. */
 export type ResidencyDirection = 'attach' | 'detach';

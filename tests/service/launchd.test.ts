@@ -84,6 +84,25 @@ describe('LaunchdServiceManager', () => {
     expect(runner.calls).toEqual([]);
   });
 
+  test('install RE-CREATES a removed log directory, even when the plist is unchanged', async () => {
+    // launchd redirects the daemon's stdout/stderr to absolute paths and will
+    // not create the parent — a missing dir crash-loops the job on every
+    // relaunch. Ensuring the dirs is a precondition shared with systemd/windows,
+    // so it must run BEFORE the unchanged-plist early return, not after.
+    const s = spec(home);
+    await mgr.install(s);
+    expect(fs.existsSync(path.dirname(s.stdoutPath))).toBe(true);
+
+    fs.rmSync(path.join(home, 'service'), { recursive: true, force: true });
+    expect(fs.existsSync(path.dirname(s.stdoutPath))).toBe(false);
+
+    // Byte-identical plist -> install takes the early return. The dirs must
+    // still come back.
+    await mgr.install(s);
+    expect(fs.existsSync(path.dirname(s.stdoutPath))).toBe(true);
+    expect(fs.existsSync(path.dirname(s.stderrPath))).toBe(true);
+  });
+
   test('install on changed spec writes the new plist without bootout when force is omitted', async () => {
     const s1 = spec(home);
     await mgr.install(s1);
