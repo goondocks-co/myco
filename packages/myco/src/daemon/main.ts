@@ -1707,6 +1707,10 @@ export async function main(): Promise<void> {
       logger,
       resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
       fallbackVaultDir: bootstrapVaultDir,
+      // The buffer journal may hold real prompts the DB never converged
+      // (wedged daemon, failed startup replay); the reap defers to the
+      // reconciler's probe exactly like the maintenance sweep does.
+      hasUnconvergedBuffer: (id) => reconciler.hasUnconvergedBuffer(id),
     }),
   };
   const sessionLifecycle = createSessionLifecycleHandlers(sessionLifecycleDeps);

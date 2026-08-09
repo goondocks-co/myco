@@ -896,12 +896,24 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // registerPowerJobs, same deferred pattern as the register path.
     const canopyRegistry = deps.canopyRegistry;
     const rcForCanopy = req.requestContext;
-    if (canopyRegistry && rcForCanopy?.projectId && rcForCanopy?.databasePath && rcForCanopy?.groveId) {
+    // Root the scan at the CANONICAL registered project root, never the
+    // caller-preferring filesystem root: a worktree callerRoot would thrash
+    // runner identity against the register-path trigger (which roots at
+    // projectRoot) and delta-scan the wrong tree — deleting canonical-tree
+    // canopy entries. Host-served (routed) stops are skipped entirely: the
+    // member's paths don't exist on this host, and a scan rooted at a
+    // member path could wipe or pollute the hosted project's index.
+    if (
+      canopyRegistry
+      && rcForCanopy?.projectId && rcForCanopy?.databasePath && rcForCanopy?.groveId
+      && rcForCanopy.projectRoot
+      && !isHostServedRequest(rcForCanopy)
+    ) {
       try {
         const runner = canopyRegistry.ensureRunner({
           databasePath: rcForCanopy.databasePath,
           projectId: assertGroveProjectId(rcForCanopy.projectId),
-          projectRoot: requestFilesystemRoot,
+          projectRoot: rcForCanopy.projectRoot,
           groveId: rcForCanopy.groveId,
         });
         runner.run().catch((err) => {

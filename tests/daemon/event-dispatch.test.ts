@@ -15,7 +15,7 @@ import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { listGitProvenance } from '@myco/db/queries/release-provenance.js';
 import { getDatabase } from '@myco/db/client.js';
 import { EventBuffer } from '@myco/capture/buffer.js';
-import { insertSessionTombstone, SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
+import { insertSessionTombstone, hasSessionTombstone, SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
 
 import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 function makeHandler(opts: {
@@ -858,6 +858,108 @@ describe('createEventDispatcher', () => {
       logger.close();
       fs.rmSync(vaultDir, { recursive: true, force: true });
       fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+
+    it('a HUMAN prompt supersedes a phantom_reap tombstone — session resurrected, tombstone cleared', async () => {
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'phantom-resurrect-001';
+      insertSessionTombstone(getDatabase(), {
+        sessionId,
+        projectId: null,
+        source: SESSION_TOMBSTONE_SOURCE.PHANTOM_REAP,
+      });
+      const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-phantom-res-'));
+      const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+      fs.writeFileSync(transcriptPath, '');
+
+      const res = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: {
+          type: 'user_prompt',
+          session_id: sessionId,
+          agent: 'claude-code',
+          transcript_path: transcriptPath,
+          prompt: 'I stepped away, now typing my first prompt',
+        },
+        query: {}, params: {}, pathname: '/events',
+      });
+
+      expect(res.body).not.toMatchObject({ ignored: 'session_tombstoned' });
+      expect(hasSessionTombstone(sessionId)).toBe(false);
+      expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).not.toBeNull();
+      expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE }).length).toBeGreaterThan(0);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+
+    it('a prompt still resurrects after a non-prompt event cached the tombstone drop', async () => {
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'phantom-resurrect-cached-002';
+      insertSessionTombstone(getDatabase(), {
+        sessionId,
+        projectId: null,
+        source: SESSION_TOMBSTONE_SOURCE.PHANTOM_REAP,
+      });
+
+      // Non-prompt noise arrives first and caches the tombstone drop.
+      const noise = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: { type: 'tool_use', session_id: sessionId, agent: 'claude-code', tool_name: 'Bash', tool_input: { command: 'pwd' } },
+        query: {}, params: {}, pathname: '/events',
+      });
+      expect(noise.body).toEqual({ ok: true, ignored: 'session_tombstoned', persisted: false });
+
+      const res = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: { type: 'user_prompt', session_id: sessionId, agent: 'claude-code', prompt: 'real human input' },
+        query: {}, params: {}, pathname: '/events',
+      });
+      expect(res.body).not.toMatchObject({ ignored: 'session_tombstoned' });
+      expect(hasSessionTombstone(sessionId)).toBe(false);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    });
+
+    it('non-prompt events never supersede a phantom_reap tombstone', async () => {
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'phantom-no-resurrect-003';
+      insertSessionTombstone(getDatabase(), {
+        sessionId,
+        projectId: null,
+        source: SESSION_TOMBSTONE_SOURCE.PHANTOM_REAP,
+      });
+
+      const res = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: { type: 'tool_use', session_id: sessionId, agent: 'claude-code', tool_name: 'Bash', tool_input: { command: 'ls' } },
+        query: {}, params: {}, pathname: '/events',
+      });
+      expect(res.body).toEqual({ ok: true, ignored: 'session_tombstoned', persisted: false });
+      expect(hasSessionTombstone(sessionId)).toBe(true);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    });
+
+    it('a HUMAN prompt does NOT supersede an api_delete tombstone (deliberate deletes stay final)', async () => {
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'api-delete-stays-final-004';
+      tombstone(sessionId);
+
+      const res = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: { type: 'user_prompt', session_id: sessionId, agent: 'claude-code', prompt: 'let me back in' },
+        query: {}, params: {}, pathname: '/events',
+      });
+      expect(res.body).toEqual({ ok: true, ignored: 'session_tombstoned', persisted: false });
+      expect(hasSessionTombstone(sessionId)).toBe(true);
+      expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
     });
 
     it('flows events again after an explicit register recreates the row (rehydrate branch — gate not consulted)', async () => {

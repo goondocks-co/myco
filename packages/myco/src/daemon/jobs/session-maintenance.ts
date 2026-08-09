@@ -8,14 +8,11 @@
  *    are deleted via cascade, including vault file and embedding vector cleanup.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { isProjectPaused } from '@myco/grove/registry.js';
 import { deleteSessionCascade } from '@myco/db/queries/sessions.js';
 import { completeSessionWithMining, type SessionCompletionDeps } from '../session-completion.js';
 import { SESSION_TOMBSTONE_SOURCE, pruneSessionTombstones } from '@myco/db/queries/session-tombstones.js';
-import { removeBufferLockCompanion } from '@myco/capture/buffer.js';
 import { resolveBufferDirForProjectId } from '@myco/capture/buffer-location.js';
 import {
   epochSeconds,
@@ -26,9 +23,8 @@ import {
 } from '../../constants.js';
 import type { Logger } from '../logger.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
-import { cleanupAfterSessionCascade } from './session-cleanup.js';
-import { findPhantomCandidates } from '../phantom-reaper.js';
-import { findTranscriptFor } from '@myco/symbionts/transcript-discovery.js';
+import { cleanupAfterSessionCascadeOrDegrade } from './session-cleanup.js';
+import { findPhantomCandidates, reapPhantomSession } from '../phantom-reaper.js';
 import { LOG_KINDS } from '../../constants/log-kinds.js';
 
 /**
@@ -269,24 +265,15 @@ export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promi
     // Buffer journal lives under the GROVE project dir; resolve from the
     // deleted row's project id. Unresolvable → skip the buffer file (the
     // tombstone keeps it inert), never guess a path.
-    const bufferDir = resolveBufferDirForProjectId(result.projectId);
-    const vaultDir = resolveProjectVaultDir(result.projectId);
-    if (vaultDir) {
-      await cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir, bufferDir);
-    } else {
-      // No registered project — vector cleanup still runs; vault files
-      // (if any) are unreachable without a project root, so skip the
-      // filesystem pass rather than guess. The buffer journal is still
-      // removed when its Grove dir resolved.
-      for (const sporeId of result.deletedSporeIds) {
-        try { embeddingManager.onRemoved('spores', sporeId); } catch { /* best-effort */ }
-      }
-      try { embeddingManager.onRemoved('sessions', sessionId); } catch { /* best-effort */ }
-      if (bufferDir) {
-        try { fs.unlinkSync(path.join(bufferDir, `${sessionId}.jsonl`)); } catch { /* best-effort */ }
-        removeBufferLockCompanion(bufferDir, sessionId);
-      }
-    }
+    // Shared degraded-tolerant cleanup: an unresolvable project vault
+    // still gets vector + buffer cleanup, never a guessed path.
+    await cleanupAfterSessionCascadeOrDegrade(
+      sessionId,
+      result,
+      embeddingManager,
+      resolveProjectVaultDir(result.projectId),
+      resolveBufferDirForProjectId(result.projectId),
+    );
 
     deletedCount++;
     logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Deleted dead session', {
@@ -303,45 +290,35 @@ export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promi
   // Task 3: Reap injection-only phantom sessions. These escape the
   // dead-session sweep by construction: the SessionStart injection forced
   // a RECOVERED-sentinel batch into them, so they carry exactly one batch
-  // while DEAD_SESSION_MAX_PROMPTS is zero. Same cascade, same cleanup,
-  // own tombstone source. This pass is also the historical cleanup for
-  // phantoms created before the reaper shipped.
+  // while DEAD_SESSION_MAX_PROMPTS is zero. This pass is also the
+  // historical cleanup for phantoms created before the reaper shipped.
+  //
+  // Every deletion goes through `reapPhantomSession` — the single reap
+  // chokepoint. The candidate list is a stale snapshot (each iteration
+  // awaits real fs work, and /sessions/register traffic interleaves);
+  // the chokepoint re-runs the FULL predicate + vetoes synchronously
+  // with the cascade, so a session that re-registered or gained real
+  // work mid-sweep is never deleted from snapshot data.
   const skipPausedForPhantoms = pausedProjectSkipper();
-  const discoverTranscript = deps.findTranscript ?? findTranscriptFor;
   let reapedCount = 0;
   for (const candidate of findPhantomCandidates(registered)) {
     if (skipPausedForPhantoms(candidate.project_id)) continue;
-    if (deps.hasUnconvergedBuffer?.(candidate.id)) {
-      logger.debug(LOG_KINDS.MAINTENANCE_SESSION, 'Deferred phantom reap — unconverged buffer present', {
-        session_id: candidate.id,
-      });
-      continue;
-    }
-    // On-disk transcript veto: discovery success means real content may
-    // exist that mining simply hasn't attached yet — never reap it.
-    try {
-      if (discoverTranscript(candidate.agent, candidate.id)) continue;
-    } catch {
-      continue;
-    }
+    if (registeredSessionIds().includes(candidate.id)) continue;
 
-    const result = deleteSessionCascade(candidate.id, SESSION_TOMBSTONE_SOURCE.PHANTOM_REAP);
-    if (!result.deleted) continue;
+    const result = reapPhantomSession(candidate.id, {
+      logger,
+      findTranscript: deps.findTranscript,
+      hasUnconvergedBuffer: deps.hasUnconvergedBuffer,
+    });
+    if (!result) continue;
 
-    const bufferDir = resolveBufferDirForProjectId(result.projectId);
-    const vaultDir = resolveProjectVaultDir(result.projectId);
-    if (vaultDir) {
-      await cleanupAfterSessionCascade(candidate.id, result, embeddingManager, vaultDir, bufferDir);
-    } else {
-      for (const sporeId of result.deletedSporeIds) {
-        try { embeddingManager.onRemoved('spores', sporeId); } catch { /* best-effort */ }
-      }
-      try { embeddingManager.onRemoved('sessions', candidate.id); } catch { /* best-effort */ }
-      if (bufferDir) {
-        try { fs.unlinkSync(path.join(bufferDir, `${candidate.id}.jsonl`)); } catch { /* best-effort */ }
-        removeBufferLockCompanion(bufferDir, candidate.id);
-      }
-    }
+    await cleanupAfterSessionCascadeOrDegrade(
+      candidate.id,
+      result,
+      embeddingManager,
+      resolveProjectVaultDir(result.projectId),
+      resolveBufferDirForProjectId(result.projectId),
+    );
 
     reapedCount++;
     logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Reaped injection-only phantom session', {

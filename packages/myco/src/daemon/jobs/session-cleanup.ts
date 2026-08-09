@@ -67,3 +67,32 @@ export async function cleanupAfterSessionCascade(
     removeBufferLockCompanion(bufferDir, sessionId);
   }
 }
+
+/**
+ * Cascade cleanup that tolerates an unresolvable vault dir. When the
+ * project's vault can't be resolved, vector cleanup still runs and the
+ * buffer journal (if its dir resolved) is still removed; only the
+ * filesystem passes that need a vault root are skipped — never guessed.
+ * The single shared shape for every sweep-style caller (dead-session
+ * sweep, phantom reap) so their degraded branches cannot drift apart.
+ */
+export async function cleanupAfterSessionCascadeOrDegrade(
+  sessionId: string,
+  result: DeleteCascadeResult,
+  embeddingManager: EmbeddingManager,
+  vaultDir: string | null,
+  bufferDir: string | null,
+): Promise<void> {
+  if (vaultDir) {
+    await cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir, bufferDir);
+    return;
+  }
+  try { embeddingManager.onRemoved('sessions', sessionId); } catch { /* best-effort */ }
+  for (const sporeId of result.deletedSporeIds) {
+    try { embeddingManager.onRemoved('spores', sporeId); } catch { /* best-effort */ }
+  }
+  if (bufferDir) {
+    try { await unlink(`${bufferDir}/${sessionId}.jsonl`); } catch { /* best-effort */ }
+    removeBufferLockCompanion(bufferDir, sessionId);
+  }
+}

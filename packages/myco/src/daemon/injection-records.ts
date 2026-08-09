@@ -17,6 +17,15 @@ import { insertActivity, type ActivityRow } from '@myco/db/queries/activities.js
 import { getLatestBatch, incrementActivityCount } from '@myco/db/queries/batches.js';
 import { epochSeconds } from '@myco/constants.js';
 
+/**
+ * Tool-name prefix for Myco-origin injection activities
+ * (`myco:inject_<type>`). The phantom reaper's deletion predicate matches
+ * on this prefix — writer and predicate MUST share this constant, or a
+ * rename silently desynchronizes them and either phantoms reaccumulate or
+ * real sessions become reap-eligible.
+ */
+export const INJECTION_TOOL_NAME_PREFIX = 'myco:inject_';
+
 const INJECTION_OUTPUT_STORE_LIMIT = 8000;
 
 export type InjectionType = 'cortex' | 'spores' | 'canopy' | 'subagent' | 'plan-nudge';
@@ -149,7 +158,7 @@ export async function recordInjectionActivity(
   }
 
   const contentHash = buildInjectionContentHash(injectionType, sessionId, discriminator);
-  const toolName = `myco:inject_${injectionType}`;
+  const toolName = `${INJECTION_TOOL_NAME_PREFIX}${injectionType}`;
   const now = epochSeconds();
 
   let activity: ActivityRow;

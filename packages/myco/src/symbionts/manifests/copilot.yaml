@@ -185,8 +185,10 @@ capabilities:
       readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl, Get-Content, gc]
     - tool: edit
       pathField: path
+      mutates: true
     - tool: create
       pathField: path
+      mutates: true
     - tool: grep
       pathField: path
 

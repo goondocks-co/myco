@@ -19,6 +19,7 @@ import type { EventBuffer } from '@myco/capture/buffer.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { resolveTenantConfig } from '../request-config.js';
 import { updateSession } from '@myco/db/queries/sessions.js';
+import { deleteSessionTombstone } from '@myco/db/queries/session-tombstones.js';
 import { completeSessionWithMining } from '../session-completion.js';
 import { ensureSession, ENSURE_SESSION_SOURCE } from '../session-lifecycle.js';
 import { notify } from '@myco/notifications/notify.js';
@@ -136,6 +137,16 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
     const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
     const requestMachineId = req.requestContext?.machineId ?? machineId;
+    // An EXPLICIT register deliberately supersedes a prior deletion (the
+    // same-id reload flow). Clearing the tombstone here — not just skipping
+    // it — keeps the tombstone-driven gates downstream (event drops, buffer
+    // cleanup's delete classification, defensive-insert refusal) from
+    // fighting the live session for the rest of the retention window.
+    if (deleteSessionTombstone(session_id)) {
+      logger.info(LOG_KINDS.LIFECYCLE_REGISTER, 'Cleared session tombstone on explicit re-register', {
+        session_id,
+      });
+    }
     // Persist + register through the single lifecycle helper. Pre-fix this
     // call site registered in memory FIRST and upserted second, which
     // poisoned the registry whenever the DB persist later threw.

@@ -47,7 +47,7 @@ import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch, toPromptBatchOrigin, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { getSession, updateSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
-import { hasSessionTombstone } from '@myco/db/queries/session-tombstones.js';
+import { hasSessionTombstone, getSessionTombstone, deleteSessionTombstone, SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
 import { ensureSession, ensureSessionRowExists, ENSURE_SESSION_SOURCE } from './session-lifecycle.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
 import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
@@ -369,7 +369,14 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         const hasTranscriptNow = typeof event.transcript_path === 'string' && event.transcript_path.length > 0;
         // Re-evaluate when a previously-unattended session newly supplies a
         // transcript_path — the earlier drop was made without transcript meta.
-        const shouldReevaluate = cached && !cached.hadTranscriptMeta && hasTranscriptNow;
+        // A HUMAN prompt additionally re-opens a cached tombstone drop: the
+        // gate below distinguishes a phantom-reap tombstone (which a real
+        // prompt supersedes) from a deliberate delete (which stays final) —
+        // the cache must not answer that question with stale data.
+        const shouldReevaluate = cached && (
+          (!cached.hadTranscriptMeta && hasTranscriptNow)
+          || (cached.reason === 'session_tombstoned' && event.type === 'user_prompt')
+        );
         if (cached && !shouldReevaluate) {
           const reason = cached.reason ?? 'rule';
           logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event for previously-dropped session', {
@@ -382,18 +389,35 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         if (shouldReevaluate) {
           droppedSessions.delete(event.session_id);
         }
-        if (hasSessionTombstone(event.session_id)) {
-          // Deletion is final against passive event-driven recreation (an
-          // explicit /sessions/register deliberately supersedes — same-id
-          // reload is a supported flow). hadTranscriptMeta: true makes the
-          // cached drop permanent: a later transcript_path must not reopen
-          // resurrection for a deliberately deleted session.
-          rememberDropped(event.session_id, 'session_tombstoned', true);
-          logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event for deleted (tombstoned) session', {
-            session_id: event.session_id,
-            type: event.type,
-          });
-          return { body: { ok: true, ignored: 'session_tombstoned', persisted: false } };
+        const tombstone = getSessionTombstone(event.session_id);
+        if (tombstone) {
+          // A fresh HUMAN prompt disproves a phantom classification: the
+          // reaper deleted this session as injection-only precisely because
+          // no prompt ever arrived, so one arriving now means the phantom
+          // call was premature (agent idled before its first prompt, then
+          // the user came back). Capture is the core contract — clear the
+          // tombstone and let the event proceed. Applies ONLY to
+          // `phantom_reap`: user deletes and sweep deletes stay final
+          // against every passive event (an explicit /sessions/register
+          // deliberately supersedes those — same-id reload is a supported
+          // flow).
+          if (tombstone.source === SESSION_TOMBSTONE_SOURCE.PHANTOM_REAP && event.type === 'user_prompt') {
+            deleteSessionTombstone(event.session_id);
+            droppedSessions.delete(event.session_id);
+            logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Human prompt superseded phantom-reap tombstone — session resurrected', {
+              session_id: event.session_id,
+            });
+          } else {
+            // hadTranscriptMeta: true makes the cached drop permanent: a
+            // later transcript_path must not reopen resurrection for a
+            // deliberately deleted session.
+            rememberDropped(event.session_id, 'session_tombstoned', true);
+            logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event for deleted (tombstoned) session', {
+              session_id: event.session_id,
+              type: event.type,
+            });
+            return { body: { ok: true, ignored: 'session_tombstoned', persisted: false } };
+          }
         }
         const { decision, hadTranscriptMeta } = evaluateAutoRegistration(event);
         if (decision.action === 'drop') {
