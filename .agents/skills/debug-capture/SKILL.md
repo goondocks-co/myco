@@ -157,6 +157,7 @@ Two structural predicates drive classification (both prefer message *shape* over
 
 - **`prompt_envelope_tag_in: [tags]`** — matches when the prompt begins with `<tag` for any listed tag name, ignoring attributes, so `<agent-message from="…">` still matches `agent-message`. Maps known runtime/agent envelopes to an origin.
 - **`prompt_is_enclosing_envelope: true`** — the whole-message fail-safe: fires when the ENTIRE trimmed prompt is one balanced (or self-closing) XML envelope, and classifies it `system` (preserved, hidden). It MUST be the last `user_prompt` rule (first-match-wins) and belongs only on agents whose human input does NOT arrive wrapped.
+- **`record_field_equals: {path, value}`** — matches a dot-path field on the RAW transcript record (mining-path only; live hook events carry no record). Used for record-level structural signals, e.g. Claude Code's `isCompactSummary: true` → origin `system` for auto-compact continuation summaries. The same record's snake_case `session_id` (≠ its camelCase `sessionId`) is how the miner stitches `parent_session_id`/`parent_session_reason='compact continuation'` on rollover sessions.
 
 **Common misclassifications:**
 - A real human prompt tagged `system` with `reason` ending `-unknown-envelope` — the fail-safe caught it. Either the agent's `prompt_envelope_tag_in` map is missing that tag (add it with the right origin), or the agent wraps its human input in an envelope and should NOT carry the fail-safe at all (strip the wrapper first instead — see `add-symbiont`).

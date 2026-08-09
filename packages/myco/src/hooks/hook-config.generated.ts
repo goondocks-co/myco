@@ -168,6 +168,20 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "event": "user_prompt",
         "scope": "this_agent",
         "when": {
+          "record_field_equals": {
+            "path": "isCompactSummary",
+            "value": true
+          }
+        },
+        "action": "classify",
+        "reason": "claude-code-compact-continuation-summary",
+        "trim": true,
+        "set_origin": "system"
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
           "prompt_is_enclosing_envelope": true
         },
         "action": "classify",

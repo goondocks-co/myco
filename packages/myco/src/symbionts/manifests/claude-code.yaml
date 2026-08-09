@@ -133,6 +133,25 @@ capture:
       action: classify
       set_origin: system
       reason: claude-code-system-envelope
+    # Auto-compact continuation summaries → system (preserved, hidden).
+    #
+    # When Claude Code auto-compacts at the context ceiling it synthesizes a
+    # `type: user` record carrying the continuation summary ("This session is
+    # being continued from a previous conversation…") with the structural
+    # marker `isCompactSummary: true`. Runtime-synthesized, never human-typed
+    # — but text-shaped like a real prompt, so without this rule it lands as
+    # an origin='human' initial batch. Keyed on the record field, not the
+    # text prefix: mining-path only, which is exactly where these records
+    # live (they never fire UserPromptSubmit). Manual `/compact` summaries
+    # share a promptId with the dropped `<command-name>` dispatch and are
+    # already suppressed by dedupeBy before rules run — unaffected here.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        record_field_equals: { path: isCompactSummary, value: true }
+      action: classify
+      set_origin: system
+      reason: claude-code-compact-continuation-summary
     # Fail-safe: any other whole-message envelope is non-human (preserved, hidden). MUST be last.
     - event: user_prompt
       scope: this_agent
