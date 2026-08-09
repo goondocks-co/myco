@@ -332,6 +332,7 @@ capabilities:
     - tool: apply_patch
       pathField: command
       extract: patch
+      mutates: true
 
 hooks:
   # Single-event turn-end: `Stop` carries both the inline response and the

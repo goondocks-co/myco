@@ -59,7 +59,8 @@ import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
 import { materializeSessionMycoToolCalls } from '@myco/db/queries/myco-tool-usage.js';
 import { filesystemRootFromRequestContext, isHostServedRequest, rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { hostSubstitutedTranscriptPath } from '@myco/host/routed-transcript.js';
-import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { ALL_PROJECTS_SCOPE, assertGroveProjectId } from '@myco/grove/ids.js';
+import type { CanopyJobsRegistry } from './jobs/canopy-scan.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { deferGitProvenance } from '@myco/release-provenance/capture.js';
 import { primaryProductionRef } from '@myco/release-provenance/config.js';
@@ -98,6 +99,14 @@ export interface StopProcessorDeps {
    * fire-safe: errors are logged, never thrown into the stop chain.
    */
   onStopProcessed?: (sessionId: string) => void;
+  /**
+   * Holder for the project-keyed canopy registry, populated after
+   * `registerPowerJobs` (same deferred pattern as the session-register
+   * path). When present, each per-turn Stop kicks the caller project's
+   * debounced delta scan so canopy freshness follows captured work even
+   * for agents whose tool events arrive via transcript mining.
+   */
+  canopyRegistry?: CanopyJobsRegistry;
 }
 
 
@@ -875,6 +884,37 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       has_transcript_path: !!hookTranscriptPath,
       has_response: !!lastAssistantMessage,
     });
+
+    // Canopy end-of-turn freshness kick. Agents whose tool events arrive
+    // mostly (or entirely) via transcript mining never hit the per-edit
+    // rescan bridge, so without this a long-lived session's edits stayed
+    // invisible to canopy until the hourly background fan-out. Stop fires
+    // once per turn; the runner's 30s debounce collapses bursts. Tenancy
+    // comes from the caller's request context — no resolvable Grove
+    // project means no scan (never synthesized from the anchor). Read
+    // through `deps` at call time: the registry holder is populated after
+    // registerPowerJobs, same deferred pattern as the register path.
+    const canopyRegistry = deps.canopyRegistry;
+    const rcForCanopy = req.requestContext;
+    if (canopyRegistry && rcForCanopy?.projectId && rcForCanopy?.databasePath && rcForCanopy?.groveId) {
+      try {
+        const runner = canopyRegistry.ensureRunner({
+          databasePath: rcForCanopy.databasePath,
+          projectId: assertGroveProjectId(rcForCanopy.projectId),
+          projectRoot: requestFilesystemRoot,
+          groveId: rcForCanopy.groveId,
+        });
+        runner.run().catch((err) => {
+          logger.warn(LOG_KINDS.HOOKS_STOP, 'Canopy delta scan failed on stop', {
+            error: (err as Error).message,
+            session_id: sessionId,
+          });
+        });
+      } catch {
+        // Boot/legacy contexts use a non-Grove project id; skip silently,
+        // mirroring the session-register trigger's stance.
+      }
+    }
     logger.debug(LOG_KINDS.HOOKS_STOP, 'Stop event detail', {
       session_id: sessionId,
       transcript_path: hookTranscriptPath ?? null,

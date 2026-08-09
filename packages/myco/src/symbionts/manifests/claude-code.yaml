@@ -290,10 +290,16 @@ capabilities:
       pathField: file_path
     - tool: Write
       pathField: file_path
+      mutates: true
     - tool: Edit
       pathField: file_path
+      mutates: true
     - tool: MultiEdit
       pathField: file_path
+      mutates: true
+    - tool: NotebookEdit
+      pathField: notebook_path
+      mutates: true
 
 hooks:
   # Single-event turn-end: `Stop` carries both the inline response and the

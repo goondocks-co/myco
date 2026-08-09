@@ -5,7 +5,7 @@ import os from 'node:os';
 import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
 import { rescanSingle } from '@myco/canopy/scanner/rescan-single';
-import { handleCanopyToolUse, FILE_MUTATING_TOOLS_LIST } from '@myco/canopy/scanner/handle-tool-use';
+import { handleCanopyToolUse } from '@myco/canopy/scanner/handle-tool-use';
 import type { DaemonLogger } from '@myco/daemon/logger';
 
 const PROJECT_ID_PREFIX = 'p';
@@ -152,12 +152,13 @@ describe('handleCanopyToolUse', () => {
     return { logger, calls };
   }
 
-  it('triggers a rescan for Write tool events', () => {
+  it('triggers a rescan for Write tool events (claude-code manifest vocabulary)', () => {
     write('src/a.ts', 'export const x = 1;\n');
     const { logger, calls } = makeLogger();
     handleCanopyToolUse({
       db: getDatabase(),
       logger, machineId: 'local', projectRoot, projectId,
+      agent: 'claude-code',
       toolName: 'Write',
       toolInput: { file_path: path.join(projectRoot, 'src/a.ts') },
     });
@@ -165,19 +166,71 @@ describe('handleCanopyToolUse', () => {
     expect(calls.some((c) => c.kind === 'canopy.rescan')).toBe(true);
   });
 
-  it('ignores tool events outside the file-mutating set', () => {
+  it('triggers a rescan for pi lowercase edit via the pi manifest', () => {
+    write('src/pi-edit.ts', 'export const pi = 3;\n');
     const { logger, calls } = makeLogger();
     handleCanopyToolUse({
       db: getDatabase(),
       logger, machineId: 'local', projectRoot, projectId,
+      agent: 'pi',
+      toolName: 'edit',
+      toolInput: { path: path.join(projectRoot, 'src/pi-edit.ts') },
+    });
+    expect(rowExists('src/pi-edit.ts')).toBe(true);
+    expect(calls.some((c) => c.kind === 'canopy.rescan')).toBe(true);
+  });
+
+  it('triggers a rescan for codex apply_patch via patch-envelope extraction', () => {
+    write('src/patched.ts', 'export const patched = true;\n');
+    const { logger, calls } = makeLogger();
+    handleCanopyToolUse({
+      db: getDatabase(),
+      logger, machineId: 'local', projectRoot, projectId,
+      agent: 'codex',
+      toolName: 'apply_patch',
+      toolInput: {
+        command: `*** Begin Patch\n*** Update File: ${path.join(projectRoot, 'src/patched.ts')}\n+export const patched = true;\n*** End Patch`,
+      },
+    });
+    expect(rowExists('src/patched.ts')).toBe(true);
+    expect(calls.some((c) => c.kind === 'canopy.rescan')).toBe(true);
+  });
+
+  it('never rescans on read tools — including path-bearing ones', () => {
+    const { logger, calls } = makeLogger();
+    handleCanopyToolUse({
+      db: getDatabase(),
+      logger, machineId: 'local', projectRoot, projectId,
+      agent: 'claude-code',
       toolName: 'Read',
       toolInput: { file_path: 'src/a.ts' },
+    });
+    handleCanopyToolUse({
+      db: getDatabase(),
+      logger, machineId: 'local', projectRoot, projectId,
+      agent: 'pi',
+      toolName: 'read',
+      toolInput: { path: 'src/a.ts' },
+    });
+    handleCanopyToolUse({
+      db: getDatabase(),
+      logger, machineId: 'local', projectRoot, projectId,
+      agent: 'pi',
+      toolName: 'bash',
+      toolInput: { command: 'cat src/a.ts' },
     });
     expect(calls.length).toBe(0);
   });
 
-  it('exposes the trigger list', () => {
-    expect(FILE_MUTATING_TOOLS_LIST).toContain('Write');
-    expect(FILE_MUTATING_TOOLS_LIST).toContain('Edit');
+  it('ignores tools from an unknown agent manifest', () => {
+    const { logger, calls } = makeLogger();
+    handleCanopyToolUse({
+      db: getDatabase(),
+      logger, machineId: 'local', projectRoot, projectId,
+      agent: 'no-such-agent',
+      toolName: 'Write',
+      toolInput: { file_path: 'src/a.ts' },
+    });
+    expect(calls.length).toBe(0);
   });
 });

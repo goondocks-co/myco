@@ -76,22 +76,26 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         {
           "tool": "view_file",
           "pathField": "AbsolutePath",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "write_to_file",
           "pathField": "TargetFile",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "read_file",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "replace",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "run_shell_command",
@@ -112,7 +116,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         }
       ]
     },
@@ -344,29 +349,40 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         {
           "tool": "Read",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         }
       ],
       "pathBearingTools": [
         {
           "tool": "Read",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "Write",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "Edit",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "MultiEdit",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
+        },
+        {
+          "tool": "NotebookEdit",
+          "pathField": "notebook_path",
+          "pathKind": "file",
+          "mutates": true
         }
       ]
     },
@@ -459,17 +475,20 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         {
           "tool": "read_files",
           "pathField": "path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "editor",
           "pathField": "path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "apply_patch",
           "pathField": "input",
-          "extract": "patch"
+          "extract": "patch",
+          "mutates": true
         },
         {
           "tool": "run_commands",
@@ -490,7 +509,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         },
         {
           "tool": "run_commands",
@@ -511,7 +531,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         }
       ]
     },
@@ -765,7 +786,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         }
       ],
       "pathBearingTools": [
@@ -788,12 +810,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         },
         {
           "tool": "apply_patch",
           "pathField": "command",
-          "extract": "patch"
+          "extract": "patch",
+          "mutates": true
         }
       ]
     },
@@ -871,7 +895,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         {
           "tool": "read_file",
           "pathField": "filePath",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "run_in_terminal",
@@ -892,12 +917,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         },
         {
           "tool": "view",
           "pathField": "path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "bash",
@@ -918,7 +945,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         },
         {
           "tool": "powershell",
@@ -941,19 +969,22 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "perl",
             "Get-Content",
             "gc"
-          ]
+          ],
+          "mutates": false
         },
         {
           "tool": "grep",
           "pathField": "path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         }
       ],
       "pathBearingTools": [
         {
           "tool": "read_file",
           "pathField": "filePath",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "run_in_terminal",
@@ -974,27 +1005,32 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         },
         {
           "tool": "replace_string_in_file",
           "pathField": "filePath",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "create_file",
           "pathField": "filePath",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "apply_patch",
           "pathField": "filePath",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "view",
           "pathField": "path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "bash",
@@ -1015,7 +1051,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         },
         {
           "tool": "powershell",
@@ -1038,22 +1075,26 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "perl",
             "Get-Content",
             "gc"
-          ]
+          ],
+          "mutates": false
         },
         {
           "tool": "edit",
           "pathField": "path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "create",
           "pathField": "path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "grep",
           "pathField": "path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         }
       ]
     },
@@ -1164,32 +1205,38 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         {
           "tool": "Read",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "Write",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "Edit",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "MultiEdit",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "Delete",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "Grep",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "Shell",
@@ -1210,7 +1257,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         }
       ]
     },
@@ -1271,22 +1319,26 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         {
           "tool": "read",
           "pathField": "filePath",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "write",
           "pathField": "filePath",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "edit",
           "pathField": "filePath",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "apply_patch",
           "pathField": "patchText",
-          "extract": "patch"
+          "extract": "patch",
+          "mutates": true
         },
         {
           "tool": "bash",
@@ -1307,7 +1359,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         }
       ]
     },
@@ -1361,17 +1414,20 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         {
           "tool": "read",
           "pathField": "path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": false
         },
         {
           "tool": "write",
           "pathField": "path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "edit",
           "pathField": "path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "bash",
@@ -1392,7 +1448,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         }
       ]
     },
@@ -1459,7 +1516,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         {
           "tool": "post_write_code",
           "pathField": "file_path",
-          "pathKind": "file"
+          "pathKind": "file",
+          "mutates": true
         },
         {
           "tool": "post_run_command",
@@ -1480,7 +1538,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "grep",
             "rg",
             "perl"
-          ]
+          ],
+          "mutates": false
         }
       ]
     },

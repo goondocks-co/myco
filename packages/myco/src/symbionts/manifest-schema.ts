@@ -449,6 +449,15 @@ const CanopyReadToolStructured = z.strictObject({
   tool: z.string().min(1),
   pathField: z.string().min(1),
   pathKind: z.literal('file').default('file'),
+  /**
+   * True when this tool call MUTATES the file at the extracted path
+   * (Write/Edit-class tools). Canopy's scanner keys single-file rescans on
+   * this flag so index freshness follows captured work for every agent's
+   * own mutation vocabulary — pi's lowercase `edit`, codex's `apply_patch`
+   * — instead of a hardcoded Claude Code tool list. Meaningful only on
+   * `pathBearingTools` entries; never set it on read/shell-arg entries.
+   */
+  mutates: z.boolean().default(false),
 });
 
 const CanopyReadToolShellArg = z.strictObject({
@@ -456,12 +465,16 @@ const CanopyReadToolShellArg = z.strictObject({
   pathField: z.string().min(1),
   extract: z.literal('shell-arg'),
   readCommands: z.array(z.string().min(1)).min(1),
+  /** See CanopyReadToolStructured.mutates. Shell-arg entries are read-side; this exists for shape parity and must stay false. */
+  mutates: z.boolean().default(false),
 });
 
 const CanopyReadToolPatch = z.strictObject({
   tool: z.string().min(1),
   pathField: z.string().min(1),
   extract: z.literal('patch'),
+  /** See CanopyReadToolStructured.mutates. Patch envelopes are file mutations (codex/opencode `apply_patch`). */
+  mutates: z.boolean().default(false),
 });
 
 const CanopyReadToolSchema = z.union([
