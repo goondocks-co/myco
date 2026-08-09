@@ -139,6 +139,10 @@ phases:
          - If your observation adds meaningful new detail: create the new
            spore, then supersede the old via `vault_resolve_spore`
            action "supersede" with new_spore_id
+         - If your observation invalidates the existing spore outright and
+           nothing replaces it (the machinery it describes was deleted, or
+           its finding was retracted): retire it via `vault_resolve_spore`
+           action "obsolete" with a reason stating what invalidated it
          - If your observation adds nothing new: skip it entirely
       3. If no similar spore exists: create it as new
       4. Mark the source batches as processed via `vault_mark_processed`
@@ -155,12 +159,13 @@ phases:
       - If approaching the turn budget or the 40-batch cap, stop and move on
 
       Final summary MUST be ≤ 6 lines: batches processed, spores created (by
-      type), and supersedes applied. No per-spore retelling.
+      type), and supersedes/obsoletes applied. No per-spore retelling.
     purpose: >-
-      Resolves spore lifecycle via vault_resolve_spore action "supersede" when
-      a new spore replaces an existing one with meaningful new detail, and
-      marks source prompt batches processed via vault_mark_processed as
-      extraction consumes them.
+      Resolves spore lifecycle via vault_resolve_spore — action "supersede"
+      when a new spore replaces an existing one with meaningful new detail,
+      action "obsolete" with a stated reason when new evidence invalidates an
+      existing spore that has no replacement — and marks source prompt batches
+      processed via vault_mark_processed as extraction consumes them.
     tools:
       - vault_unprocessed
       - vault_spores
