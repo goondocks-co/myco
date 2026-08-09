@@ -318,13 +318,16 @@ function describeResponsesFailure(body: ResponsesBodyShape): string {
  * the fix for spore discovery-5c27c512: OpenRouter's `/api/v1/responses`
  * returns HTTP 200 for an upstream provider failure (`status: "failed"`,
  * `error: {...}`, `output: []`, `usage: null`; also `status: "incomplete"`
- * with reasoning-only output). `@openai/agents` v0.12.0's
+ * with reasoning-only output). `@openai/agents`'s
  * `OpenAIResponsesModel.getResponse` reads only `response.output` and
  * `response.usage` — it never checks `status`/`error` — so a 200-wrapped
  * failure becomes a zero-item model turn, and agents-core's turn loop
- * silently re-runs ("if there is no output we just run again") until
+ * silently re-runs ("run again", turnResolution.js) until
  * `MaxTurnsExceededError`, burning the whole turn budget in seconds with
- * zero tool events and zero recorded usage.
+ * zero tool events and zero recorded usage. First observed on v0.12.0;
+ * re-verified unchanged against v0.14.3 (openaiResponsesModel.js
+ * `responses.create` non-streaming call + turnResolution.js empty-output
+ * re-run) — re-check both sites on the next SDK bump.
  *
  * Interception point: `@openai/agents`'s `Runner.run()` (called by
  * `runOpenAIAgent` below) never passes `stream: true` — `getResponse`
