@@ -2,7 +2,7 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.4.0] - Unreleased
+## [1.4.0] - 2026-08-08
 
 ### Headline
 
