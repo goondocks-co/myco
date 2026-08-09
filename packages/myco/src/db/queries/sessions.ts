@@ -239,8 +239,14 @@ function toSessionRow(row: Record<string, unknown>): SessionRow {
 /**
  * Insert a session or update it if the id already exists.
  *
- * On conflict the row is updated with the values from `data`, preserving
- * any columns not supplied via COALESCE with EXCLUDED values.
+ * Conflict semantics are additive: agents re-fire session registration
+ * mid-session (Claude Code on compact/resume, Codex desktop periodically,
+ * Pi after pre-compact), so a re-register may only enrich the row, never
+ * erase it. `started_at` keeps the earliest value ever seen; nullable
+ * enrichment columns (`user`, `project_root`, `branch`, lineage,
+ * `content_hash`) keep their stored value unless the caller supplies a
+ * replacement. A reloaded session therefore keeps a stale `content_hash`
+ * until the next close recomputes it — accepted, same as title/summary.
  */
 export function upsertSession(data: SessionInsert): SessionRow {
   const db = getDatabase();
@@ -262,10 +268,10 @@ export function upsertSession(data: SessionInsert): SessionRow {
      ON CONFLICT (id) DO UPDATE SET
        project_id            = COALESCE(EXCLUDED.project_id, sessions.project_id),
        agent                 = EXCLUDED.agent,
-       "user"                = EXCLUDED."user",
-       project_root          = EXCLUDED.project_root,
-       branch                = EXCLUDED.branch,
-       started_at            = EXCLUDED.started_at,
+       "user"                = COALESCE(EXCLUDED."user", sessions."user"),
+       project_root          = COALESCE(EXCLUDED.project_root, sessions.project_root),
+       branch                = COALESCE(EXCLUDED.branch, sessions.branch),
+       started_at            = MIN(sessions.started_at, EXCLUDED.started_at),
        ended_at              = COALESCE(EXCLUDED.ended_at, sessions.ended_at),
        status                = COALESCE(EXCLUDED.status, sessions.status),
        prompt_count          = CASE WHEN ? THEN EXCLUDED.prompt_count ELSE sessions.prompt_count END,
@@ -273,10 +279,10 @@ export function upsertSession(data: SessionInsert): SessionRow {
        title                 = COALESCE(EXCLUDED.title, sessions.title),
        summary               = COALESCE(EXCLUDED.summary, sessions.summary),
        transcript_path       = COALESCE(EXCLUDED.transcript_path, sessions.transcript_path),
-       parent_session_id     = EXCLUDED.parent_session_id,
-       parent_session_reason = EXCLUDED.parent_session_reason,
+       parent_session_id     = COALESCE(EXCLUDED.parent_session_id, sessions.parent_session_id),
+       parent_session_reason = COALESCE(EXCLUDED.parent_session_reason, sessions.parent_session_reason),
        processed             = COALESCE(EXCLUDED.processed, sessions.processed),
-       content_hash          = EXCLUDED.content_hash`,
+       content_hash          = COALESCE(EXCLUDED.content_hash, sessions.content_hash)`,
   ).run(
     data.id,
     data.project_id ?? null,
