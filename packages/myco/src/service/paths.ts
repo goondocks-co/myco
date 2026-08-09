@@ -35,6 +35,25 @@ export function resolveServiceUnitDir(options: ServiceUnitDirOptions = {}): stri
 }
 
 /**
+ * Boot-scope (system) supervisor unit directories — where a service installed
+ * to run at boot for all users lives, distinct from the per-user dirs
+ * `resolveServiceUnitDir` returns. Myco's own daemon is user-scoped, but the
+ * retired 1.3.x overlay registered `co.goondocks.myco-headscale` /
+ * `-tailscaled` HERE (root, `myco service install` boot mode), so a residue
+ * scan that only reads the user scope never sees them on an upgraded host.
+ *
+ * Returns the platform's system dir(s); empty on Windows (scheduled tasks carry
+ * no analogous on-disk unit directory). Not env-overridable — these are fixed
+ * OS locations; tests inject them through the caller instead.
+ */
+export function resolveBootServiceUnitDirs(options: Pick<ServiceUnitDirOptions, 'platform'> = {}): string[] {
+  const platform = options.platform ?? process.platform;
+  if (platform === 'darwin') return ['/Library/LaunchDaemons'];
+  if (platform === 'win32') return [];
+  return ['/etc/systemd/system'];
+}
+
+/**
  * True when the running process is using a sandboxed unit directory rather
  * than the platform default. Drives a suffix on launchd/systemd labels so a
  * sandboxed install cannot collide with the real user's daemon registration

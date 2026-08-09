@@ -32,6 +32,8 @@ const MEMBERSHIP_ERROR_COPY: Record<string, string> = {
     'This machine already has access to that host. Ask the host operator to remove its existing access first, then join again.',
   host_enroll_failed:
     "Couldn't finish joining this host. It may be busy or set up incompletely — check with the host operator and try again.",
+  host_join_state_corrupt:
+    "This machine's saved join info for that host is damaged — usually left behind when Myco was interrupted mid-join. Leave the host to clear it, then join again.",
   host_predates_served_grove:
     "This host hasn't reported its team storage yet — update Myco on the host machine, then re-join and try attaching again.",
   attach_grove_mismatch:

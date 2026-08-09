@@ -96,6 +96,13 @@ export class LaunchdServiceManager implements ServiceManager {
     const plistPath = this.plistPath(spec.label);
     const rendered = renderLaunchdPlist(spec);
 
+    // Before the unchanged-unit early return: an install over an existing unit
+    // whose log directory has since been removed must still repair it, or the
+    // job starts and immediately dies on its output redirect. Shared precondition
+    // with systemd/windows — every manager ensures log dirs before deciding the
+    // on-disk unit is unchanged.
+    ensureServiceLogDirs(spec);
+
     let existing: string | null = null;
     try { existing = fs.readFileSync(plistPath, 'utf-8'); } catch { /* ENOENT */ }
 
@@ -115,7 +122,6 @@ export class LaunchdServiceManager implements ServiceManager {
     }
 
     fs.mkdirSync(this.agentsDir, { recursive: true });
-    ensureServiceLogDirs(spec);
     atomicWriteFileSync(plistPath, rendered);
 
     if (existing === null) {

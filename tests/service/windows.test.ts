@@ -255,6 +255,30 @@ describe('WindowsTaskServiceManager', () => {
     expect(r2.changed).toBe(false);
   });
 
+  test('install RE-CREATES a removed log directory, even when the task is unchanged', async () => {
+    // The launcher redirects the daemon's output to absolute paths; a missing
+    // parent dir fails the task the moment it starts. Ensuring the dirs is a
+    // precondition shared with systemd/launchd, so it must run BEFORE the
+    // unchanged-registration early return, not after.
+    const scriptDir = tmp('myco-wt-');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const spec = makeSpec();
+
+    await mgr.install(spec);
+    expect(fs.existsSync(path.dirname(spec.stdoutPath))).toBe(true);
+
+    fs.rmSync(path.dirname(spec.stdoutPath), { recursive: true, force: true });
+    expect(fs.existsSync(path.dirname(spec.stdoutPath))).toBe(false);
+
+    // Byte-identical launcher + existing task -> install takes the early
+    // return. The dirs must still come back.
+    const r = await mgr.install(spec);
+    expect(r.changed).toBe(false);
+    expect(fs.existsSync(path.dirname(spec.stdoutPath))).toBe(true);
+    expect(fs.existsSync(path.dirname(spec.stderrPath))).toBe(true);
+  });
+
   test('re-registers when runAtLoad changes instead of retaining a stale logon trigger', async () => {
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({

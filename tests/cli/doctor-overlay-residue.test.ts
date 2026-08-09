@@ -41,17 +41,21 @@ describe('doctor: per-host networking residue', () => {
   let teamsHome: string;
   let homeDir: string;
   let unitDir: string;
+  let bootUnitDir: string;
 
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-overlay-residue-'));
     teamsHome = path.join(tmp, 'team');
     homeDir = path.join(tmp, 'home');
     unitDir = path.join(tmp, 'units');
-    for (const d of [teamsHome, homeDir, unitDir]) fs.mkdirSync(d, { recursive: true });
+    bootUnitDir = path.join(tmp, 'boot-units');
+    for (const d of [teamsHome, homeDir, unitDir, bootUnitDir]) fs.mkdirSync(d, { recursive: true });
   });
   afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-  const check = () => checkOverlayResidue({ teamsHome, homeDir, serviceUnitDir: unitDir });
+  // A managed (empty) boot dir keeps every case hermetic: without it the scan
+  // would read the real /etc/systemd/system or /Library/LaunchDaemons.
+  const check = () => checkOverlayResidue({ teamsHome, homeDir, serviceUnitDir: unitDir, bootServiceUnitDirs: [bootUnitDir] });
   const seed = (...parts: string[]) => {
     const p = path.join(...parts);
     fs.mkdirSync(p, { recursive: true });
@@ -140,6 +144,51 @@ describe('doctor: per-host networking residue', () => {
     expect(after?.detail).toContain(unit);
   });
 
+  test('a BOOT-scope host unit is found — the user scope alone would miss it', async () => {
+    // 1.3.x registered co.goondocks.myco-headscale / -tailscaled at boot scope
+    // (root). A scan of the user scope only leaves them running forever on an
+    // upgraded Linux host, invisible.
+    const bootUnit = path.join(bootUnitDir, 'co.goondocks.myco-tailscaled.service');
+    fs.writeFileSync(bootUnit, 'x');
+
+    const result = await check();
+    expect(result?.status).toBe('warn');
+    expect(result?.detail).toContain(bootUnit);
+    expect(result?.detail).toMatch(/sudo/);
+  });
+
+  test('data is NOT fixable while a boot service still owns it', async () => {
+    // The live-socket guard cannot see a root tailscaled holding host state, so
+    // a boot unit is the ownership signal: refuse the delete until it is gone,
+    // rather than stranding a running root service by removing its state.
+    const headscale = seed(teamsHome, 'host', 'headscale');
+    const bootUnit = path.join(bootUnitDir, 'co.goondocks.myco-headscale.service');
+    fs.writeFileSync(bootUnit, 'x');
+
+    const found = await check();
+    expect(found?.fixable).toBe(false);
+    expect(found?.detail).toContain(headscale);
+    expect(found?.detail).toMatch(/OWNED by an installed boot service/);
+
+    // The fixer, handed the reported check, deletes nothing — the state stays.
+    await DOCTOR_FIXERS['overlay-residue']({} as DoctorFixContext, [found as DoctorCheck]);
+    expect(fs.existsSync(headscale)).toBe(true);
+  });
+
+  test('once the boot unit is removed, the SAME state becomes fixable', async () => {
+    // The recovery path: stop+remove the root service (sudo), re-run doctor, and
+    // the state the service owned is now safe to clean.
+    const headscale = seed(teamsHome, 'host', 'headscale');
+    const bootUnit = path.join(bootUnitDir, 'co.goondocks.myco-headscale.service');
+    fs.writeFileSync(bootUnit, 'x');
+    expect((await check())?.fixable).toBe(false);
+
+    fs.rmSync(bootUnit);
+    const after = await check();
+    expect(after?.fixable).toBe(true);
+    expect(after?.fixData?.paths as string[]).toContain(headscale);
+  });
+
   test('a broken HOME proposes NOTHING — never a relative path', async () => {
     // `os.homedir()` returns '' on a broken environment, and
     // `path.join('', '.myco-ts')` is RELATIVE — `rmSync` would resolve it
@@ -150,7 +199,7 @@ describe('doctor: per-host networking residue', () => {
     if (!preexisting) fs.mkdirSync(bait, { recursive: true });
     try {
       for (const brokenHome of ['', '.', 'relative/path']) {
-        const result = await checkOverlayResidue({ teamsHome, homeDir: brokenHome, serviceUnitDir: unitDir });
+        const result = await checkOverlayResidue({ teamsHome, homeDir: brokenHome, serviceUnitDir: unitDir, bootServiceUnitDirs: [bootUnitDir] });
         const proposed = (result?.fixData?.paths as string[] | undefined) ?? [];
         expect(proposed.every((p) => path.isAbsolute(p))).toBe(true);
         expect(proposed.some((p) => p.endsWith('.myco-ts'))).toBe(false);
@@ -162,7 +211,7 @@ describe('doctor: per-host networking residue', () => {
   });
 
   test('the filesystem ROOT as an anchor proposes nothing', async () => {
-    const result = await checkOverlayResidue({ teamsHome: path.parse(process.cwd()).root, homeDir, serviceUnitDir: unitDir });
+    const result = await checkOverlayResidue({ teamsHome: path.parse(process.cwd()).root, homeDir, serviceUnitDir: unitDir, bootServiceUnitDirs: [bootUnitDir] });
     const proposed = (result?.fixData?.paths as string[] | undefined) ?? [];
     expect(proposed.some((p) => p.split(path.sep).filter(Boolean).length < 2)).toBe(false);
   });
@@ -198,7 +247,7 @@ describe('doctor: per-host networking residue', () => {
     const unrelated = path.join(tmpDir, 'myco-other.sock');
     for (const f of [hostSock, memberSock, otherUser, lookalike, unrelated]) fs.writeFileSync(f, '');
 
-    const found = await checkOverlayResidue({ teamsHome, homeDir, serviceUnitDir: unitDir, tmpDir });
+    const found = await checkOverlayResidue({ teamsHome, homeDir, serviceUnitDir: unitDir, tmpDir, bootServiceUnitDirs: [bootUnitDir] });
     await DOCTOR_FIXERS['overlay-residue']({} as DoctorFixContext, [found as DoctorCheck]);
 
     expect(fs.existsSync(hostSock)).toBe(false);
@@ -212,7 +261,7 @@ describe('doctor: per-host networking residue', () => {
   test('an unusable TEMP dir proposes no temp path', async () => {
     seed(teamsHome, 'hosts', 'host_aaaa');
     for (const badTmp of ['', '.', 'relative']) {
-      const result = await checkOverlayResidue({ teamsHome, homeDir, serviceUnitDir: unitDir, tmpDir: badTmp });
+      const result = await checkOverlayResidue({ teamsHome, homeDir, serviceUnitDir: unitDir, tmpDir: badTmp, bootServiceUnitDirs: [bootUnitDir] });
       const proposed = (result?.fixData?.paths as string[] | undefined) ?? [];
       expect(proposed.every((p) => path.isAbsolute(p))).toBe(true);
       expect(proposed.some((p) => p.endsWith('.sock'))).toBe(false);
