@@ -7,6 +7,16 @@ const PACKAGE_ROOT = path.resolve(__dirname, '..');
 const UI_DIR = path.resolve(PACKAGE_ROOT, 'dist/ui');
 const OUTPUT_PATH = path.resolve(PACKAGE_ROOT, 'src/ui-assets.generated.ts');
 
+const ENTRY_FILE = 'index.html';
+const PUBLIC_DIR = path.resolve(PACKAGE_ROOT, 'ui/public');
+
+/**
+ * File extensions whose contents are text and may reference other assets by
+ * their (content-hashed, unique) filename. Everything else — fonts, images —
+ * is a leaf: it can be referenced but never references.
+ */
+const REFERENCING_EXTENSIONS = new Set(['.html', '.js', '.mjs', '.css', '.svg', '.json', '.webmanifest', '.txt']);
+
 /**
  * Recursively walk a directory, returning every file's path relative to the
  * walk root, using forward slashes (the keys callers look up at serve time).
@@ -24,6 +34,60 @@ function walkFiles(root: string, dir: string = root): string[] {
   return out;
 }
 
+/**
+ * Return the subset of `files` that is neither copied from `ui/public/` nor
+ * reachable from the entry file — i.e. stale build artifacts.
+ *
+ * Two-part trust model, mirroring where dist/ui content comes from:
+ *
+ * 1. Files whose relative path exists in `ui/public/` are trusted verbatim.
+ *    Vite copies public/ into dist/ui unchanged; those files are deliberate,
+ *    source-controlled additions and may be addressed by runtime-constructed
+ *    paths (`/favicon-${theme}.svg`) that no static scan can see.
+ * 2. Everything else is Vite-emitted output and must be reachable from
+ *    index.html. Reachability is a breadth-first fixpoint over literal
+ *    filename mentions: Vite emits content-hashed basenames
+ *    (`index-Dy3Si9wF.js`), and every consumer — index.html script/link
+ *    tags, dynamic-import specifiers inside minified JS, `url()` in CSS —
+ *    contains that basename verbatim, so a file is referenced iff its
+ *    basename appears in the text of a reached file.
+ *
+ * This guard exists because the embed step used to trust `dist/ui` blindly:
+ * a leftover chunk from a previous build (interrupted build, older checkout,
+ * second writer into the out-of-root dist dir) was embedded, committed, and
+ * shipped 2.2MB of dead weight in every binary. Whatever puts a stale file in
+ * `dist/ui`, it fails HERE — at the consumption point — instead of silently
+ * bloating the bundle. A stale hashed chunk can satisfy neither branch: it is
+ * never in public/, and nothing current references its hash.
+ */
+export function findStaleAssets(root: string, files: string[], publicDir: string): string[] {
+  if (!files.includes(ENTRY_FILE)) {
+    return [];
+  }
+  const reached = new Set<string>([ENTRY_FILE]);
+  for (const file of files) {
+    if (fs.existsSync(path.join(publicDir, file))) {
+      reached.add(file);
+    }
+  }
+  const queue = [ENTRY_FILE];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (!REFERENCING_EXTENSIONS.has(path.extname(current).toLowerCase())) {
+      continue;
+    }
+    const content = fs.readFileSync(path.join(root, current), 'utf-8');
+    for (const candidate of files) {
+      if (reached.has(candidate)) continue;
+      if (content.includes(path.posix.basename(candidate))) {
+        reached.add(candidate);
+        queue.push(candidate);
+      }
+    }
+  }
+  return files.filter((file) => !reached.has(file));
+}
+
 function readUiAssetMap(): Record<string, string> {
   if (!fs.existsSync(UI_DIR)) {
     process.stderr.write(
@@ -32,8 +96,20 @@ function readUiAssetMap(): Record<string, string> {
     );
     return {};
   }
+  const files = walkFiles(UI_DIR);
+  const stale = findStaleAssets(UI_DIR, files, PUBLIC_DIR);
+  if (stale.length > 0) {
+    throw new Error(
+      `[gen-ui-assets] ${path.relative(PACKAGE_ROOT, UI_DIR)} contains ${stale.length} file(s) that are not copied ` +
+        `from ui/public/ and that nothing reachable from ${ENTRY_FILE} references:\n` +
+        stale.map((file) => `  - ${file}`).join('\n') +
+        `\nThis is almost always a stale artifact from a previous build left in dist/ui. ` +
+        `Delete dist/ui, rerun the UI build (\`npm run build:ui\`), then rerun codegen. ` +
+        `Embedding it would ship dead weight in every compiled binary, so this build refuses.`,
+    );
+  }
   return Object.fromEntries(
-    walkFiles(UI_DIR).map((rel) => [rel, fs.readFileSync(path.join(UI_DIR, rel)).toString('base64')]),
+    files.map((rel) => [rel, fs.readFileSync(path.join(UI_DIR, rel)).toString('base64')]),
   );
 }
 
@@ -58,4 +134,6 @@ export const BUNDLED_UI: Readonly<Record<string, string>> = ${JSON.stringify(ass
   );
 }
 
-main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}
