@@ -15,11 +15,10 @@
  */
 
 /**
- * External access — Tab 2 of the Team page (E1 §5.2), promoted from the
- * bottom of the old eleven-panel stack. Every call CARRIES THE TARGET
- * (`teamCarrierHeaders`): these three requests previously sent no context
- * headers at all, so they routed by whatever project the topbar last
- * browsed — Rotate token could rotate a DIFFERENT host's token and show a
+ * External access — Tab 2 of the Team page (E1 §5.2). Every call CARRIES THE
+ * TARGET (`teamCarrierHeaders`): without a context header a request routes by
+ * whatever project the topbar last browsed — Rotate token could rotate a
+ * DIFFERENT host's token and show a
  * success banner, and under the machine-scoped route they all silently
  * became local 404s rendered as "status unavailable" (E1 review, PR 3/4).
  */
@@ -106,8 +105,8 @@ export function ExternalAccessPanel({ target }: { target: TeamConfigTarget }) {
       if (next.funnel_url) setFunnelUrl(next.funnel_url);
       setStatusError(null);
     } catch (err) {
-      // NEVER a silent null: the old panel swallowed this into "status
-      // unavailable" with no cause — the silent-unconfigurable class.
+      // NEVER a silent null: swallowing this into "status unavailable" with
+      // no cause is the silent-unconfigurable class — surface the error.
       setStatus(null);
       setStatusError(err instanceof Error ? err.message : 'Status request failed.');
     }

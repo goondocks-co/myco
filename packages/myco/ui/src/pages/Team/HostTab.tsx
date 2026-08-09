@@ -135,7 +135,7 @@ export function JoinHostForm({ collapsed = false }: { collapsed?: boolean } = {}
       </p>
       {!overlaySupported && (
         <p className="text-xs text-terracotta-text m-0 mb-3">
-          This machine can't join a team yet — Myco's overlay client has no build for this operating system.
+          This machine can't join a team yet — team membership isn't supported on this operating system.
           Everything else in Myco works normally here. Ask your host operator not to spend a one-time key on
           this machine.
         </p>

@@ -2,6 +2,31 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - Unreleased
+
+### Headline
+
+**Team Host now reaches its members over public HTTPS, not a private overlay.** A host publishes its team surface at a public address through its own Tailscale Funnel (`https://<machine>.<tailnet>.ts.net:8443`); members hold only that address and a per-member token, dial it like any HTTPS endpoint, and join no network. There is nothing for a member to install — no Tailscale, no tailnet — and the host provisions no networking stack of its own: it uses the Tailscale the operator already runs. The retired model (a Myco-provisioned headscale control plane + WireGuard overlay, with a Homebrew-installed client on macOS) is gone.
+
+### Changed
+
+- **`myco host enable` no longer takes an address.** The host used to be told the URL members would dial (`--server-url`); it now learns its own public address from Tailscale Funnel after the daemon restarts, and `myco host status` prints it. The `--serve` installer flag likewise drops `--server-url` — `curl … | sh -s -- --serve` is the whole command.
+- **Per-member tokens.** Each enrolled machine holds its own bearer token bound to its machine identity, rather than sharing one host bearer.
+
+### Added
+
+- **`myco host members`** lists the machines enrolled on a host, and **`myco host revoke <member-id>`** removes one — the recovery path for a machine that was wiped or replaced and can't re-join under its own identity.
+
+### Breaking
+
+- **The `myco join` command shape changed.** It is now `myco join <host> --key <one-time-key> --host-url <https://host.tailnet.ts.net:8443>`. The retired `--server-url` and `--overlay-address` flags are gone; a member holds the host's public URL and a key, nothing else. Re-mint a join command from the host (dashboard **Invite a member**, or `myco host rotate-key`) and re-run it on any machine still using the old form.
+- **Windows still cannot host or join a team** (unchanged), and the team transport is served over a Unix-domain socket, which Windows does not provide.
+
+### Upgrade & rollback
+
+- **Update the host before members, and have members re-join after they update.** A member on 1.3.x dials the old overlay address, which now resolves nowhere; it reports a timeout and cannot know to update. After upgrading, that member re-joins with the new `--host-url` form (a fresh key from the operator) to pick up the public address.
+- **Before downgrading a machine below 1.4.0, run `myco leave <host>` for every host it has joined.** A 1.4.0 host record omits the `overlay_address` a 1.3.x daemon requires at boot; left in place, the older daemon refuses to start and takes local capture down with it, and 1.3.x cannot clear the record itself. Leaving each host first removes the record cleanly. If you have already downgraded and the old daemon won't start, re-upgrade to 1.4.0, run `myco leave`, then downgrade.
+
 ## [1.3.2] - 2026-08-03
 
 ### Fixed

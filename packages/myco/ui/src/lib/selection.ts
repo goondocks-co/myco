@@ -155,8 +155,7 @@ export function projectRouteSuffix(pathname: string): string {
 export type NavScope = 'project' | 'grove' | 'machine';
 
 /** Page scope inferred from the URL: project (/g/<g>/p/<p>/…), grove (/g/<g>/…), else machine.
- *  (The old PAGE_SCOPE_OVERRIDES list existed solely for the Team page's
- *  grove-bound URL; the page lives at machine-scoped /team now — E1 §5.4.) */
+ *  (No per-page overrides: the Team page lives at machine-scoped /team — E1 §5.4.) */
 export function scopeForPath(pathname: string): NavScope {
   if (/^\/g\/[^/]+\/p\/[^/]+/.test(pathname)) return 'project';
   if (/^\/g\/[^/]+/.test(pathname)) return 'grove';
@@ -219,9 +218,9 @@ export function colorForProjectId(id: string): string {
   return `hsl(${hue} 58% 48%)`;
 }
 
-// `applyProjectFavicon` was removed — it generated a canvas with the
-// project's monogram + colored bg and overwrote the theme favicon
-// link. The result was that the OS tab UI lost the static
-// `/favicon-<theme>.svg` whenever a project was selected. The
+// There is deliberately no per-project favicon: generating a canvas with
+// the project's monogram + colored bg and overwriting the theme favicon
+// link makes the OS tab UI lose the static
+// `/favicon-<theme>.svg` whenever a project is selected. The
 // project monogram still shines inside the app chrome (sidebar
 // project switcher, Groves page tile) where it belongs.

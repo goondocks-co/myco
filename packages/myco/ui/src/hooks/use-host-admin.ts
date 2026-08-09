@@ -134,7 +134,7 @@ export function useMintJoinKey() {
 
 /**
  * Poll the job's step log. A 404 after the daemon restarted is EXPECTED
- * (the tracker is in-memory and died with the old process) — the terminal
+ * (the tracker is in-memory and does not survive a restart) — the terminal
  * step was written before the restart, so a 404 on a token we saw running
  * means "job finished, daemon bounced"; the caller falls through to the
  * Phase-2 status poll rather than reporting an error.

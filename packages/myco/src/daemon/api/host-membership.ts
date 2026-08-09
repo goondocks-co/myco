@@ -396,9 +396,10 @@ export function createHostMembershipStatusHandler(deps: HostMembershipRouteDeps 
     }
 
     // Whether this machine can take part in a team at all. A capability, not a
-    // platform string: the UI needs to know joining will work, and Windows has
-    // no overlay client build, so the Join form must say so up front rather
-    // than fail after the operator has already minted a one-time key.
+    // platform string: the UI needs to know joining will work, and the team
+    // transport is served over a Unix-domain socket, which win32 does not
+    // provide, so the Join form must say so up front rather than fail after the
+    // operator has already minted a one-time key.
     const platform = deps.platform ?? process.platform;
     const overlaySupported = platform === 'darwin' || platform === 'linux';
     // External MCP activation is a distinct capability that happens to share

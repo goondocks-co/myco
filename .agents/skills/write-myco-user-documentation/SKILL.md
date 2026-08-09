@@ -206,14 +206,13 @@ Documentation is a merge gate, not a mid-implementation artifact. Write docs aft
 
 ```
 ❌ Before (implementation voice):
-"Team Host establishes a peer-to-peer overlay connection and provisions
-credentials through the enrollment handshake. The bearer token is stored
-under the machine-scoped secrets file once join completes."
+"Team Host provisions credentials through the enrollment handshake. The bearer
+token is stored under the machine-scoped secrets file once join completes."
 
 ✅ After (user voice):
-"Join a team by running `myco join <host> --key <one-time-key> --server-url
-<url> --overlay-address <address>`. Your connection details are stored
-securely — you only need to do this once per machine."
+"Join a team by running `myco join <host> --key <one-time-key> --host-url
+<address>`. Your connection details are stored securely — you only need to do
+this once per machine."
 ```
 
 ## What This Skill Does Not Cover

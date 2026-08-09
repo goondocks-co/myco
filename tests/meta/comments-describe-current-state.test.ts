@@ -55,7 +55,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const SRC_ROOTS = [path.join(REPO_ROOT, 'packages', 'myco', 'src')];
+// The dashboard's own source is scanned too: a stale mechanism comment in
+// `ui/src` (e.g. "Inviting is DISABLED in this build") rotted unseen because
+// this gate stopped at the daemon's `src`. The UI is user-facing surface — it
+// gets the same discipline.
+const SRC_ROOTS = [
+  path.join(REPO_ROOT, 'packages', 'myco', 'src'),
+  path.join(REPO_ROOT, 'packages', 'myco', 'ui', 'src'),
+];
 
 /**
  * Narrates a CHANGE TO THE CODE.
@@ -84,7 +91,7 @@ const DEFERRAL = /(unavailable on this build|until (that|it|enrollment|the .{0,3
  */
 const NOT_YET_SWEPT: ReadonlySet<string> = new Set<string>([]);
 
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'target', '.git', 'ui']);
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'target', '.git']);
 
 function listSourceFiles(dir: string): string[] {
   const out: string[] = [];
@@ -92,7 +99,10 @@ function listSourceFiles(dir: string): string[] {
     if (SKIP_DIRS.has(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) { out.push(...listSourceFiles(full)); continue; }
-    if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) out.push(full);
+    // `.ts` and `.tsx`, never their `.test.*` siblings — the UI root carries both.
+    const isSource = (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts'))
+      || (entry.name.endsWith('.tsx') && !entry.name.endsWith('.test.tsx'));
+    if (entry.isFile() && isSource) out.push(full);
   }
   return out;
 }
