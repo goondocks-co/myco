@@ -69,16 +69,16 @@ export const RESIDENCY_MIN_HOST_PROTOCOL = 5;
  * here is `--allow-no-pull`, which abandons the history on the host, and a
  * data-loss fix must not make walking away from your data the supported path.
  *
- * This constant used to sit at 3 ("the version that introduced the artifact
- * routes"), meaning to promise a wider reach than push. But the extra reach was
- * a fiction: the detach precheck admitted a recorded-v3 host, and then the dial
- * hit `hostProtocolCompatible`, which refuses anything below `HOST_MIN_COMPAT_VERSION`
- * (4) — so a v3 host was never actually detachable, it just failed later, at the
- * transport, with a mismatch error instead of the actionable
+ * Why not a lower floor than the compat floor, to reach a wider range of hosts?
+ * Because that wider reach is a fiction. The detach precheck would admit a
+ * recorded-v3 host, but the dial then hits `hostProtocolCompatible`, which
+ * refuses anything below `HOST_MIN_COMPAT_VERSION` (4) — so a v3 host is not
+ * detachable at all; a floor below 4 only defers its refusal to the transport,
+ * where it surfaces as an opaque mismatch instead of the actionable
  * `residency_pull_unavailable` this precheck raises. Pinning the floor to the
  * compat floor refuses a v3 host HERE, up front, and states the honest reachable
  * window: `[HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION]`, the same window
- * every other host call already accepts. The two now cannot drift.
+ * every other host call accepts. Tying the two together keeps them from drifting.
  */
 export const RESIDENCY_MIN_HOST_PROTOCOL_PULL = HOST_MIN_COMPAT_VERSION;
 
