@@ -251,6 +251,23 @@ const CaptureManifestSchema = z.object({
    * agent-agnostic while the code stays shape-agnostic.
    */
   subagentLabelPath: z.string().optional(),
+  /**
+   * Where this agent's ROLLOVER compact-summary records carry the
+   * structural continuation signal. Declaring this ENABLES the miner's
+   * compact-continuation lineage stitch for the agent; absent means the
+   * agent has no rollover concept and the stitch never runs on its
+   * transcripts — a foreign transcript that happens to carry
+   * similar-looking fields can never write bogus lineage.
+   *
+   * `recordFlagPath` must resolve to boolean true on the summary record;
+   * `parentSessionIdPath` resolves to the PREDECESSOR session id — the
+   * stitch fires only when that value differs from the session being
+   * mined (equality = an in-place compaction, not a rollover).
+   */
+  compactContinuation: z.object({
+    recordFlagPath: z.string(),
+    parentSessionIdPath: z.string(),
+  }).optional(),
 });
 
 const RegistrationSchema = z.object({

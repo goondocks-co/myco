@@ -66,6 +66,20 @@ export function hasSessionTombstone(sessionId: string): boolean {
 /**
  * Retrieve a single tombstone row (diagnostics / tests).
  */
+/**
+ * Remove a session's tombstone. Only EXPLICIT supersession may call this:
+ * a user-driven /sessions/register for the same id (supported reload
+ * flow), or a fresh human prompt arriving for a `phantom_reap` tombstone
+ * (live human input disproves the phantom classification). Passive event
+ * traffic must never clear a tombstone — deletion stays final against
+ * event-driven recreation.
+ */
+export function deleteSessionTombstone(sessionId: string): boolean {
+  const db = getDatabase();
+  const res = db.prepare(`DELETE FROM session_tombstones WHERE session_id = ?`).run(sessionId);
+  return res.changes > 0;
+}
+
 export function getSessionTombstone(sessionId: string): SessionTombstoneRow | null {
   const db = getDatabase();
   const row = db.prepare(

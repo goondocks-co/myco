@@ -492,6 +492,29 @@ describe('Buffer reconciliation — tombstones + gate-checked resurrection', () 
     expect(fs.existsSync(bufferPathFor(divergingId))).toBe(true);
   });
 
+  it('a LIVE reloaded row outranks its stale tombstone — the buffer is retained, not deleted', () => {
+    // Same-id reload after a delete: the tombstone still exists (only an
+    // explicit register clears it, and pruning is time-based), but the
+    // session is live again with an ACTIVE row. Its wedge-recovery journal
+    // must survive every cleanStaleBuffers pass fired by OTHER sessions'
+    // unregisters — honoring the tombstone first destroyed it mid-session.
+    const reloadedId = 'live-outranks-tombstone-017';
+    inGrove(() => {
+      upsertSession({ id: reloadedId, agent: 'claude-code', started_at: nowSec(), created_at: nowSec(), project_id: projectId });
+      deleteSessionCascade(reloadedId, SESSION_TOMBSTONE_SOURCE.PHANTOM_REAP);
+      // Reload recreates the row (status defaults to active).
+      upsertSession({ id: reloadedId, agent: 'claude-code', started_at: nowSec(), created_at: nowSec(), project_id: projectId });
+    });
+    writeBuffer(reloadedId, [
+      { type: 'user_prompt', prompt: 'wedge-buffered mid-turn event', origin: 'human', agent: 'claude-code', transcript_path: TRANSCRIPT, timestamp: iso(1000) },
+    ]);
+
+    const removed = makeReconciler().cleanStaleBuffers();
+
+    expect(removed).toBe(0);
+    expect(fs.existsSync(bufferPathFor(reloadedId))).toBe(true);
+  });
+
   it('startup reconciliation converges FIRST, then cleans — an aged diverging buffer is replayed, not destroyed', () => {
     const sessionId = 'startup-order-008';
     inGrove(() => upsertSession({ id: sessionId, agent: 'claude-code', started_at: nowSec(), created_at: nowSec(), project_id: projectId }));

@@ -32,6 +32,7 @@ import { getSession, deleteSessionCascade, type DeleteCascadeResult } from '@myc
 import { RECOVERED_BATCH_SENTINEL, BATCH_KIND } from '@myco/db/queries/batches.js';
 import { SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
 import { findTranscriptFor } from '@myco/symbionts/transcript-discovery.js';
+import { INJECTION_TOOL_NAME_PREFIX } from './injection-records.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import { resolveBufferDirForProjectId } from '@myco/capture/buffer-location.js';
 import { resolveProjectBufferDir } from '@myco/grove/paths.js';
@@ -63,10 +64,45 @@ export interface PhantomCandidate {
 }
 
 /**
- * DB-shape half of the phantom predicate: at least one batch, every batch
- * a RECOVERED sentinel, every activity a Myco injection, no recorded
- * transcript path. The on-disk transcript veto lives in
- * `sessionQualifiesForPhantomReap` — callers must not skip it.
+ * SQL LIKE pattern for Myco injection activities, derived from the SAME
+ * constant the writer uses (`injection-records.ts`) so predicate and
+ * producer cannot silently diverge. The `_` in the prefix is escaped —
+ * LIKE treats a bare underscore as a single-char wildcard.
+ */
+const INJECTION_TOOL_LIKE = `${INJECTION_TOOL_NAME_PREFIX.replaceAll('_', '\\_')}%`;
+
+/**
+ * The phantom DB shape, expressed ONCE and interpolated into both the
+ * single-session predicate and the sweep's candidate query (data-deletion
+ * predicates must never fork — a tightening that lands in one copy makes
+ * the two entry points reap different session classes).
+ *
+ * A session matches when ALL hold:
+ *  - no recorded transcript path;
+ *  - at least one batch, and every batch is a RECOVERED-kind sentinel
+ *    whose `response_summary` is still NULL — a sentinel that captured a
+ *    real assistant response (Stop's `last_assistant_message` lands on it
+ *    via `setResponseSummary`) is preserved content, never phantom;
+ *  - every activity is a Myco-origin injection.
+ */
+const PHANTOM_SHAPE_SQL = `
+       s.transcript_path IS NULL
+       AND EXISTS (SELECT 1 FROM prompt_batches pb WHERE pb.session_id = s.id)
+       AND NOT EXISTS (
+         SELECT 1 FROM prompt_batches pb
+         WHERE pb.session_id = s.id
+           AND NOT (pb.kind = ? AND pb.user_prompt = ? AND pb.response_summary IS NULL)
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM activities a
+         WHERE a.session_id = s.id
+           AND a.tool_name NOT LIKE '${INJECTION_TOOL_LIKE}' ESCAPE '\\'
+       )`;
+
+/**
+ * DB-shape half of the phantom predicate. The on-disk transcript veto and
+ * the unconverged-buffer veto live in `sessionQualifiesForPhantomReap` —
+ * callers must not skip it.
  */
 export function sessionLooksInjectionOnly(sessionId: string): boolean {
   const db = getDatabase();
@@ -74,18 +110,7 @@ export function sessionLooksInjectionOnly(sessionId: string): boolean {
     `SELECT 1 AS phantom
      FROM sessions s
      WHERE s.id = ?
-       AND s.transcript_path IS NULL
-       AND EXISTS (SELECT 1 FROM prompt_batches pb WHERE pb.session_id = s.id)
-       AND NOT EXISTS (
-         SELECT 1 FROM prompt_batches pb
-         WHERE pb.session_id = s.id
-           AND NOT (pb.kind = ? AND pb.user_prompt = ?)
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM activities a
-         WHERE a.session_id = s.id
-           AND a.tool_name NOT LIKE 'myco:inject\\_%' ESCAPE '\\'
-       )`,
+       AND ${PHANTOM_SHAPE_SQL}`,
   ).get(sessionId, BATCH_KIND.RECOVERED, RECOVERED_BATCH_SENTINEL) as { phantom: number } | undefined;
   return !!row;
 }
@@ -93,8 +118,11 @@ export function sessionLooksInjectionOnly(sessionId: string): boolean {
 /**
  * Set-based candidate query for the maintenance sweep. Applies the same
  * DB-shape predicate plus sweep-only gates: not active, not currently
- * registered, and past the age guard. The caller applies the transcript
- * veto and paused-project skip per candidate.
+ * registered, and past the age guard. Candidates are a SNAPSHOT — the
+ * sweep must route each one through `reapPhantomSession`, which re-runs
+ * the full predicate synchronously with the delete, so a session that
+ * gained real work (or re-registered) between snapshot and delete is
+ * never reaped from stale data.
  */
 export function findPhantomCandidates(
   registeredSessionIds: string[],
@@ -110,19 +138,8 @@ export function findPhantomCandidates(
     `SELECT s.id, s.agent, s.project_id
      FROM sessions s
      WHERE s.status != 'active'
-       AND s.transcript_path IS NULL
        AND COALESCE(s.ended_at, s.started_at) <= ?
-       AND EXISTS (SELECT 1 FROM prompt_batches pb WHERE pb.session_id = s.id)
-       AND NOT EXISTS (
-         SELECT 1 FROM prompt_batches pb
-         WHERE pb.session_id = s.id
-           AND NOT (pb.kind = ? AND pb.user_prompt = ?)
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM activities a
-         WHERE a.session_id = s.id
-           AND a.tool_name NOT LIKE 'myco:inject\\_%' ESCAPE '\\'
-       )
+       AND ${PHANTOM_SHAPE_SQL}
        ${excludePlaceholders}`,
   ).all(cutoff, BATCH_KIND.RECOVERED, RECOVERED_BATCH_SENTINEL, ...registeredSessionIds) as PhantomCandidate[];
 }
@@ -131,6 +148,15 @@ export interface PhantomReapOptions {
   logger: ReaperLogger;
   /** Injectable transcript discovery — tests stub this; production uses manifest discovery. */
   findTranscript?: (agent: string, sessionId: string) => string | null;
+  /**
+   * The reconciler's convergence probe. An unconverged buffer may hold the
+   * ONLY copy of real prompt events the DB hasn't seen (daemon wedged
+   * mid-session, failed startup replay) — the DB shape then lies about the
+   * session being injection-only, and the cascade would delete the journal.
+   * When the probe reports unconverged (or is absent at a call site that
+   * cannot supply it but buffers may exist), the reap is vetoed.
+   */
+  hasUnconvergedBuffer?: (sessionId: string) => boolean;
 }
 
 /**
@@ -142,6 +168,16 @@ export function sessionQualifiesForPhantomReap(sessionId: string, opts: PhantomR
   if (!sessionLooksInjectionOnly(sessionId)) return false;
   const row = getSession(sessionId, ALL_PROJECTS_SCOPE);
   if (!row) return false;
+  // Unconverged-buffer veto: the buffer journal may hold the only copy of
+  // real prompt events the DB never converged — the DB shape alone cannot
+  // prove the session is injection-only. Defer; the next reconcile either
+  // replays the events (session stops qualifying) or proves it empty.
+  try {
+    if (opts.hasUnconvergedBuffer?.(sessionId)) return false;
+  } catch {
+    // A failing probe is not proof of convergence — refuse to reap.
+    return false;
+  }
   const discover = opts.findTranscript ?? findTranscriptFor;
   try {
     if (discover(row.agent, sessionId)) return false;
@@ -175,6 +211,10 @@ export interface UnregisterPhantomReapDeps {
   /** Bootstrap vault dir fallback when the request context carries no project vault. */
   fallbackVaultDir: string;
   findTranscript?: (agent: string, sessionId: string) => string | null;
+  /** See {@link PhantomReapOptions.hasUnconvergedBuffer} — REQUIRED at the
+   *  unregister site in production wiring; typed optional only so minimal
+   *  test constructions compile. */
+  hasUnconvergedBuffer?: (sessionId: string) => boolean;
 }
 
 /**
@@ -191,7 +231,11 @@ export function createUnregisterPhantomReap(deps: UnregisterPhantomReapDeps) {
   ): boolean {
     let result: DeleteCascadeResult | null = null;
     try {
-      result = reapPhantomSession(sessionId, { logger: deps.logger, findTranscript: deps.findTranscript });
+      result = reapPhantomSession(sessionId, {
+        logger: deps.logger,
+        findTranscript: deps.findTranscript,
+        hasUnconvergedBuffer: deps.hasUnconvergedBuffer,
+      });
     } catch (err) {
       deps.logger.warn(LOG_KINDS.LIFECYCLE_REAP, 'Phantom reap check failed — session left in place', {
         session_id: sessionId,

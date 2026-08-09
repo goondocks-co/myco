@@ -319,6 +319,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "*/{sessionId}.jsonl"
         ],
         "transcriptCwdPath": "cwd"
+      },
+      "compactContinuation": {
+        "recordFlagPath": "isCompactSummary",
+        "parentSessionIdPath": "session_id"
       }
     },
     "registration": {
@@ -1082,13 +1086,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "tool": "edit",
           "pathField": "path",
           "pathKind": "file",
-          "mutates": false
+          "mutates": true
         },
         {
           "tool": "create",
           "pathField": "path",
           "pathKind": "file",
-          "mutates": false
+          "mutates": true
         },
         {
           "tool": "grep",

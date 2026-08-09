@@ -497,6 +497,38 @@ describe('claude-code manifest declares its file-read tool', () => {
       expect(byTool.get(tool)?.mutates).toBe(true);
     }
   });
+
+  it('every manifest write-vocabulary entry is flagged mutating — no read tool is', () => {
+    // Cross-manifest completeness pin for the canopy mutation vocabulary.
+    // A write-side tool missing `mutates: true` silently reverts its agent
+    // to hourly-scan staleness (the copilot CLI `edit`/`create` gap).
+    const expectations: Record<string, { mutating: string[]; readOnly: string[] }> = {
+      'claude-code': { mutating: ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'], readOnly: ['Read'] },
+      pi: { mutating: ['write', 'edit'], readOnly: ['read', 'bash'] },
+      codex: { mutating: ['apply_patch'], readOnly: [] },
+      opencode: { mutating: ['write', 'edit', 'apply_patch'], readOnly: ['read'] },
+      cursor: { mutating: ['Write', 'Edit', 'MultiEdit', 'Delete'], readOnly: ['Read', 'Grep'] },
+      copilot: { mutating: ['replace_string_in_file', 'create_file', 'apply_patch', 'edit', 'create'], readOnly: ['read_file', 'grep'] },
+      windsurf: { mutating: ['post_write_code'], readOnly: [] },
+      cline: { mutating: ['editor', 'apply_patch'], readOnly: ['read_files'] },
+      antigravity: { mutating: ['write_to_file', 'replace'], readOnly: ['view_file', 'read_file'] },
+    };
+    for (const [name, expectation] of Object.entries(expectations)) {
+      const raw = fs.readFileSync(path.join(MANIFESTS_DIR, `${name}.yaml`), 'utf-8');
+      const m = SymbiontManifestSchema.parse(YAML.parse(raw));
+      const entries = m.capabilities?.pathBearingTools ?? [];
+      for (const tool of expectation.mutating) {
+        const matching = entries.filter((t) => t.tool === tool);
+        expect(matching.length, `${name}: missing pathBearingTools entry for ${tool}`).toBeGreaterThan(0);
+        expect(matching.some((t) => t.mutates), `${name}: ${tool} must be mutates: true`).toBe(true);
+      }
+      for (const tool of expectation.readOnly) {
+        for (const entry of entries.filter((t) => t.tool === tool)) {
+          expect(entry.mutates, `${name}: read tool ${tool} must never be mutates: true`).toBe(false);
+        }
+      }
+    }
+  });
 });
 
 describe('codex manifest enables Canopy PreToolUse for Bash reads', () => {
