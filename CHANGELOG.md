@@ -2,6 +2,15 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] - 2026-08-09
+
+### Fixed
+
+- **Session durations are recorded correctly again.** Agents that re-announce a session mid-flight (Claude Code after a context compaction or resume, Codex Desktop periodically, Pi after compaction) were rewriting the session's start time on every re-announcement — a session spanning days could show as minutes. Re-registration is now additive: the earliest start time wins, and details already recorded (branch, lineage, project root) are never erased by a sparser re-announcement.
+- **Long Claude Code sessions no longer split into disconnected sessions.** Recent Claude Code builds continue a conversation under a new session id when the context window fills. Myco now links the continuation to its predecessor (sessions carry a "compact continuation" parent) and files the continuation summary as system context instead of displaying it as an enormous prompt you never typed.
+- **Empty "recovered" sessions no longer accumulate.** Launching an agent and quitting before typing anything left behind one-prompt phantom sessions reading "(implicit batch — capture recovered)". These are now cleaned up automatically, with deliberately conservative guards: a session holding any real prompt, captured response, transcript on disk, or not-yet-replayed buffered events is never touched — and if you come back and type after a cleanup, capture resumes seamlessly.
+- **Project file descriptions stay fresh for every agent.** The per-edit Canopy refresh only recognized Claude Code's tool names, so projects driven by Pi, Codex, Copilot, and others went stale between hourly background scans (a daemon restart appeared to fix it — briefly). Each agent's own edit vocabulary now triggers the refresh, and every turn-end nudges a scan, so descriptions follow the work no matter which agent does it.
+
 ## [1.4.0] - 2026-08-08
 
 ### Headline
