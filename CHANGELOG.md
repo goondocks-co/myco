@@ -2,6 +2,13 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.2] - 2026-08-09
+
+### Changed
+
+- **Dependency refresh across the board.** All open dependency updates consolidated and taken: the agent-execution SDK (`@openai/agents` 0.14.3 — verified live against a local model backend, with token accounting intact), the dashboard build toolchain (vite 8.2, React type packages), worker tooling (wrangler 4.116, workers types), and test infrastructure. One update was deliberately declined: the `openai` package stays on 6.x until the agents SDK it feeds supports 7.x — taking it early would have broken the model-provider handoff.
+- **Version drift between packages is now structurally impossible to ship.** A new repository gate verifies that any dependency declared by more than one package resolves to a single version, closing the class of bug where a half-applied update runs old code in one part of the daemon while the rest assumes new.
+
 ## [1.4.1] - 2026-08-09
 
 ### Fixed
