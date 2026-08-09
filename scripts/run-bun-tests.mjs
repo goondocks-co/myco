@@ -978,6 +978,16 @@ async function runPhase(label, extraArgs, bunfig, { isolate }) {
     const args = [
       'test',
       ...(isolate ? ['--isolate'] : []),
+      // Default per-test timeout, raised from bun's 5s. The suite creates real
+      // vault schemas and reads real files per test, and shared CI runners
+      // have been measured running the same case 15x slower than idle
+      // (~0.4s -> ~6s) — so ANY test over ~300ms idle can blow a 5s budget
+      // under contention, and three different suites did in one day, each
+      // green on re-run. Tests that wait on time use injected clocks (the
+      // comments gate keeps them honest), so this budget masks nothing but
+      // runner load; a genuinely hung test still fails, just at 30s. An
+      // explicit --timeout from the caller wins.
+      ...(extraArgs.some((a) => a === '--timeout' || a.startsWith('--timeout=')) ? [] : ['--timeout', '30000']),
       '--reporter=junit',
       `--reporter-outfile=${reportFile}`,
       ...extraArgs,
