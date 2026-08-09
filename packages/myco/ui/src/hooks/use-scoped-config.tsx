@@ -33,9 +33,9 @@ export interface TeamConfigTarget {
    * The DESTINATION HOST for a team-write from a MEMBER machine (E1 §5.3):
    * the daemon resolves `x-myco-host-id` into a synthetic routing target
    * built from the host record — which is what makes a joined host with
-   * ZERO attached projects configurable (the old attached-project-ref
-   * carrier had no ref to ride on such a host, so the write silently
-   * landed on the member's own daemon). `null` targets THIS machine's own
+   * ZERO attached projects configurable (there is no attach ref to carry
+   * the write on such a host, so resolving from the host id is the only
+   * thing that reaches it). `null` targets THIS machine's own
    * served grove directly — no carrier needed, resolved server-side from
    * `hostServe.servedGroveId` — used when configuring a Team from the host
    * machine itself.

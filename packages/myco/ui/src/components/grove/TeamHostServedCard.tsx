@@ -18,9 +18,8 @@ interface Props {
  * `TeamHostServingCard` on the Machine Dashboard is the unconditional
  * counterpart: it always shows this machine's own serving state regardless
  * of which Grove is currently being viewed. Follows the shape of the
- * retired `TeamStatusCard` (E-2/E-3, `git show ed899d42~1:…TeamStatusCard.tsx`)
- * that used to occupy this same Row 1 slot: whole-card link to the Team
- * page, `ochre` tone, `Users` eyebrow icon.
+ * retired `TeamStatusCard` (E-2/E-3, `git show ed899d42~1:…TeamStatusCard.tsx`):
+ * whole-card link to the Team page, `ochre` tone, `Users` eyebrow icon.
  */
 export function TeamHostServedCard({ groveId }: Props) {
   const { data } = useHostServeStatus();

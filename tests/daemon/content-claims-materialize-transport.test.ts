@@ -634,7 +634,7 @@ let memberToken: string;
     expect(res.status).toBe(404);
     const body = await res.json() as { error: string; message: string; retryable: boolean };
     expect(body.error).toBe('not_found');
-    expect(body.message).toBe('This route is served on localhost only, not over the overlay.');
+    expect(body.message).toBe('This route is served on localhost only, not to remote team members.');
     expect(body.retryable).toBe(false);
   });
 });

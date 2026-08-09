@@ -70,10 +70,10 @@ export function usePatchProjectSymbionts() {
   });
 }
 
-// NOTE: convenience wrappers `useSetSymbiontOverride` and
-// `useResetSymbiontOverride` were removed — they spread the
-// underlying TanStack mutation result and overrode `.mutate` with a
-// non-standard positional signature, which would silently misbind
+// NOTE: there are deliberately no `useSetSymbiontOverride` /
+// `useResetSymbiontOverride` convenience wrappers — spreading the
+// underlying TanStack mutation result and overriding `.mutate` with a
+// non-standard positional signature silently misbinds
 // any caller using TanStack's canonical `mutate(variables, options)`
 // shape. Call sites now use `usePatchProjectSymbionts()` directly
 // with an explicit `{ symbionts: { [name]: { enabled } | null } }`

@@ -312,7 +312,7 @@ describe('overlayHostStampRefusal (host-side overlay backstop)', () => {
     expect(secret).toEqual({
       status: 404,
       error: 'not_found',
-      message: 'This route is served on localhost only, not over the overlay.',
+      message: 'This route is served on localhost only, not to remote team members.',
       retryable: false,
     });
     expect(overlayHostStampRefusal('GET', '/api/providers/secrets')?.status).toBe(404);

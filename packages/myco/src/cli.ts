@@ -39,7 +39,7 @@ Commands:
   leave <host>             Detach this machine from a Team Host
   attach <project> --host <h>   Route a project to a Team Host (going-forward)
   detach <project>         Clear a project's Team Host mapping (resolves local again)
-  host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key)
+  host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key|members|revoke)
   version                  Show plugin version
   mcp                     Start the MCP stdio server
   hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact, error-occurred, notification)
@@ -231,10 +231,10 @@ async function main(): Promise<void> {
   if (cmd === 'attach') return (await import('./cli/attach.js')).runAttach(args, resolveVaultDir());
   if (cmd === 'detach') return (await import('./cli/attach.js')).runDetach(args, resolveVaultDir());
 
-  // Team Host operator orchestration — provisions the overlay stack (control
-  // plane as a root system service; the networking daemon unprivileged) and
-  // writes machine-tier config, not a project vault, so like `join`/`attach` it sits
-  // above the myco.yaml gate and works from any cwd.
+  // Team Host operator orchestration — enables serving (the daemon binds a
+  // local team listener and publishes it through the operator's Tailscale
+  // Funnel) and writes machine-tier config, not a project vault, so like
+  // `join`/`attach` it sits above the myco.yaml gate and works from any cwd.
   if (cmd === 'host') return (await import('./cli/host.js')).runHostCommand(args);
 
   if (cmd === 'doctor') {

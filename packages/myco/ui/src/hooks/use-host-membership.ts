@@ -57,9 +57,10 @@ export interface HostMembershipHint {
 export interface HostMembershipStatusResponse {
   hosts: HostMembershipHost[];
   hint: HostMembershipHint | null;
-  /** False when this machine has no overlay client build and cannot join a
-   *  team. Optional so an older daemon (which omits it) reads as capable
-   *  rather than silently disabling the form. */
+  /** False when this machine cannot take part in a team — the team transport is
+   *  served over a Unix-domain socket, which Windows does not provide. Optional
+   *  so an older daemon (which omits it) reads as capable rather than silently
+   *  disabling the form. */
   overlay_supported?: boolean;
   /** False when this machine cannot activate external agent access (the
    *  Unix-socket + Funnel flow; refused on Windows). Same optional-field

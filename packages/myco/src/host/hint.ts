@@ -89,7 +89,7 @@ export function resolveTeamHostHintState(
 export function teamHostHintMessage(state: TeamHostHintState): string | null {
   switch (state.kind) {
     case 'not_joined':
-      return `This project is served by Team Host ${state.hostId} — run \`myco join ${state.hostId}\` to enroll this machine, then attach this project.`;
+      return `This project is served by Team Host ${state.hostId} — enroll this machine with \`myco join ${state.hostId} --key <one-time-key> --host-url <address>\` (the operator gives you the key and address), then attach this project.`;
     case 'not_attached':
       return `This project is served by Team Host ${state.hostId} (already joined) — run \`myco attach\` to route this project through the host.`;
     case 'resolved':

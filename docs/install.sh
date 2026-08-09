@@ -1,7 +1,7 @@
 #!/bin/sh
 # Myco installer — https://myco.sh
 # Usage: curl -fsSL https://myco.sh/install.sh | sh
-#        curl -fsSL https://myco.sh/install.sh | sh -s -- --serve --server-url https://host.example:8080
+#        curl -fsSL https://myco.sh/install.sh | sh -s -- --serve
 #
 # Env overrides:
 #   MYCO_CHANNEL       — "stable" (default) or "beta"
@@ -13,9 +13,10 @@
 #
 # --serve options (a serving box is a full Myco instance — nothing above is
 # skipped; --serve is additive: enable Team Host serving after install):
-#   --serve                 Stand up this machine as a Team Host after install
-#   --server-url <url>      REQUIRED with --serve — the address members dial
-#   --hostname <name>       This host's node name on the tailnet (optional)
+#   --serve                 Stand up this machine as a Team Host after install.
+#                           The address members dial is published automatically
+#                           through this host's Tailscale Funnel — nothing to pass.
+#   --hostname <name>       Label for this host in teammates' dashboards (optional)
 set -eu
 
 REPO="goondocks-co/myco"
@@ -41,20 +42,11 @@ error()   { printf "${RED}%s${NC}\n"    "$1" >&2; }
 # below unless --serve is actually passed)
 # ---------------------------------------------------------------------------
 SERVE=0
-SERVE_SERVER_URL=""
 SERVE_HOSTNAME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --serve)
       SERVE=1
-      shift
-      ;;
-    --server-url)
-      SERVE_SERVER_URL="${2:-}"
-      shift 2
-      ;;
-    --server-url=*)
-      SERVE_SERVER_URL="${1#--server-url=}"
       shift
       ;;
     --hostname)
@@ -71,11 +63,6 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
-
-if [ "$SERVE" = "1" ] && [ -z "$SERVE_SERVER_URL" ]; then
-  error "--serve requires --server-url <https://host:8080> — the address members dial to reach the control plane."
-  exit 1
-fi
 
 # ---------------------------------------------------------------------------
 # Token helpers — DRY, no eval, token never echoed/logged
@@ -401,16 +388,16 @@ if [ "$SERVE" = "1" ]; then
   # complete ready-to-paste `myco join …` command. MYCO_TEAM_AGENT_KEY (if
   # set in the environment) flows through unchanged — the composite
   # orchestrator reads it and stores it in the served Grove's secrets.env.
-  info "Running: myco host enable --server-url ${SERVE_SERVER_URL} --designate-default --emit-join"
+  info "Running: myco host enable --designate-default --emit-join"
   if [ -n "$SERVE_HOSTNAME" ]; then
-    if ! "${BIN_DIR}/myco" host enable --server-url "$SERVE_SERVER_URL" --hostname "$SERVE_HOSTNAME" --designate-default --emit-join; then
+    if ! "${BIN_DIR}/myco" host enable --hostname "$SERVE_HOSTNAME" --designate-default --emit-join; then
       warn "Team Host enable did not complete. Re-run manually:"
-      echo "    ${BIN_DIR}/myco host enable --server-url $SERVE_SERVER_URL --hostname $SERVE_HOSTNAME --designate-default --emit-join"
+      echo "    ${BIN_DIR}/myco host enable --hostname $SERVE_HOSTNAME --designate-default --emit-join"
     fi
   else
-    if ! "${BIN_DIR}/myco" host enable --server-url "$SERVE_SERVER_URL" --designate-default --emit-join; then
+    if ! "${BIN_DIR}/myco" host enable --designate-default --emit-join; then
       warn "Team Host enable did not complete. Re-run manually:"
-      echo "    ${BIN_DIR}/myco host enable --server-url $SERVE_SERVER_URL --designate-default --emit-join"
+      echo "    ${BIN_DIR}/myco host enable --designate-default --emit-join"
     fi
   fi
   echo ""

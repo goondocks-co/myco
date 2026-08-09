@@ -11,7 +11,7 @@ import { cn } from '../../lib/cn';
  */
 
 export interface MemberAvatarProps extends HTMLAttributes<HTMLSpanElement> {
-  /** Display name; used to derive initials when `initials` is not set. */
+  /** Display name the initials fall back to when `initials` is not set. */
   name: string;
   /** Override the derived initials (max 2 characters recommended). */
   initials?: string;

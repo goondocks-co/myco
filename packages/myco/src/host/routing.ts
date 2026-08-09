@@ -216,18 +216,18 @@ export function configHostAuthoritative(capability: string): RefusalPayload {
 }
 
 /**
- * Refusal for a route the host serves on its localhost only and never over the
- * overlay — the operator/machine-local control plane (scope-map §1d) and the
- * member-assembled config carve (§6.3), both of which are never a valid overlay
+ * Refusal for a route the host serves on its localhost only and never to remote
+ * team members — the operator/machine-local admin routes (scope-map §1d) and the
+ * member-assembled config carve (§6.3), neither of which is a valid remote
  * surface. Uses the SAME 404 `not_found` body the host-serve lifecycle refusal
  * emits (`daemon/host-serve.ts` `overlayLifecycleRefused`) so a member sees one
- * uniform "not served over the overlay" shape.
+ * uniform "not served remotely" shape.
  */
 export function overlayLocalhostOnlyRefusal(): RefusalPayload {
   return {
     status: 404,
     error: 'not_found',
-    message: 'This route is served on localhost only, not over the overlay.',
+    message: 'This route is served on localhost only, not to remote team members.',
     retryable: false,
   };
 }

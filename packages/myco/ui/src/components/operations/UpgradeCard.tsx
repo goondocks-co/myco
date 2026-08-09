@@ -94,9 +94,9 @@ export function UpgradeCard() {
       // The daemon spawns a detached update script and SIGTERMs itself.
       // Poll /health AND verify the running version matches the target
       // before reloading. A first /health 200 isn't enough: launchd's
-      // KeepAlive can briefly bring the old binary back, and a daemon
+      // KeepAlive can briefly bring the previous binary back, and a daemon
       // started before the npm install finishes can answer /health at
-      // the OLD version. Without the version check the reload can race
+      // the previous version. Without the version check the reload can race
       // an in-flight respawn cycle and land on a connection-refused
       // screen.
       const targetVersion = applyResponse.version;

@@ -52,13 +52,15 @@ Commands:
   revoke <member-id>                     Remove one member's access. Use when a machine was
                                          wiped or replaced and cannot re-join.
 
-enable turns THIS machine into a Team Host: it publishes the daemon's team
-surface at a public HTTPS address and wires the local daemon to serve your team
-there. Teammates need only that address and a one-time key — there is no network
-for them to join. The stack runs unprivileged as your user and does not disturb a
-Tailscale you already have installed. (One exception: a machine whose daemon is
-boot-scoped via \`myco service install\` needs sudo for the system-domain unit
-step on macOS.) \`status\` prints the address teammates dial.
+enable turns THIS machine into a Team Host: the daemon binds a local team
+listener and publishes it at a public HTTPS address through your own Tailscale
+Funnel. Teammates need only that address and a one-time key — there is no network
+for them to join and nothing for them to install. Tailscale must be signed in on
+this machine with Funnel available; Myco uses the Tailscale you already run and
+never installs or manages it for you. The stack runs unprivileged as your user.
+(One exception: a machine whose daemon is boot-scoped via \`myco service install\`
+needs sudo for the system-domain unit step on macOS.) \`status\` prints the
+address teammates dial.
 
 --designate-default --emit-join is the --serve installer flag's composite path:
 enable, make this box's project storage what it serves for the team, optionally

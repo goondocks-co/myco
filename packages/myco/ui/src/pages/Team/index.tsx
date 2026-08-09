@@ -25,8 +25,8 @@
  * first fetch 404'd `not_serving` and rendered an error banner as the
  * page's DEFAULT state.
  *
- * CONNECTED: three tabs on the old four-tab page's frame (recovered from
- * a0c40006), rebuilt around hosts-as-teams:
+ * CONNECTED: three tabs rebuilt around hosts-as-teams (frame recovered from
+ * a0c40006):
  *   - Team (machine-scoped): serving card + membership + attach + delivery
  *   - External access (host-scoped): promoted from the page bottom
  *   - Settings (host-scoped): full member editors, E-0 routed-write model
@@ -165,7 +165,7 @@ export function TeamPage() {
       <div className="mb-4 flex flex-wrap items-center gap-3" data-testid="team-connected">
         <SubtabPill tabs={tabItems(externalMcpSupported)} activeTab={tab} onTabChange={setTab} />
         {/* The machine-scoped tab hides the selector; host-scoped tabs
-            require it (the old UI's scope rule, carried over). */}
+            require it (the scope rule for these tabs). */}
         {hostScoped && targetOptions.length > 0 && (
           <select
             aria-label="Configure team for"
