@@ -21,7 +21,7 @@ import { extractUserPromptRecordsWithDrops, type UserPromptRecord } from './prom
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
-import { getSession } from '../db/queries/sessions.js';
+import { getSession, updateSession } from '../db/queries/sessions.js';
 import { assertGroveProjectId, ALL_PROJECTS_SCOPE, type GroveProjectId } from '@myco/grove/ids.js';
 import { readTranscriptMeta } from '../hooks/transcript-meta.js';
 import { evaluateSessionCaptureRules, resolveSubagentThread } from '../hooks/capture-rules.js';
@@ -384,6 +384,14 @@ export class TranscriptMiner {
     // The walker receives the transcript meta so per-prompt
     // `transcript_meta_*` rules fire at mining time exactly as at hook time.
     const parsed = this.parseAllEvents(input.transcriptPath);
+
+    // Compact-continuation lineage: when Claude Code auto-compacts at the
+    // context ceiling, the continuation is written to a NEW transcript under
+    // a NEW session id whose compact-summary record still carries the OLD
+    // session id (snake_case `session_id`, distinct from the record's own
+    // camelCase `sessionId`). An in-place compaction carries its OWN id
+    // there — the fields differing is the rollover discriminator.
+    this.stitchCompactContinuationLineage(targetSessionId, parsed.events);
     const { records, droppedText, noMaskableDropRuleFound } = extractUserPromptRecordsWithDrops(
       input.agent,
       parsed.events,
@@ -720,6 +728,48 @@ export class TranscriptMiner {
           error: (err as Error).message,
         });
       }
+    }
+  }
+
+  /**
+   * Stitch compact-continuation lineage from the transcript's own records.
+   *
+   * The rollover discriminator is structural: a compact-summary user record
+   * (`isCompactSummary: true`) whose snake_case `session_id` differs from
+   * the session being mined names its predecessor. In-place compactions
+   * carry the session's own id there and are skipped. NULL-guarded so a
+   * re-mine (or a later in-place compaction in the same file) never
+   * overwrites lineage already recorded — idempotent by construction.
+   * Re-registration cannot wipe the write: `upsertSession` COALESCEs
+   * lineage columns (additive re-registration semantics).
+   */
+  private stitchCompactContinuationLineage(
+    sessionId: string,
+    events: ReadonlyArray<Record<string, unknown>>,
+  ): void {
+    for (const event of events) {
+      if (event.type !== 'user' || event.isCompactSummary !== true) continue;
+      const parentId = typeof event.session_id === 'string' ? event.session_id : null;
+      if (!parentId || parentId === sessionId) continue;
+      try {
+        const existing = getSession(sessionId, ALL_PROJECTS_SCOPE);
+        if (!existing || existing.parent_session_id) return;
+        updateSession(sessionId, {
+          parent_session_id: parentId,
+          parent_session_reason: 'compact continuation',
+        }, ALL_PROJECTS_SCOPE);
+        this.logger?.info(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Stitched compact-continuation lineage', {
+          session_id: sessionId,
+          parent_session_id: parentId,
+        });
+      } catch (err) {
+        this.logger?.warn(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Compact-continuation lineage stitch failed', {
+          session_id: sessionId,
+          parent_session_id: parentId,
+          error: (err as Error).message,
+        });
+      }
+      return;
     }
   }
 

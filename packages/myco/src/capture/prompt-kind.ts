@@ -229,6 +229,10 @@ function walkTranscript(
         prompt: rawText,
         transcriptPath: transcriptPath ?? '<transcript-walker>',
         transcriptMeta: evalMeta,
+        // Raw record context: lets `record_field_equals` rules key on
+        // record-level structural signals (e.g. Claude Code's
+        // `isCompactSummary`) that never appear in the prompt text.
+        record: event,
       },
     );
     if (decision.action === 'drop') {
