@@ -54,6 +54,7 @@ import { getMachineId } from '@myco/machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { migrateLegacyBackups } from '@myco/backup/migrate.js';
 import { createSessionLifecycleHandlers } from './api/session-lifecycle.js';
+import { createUnregisterPhantomReap } from './phantom-reaper.js';
 import {
   handleListCandidates,
   handleGetCandidate,
@@ -1698,6 +1699,11 @@ export async function main(): Promise<void> {
     registry, sessionBuffers, reconciler, stopProcessor, transcriptMiner,
     server, machineId, logger, liveConfig, vaultDir: bootstrapVaultDir,
     projectStateTracker,
+    reapPhantom: createUnregisterPhantomReap({
+      logger,
+      resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
+      fallbackVaultDir: bootstrapVaultDir,
+    }),
   };
   const sessionLifecycle = createSessionLifecycleHandlers(sessionLifecycleDeps);
   server.registerRoute('POST', '/sessions/register', sessionLifecycle.handleRegister);

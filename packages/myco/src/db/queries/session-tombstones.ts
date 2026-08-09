@@ -20,6 +20,8 @@ export const SESSION_TOMBSTONE_SOURCE = {
   MAINTENANCE_SWEEP: 'maintenance_sweep',
   /** Stop-gate cleanup of an invalid captured session. */
   INVALID_CAPTURE: 'invalid_capture',
+  /** Injection-only phantom session reaper (unregister + maintenance sweep). */
+  PHANTOM_REAP: 'phantom_reap',
 } as const;
 
 export type SessionTombstoneSource =

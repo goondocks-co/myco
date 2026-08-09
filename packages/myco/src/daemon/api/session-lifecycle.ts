@@ -91,6 +91,15 @@ export interface SessionLifecycleDeps {
    * resolved, so tool-use and subagent traffic count as much as SessionStart.
    */
   projectStateTracker?: ProjectPowerStateTracker;
+  /**
+   * Injection-only phantom reaper (`createUnregisterPhantomReap`). Runs at
+   * SessionEnd AFTER the completion chokepoint's final mining, so a
+   * last-moment transcript resolution vetoes the reap. Returns true when
+   * the session was deleted — the handler then skips the session-ended
+   * notification for a session that no longer exists. Optional so tests
+   * and minimal constructions keep their current behavior.
+   */
+  reapPhantom?: (sessionId: string, requestContext: RouteRequest['requestContext']) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,13 +265,20 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     server.updateDaemonJsonSessions(registry.sessions);
     logger.info(LOG_KINDS.LIFECYCLE_UNREGISTER, 'Session unregistered', { session_id });
 
-    notify(vaultDir, {
-      domain: 'sessions',
-      type: 'session.ended',
-      title: 'Session ended',
-      link: `/sessions/${session_id}`,
-      metadata: { sessionId: session_id },
-    }, liveConfig.current);
+    // Injection-only phantom reap — after final mining above so a
+    // just-resolved transcript vetoes. A reaped session gets no
+    // session-ended notification: the link would point at a deleted row.
+    const reaped = deps.reapPhantom?.(session_id, req.requestContext) ?? false;
+
+    if (!reaped) {
+      notify(vaultDir, {
+        domain: 'sessions',
+        type: 'session.ended',
+        title: 'Session ended',
+        link: `/sessions/${session_id}`,
+        metadata: { sessionId: session_id },
+      }, liveConfig.current);
+    }
 
     return { body: { ok: true, sessions: registry.sessions } };
   }
