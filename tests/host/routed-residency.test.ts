@@ -529,6 +529,30 @@ describe('residency apply matrix', () => {
     ).get() as { content_hash: string }).content_hash).toBe('new');
   });
 
+
+  test('local-rowid: two revisions differing ONLY in parent lineage both survive', () => {
+    // digest_extract_revisions self-references by parent_revision_id. The probe
+    // must include the REMAPPED parent, or two children identical in content but
+    // under different parents collapse — truncating lineage, which for this
+    // table is the point. Applied in ONE batch, as the drain ships a table's
+    // rows together, so both parents are in the remap when their children land.
+    const rev = (id: number, parent: number | null, content: string) => ({
+      id, project_id: PROJ, agent_id: 'myco-agent', tier: 1,
+      content, parent_revision_id: parent, created_at: NOW,
+    });
+    apply('digest_extract_revisions', [
+      rev(1, null, 'root-a'),
+      rev(2, null, 'root-b'),
+      rev(3, 1, 'child'),   // child of root-a
+      rev(4, 2, 'child'),   // child of root-b — identical but for lineage
+    ]);
+    const children = getDatabase().prepare(
+      `SELECT parent_revision_id FROM digest_extract_revisions WHERE content = 'child' ORDER BY parent_revision_id`,
+    ).all() as Array<{ parent_revision_id: number }>;
+    expect(children).toHaveLength(2);
+    expect(new Set(children.map((c) => c.parent_revision_id)).size).toBe(2);
+  });
+
   test('insert-only dedups on the PK (graph_edges)', () => {
     const edge = { id: 'ge1', project_id: PROJ, agent_id: 'myco-agent', source_id: 'a', source_type: 'x', target_id: 'b', target_type: 'y', type: 'rel', created_at: NOW, machine_id: 'm' };
     apply('graph_edges', [edge]);

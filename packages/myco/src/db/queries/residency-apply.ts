@@ -42,6 +42,7 @@
 import { epochSeconds } from '@myco/constants.js';
 import type { Database } from '@myco/db/client.js';
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
+import { residencyDecodeRow } from '@myco/db/queries/residency-wire.js';
 import type { Logger } from '@myco/daemon/logger.js';
 import { shouldLogOncePerInterval } from '@myco/daemon/log-throttle.js';
 
@@ -202,8 +203,15 @@ interface EntityMentionsRule {
  *
  * That leaves nothing to make a replay idempotent, so identity becomes EVERY OTHER
  * SHIPPED COLUMN: a row is a duplicate only when it is byte-identical to one already
- * present, which is the only case where merging loses nothing, because the two are
- * then indistinguishable.
+ * present. Two byte-identical rows carry no distinguishing INFORMATION — merging
+ * them loses no content — but they can be genuinely distinct EVENTS (capture writes,
+ * say, twelve identical `git status` tool calls in one batch), so this does UNDERCOUNT:
+ * the host keeps one row where the member had twelve, and a denormalized counter like
+ * `prompt_batches.activity_count` can then read higher than the surviving rows.
+ * Measured ~0.6% of `activities` on a real vault. Accepted as a bounded, convergent
+ * residual — the alternative (a per-row source ordinal to preserve multiplicity) is a
+ * schema change disproportionate to a count that carries no information — but stated
+ * honestly here rather than claimed away: this is lossless of CONTENT, not of COUNT.
  *
  * Hand-picked identifying tuples were tried first and failed twice, the second time
  * in production data. `activities` keyed on (scope, parents, `tool_name`, `timestamp`)
@@ -715,10 +723,12 @@ function applyLocalRowid(db: Database, table: string, rows: Record<string, unkno
 
     const cols = insertableColumns(row, columns).filter((c) => c !== 'id');
     // `project_id` first so the probe opens on the scope index; the rest narrow
-    // it to a byte-identical row. The self-reference is excluded because it was
-    // just rewritten to a receiver id and would never match a stored row.
+    // it to a byte-identical row. The self-reference is INCLUDED using its
+    // remapped receiver value (set above): stored rows carry receiver-side
+    // parent ids, so probing the remapped value keeps two revisions that differ
+    // only in lineage apart, while a replay — parent-first ordered — re-resolves
+    // the same receiver parent and still matches its prior insert.
     const probeCols = cols
-      .filter((c) => c !== rule.selfRef)
       .sort((a, b) => Number(b === 'project_id') - Number(a === 'project_id'));
     const probeSql = `SELECT id FROM ${table} WHERE ${probeCols.map((c) => `${c} IS ?`).join(' AND ')}`;
     const params = probeCols.map((c) => row[c] as never);
@@ -911,6 +921,12 @@ export function applyResidencyRows(
   const rule = RESIDENCY_APPLY_RULES[table];
   if (!rule) throw new Error(`no residency apply rule for table ${table}`);
   if (rows.length === 0) return { applied: 0 };
+
+  // Decode the wire codec (base64 BLOB wrappers -> Buffers) ONCE, before any
+  // rule reads a row — the single chokepoint that mirrors `residencyEncodeRow`
+  // on the send side. Idempotent for rows with no BLOB, so it costs a walk and
+  // nothing else on the common path.
+  rows = rows.map(residencyDecodeRow);
 
   // Tenancy admission runs BEFORE any write, for every rule kind that writes:
   // a batch is either entirely inside its declared project or entirely
