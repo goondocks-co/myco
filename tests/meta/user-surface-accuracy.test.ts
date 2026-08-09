@@ -30,6 +30,7 @@
  * the overlay transport"), which is the one place those words belong.
  */
 import { describe, expect, test } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,6 +54,28 @@ function filesUnder(dir: string, exts: string[]): string[] {
     if (exts.some((e) => entry.name.endsWith(e))) out.push(full);
   }
   return out;
+}
+
+/**
+ * Git-TRACKED files under `dir` (repo-relative, forward-slash) matching
+ * `exts`. "Shipping" is defined by version control: only a tracked file can
+ * ship, so gitignored local material under the same tree (e.g. the
+ * developer's `docs/superpowers/` plans, which legitimately discuss retired
+ * vocabulary) must never trip a shipping-surface check. A dev checkout has
+ * those files on disk while CI does not — a plain filesystem walk makes this
+ * suite pass in CI and fail locally on the same commit. Falls back to the
+ * filesystem walk when git is unavailable (e.g. an exported tarball).
+ */
+function trackedFilesUnder(dir: string, exts: string[]): string[] {
+  const relDir = path.relative(REPO_ROOT, dir).split(path.sep).join('/');
+  try {
+    return execFileSync('git', ['ls-files', '-z', '--', relDir], { cwd: REPO_ROOT })
+      .toString('utf-8')
+      .split('\0')
+      .filter((f) => f.length > 0 && exts.some((e) => f.endsWith(e)));
+  } catch {
+    return filesUnder(dir, exts).map((f) => path.relative(REPO_ROOT, f).split(path.sep).join('/'));
+  }
 }
 
 /**
@@ -101,8 +124,7 @@ describe('user-facing surface matches the shipped transport', () => {
   // shipped verbatim from docs/, so they are in scope too.
   const docFiles = [
     'README.md',
-    ...filesUnder(path.join(REPO_ROOT, 'docs'), ['.md', '.html', '.sh'])
-      .map((f) => path.relative(REPO_ROOT, f).split(path.sep).join('/')),
+    ...trackedFilesUnder(path.join(REPO_ROOT, 'docs'), ['.md', '.html', '.sh']),
   ];
 
   test('no shipping doc names the retired overlay transport or its dead flags', () => {
