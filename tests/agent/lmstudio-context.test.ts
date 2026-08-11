@@ -1,152 +1,15 @@
 /**
- * Tests for the LM Studio context-load resolver.
+ * Tests for the LM Studio context-load resolver — which (model, endpoint,
+ * context length) tuples a run ensures, with max-wins reconciliation.
+ * Mirrors the structure of tests/agent/ollama-context.test.ts.
  *
- * Stubs the timed-fetch helper so the resolver and per-model loader can
- * be exercised without a running LM Studio. Mirrors the structure of
- * tests/agent/ollama-context.test.ts.
+ * The load itself is injected (`loadModel`); the real ensure path is
+ * covered by tests/intelligence/lmstudio-instances.test.ts.
  */
 
 import { describe, it, expect } from 'bun:test';
-import {
-  resolveLmStudioContextLoads,
-  ensureLmStudioModelLoaded,
-  type TimedFetch,
-} from '@myco/agent/lmstudio-context.js';
+import { resolveLmStudioContextLoads } from '@myco/agent/lmstudio-context.js';
 import type { ProviderConfig } from '@myco/agent/types.js';
-
-interface FetchCall {
-  url: string;
-  init: RequestInit;
-}
-
-/**
- * Builds a TimedFetch stub backed by a per-URL response map. Records every
- * call so tests can assert request shape.
- */
-function makeFetchStub(routes: Record<string, () => Response>) {
-  const calls: FetchCall[] = [];
-  const fetchImpl: TimedFetch = async (url, init) => {
-    calls.push({ url, init });
-    const handler = routes[url];
-    if (!handler) {
-      // Default: 404 from server's perspective. Lets unmocked URLs surface.
-      return new Response('not found', { status: 404 });
-    }
-    return handler();
-  };
-  return { fetchImpl, calls };
-}
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
-describe('ensureLmStudioModelLoaded', () => {
-  it('POSTs the documented body shape and resolves on 200', async () => {
-    const { fetchImpl, calls } = makeFetchStub({
-      'http://localhost:1234/api/v1/models': () => jsonResponse({ models: [] }),
-      'http://localhost:1234/api/v1/models/load': () =>
-        jsonResponse({ type: 'llm', instance_id: 'i1', load_time_seconds: 1, status: 'loaded' }),
-    });
-
-    const ok = await ensureLmStudioModelLoaded(
-      'openai/gpt-oss-20b',
-      32768,
-      'http://localhost:1234',
-      fetchImpl,
-    );
-
-    expect(ok).toBe(true);
-    const loadCall = calls.find((c) => c.url.endsWith('/api/v1/models/load'));
-    expect(loadCall).toBeDefined();
-    expect(loadCall!.init.method).toBe('POST');
-    expect(JSON.parse(loadCall!.init.body as string)).toEqual({
-      model: 'openai/gpt-oss-20b',
-      context_length: 32768,
-    });
-  });
-
-  it('skips the load when an instance is already loaded at >= requested context', async () => {
-    const { fetchImpl, calls } = makeFetchStub({
-      'http://localhost:1234/api/v1/models': () =>
-        jsonResponse({
-          models: [
-            {
-              key: 'openai/gpt-oss-20b',
-              loaded_instances: [{ id: 'inst-1', config: { context_length: 32768 } }],
-            },
-          ],
-        }),
-    });
-
-    const ok = await ensureLmStudioModelLoaded(
-      'openai/gpt-oss-20b',
-      16384,
-      'http://localhost:1234',
-      fetchImpl,
-    );
-
-    expect(ok).toBe(true);
-    expect(calls.some((c) => c.url.endsWith('/api/v1/models/load'))).toBe(false);
-  });
-
-  it('still loads when an instance is loaded but at smaller context', async () => {
-    const { fetchImpl, calls } = makeFetchStub({
-      'http://localhost:1234/api/v1/models': () =>
-        jsonResponse({
-          models: [
-            {
-              key: 'openai/gpt-oss-20b',
-              loaded_instances: [{ id: 'inst-1', config: { context_length: 4096 } }],
-            },
-          ],
-        }),
-      'http://localhost:1234/api/v1/models/load': () =>
-        jsonResponse({ type: 'llm', instance_id: 'i2', load_time_seconds: 2, status: 'loaded' }),
-    });
-
-    const ok = await ensureLmStudioModelLoaded(
-      'openai/gpt-oss-20b',
-      32768,
-      'http://localhost:1234',
-      fetchImpl,
-    );
-
-    expect(ok).toBe(true);
-    expect(calls.some((c) => c.url.endsWith('/api/v1/models/load'))).toBe(true);
-  });
-
-  it('returns false (does not throw) on 5xx', async () => {
-    const fetchImpl: TimedFetch = async (url) => {
-      if (url.endsWith('/api/v1/models')) return new Response('err', { status: 500 });
-      return new Response('err', { status: 500 });
-    };
-    const ok = await ensureLmStudioModelLoaded('m', 32768, 'http://localhost:1234', fetchImpl);
-    expect(ok).toBe(false);
-  });
-
-  it('returns false (does not throw) on network error', async () => {
-    const fetchImpl: TimedFetch = async () => {
-      throw new Error('ECONNREFUSED');
-    };
-    const ok = await ensureLmStudioModelLoaded('m', 32768, 'http://localhost:1234', fetchImpl);
-    expect(ok).toBe(false);
-  });
-
-  it('strips a trailing slash from baseUrl', async () => {
-    const { fetchImpl, calls } = makeFetchStub({
-      'http://localhost:1234/api/v1/models': () => jsonResponse({ models: [] }),
-      'http://localhost:1234/api/v1/models/load': () =>
-        jsonResponse({ type: 'llm', instance_id: 'i', load_time_seconds: 1, status: 'loaded' }),
-    });
-    const ok = await ensureLmStudioModelLoaded('m', 8192, 'http://localhost:1234/', fetchImpl);
-    expect(ok).toBe(true);
-    expect(calls.map((c) => c.url)).toContain('http://localhost:1234/api/v1/models/load');
-  });
-});
 
 describe('resolveLmStudioContextLoads', () => {
   function makeLoadStub() {
@@ -210,6 +73,85 @@ describe('resolveLmStudioContextLoads', () => {
       contextLength: 32768,
     });
     expect(result.conflicts).toEqual([]);
+  });
+
+  it('recognizes an openai-compatible provider pointed at an LM Studio port', async () => {
+    const { loadModel, calls } = makeLoadStub();
+    const taskProvider: ProviderConfig = {
+      type: 'openai-compatible',
+      model: 'openai/gpt-oss-20b',
+      baseUrl: 'http://localhost:1234/v1',
+      contextLength: 16384,
+    };
+
+    const result = await resolveLmStudioContextLoads(taskProvider, {}, loadModel);
+
+    // Triggered via backend inference (not type === 'lmstudio'), and the
+    // baseUrl is normalized to the control root for the load.
+    expect(calls).toEqual([
+      { model: 'openai/gpt-oss-20b', ctx: 16384, baseUrl: 'http://localhost:1234' },
+    ]);
+    expect(result.taskProvider?.contextLength).toBe(16384);
+  });
+
+  it('recognizes a localBackend: lmstudio provider', async () => {
+    const { loadModel, calls } = makeLoadStub();
+    const taskProvider: ProviderConfig = {
+      type: 'openai-compatible',
+      localBackend: 'lmstudio',
+      model: 'openai/gpt-oss-20b',
+      baseUrl: 'http://10.29.13.55:8080',
+      contextLength: 16384,
+    };
+
+    await resolveLmStudioContextLoads(taskProvider, {}, loadModel);
+
+    expect(calls).toEqual([
+      { model: 'openai/gpt-oss-20b', ctx: 16384, baseUrl: 'http://10.29.13.55:8080' },
+    ]);
+  });
+
+  it('does not treat an openai-compatible provider on a non-LM-Studio port as LM Studio', async () => {
+    const { loadModel, calls } = makeLoadStub();
+    const taskProvider: ProviderConfig = {
+      type: 'openai-compatible',
+      model: 'some-model',
+      baseUrl: 'http://localhost:8000/v1',
+    };
+
+    const result = await resolveLmStudioContextLoads(taskProvider, {}, loadModel);
+
+    expect(calls).toHaveLength(0);
+    expect(result.taskProvider).toEqual(taskProvider);
+  });
+
+  it('keys /v1-suffixed and bare baseUrls to one load', async () => {
+    const { loadModel, calls } = makeLoadStub();
+    const taskProvider: ProviderConfig = {
+      type: 'lmstudio',
+      model: 'openai/gpt-oss-20b',
+      contextLength: 16384,
+      baseUrl: 'http://localhost:1234',
+    };
+    const phaseOverrides = {
+      draft: {
+        maxTurns: 20,
+        provider: {
+          type: 'lmstudio' as const,
+          model: 'openai/gpt-oss-20b',
+          contextLength: 32768,
+          baseUrl: 'http://localhost:1234/v1',
+        },
+      },
+    };
+
+    const result = await resolveLmStudioContextLoads(taskProvider, phaseOverrides, loadModel);
+
+    // Same endpoint after normalization → one load at the reconciled max.
+    expect(calls).toEqual([
+      { model: 'openai/gpt-oss-20b', ctx: 32768, baseUrl: 'http://localhost:1234' },
+    ]);
+    expect(result.conflicts).toHaveLength(1);
   });
 
   it('reconciles same-model-different-context to one load (max wins)', async () => {

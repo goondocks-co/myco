@@ -436,16 +436,21 @@ export async function runAgent(
     }
   }
 
-  // Same shape as the Ollama resolver, but for LM Studio: loads the model
-  // via /api/v1/models/load with the configured context_length. Only runs
-  // when context_length is explicitly set on an lmstudio provider; unset
-  // passes through to whatever the GUI already has loaded.
+  // Same shape as the Ollama resolver, but for LM Studio: ensures one
+  // instance per (endpoint, model) via the shared single-flight helper.
+  // When context_length is unset the 32K local default applies — LM
+  // Studio's own default window (4K) is too small for Myco's batch tasks.
   {
     const resolved = await resolveLmStudioContextLoads(
       taskProviderOverride,
       phaseProviderOverrides,
       undefined,
       config.execution?.reasoningLevel ?? config.reasoningLevel,
+      // Route the instance manager's tripwires (loaded-state-source-lying,
+      // converge-sweep, ...) into the structured run log instead of
+      // console — these warnings ARE the regression alarm for this
+      // subsystem and must be visible in the daemon log.
+      (event, message, meta) => options?.logger?.warn(event, message, meta),
     );
     taskProviderOverride = resolved.taskProvider;
     phaseProviderOverrides = resolved.phaseOverrides;

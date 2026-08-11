@@ -2,7 +2,10 @@ import { describe, it, expect, afterEach } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { LmStudioBackend } from '@myco/intelligence/lm-studio';
 
-// --- Helpers ---
+// LmStudioBackend is the embedding + availability client only. Text
+// generation goes through the openai-agents harness, and model-instance
+// lifecycle (load/unload/loaded state) is covered by
+// tests/intelligence/lmstudio-instances.test.ts.
 
 /** Capture fetch calls and return canned responses. */
 function mockFetch(handlers: Record<string, (body: any) => unknown>) {
@@ -31,261 +34,71 @@ function makeBackend(overrides: Record<string, unknown> = {}) {
   return new LmStudioBackend({
     model: 'test-model',
     base_url: 'http://localhost:9999',
-    context_window: 65536,
-    max_tokens: 1024,
     ...overrides,
   });
 }
-
-// --- Tests ---
 
 describe('LmStudioBackend', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  describe('summarize', () => {
-    it('always includes context_length in request body', async () => {
+  describe('embed', () => {
+    it('POSTs the configured model and input to the OpenAI-compat endpoint', async () => {
       const { calls } = mockFetch({
-        '/api/v1/chat': () => ({
-          model_instance_id: 'test-model',
-          output: [{ type: 'message', content: 'response' }],
+        '/v1/embeddings': () => ({
+          data: [{ embedding: [0.1, 0.2, 0.3] }],
+          model: 'test-model',
         }),
       });
 
       const backend = makeBackend();
-      await backend.summarize('test prompt');
+      const result = await backend.embed('some text');
 
-      const chatCall = calls.find((c) => c.url.includes('/api/v1/chat'));
-      expect(chatCall).toBeDefined();
-      expect(chatCall!.body.context_length).toBe(65536);
+      const call = calls.find((c) => c.url.includes('/v1/embeddings'));
+      expect(call).toBeDefined();
+      expect(call!.method).toBe('POST');
+      expect(call!.body).toEqual({ model: 'test-model', input: 'some text' });
+      expect(result.embedding).toEqual([0.1, 0.2, 0.3]);
+      expect(result.dimensions).toBe(3);
     });
 
-    it('uses per-request contextLength when provided', async () => {
-      const { calls } = mockFetch({
-        '/api/v1/chat': () => ({
-          model_instance_id: 'test-model',
-          output: [{ type: 'message', content: 'response' }],
-        }),
-      });
-
+    it('throws on a non-OK response', async () => {
+      mockFetch({});
       const backend = makeBackend();
-      await backend.summarize('test prompt', { contextLength: 32768 });
-
-      const chatCall = calls.find((c) => c.url.includes('/api/v1/chat'));
-      expect(chatCall!.body.context_length).toBe(32768);
-    });
-
-    it('routes by instance ID after ensureLoaded', async () => {
-      const { calls } = mockFetch({
-        '/api/v1/models/load': () => ({ instance_id: 'test-model:3', status: 'loaded' }),
-        '/api/v1/models': () => ({ models: [{ key: 'test-model', loaded_instances: [] }] }),
-        '/api/v1/chat': () => ({
-          model_instance_id: 'test-model:3',
-          output: [{ type: 'message', content: 'response' }],
-        }),
-      });
-
-      const backend = makeBackend();
-      await backend.ensureLoaded(65536, false);
-      await backend.summarize('test prompt');
-
-      const chatCall = calls.find((c) => c.url.includes('/api/v1/chat'));
-      expect(chatCall!.body.model).toBe('test-model:3');
-      // context_length still sent alongside instance ID
-      expect(chatCall!.body.context_length).toBe(65536);
-    });
-
-    it('falls back to model name when no instance ID', async () => {
-      const { calls } = mockFetch({
-        '/api/v1/chat': () => ({
-          model_instance_id: 'test-model',
-          output: [{ type: 'message', content: 'response' }],
-        }),
-      });
-
-      const backend = makeBackend();
-      // No ensureLoaded — instanceId is null
-      await backend.summarize('test prompt');
-
-      const chatCall = calls.find((c) => c.url.includes('/api/v1/chat'));
-      expect(chatCall!.body.model).toBe('test-model');
-    });
-
-    it('clears instance ID on 404 for self-healing', async () => {
-      mockFetch({
-        '/api/v1/models/load': () => ({ instance_id: 'test-model:3', status: 'loaded' }),
-        '/api/v1/models': () => ({ models: [{ key: 'test-model', loaded_instances: [] }] }),
-      });
-
-      const backend = makeBackend();
-      await backend.ensureLoaded(65536, false);
-
-      // Now mock a 404 on chat
-      vi.restoreAllMocks();
-      const { calls } = mockFetch({});
-      // No chat handler → returns 404
-
-      await expect(backend.summarize('test')).rejects.toThrow(/404/);
-
-      // Next summarize should use model name (instance ID was cleared)
-      vi.restoreAllMocks();
-      const round2 = mockFetch({
-        '/api/v1/chat': () => ({
-          model_instance_id: 'test-model',
-          output: [{ type: 'message', content: 'ok' }],
-        }),
-      });
-
-      await backend.summarize('test');
-      const chatCall = round2.calls.find((c) => c.url.includes('/api/v1/chat'));
-      expect(chatCall!.body.model).toBe('test-model');
+      await expect(backend.embed('x')).rejects.toThrow(/404/);
     });
   });
 
-  describe('ensureLoaded', () => {
-    it('reuses any loaded instance without loading', async () => {
-      const { calls } = mockFetch({
-        '/api/v1/models': () => ({
-          models: [{
-            key: 'test-model',
-            loaded_instances: [{
-              id: 'test-model:1',
-              config: { context_length: 65536, offload_kv_cache_to_gpu: false },
-            }],
-          }],
-        }),
-      });
-
-      const backend = makeBackend();
-      await backend.ensureLoaded(65536, false);
-
-      const loadCalls = calls.filter((c) => c.url.includes('/models/load'));
-      expect(loadCalls).toHaveLength(0);
+  describe('isAvailable', () => {
+    it('is true when the models list responds OK', async () => {
+      mockFetch({ '/v1/models': () => ({ data: [] }) });
+      expect(await makeBackend().isAvailable()).toBe(true);
     });
 
-    it('reuses instance even with different config (no config matching)', async () => {
-      const { calls } = mockFetch({
-        '/api/v1/models': () => ({
-          models: [{
-            key: 'test-model',
-            loaded_instances: [{
-              id: 'test-model:1',
-              config: { context_length: 4096, offload_kv_cache_to_gpu: true },
-            }],
-          }],
-        }),
+    it('is false when the server is unreachable', async () => {
+      const mock = vi.fn(async () => {
+        throw new Error('ECONNREFUSED');
+      }) as unknown as typeof globalThis.fetch;
+      vi.stubGlobal('fetch', mock);
+      expect(await makeBackend().isAvailable()).toBe(false);
+    });
+  });
+
+  describe('listModels', () => {
+    it('returns model ids from the OpenAI-compat list', async () => {
+      mockFetch({
+        '/v1/models': () => ({ data: [{ id: 'a' }, { id: 'b' }] }),
       });
-
-      const backend = makeBackend();
-      // Request different context and kv_cache — should still reuse
-      await backend.ensureLoaded(65536, false);
-
-      const loadCalls = calls.filter((c) => c.url.includes('/models/load'));
-      expect(loadCalls).toHaveLength(0);
+      expect(await makeBackend().listModels()).toEqual(['a', 'b']);
     });
 
-    it('reuses instance when config fields are missing (non-llama.cpp models)', async () => {
-      const { calls } = mockFetch({
-        '/api/v1/models': () => ({
-          models: [{
-            key: 'test-model',
-            loaded_instances: [{
-              id: 'test-model:1',
-              // Models like glm-4.7-flash don't report kv_cache or flash_attention
-              config: { context_length: 32768 },
-            }],
-          }],
-        }),
-      });
-
-      const backend = makeBackend();
-      await backend.ensureLoaded(65536, false);
-
-      // Must NOT load a new instance — this was the root cause of resource exhaustion
-      const loadCalls = calls.filter((c) => c.url.includes('/models/load'));
-      expect(loadCalls).toHaveLength(0);
-    });
-
-    it('loads new instance when none exist', async () => {
-      const { calls } = mockFetch({
-        '/api/v1/models/load': () => ({ instance_id: 'test-model:1', status: 'loaded' }),
-        '/api/v1/models': () => ({
-          models: [{ key: 'test-model', loaded_instances: [] }],
-        }),
-      });
-
-      const backend = makeBackend();
-      await backend.ensureLoaded(65536, false);
-
-      const loadCall = calls.find((c) => c.url.includes('/models/load'));
-      expect(loadCall).toBeDefined();
-      expect(loadCall!.body.model).toBe('test-model');
-      expect(loadCall!.body.context_length).toBe(65536);
-      // gpu_kv_cache=false should NOT be sent (it's the default, and not all models support it)
-      expect(loadCall!.body.offload_kv_cache_to_gpu).toBeUndefined();
-    });
-
-    it('sends offload_kv_cache_to_gpu only when explicitly true', async () => {
-      const { calls } = mockFetch({
-        '/api/v1/models/load': () => ({ instance_id: 'test-model:1', status: 'loaded' }),
-        '/api/v1/models': () => ({
-          models: [{ key: 'test-model', loaded_instances: [] }],
-        }),
-      });
-
-      const backend = makeBackend();
-      await backend.ensureLoaded(65536, true);
-
-      const loadCall = calls.find((c) => c.url.includes('/models/load'));
-      expect(loadCall!.body.offload_kv_cache_to_gpu).toBe(true);
-    });
-
-    it('captures instance ID from load response', async () => {
-      const { calls } = mockFetch({
-        '/api/v1/models/load': () => ({ instance_id: 'test-model:5', status: 'loaded' }),
-        '/api/v1/models': () => ({
-          models: [{ key: 'test-model', loaded_instances: [] }],
-        }),
-        '/api/v1/chat': () => ({
-          model_instance_id: 'test-model:5',
-          output: [{ type: 'message', content: 'ok' }],
-        }),
-      });
-
-      const backend = makeBackend();
-      await backend.ensureLoaded(65536, false);
-      await backend.summarize('test');
-
-      const chatCall = calls.find((c) => c.url.includes('/api/v1/chat'));
-      expect(chatCall!.body.model).toBe('test-model:5');
-    });
-
-    it('reuses first instance when multiple exist (no config matching)', async () => {
-      const { calls } = mockFetch({
-        '/api/v1/models': () => ({
-          models: [{
-            key: 'test-model',
-            loaded_instances: [
-              {
-                id: 'test-model:1',
-                config: { context_length: 32768, offload_kv_cache_to_gpu: true },
-              },
-              {
-                id: 'test-model:2',
-                config: { context_length: 65536, offload_kv_cache_to_gpu: false },
-              },
-            ],
-          }],
-        }),
-      });
-
-      const backend = makeBackend();
-      await backend.ensureLoaded(65536, false);
-
-      // Should reuse first available without loading or unloading
-      const loadCalls = calls.filter((c) => c.url.includes('/models/load'));
-      expect(loadCalls).toHaveLength(0);
+    it('returns [] on failure', async () => {
+      const mock = vi.fn(async () => {
+        throw new Error('ECONNREFUSED');
+      }) as unknown as typeof globalThis.fetch;
+      vi.stubGlobal('fetch', mock);
+      expect(await makeBackend().listModels()).toEqual([]);
     });
   });
 });
