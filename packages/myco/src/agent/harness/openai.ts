@@ -28,7 +28,7 @@ import { HARNESS_OPENAI_AGENTS } from '@myco/agent/types.js';
 import { DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS } from '@myco/agent/context-windows.js';
 import { ensureOllamaContextVariant } from '@myco/agent/ollama-context.js';
 import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
-import { LmStudioBackend } from '@myco/intelligence/lm-studio.js';
+import { ensureLmStudioModelInstance } from '@myco/intelligence/lmstudio-instances.js';
 import {
   getLocalOpenAIBackendDefaultBaseUrl,
   inferLocalOpenAIBackendKind,
@@ -246,21 +246,36 @@ async function prepareLocalProviderExecution(
     };
   }
 
-  const controlBaseUrl = toLocalControlBaseUrl(
-    normalizedProvider.baseUrl ?? getLocalOpenAIBackendDefaultBaseUrl('lmstudio'),
-  );
-  const backend = new LmStudioBackend({
-    base_url: controlBaseUrl,
+  // Shared single-flight ensure — the same path the executor pre-load
+  // uses, so a run's two ensure points (executor resolver + here) and any
+  // concurrent runs against the same endpoint converge on one instance
+  // instead of each loading their own (see intelligence/lmstudio-instances.ts).
+  const ensured = await ensureLmStudioModelInstance({
+    baseUrl: toLocalControlBaseUrl(
+      normalizedProvider.baseUrl ?? getLocalOpenAIBackendDefaultBaseUrl('lmstudio'),
+    ),
     model,
-    context_window: contextLength,
+    contextLength,
   });
-  await backend.ensureLoaded(contextLength, false);
+  // Not-loaded is run-fatal here, matching the pre-refactor behavior where
+  // a failed load threw out of ensureLoaded: proceeding with the bare
+  // model name would let LM Studio JIT-load at its ~4K default and
+  // silently truncate batch prompts that are sized for `contextLength`.
+  if (!ensured.loaded) {
+    throw new Error(
+      `LM Studio could not confirm model "${model}" loaded at ${contextLength} tokens of context — see daemon warnings for the load/list failure detail`,
+    );
+  }
   return {
     provider: {
       ...normalizedProvider,
       contextLength,
     },
-    model: backend.getLoadedInstanceId() ?? model,
+    // Pin the chat request to the confirmed instance id: with multiple
+    // instances loaded, LM Studio's routing for a bare model name is
+    // undocumented, and the id keeps requests on the instance the
+    // converge policy chose.
+    model: ensured.instanceId ?? model,
   };
 }
 

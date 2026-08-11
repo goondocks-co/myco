@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import type { LlmProvider, LlmResponse, EmbeddingProvider, EmbeddingResponse, LlmRequestOptions } from '@myco/intelligence/llm';
-import { createLlmProvider, createEmbeddingProvider } from '@myco/intelligence/llm';
+import { createEmbeddingProvider } from '@myco/intelligence/llm';
 
 describe('LlmProvider interface', () => {
   it('defines summarize with optional LlmRequestOptions', () => {
@@ -25,27 +25,6 @@ describe('EmbeddingProvider interface', () => {
       async isAvailable() { return true; },
     };
     expect(mock.name).toBe('mock');
-  });
-});
-
-describe('createLlmProvider', () => {
-  it('returns OllamaBackend for ollama provider', () => {
-    const backend = createLlmProvider({ provider: 'ollama', model: 'gpt-oss' });
-    expect(backend.name).toBe('ollama');
-  });
-
-  it('returns LmStudioBackend for lm-studio provider', () => {
-    const backend = createLlmProvider({ provider: 'lm-studio', model: 'gpt-oss' });
-    expect(backend.name).toBe('lm-studio');
-  });
-
-  it('returns AnthropicBackend for anthropic provider', () => {
-    const backend = createLlmProvider({ provider: 'anthropic', model: 'claude-haiku-4-5-20251001' });
-    expect(backend.name).toBe('anthropic');
-  });
-
-  it('throws for unknown provider', () => {
-    expect(() => createLlmProvider({ provider: 'unknown' as any, model: 'x' })).toThrow(/Unknown LLM provider/);
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { loadPrompt } from '@myco/prompts/index';
-import { createLlmProvider } from '@myco/intelligence/llm';
+import { OllamaBackend } from '@myco/intelligence/ollama';
 import { stripReasoningTokens } from '@myco/intelligence/response';
 import { CONSOLIDATION_MAX_TOKENS, LLM_REASONING_MODE } from '@myco/constants';
 import fs from 'node:fs';
@@ -59,8 +59,7 @@ function buildPrompt(fixture: Fixture): string {
 }
 
 function createTestLlm() {
-  return createLlmProvider({
-    provider: 'ollama',
+  return new OllamaBackend({
     model: process.env.EVAL_MODEL ?? 'qwen3.5:latest',
     base_url: process.env.EVAL_BASE_URL ?? 'http://localhost:11434',
   });

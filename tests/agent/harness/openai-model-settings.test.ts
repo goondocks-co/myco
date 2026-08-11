@@ -24,17 +24,14 @@ import { describe, expect, it, mock } from 'bun:test';
 import { Agent, Runner } from '@openai/agents';
 import { OpenAIAgentsHarness } from '@myco/agent/harness/openai.js';
 
-// LM Studio's real backend makes a network call (`ensureLoaded`) to load
-// the model before the harness can construct the Agent. Stub it so the
-// lmstudio local-provider case can be asserted at the harness level
-// without depending on a live LM Studio server — mirrors how
+// The real ensure path makes network calls (loaded-state query + load)
+// before the harness can construct the Agent. Stub it so the lmstudio
+// local-provider case can be asserted at the harness level without
+// depending on a live LM Studio server — mirrors how
 // runtime-claude.test.ts stubs SDK-adjacent modules rather than hitting
 // the real thing.
-mock.module('@myco/intelligence/lm-studio.js', () => ({
-  LmStudioBackend: class {
-    async ensureLoaded() { /* no-op stub — no live server required */ }
-    getLoadedInstanceId() { return 'stub-lmstudio-model'; }
-  },
+mock.module('@myco/intelligence/lmstudio-instances.js', () => ({
+  ensureLmStudioModelInstance: async () => ({ instanceId: 'stub-lmstudio-model', loaded: true }),
 }));
 
 function stubModelProvider() {
