@@ -118,6 +118,8 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevelUi | undefined>(currentConfig?.reasoningLevel);
   const [savedReasoningLevel, setSavedReasoningLevel] = useState<ReasoningLevelUi | undefined>(currentConfig?.reasoningLevel);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [scheduleTouched, setScheduleTouched] = useState(false);
   const providers = providersData?.providers ?? [];
   const providerDraftDefaults = {
     harness: defaults?.harness,
@@ -166,6 +168,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
     || maybeInferHarnessFromProviderType(parsedDefaultProviderType)
     || 'claude-sdk';
   const isDirty = isProviderDirty
+    || scheduleTouched
     || reasoningLevel !== savedReasoningLevel
     || maxTurns !== savedTaskSnapshot.maxTurns
     || timeoutSeconds !== savedTaskSnapshot.timeoutSeconds
@@ -181,6 +184,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
     setTimeoutSeconds(snapshot.timeoutSeconds);
     setPhaseOverrides(snapshot.phaseOverrides);
     setScheduleOverride(snapshot.scheduleOverride);
+    setScheduleTouched(false);
     setParamsOverride(snapshot.paramsOverride);
     setSavedTaskSnapshot(snapshot);
     setReasoningLevel(currentConfig?.reasoningLevel);
@@ -194,12 +198,25 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   ]);
 
   // Server effective state is authoritative; only layer an unsaved local
-  // toggle draft over it while the user is editing.
+  // toggle draft over it while the user is editing. Interaction is tracked
+  // explicitly (not by comparing against the saved override) because a
+  // gate-blocked config can hold a saved `enabled: true` the server
+  // refuses — clicking the switch back to that same value must still read
+  // as a draft, or the click gives no visual feedback at all.
   const draftScheduleEnabled = scheduleOverride.enabled ?? schedule?.enabled ?? false;
-  const savedScheduleEnabled = savedTaskSnapshot.scheduleOverride.enabled;
-  const hasScheduleEnabledDraft = scheduleOverride.enabled !== savedScheduleEnabled;
+  const hasScheduleEnabledDraft = scheduleTouched;
   const scheduleCapabilityDisabled = taskConfigData?.capability != null
     && taskConfigData.capabilityEnabled === false;
+  // Server-driven provider gate (requiresTaskProvider tasks): blocked until
+  // config carries an explicit provider for this task. The block lifts when
+  // the pending SAVE would satisfy the gate — a dirty task-level provider
+  // draft, or a phase-level provider override (phase overrides ride in
+  // every save payload) — so "pick a model + enable" lands in one save;
+  // the daemon validates the combined payload.
+  const draftSatisfiesProviderGate = (isProviderDirty && providerType !== '')
+    || Object.values(phaseOverrides).some((phase) => phase?.provider);
+  const scheduleBlockedByProvider = taskConfigData?.scheduleBlockedReason === 'requires_task_provider'
+    && !draftSatisfiesProviderGate;
   const effectiveScheduleEnabled = scheduleCapabilityDisabled
     ? false
     : (
@@ -226,12 +243,26 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   }
 
   function handleSave() {
-    const provider = draftToNormalizedProviderConfig(
-      { ...draft, harness: effectiveHarness as 'claude-sdk' | 'openai-agents' },
-      reasoningModels,
-    );
-    if (!provider) {
-      return;
+    setSaveError(null);
+    // Section-scoped payload: harness/provider are included only when the
+    // provider section was actually edited. The draft is pre-seeded from
+    // the inherited defaults, so an unconditional include would silently
+    // materialize a per-task provider override on every save — pinning the
+    // task and detaching it from future default-provider changes.
+    let providerPayload: { harness?: 'claude-sdk' | 'openai-agents'; provider?: ProviderConfig } = {};
+    if (isProviderDirty) {
+      const provider = draftToNormalizedProviderConfig(
+        { ...draft, harness: effectiveHarness as 'claude-sdk' | 'openai-agents' },
+        reasoningModels,
+      );
+      if (!provider) {
+        setSaveError('Choose a provider to save the model settings.');
+        return;
+      }
+      providerPayload = {
+        harness: effectiveHarness as 'claude-sdk' | 'openai-agents',
+        provider,
+      };
     }
 
     // Build schedule payload: only include fields the user has overridden
@@ -248,8 +279,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       {
         taskId,
         config: {
-          harness: effectiveHarness as 'claude-sdk' | 'openai-agents',
-          provider,
+          ...providerPayload,
           reasoningLevel: reasoningLevel ?? null,
           maxTurns: maxTurns ? Number(maxTurns) : null,
           timeoutSeconds: timeoutSeconds ? Number(timeoutSeconds) : null,
@@ -260,11 +290,14 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       },
       {
         onSuccess: () => {
-          commitDraft(providerDraftFromSource(
-            { harness: effectiveHarness, provider },
-            providerDraftDefaults,
-          ));
+          if (providerPayload.provider) {
+            commitDraft(providerDraftFromSource(
+              { harness: effectiveHarness, provider: providerPayload.provider },
+              providerDraftDefaults,
+            ));
+          }
           setSavedReasoningLevel(reasoningLevel);
+          setScheduleTouched(false);
           setSavedTaskSnapshot({
             maxTurns,
             timeoutSeconds,
@@ -273,11 +306,15 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
             paramsOverride,
           });
         },
+        onError: (err) => {
+          setSaveError(err.message);
+        },
       },
     );
   }
 
   function handleClear() {
+    setSaveError(null);
     updateMutation.mutate(
       {
         taskId,
@@ -294,6 +331,9 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
         },
       },
       {
+        onError: (err) => {
+          setSaveError(err.message);
+        },
         onSuccess: () => {
           const clearedSnapshot = taskConfigSnapshot(null);
           commitDraft(providerDraftFromSource(null, providerDraftDefaults));
@@ -304,6 +344,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
           setTimeoutSeconds(clearedSnapshot.timeoutSeconds);
           setPhaseOverrides(clearedSnapshot.phaseOverrides);
           setScheduleOverride(clearedSnapshot.scheduleOverride);
+          setScheduleTouched(false);
           setParamsOverride(clearedSnapshot.paramsOverride);
           setSavedTaskSnapshot(clearedSnapshot);
         },
@@ -475,6 +516,13 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
 
         <div className="flex-1" />
 
+        {saveError && (
+          <span className="flex items-center gap-1 text-xs text-red-400">
+            <XCircle className="h-3.5 w-3.5" />
+            {saveError}
+          </span>
+        )}
+
         <Button
           size="sm"
           onClick={handleSave}
@@ -500,7 +548,9 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
             >
               {scheduleCapabilityDisabled
                 ? 'governed off'
-                : (effectiveScheduleEnabled ? 'active' : 'off')}
+                : (scheduleBlockedByProvider && !effectiveScheduleEnabled
+                  ? 'needs model'
+                  : (effectiveScheduleEnabled ? 'active' : 'off'))}
             </Badge>
           </div>
 
@@ -511,11 +561,18 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
               <p className="font-sans text-[11px] text-on-surface-variant">
                 Automatically run this task on a schedule
               </p>
+              {scheduleBlockedByProvider && !effectiveScheduleEnabled && !scheduleCapabilityDisabled && (
+                <p className="font-sans text-[11px] text-amber-500">
+                  This task runs on a model chosen for it, not your default.
+                  Select one above to confirm it for this task, then turn on auto-run.
+                </p>
+              )}
             </div>
             <Switch
               checked={effectiveScheduleEnabled}
-              disabled={scheduleCapabilityDisabled}
+              disabled={scheduleCapabilityDisabled || (scheduleBlockedByProvider && !effectiveScheduleEnabled)}
               onCheckedChange={(checked) => {
+                setScheduleTouched(true);
                 setScheduleOverride((prev) => ({ ...prev, enabled: checked }));
               }}
             />

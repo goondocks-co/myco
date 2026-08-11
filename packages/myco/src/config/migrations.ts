@@ -539,6 +539,29 @@ export const MIGRATIONS: Migration[] = [
       delete embedding.run_in_deep_sleep;
     },
   },
+  {
+    version: 12,
+    name: 'reseed-canopy-enabled-for-injection-off-cohort',
+    // The canopy-map builder gates on the capability master switch
+    // (cortex.canopy.enabled). A config carrying inject_on_pre_tool_use:
+    // false with `enabled` absent (defaulting true) expresses "canopy off"
+    // intent that the master switch doesn't see — without this re-seed,
+    // scheduled map runs would silently bill the default provider for
+    // that cohort. Value-relocation shape (fires only when the injection
+    // key is present and enabled is absent), so it never expands a sparse
+    // local.yaml; only the `false` value is seeded because absent `enabled`
+    // already defaults true.
+    migrate(doc: Record<string, unknown>): void {
+      const cortex = doc.cortex as Record<string, unknown> | undefined;
+      if (!cortex) return;
+      const canopy = cortex.canopy as Record<string, unknown> | undefined;
+      if (!canopy) return;
+      if ('enabled' in canopy) return;
+      if (canopy.inject_on_pre_tool_use === false) {
+        canopy.enabled = false;
+      }
+    },
+  },
 ];
 
 /** Current migration version — the highest version in MIGRATIONS. */

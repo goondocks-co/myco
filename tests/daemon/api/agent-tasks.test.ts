@@ -21,6 +21,7 @@ import {
   handleCopyTask,
   handleDeleteTask,
   handleGetTaskConfig,
+  handleUpdateTaskConfig,
 } from '@myco/daemon/api/agent-tasks.js';
 import { invalidateMergedConfigCache } from '@myco/config/loader.js';
 import { createGrove, clearGroveRegistryCaches } from '@myco/grove/registry.js';
@@ -214,6 +215,183 @@ describe('handleGetTaskConfig', () => {
       capabilityEnabled: false,
       effectiveScheduleEnabled: false,
       config: { schedule: { enabled: true } },
+      scheduleBlockedReason: 'capability_off',
     });
+  });
+
+  it('reports requires_task_provider for canopy-describe until a provider is chosen', async () => {
+    const grove = createGrove('Agent Tasks Gate', mycoHome);
+    const groveConfigPath = resolveGroveConfigPath(grove.id, mycoHome);
+    fs.mkdirSync(path.dirname(groveConfigPath), { recursive: true });
+    fs.writeFileSync(
+      groveConfigPath,
+      [
+        'version: 3',
+        'cortex:',
+        '  canopy:',
+        '    enabled: true',
+        'agent:',
+        '  tasks:',
+        '    canopy-describe:',
+        '      schedule:',
+        '        enabled: true',
+        '',
+      ].join('\n'),
+    );
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\n');
+    invalidateMergedConfigCache();
+
+    const req = makeReq({
+      params: { id: 'canopy-describe' },
+      requestContext: { ...TEST_REQUEST_CONTEXT, groveId: grove.id },
+    });
+    const blocked = await handleGetTaskConfig(req, vaultDir);
+    expect(blocked.status).toBe(200);
+    // The enabled override alone must not schedule the task — it does not
+    // fall back to the default provider by design.
+    expect(blocked.body).toMatchObject({
+      effectiveScheduleEnabled: false,
+      scheduleBlockedReason: 'requires_task_provider',
+    });
+
+    fs.writeFileSync(
+      groveConfigPath,
+      [
+        'version: 3',
+        'cortex:',
+        '  canopy:',
+        '    enabled: true',
+        'agent:',
+        '  tasks:',
+        '    canopy-describe:',
+        '      provider:',
+        '        type: lmstudio',
+        '        model: openai/gpt-oss-20b',
+        '      schedule:',
+        '        enabled: true',
+        '',
+      ].join('\n'),
+    );
+    invalidateMergedConfigCache();
+    const satisfied = await handleGetTaskConfig(req, vaultDir);
+    expect(satisfied.body).toMatchObject({
+      effectiveScheduleEnabled: true,
+      scheduleBlockedReason: null,
+    });
+  });
+});
+
+describe('handleUpdateTaskConfig schedule gate', () => {
+  it('422s when enabling canopy-describe schedule without a provider, and accepts pick-model+enable in one write', async () => {
+    const grove = createGrove('Agent Tasks Put Gate', mycoHome);
+    const groveConfigPath = resolveGroveConfigPath(grove.id, mycoHome);
+    fs.mkdirSync(path.dirname(groveConfigPath), { recursive: true });
+    fs.writeFileSync(groveConfigPath, 'version: 3\n');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\n');
+    invalidateMergedConfigCache();
+
+    const baseReq = {
+      params: { id: 'canopy-describe' },
+      requestContext: { ...TEST_REQUEST_CONTEXT, groveId: grove.id },
+    };
+
+    const rejected = await handleUpdateTaskConfig(
+      makeReq({ ...baseReq, body: { schedule: { enabled: true } } }),
+      vaultDir,
+      grove.id,
+    );
+    expect(rejected.status).toBe(422);
+    expect(rejected.body).toMatchObject({ error: 'schedule_requires_task_provider' });
+
+    const accepted = await handleUpdateTaskConfig(
+      makeReq({
+        ...baseReq,
+        body: {
+          harness: 'openai-agents',
+          provider: { type: 'lmstudio', model: 'openai/gpt-oss-20b' },
+          schedule: { enabled: true },
+        },
+      }),
+      vaultDir,
+      grove.id,
+    );
+    expect(accepted.status).toBe(200);
+    expect((accepted.body as { config: { schedule?: { enabled?: boolean } } }).config.schedule?.enabled).toBe(true);
+  });
+
+  it('422s a provider-removal write that leaves the schedule enabled', async () => {
+    const grove = createGrove('Agent Tasks Removal Gate', mycoHome);
+    const groveConfigPath = resolveGroveConfigPath(grove.id, mycoHome);
+    fs.mkdirSync(path.dirname(groveConfigPath), { recursive: true });
+    fs.writeFileSync(
+      groveConfigPath,
+      [
+        'version: 3',
+        'agent:',
+        '  tasks:',
+        '    canopy-describe:',
+        '      provider:',
+        '        type: lmstudio',
+        '        model: openai/gpt-oss-20b',
+        '      schedule:',
+        '        enabled: true',
+        '',
+      ].join('\n'),
+    );
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\n');
+    invalidateMergedConfigCache();
+
+    const baseReq = {
+      params: { id: 'canopy-describe' },
+      requestContext: { ...TEST_REQUEST_CONTEXT, groveId: grove.id },
+    };
+
+    // Removal-only write: the body never touches the schedule, but the
+    // post-write state is enabled-without-provider — refused.
+    const removal = await handleUpdateTaskConfig(
+      makeReq({ ...baseReq, body: { provider: null } }),
+      vaultDir,
+      grove.id,
+    );
+    expect(removal.status).toBe(422);
+
+    // Removal combined with an explicit enable: the pre-write merged view
+    // still holds the old provider — must not launder the removal through.
+    const combined = await handleUpdateTaskConfig(
+      makeReq({ ...baseReq, body: { provider: null, schedule: { enabled: true } } }),
+      vaultDir,
+      grove.id,
+    );
+    expect(combined.status).toBe(422);
+
+    // Removing the provider together with the schedule is a legitimate
+    // "turn it all off" write.
+    const teardown = await handleUpdateTaskConfig(
+      makeReq({ ...baseReq, body: { provider: null, schedule: null } }),
+      vaultDir,
+      grove.id,
+    );
+    expect(teardown.status).toBe(200);
+  });
+
+  it('does not gate schedule-only writes for unflagged tasks', async () => {
+    const grove = createGrove('Agent Tasks Ungated', mycoHome);
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\n');
+    invalidateMergedConfigCache();
+
+    const res = await handleUpdateTaskConfig(
+      makeReq({
+        params: { id: 'vault-evolve' },
+        body: { schedule: { enabled: true } },
+        requestContext: { ...TEST_REQUEST_CONTEXT, groveId: grove.id },
+      }),
+      vaultDir,
+      grove.id,
+    );
+    expect(res.status).toBe(200);
   });
 });

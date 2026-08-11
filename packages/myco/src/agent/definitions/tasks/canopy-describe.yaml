@@ -29,6 +29,11 @@ maxTurns: 60
 timeoutSeconds: 1800
 schedule:
   enabled: false
+  # The describe trickle runs every ~2 minutes across every enabled
+  # project. Falling back to the global provider would silently put that
+  # recurring load on the user's primary (typically paid cloud) provider —
+  # scheduling this task requires an explicit model choice for it.
+  requiresTaskProvider: true
   # runIn includes 'active' deliberately: canopy-describe is lightweight
   # (~3–23s per batch) and often routed to a different model from the
   # foreground agent. Running it during active sessions keeps

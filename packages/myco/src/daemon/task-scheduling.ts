@@ -48,7 +48,7 @@ import { HARNESS_HEALTH_TASK_NAME, notifyHarnessHealthFindings } from '@myco/not
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { DEFAULT_AGENT_ID, MS_PER_DAY } from '@myco/constants.js';
 import { errorMessage } from '@myco/utils/error-message.js';
-import { effectiveTaskScheduleEnabled, isCaptureOnly } from '@myco/config/capabilities.js';
+import { bundledTaskScheduleDefaults, effectiveTaskScheduleEnabled, isCaptureOnly, type TaskScheduleGateOptions } from '@myco/config/capabilities.js';
 import {
   forEachGrove,
   forEachRegisteredProject,
@@ -110,7 +110,15 @@ export function makeTotalCanopyPendingProbe(deps: CanopyPendingProbeDeps): () =>
           mycoHome,
           projectTierOptional: !projectTreeAvailable(projectVaultDir),
         });
-        if (!effectiveTaskScheduleEnabled(config, 'canopy-describe', false)) continue;
+        // Schedule default + provider gate both come from the bundled
+        // definition via the capabilities lookup — no hand-maintained
+        // mirror of canopy-describe.yaml. Without the gate here the hold
+        // would keep the daemon awake for rows a gated task never drains.
+        if (!effectiveTaskScheduleEnabled(
+          config,
+          'canopy-describe',
+          bundledTaskScheduleDefaults('canopy-describe')?.scheduleEnabledByDefault ?? false,
+        )) continue;
         grovePending += countPendingCanopyDescribe(
           null,
           project.project_id,
@@ -454,9 +462,10 @@ export function resolveTaskScheduleEnabled(
   config: MycoConfig | null,
   taskName: string,
   yamlScheduleEnabled: boolean,
+  gate?: TaskScheduleGateOptions,
 ): boolean {
   if (taskName === HARNESS_HEALTH_TASK_NAME && isCaptureOnly(config)) return false;
-  return effectiveTaskScheduleEnabled(config, taskName, yamlScheduleEnabled);
+  return effectiveTaskScheduleEnabled(config, taskName, yamlScheduleEnabled, gate);
 }
 
 // ---------------------------------------------------------------------------
@@ -866,9 +875,9 @@ export async function registerScheduledTasks(
       if (!config) return { schedule: { enabled: false } };
       return config.agent.tasks?.[taskName];
     },
-    getTaskScheduleEnabled: (scope, taskName, yamlScheduleEnabled) => {
+    getTaskScheduleEnabled: (scope, taskName, yamlScheduleEnabled, scheduleGate) => {
       const config = resolveProjectConfig(scope);
-      const enabled = resolveTaskScheduleEnabled(config, taskName, yamlScheduleEnabled);
+      const enabled = resolveTaskScheduleEnabled(config, taskName, yamlScheduleEnabled, scheduleGate);
       if (!enabled && taskName === HARNESS_HEALTH_TASK_NAME && isCaptureOnly(config)) {
         logger.debug(LOG_KINDS.AGENT_RUN, 'Skipping harness-health — project is capture-only', {
           grove_id: scope.grove.id,

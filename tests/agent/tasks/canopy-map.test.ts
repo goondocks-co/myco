@@ -47,9 +47,11 @@ import { epochSeconds } from '@myco/constants.js';
 import { TEST_REQUEST_CONTEXT, makeTestRequestContext } from '../../helpers/request-context';
 function makeConfig(overrides: { canopyEnabled?: boolean } = {}): MycoConfig {
   const enabled = overrides.canopyEnabled ?? true;
+  // The map builder gates on the Canopy capability master switch
+  // (cortex.canopy.enabled), not the per-consumer injection toggle.
   return MycoConfigSchema.parse({
     version: 3,
-    cortex: { canopy: { inject_on_pre_tool_use: enabled } },
+    cortex: { canopy: { enabled } },
   });
 }
 
@@ -167,7 +169,7 @@ describe('canopy-map task', () => {
   // -----------------------------------------------------------------------
 
   describe('no-op gates', () => {
-    it('skips with reason "canopy_disabled" when canopy injection is off', async () => {
+    it('skips with reason "canopy_disabled" when the Canopy capability is off', async () => {
       seedDescribed('src/a.ts', 'ah', 'A module.');
       const ctx = await gatherCanopyMapContext(
         projectRoot,
@@ -176,6 +178,18 @@ describe('canopy-map task', () => {
       );
       expect('skip' in ctx).toBe(true);
       expect(ctx).toEqual({ skip: true, reason: 'canopy_disabled' });
+    });
+
+    it('builds even when injection is off, as long as the capability is on', async () => {
+      // The map is consumed beyond injection (MCP canopy_map, cortex-brief,
+      // the UI) — the per-consumer injection toggle must not starve them.
+      seedDescribed('src/a.ts', 'ah', 'A module.');
+      const config = MycoConfigSchema.parse({
+        version: 3,
+        cortex: { canopy: { enabled: true, inject_on_pre_tool_use: false } },
+      });
+      const ctx = await gatherCanopyMapContext(projectRoot, false, config);
+      expect('skip' in ctx).toBe(false);
     });
 
     it('buildCanopyMapInstruction returns undefined when canopy is disabled', async () => {

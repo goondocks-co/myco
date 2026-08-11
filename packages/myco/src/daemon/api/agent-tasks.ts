@@ -32,6 +32,7 @@ import {
   capabilityEnabled,
   effectiveTaskScheduleEnabled,
   governingCapability,
+  taskHasExplicitProvider,
 } from '../../config/capabilities.js';
 import { withTaskConfig } from '../../config/updates.js';
 import type { TaskConfigUpdate } from '../../config/updates.js';
@@ -355,18 +356,30 @@ export async function handleGetTaskConfig(
   const taskConfig = config.agent.tasks?.[taskId] ?? null;
   const capability = governingCapability(taskId);
   const yamlScheduleEnabled = task.schedule?.enabled ?? false;
+  const scheduleGate = { requiresTaskProvider: task.schedule?.requiresTaskProvider };
+  const capabilityOn = capability ? capabilityEnabled(config, capability) : true;
+  // Machine-readable reason the schedule is (or would be) blocked, so the
+  // UI can gate its switch and phrase guidance server-driven instead of
+  // recomputing enablement client-side.
+  const scheduleBlockedReason = !capabilityOn
+    ? 'capability_off'
+    : (scheduleGate.requiresTaskProvider && !taskHasExplicitProvider(config, taskId)
+      ? 'requires_task_provider'
+      : null);
   return {
     status: HTTP_OK,
     body: {
       taskId,
       config: taskConfig,
       capability,
-      capabilityEnabled: capability ? capabilityEnabled(config, capability) : true,
+      capabilityEnabled: capabilityOn,
       effectiveScheduleEnabled: effectiveTaskScheduleEnabled(
         config,
         taskId,
         yamlScheduleEnabled,
+        scheduleGate,
       ),
+      scheduleBlockedReason,
     },
   };
 }
@@ -395,11 +408,55 @@ export async function handleUpdateTaskConfig(
     return { status: HTTP_BAD_REQUEST, body: { error: 'missing_body' } };
   }
 
+  // Defense-in-depth for the requiresTaskProvider schedule gate: refuse a
+  // write that enables the schedule while the post-write config still has
+  // no explicit provider for the task. The authoritative gate lives in
+  // effectiveTaskScheduleEnabled (covers hand-edited configs too); this
+  // just makes the API fail loudly instead of writing a config the
+  // scheduler will silently refuse. Evaluated on the candidate (post-
+  // update) entry so "pick a model + enable" works in one save; a provider
+  // already present in the merged view (e.g. a local-tier override) also
+  // satisfies it.
+  const scheduleGateBlocks = (candidate: {
+    agent?: { tasks?: Record<string, { schedule?: { enabled?: boolean } } | undefined> };
+  } & Parameters<typeof taskHasExplicitProvider>[0]): boolean => {
+    // Judged on the candidate's POST-write state, not on what the body
+    // touched: a provider-removal write that leaves schedule.enabled: true
+    // behind produces the same refused config as an enable-without-provider
+    // write, and must 422 the same way.
+    if (candidate?.agent?.tasks?.[taskId]?.schedule?.enabled !== true) return false;
+    const gatedTask = loadAllTasks(resolveDefinitionsDir(), vaultDir).get(taskId);
+    if (!gatedTask?.schedule?.requiresTaskProvider) return false;
+    if (taskHasExplicitProvider(candidate, taskId)) return false;
+    // A provider defined at another config tier also satisfies the gate —
+    // but the merged view is read pre-write, so it is only trustworthy
+    // when this write doesn't touch provider/phases (otherwise it still
+    // reflects the provider the write is removing).
+    const bodyTouchesProvider = 'provider' in body || 'phases' in body || 'harness' in body;
+    if (!bodyTouchesProvider) {
+      try {
+        const merged = loadMergedConfig(vaultDir, { groveId: groveId ?? null, projectTierOptional: !projectTreeAvailable(vaultDir) });
+        if (taskHasExplicitProvider(merged, taskId)) return false;
+      } catch {
+        // Merged view unavailable — judge on the candidate tier alone.
+      }
+    }
+    return true;
+  };
+  const scheduleGateResponse: RouteResponse = {
+    status: 422,
+    body: {
+      error: 'schedule_requires_task_provider',
+      message: `The ${taskId} schedule needs a model chosen for this task — it does not fall back to the default provider.`,
+    },
+  };
+
   if (groveId) {
     let updatedTask: TaskProviderOverride | undefined;
     try {
       const groveConfig = loadGroveConfig(groveId);
       const updated = withTaskConfig(groveConfig, taskId, body);
+      if (scheduleGateBlocks(updated)) return scheduleGateResponse;
       updatedTask = updated.agent.tasks?.[taskId];
       // Verbatim subtree replace of THIS task only via setAtPath/unsetAtPath:
       // task updates DELETE keys (null fields, emptied entries), so a deep
@@ -439,22 +496,30 @@ export async function handleUpdateTaskConfig(
   // No Grove bound — write agent.tasks at project tier via updateConfig.
   // saveConfig retains grove-tier values in myco.yaml while the project is
   // unbound, and the next Grove-bound load lifts them into grove config.
+  class ScheduleGateBlocked extends Error {}
   let updated;
   try {
-    updated = updateConfig(vaultDir, (config) =>
-      withTaskConfig(config, taskId, body),
-    );
+    updated = updateConfig(vaultDir, (config) => {
+      const candidate = withTaskConfig(config, taskId, body);
+      if (scheduleGateBlocks(candidate)) throw new ScheduleGateBlocked('schedule_requires_task_provider');
+      return candidate;
+    });
   } catch (err) {
-    if (err instanceof TierConfigUnreadableError) {
-      return { status: 422, body: { error: 'tier_config_unreadable', message: err.message, file: err.filePath } };
-    }
-    // withTaskConfig throws on unknown keys to prevent silent drops.
-    // Surface the message to the UI so a stale form payload fails loudly.
-    return { status: HTTP_BAD_REQUEST, body: { error: (err as Error).message } };
+    if (err instanceof ScheduleGateBlocked) return scheduleGateResponse;
+    return handleProjectTierUpdateError(err);
   }
 
   return {
     status: HTTP_OK,
     body: { taskId, config: updated.agent.tasks?.[taskId] ?? null },
   };
+}
+
+function handleProjectTierUpdateError(err: unknown): RouteResponse {
+  if (err instanceof TierConfigUnreadableError) {
+    return { status: 422, body: { error: 'tier_config_unreadable', message: err.message, file: err.filePath } };
+  }
+  // withTaskConfig throws on unknown keys to prevent silent drops.
+  // Surface the message to the UI so a stale form payload fails loudly.
+  return { status: HTTP_BAD_REQUEST, body: { error: (err as Error).message } };
 }
