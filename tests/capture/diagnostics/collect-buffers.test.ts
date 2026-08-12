@@ -33,11 +33,16 @@ describe('collectBuffers', () => {
 
   test('skeletonizes buffer lines by default; verbatim only with includeContent', () => {
     const { home, bufDir } = makeHome();
+    // Realistic capture-event shape: the daemon's EventBody schema
+    // (daemon/event-dispatch.ts) and EventBuffer.append (buffer.ts) both
+    // carry the discriminator on `type`, e.g. buffer.test.ts's fixture
+    // `{ type: 'tool_use', tool: 'Read', ... }` — never `event_type`.
     const line = JSON.stringify({
-      event_type: 'prompt',
+      type: 'tool_use',
       timestamp: '2026-08-12T00:00:00Z',
       session_id: 'sessA',
-      text: PROSE,
+      tool: 'Read',
+      input: { path: '/foo', text: PROSE },
     });
     writeFileSync(path.join(bufDir, 'sessA.jsonl'), line + '\n');
 
@@ -50,8 +55,10 @@ describe('collectBuffers', () => {
     const skelFile = skeletonized.files.find((f) => f.path === 'buffers/p1/sessA.jsonl');
     expect(skelFile).toBeDefined();
     expect(String(skelFile!.data)).not.toContain(PROSE);
-    expect(String(skelFile!.data)).toContain('event_type');
     expect(String(skelFile!.data)).toContain('content_hash');
+    const skeletonLine = JSON.parse(String(skelFile!.data).trim());
+    expect(skeletonLine.event_type).toBe('tool_use');
+    expect(skeletonLine.event_type).not.toBe('unknown');
 
     const verbatim = collectBuffers({
       groveId: 'g1',
@@ -62,6 +69,22 @@ describe('collectBuffers', () => {
     const fullFile = verbatim.files.find((f) => f.path === 'buffers/p1/sessA.jsonl');
     expect(fullFile).toBeDefined();
     expect(String(fullFile!.data)).toContain(PROSE);
+  });
+
+  test('falls back to event_type when a line lacks a type field', () => {
+    const { home, bufDir } = makeHome();
+    const line = JSON.stringify({ event_type: 'legacy_shape', session_id: 'sessA' });
+    writeFileSync(path.join(bufDir, 'sessA.jsonl'), line + '\n');
+
+    const res = collectBuffers({
+      groveId: 'g1',
+      mycoHome: home,
+      sessionIdsInWindow: ['sessA'],
+      includeContent: false,
+    });
+    const skelFile = res.files.find((f) => f.path === 'buffers/p1/sessA.jsonl');
+    const skeletonLine = JSON.parse(String(skelFile!.data).trim());
+    expect(skeletonLine.event_type).toBe('legacy_shape');
   });
 
   test('a live buffer outside the window is not collected', () => {

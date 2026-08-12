@@ -5,7 +5,7 @@ import { sha256Hex } from './hash.js';
 import { safePathSegment } from './safe-path.js';
 import type { BundleFile } from './types.js';
 
-const TYPE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/; // Lowercase identifiers (event_type)
+const TYPE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/; // Lowercase identifiers (input `type`/`event_type` -> output `event_type`)
 const UUID_PATTERN = /^[a-z0-9-]{1,64}$/; // Lowercase hex and hyphen (session_id)
 const TIMESTAMP_PATTERN = /^[0-9TZz:.,+\- ]{1,40}$/; // ISO 8601 and variants
 
@@ -28,7 +28,17 @@ export function skeletonizeBufferLine(line: string): Record<string, unknown> {
     return { event_type: 'unparseable', timestamp: null, session_id: null, byte_length, content_hash: sha256Hex(line) };
   }
 
-  const rawType = typeof evt.event_type === 'string' ? evt.event_type : null;
+  // A live capture event's discriminator field is `type` (EventBody in
+  // daemon/event-dispatch.ts: `z.object({ type: z.string(), session_id:
+  // z.string() }).passthrough()`, and `EventBuffer.append` — buffer.ts —
+  // persists that object verbatim; confirmed against buffer.test.ts
+  // fixtures, e.g. `{ type: 'tool_use', tool: 'Read', ... }`). `event_type`
+  // is kept as a fallback in case an older or alternate writer ever used
+  // that name; the OUTPUT field below is always called `event_type`
+  // regardless of which input name it was read from.
+  const rawType = typeof evt.type === 'string'
+    ? evt.type
+    : typeof evt.event_type === 'string' ? evt.event_type : null;
   const event_type = rawType && TYPE_PATTERN.test(rawType) ? rawType : 'unknown';
 
   const rawTimestamp = typeof evt.timestamp === 'string' ? evt.timestamp : null;

@@ -130,14 +130,10 @@ Like transcript skeletons, buffer skeleton lines are **flat** — no `table`/`ro
 **live** buffers for sessions inside the window are included; **all** quarantine-dir buffers are
 included regardless of window (quarantine is capped at 7 days by the daemon's own retention).
 `content_hash` here is a hash of the raw JSONL line, not a cross-layer key — don't compare it to
-`text_sha256` or `user_prompt_sha256`.
-
-**Known gap:** `skeletonizeBufferLine` (`collect-buffers.ts`) reads the raw event's `event_type`
-field, but the daemon's live capture-event objects (`event-dispatch.ts`) carry the type on a field
-literally named `type` (values like `user_prompt`, `tool_use`, `stop_failure`), not `event_type`.
-Until that's reconciled, expect `event_type` to read `"unknown"` on real bundles — don't read
-significance into it. `timestamp`, `session_id`, and `content_hash` are unaffected and remain the
-reliable fields on a buffer skeleton line.
+`text_sha256` or `user_prompt_sha256`. `event_type` is read from the raw capture event's `type`
+field (values like `user_prompt`, `tool_use`, `stop_failure` — see `daemon/event-dispatch.ts`'s
+`EventBody` schema), with `event_type` accepted as a fallback for any line that carries that name
+instead; a line where neither field is present reads `"unknown"`.
 
 ### `log-entries.jsonl` and `daemon-log.jsonl`
 
