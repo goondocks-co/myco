@@ -43,7 +43,9 @@ import {
   MS_PER_SECOND,
   epochSeconds,
 } from '@myco/constants.js';
+import fs from 'node:fs';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { captureOnlyNoticeMarkerPath, sweepCaptureOnlyNotice } from '@myco/notifications/capture-only-notice.js';
 import { POWER_JOB_NAMES, type PowerJobName } from '@myco/constants/power-jobs.js';
 import {
   forEachGrove,
@@ -891,6 +893,69 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
           notifyOnProjectFailure: buildProjectFailureNotifier(
             'daemon.staging_gc_failed',
             'Staging GC',
+          ),
+        },
+      );
+    },
+  });
+
+  const CAPTURE_ONLY_NOTICE_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
+  let lastCaptureOnlyNoticeSweepAt = 0;
+  runner.register({
+    name: POWER_JOB_NAMES.CAPTURE_ONLY_NOTICE_SWEEP,
+    // active included: markers appear right after a project provisions,
+    // which happens while the user is working. The interval throttle keeps
+    // the registry fan-out to a few passes per hour.
+    runIn: ['active', 'idle'],
+    kind: 'housekeeping',
+    fn: async () => {
+      const now = Date.now();
+      if (now - lastCaptureOnlyNoticeSweepAt < CAPTURE_ONLY_NOTICE_SWEEP_INTERVAL_MS) return;
+      lastCaptureOnlyNoticeSweepAt = now;
+      await forEachRegisteredProject(
+        cache,
+        logger,
+        ({ project, projectId, projectVaultDir, grove, treeAvailable }: RegisteredProjectScope) => {
+          // The marker lives in the project's working-tree vault; a Team
+          // Host serving a member's registered project has neither the
+          // marker nor the authority to speak for its capabilities.
+          if (!treeAvailable) return;
+          if (!fs.existsSync(captureOnlyNoticeMarkerPath(projectVaultDir))) return;
+          let config: MycoConfig | null = null;
+          try {
+            config = loadMergedConfig(projectVaultDir, { groveId: grove.id, mycoHome });
+          } catch {
+            // Unreadable config: sweep with null config — the notice module
+            // defers (keeps the marker) when it cannot emit.
+          }
+          const result = sweepCaptureOnlyNotice({
+            vaultDir: projectVaultDir,
+            projectId,
+            projectName: project.name,
+            config,
+            warn: (message) =>
+              logger.warn(LOG_KINDS.CAPTURE_ONLY_NOTICE, message, {
+                project_id: project.project_id,
+                project_root: project.root,
+              }),
+          });
+          if (result !== 'none') {
+            logger.info(LOG_KINDS.CAPTURE_ONLY_NOTICE, 'Capture-only notice marker swept', {
+              project_id: project.project_id,
+              project_root: project.root,
+              result,
+            });
+          }
+        },
+        {
+          mycoHome,
+          daemonStateDir,
+          machineId,
+          lockNamespace,
+          shouldVisit: pauseAwareShouldVisit(mycoHome),
+          notifyOnProjectFailure: buildProjectFailureNotifier(
+            'daemon.capture_only_notice_failed',
+            'Capture-only notice sweep',
           ),
         },
       );

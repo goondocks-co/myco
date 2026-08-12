@@ -1,9 +1,11 @@
 /**
  * Per-project vault provisioning.
  *
- * Called from the daemon's hook-event intake path when an event arrives
- * from a project root whose vault doesn't exist yet. Creates the minimal
- * set of files the project needs to participate in capture:
+ * Runs inside short-lived hook client processes (via the vault-gate) when
+ * an event arrives from a project root whose vault doesn't exist yet —
+ * NOT inside the daemon, so nothing here may touch the notifications DB
+ * or any daemon-initialized resource. File writes only. Creates the
+ * minimal set of files the project needs to participate in capture:
  *
  *   - `.myco/myco.yaml` — config stub (loader fills in defaults on read)
  *   - `.myco/.gitignore` — canonical body (`vault/gitignore.ts`)
@@ -33,9 +35,19 @@ import {
   type GlobalInstallMigrationSentinel,
 } from '../grove/global-install-migration.js';
 import { CAPABILITIES } from '../config/capabilities.js';
-import { saveLocalConfig } from '../config/loader.js';
-import { setAtPath } from '../utils/dot-path.js';
+import { loadLocalConfig, saveLocalConfig } from '../config/loader.js';
+import { getAtPath, setAtPath } from '../utils/dot-path.js';
 import type { MycoConfig } from '../config/schema.js';
+
+/**
+ * Marker consumed by the daemon's capture-only notice sweep
+ * (`notifications/capture-only-notice.ts`). Written here because this
+ * code runs in a hook process with no notifications DB — the daemon
+ * discovers the marker on its next sweep, emits the one-time
+ * "project is capture-only" notification, and deletes the file. Durable
+ * exactly-once across restarts, no in-memory dedup involved.
+ */
+export const CAPTURE_ONLY_NOTICE_MARKER = '.capture-only-notice-pending';
 
 const MINIMAL_MYCO_YAML = 'version: 3\n';
 
@@ -46,9 +58,10 @@ export interface EnsureProjectVaultOptions {
    */
   projectName?: string;
   /**
-   * Existing vaults normally return without mutating config. `force` re-applies
-   * the capture-only gate overrides for re-admission paths that intentionally
-   * treat a leftover vault as fresh.
+   * Existing vaults normally return without mutating config. `force` seeds
+   * the capture-only off-override for any capability gate the local.yaml
+   * does not already carry; gate keys already present (a user's explicit
+   * choices in a leftover vault) are kept as-is.
    */
   force?: boolean;
 }
@@ -128,7 +141,20 @@ export function ensureProjectVault(
   // New vaults start capture-only: write local.yaml off-overrides for every
   // capability master gate so intelligence features only activate when the
   // user explicitly promotes the project.
-  reseedCaptureOnly(vaultDir);
+  const seededGates = reseedCaptureOnly(vaultDir);
+
+  // Flag the project for the daemon's one-time notice — only when every
+  // gate was freshly seeded. A cold re-run over a surviving local.yaml
+  // (myco.yaml removed by a branch switch, crash-resume, unarchive of a
+  // leftover vault) is an established project, not a new one, and must
+  // not re-notify.
+  if (seededGates === Object.keys(CAPABILITIES).length) {
+    fs.writeFileSync(
+      path.join(vaultDir, CAPTURE_ONLY_NOTICE_MARKER),
+      JSON.stringify({ schema_version: 1, created_at: epochSeconds(), project_id: manifest.project.id }) + '\n',
+      'utf-8',
+    );
+  }
 
   // myco.yaml is written LAST — it is the hot-path existence sentinel (the
   // check at the top of this function). Writing it last means a mid-provision
@@ -139,12 +165,24 @@ export function ensureProjectVault(
   return { vaultDir, created: true, projectId: manifest.project.id };
 }
 
-export function reseedCaptureOnly(vaultDir: string): void {
+/**
+ * Seed the capture-only off-override for each capability gate the
+ * local.yaml does not already carry; existing gate keys (a user's
+ * explicit choices in a leftover vault) are kept as-is. Returns how many
+ * gates were seeded — equal to the capability count exactly when the
+ * vault had no prior gate keys at all.
+ */
+export function reseedCaptureOnly(vaultDir: string): number {
+  const existing = loadLocalConfig(vaultDir);
   const captureOnlyPatch: Record<string, unknown> = {};
+  let seeded = 0;
   for (const cap of Object.values(CAPABILITIES)) {
+    if (getAtPath(existing, cap.masterGate) !== undefined) continue;
     setAtPath(captureOnlyPatch, cap.masterGate, false);
+    seeded += 1;
   }
-  saveLocalConfig(vaultDir, captureOnlyPatch as Partial<MycoConfig>);
+  if (seeded > 0) saveLocalConfig(vaultDir, captureOnlyPatch as Partial<MycoConfig>);
+  return seeded;
 }
 
 function bornGlobalPassId(): string {

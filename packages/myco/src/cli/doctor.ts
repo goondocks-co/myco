@@ -18,6 +18,8 @@ import {
 } from '../daemon/daemon-state-authority.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
+import { describeCaptureOnly, isCaptureOnly } from '../config/capabilities.js';
+import type { MycoConfig } from '../config/schema.js';
 import { resolveTeamHostHintState, teamHostHintMessage } from '../host/hint.js';
 import { isProcessAlive } from './shared.js';
 import { parseStrictFlags } from './args.js';
@@ -122,6 +124,25 @@ export function checkTeamHostHint(
   ));
   if (!detail) return null;
   return { name: 'Team Host', status: 'warn', detail, fixable: false };
+}
+
+/**
+ * Capture-only awareness row for the CURRENT project. Capture-only is a
+ * legitimate steady state, so the row reports `ok` with guidance and is
+ * never fixable. Returns null when any capability is enabled or no config
+ * resolves (other checks own the missing-vault story).
+ */
+export function checkCaptureOnly(config: MycoConfig | null | undefined): DoctorCheck | null {
+  if (!config) return null;
+  if (!isCaptureOnly(config)) return null;
+  return {
+    name: 'Capabilities',
+    status: 'ok',
+    detail:
+      `This project is capture-only. ${describeCaptureOnly()} Turn them on in the `
+      + 'dashboard under Grove management, or leave them off if capture is all you want here.',
+    fixable: false,
+  };
 }
 
 /**
@@ -1621,6 +1642,9 @@ export async function runChecks(
 ): Promise<DoctorCheck[]> {
   const { check: vaultCheck, config } = await checkVault(vaultDir);
   const checks: DoctorCheck[] = [vaultCheck];
+
+  const captureOnly = checkCaptureOnly(config);
+  if (captureOnly) checks.push(captureOnly);
 
   // Reads project.toml directly (not `config`), so it applies even to a
   // freshly-cloned checkout that has a committed manifest but no

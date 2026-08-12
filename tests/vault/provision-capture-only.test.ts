@@ -73,3 +73,63 @@ describe('ensureProjectVault capture-only default', () => {
     expect(local.vault_evolution.enabled).toBe(false);
   });
 });
+
+describe('reseedCaptureOnly seeds only absent gate keys', () => {
+  it('force re-admission preserves a capability the user explicitly enabled', () => {
+    dir = mkdtempSync(join(tmpdir(), 'prov-'));
+    ensureProjectVault(dir);
+    const localPath = join(dir, '.myco', 'local.yaml');
+    // User promotes the project (capability panel writes at local scope).
+    const promoted = parse(readFileSync(localPath, 'utf-8')) as any;
+    promoted.cortex.canopy.enabled = true;
+    fs.writeFileSync(localPath, `cortex:\n  enabled: false\n  canopy:\n    enabled: true\nskills:\n  enabled: false\nvault_evolution:\n  enabled: false\n`);
+
+    ensureProjectVault(dir, { force: true });
+
+    const local = parse(readFileSync(localPath, 'utf-8')) as any;
+    expect(local.cortex.canopy.enabled).toBe(true);
+    expect(local.skills.enabled).toBe(false);
+  });
+
+  it('cold-path re-run (deleted myco.yaml) re-seeds only missing gates', () => {
+    dir = mkdtempSync(join(tmpdir(), 'prov-'));
+    ensureProjectVault(dir);
+    const localPath = join(dir, '.myco', 'local.yaml');
+    fs.writeFileSync(localPath, `skills:\n  enabled: true\n`);
+    // Crash-resume design: deleting the hot-path sentinel re-runs the cold path.
+    unlinkSync(join(dir, '.myco', 'myco.yaml'));
+
+    // The cold re-run also consumed no fresh-notice budget: the marker is
+    // written only when every gate was freshly seeded.
+    unlinkSync(join(dir, '.myco', '.capture-only-notice-pending'));
+    ensureProjectVault(dir);
+
+    const local = parse(readFileSync(localPath, 'utf-8')) as any;
+    expect(local.skills.enabled).toBe(true);
+    expect(local.cortex.enabled).toBe(false);
+    expect(local.cortex.canopy.enabled).toBe(false);
+    expect(local.vault_evolution.enabled).toBe(false);
+    expect(existsSync(join(dir, '.myco', '.capture-only-notice-pending'))).toBe(false);
+  });
+});
+
+describe('capture-only notice marker', () => {
+  it('cold path writes the pending-notice marker for the daemon sweep', () => {
+    dir = mkdtempSync(join(tmpdir(), 'prov-'));
+    const result = ensureProjectVault(dir);
+    const markerPath = join(dir, '.myco', '.capture-only-notice-pending');
+    expect(existsSync(markerPath)).toBe(true);
+    const marker = JSON.parse(readFileSync(markerPath, 'utf-8'));
+    expect(marker.project_id).toBe(result.projectId);
+  });
+
+  it('hot path does not rewrite a consumed marker', () => {
+    dir = mkdtempSync(join(tmpdir(), 'prov-'));
+    ensureProjectVault(dir);
+    const markerPath = join(dir, '.myco', '.capture-only-notice-pending');
+    unlinkSync(markerPath); // daemon sweep consumed it
+    ensureProjectVault(dir);
+    ensureProjectVault(dir, { force: true });
+    expect(existsSync(markerPath)).toBe(false);
+  });
+});

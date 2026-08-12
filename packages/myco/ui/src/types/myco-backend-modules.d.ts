@@ -219,6 +219,9 @@ declare module '@myco/config/capabilities' {
     config: MycoConfigShape | null | undefined,
     capId: MycoCapabilityId,
   ): boolean;
+  export function isCaptureOnly(config: MycoConfigShape | null | undefined): boolean;
+  export function capabilitiesPanelLink(projectId?: string | null): string;
+  export function describeCaptureOnly(): string;
 }
 
 declare module '@myco/config/focus' {
