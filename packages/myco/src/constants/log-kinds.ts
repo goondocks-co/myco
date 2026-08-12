@@ -161,6 +161,8 @@ export const LOG_KINDS = {
   LOG_RETENTION: 'log.retention',
   AGENT_RUN_RETENTION: 'agent_run.retention',
   NOTIFICATION_RETENTION: 'notification.retention',
+  // One-time capture-only notice: marker consumption by the daemon sweep
+  CAPTURE_ONLY_NOTICE: 'notification.capture_only_notice',
   // Content claim system (Team Host WS2) — the publication-lock expiry sweep
   CONTENT_CLAIM_EXPIRY: 'content_claim.expiry',
   // Content claim system (Team Host WS2) — member-side materialization (§4)

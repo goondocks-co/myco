@@ -207,3 +207,25 @@ export function effectiveTaskScheduleEnabled(
 export function isCaptureOnly(config: MycoConfig | null | undefined): boolean {
   return (Object.keys(CAPABILITIES) as CapabilityId[]).every((id) => !capabilityEnabled(config, id));
 }
+
+/**
+ * Deep link to the Groves page with a project's capability panel open —
+ * the single place capabilities are toggled. Every surface that points a
+ * user at capability management builds the URL here.
+ */
+export function capabilitiesPanelLink(projectId?: string | null): string {
+  return projectId ? `/groves?capabilities=${encodeURIComponent(projectId)}` : '/groves';
+}
+
+/**
+ * One-sentence description of what capture-only means, with the feature
+ * list derived from the capability map so every surface stays complete as
+ * capabilities are added.
+ */
+export function describeCaptureOnly(): string {
+  const labels = Object.values(CAPABILITIES).map((cap) => cap.label);
+  const list = labels.length > 1
+    ? `${labels.slice(0, -1).join(', ')}, and ${labels[labels.length - 1]}`
+    : labels[0] ?? '';
+  return `Sessions are recorded and searchable, but intelligence features (${list}) are off for this project.`;
+}

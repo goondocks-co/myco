@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { CAPABILITIES, capabilityEnabled } from '@myco/config/capabilities';
+import { CAPABILITIES, capabilitiesPanelLink, capabilityEnabled } from '@myco/config/capabilities';
 import type { CapabilityId } from '@myco/config/scope';
 import type { MycoConfig } from '@myco/config/schema';
 import { StatusDot } from '../ui/status-dot';
@@ -23,9 +23,7 @@ export function CapabilityIndicator({ capability }: { capability: CapabilityId }
 
   const def = CAPABILITIES[capability];
   const enabled = capabilityEnabled(effective as MycoConfig, capability);
-  const to = selection
-    ? `/groves?capabilities=${encodeURIComponent(selection.project.project_id)}`
-    : '/groves';
+  const to = capabilitiesPanelLink(selection?.project.project_id);
 
   return (
     <Link
