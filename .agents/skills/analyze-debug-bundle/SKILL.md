@@ -49,7 +49,9 @@ absence (noted) or a recorded collector error, never silent.
   "window": { "since": 1234567890, "until": 1234571490 },  // epoch seconds, inclusive
   "include_content": false,             // whether prose/prompt text was included (private re-export only)
   "generated_at": 1234571500,
-  "doctor_vault_dir": "...",            // the BOOTSTRAP vault dir doctor.json ran against
+  "doctor_vault_dir": "...",            // the vault dir doctor.json ran against — the requesting
+                                         // project's vault when the export carried project context,
+                                         // else the daemon's bootstrap vault
   "files": ["manifest.json", "environment.json", ...],  // must equal the zip's actual inventory
   "collector_errors": [{ "layer": "audit", "error": "..." }],
   "notes": ["session sA: no surviving buffer (converged buffers are deleted after drain)", ...]
@@ -219,11 +221,17 @@ For each session id present in `transcripts/*.skeleton.jsonl` and/or `sessions.j
    `prompt_batches` are *canonical-tuple* hashes — `sha256(session_id + " " + origin + " " + ordinal + " " + normalized_prompt [+ thread_id])`, per `promptBatchContentHash` in `packages/myco/src/db/queries/batches.ts:126-175` — a dedup key over a composite tuple, not a hash of prompt text alone. They will **never** match `text_sha256` or `user_prompt_sha256` even when capture is perfectly correct. Chasing that mismatch as "divergence" is a dead end — say so explicitly if you rule it out, so the next reader doesn't re-walk it.
 
    **Caveat on `origin` fields:** Not every `prompt_batches` row is guaranteed a skeleton
-   `text_sha256` match. Only `origin: "human"` rows correspond to transcript skeleton lines; `origin:
-   "system"` rows (synthesized prompts, e.g. `kind: "initial"`) may legitimately have a
+   `text_sha256` match — only `origin: "human"` rows are. `origin` and `kind` are orthogonal fields
+   (`packages/myco/src/db/queries/batches.ts:73-91`); `kind: "initial"` is NOT a system-origin
+   marker — it just means "first batch in the session" and is the default `kind` for human batches
+   too (`toBatchRow`, `batches.ts:313`). The full `origin` vocabulary is `human` (user-typed,
+   default), `system` (harness-synthesized continuation events — `<task-notification>`,
+   `<environment_context>`, `<skill>` envelope expansions), `agent_dispatch` (a sub-agent's prompt
+   returned to its parent, e.g. Codex's `<subagent_notification>`), and `hook_injected` (reserved;
+   currently folded into `human`). Both `system` and `agent_dispatch` rows may legitimately have a
    `user_prompt_sha256` with no transcript counterpart. Before treating an unmatched batch hash as
-   divergence, check the `row.origin` field — if it's `"system"`, the mismatch is expected, not a
-   bug.
+   divergence, check the `row.origin` field — if it's `"system"` or `"agent_dispatch"`, the mismatch
+   is expected, not a bug.
 
 The **first layer where counts or hashes diverge** (skeleton has more user turns than
 `prompt_batches` has rows, or a `text_sha256` present in the skeleton has no matching
