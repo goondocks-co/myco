@@ -47,6 +47,56 @@ describe('collectTranscripts', () => {
     expect(res.errors.length + res.notes.length).toBeGreaterThan(0);
   });
 
+  test('stale recorded transcript_path falls back to discovery: skeleton emitted, note present, no error', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'diag-'));
+    const db = getDatabase();
+    const discoveredPath = writeTranscript(dir, 'discovered.jsonl');
+    seedSession({
+      id: 's3',
+      agent: 'claude-code',
+      startedAt: 1000,
+      // The recorded path itself no longer exists on disk (e.g. a
+      // worktree-suffixed project dir that was removed) — this is the
+      // ENOENT-with-a-discoverable-alternative case discovery must recover.
+      transcriptPath: '/definitely/does/not/exist/x.jsonl',
+    });
+
+    const res = await collectTranscripts({
+      db,
+      window: { since: 0, until: 2000 },
+      includeContent: false,
+      discover: (agent, sessionId) => (agent === 'claude-code' && sessionId === 's3' ? discoveredPath : null),
+    });
+
+    const skel = res.files.find((f) => f.path === 'transcripts/s3.skeleton.jsonl');
+    expect(skel).toBeDefined();
+    expect(
+      res.notes.some((n) => n.includes('s3') && n.includes('recorded transcript_path missing on disk') && n.includes('discovery')),
+    ).toBe(true);
+    expect(res.errors.length).toBe(0);
+  });
+
+  test('stale recorded transcript_path with no discoverable alternative still records an error', async () => {
+    const db = getDatabase();
+    seedSession({
+      id: 's4',
+      agent: 'claude-code',
+      startedAt: 1000,
+      transcriptPath: '/definitely/does/not/exist/x.jsonl',
+    });
+
+    const res = await collectTranscripts({
+      db,
+      window: { since: 0, until: 2000 },
+      includeContent: false,
+      discover: () => null,
+    });
+
+    expect(res.files.length).toBe(0);
+    expect(res.errors.length).toBe(1);
+    expect(res.errors[0]!.layer).toBe('transcript:s4');
+  });
+
   test('unsafe session id is sanitized in emitted bundle paths', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'diag-'));
     const db = getDatabase();
