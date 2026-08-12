@@ -19,14 +19,14 @@ import { formatEpochAbsolute } from '../../lib/format';
  */
 const SKIP_REASON_COPY: Record<string, { title: string; detail: React.ReactNode }> = {
   canopy_disabled: {
-    title: 'Canopy injection is turned off.',
+    title: 'Canopy is off for this project.',
     detail: (
       <>
-        Enable canopy injection on the{' '}
-        <Link to="/cortex?tab=canopy" className="text-primary underline underline-offset-2 hover:text-primary/80">
-          Cortex → Canopy
+        Turn on Canopy in{' '}
+        <Link to="/groves" className="text-primary underline underline-offset-2 hover:text-primary/80">
+          Grove management
         </Link>{' '}
-        page before regenerating the map.
+        before regenerating the map.
       </>
     ),
   },

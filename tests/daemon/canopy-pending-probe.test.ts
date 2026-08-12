@@ -101,9 +101,22 @@ function setupProbeFixture(): ProbeFixture {
     const groveConfigPath = resolveGroveConfigPath(grove.id, mycoHome);
     fs.mkdirSync(path.dirname(groveConfigPath), { recursive: true });
     if (enabled) {
+      // A provider is part of "enabled": canopy-describe's schedule gate
+      // (requiresTaskProvider) refuses to run on the default-provider
+      // fallback, and the probe mirrors the scheduler's gate.
       fs.writeFileSync(
         groveConfigPath,
-        'agent:\n  tasks:\n    canopy-describe:\n      schedule:\n        enabled: true\n',
+        [
+          'agent:',
+          '  tasks:',
+          '    canopy-describe:',
+          '      provider:',
+          '        type: lmstudio',
+          '        model: openai/gpt-oss-20b',
+          '      schedule:',
+          '        enabled: true',
+          '',
+        ].join('\n'),
       );
     } else {
       // No agent.tasks override → schema/task default (disabled).
@@ -211,6 +224,19 @@ describe('makeTotalCanopyPendingProbe', () => {
   });
 
   it('returns 0 when capability is on but canopy-describe override is unset', () => {
+    insertPendingEntry(fx);
+    expect(makeProbe(fx)()).toBe(0);
+  });
+
+  it('returns 0 when the schedule is enabled but no task provider is chosen', () => {
+    // The requiresTaskProvider gate: an enabled override alone must not
+    // hold the daemon awake for rows the scheduler will refuse to drain.
+    const groveConfigPath = resolveGroveConfigPath(fx.grove.id, fx.mycoHome);
+    fs.writeFileSync(
+      groveConfigPath,
+      'agent:\n  tasks:\n    canopy-describe:\n      schedule:\n        enabled: true\n',
+    );
+    invalidateMergedConfigCache();
     insertPendingEntry(fx);
     expect(makeProbe(fx)()).toBe(0);
   });

@@ -219,8 +219,8 @@ describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
 });
 
 describe('CURRENT_MIGRATION_VERSION', () => {
-  it('is 11', () => {
-    expect(CURRENT_MIGRATION_VERSION).toBe(11);
+  it('is 12', () => {
+    expect(CURRENT_MIGRATION_VERSION).toBe(12);
   });
 });
 
@@ -321,14 +321,14 @@ describe('Migration v5: seed-settings-notification-domain-default', () => {
 });
 
 describe('runMigrations', () => {
-  it('runs v3 through v11 when config_version is 2', () => {
+  it('runs v3 through v12 when config_version is 2', () => {
     const doc: Record<string, unknown> = {
       config_version: 2,
       agent: { auto_run: true, interval_seconds: 300 },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(11);
+    expect(doc.config_version).toBe(12);
 
     const agent = doc.agent as Record<string, unknown>;
     const tasks = agent.tasks as Record<string, Record<string, unknown>>;
@@ -343,14 +343,14 @@ describe('runMigrations', () => {
     });
   });
 
-  it('runs v4 onward when config_version is 3 (target v11)', () => {
+  it('runs v4 onward when config_version is 3 (target v12)', () => {
     const doc: Record<string, unknown> = {
       config_version: 3,
       agent: { provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(11);
+    expect(doc.config_version).toBe(12);
     const agent = doc.agent as Record<string, unknown>;
     expect((agent.provider as Record<string, unknown>).type).toBe('anthropic');
   });
@@ -364,7 +364,7 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(11);
+    expect(doc.config_version).toBe(12);
 
     const notifications = doc.notifications as Record<string, unknown>;
     const domains = notifications.domains as Record<string, Record<string, unknown>>;
@@ -381,7 +381,7 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(11);
+    expect(doc.config_version).toBe(12);
     const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
     expect(tasks['full-intelligence']).toBeUndefined();
     expect(tasks['vault-evolve']).toEqual({ model: 'claude-sonnet-4-6' });
@@ -394,7 +394,7 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(11);
+    expect(doc.config_version).toBe(12);
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.auto_run).toBe(true);
     expect((agent.provider as Record<string, unknown>).type).toBe('cloud');
@@ -407,15 +407,15 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(11);
+    expect(doc.config_version).toBe(12);
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.auto_run).toBe(true);
     expect((agent.provider as Record<string, unknown>).type).toBe('cloud');
   });
 
-  it('skips all migrations when config_version is already 11', () => {
+  it('skips all migrations when config_version is already 12', () => {
     const doc: Record<string, unknown> = {
-      config_version: 11,
+      config_version: 12,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
@@ -466,7 +466,7 @@ describe('Migration v7: dedupe-canopy-exclude-patterns-against-baseline', () => 
   it('is a no-op when canopy.exclude is missing', () => {
     const doc: Record<string, unknown> = { config_version: 6 };
     expect(() => runMigrations(doc, '/tmp')).not.toThrow();
-    expect(doc.config_version).toBe(11);
+    expect(doc.config_version).toBe(12);
   });
 });
 

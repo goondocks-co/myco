@@ -109,7 +109,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "accelerated": 500
         }
       },
-      "runWhenCold": true
+      "runWhenCold": true,
+      "requiresTaskProvider": true
     },
     "params": {
       "batch_size": 10,

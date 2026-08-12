@@ -12,6 +12,7 @@
 import { resolve } from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { capabilityEnabled } from '@myco/config/capabilities.js';
 import { sha256Hex } from '@myco/canopy/hash.js';
 import { resolveRequestContextForVault, isHostServedRequest } from '@myco/grove/request-context.js';
 import {
@@ -1059,8 +1060,11 @@ function loadDescribedCanopyEntries(projectId: string): CanopyEntryInput[] {
 /**
  * Skip envelope returned by gatherCanopyMapContext when the run would be a
  * no-op. `reason` distinguishes:
- *   - 'canopy_disabled': cortex.canopy.inject_on_pre_tool_use is false at
- *     the project level. The whole canopy feature is off; nothing to map.
+ *   - 'canopy_disabled': the Canopy capability master gate
+ *     (cortex.canopy.enabled) is off for the project. The map is consumed
+ *     beyond injection (MCP canopy_map, cortex-brief, the UI), so it
+ *     builds whenever the capability is on — per-consumer toggles like
+ *     inject_on_pre_tool_use only gate their own consumer.
  *   - 'no_described_entries': canopy is on but no rows have llm_description
  *     yet (canopy-describe hasn't drained the queue). Map would be empty.
  *   - 'inputs_unchanged': the prior canopy_maps row's inputs_hash matches —
@@ -1091,11 +1095,11 @@ export async function gatherCanopyMapContext(
   const vaultDir = `${projectRoot.replace(/\/$/, '')}/.myco`;
   const projectId = requireProjectId(resolveRequestContextForVault(vaultDir), 'canopy map instruction');
 
-  // Gate 1: canopy injection master switch. The schedule fires whenever the
-  // task is enabled, so the gate must absorb the disabled-canopy case here.
-  // Defaults to true when config is unavailable (legacy callers, tests),
-  // so omitting the config doesn't accidentally hide work.
-  if (config && !config.cortex.canopy.inject_on_pre_tool_use) {
+  // Gate 1: the Canopy capability master gate. The schedule fires whenever
+  // the task is enabled, so the gate must absorb the disabled-canopy case
+  // here. Defaults to open when config is unavailable (legacy callers,
+  // tests), so omitting the config doesn't accidentally hide work.
+  if (config && !capabilityEnabled(config, 'canopy')) {
     return { skip: true, reason: 'canopy_disabled' };
   }
 

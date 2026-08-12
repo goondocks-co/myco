@@ -386,6 +386,8 @@ export interface TaskConfigResponse {
   capability: string | null;
   capabilityEnabled: boolean;
   effectiveScheduleEnabled: boolean;
+  /** Why the schedule is (or would be) blocked — server-driven so the UI never recomputes gating. */
+  scheduleBlockedReason?: 'capability_off' | 'requires_task_provider' | null;
 }
 
 export interface TestProviderResponse {
@@ -468,7 +470,13 @@ export function useUpdateTaskConfig() {
       return putJson<{ taskId: string; config: TaskConfigOverride | null }>(path, config, { headers });
     },
     onSuccess: (_data, variables) => {
-      const queryKey = isTeam ? ['team-task-config', variables.taskId] : ['task-config', variables.taskId];
+      // Team key must mirror useTaskConfig's ['team-task-config', hostId,
+      // taskId] shape — element [1] is the host, so a taskId in that slot
+      // never prefix-matches and the save would leave a stale response
+      // (visible as the schedule gate re-engaging after a successful save).
+      const queryKey = isTeam
+        ? ['team-task-config', target?.carrier?.hostId ?? 'self', variables.taskId]
+        : ['task-config', variables.taskId];
       void queryClient.invalidateQueries({ queryKey });
     },
   });

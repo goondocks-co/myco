@@ -171,6 +171,16 @@ export const TaskScheduleSchema = z.object({
    */
   runWhenCold: z.boolean().optional(),
   /**
+   * Scheduling requires an explicit per-task provider choice in config
+   * (task-level `provider` or a phase-level provider override) — the
+   * global-provider fallback is not accepted. For recurring batch tasks
+   * (canopy-describe) where silently falling back would put a
+   * high-frequency trickle on the user's primary (typically paid cloud)
+   * provider. Lives in task YAML only; config-side ScheduleOverrideSchema
+   * has no such key, so users cannot override it.
+   */
+  requiresTaskProvider: z.boolean().optional(),
+  /**
    * Hard ceiling on completed-or-failed runs of this task per
    * (grove, project) tuple in the trailing 24 hours. When the count is
    * at-or-above the ceiling, the scheduler will not dispatch another run

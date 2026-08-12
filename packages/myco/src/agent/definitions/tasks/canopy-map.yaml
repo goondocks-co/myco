@@ -34,8 +34,8 @@ timeoutSeconds: 600
 schedule:
   # On by default so the map keeps itself fresh as canopy_entries drift.
   # The gather phase has a mechanical no-op gate (see
-  # gatherCanopyMapContext): when canopy injection is disabled at the
-  # project level OR no rows have llm_description yet, the run is skipped
+  # gatherCanopyMapContext): when the Canopy capability is off for the
+  # project OR no rows have llm_description yet, the run is skipped
   # before any LLM cost. Users with canopy turned off see no runs.
   enabled: true
   intervalSeconds: 21600

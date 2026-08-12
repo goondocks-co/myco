@@ -2311,7 +2311,7 @@ export async function main(): Promise<void> {
       return requireProjectId(ctx, 'canopy read');
     },
     resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(),
-    runCanopyMapTask: async ({ task, params }) => {
+    runCanopyMapTask: async ({ task, params, project_id, requestContext: routeContext }) => {
       // Mirror the dispatch shape used by /api/agent/run (see
       // createAgentRunHandlers.handleRun): build the instruction,
       // pre-generate the run id, and fire runAgent with it via
@@ -2330,13 +2330,29 @@ export async function main(): Promise<void> {
       const { dispatchAgentRun } = await import('../agent/runner-host.js');
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
-      const mycoConfig = liveConfig.current;
-      const requestContext = dataPaths.requestContext;
-      const projectId = rowProjectIdFromRequestContext(requestContext);
+      // Gate and build against the REQUEST's project, not the boot-time
+      // anchor: cortex.canopy is project-scoped config, so on a
+      // multi-project daemon the anchor's toggle is the wrong project's
+      // answer (and the anchor's tree is the wrong map source). Tenancy
+      // comes from the route's resolved request context — never
+      // synthesized here from a vault path.
+      let mycoConfig = liveConfig.current;
+      let requestContext = dataPaths.requestContext;
+      let projectId = rowProjectIdFromRequestContext(requestContext);
+      let projectRoot = requestContext.projectRoot;
+      if (routeContext?.projectRoot && project_id && project_id !== projectId) {
+        requestContext = routeContext;
+        projectRoot = routeContext.projectRoot;
+        const projectVaultDir = resolveProjectVaultDir(projectRoot);
+        mycoConfig = loadMergedConfig(projectVaultDir, {
+          groveId: routeContext.groveId ?? null,
+          projectTierOptional: !projectTreeAvailable(projectVaultDir),
+        });
+        projectId = assertGroveProjectId(project_id);
+      }
       if (projectId == null) {
         return { skipped: true, reason: 'canopy-map regenerate requires a project-scoped daemon context' };
       }
-      const projectRoot = requestContext.projectRoot;
       // Whether this project's working tree is present on THIS machine —
       // false for a Team Host serving a member's registered project. Fed
       // into RunOptions.treeAvailable below (same signal + mechanism as
