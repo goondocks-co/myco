@@ -211,6 +211,13 @@ mock.module('../../packages/myco/ui/src/components/operations/UpgradeCard', () =
 mock.module('../../packages/myco/ui/src/components/operations/BackupCard', () => ({
   BackupCard: () => <div data-testid="backup-card" />,
 }));
+// DiagnosticsCard reaches into useActiveProjectSelection (not covered by this
+// file's use-project-selection mock above, which only provides
+// useProjectSelection) and fetches /diagnostics/exports — same reasoning as
+// BackupCard above, same stub treatment.
+mock.module('../../packages/myco/ui/src/components/operations/DiagnosticsCard', () => ({
+  DiagnosticsCard: () => <div data-testid="diagnostics-card" />,
+}));
 
 // scrollIntoView isn't implemented in jsdom.
 if (typeof Element !== 'undefined' && !(Element.prototype as { scrollIntoView?: () => void }).scrollIntoView) {

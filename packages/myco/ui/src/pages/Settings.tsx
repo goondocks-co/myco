@@ -6,6 +6,7 @@ import {
   BookOpen,
   Bot,
   Brain,
+  Bug,
   GitBranch,
   MessageSquare,
   RotateCcw,
@@ -36,6 +37,7 @@ import { EmbeddingCard } from '../components/settings/EmbeddingCard';
 import { ReleaseProvenanceCard } from '../components/settings/ReleaseProvenanceCard';
 import { UpgradeCard } from '../components/operations/UpgradeCard';
 import { BackupCard } from '../components/operations/BackupCard';
+import { DiagnosticsCard } from '../components/operations/DiagnosticsCard';
 import { useDaemon } from '../hooks/use-daemon';
 import { SETTINGS_GROUPS, type SettingField, type SettingGroup, type SettingScope } from '../settings/manifest';
 import { useUnifiedSettings } from '../hooks/use-unified-settings';
@@ -54,6 +56,7 @@ const ICONS: Record<string, IconComponent> = {
   BookOpen,
   Bot,
   Brain,
+  Bug,
   GitBranch,
   MessageSquare,
   RotateCcw,
@@ -175,6 +178,7 @@ const CUSTOM_GROUP_IDS = new Set([
   'notifications',
   'upgrade',
   'backup',
+  'diagnostics',
   'logging',
 ]);
 
@@ -224,6 +228,9 @@ const CUSTOM_GROUP_RENDERERS: Record<string, (ctx: CustomGroupCtx) => JSX.Elemen
       <BackupCard embedded />
     </div>
   ),
+  // Diagnostics has no config fields of its own (manifest `fields: []`) —
+  // DiagnosticsCard is the entire group body.
+  diagnostics: () => <DiagnosticsCard embedded />,
   // Logging is hybrid: manifest fields drive log_level + log_retention_days,
   // and we tag on a read-only Machine ID row at the bottom — pre-merge this
   // lived in a standalone MachineIdentityCard on /machine/settings and is

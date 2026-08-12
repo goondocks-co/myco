@@ -653,6 +653,14 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
     ],
   },
   {
+    id: 'diagnostics',
+    label: 'Diagnostics',
+    desc: 'Export a diagnostic bundle to attach to a bug report.',
+    category: 'Diagnostics',
+    icon: 'Bug',
+    fields: [],
+  },
+  {
     id: 'sessions',
     label: 'Sessions',
     desc: 'Session lifecycle thresholds the daemon uses for staleness detection.',
