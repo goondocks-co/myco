@@ -29,6 +29,7 @@ import {
   SessionNotFoundError,
   resolveDiagnosticsRoot,
 } from '../../capture/diagnostics/index.js';
+import { sha256Hex } from '../../capture/diagnostics/hash.js';
 import { safePathSegment } from '../../capture/diagnostics/safe-path.js';
 import type { DiagnosticWindow } from '../../capture/diagnostics/types.js';
 
@@ -199,7 +200,25 @@ export function createDiagnosticsHandlers(deps: DiagnosticsDeps) {
     // that had a project vault to run against.
     const vaultDir = req.requestContext?.projectVaultDir ?? deps.bootstrapVaultDir;
 
-    const key = `diagnostics:${actionScopeKey(scope)}`;
+    // Scope alone is NOT a sufficient coalescing key: two concurrent exports
+    // for the same Grove but different windows (or session_id, or
+    // include_content) are different bundles, and sharing one in-flight
+    // promise between them would silently hand the second caller the
+    // FIRST caller's bundle — a wrong result, worse than no coalescing at
+    // all. The params hash folds in every field that changes what gets
+    // built (deliberately excluding `narrative`, which is caller-supplied
+    // commentary, not a selection of what to collect) so only truly
+    // identical concurrent requests share a build; `?? null` normalizes the
+    // XOR'd session_id/window fields so JSON.stringify doesn't drop an
+    // `undefined` key inconsistently between otherwise-identical requests.
+    const paramsKey = sha256Hex(
+      JSON.stringify({
+        session_id: body.session_id ?? null,
+        window: body.window ?? null,
+        include_content: body.include_content ?? false,
+      }),
+    );
+    const key = `diagnostics:${actionScopeKey(scope)}:${paramsKey}`;
     try {
       return await inflight.run(key, async (): Promise<RouteResponse> => {
         const result = await buildDiagnosticBundle({

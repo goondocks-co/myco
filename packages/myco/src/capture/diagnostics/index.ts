@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -378,7 +379,15 @@ export async function buildDiagnosticBundle(
   mkdirSync(outDir, { recursive: true });
   const safeGroveId = safePathSegment(opts.groveId).segment;
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const filePath = path.join(outDir, `myco-diagnostic-${safeGroveId}-${timestamp}.zip`);
+  // Millisecond-resolution timestamp alone is not a unique file name: two
+  // genuinely concurrent exports for the same Grove (different windows, now
+  // that coalescing keys on request params rather than scope alone) can
+  // land in the same millisecond and silently overwrite each other on
+  // disk. An 8-hex random suffix makes collision astronomically unlikely
+  // without changing the name's sort order or the list/download routes'
+  // prefix-matching (both match on `myco-diagnostic-<groveId>-` / `.zip`).
+  const uniq = randomBytes(4).toString('hex');
+  const filePath = path.join(outDir, `myco-diagnostic-${safeGroveId}-${timestamp}-${uniq}.zip`);
   writeFileSync(filePath, zipped);
 
   sweepRetention(outDir, safeGroveId);

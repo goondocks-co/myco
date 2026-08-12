@@ -306,7 +306,7 @@ describe('diagnostics export/list/download routes', () => {
     expect(res.status === undefined || res.status < 400).toBe(true);
   });
 
-  it('coalesces two concurrent exports for the same scope into a single build', async () => {
+  it('coalesces two concurrent exports for the same scope AND same request params into a single build', async () => {
     const grove = createGrove('alpha', mycoHome);
     seedSession(grove, 's1');
     const handlers = makeHandlers();
@@ -327,6 +327,38 @@ describe('diagnostics export/list/download routes', () => {
 
     const zips = fs.readdirSync(diagnosticsDir).filter((f) => f.endsWith('.zip'));
     expect(zips.length).toBe(1);
+  });
+
+  it('does NOT coalesce two concurrent exports for the same scope but different windows — each builds its own bundle', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    seedSession(grove, 's-early', 1000, 1800);
+    seedSession(grove, 's-late', 5000, 5800);
+    const handlers = makeHandlers();
+
+    // Same Grove scope, but the window differs — the params hash must keep
+    // these on separate coalescing keys, or the second caller would
+    // silently receive the FIRST caller's (wrong) window's bundle.
+    const [early, late] = await Promise.all([
+      handlers.handleExport(
+        emptyRequest({
+          body: { scope: { kind: 'grove', grove_id: grove.id }, window: { since: 500, until: 2500 } },
+        }),
+      ),
+      handlers.handleExport(
+        emptyRequest({
+          body: { scope: { kind: 'grove', grove_id: grove.id }, window: { since: 4500, until: 6000 } },
+        }),
+      ),
+    ]);
+
+    const earlyBody = early.body as { file_path: string; manifest: { window: { since: number } } };
+    const lateBody = late.body as { file_path: string; manifest: { window: { since: number } } };
+    expect(earlyBody.file_path).not.toBe(lateBody.file_path);
+    expect(earlyBody.manifest.window.since).toBe(500);
+    expect(lateBody.manifest.window.since).toBe(4500);
+
+    const zips = fs.readdirSync(diagnosticsDir).filter((f) => f.endsWith('.zip'));
+    expect(zips.length).toBe(2);
   });
 
   it('does not coalesce exports for different Groves', async () => {
