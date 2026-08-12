@@ -146,6 +146,14 @@ describe('buildDiagnosticBundle', () => {
     const allText = names.map((n) => strFromU8(unzipped[n]!)).join('\n');
     expect(allText).not.toContain(TRANSCRIPT_PROSE);
     expect(allText).not.toContain(DAEMON_LOG_PROSE);
+
+    // The cross-file join key: session_id survives verbatim in daemon-log.jsonl
+    // (it's an opaque structural id, already verbatim in sessions.jsonl too),
+    // even while prompt_preview on the same line is hashed.
+    const daemonLog = strFromU8(unzipped['daemon-log.jsonl']!);
+    expect(daemonLog).toContain('"sA"');
+    expect(daemonLog).not.toContain(DAEMON_LOG_PROSE);
+    expect(daemonLog).toContain('prompt_preview');
   });
 
   test('includeContent: true reveals transcript prose but daemon-log prompt_preview still never leaks', async () => {
@@ -164,6 +172,8 @@ describe('buildDiagnosticBundle', () => {
     expect(allText).not.toContain(DAEMON_LOG_PROSE);
     const daemonLog = strFromU8(unzipped['daemon-log.jsonl']!);
     expect(daemonLog).not.toContain(DAEMON_LOG_PROSE);
+    // The join key still survives verbatim even with includeContent: true.
+    expect(daemonLog).toContain('"sA"');
   });
 
   test('narrative.md is present only when a non-empty narrative is passed', async () => {

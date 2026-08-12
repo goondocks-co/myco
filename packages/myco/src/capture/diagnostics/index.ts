@@ -107,17 +107,22 @@ function countLogEntriesInWindow(db: Database, w: DiagnosticWindow): number {
   return row.c;
 }
 
-/** Up to 3 sessions (any window) ranked by |started_at - window midpoint|, closest first. */
+/**
+ * Up to 3 sessions (any window) ranked by |started_at - window midpoint|,
+ * closest first. Ordering and limiting happen in SQL, not in JS: the
+ * empty-window error path runs before any file work, so a full-table
+ * `SELECT` + JS sort would be a synchronous full-table scan on the daemon's
+ * main loop for every rejected export.
+ */
 function nearestSessions(db: Database, w: DiagnosticWindow): Array<{ id: string; started_at: number }> {
   const midpoint = (w.since + w.until) / 2;
-  const rows = db.query(`SELECT id, started_at FROM sessions`).all() as Array<{
-    id: string;
-    started_at: number;
-  }>;
-  return rows
-    .slice()
-    .sort((a, b) => Math.abs(a.started_at - midpoint) - Math.abs(b.started_at - midpoint))
-    .slice(0, 3);
+  return db
+    .query(
+      `SELECT id, started_at FROM sessions
+       ORDER BY ABS(started_at - $mid)
+       LIMIT 3`,
+    )
+    .all({ $mid: midpoint }) as Array<{ id: string; started_at: number }>;
 }
 
 /** Same window predicate as collectSessionRows, ids only — feeds collectBuffers' sessionIdsInWindow. */
@@ -141,8 +146,23 @@ function sessionIdsInWindow(db: Database, w: DiagnosticWindow): string[] {
  * -> a synthetic JSON `data` string) before being redacted, otherwise
  * `prompt_preview` would pass straight through as an unrecognized
  * "structural" field.
+ *
+ * `session_id`/`project_id` are added to the core set on top of
+ * DaemonLogger's own 5: they're opaque structural ids, not prose, and they
+ * already ship verbatim in sessions.jsonl (collect-vault.ts's
+ * SESSION_STRUCTURAL_COLS/LOG_ENTRY_COLS) — hashing them here would sever
+ * the cross-file join key that correlating a daemon-log line back to a
+ * session is the whole reason this file is in the bundle.
  */
-const DAEMON_LOG_CORE_FIELDS = new Set(['timestamp', 'level', 'kind', 'component', 'message']);
+const DAEMON_LOG_CORE_FIELDS = new Set([
+  'timestamp',
+  'level',
+  'kind',
+  'component',
+  'message',
+  'session_id',
+  'project_id',
+]);
 
 function toRedactableLogRow(entry: LogEntry): Record<string, unknown> {
   const structural: Record<string, unknown> = {};
