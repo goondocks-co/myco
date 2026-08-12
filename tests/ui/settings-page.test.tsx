@@ -211,6 +211,13 @@ mock.module('../../packages/myco/ui/src/components/operations/UpgradeCard', () =
 mock.module('../../packages/myco/ui/src/components/operations/BackupCard', () => ({
   BackupCard: () => <div data-testid="backup-card" />,
 }));
+// DiagnosticsCard reaches into useActiveProjectSelection (not covered by this
+// file's use-project-selection mock above, which only provides
+// useProjectSelection) and fetches /diagnostics/exports — same reasoning as
+// BackupCard above, same stub treatment.
+mock.module('../../packages/myco/ui/src/components/operations/DiagnosticsCard', () => ({
+  DiagnosticsCard: () => <div data-testid="diagnostics-card" />,
+}));
 
 // scrollIntoView isn't implemented in jsdom.
 if (typeof Element !== 'undefined' && !(Element.prototype as { scrollIntoView?: () => void }).scrollIntoView) {
@@ -246,13 +253,13 @@ describe('Unified Settings page', () => {
     };
   });
 
-  it('renders all 12 groups in manifest order', () => {
+  it('renders all groups in manifest order', () => {
     renderPage();
     // Each group renders its label as a heading inside the card.
     for (const group of SETTINGS_GROUPS) {
       expect(screen.getAllByText(group.label).length).toBeGreaterThan(0);
     }
-    // 12 sections total in the document (anchors).
+    // Every manifest group has a section in the document (anchors), in order.
     const sections = document.querySelectorAll('section[id]');
     const ids = Array.from(sections).map((s) => s.id);
     expect(ids).toEqual(SETTINGS_GROUPS.map((g) => g.id));
@@ -274,6 +281,21 @@ describe('Unified Settings page', () => {
     // Hidden: skills (project-only), team (grove-only).
     expect(visibleIds).not.toContain('skills');
     expect(visibleIds).not.toContain('team');
+  });
+
+  it('diagnostics (a fields:[] custom group) is visible under Grove and hidden under Machine', () => {
+    // Regression for groupIsVisible's fields-derived scope check: an empty
+    // `fields` array's `.some(...)` is always false, which would hide a
+    // `fields: []` group under every non-'all' scope filter even though it
+    // has a real backend scope (manifest.ts's `SettingGroup.scope`,
+    // consulted only when `fields` is empty).
+    renderPage();
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Grove/ }));
+    expect(document.getElementById('diagnostics')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Machine/ }));
+    expect(document.getElementById('diagnostics')).toBeNull();
   });
 
   it('search filter narrows visible fields', async () => {

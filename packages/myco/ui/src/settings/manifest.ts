@@ -108,6 +108,17 @@ export interface SettingGroup {
   category: string;
   /** Group-level Lucide icon. */
   icon: string;
+  /**
+   * The group's own backend scope, for scope-filter visibility when the
+   * group has no `fields` to derive one from (Settings.tsx's
+   * `groupIsVisible` normally infers a custom group's scope from its
+   * fields' own `scope`, which is impossible for a `fields: []` group — an
+   * empty array's `.some(...)` is always false, hiding the group under
+   * every non-'all' scope filter). Only consulted when `fields` is empty;
+   * a group with fields keeps deriving visibility from them, unaffected by
+   * this field.
+   */
+  scope?: SettingScope;
   fields: SettingField[];
 }
 
@@ -651,6 +662,18 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
         note: 'Kept beyond the daily window for longer-term restore points.',
       },
     ],
+  },
+  {
+    id: 'diagnostics',
+    label: 'Diagnostics',
+    desc: 'Export a diagnostic bundle to attach to a bug report.',
+    category: 'Diagnostics',
+    icon: 'Bug',
+    // Diagnostic bundles are always Grove-scoped (daemon/api/diagnostics.ts
+    // rejects project/all-groves) — declared here since `fields: []` gives
+    // groupIsVisible nothing to derive a scope from.
+    scope: 'grove',
+    fields: [],
   },
   {
     id: 'sessions',
