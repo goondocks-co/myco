@@ -146,8 +146,8 @@ moves INTO `quarantine/` once it's `BUFFER_HARD_RETENTION_MS` = 7 days old; the 
 then pruned (deleted) once it's `TOMBSTONE_RETENTION_MS` = 14 days old
 (`packages/myco/src/constants.ts:123,134`; the move-then-prune sequence runs in `cleanBufferDirs`,
 `packages/myco/src/daemon/reconciliation.ts:1209-1245`). So a quarantined file you see in a bundle
-has been sitting there for a while, not freshly diverged — don't read "quarantine entry" as "this
-diverged just now."
+has been sitting there for a while, not freshly diverged — don't assume "quarantine entry" means
+"this diverged at the time of export."
 `content_hash` here is a hash of the raw JSONL line, not a cross-layer key — don't compare it to
 `text_sha256` or `user_prompt_sha256`. `event_type` is read from the raw capture event's `type`
 field (values like `user_prompt`, `tool_use`, `stop_failure` — see `daemon/event-dispatch.ts`'s
@@ -228,7 +228,7 @@ For each session id present in `transcripts/*.skeleton.jsonl` and/or `sessions.j
    default), `system` (harness-synthesized continuation events — `<task-notification>`,
    `<environment_context>`, `<skill>` envelope expansions), `agent_dispatch` (a sub-agent's prompt
    returned to its parent, e.g. Codex's `<subagent_notification>`), and `hook_injected` (reserved;
-   currently folded into `human`). Both `system` and `agent_dispatch` rows may legitimately have a
+   folded into `human`). Both `system` and `agent_dispatch` rows may legitimately have a
    `user_prompt_sha256` with no transcript counterpart. Before treating an unmatched batch hash as
    divergence, check the `row.origin` field — if it's `"system"` or `"agent_dispatch"`, the mismatch
    is expected, not a bug.
