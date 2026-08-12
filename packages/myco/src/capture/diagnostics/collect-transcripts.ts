@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type { Database } from 'bun:sqlite';
 import { findTranscriptFor } from '../../symbionts/transcript-discovery.js';
+import { safePathSegment } from './safe-path.js';
 import { skeletonizeTranscript } from './skeletonize.js';
 import type { BundleFile, CollectorError, DiagnosticWindow } from './types.js';
 
@@ -49,13 +50,16 @@ export async function collectTranscripts(opts: {
     if (!s.transcript_path) {
       notes.push(`session ${s.id}: transcript_path missing in vault; found via discovery — hook may never have fired`);
     }
+    const { segment, sanitized } = safePathSegment(s.id);
+    if (sanitized) notes.push(`session ${segment}: unsafe session id sanitized in bundle paths`);
+
     try {
       await new Promise((resolve) => setImmediate(resolve)); // yield per file
       const raw = await readFile(resolved, 'utf8');
-      files.push({ path: `transcripts/${s.id}.skeleton.jsonl`, data: skeletonizeTranscript(raw) });
-      if (opts.includeContent) files.push({ path: `transcripts/${s.id}.full.jsonl`, data: raw });
+      files.push({ path: `transcripts/${segment}.skeleton.jsonl`, data: skeletonizeTranscript(raw) });
+      if (opts.includeContent) files.push({ path: `transcripts/${segment}.full.jsonl`, data: raw });
     } catch (err) {
-      errors.push({ layer: `transcript:${s.id}`, error: err instanceof Error ? err.message : String(err) });
+      errors.push({ layer: `transcript:${segment}`, error: err instanceof Error ? err.message : String(err) });
     }
   }
   return { files, notes, errors };

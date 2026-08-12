@@ -46,4 +46,22 @@ describe('collectTranscripts', () => {
     expect(res.files.length).toBe(0);
     expect(res.errors.length + res.notes.length).toBeGreaterThan(0);
   });
+
+  test('unsafe session id is sanitized in emitted bundle paths', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'diag-'));
+    const db = getDatabase();
+    const tp = writeTranscript(dir, 'evil.jsonl');
+    const unsafeId = '../evil';
+    seedSession({ id: unsafeId, agent: 'claude-code', startedAt: 1000, transcriptPath: tp });
+
+    const res = await collectTranscripts({ db, window: { since: 0, until: 2000 }, includeContent: false });
+    expect(res.files.length).toBe(1);
+    const emitted = res.files[0]!.path;
+    expect(emitted.startsWith('transcripts/')).toBe(true);
+    const rest = emitted.slice('transcripts/'.length);
+    expect(rest.includes('/')).toBe(false);
+    expect(rest.includes('..')).toBe(false);
+    expect(res.notes.some((n) => n.includes('unsafe session id sanitized'))).toBe(true);
+    expect(res.notes.some((n) => n.includes(unsafeId))).toBe(false);
+  });
 });
