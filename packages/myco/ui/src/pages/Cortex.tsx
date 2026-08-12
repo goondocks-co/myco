@@ -4,7 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import { Brain, Check, Copy, Database, Sparkles, Trees } from 'lucide-react';
 import { CONFIG_FOCUS_TAB_PARAM, CONFIG_SECTION_IDS } from '@myco/config/focus';
 import { CORTEX_PATHS } from '@myco/config/paths';
-import { useAgentRuns, useAgentTasks } from '../hooks/use-agent';
+import { useAgentRuns } from '../hooks/use-agent';
+import { useTaskConfig } from '../hooks/use-providers';
 import { useScopedConfig } from '../hooks/use-scoped-config';
 import { useSymbionts, type SymbiontInfo } from '../hooks/use-symbionts';
 import { usePowerQuery } from '../hooks/use-power-query';
@@ -1078,16 +1079,12 @@ function ExcludePatternsEditor({
 
 function CanopyTab() {
   const { effective, isLoading } = useScopedConfig();
-  const { data: tasksData } = useAgentTasks();
-  // Effective schedule = user override (from myco.yaml) ?? YAML default
-  // (from /agent/tasks). The /agent/tasks API only reads YAML files; it
-  // does not merge in agent.tasks.<name>.schedule overrides from the
-  // live config, so a project that flipped the schedule on via myco.yaml
-  // will have a `false` API row and a `true` config override.
-  const describeTask = tasksData?.tasks.find((t) => t.name === 'canopy-describe');
-  const describeOverride = (effective?.agent?.tasks as Record<string, { schedule?: { enabled?: boolean } } | undefined> | undefined)?.['canopy-describe'];
-  const describeEnabled =
-    describeOverride?.schedule?.enabled ?? describeTask?.schedule?.enabled ?? false;
+  // Server-computed schedule enablement — the daemon's answer accounts for
+  // the capability gate and the explicit-model requirement, so this badge
+  // can never claim "on" for a schedule the scheduler refuses to run.
+  const { data: describeConfig } = useTaskConfig('canopy-describe');
+  const describeEnabled = describeConfig?.effectiveScheduleEnabled ?? false;
+  const describeNeedsModel = describeConfig?.scheduleBlockedReason === 'requires_task_provider';
   if (isLoading || !effective) {
     return <p className="font-sans text-sm text-on-surface-variant">Loading...</p>;
   }
@@ -1295,11 +1292,16 @@ function CanopyTab() {
               >
                 canopy-describe task
               </Link>{' '}
-              ships <strong>opt-in</strong> — its schedule is off by default so
-              new projects don&rsquo;t spend tokens unprompted. Enable it on the
-              task page (where you can also pick a model and schedule) to start
-              filling in descriptions; the Canopy Map needs at least one
-              described file before it can build.
+              ships <strong>opt-in</strong>, and its schedule only runs on a
+              model you choose for it — scheduled runs never fall back to your
+              default model, so this background task can&rsquo;t quietly spend
+              on your main provider. (Running it manually uses whatever model
+              you ask for at that moment.)
+              {describeNeedsModel
+                ? ' Pick a model on the task page (a small local model works well), then turn on auto-run to start filling in descriptions;'
+                : ' Turn on auto-run on the task page to start filling in descriptions;'}{' '}
+              the Canopy Map needs at least one described file before it can
+              build.
             </>
           )}
         </p>

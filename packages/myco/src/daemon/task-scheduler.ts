@@ -85,6 +85,7 @@ export interface ScheduledJobContext {
     scope: RegisteredProjectScope,
     taskName: string,
     yamlScheduleEnabled: boolean,
+    scheduleGate?: { requiresTaskProvider?: boolean },
   ) => boolean;
   /**
    * True when the project is past the cold_project_threshold_days
@@ -252,7 +253,9 @@ export function buildScheduledJobs(
             ? resolveSchedule(task.schedule, taskConfig)
             : yamlEffective;
           const enabled = context.getTaskScheduleEnabled
-            ? context.getTaskScheduleEnabled(projectScope, task.name, yamlEffective.enabled)
+            ? context.getTaskScheduleEnabled(projectScope, task.name, yamlEffective.enabled, {
+              requiresTaskProvider: task.schedule?.requiresTaskProvider,
+            })
             : effective.enabled;
           if (!enabled) continue;
 

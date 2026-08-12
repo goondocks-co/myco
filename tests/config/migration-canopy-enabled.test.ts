@@ -9,8 +9,8 @@ function runV10(doc: Record<string, unknown>) {
 }
 
 describe('v10 seed canopy.enabled from inject_on_pre_tool_use', () => {
-  it('bumps CURRENT_MIGRATION_VERSION to 11', () => {
-    expect(CURRENT_MIGRATION_VERSION).toBe(11);
+  it('bumps CURRENT_MIGRATION_VERSION to 12', () => {
+    expect(CURRENT_MIGRATION_VERSION).toBe(12);
   });
   it('seeds enabled=false when inject_on_pre_tool_use is false and enabled absent', () => {
     const doc = runV10({ cortex: { canopy: { inject_on_pre_tool_use: false } } });
@@ -45,6 +45,8 @@ describe('v10 on local tier', () => {
     };
     runMigrations(doc, '/tmp/vault', undefined, 'local');
     expect((doc.cortex as any).canopy.enabled).toBe(false);
+    // Version ticks only on mutation: v10 seeds `enabled`, so the later
+    // no-op steps (v11 rename, v12 reseed) leave the stamp at 10.
     expect(doc.config_version).toBe(10);
   });
 
@@ -66,5 +68,37 @@ describe('v10 on local tier', () => {
     // enabled should not have been added
     expect('enabled' in (doc.cortex as any).canopy).toBe(false);
     expect(JSON.stringify(doc)).toBe(before);
+  });
+});
+
+describe('v12 reseed canopy.enabled for the injection-off cohort', () => {
+  function runV12(doc: Record<string, unknown>) {
+    const step = MIGRATIONS.find((m) => m.version === 12);
+    if (!step) throw new Error('v12 migration missing');
+    step.migrate(doc, '/tmp/vault');
+    return doc;
+  }
+
+  it('seeds enabled=false when injection was explicitly turned off after v10', () => {
+    // The canopy-map gate moved from inject_on_pre_tool_use to the
+    // capability master switch; without this reseed, this cohort's
+    // scheduled map runs would silently resume on the default provider.
+    const doc = runV12({ cortex: { canopy: { inject_on_pre_tool_use: false } } });
+    expect((doc.cortex as any).canopy.enabled).toBe(false);
+  });
+
+  it('does not seed when injection is on (enabled defaults true)', () => {
+    const doc = runV12({ cortex: { canopy: { inject_on_pre_tool_use: true } } });
+    expect('enabled' in (doc.cortex as any).canopy).toBe(false);
+  });
+
+  it('leaves an explicit enabled untouched', () => {
+    const doc = runV12({ cortex: { canopy: { enabled: true, inject_on_pre_tool_use: false } } });
+    expect((doc.cortex as any).canopy.enabled).toBe(true);
+  });
+
+  it('is a no-op on a sparse doc', () => {
+    const doc = runV12({});
+    expect(Object.keys(doc)).toHaveLength(0);
   });
 });

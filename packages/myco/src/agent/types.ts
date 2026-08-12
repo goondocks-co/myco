@@ -511,6 +511,12 @@ export interface TaskSchedule {
    * Tasks that generate NEW knowledge stay cold-gated by default.
    */
   runWhenCold?: boolean;
+  /**
+   * Scheduling requires an explicit per-task provider choice in config
+   * (task-level provider or a phase-level provider override); the
+   * global-provider fallback is not accepted for this task's schedule.
+   */
+  requiresTaskProvider?: boolean;
 }
 
 /** Shape of each task YAML file (e.g., `tasks/vault-evolve.yaml`). */

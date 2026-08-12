@@ -463,6 +463,13 @@ export interface CanopyMapRegenerateArgs {
   project_id: string;
   machine_id: string;
   force_cold_start: boolean;
+  /**
+   * The route's resolved request context — the tenancy authority for which
+   * project's config gates the regenerate and whose tree the map is built
+   * from. Passed through to the runner so it never falls back to the
+   * daemon's boot-time anchor project on multi-project daemons.
+   */
+  requestContext?: import('@myco/grove/request-context.js').MycoRequestContext;
 }
 
 export interface CanopyMapRegenerateResult {
@@ -499,6 +506,7 @@ export interface CanopyMapTaskRunner {
     params: { force_cold_start: boolean };
     project_id: string;
     machine_id: string;
+    requestContext?: import('@myco/grove/request-context.js').MycoRequestContext;
   }) => Promise<{ run_id: string } | { skipped: true; reason: string }>;
 }
 
@@ -528,6 +536,7 @@ export async function handleCanopyMapRegenerate(
     params: { force_cold_start: args.force_cold_start === true },
     project_id: args.project_id,
     machine_id: args.machine_id,
+    requestContext: args.requestContext,
   });
   if ('skipped' in result) {
     return { ok: true, skipped: true, reason: result.reason };
@@ -677,6 +686,7 @@ export function registerCanopyReadRoutes(server: {
             project_id: resolveProjectId(req),
             machine_id: resolveMachineId(req),
             force_cold_start,
+            requestContext: req.requestContext,
           },
           { runner: runCanopyMapTask },
         );
