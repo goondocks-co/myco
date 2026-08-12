@@ -18,6 +18,8 @@ export interface BundleManifest {
   window: DiagnosticWindow;
   include_content: boolean;
   generated_at: number;
+  /** The daemon's BOOTSTRAP vault dir passed to `runChecks` for the doctor collector. */
+  doctor_vault_dir: string;
   /** Zip-relative paths of every file present. */
   files: string[];
   collector_errors: CollectorError[];
