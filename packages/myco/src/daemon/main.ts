@@ -52,6 +52,7 @@ import { createUpgradeHandlers } from './api/upgrade.js';
 import { resolveGlobalPrefix, resolveMycoBinary } from './update-checker.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
+import { createDiagnosticsHandlers } from './api/diagnostics.js';
 import { migrateLegacyBackups } from '@myco/backup/migrate.js';
 import { createSessionLifecycleHandlers } from './api/session-lifecycle.js';
 import { createUnregisterPhantomReap } from './phantom-reaper.js';
@@ -2621,6 +2622,20 @@ export async function main(): Promise<void> {
     }
     return result;
   });
+
+  const diagnosticsHandlers = createDiagnosticsHandlers({
+    cache: runtimeCache,
+    vaultDir: bootstrapVaultDir,
+    logDir: resolveDaemonLogDir(bootstrapVaultDir, {
+      requestContext: dataPaths.requestContext,
+      env: process.env,
+    }),
+    config: liveConfig.current,
+    mycoVersion: getPluginVersion(),
+  });
+  server.registerRoute('POST', '/api/diagnostics/export', diagnosticsHandlers.handleExport);
+  server.registerRoute('GET', '/api/diagnostics/exports', diagnosticsHandlers.handleListExports);
+  server.registerRoute('GET', '/api/diagnostics/export/:file/download', diagnosticsHandlers.handleDownload);
 
   // --- Search, activity feed, and embedding status ---
 
