@@ -55,13 +55,13 @@ describe('diagnostics export/list/download routes', () => {
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 
-  function makeHandlers() {
+  function makeHandlers(overrides: { config?: () => unknown } = {}) {
     return createDiagnosticsHandlers({
       cache,
       mycoHome,
       vaultDir: path.join(workDir, 'bootstrap-vault'),
       logDir,
-      config: { daemon: { port: 4155 } },
+      config: overrides.config ?? (() => ({ daemon: { port: 4155 } })),
       mycoVersion: '9.9.9-test',
       diagnosticsDir,
     });
@@ -137,6 +137,32 @@ describe('diagnostics export/list/download routes', () => {
     expect((res.body as { error: string }).error).toBe('invalid_window');
   });
 
+  it('invalid_body for a structurally malformed window (not the session_id/window ambiguity rule)', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    const handlers = makeHandlers();
+    const res = await handlers.handleExport(
+      emptyRequest({
+        body: { scope: { kind: 'grove', grove_id: grove.id }, window: { since: 'nope', until: 100 } },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((res.body as { error: string }).error).toBe('invalid_body');
+  });
+
+  it('session_not_found (404) for an unknown session_id, not a raw 500', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    const handlers = makeHandlers();
+    const res = await handlers.handleExport(
+      emptyRequest({
+        body: { scope: { kind: 'grove', grove_id: grove.id }, session_id: 'does-not-exist' },
+      }),
+    );
+    expect(res.status).toBe(404);
+    const body = res.body as { error: string; message: string };
+    expect(body.error).toBe('session_not_found');
+    expect(body.message).toMatch(/does-not-exist/);
+  });
+
   it('empty_window with nearest_sessions when the resolved window has no sessions and no log entries', async () => {
     const grove = createGrove('alpha', mycoHome);
     seedSession(grove, 's1', 1_000_000, 1_000_100);
@@ -172,6 +198,38 @@ describe('diagnostics export/list/download routes', () => {
     expect(body.size_bytes).toBeGreaterThan(0);
     expect(body.file_name).toMatch(/^myco-diagnostic-.*\.zip$/);
     expect(body.manifest).toBeTruthy();
+  });
+
+  it('dereferences the config getter fresh on every export (no boot-time snapshot)', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    seedSession(grove, 's1');
+    let callCount = 0;
+    let currentPort = 4155;
+    const handlers = makeHandlers({
+      config: () => {
+        callCount += 1;
+        return { daemon: { port: currentPort } };
+      },
+    });
+
+    const first = await handlers.handleExport(
+      emptyRequest({ body: { scope: { kind: 'grove', grove_id: grove.id }, window: { since: 1000, until: 2000 } } }),
+    );
+    expect(callCount).toBe(1);
+    currentPort = 9999;
+    const second = await handlers.handleExport(
+      emptyRequest({ body: { scope: { kind: 'grove', grove_id: grove.id }, window: { since: 1000, until: 2000 } } }),
+    );
+    expect(callCount).toBe(2);
+
+    const firstEnv = JSON.parse(
+      strFromU8(unzipSync(fs.readFileSync((first.body as { file_path: string }).file_path))['environment.json']!),
+    ) as { config: { daemon: { port: number } } };
+    const secondEnv = JSON.parse(
+      strFromU8(unzipSync(fs.readFileSync((second.body as { file_path: string }).file_path))['environment.json']!),
+    ) as { config: { daemon: { port: number } } };
+    expect(firstEnv.config.daemon.port).toBe(4155);
+    expect(secondEnv.config.daemon.port).toBe(9999);
   });
 
   it('defaults to the request-context Grove when no body scope is given', async () => {
@@ -257,7 +315,7 @@ describe('diagnostics export/list/download routes', () => {
       emptyRequest({ pathname: '/api/diagnostics/exports', requestContext: makeTestRequestContext({ groveId: groveA.id }) }),
     );
     expect(listRes.status === undefined || listRes.status < 400).toBe(true);
-    const listBody = listRes.body as { exports: Array<{ file_name: string; size_bytes: number; modified_at: number }> };
+    const listBody = listRes.body as { exports: Array<{ file_name: string; size_bytes: number; modified_at: string }> };
     const names = listBody.exports.map((e) => e.file_name);
     expect(names).toContain(firstName);
     expect(names).toContain(secondName);
@@ -267,6 +325,11 @@ describe('diagnostics export/list/download routes', () => {
     expect(names.every((n) => !n.includes(groveB.id))).toBe(true);
     // Sorted newest first.
     expect(listBody.exports[0]!.file_name).toBe(secondName);
+    // modified_at is an ISO string, matching backup's list shape.
+    for (const entry of listBody.exports) {
+      expect(entry.modified_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      expect(new Date(entry.modified_at).toISOString()).toBe(entry.modified_at);
+    }
   });
 
   it('list is grove_required without a resolved Grove context', async () => {
@@ -280,28 +343,69 @@ describe('diagnostics export/list/download routes', () => {
   // GET /api/diagnostics/export/:file/download
   // ---------------------------------------------------------------------
 
-  it('download: 404 on a traversal-shaped file param', async () => {
+  it('download: grove_required (400) when the request carries no Grove context', async () => {
     const handlers = makeHandlers();
     const res = await handlers.handleDownload(
-      emptyRequest({ params: { file: '..%2Fdaemon.log' }, pathname: '/api/diagnostics/export/..%2Fdaemon.log/download' }),
+      emptyRequest({ params: { file: 'myco-diagnostic-whatever-2026-01-01T00-00-00-000Z.zip' } }),
+    );
+    expect(res.status).toBe(400);
+    expect((res.body as { error: string }).error).toBe('grove_required');
+  });
+
+  it('download: 404 on a traversal-shaped file param', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    const handlers = makeHandlers();
+    const res = await handlers.handleDownload(
+      emptyRequest({
+        params: { file: '..%2Fdaemon.log' },
+        pathname: '/api/diagnostics/export/..%2Fdaemon.log/download',
+        requestContext: makeTestRequestContext({ groveId: grove.id }),
+      }),
     );
     expect(res.status).toBe(404);
   });
 
   it('download: 404 for a non-bundle file name (daemon.log)', async () => {
+    const grove = createGrove('alpha', mycoHome);
     const handlers = makeHandlers();
     const res = await handlers.handleDownload(
-      emptyRequest({ params: { file: 'daemon.log' }, pathname: '/api/diagnostics/export/daemon.log/download' }),
+      emptyRequest({
+        params: { file: 'daemon.log' },
+        pathname: '/api/diagnostics/export/daemon.log/download',
+        requestContext: makeTestRequestContext({ groveId: grove.id }),
+      }),
     );
     expect(res.status).toBe(404);
   });
 
   it('download: 404 for a valid-shaped but nonexistent file name', async () => {
+    const grove = createGrove('alpha', mycoHome);
     const handlers = makeHandlers();
     const res = await handlers.handleDownload(
       emptyRequest({
-        params: { file: 'myco-diagnostic-nonexistent-2026-01-01T00-00-00-000Z.zip' },
+        params: { file: `myco-diagnostic-${grove.id}-nonexistent-2026-01-01T00-00-00-000Z.zip` },
         pathname: '/api/diagnostics/export/x/download',
+        requestContext: makeTestRequestContext({ groveId: grove.id }),
+      }),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('download: 404 when a Grove A context requests Grove B\'s bundle filename', async () => {
+    const groveA = createGrove('alpha', mycoHome);
+    const groveB = createGrove('beta', mycoHome);
+    seedSession(groveB, 's1');
+    const handlers = makeHandlers();
+    const exportRes = await handlers.handleExport(
+      emptyRequest({ body: { scope: { kind: 'grove', grove_id: groveB.id }, window: { since: 1000, until: 2000 } } }),
+    );
+    const groveBFileName = (exportRes.body as { file_name: string }).file_name;
+
+    const res = await handlers.handleDownload(
+      emptyRequest({
+        params: { file: groveBFileName },
+        pathname: `/api/diagnostics/export/${groveBFileName}/download`,
+        requestContext: makeTestRequestContext({ groveId: groveA.id }),
       }),
     );
     expect(res.status).toBe(404);
@@ -317,7 +421,11 @@ describe('diagnostics export/list/download routes', () => {
     const fileName = (exportRes.body as { file_name: string }).file_name;
 
     const res = await handlers.handleDownload(
-      emptyRequest({ params: { file: fileName }, pathname: `/api/diagnostics/export/${fileName}/download` }),
+      emptyRequest({
+        params: { file: fileName },
+        pathname: `/api/diagnostics/export/${fileName}/download`,
+        requestContext: makeTestRequestContext({ groveId: grove.id }),
+      }),
     );
     expect(res.status).toBe(200);
     expect(res.headers?.['Content-Type']).toBe('application/zip');

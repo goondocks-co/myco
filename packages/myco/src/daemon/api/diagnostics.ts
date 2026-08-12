@@ -24,6 +24,7 @@ import {
 import {
   buildDiagnosticBundle,
   EmptyWindowError,
+  SessionNotFoundError,
   resolveDiagnosticsRoot,
 } from '../../capture/diagnostics/index.js';
 import { safePathSegment } from '../../capture/diagnostics/safe-path.js';
@@ -72,8 +73,16 @@ export interface DiagnosticsDeps {
   vaultDir: string;
   /** resolveDaemonLogDir(bootstrapVaultDir) output — the machine-global daemon.log dir. */
   logDir: string;
-  /** Merged config; redacted inside the engine's environment collector. */
-  config: unknown;
+  /**
+   * Getter for the merged config (redacted inside the engine's environment
+   * collector), dereferenced fresh on every export — NOT a snapshot captured
+   * once at handler-construction time. `main.ts` registers routes once at
+   * daemon boot, so a plain value here would freeze every bundle's
+   * `environment.json` at the config as of that instant; production passes
+   * `() => liveConfig.current`, the same live-updating ref other handlers
+   * close over.
+   */
+  config: () => unknown;
   mycoVersion: string;
   /** Override the export root (tests); production defaults to resolveDiagnosticsRoot(). */
   diagnosticsDir?: string;
@@ -94,10 +103,14 @@ export function createDiagnosticsHandlers(deps: DiagnosticsDeps) {
   async function handleExport(req: RouteRequest): Promise<RouteResponse> {
     const parsedBody = ExportBodySchema.safeParse(req.body ?? {});
     if (!parsedBody.success) {
+      // Structural body-shape failures (e.g. `window` present but not
+      // `{since,until}`) get their own code — `invalid_window` is reserved
+      // for the session_id XOR window rule below, so a UI consumer can tell
+      // "malformed request" apart from "ambiguous/missing window choice".
       return {
         status: 400,
         body: {
-          error: 'invalid_window',
+          error: 'invalid_body',
           message: parsedBody.error.issues.map((i) => i.message).join('; '),
         },
       };
@@ -164,7 +177,7 @@ export function createDiagnosticsHandlers(deps: DiagnosticsDeps) {
         dbPath: resolveGroveDbPath(grove.id, mycoHome),
         mycoHome,
         logDir: deps.logDir,
-        config: deps.config,
+        config: deps.config(),
         mycoVersion: deps.mycoVersion,
         window,
         includeContent: body.include_content ?? false,
@@ -184,6 +197,12 @@ export function createDiagnosticsHandlers(deps: DiagnosticsDeps) {
         return {
           status: 404,
           body: { error: 'empty_window', nearest_sessions: err.nearestSessions },
+        };
+      }
+      if (err instanceof SessionNotFoundError) {
+        return {
+          status: 404,
+          body: { error: 'session_not_found', message: err.message },
         };
       }
       throw err;
@@ -217,21 +236,41 @@ export function createDiagnosticsHandlers(deps: DiagnosticsDeps) {
           // Vanished between readdir and stat (a concurrent sweep/export
           // raced us) — falls to the bottom of the sort, harmless.
         }
-        return { file_name: name, size_bytes: size, modified_at: Math.floor(mtimeMs / 1000) };
+        // ISO string, matching backup's list shape (`BackupMeta.modified_at`,
+        // backup/engine.ts:386) — a UI consumer renders both lists uniformly.
+        // Lexicographic sort on a fixed-width UTC ISO string sorts newest
+        // first identically to sorting the raw epoch ms.
+        return { file_name: name, size_bytes: size, modified_at: new Date(mtimeMs).toISOString() };
       })
-      .sort((a, b) => b.modified_at - a.modified_at);
+      .sort((a, b) => (a.modified_at < b.modified_at ? 1 : a.modified_at > b.modified_at ? -1 : 0));
 
     return { body: { exports } };
   }
 
   /** GET /api/diagnostics/export/:file/download — serve a bundle's raw zip bytes. */
   async function handleDownload(req: RouteRequest): Promise<RouteResponse> {
+    // Same Grove-required gate as the list route: a bundle carries session
+    // content, transcripts, and prompt hashes for one Grove, so the request
+    // must name a Grove before any file resolution happens.
+    const groveId = req.requestContext?.groveId;
+    if (!groveId) return GROVE_REQUIRED;
+
     const file = req.params.file;
     // No path separators are legal in a bundle file name, so a traversal
     // attempt (`..%2Fdaemon.log`, `../daemon.log`) fails the character-class
     // regex before any fs call — the same "reject, don't sanitize" posture
     // as attachments.ts.
     if (!file || !EXPORT_FILE_NAME_RE.test(file)) {
+      return { status: 404, body: { error: 'not_found' } };
+    }
+
+    // The bundle's own file name encodes the Grove it was built for
+    // (buildDiagnosticBundle's `myco-diagnostic-<safeGroveId>-<ts>.zip`) — a
+    // context bound to Grove A must not be able to name Grove B's file and
+    // download it. Same 404 as "not found" so this never distinguishes
+    // "exists but wrong Grove" from "doesn't exist" to the caller.
+    const requiredPrefix = `myco-diagnostic-${safePathSegment(groveId).segment}-`;
+    if (!file.startsWith(requiredPrefix)) {
       return { status: 404, body: { error: 'not_found' } };
     }
 

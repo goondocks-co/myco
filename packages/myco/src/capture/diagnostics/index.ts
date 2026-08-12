@@ -16,6 +16,8 @@ import { collectBuffers } from './collect-buffers.js';
 import { createZip } from './zip.js';
 import { safePathSegment } from './safe-path.js';
 import { resolveWindow } from './window.js';
+
+export { SessionNotFoundError } from './window.js';
 import type { BundleFile, BundleManifest, CollectorError, DiagnosticWindow } from './types.js';
 
 export interface BuildBundleOptions {

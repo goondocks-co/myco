@@ -2630,7 +2630,7 @@ export async function main(): Promise<void> {
       requestContext: dataPaths.requestContext,
       env: process.env,
     }),
-    config: liveConfig.current,
+    config: () => liveConfig.current,
     mycoVersion: getPluginVersion(),
   });
   server.registerRoute('POST', '/api/diagnostics/export', diagnosticsHandlers.handleExport);

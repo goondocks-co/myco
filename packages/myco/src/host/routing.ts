@@ -319,6 +319,7 @@ const DB_MAINTENANCE = 'Database maintenance';
 const EMBEDDING_MAINTENANCE = 'Embedding maintenance';
 const CONTENT_MATERIALIZE = 'Content materialization';
 const TEAM_WRITE = 'Team configuration';
+const DIAGNOSTICS = 'Diagnostic export';
 
 /**
  * The stamp table — every rule here is a route whose attached-project behavior
@@ -506,6 +507,22 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   { method: 'GET', pattern: '/api/restore/status', stamp: 'localhost-only', capability: CONFIG },
   { method: 'GET', pattern: '/api/backups', stamp: 'localhost-only', capability: CONFIG },
   { method: 'GET', pattern: '/api/notifications/registry', stamp: 'localhost-only', capability: 'Viewing' },
+
+  // --- localhost-only: diagnostic export bundles (`daemon/api/diagnostics.ts`).
+  //     Operator-diagnostic tooling, not knowledge serving — a bundle packages
+  //     the host's OWN environment/doctor/audit state plus windowed session,
+  //     agent-run, and daemon-log rows for whichever Grove the operator names,
+  //     for support/debugging outside Myco entirely. Mirrors backup's stamp
+  //     (`/api/backups` above, `/api/backup` degraded): an enrolled member must
+  //     never be able to trigger an export of, list, or download a bundle for
+  //     ANY Grove this host owns over the overlay — the download route in
+  //     particular hands back the bundle's raw bytes (session content,
+  //     transcripts, prompt hashes), so leaving it to the `serve` default would
+  //     let a bearer-holding member exfiltrate another Grove's diagnostic data
+  //     wholesale. ---
+  { method: 'POST', pattern: '/api/diagnostics/export', stamp: 'localhost-only', capability: DIAGNOSTICS },
+  { method: 'GET', pattern: '/api/diagnostics/exports', stamp: 'localhost-only', capability: DIAGNOSTICS },
+  { method: 'GET', pattern: '/api/diagnostics/export/:file/download', stamp: 'localhost-only', capability: DIAGNOSTICS },
 
   // --- localhost-only: content-claim MATERIALIZATION, the disk-write step
   //     (design: docs/superpowers/specs/2026-07-09-content-claim-system-design.md

@@ -5,6 +5,16 @@ export const WINDOW_PAD_SECONDS = 30 * 60;
 /** Expansion never grows the window more than 24h past the initial padded span. */
 export const MAX_EXPANSION_SECONDS = 24 * 60 * 60;
 
+/** Thrown by `resolveWindow` when `{sessionId}` names a session that does not
+ *  exist. A typed class (not a bare `Error`) so daemon callers can map it to a
+ *  404 instead of leaking a raw 500 with the session id embedded in the message. */
+export class SessionNotFoundError extends Error {
+  constructor(public readonly sessionId: string) {
+    super(`session not found: ${sessionId}`);
+    this.name = 'SessionNotFoundError';
+  }
+}
+
 /**
  * Resolve the export window. A session id becomes the session's own span
  * padded ±30min, then expanded ONCE to cover sessions that STARTED inside
@@ -24,7 +34,7 @@ export function resolveWindow(
   const row = db
     .query(`SELECT started_at, ended_at FROM sessions WHERE id = $id`)
     .get({ $id: input.sessionId }) as { started_at: number; ended_at: number | null } | null;
-  if (!row) throw new Error(`session not found: ${input.sessionId}`);
+  if (!row) throw new SessionNotFoundError(input.sessionId);
 
   const now = Math.floor(Date.now() / 1000);
   const since0 = row.started_at - WINDOW_PAD_SECONDS;
