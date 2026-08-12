@@ -18,9 +18,11 @@ import { assertOwnedGrove, type GroveRecord } from '../../grove/registry.js';
 import { resolveGroveDbPath, resolveMycoHome } from '../../grove/paths.js';
 import {
   resolveActionScope,
+  actionScopeKey,
   InvalidActionScopeError,
   type ActionScope,
 } from './action-scope.js';
+import { ActionInflightRegistry } from './action-inflight.js';
 import {
   buildDiagnosticBundle,
   EmptyWindowError,
@@ -47,7 +49,10 @@ const ExportBodySchema = z.object({
   window: DiagnosticWindowSchema.optional(),
   session_id: z.string().min(1).optional(),
   include_content: z.boolean().optional(),
-  narrative: z.string().optional(),
+  // Capped so a runaway narrative fails loud as a clean 400 invalid_body
+  // instead of tripping the transport's own body-size limit (413) further
+  // up the stack — the same shape of failure the UI can't render.
+  narrative: z.string().max(20_000).optional(),
 });
 
 const EXPORT_FILE_NAME_RE = /^myco-diagnostic-[A-Za-z0-9._-]+\.zip$/;
@@ -69,8 +74,18 @@ export interface DiagnosticsDeps {
   cache: GroveRuntimeCache;
   /** Override Myco home (tests); production resolves via env/HOME. */
   mycoHome?: string;
-  /** The daemon's BOOTSTRAP vault dir — passed through to the doctor collector. */
-  vaultDir: string;
+  /**
+   * Fallback vault dir used only when a request arrives with no
+   * `requestContext` — mirrors `BackupConfigDeps.bootstrapVaultDir`
+   * (backup.ts) and `ConfigRouteDeps.bootstrapVaultDir`
+   * (register-config-routes.ts). Every export handler resolves the
+   * engine's `vaultDir` per-request from `req.requestContext.projectVaultDir`
+   * first, falling back to this only for context-less callers, so doctor
+   * runs against the caller's own project vault (which has a Grove project
+   * id) instead of the Grove-less bootstrap dir doctor's `runChecks` can
+   * never resolve a project for.
+   */
+  bootstrapVaultDir: string;
   /** resolveDaemonLogDir(bootstrapVaultDir) output — the machine-global daemon.log dir. */
   logDir: string;
   /**
@@ -90,6 +105,10 @@ export interface DiagnosticsDeps {
 
 export function createDiagnosticsHandlers(deps: DiagnosticsDeps) {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  // Same coalescing shape as backup's create handler (backup.ts:90,164,180):
+  // two near-simultaneous exports for the same scope share one build instead
+  // of racing two full collector passes against the same Grove DB.
+  const inflight = new ActionInflightRegistry();
 
   function databaseForGrove(groveId: string) {
     return deps.cache.getDatabase(resolveGroveDbPath(groveId, mycoHome));
@@ -169,29 +188,43 @@ export function createDiagnosticsHandlers(deps: DiagnosticsDeps) {
       ? { sessionId: body.session_id! }
       : (body.window as DiagnosticWindow);
 
+    // Doctor's `runChecks` is project-vault-oriented (it needs a Grove
+    // project id to resolve against); the bootstrap dir has none, so a
+    // request carrying a project-scoped context feeds the engine THAT vault
+    // instead — the same `requestContext.projectVaultDir ?? bootstrap`
+    // pattern as backup's config routes (backup.ts:333) and the config
+    // routes themselves (register-config-routes.ts:53). The manifest
+    // records whichever dir was actually used as `doctor_vault_dir`, so a
+    // context-less export (doctor still absent) is distinguishable from one
+    // that had a project vault to run against.
+    const vaultDir = req.requestContext?.projectVaultDir ?? deps.bootstrapVaultDir;
+
+    const key = `diagnostics:${actionScopeKey(scope)}`;
     try {
-      const result = await buildDiagnosticBundle({
-        groveId: grove.id,
-        db: databaseForGrove(grove.id),
-        vaultDir: deps.vaultDir,
-        dbPath: resolveGroveDbPath(grove.id, mycoHome),
-        mycoHome,
-        logDir: deps.logDir,
-        config: deps.config(),
-        mycoVersion: deps.mycoVersion,
-        window,
-        includeContent: body.include_content ?? false,
-        narrative: body.narrative,
-        outDir: deps.diagnosticsDir,
+      return await inflight.run(key, async (): Promise<RouteResponse> => {
+        const result = await buildDiagnosticBundle({
+          groveId: grove.id,
+          db: databaseForGrove(grove.id),
+          vaultDir,
+          dbPath: resolveGroveDbPath(grove.id, mycoHome),
+          mycoHome,
+          logDir: deps.logDir,
+          config: deps.config(),
+          mycoVersion: deps.mycoVersion,
+          window,
+          includeContent: body.include_content ?? false,
+          narrative: body.narrative,
+          outDir: deps.diagnosticsDir,
+        });
+        return {
+          body: {
+            file_path: result.filePath,
+            file_name: path.basename(result.filePath),
+            size_bytes: result.sizeBytes,
+            manifest: result.manifest,
+          },
+        };
       });
-      return {
-        body: {
-          file_path: result.filePath,
-          file_name: path.basename(result.filePath),
-          size_bytes: result.sizeBytes,
-          manifest: result.manifest,
-        },
-      };
     } catch (err) {
       if (err instanceof EmptyWindowError) {
         return {

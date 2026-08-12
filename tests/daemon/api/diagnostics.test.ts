@@ -38,6 +38,7 @@ describe('diagnostics export/list/download routes', () => {
   let mycoHome: string;
   let diagnosticsDir: string;
   let logDir: string;
+  let bootstrapVaultDir: string;
   let cache: GroveRuntimeCache;
 
   beforeEach(() => {
@@ -47,6 +48,7 @@ describe('diagnostics export/list/download routes', () => {
     diagnosticsDir = path.join(workDir, 'diagnostics');
     logDir = path.join(workDir, 'logs');
     fs.mkdirSync(logDir, { recursive: true });
+    bootstrapVaultDir = path.join(workDir, 'bootstrap-vault');
     cache = new GroveRuntimeCache();
   });
 
@@ -59,7 +61,7 @@ describe('diagnostics export/list/download routes', () => {
     return createDiagnosticsHandlers({
       cache,
       mycoHome,
-      vaultDir: path.join(workDir, 'bootstrap-vault'),
+      bootstrapVaultDir,
       logDir,
       config: overrides.config ?? (() => ({ daemon: { port: 4155 } })),
       mycoVersion: '9.9.9-test',
@@ -230,6 +232,124 @@ describe('diagnostics export/list/download routes', () => {
     ) as { config: { daemon: { port: number } } };
     expect(firstEnv.config.daemon.port).toBe(4155);
     expect(secondEnv.config.daemon.port).toBe(9999);
+  });
+
+  // ---------------------------------------------------------------------
+  // DEFECT A — doctor_vault_dir resolution (route-layer request-context
+  // pattern, register-config-routes.ts:53 / backup.ts:333)
+  // ---------------------------------------------------------------------
+
+  it('doctor_vault_dir follows requestContext.projectVaultDir when the request carries one', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    seedSession(grove, 's1');
+    const handlers = makeHandlers();
+    const projectVaultDir = path.join(workDir, 'project-vault');
+    const res = await handlers.handleExport(
+      emptyRequest({
+        body: { scope: { kind: 'grove', grove_id: grove.id }, window: { since: 1000, until: 2000 } },
+        requestContext: makeTestRequestContext({ groveId: grove.id, vaultDir: projectVaultDir }),
+      }),
+    );
+    expect(res.status === undefined || res.status < 400).toBe(true);
+    const body = res.body as { manifest: { doctor_vault_dir: string } };
+    expect(body.manifest.doctor_vault_dir).toBe(projectVaultDir);
+  });
+
+  it('doctor_vault_dir falls back to the bootstrap vault dir when the request carries no context', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    seedSession(grove, 's1');
+    const handlers = makeHandlers();
+    const res = await handlers.handleExport(
+      emptyRequest({
+        body: { scope: { kind: 'grove', grove_id: grove.id }, window: { since: 1000, until: 2000 } },
+      }),
+    );
+    expect(res.status === undefined || res.status < 400).toBe(true);
+    const body = res.body as { manifest: { doctor_vault_dir: string } };
+    expect(body.manifest.doctor_vault_dir).toBe(bootstrapVaultDir);
+  });
+
+  // ---------------------------------------------------------------------
+  // Fast-follows: narrative size cap + export coalescing
+  // ---------------------------------------------------------------------
+
+  it('invalid_body when narrative exceeds the 20,000-char cap — clean 400, not a transport 413', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    seedSession(grove, 's1');
+    const handlers = makeHandlers();
+    const res = await handlers.handleExport(
+      emptyRequest({
+        body: {
+          scope: { kind: 'grove', grove_id: grove.id },
+          window: { since: 1000, until: 2000 },
+          narrative: 'x'.repeat(20_001),
+        },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((res.body as { error: string }).error).toBe('invalid_body');
+  });
+
+  it('accepts a narrative at exactly the 20,000-char cap', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    seedSession(grove, 's1');
+    const handlers = makeHandlers();
+    const res = await handlers.handleExport(
+      emptyRequest({
+        body: {
+          scope: { kind: 'grove', grove_id: grove.id },
+          window: { since: 1000, until: 2000 },
+          narrative: 'x'.repeat(20_000),
+        },
+      }),
+    );
+    expect(res.status === undefined || res.status < 400).toBe(true);
+  });
+
+  it('coalesces two concurrent exports for the same scope into a single build', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    seedSession(grove, 's1');
+    const handlers = makeHandlers();
+    const body = { scope: { kind: 'grove', grove_id: grove.id }, window: { since: 1000, until: 2000 } };
+
+    // Fired without an intervening await: both calls run synchronously up to
+    // the same `inflight.run(key, …)` call, so the second one finds the
+    // first's promise already registered and shares it rather than starting
+    // its own collector pass (ActionInflightRegistry, action-inflight.ts).
+    const [first, second] = await Promise.all([
+      handlers.handleExport(emptyRequest({ body })),
+      handlers.handleExport(emptyRequest({ body })),
+    ]);
+
+    const firstBody = first.body as { file_path: string };
+    const secondBody = second.body as { file_path: string };
+    expect(secondBody.file_path).toBe(firstBody.file_path);
+
+    const zips = fs.readdirSync(diagnosticsDir).filter((f) => f.endsWith('.zip'));
+    expect(zips.length).toBe(1);
+  });
+
+  it('does not coalesce exports for different Groves', async () => {
+    const groveA = createGrove('alpha', mycoHome);
+    const groveB = createGrove('beta', mycoHome);
+    seedSession(groveA, 's-a1');
+    seedSession(groveB, 's-b1');
+    const handlers = makeHandlers();
+
+    const [resA, resB] = await Promise.all([
+      handlers.handleExport(
+        emptyRequest({ body: { scope: { kind: 'grove', grove_id: groveA.id }, window: { since: 1000, until: 2000 } } }),
+      ),
+      handlers.handleExport(
+        emptyRequest({ body: { scope: { kind: 'grove', grove_id: groveB.id }, window: { since: 1000, until: 2000 } } }),
+      ),
+    ]);
+
+    const fileA = (resA.body as { file_path: string }).file_path;
+    const fileB = (resB.body as { file_path: string }).file_path;
+    expect(fileA).not.toBe(fileB);
+    const zips = fs.readdirSync(diagnosticsDir).filter((f) => f.endsWith('.zip'));
+    expect(zips.length).toBe(2);
   });
 
   it('defaults to the request-context Grove when no body scope is given', async () => {

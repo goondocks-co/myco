@@ -2625,7 +2625,7 @@ export async function main(): Promise<void> {
 
   const diagnosticsHandlers = createDiagnosticsHandlers({
     cache: runtimeCache,
-    vaultDir: bootstrapVaultDir,
+    bootstrapVaultDir,
     logDir: resolveDaemonLogDir(bootstrapVaultDir, {
       requestContext: dataPaths.requestContext,
       env: process.env,

@@ -18,7 +18,12 @@ export interface BundleManifest {
   window: DiagnosticWindow;
   include_content: boolean;
   generated_at: number;
-  /** The daemon's BOOTSTRAP vault dir passed to `runChecks` for the doctor collector. */
+  /**
+   * The vault dir passed to `runChecks` for the doctor collector — the
+   * request's own project vault when the export was made in a project
+   * context, otherwise the daemon's bootstrap vault dir. Lets an analyst
+   * tell which one produced (or failed to produce) `doctor.json`.
+   */
   doctor_vault_dir: string;
   /** Zip-relative paths of every file present. */
   files: string[];
