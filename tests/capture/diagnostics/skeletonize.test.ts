@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { skeletonizeTranscript } from '../../../packages/myco/src/capture/diagnostics/skeletonize.js';
 
-const PROSE = 'SECRET_PROSE_do_not_leak';
+// Contains a space so it stays outside the widened UUID_PATTERN /
+// TYPE_ROLE_PATTERN character classes (neither allows whitespace) — the
+// gate's actual boundary now, after widening those patterns for ULID-style
+// harness ids (see the dedicated 'value injection gate' test below).
+const PROSE = 'SECRET PROSE do not leak';
 const ALLOWED_KEYS = new Set([
   'type', 'timestamp', 'uuid', 'parent_uuid', 'role', 'content_hash', 'text_sha256', 'byte_length',
 ]);
@@ -75,5 +79,46 @@ describe('skeletonizeTranscript', () => {
 
     // role field with prose becomes null
     expect(results[4]!.role).toBeNull();
+  });
+
+  test('uuid/parent_uuid pattern is widened for ULID-style ids: uppercase alnum passes through unchanged; prose with spaces still nulls', () => {
+    // ULID: Crockford base32, uppercase, no separators — the harness id
+    // shape that used to null out under the old lowercase-only pattern.
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const withUlid = JSON.stringify({
+      type: 'user',
+      uuid: ulid,
+      parentUuid: ulid,
+      timestamp: '2026-08-12T10:00:00Z',
+      message: { role: 'user', content: 'ok' },
+    });
+    const [ulidLine] = skeletonizeTranscript(withUlid).trim().split('\n');
+    const ulidResult = JSON.parse(ulidLine!);
+    expect(ulidResult.uuid).toBe(ulid);
+    expect(ulidResult.parent_uuid).toBe(ulid);
+
+    // Prose containing a space is still outside the widened character
+    // class, so it keeps nulling exactly as before.
+    const withProse = JSON.stringify({
+      type: 'user',
+      uuid: PROSE,
+      timestamp: '2026-08-12T10:00:00Z',
+      message: { role: 'user', content: 'ok' },
+    });
+    const [proseLine] = skeletonizeTranscript(withProse).trim().split('\n');
+    expect(JSON.parse(proseLine!).uuid).toBeNull();
+  });
+
+  test('type/role pattern is case-insensitive for title-cased harness values', () => {
+    const line = JSON.stringify({
+      type: 'User',
+      uuid: 'u1',
+      timestamp: '2026-08-12T10:00:00Z',
+      message: { role: 'Assistant', content: 'ok' },
+    });
+    const [out] = skeletonizeTranscript(line).trim().split('\n');
+    const result = JSON.parse(out!);
+    expect(result.type).toBe('User');
+    expect(result.role).toBe('Assistant');
   });
 });

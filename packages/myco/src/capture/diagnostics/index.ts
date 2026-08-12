@@ -24,7 +24,14 @@ export interface BuildBundleOptions {
   groveId: string;
   /** Grove DB handle from GroveRuntimeCache. */
   db: Database;
-  /** The daemon's BOOTSTRAP vault dir — doctor is project-vault-oriented, but this is what runChecks gets. */
+  /**
+   * The vault dir handed to `runChecks` for the doctor collector — doctor
+   * is project-vault-oriented (it needs a Grove project id to resolve
+   * against), so the route layer resolves this per-request to
+   * `requestContext.projectVaultDir` when one is bound, falling back to the
+   * daemon's bootstrap vault dir only for context-less callers (which will
+   * still see doctor absent from `collector_errors`, honestly).
+   */
   vaultDir: string;
   /** Path to the Grove's SQLite file on disk, for the read-only audit connection. */
   dbPath: string;
@@ -234,7 +241,13 @@ function collectBuffersSafe(
   }
 }
 
-/** Keep the newest `keep` bundles for this Grove in `outDir`; delete the rest. Best-effort. */
+/**
+ * Keep the newest `keep` bundles for this Grove in `outDir`; delete the
+ * rest. Best-effort. Prefix-matching on `safeGroveId` is safe because Grove
+ * ids are fixed-shape (`grove_<32 hex chars>`, `OPAQUE_ID_PATTERN` in
+ * grove/ids.ts) — no Grove id is ever a proper prefix of another, so this
+ * can never sweep another Grove's bundles.
+ */
 function sweepRetention(outDir: string, safeGroveId: string, keep = 5): void {
   const prefix = `myco-diagnostic-${safeGroveId}-`;
   let names: string[];
@@ -312,6 +325,11 @@ export async function buildDiagnosticBundle(
 
   const transcriptFiles = await collectTranscriptsSafe(opts, window, errors, notes);
   files.push(...transcriptFiles);
+  // Same main-loop-yield discipline as every other collector above (`run`)
+  // and transcripts' own entry (collectTranscriptsSafe) — collectBuffers is
+  // sync and was the one collector in this pipeline that never yielded
+  // before doing its (potentially multi-project, multi-file) fs work.
+  await new Promise((resolve) => setImmediate(resolve));
   const bufferFiles = collectBuffersSafe(opts, window, errors, notes);
   files.push(...bufferFiles);
 
@@ -334,6 +352,25 @@ export async function buildDiagnosticBundle(
     doctor_vault_dir: opts.vaultDir,
   };
   files.unshift({ path: 'manifest.json', data: JSON.stringify(manifest, null, 2) });
+
+  // A duplicate zip-relative path is always a collector bug (two collectors
+  // independently landing on the same name, or one collector emitting the
+  // same path twice) rather than a legitimate collision — every collector
+  // above derives its path from a namespaced prefix (`transcripts/`,
+  // `buffers/<project>/`) plus a per-entity id, so distinct entities can
+  // never produce the same path. Fail loud here rather than let `createZip`
+  // silently pick a winner and drop the other file's evidence.
+  const seenPaths = new Set<string>();
+  const duplicatePaths = new Set<string>();
+  for (const f of files) {
+    if (seenPaths.has(f.path)) duplicatePaths.add(f.path);
+    seenPaths.add(f.path);
+  }
+  if (duplicatePaths.size > 0) {
+    throw new Error(
+      `Diagnostic bundle collector bug: duplicate file path(s) in manifest: ${[...duplicatePaths].join(', ')}`,
+    );
+  }
 
   const zipped = createZip(files);
 

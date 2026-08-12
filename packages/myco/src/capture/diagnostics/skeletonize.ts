@@ -1,8 +1,8 @@
 import { sha256Hex } from './hash.js';
 
 // Allowlist patterns for metadata field values — blocks prose injection
-const TYPE_ROLE_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/; // Lowercase identifiers (user, assistant, unknown)
-const UUID_PATTERN = /^[a-z0-9-]{1,64}$/; // Lowercase hex and hyphen (uuid, session ids)
+const TYPE_ROLE_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/i; // Identifiers (user, assistant, unknown) — case-insensitive for harnesses that title-case
+const UUID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/; // uuid/ULID/session-id shaped identifiers (ULIDs are uppercase Crockford base32)
 const TIMESTAMP_PATTERN = /^[0-9TZz:.,+\- ]{1,40}$/; // ISO 8601 and variants
 
 /**
