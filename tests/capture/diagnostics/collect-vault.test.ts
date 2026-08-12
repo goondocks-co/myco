@@ -4,6 +4,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { getDatabase } from '@myco/db/client.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatchStateless } from '@myco/db/queries/batches.js';
+import { sha256Hex } from '@myco/capture/diagnostics/hash.js';
 import {
   collectSessionRows,
   collectAgentRuns,
@@ -12,6 +13,7 @@ import {
 } from '@myco/capture/diagnostics/collect-vault.js';
 
 const PROSE = 'PLANTED_PROSE_should_not_leak';
+const RESPONSE_PROSE = 'PLANTED_RESPONSE_SUMMARY_should_not_leak';
 
 beforeEach(() => {
   setupTestDb();
@@ -23,9 +25,13 @@ afterAll(() => teardownTestDb());
  * Seed one in-window session with a batch, plus one out-of-window session,
  * via the real query layer (upsertSession / insertBatchStateless). `title`
  * and `summary` on the 'in' session, and `user_prompt` on the batch, carry
- * the planted prose marker.
+ * the planted prose marker. `StatelessBatchInsert` has no `response_summary`
+ * field — `insertBatchStateless` hardcodes it to NULL on insert (it is
+ * populated later by a separate transcript-matching pass, batches.ts:431+)
+ * — so it is planted via a direct UPDATE on the real single-writer's own
+ * column, matching the DDL.
  */
-function seedSessionAndBatch(db: Database, prose: string): void {
+function seedSessionAndBatch(db: Database, prose: string, responseProse: string): void {
   upsertSession({
     id: 'in',
     agent: 'claude-code',
@@ -40,13 +46,16 @@ function seedSessionAndBatch(db: Database, prose: string): void {
     started_at: 99_999,
     created_at: 99_999,
   });
-  insertBatchStateless({
+  const { row } = insertBatchStateless({
     session_id: 'in',
     created_at: 1001,
     started_at: 1001,
     user_prompt: prose,
   });
-  void db;
+  db.query(`UPDATE prompt_batches SET response_summary = $rs WHERE id = $id`).run({
+    $rs: responseProse,
+    $id: row.id,
+  });
 }
 
 /**
@@ -75,10 +84,11 @@ function seedAgentRun(db: Database, prose: string): void {
 describe('collectSessionRows', () => {
   test('window-filters, drops prose columns by default, keeps content_hash, emits user_prompt_sha256', () => {
     const db = getDatabase();
-    seedSessionAndBatch(db, PROSE);
+    seedSessionAndBatch(db, PROSE, RESPONSE_PROSE);
 
     const jsonl = collectSessionRows(db, { since: 0, until: 2000 }, false);
     expect(jsonl).not.toContain(PROSE);
+    expect(jsonl).not.toContain(RESPONSE_PROSE);
     expect(jsonl).not.toContain('"out"');
     const lines = jsonl.trim().split('\n').map((l) => JSON.parse(l));
     const session = lines.find((l) => l.table === 'sessions' && l.row.id === 'in');
@@ -87,12 +97,24 @@ describe('collectSessionRows', () => {
     const batch = lines.find((l) => l.table === 'prompt_batches');
     expect(batch.row.user_prompt).toBeUndefined();
     expect(batch.row.user_prompt_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(batch.row.response_summary).toBeUndefined();
+    expect(batch.row.response_summary_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(batch.row.response_summary_sha256).toBe(sha256Hex(RESPONSE_PROSE));
+    expect(batch.row.response_summary_bytes).toBe(Buffer.byteLength(RESPONSE_PROSE, 'utf8'));
   });
 
-  test('includeContent=true keeps prose columns', () => {
+  test('includeContent=true keeps prose columns, including response_summary', () => {
     const db = getDatabase();
-    seedSessionAndBatch(db, PROSE);
-    expect(collectSessionRows(db, { since: 0, until: 2000 }, true)).toContain(PROSE);
+    seedSessionAndBatch(db, PROSE, RESPONSE_PROSE);
+    const jsonl = collectSessionRows(db, { since: 0, until: 2000 }, true);
+    expect(jsonl).toContain(PROSE);
+    expect(jsonl).toContain(RESPONSE_PROSE);
+    const batch = jsonl
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+      .find((l) => l.table === 'prompt_batches');
+    expect(batch.row.response_summary).toBe(RESPONSE_PROSE);
   });
 });
 
