@@ -2,6 +2,16 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.5] - 2026-08-12
+
+### Added
+
+- **Attach a diagnostic bundle to a bug report.** When capture misbehaves — duplicate sessions, missing prompts, a session that never appeared — you can now export the evidence instead of describing it from memory. Settings → Diagnostics packages everything relevant to a time window (or a specific session) into a single zip: session records, transcript and buffer structure, health-check and capture-audit reports, and the daemon's logs, plus your own description of what happened. **By default the bundle contains none of your prompts or code** — conversational content travels only as fingerprints (hashes and sizes), which is enough to diagnose most capture problems. A clearly-labeled toggle includes full transcript content for when you're comfortable sharing it; even then, log lines that could mention other projects' activity stay fingerprinted. Bundles are per-Grove, downloadable from the browser, and the last five are kept on disk.
+
+### Changed
+
+- **Dependency refresh.** Test tooling (`tsx` 4.23.12) and the Claude agent SDK (0.3.228, exercised live against the agent harness before landing).
+
 ## [1.4.4] - 2026-08-12
 
 ### Fixed
