@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
@@ -42,7 +42,16 @@ describe('collectTranscripts', () => {
   test('missing transcript file becomes a note + error, not a throw', async () => {
     const db = getDatabase();
     seedSession({ id: 's2', agent: 'claude-code', startedAt: 1000, transcriptPath: '/nonexistent/x.jsonl' });
-    const res = await collectTranscripts({ db, window: { since: 0, until: 2000 }, includeContent: false });
+    // No real transcript exists for this synthetic session anywhere on
+    // disk, but leaving `discover` at its default would still touch the
+    // real filesystem via findTranscriptFor on the ENOENT-fallback branch —
+    // inject a no-op so this stays fully hermetic.
+    const res = await collectTranscripts({
+      db,
+      window: { since: 0, until: 2000 },
+      includeContent: false,
+      discover: () => null,
+    });
     expect(res.files.length).toBe(0);
     expect(res.errors.length + res.notes.length).toBeGreaterThan(0);
   });
@@ -95,6 +104,36 @@ describe('collectTranscripts', () => {
     expect(res.files.length).toBe(0);
     expect(res.errors.length).toBe(1);
     expect(res.errors[0]!.layer).toBe('transcript:s4');
+  });
+
+  test('a non-ENOENT read failure (EISDIR) records an error and does NOT trigger discovery', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'diag-'));
+    const db = getDatabase();
+    // transcript_path points at a DIRECTORY, not a missing file — readFile
+    // fails with EISDIR, not ENOENT. The stale-path fallback is deliberately
+    // scoped to ENOENT only (a genuinely absent file); any other failure
+    // (permissions, EISDIR, a truncated read) is a different kind of bug
+    // that discovery masking would only hide.
+    const dirAsTranscriptPath = path.join(dir, 'not-a-file');
+    mkdirSync(dirAsTranscriptPath);
+    const discoveredPath = writeTranscript(dir, 'should-not-be-used.jsonl');
+    let discoverCalled = false;
+    seedSession({ id: 's5', agent: 'claude-code', startedAt: 1000, transcriptPath: dirAsTranscriptPath });
+
+    const res = await collectTranscripts({
+      db,
+      window: { since: 0, until: 2000 },
+      includeContent: false,
+      discover: () => {
+        discoverCalled = true;
+        return discoveredPath;
+      },
+    });
+
+    expect(discoverCalled).toBe(false);
+    expect(res.files.length).toBe(0);
+    expect(res.errors.length).toBe(1);
+    expect(res.errors[0]!.layer).toBe('transcript:s5');
   });
 
   test('unsafe session id is sanitized in emitted bundle paths', async () => {

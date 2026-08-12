@@ -361,6 +361,79 @@ describe('diagnostics export/list/download routes', () => {
     expect(zips.length).toBe(2);
   });
 
+  it('does NOT coalesce two concurrent exports for the same scope+window but different narratives — each bundle embeds its own narrative.md', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    seedSession(grove, 's1');
+    const handlers = makeHandlers();
+
+    // `narrative` lands verbatim in narrative.md inside the zip. If it were
+    // left out of the coalescing key, caller B would silently receive
+    // caller A's narrative embedded in the bundle B walks away with.
+    const [a, b] = await Promise.all([
+      handlers.handleExport(
+        emptyRequest({
+          body: {
+            scope: { kind: 'grove', grove_id: grove.id },
+            window: { since: 1000, until: 2000 },
+            narrative: 'Caller A: disk full during export.',
+          },
+        }),
+      ),
+      handlers.handleExport(
+        emptyRequest({
+          body: {
+            scope: { kind: 'grove', grove_id: grove.id },
+            window: { since: 1000, until: 2000 },
+            narrative: 'Caller B: capture silently stopped.',
+          },
+        }),
+      ),
+    ]);
+
+    const aBody = a.body as { file_path: string };
+    const bBody = b.body as { file_path: string };
+    expect(aBody.file_path).not.toBe(bBody.file_path);
+
+    const aNarrative = strFromU8(unzipSync(fs.readFileSync(aBody.file_path))['narrative.md']!);
+    const bNarrative = strFromU8(unzipSync(fs.readFileSync(bBody.file_path))['narrative.md']!);
+    expect(aNarrative).toContain('Caller A: disk full during export.');
+    expect(aNarrative).not.toContain('Caller B');
+    expect(bNarrative).toContain('Caller B: capture silently stopped.');
+    expect(bNarrative).not.toContain('Caller A');
+
+    const zips = fs.readdirSync(diagnosticsDir).filter((f) => f.endsWith('.zip'));
+    expect(zips.length).toBe(2);
+  });
+
+  it('does NOT coalesce two concurrent exports with different vaultDir (context-less vs project-context) — each doctor.json runs against its own vault', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    seedSession(grove, 's1');
+    const handlers = makeHandlers();
+    const projectVaultDir = path.join(workDir, 'project-vault');
+    const body = { scope: { kind: 'grove', grove_id: grove.id }, window: { since: 1000, until: 2000 } };
+
+    // Same scope, same window — but one request carries a project
+    // requestContext (so `vaultDir` resolves to the project vault) and one
+    // carries none (so it falls back to the bootstrap vault). Coalescing
+    // these onto one build would hand one of the two callers a doctor.json
+    // run against the WRONG vault.
+    const [contextLess, projectContext] = await Promise.all([
+      handlers.handleExport(emptyRequest({ body })),
+      handlers.handleExport(
+        emptyRequest({ body, requestContext: makeTestRequestContext({ groveId: grove.id, vaultDir: projectVaultDir }) }),
+      ),
+    ]);
+
+    const contextLessBody = contextLess.body as { file_path: string; manifest: { doctor_vault_dir: string } };
+    const projectContextBody = projectContext.body as { file_path: string; manifest: { doctor_vault_dir: string } };
+    expect(contextLessBody.file_path).not.toBe(projectContextBody.file_path);
+    expect(contextLessBody.manifest.doctor_vault_dir).toBe(bootstrapVaultDir);
+    expect(projectContextBody.manifest.doctor_vault_dir).toBe(projectVaultDir);
+
+    const zips = fs.readdirSync(diagnosticsDir).filter((f) => f.endsWith('.zip'));
+    expect(zips.length).toBe(2);
+  });
+
   it('does not coalesce exports for different Groves', async () => {
     const groveA = createGrove('alpha', mycoHome);
     const groveB = createGrove('beta', mycoHome);

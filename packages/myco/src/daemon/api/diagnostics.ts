@@ -202,20 +202,27 @@ export function createDiagnosticsHandlers(deps: DiagnosticsDeps) {
 
     // Scope alone is NOT a sufficient coalescing key: two concurrent exports
     // for the same Grove but different windows (or session_id, or
-    // include_content) are different bundles, and sharing one in-flight
-    // promise between them would silently hand the second caller the
-    // FIRST caller's bundle — a wrong result, worse than no coalescing at
-    // all. The params hash folds in every field that changes what gets
-    // built (deliberately excluding `narrative`, which is caller-supplied
-    // commentary, not a selection of what to collect) so only truly
-    // identical concurrent requests share a build; `?? null` normalizes the
-    // XOR'd session_id/window fields so JSON.stringify doesn't drop an
+    // include_content, or narrative, or vaultDir) are different bundles,
+    // and sharing one in-flight promise between them would silently hand
+    // the second caller the FIRST caller's bundle — a wrong result, worse
+    // than no coalescing at all. Concretely: `narrative` lands verbatim in
+    // narrative.md inside the zip, so omitting it would let caller B walk
+    // away with caller A's prose embedded in a bundle B might attach
+    // publicly; `vaultDir` selects which project's config `doctor.json`
+    // ran against, so omitting it would let a context-less caller and a
+    // project-context caller coalesce onto one doctor result that's wrong
+    // for one of them. The params hash folds in every field that changes
+    // what gets built or what's embedded, so only truly identical
+    // concurrent requests share a build; `?? null` normalizes the XOR'd
+    // session_id/window/narrative fields so JSON.stringify doesn't drop an
     // `undefined` key inconsistently between otherwise-identical requests.
     const paramsKey = sha256Hex(
       JSON.stringify({
         session_id: body.session_id ?? null,
         window: body.window ?? null,
         include_content: body.include_content ?? false,
+        narrative: body.narrative ?? null,
+        vault_dir: vaultDir,
       }),
     );
     const key = `diagnostics:${actionScopeKey(scope)}:${paramsKey}`;
