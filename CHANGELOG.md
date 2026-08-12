@@ -2,12 +2,29 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.4] - 2026-08-12
+
+### Fixed
+
+- **Local models no longer pile up in LM Studio.** Every background intelligence pass against an LM Studio server could load another full copy of the configured model — ~12GB apiece — until the machine ran out of memory. Recent LM Studio builds report an empty loaded-model list on the interface Myco checked, so every run concluded the model wasn't loaded and loaded it again. Myco now reads loaded state from an interface that reports it reliably, keeps exactly one copy of each model loaded — shared across every project and task, replaced only when a larger context window is required — and cleans up any duplicate copies earlier versions left behind. If a run can't confirm its model is loaded, it now fails visibly instead of silently running against a tiny default context window.
+- **Saving task settings always takes effect — or tells you why it can't.** Toggling a task's schedule with no model selected enabled the Save button but silently did nothing; with a default model configured, the same save silently pinned a copy of that default onto the task, so later changes to your default model stopped reaching it. Saves are now scoped to what you actually edited, schedule-only saves work, and anything unsaveable shows a visible message instead of a dead button.
+- **The Canopy map follows the Canopy toggle.** The map refused to build when canopy injection was off, even though the map also powers search, session guidance, and the dashboard. It now follows the project's Canopy capability switch — and regenerating the map from the dashboard acts on the project you asked for, not whichever project the daemon happened to start in.
+- **Re-adding a project preserves the features you enabled.** Restoring an archived project whose configuration survived on disk no longer silently switches every intelligence feature back off.
+
+### Changed
+
+- **Background file descriptions never bill your default model.** The file-description task runs every couple of minutes once enabled — quietly routing that to your primary (typically paid) model was too easy to do by accident. Turning on its schedule now requires choosing a model for the task (a small local model works well); the task page guides the choice, and both the schedule and any hand-edited configuration refuse to run without one. Running the task manually still uses whatever you pick at that moment.
+
+### Added
+
+- **Projects tell you when they're capture-only.** New projects start with capture on and intelligence features off — by design, but previously nothing said so. The dashboard now carries a "Capture-only" chip linking to Grove management, panels whose feature is off say that plainly instead of implying content will appear on its own ("Skills are off for this project…"), a single quiet notification lands in the drawer when a new project is first captured, and `myco doctor` reports the mode. Every surface also says the quiet part: leaving features off is fine if capture is all you want.
+
 ## [1.4.3] - 2026-08-09
 
 ### Fixed
 
 - **The scheduled intelligence pass can retire out-of-date knowledge again.** When background processing discovered that a saved insight had been invalidated outright — the code it described was deleted, or its finding was retracted — the safety review that vets destructive writes rejected the retirement: the write was legitimate, but the rule it was judged against only allowed replacing knowledge, never retiring it. Affected runs could fail outright and re-attempt the same work later. The rule now matches intended stewardship: replace an insight when a better one supersedes it, retire it with a stated reason when nothing does.
-- **The compiled binary drops 2.2MB of dead weight.** A leftover artifact from an earlier dashboard build — a second, unreferenced copy of the UI bundle — had been riding inside every binary since shortly before 1.4.2. The embedded dashboard now contains only files the UI actually serves, and the build refuses to package anything else, so a stale artifact fails the build instead of silently shipping.
+- **The compiled binary drops 2.2MB of dead weight.** A leftover artifact from an earlier dashboard build — a second, unreferenced copy of the UI bundle — had been riding inside every binary since 1.4.0. The embedded dashboard now contains only files the UI actually serves, and the build refuses to package anything else, so a stale artifact fails the build instead of silently shipping.
 
 ## [1.4.2] - 2026-08-09
 
