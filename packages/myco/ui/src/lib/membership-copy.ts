@@ -160,6 +160,21 @@ export const HOST_DETAIL_NO_PROJECTS_COPY = 'No projects attached to this host y
  */
 export const BACKUPS_HOSTED_LIST_NOTICE = "This project's team storage is backed up by its host.";
 
+/**
+ * One-line notice replacing the ENTIRE diagnostics card (form + list) for an
+ * attached (hosted) project — same reasoning as `BACKUPS_HOSTED_LIST_NOTICE`
+ * above. A diagnostic bundle is built from THIS machine's local Grove DB
+ * (`daemon/api/diagnostics.ts` mirrors backup's grove-only scope handling),
+ * and all three diagnostics routes are localhost-only, not degrade-stamped
+ * (`host/routing.ts`) — so export/list would silently succeed under an
+ * attached selection and produce/list the MEMBER's own local display-Grove
+ * bundles as if they belonged to the team project. Unlike backups, nothing
+ * on the host side stands in for this, so the copy states unavailability
+ * directly rather than "handled by the host".
+ */
+export const DIAGNOSTICS_HOSTED_NOTICE =
+  "Diagnostic bundles aren't available yet for projects hosted on a Team Host.";
+
 function apiErrorCode(err: ApiError): string | null {
   if (typeof err.body !== 'object' || err.body === null) return null;
   const error = (err.body as { error?: { code?: unknown } }).error;
