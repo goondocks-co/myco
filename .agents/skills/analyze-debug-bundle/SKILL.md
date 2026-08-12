@@ -59,18 +59,29 @@ absence (noted) or a recorded collector error, never silent.
 **Read `collector_errors` and `notes` FIRST, before opening any other file.** They tell you what's
 missing and why *before* you go looking for it and mistake absence for evidence. A `collector_errors`
 entry means that layer's file plain doesn't exist in the zip — don't chase a phantom "why is
-`audit-report.json` empty," it's absent because the layer threw. A `notes` entry like
-`"session sA: no surviving buffer"` is explicitly **not** a red flag by itself — see Step 4.
+`audit-report.json` empty," it's absent because the layer threw. Absence explanations may arrive via
+either `collector_errors` or `notes` (or both); read **both** before assuming a layer is silently
+missing. A `notes` entry like `"session sA: no surviving buffer"` is explicitly **not** a red flag
+by itself — see Step 4.
 
 Also check up front:
 - **`bundle_format`** — this skill (and any tooling) targets format `1`. A newer format may have
   restructured files; don't assume the shapes below still apply without checking the collector
   source for that format.
 - **`myco_version` / `schema_version` vs current** — a large gap is itself often the whole story
-  (a bug already fixed in a newer release, or a schema migration mid-window).
+  (a bug already fixed in a newer release, or a schema migration mid-window). Note that dev builds
+  carry git-describe suffixes (e.g. `0.0.0-dev+1.4.4-21-g<sha>-dirty`); strip the suffix before
+  comparing version strings.
 - **`include_content`** — almost always `false` for a bundle attached to a public issue. If `true`,
   the reporter did a private re-export with prose intact; treat that content as sensitive and don't
   paste it into a public issue thread.
+
+### `narrative.md` (optional)
+
+Plain text, free-form field: the reporter's own account of what they were doing and what went
+wrong. Present only if the exporter filled the field when generating the bundle (from
+`BuildBundleOptions.narrative`, embedded trimmed). When present, this is the **highest-value
+context in the entire bundle** — read it before anything else.
 
 ### `environment.json`, `doctor.json`, `audit-report.json`
 
@@ -152,6 +163,9 @@ Both JSONL, both windowed, but scoped differently:
 
 ### Step 1 — Unzip and manifest sanity
 
+If `narrative.md` is present in the bundle, read it before anything else — it is the reporter's
+own account and the highest-value context in the bundle.
+
 ```bash
 mkdir -p /tmp/bundle-analysis && cd /tmp/bundle-analysis   # or your scratchpad
 unzip -o /path/to/myco-diagnostic-*.zip -d .
@@ -204,6 +218,13 @@ For each session id present in `transcripts/*.skeleton.jsonl` and/or `sessions.j
    `sessions`/`prompt_batches` rows.** The stored `content_hash` columns on `sessions` and
    `prompt_batches` are *canonical-tuple* hashes — `sha256(session_id + " " + origin + " " + ordinal + " " + normalized_prompt [+ thread_id])`, per `promptBatchContentHash` in `packages/myco/src/db/queries/batches.ts:126-175` — a dedup key over a composite tuple, not a hash of prompt text alone. They will **never** match `text_sha256` or `user_prompt_sha256` even when capture is perfectly correct. Chasing that mismatch as "divergence" is a dead end — say so explicitly if you rule it out, so the next reader doesn't re-walk it.
 
+   **Caveat on `origin` fields:** Not every `prompt_batches` row is guaranteed a skeleton
+   `text_sha256` match. Only `origin: "human"` rows correspond to transcript skeleton lines; `origin:
+   "system"` rows (synthesized prompts, e.g. `kind: "initial"`) may legitimately have a
+   `user_prompt_sha256` with no transcript counterpart. Before treating an unmatched batch hash as
+   divergence, check the `row.origin` field — if it's `"system"`, the mismatch is expected, not a
+   bug.
+
 The **first layer where counts or hashes diverge** (skeleton has more user turns than
 `prompt_batches` has rows, or a `text_sha256` present in the skeleton has no matching
 `user_prompt_sha256` in `sessions.jsonl`, or vice versa) is the suspect layer — stop climbing
@@ -237,6 +258,11 @@ these fields, by design, so they're safe to grep/filter directly:
 jq 'select(.row.session_id=="<sid>")' log-entries.jsonl
 jq 'select(.row.session_id=="<sid>")' daemon-log.jsonl
 ```
+
+**Warning on timestamp formats:** `manifest.window` and `sessions.started_at`/`ended_at` are epoch
+SECONDS, but `log-entries.jsonl` and `daemon-log.jsonl` row `timestamp` fields are ISO-8601
+STRINGS. A numeric jq range filter on `.row.timestamp` silently returns nothing (jq sorts strings
+above numbers); convert with `fromdateiso8601` or compare ISO strings lexicographically instead.
 
 Walk both across the **full bundle window**, not just around the suspected divergence point —
 the event that explains a Step 3 divergence (a duplicate hook fire, a dedup-window suppression, a
