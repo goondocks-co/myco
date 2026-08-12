@@ -135,7 +135,7 @@ async function expectLocalZeroState() {
   expect(screen.getByRole('heading', { name: 'No active sessions' })).toBeTruthy();
   expect(screen.getByText('No agent runs yet for this project.')).toBeTruthy();
   expect(screen.getByText(/No skills yet/)).toBeTruthy();
-  expect(screen.getByText(/Canopy hasn't summarized any files yet/)).toBeTruthy();
+  expect(screen.getByText(/Canopy hasn.t summarized any files yet/)).toBeTruthy();
 }
 
 afterEach(() => {

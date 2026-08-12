@@ -77,4 +77,12 @@ export function registerBuiltinDomains(): void {
       { id: 'settings.config_unreadable', label: 'Config file unreadable', defaultMode: 'banner', defaultLevel: 'error' },
     ],
   });
+
+  register({
+    domain: 'projects',
+    label: 'Projects',
+    types: [
+      { id: 'project.capture_only', label: 'New project in capture-only mode', defaultMode: 'summary', defaultLevel: 'info' },
+    ],
+  });
 }

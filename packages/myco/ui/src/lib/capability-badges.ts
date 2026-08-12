@@ -15,11 +15,17 @@ import { CAPABILITIES } from '@myco/config/capabilities';
 import type { CapabilityId } from '@myco/config/scope';
 import type { CapabilityChipDescriptor } from './capability-map';
 
+/** The locked capture-only vocabulary — every surface that names the mode uses these strings. */
+export const CAPTURE_ONLY_BADGE = {
+  label: 'Capture-only',
+  title: 'Sessions, search, and MCP only',
+} as const;
+
 /** Build capability badge descriptors from resolved per-project gate values. */
 export function buildCapabilityBadges(gates: Record<CapabilityId, boolean>): CapabilityChipDescriptor[] {
   const enabled = (Object.keys(CAPABILITIES) as CapabilityId[]).filter((id) => gates[id]);
   if (enabled.length === 0) {
-    return [{ id: 'capture-only', label: 'Capture-only', to: '', tone: 'outline', title: 'Sessions, search, and MCP only' }];
+    return [{ id: 'capture-only', label: CAPTURE_ONLY_BADGE.label, to: '', tone: 'outline', title: CAPTURE_ONLY_BADGE.title }];
   }
   return enabled.map((id) => ({
     id,

@@ -1,11 +1,15 @@
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Layout, Trees, ArrowRight, Sparkles, FileCode } from 'lucide-react';
+import { CAPTURE_ONLY_BADGE } from '../lib/capability-badges';
+import { capabilitiesPanelLink, capabilityEnabled, isCaptureOnly } from '@myco/config/capabilities';
+import type { MycoConfig } from '@myco/config/schema';
 import { useDaemon, type StatsResponse } from '../hooks/use-daemon';
 import { useSessions, type SessionSummary } from '../hooks/use-sessions';
 import { useAgentRuns, type RunRow } from '../hooks/use-agent';
 import { useSkillRecords, type SkillRecord } from '../hooks/use-skills';
 import { useCanopyEntries, type CanopyEntryRow } from '../hooks/use-canopy';
-import { useProjectPathBuilder } from '../hooks/use-project-selection';
+import { useScopedConfig } from '../hooks/use-scoped-config';
+import { useProjectPathBuilder, useActiveProjectSelection } from '../hooks/use-project-selection';
 import { PageLoading } from '../components/ui/page-loading';
 import { PageContainer } from '../components/ui/page-container';
 import { AccentSurface } from '../components/ui/accent-surface';
@@ -44,6 +48,21 @@ export default function Dashboard() {
     sort_by: 'llm_updated_at',
     sort_dir: 'desc',
   });
+  // Capability awareness for honest empty states. Two guards:
+  //  - unresolved config reads as "everything off" (capabilityEnabled is
+  //    fail-closed), so nothing capability-aware renders until it loads;
+  //  - an attached (Team-Host-served) project's capabilities are
+  //    host-authoritative — the locally-merged config would misreport, so
+  //    the dashboard stays capability-silent for it (same rule as the
+  //    Groves list, which omits the badge strip for attached rows).
+  const { effective } = useScopedConfig();
+  const selection = useActiveProjectSelection();
+  const capabilityAware = !!effective && selection?.project.attached !== true;
+  const config = effective as MycoConfig | undefined;
+  const captureOnly = capabilityAware && !!config && isCaptureOnly(config);
+  const skillsOff = capabilityAware && !!config && !capabilityEnabled(config, 'skills');
+  const canopyOff = capabilityAware && !!config && !capabilityEnabled(config, 'canopy');
+  const capabilitiesLink = capabilitiesPanelLink(selection?.project.project_id);
 
   return (
     <PageLoading
@@ -58,6 +77,8 @@ export default function Dashboard() {
             activeSessionCount={activeSessionsData?.total ?? 0}
             inFlightRunCount={(runsData?.runs ?? []).filter((r) => r.status === 'running').length}
             lastSession={recentSessionData?.sessions?.[0]}
+            captureOnly={captureOnly}
+            capabilitiesLink={capabilitiesLink}
           />
           <ScopeRow stats={stats} />
           <ActiveSessionsHero
@@ -66,10 +87,10 @@ export default function Dashboard() {
             totalActiveCount={activeSessionsData?.total ?? 0}
           />
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <AgentRunsPanel runs={runsData?.runs ?? []} />
+            <AgentRunsPanel runs={runsData?.runs ?? []} captureOnly={captureOnly} capabilitiesLink={capabilitiesLink} />
             <div className="flex flex-col gap-6">
-              <SkillsPanel skills={skillsData?.records ?? []} />
-              <CanopyPanel entries={canopyData?.rows ?? []} />
+              <SkillsPanel skills={skillsData?.records ?? []} skillsOff={skillsOff} capabilitiesLink={capabilitiesLink} />
+              <CanopyPanel entries={canopyData?.rows ?? []} canopyOff={canopyOff} capabilitiesLink={capabilitiesLink} />
             </div>
           </div>
         </PageContainer>
@@ -85,11 +106,15 @@ function DashboardHead({
   activeSessionCount,
   inFlightRunCount,
   lastSession,
+  captureOnly,
+  capabilitiesLink,
 }: {
   stats: StatsResponse;
   activeSessionCount: number;
   inFlightRunCount: number;
   lastSession: SessionSummary | undefined;
+  captureOnly: boolean;
+  capabilitiesLink: string;
 }) {
   const projectName = stats.context.project.name || basename(stats.context.project.root);
   const sub = describeActivity(activeSessionCount, inFlightRunCount, stats.embedding.queue_depth);
@@ -100,12 +125,34 @@ function DashboardHead({
         <h1 className="myco-display-lg text-on-surface m-0">Dashboard</h1>
         <p className="font-sans text-sm text-on-surface-variant m-0">{sub}</p>
       </div>
-      <CaptureHealthPill
-        lastSession={lastSession}
-        activeCount={activeSessionCount}
-        totalSessions={stats.vault.session_count}
-      />
+      <div className="flex items-center gap-2 flex-wrap">
+        {captureOnly && <CaptureOnlyChip to={capabilitiesLink} />}
+        <CaptureHealthPill
+          lastSession={lastSession}
+          activeCount={activeSessionCount}
+          totalSessions={stats.vault.session_count}
+        />
+      </div>
     </header>
+  );
+}
+
+/**
+ * Mode indicator for a project with every capability off. Clicking
+ * deep-links to the capability panel — the single place capabilities are
+ * toggled. Renders only while every gate is off.
+ */
+function CaptureOnlyChip({ to }: { to: string }) {
+  return (
+    <Link
+      to={to}
+      data-testid="dashboard-capture-only-chip"
+      title={`${CAPTURE_ONLY_BADGE.title} — manage capabilities in Grove management.`}
+      className="inline-flex items-center gap-1.5 rounded-full border border-outline-variant/40 bg-surface-container/40 px-2.5 py-1 font-sans text-xs text-on-surface-variant transition-colors hover:bg-surface-container-high"
+    >
+      <StatusDot tone="outline" />
+      <span>{CAPTURE_ONLY_BADGE.label}</span>
+    </Link>
   );
 }
 
@@ -366,7 +413,20 @@ function ActiveSessionRow({
 
 /* ---------- Agent runs panel ---------- */
 
-function AgentRunsPanel({ runs }: { runs: RunRow[] }) {
+/** Empty-state line for a panel whose feature is off for this project. */
+function CapabilityOffNote({ children, link }: { children: React.ReactNode; link: string }) {
+  return (
+    <p className="font-sans text-sm text-on-surface-variant m-0">
+      {children}{' '}
+      <Link to={link} className="text-primary underline underline-offset-2 hover:text-primary/80">
+        Turn it on in Grove management
+      </Link>{' '}
+      — or leave it off if capture is all you want here.
+    </p>
+  );
+}
+
+function AgentRunsPanel({ runs, captureOnly, capabilitiesLink }: { runs: RunRow[]; captureOnly: boolean; capabilitiesLink: string }) {
   const navigate = useNavigate();
   const projectPath = useProjectPathBuilder();
   const sorted = [...runs].sort((a, b) => {
@@ -390,9 +450,15 @@ function AgentRunsPanel({ runs }: { runs: RunRow[] }) {
       }
     >
       {sorted.length === 0 ? (
-        <p className="font-sans text-sm text-on-surface-variant m-0">
-          No agent runs yet for this project.
-        </p>
+        captureOnly ? (
+          <CapabilityOffNote link={capabilitiesLink}>
+            This project is capture-only, so scheduled intelligence tasks are off.
+          </CapabilityOffNote>
+        ) : (
+          <p className="font-sans text-sm text-on-surface-variant m-0">
+            No agent runs yet for this project.
+          </p>
+        )
       ) : (
         <ul className="m-0 p-0 list-none flex flex-col gap-2">
           {sorted.map((run) => (
@@ -442,7 +508,7 @@ function RunMiniRow({ run, onClick }: { run: RunRow; onClick: () => void }) {
 
 /* ---------- Skills panel ---------- */
 
-function SkillsPanel({ skills }: { skills: SkillRecord[] }) {
+function SkillsPanel({ skills, skillsOff, capabilitiesLink }: { skills: SkillRecord[]; skillsOff: boolean; capabilitiesLink: string }) {
   const navigate = useNavigate();
   const projectPath = useProjectPathBuilder();
   const sorted = [...skills].sort((a, b) => b.updated_at - a.updated_at);
@@ -462,9 +528,15 @@ function SkillsPanel({ skills }: { skills: SkillRecord[] }) {
       }
     >
       {sorted.length === 0 ? (
-        <p className="font-sans text-sm text-on-surface-variant m-0">
-          No skills yet. The agent surfaces candidates as you work.
-        </p>
+        skillsOff ? (
+          <CapabilityOffNote link={capabilitiesLink}>
+            Skills are off for this project, so no candidates will be surfaced.
+          </CapabilityOffNote>
+        ) : (
+          <p className="font-sans text-sm text-on-surface-variant m-0">
+            No skills yet. The agent surfaces candidates as you work.
+          </p>
+        )
       ) : (
         <ul className="m-0 p-0 list-none grid grid-cols-1 sm:grid-cols-2 gap-2">
           {sorted.map((skill) => (
@@ -494,7 +566,7 @@ function SkillsPanel({ skills }: { skills: SkillRecord[] }) {
 
 /* ---------- Canopy panel ---------- */
 
-function CanopyPanel({ entries }: { entries: CanopyEntryRow[] }) {
+function CanopyPanel({ entries, canopyOff, capabilitiesLink }: { entries: CanopyEntryRow[]; canopyOff: boolean; capabilitiesLink: string }) {
   const navigate = useNavigate();
   const projectPath = useProjectPathBuilder();
   return (
@@ -513,9 +585,15 @@ function CanopyPanel({ entries }: { entries: CanopyEntryRow[] }) {
       }
     >
       {entries.length === 0 ? (
-        <p className="font-sans text-sm text-on-surface-variant m-0">
-          Canopy hasn't summarized any files yet.
-        </p>
+        canopyOff ? (
+          <CapabilityOffNote link={capabilitiesLink}>
+            Canopy is off for this project, so files won&rsquo;t be summarized.
+          </CapabilityOffNote>
+        ) : (
+          <p className="font-sans text-sm text-on-surface-variant m-0">
+            Canopy hasn&rsquo;t summarized any files yet.
+          </p>
+        )
       ) : (
         <ul className="m-0 p-0 list-none flex flex-col gap-1.5">
           {entries.map((entry) => (

@@ -31,6 +31,13 @@ export const POWER_JOB_NAMES = {
    */
   CAPTURE_BUFFER_DRAIN: 'capture-buffer-drain',
   /**
+   * Consume pending capture-only notice markers written by the hook-side
+   * provisioner (which has no notifications DB) and emit the one-time
+   * "new project is capture-only" drawer notice. The marker file is the
+   * durable dedup; the sweep is a cheap per-project stat.
+   */
+  CAPTURE_ONLY_NOTICE_SWEEP: 'capture-only-notice-sweep',
+  /**
    * Background update check + stage: resolves the channel target from
    * GitHub Releases and stages the binary under `versions/<v>/` when a
    * newer version is available. Respects the configured check cadence
