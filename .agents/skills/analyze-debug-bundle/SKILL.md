@@ -128,7 +128,13 @@ hook event), same allowlist-projection principle as transcripts:
 
 Like transcript skeletons, buffer skeleton lines are **flat** — no `table`/`row` wrapper. Only
 **live** buffers for sessions inside the window are included; **all** quarantine-dir buffers are
-included regardless of window (quarantine is capped at 7 days by the daemon's own retention).
+included regardless of window. Two separate clocks govern quarantine, not one: a diverging buffer
+moves INTO `quarantine/` once it's `BUFFER_HARD_RETENTION_MS` = 7 days old; the quarantined file is
+then pruned (deleted) once it's `TOMBSTONE_RETENTION_MS` = 14 days old
+(`packages/myco/src/constants.ts:123,134`; the move-then-prune sequence runs in `cleanBufferDirs`,
+`packages/myco/src/daemon/reconciliation.ts:1209-1245`). So a quarantined file you see in a bundle
+has been sitting there for a while, not freshly diverged — don't read "quarantine entry" as "this
+diverged just now."
 `content_hash` here is a hash of the raw JSONL line, not a cross-layer key — don't compare it to
 `text_sha256` or `user_prompt_sha256`. `event_type` is read from the raw capture event's `type`
 field (values like `user_prompt`, `tool_use`, `stop_failure` — see `daemon/event-dispatch.ts`'s
@@ -157,7 +163,9 @@ jq '.notes' manifest.json
 
 Confirm `bundle_format` is a format this skill covers, note the version/schema gap vs. current
 `main`, and **read every `collector_errors` and `notes` entry before opening anything else** —
-they tell you what to expect to be missing and why.
+they tell you what to expect to be missing and why. `Write` is granted only for this kind of
+scratchpad use: saving the unzipped extraction, any one-off correlation script, and the final
+verdict write-up to the scratchpad — never for writing back into bundle files or the repo itself.
 
 ### Step 2 — `doctor.json` and `audit-report.json`
 
