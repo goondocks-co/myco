@@ -163,6 +163,15 @@ function groupIsVisible(
       return group.fields.some((f) => inScope(f) && fieldMatchesSearch(f, needle));
     }
     if (scope === 'all') return true;
+    // A `fields: []` group (e.g. diagnostics) has nothing for `.some()`
+    // below to derive a scope from — an empty array's `.some()` is always
+    // false, which would hide the group under every non-'all' scope filter
+    // even though it has a real backend scope. Fall back to the group's
+    // own declared `scope` in that case; a group WITH fields keeps
+    // deriving visibility from them, unaffected by this.
+    if (group.fields.length === 0) {
+      return group.scope === scope;
+    }
     return group.fields.some((f) => inScope(f));
   }
   return visibleFields.length > 0;
