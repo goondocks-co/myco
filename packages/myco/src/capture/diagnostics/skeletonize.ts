@@ -1,5 +1,10 @@
 import { sha256Hex } from './hash.js';
 
+// Allowlist patterns for metadata field values — blocks prose injection
+const TYPE_ROLE_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/; // Lowercase identifiers (user, assistant, unknown)
+const UUID_PATTERN = /^[a-z0-9-]{1,64}$/; // Lowercase hex and hyphen (uuid, session ids)
+const TIMESTAMP_PATTERN = /^[0-9TZz:.,+\- ]{1,40}$/; // ISO 8601 and variants
+
 /**
  * Structure-only view of a transcript JSONL file. This is the mechanism
  * behind "default bundles contain none of your prompts or code": each
@@ -31,12 +36,29 @@ function skeletonizeLine(line: string): Record<string, unknown> {
   const message = (evt.message ?? null) as Record<string, unknown> | null;
   const content = message && typeof message === 'object' ? message.content : undefined;
   const text = extractText(content);
+
+  // Extract and gate metadata fields against value-injection
+  const rawType = typeof evt.type === 'string' ? evt.type : null;
+  const type = rawType && TYPE_ROLE_PATTERN.test(rawType) ? rawType : 'unknown';
+
+  const rawTimestamp = typeof evt.timestamp === 'string' ? evt.timestamp : null;
+  const timestamp = rawTimestamp && TIMESTAMP_PATTERN.test(rawTimestamp) ? rawTimestamp : null;
+
+  const rawUuid = typeof evt.uuid === 'string' ? evt.uuid : null;
+  const uuid = rawUuid && UUID_PATTERN.test(rawUuid) ? rawUuid : null;
+
+  const rawParentUuid = typeof evt.parentUuid === 'string' ? evt.parentUuid : null;
+  const parent_uuid = rawParentUuid && UUID_PATTERN.test(rawParentUuid) ? rawParentUuid : null;
+
+  const rawRole = message && typeof message.role === 'string' ? message.role : null;
+  const role = rawRole && TYPE_ROLE_PATTERN.test(rawRole) ? rawRole : null;
+
   return {
-    type: typeof evt.type === 'string' ? evt.type : 'unknown',
-    timestamp: typeof evt.timestamp === 'string' ? evt.timestamp : null,
-    uuid: typeof evt.uuid === 'string' ? evt.uuid : null,
-    parent_uuid: typeof evt.parentUuid === 'string' ? evt.parentUuid : null,
-    role: message && typeof message.role === 'string' ? message.role : null,
+    type,
+    timestamp,
+    uuid,
+    parent_uuid,
+    role,
     content_hash: content === undefined ? null : sha256Hex(JSON.stringify(content)),
     // Cross-layer correlation key: sha256 of the trimmed user-visible text,
     // comparable to user_prompt_sha256 on prompt_batches rows (the stored

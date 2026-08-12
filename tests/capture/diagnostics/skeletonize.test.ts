@@ -7,7 +7,7 @@ const ALLOWED_KEYS = new Set([
 ]);
 
 describe('skeletonizeTranscript', () => {
-  test('emits only allowlisted keys and no prose', () => {
+  test('emits only allowlisted keys and no prose, filtering prose from metadata', () => {
     const lines = [
       // Claude Code-ish user event
       JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null, timestamp: '2026-08-12T10:00:00Z', message: { role: 'user', content: PROSE } }),
@@ -15,6 +15,8 @@ describe('skeletonizeTranscript', () => {
       JSON.stringify({ type: 'assistant', uuid: 'u2', parentUuid: 'u1', timestamp: '2026-08-12T10:00:05Z', message: { role: 'assistant', content: [{ type: 'text', text: PROSE }] } }),
       // novel event shape from a future harness — extra fields must not leak
       JSON.stringify({ type: 'wormhole', novelField: PROSE, nested: { deep: PROSE } }),
+      // prose injected into metadata fields
+      JSON.stringify({ type: PROSE, uuid: PROSE, parentUuid: PROSE, timestamp: PROSE, message: { role: PROSE, content: 'data' } }),
       // unparseable garbage
       '{not json',
     ];
@@ -42,5 +44,36 @@ describe('skeletonizeTranscript', () => {
     const obj = JSON.parse(line!);
     expect(obj.type).toBe('unparseable');
     expect(obj.byte_length).toBe(7);
+  });
+
+  test('metadata fields are gated against value injection', () => {
+    const lines = [
+      JSON.stringify({ type: PROSE, uuid: 'valid-uuid', timestamp: '2026-08-12T10:00:00Z', message: { role: 'user', content: 'ok' } }),
+      JSON.stringify({ type: 'user', uuid: PROSE, timestamp: '2026-08-12T10:00:00Z', message: { role: 'user', content: 'ok' } }),
+      JSON.stringify({ type: 'user', uuid: 'valid-uuid', parentUuid: PROSE, timestamp: '2026-08-12T10:00:00Z', message: { role: 'user', content: 'ok' } }),
+      JSON.stringify({ type: 'user', uuid: 'valid-uuid', timestamp: PROSE, message: { role: 'user', content: 'ok' } }),
+      JSON.stringify({ type: 'user', uuid: 'valid-uuid', timestamp: '2026-08-12T10:00:00Z', message: { role: PROSE, content: 'ok' } }),
+    ];
+    const out = skeletonizeTranscript(lines.join('\n'));
+    expect(out).not.toContain(PROSE);
+
+    const results = out.trim().split('\n').map((line) => JSON.parse(line));
+
+    // type field with prose becomes 'unknown'
+    expect(results[0]!.type).toBe('unknown');
+    expect(results[0]!.uuid).toBe('valid-uuid');
+
+    // uuid field with prose becomes null
+    expect(results[1]!.type).toBe('user');
+    expect(results[1]!.uuid).toBeNull();
+
+    // parent_uuid field with prose becomes null
+    expect(results[2]!.parent_uuid).toBeNull();
+
+    // timestamp field with prose becomes null
+    expect(results[3]!.timestamp).toBeNull();
+
+    // role field with prose becomes null
+    expect(results[4]!.role).toBeNull();
   });
 });
