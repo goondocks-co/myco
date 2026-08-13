@@ -36,8 +36,13 @@ export function findTranscriptFor(agent: string, sessionId: string): string | nu
 /** Expand `~` and `$VAR` / `${VAR}` forms against the current environment. */
 export function expandRoot(root: string, env: NodeJS.ProcessEnv = process.env): string {
   const withEnv = root.replace(/\$\{?([A-Z_][A-Z0-9_]*)\}?/gi, (whole, name: string) => env[name] ?? whole);
-  if (withEnv === '~') return os.homedir();
-  if (withEnv.startsWith('~/')) return path.join(os.homedir(), withEnv.slice(2));
+  // `~` must expand against THIS env, not a process-start-cached homedir, so
+  // a caller (a test, a sandboxed subprocess) can scope discovery to a
+  // sandbox HOME by setting the env var alone. os.homedir() only remains a
+  // fallback for the (unusual) case HOME isn't set.
+  const home = env.HOME && env.HOME.length > 0 ? env.HOME : os.homedir();
+  if (withEnv === '~') return home;
+  if (withEnv.startsWith('~/')) return path.join(home, withEnv.slice(2));
   return withEnv;
 }
 

@@ -189,4 +189,44 @@ describe('expandRoot', () => {
   it('leaves an absolute path unchanged', () => {
     expect(expandRoot('/var/transcripts')).toBe('/var/transcripts');
   });
+
+  describe('~ expansion tracks the current HOME', () => {
+    // `~` must expand against the env passed in (or process.env.HOME by
+    // default, read fresh on every call) rather than a value cached once at
+    // process start — the seam a caller relies on to scope transcript
+    // discovery to a sandbox HOME (e.g. checkReconcile fixture tests)
+    // without needing to mock node:os.
+    let prevHome: string | undefined;
+
+    beforeEach(() => {
+      prevHome = process.env.HOME;
+    });
+
+    afterEach(() => {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+    });
+
+    it('resolves ~ under process.env.HOME when it is set', () => {
+      process.env.HOME = '/tmp/sandbox-home-xyz';
+      expect(expandRoot('~/.claude/projects')).toBe('/tmp/sandbox-home-xyz/.claude/projects');
+    });
+
+    it('falls back to os.homedir() when HOME is unset', () => {
+      delete process.env.HOME;
+      expect(expandRoot('~/.claude/projects')).toBe(path.join(os.homedir(), '.claude/projects'));
+    });
+
+    it('falls back to os.homedir() when HOME is an empty string', () => {
+      process.env.HOME = '';
+      expect(expandRoot('~/.claude/projects')).toBe(path.join(os.homedir(), '.claude/projects'));
+    });
+
+    it('honours an explicit env argument over process.env.HOME', () => {
+      process.env.HOME = '/tmp/should-not-be-used';
+      expect(expandRoot('~/.claude/projects', { HOME: '/tmp/explicit-home' })).toBe(
+        '/tmp/explicit-home/.claude/projects',
+      );
+    });
+  });
 });
