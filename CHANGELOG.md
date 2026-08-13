@@ -2,6 +2,12 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.6] - 2026-08-13
+
+### Fixed
+
+- **Capture health stops crying wolf over agent-launched sessions.** Some tools drive Claude Code programmatically rather than interactively — a code-review helper spinning up its own review agents, for example. Those runs write a transcript but deliberately aren't captured, and capture health had no way to tell them apart from a session that genuinely went missing, so each one raised a high-severity alarm. They're now recognized from the session's own record of how it was started, and reported as expected rather than as loss. Sessions that really did escape capture are still flagged.
+
 ## [1.4.5] - 2026-08-12
 
 ### Added
