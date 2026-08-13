@@ -151,6 +151,58 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ],
       "rules": [
         {
+          "event": "session_start",
+          "scope": "this_agent",
+          "when": {
+            "transcript_meta_field_equals": {
+              "path": "entrypoint",
+              "value": "sdk-py"
+            }
+          },
+          "action": "drop",
+          "reason": "noninteractive-sdk",
+          "trim": true
+        },
+        {
+          "event": "session_start",
+          "scope": "this_agent",
+          "when": {
+            "transcript_meta_field_equals": {
+              "path": "entrypoint",
+              "value": "sdk-ts"
+            }
+          },
+          "action": "drop",
+          "reason": "noninteractive-sdk",
+          "trim": true
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "transcript_meta_field_equals": {
+              "path": "entrypoint",
+              "value": "sdk-py"
+            }
+          },
+          "action": "drop",
+          "reason": "noninteractive-sdk",
+          "trim": true
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "transcript_meta_field_equals": {
+              "path": "entrypoint",
+              "value": "sdk-ts"
+            }
+          },
+          "action": "drop",
+          "reason": "noninteractive-sdk",
+          "trim": true
+        },
+        {
           "event": "user_prompt",
           "scope": "this_agent",
           "when": {
