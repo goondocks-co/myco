@@ -10,29 +10,25 @@
  * interactive sessions carry `entrypoint: "cli"`.
  *
  * claude-code.yaml's manifest declares a literal `~/.claude/projects` root,
- * so exercising the real enumeration path requires controlling
- * `os.homedir()` — Bun's `os.homedir()` does not re-read `process.env.HOME`
- * once the process has started, so an env override alone (used elsewhere in
- * this suite for `MYCO_HOME`, which IS read fresh from the env on every
- * call) does not sandbox it. `mock.module('node:os', ...)` does, at the
- * cost of running this file `--isolate`d (auto-detected by
- * run-bun-tests.mjs whenever a file calls mock.module()), so the override
- * never leaks into sibling test files.
+ * so exercising the real enumeration path requires sandboxing where `~`
+ * expands to. `expandRoot()` (transcript-discovery.ts) expands `~` against
+ * `process.env.HOME` (falling back to `os.homedir()` only when HOME is
+ * unset), read fresh on every call via its default parameter — so setting
+ * `process.env.HOME` before calling `checkReconcile()` is sufficient. No
+ * module mocking needed, which means this file runs unisolated and cannot
+ * leak a partial `node:os` replacement into sibling tests (a real incident:
+ * an earlier revision here globally replaced the `node:os` module, which
+ * lacked `tmpdir`, and broke `tests/capture/audit/{tombstone-gate,
+ * prompt-count-parity,...}` when the full gate ran them in a shared
+ * process).
  *
- * Each test gets its own fresh project directory and vault: no cumulative
- * planting across tests, so a `coverage`/`findings` assertion can be exact
- * (a full row/count match) rather than a "contains the substring" probe.
+ * Each test gets its own fresh HOME, project directory, and vault: no
+ * cumulative planting across tests, so a `coverage`/`findings` assertion can
+ * be exact (a full row/count match) rather than a "contains the substring"
+ * probe.
  */
 
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-
-const MOCK_HOME = `/tmp/myco-sdk-entrypoint-home-${process.pid}-${Date.now()}`;
-
-mock.module('node:os', () => ({
-  default: { homedir: () => MOCK_HOME },
-  homedir: () => MOCK_HOME,
-}));
-
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
@@ -45,11 +41,12 @@ const NOW = 1_785_000_000;
 const PROJECT_ROOT = '/repo/sdktest';
 const PROJECT_ID = 'proj_sdktest';
 
-const projectsDir = path.join(MOCK_HOME, '.claude', 'projects', 'sdktest');
-
+let homeDir: string;
+let projectsDir: string;
 let dbDir: string;
 let dbPath: string;
 let db: Database;
+let prevHome: string | undefined;
 let prevMycoHome: string | undefined;
 
 function seedSession(id: string, over: Partial<Record<string, unknown>> = {}) {
@@ -90,10 +87,8 @@ function plantTranscript(sessionId: string, entrypoint: string): string {
 }
 
 beforeEach(() => {
-  // os.homedir() is mocked once for the whole file (mock.module can't be
-  // re-scoped per test), so isolate each test by wiping and recreating the
-  // fixed mocked home's project directory instead of the home path itself.
-  fs.rmSync(MOCK_HOME, { recursive: true, force: true });
+  homeDir = fs.mkdtempSync(path.join('/tmp', `myco-sdk-entrypoint-home-${process.pid}-`));
+  projectsDir = path.join(homeDir, '.claude', 'projects', 'sdktest');
   fs.mkdirSync(projectsDir, { recursive: true });
 
   dbDir = fs.mkdtempSync(path.join('/tmp', `myco-sdk-entrypoint-db-${process.pid}-`));
@@ -108,19 +103,23 @@ beforeEach(() => {
   // 'unattributable' bucket.
   seedSession('known-session', { project_id: PROJECT_ID, project_root: PROJECT_ROOT });
 
+  prevHome = process.env.HOME;
   prevMycoHome = process.env.MYCO_HOME;
+  process.env.HOME = homeDir;
   // Unredirected: no `.myco-redirect-epoch` marker exists under this
   // sandboxed home, so readHarnessRedirectEpoch() returns undefined and the
   // predating-redirect bucket stays out of the way of this fixture.
-  process.env.MYCO_HOME = path.join(MOCK_HOME, '.myco');
+  process.env.MYCO_HOME = path.join(homeDir, '.myco');
 });
 
 afterEach(() => {
+  if (prevHome === undefined) delete process.env.HOME;
+  else process.env.HOME = prevHome;
   if (prevMycoHome === undefined) delete process.env.MYCO_HOME;
   else process.env.MYCO_HOME = prevMycoHome;
   db.close();
   fs.rmSync(dbDir, { recursive: true, force: true });
-  fs.rmSync(MOCK_HOME, { recursive: true, force: true });
+  fs.rmSync(homeDir, { recursive: true, force: true });
 });
 
 describe('checkReconcile — claude-code SDK-entrypoint parity', () => {
