@@ -36,6 +36,56 @@ capture:
     # it into the next user prompt as <ultraplan>...</ultraplan>.
     - ultraplan
   rules:
+    # Non-interactive SDK-entrypoint filter (structural, Codex `source: exec`
+    # parity — see codex.yaml Layer 5/6).
+    #
+    # Claude Code >=2.1.x writes Agent-SDK-launched sessions (e.g. the
+    # security-review plugin's Python-SDK review agents) into the same
+    # ~/.claude/projects/<slug>/*.jsonl transcript tree as interactive
+    # sessions, as top-level files. They never fire hooks, so only the
+    # reverse (disk-enumeration) sweep ever sees them. Their structural
+    # marker is `entrypoint: "sdk-py"` / `"sdk-ts"` (interactive sessions
+    # carry `entrypoint: "cli"`) — present on attachment/user records a few
+    # lines into the file, not on line 1, which is why transcript-meta.ts
+    # scans a bounded header window rather than only the first line.
+    #
+    # Layer 1 — stop the phantom from ever being registered.
+    - event: session_start
+      scope: this_agent
+      when:
+        transcript_meta_field_equals:
+          path: entrypoint
+          value: sdk-py
+      action: drop
+      reason: noninteractive-sdk
+    - event: session_start
+      scope: this_agent
+      when:
+        transcript_meta_field_equals:
+          path: entrypoint
+          value: sdk-ts
+      action: drop
+      reason: noninteractive-sdk
+
+    # Layer 2 — safety net for SDK prompts that slip past SessionStart (e.g.
+    # transcript not yet flushed).
+    - event: user_prompt
+      scope: this_agent
+      when:
+        transcript_meta_field_equals:
+          path: entrypoint
+          value: sdk-py
+      action: drop
+      reason: noninteractive-sdk
+    - event: user_prompt
+      scope: this_agent
+      when:
+        transcript_meta_field_equals:
+          path: entrypoint
+          value: sdk-ts
+      action: drop
+      reason: noninteractive-sdk
+
     # Slash-command dispatch envelope filter (structural).
     #
     # When the user runs `/name args`, Claude Code fires UserPromptSubmit with
