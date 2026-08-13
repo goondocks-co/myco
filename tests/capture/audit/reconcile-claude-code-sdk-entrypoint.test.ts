@@ -18,9 +18,13 @@
  * cost of running this file `--isolate`d (auto-detected by
  * run-bun-tests.mjs whenever a file calls mock.module()), so the override
  * never leaks into sibling test files.
+ *
+ * Each test gets its own fresh project directory and vault: no cumulative
+ * planting across tests, so a `coverage`/`findings` assertion can be exact
+ * (a full row/count match) rather than a "contains the substring" probe.
  */
 
-import { describe, it, expect, beforeAll, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
 const MOCK_HOME = `/tmp/myco-sdk-entrypoint-home-${process.pid}-${Date.now()}`;
 
@@ -40,7 +44,8 @@ import { ACTIVITIES_TABLE, PROMPT_BATCHES_TABLE, SESSIONS_TABLE } from '@myco/db
 const NOW = 1_785_000_000;
 const PROJECT_ROOT = '/repo/sdktest';
 const PROJECT_ID = 'proj_sdktest';
-const PROJECTS_DIR = path.join(MOCK_HOME, '.claude', 'projects', 'sdktest');
+
+const projectsDir = path.join(MOCK_HOME, '.claude', 'projects', 'sdktest');
 
 let dbDir: string;
 let dbPath: string;
@@ -72,7 +77,7 @@ function seedSession(id: string, over: Partial<Record<string, unknown>> = {}) {
  * transcript-meta.ts's bounded header scan is built to see through.
  */
 function plantTranscript(sessionId: string, entrypoint: string): string {
-  const file = path.join(PROJECTS_DIR, `${sessionId}.jsonl`);
+  const file = path.join(projectsDir, `${sessionId}.jsonl`);
   const lines = [
     { type: 'queue-operation', id: 'op1' },
     { type: 'last-prompt', value: null },
@@ -84,8 +89,13 @@ function plantTranscript(sessionId: string, entrypoint: string): string {
   return file;
 }
 
-beforeAll(() => {
-  fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+beforeEach(() => {
+  // os.homedir() is mocked once for the whole file (mock.module can't be
+  // re-scoped per test), so isolate each test by wiping and recreating the
+  // fixed mocked home's project directory instead of the home path itself.
+  fs.rmSync(MOCK_HOME, { recursive: true, force: true });
+  fs.mkdirSync(projectsDir, { recursive: true });
+
   dbDir = fs.mkdtempSync(path.join('/tmp', `myco-sdk-entrypoint-db-${process.pid}-`));
   dbPath = path.join(dbDir, 'myco.db');
   db = new Database(dbPath);
@@ -105,7 +115,7 @@ beforeAll(() => {
   process.env.MYCO_HOME = path.join(MOCK_HOME, '.myco');
 });
 
-afterAll(() => {
+afterEach(() => {
   if (prevMycoHome === undefined) delete process.env.MYCO_HOME;
   else process.env.MYCO_HOME = prevMycoHome;
   db.close();
@@ -114,30 +124,51 @@ afterAll(() => {
 });
 
 describe('checkReconcile — claude-code SDK-entrypoint parity', () => {
-  it('does not report transcript-never-captured for an sdk-py transcript with no session row', () => {
+  it('excludes an sdk-py transcript with no session row as deliberate, not a finding', () => {
     plantTranscript('sdk-session-py', 'sdk-py');
 
     const { findings, coverage } = checkReconcile(db, { dbPath }, NOW, symbiontContexts('claude-code'));
 
-    expect(findings.find((f) => f.id === 'transcript-never-captured' && f.samples?.includes('sdk-session-py'))).toBeUndefined();
-    expect(coverage.some((c) => c.reason.includes('no session row by design'))).toBe(true);
+    expect(findings).toEqual([]);
+    expect(coverage).toEqual([
+      {
+        symbiont: 'claude-code',
+        scope: 'transcript reconciliation',
+        reason:
+          '1 transcript(s) have no session row by design — sub-agent threads whose turns are reattributed to the parent session, plus manifest-dropped classes (non-interactive exec, ephemeral sub-invocations). Excluded from findings.',
+      },
+    ]);
   });
 
-  it('does not report transcript-never-captured for an sdk-ts transcript with no session row', () => {
+  it('excludes an sdk-ts transcript with no session row as deliberate, not a finding', () => {
     plantTranscript('sdk-session-ts', 'sdk-ts');
 
-    const { findings } = checkReconcile(db, { dbPath }, NOW, symbiontContexts('claude-code'));
+    const { findings, coverage } = checkReconcile(db, { dbPath }, NOW, symbiontContexts('claude-code'));
 
-    expect(findings.find((f) => f.id === 'transcript-never-captured' && f.samples?.includes('sdk-session-ts'))).toBeUndefined();
+    expect(findings).toEqual([]);
+    expect(coverage).toEqual([
+      {
+        symbiont: 'claude-code',
+        scope: 'transcript reconciliation',
+        reason:
+          '1 transcript(s) have no session row by design — sub-agent threads whose turns are reattributed to the parent session, plus manifest-dropped classes (non-interactive exec, ephemeral sub-invocations). Excluded from findings.',
+      },
+    ]);
   });
 
   it('negative control: a cli-entrypoint transcript with no session row STILL produces the finding', () => {
     plantTranscript('cli-session', 'cli');
 
-    const { findings } = checkReconcile(db, { dbPath }, NOW, symbiontContexts('claude-code'));
+    const { findings, coverage } = checkReconcile(db, { dbPath }, NOW, symbiontContexts('claude-code'));
 
-    const finding = findings.find((f) => f.id === 'transcript-never-captured');
-    expect(finding).toBeDefined();
-    expect(finding?.samples).toContain('cli-session');
+    expect(coverage).toEqual([]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      id: 'transcript-never-captured',
+      severity: 'high',
+      symbiont: 'claude-code',
+      count: 1,
+      samples: ['cli-session'],
+    });
   });
 });

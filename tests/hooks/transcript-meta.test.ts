@@ -118,6 +118,33 @@ describe('readTranscriptMeta', () => {
     expect(readTranscriptMeta(file)?.entrypoint).toBeUndefined();
   });
 
+  it('reaches entrypoint past an oversized (>128KB) line 1 by reading further chunks', () => {
+    // Real sdk-py transcripts observed in the wild embed the full review
+    // prompt on line 1 (87KB+), pushing `entrypoint` (present a couple of
+    // lines later) past a single fixed 128KB read. Line 1 alone here is
+    // ~150KB — bigger than the initial read chunk, well under the 1MB hard
+    // cap — so the header scan must keep reading to reach line 3.
+    const file = writeLines([
+      { type: 'queue-operation', id: 'op1', prompt: 'x'.repeat(150_000) },
+      { type: 'last-prompt', value: null },
+      { type: 'attachment', cwd: '/repo/proj', entrypoint: 'sdk-py' },
+    ]);
+    const meta = readTranscriptMeta(file);
+    expect(meta?.entrypoint).toBe('sdk-py');
+    expect(meta?.cwd).toBe('/repo/proj');
+  });
+
+  it('returns null when line 1 alone exceeds the hard cap without ever completing', () => {
+    // A pathological transcript whose very first line never terminates
+    // within the 1MB hard cap — existing (pre-chunking) fail-open behavior:
+    // no usable header was read, so the file is treated as unreadable
+    // rather than parsing a truncated fragment as JSON.
+    const file = path.join(dir, 'transcript.jsonl');
+    const oversizedFirstLine = 'x'.repeat(1_200_000);
+    fs.writeFileSync(file, `${oversizedFirstLine}\n${JSON.stringify({ type: 'attachment', entrypoint: 'sdk-py' })}\n`);
+    expect(readTranscriptMeta(file)).toBeNull();
+  });
+
   it('returns null for a missing file', () => {
     expect(readTranscriptMeta(path.join(dir, 'does-not-exist.jsonl'))).toBeNull();
   });

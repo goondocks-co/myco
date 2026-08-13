@@ -267,8 +267,14 @@ export class TranscriptMiner {
       };
     }
 
-    // Only memoize once the meta line is readable — before the agent
-    // flushes the file, a decision would be premature and sticky.
+    // Only memoize once meta is readable — before the agent flushes the
+    // file, a decision would be premature and sticky. `meta` may be a
+    // wrapped session_meta payload (line 1 only, Codex), a headerless
+    // transcript's line-1 object, or — for transcripts whose structural
+    // fields land a few lines in rather than on line 1 (Claude Code's
+    // entrypoint) — a shallow merge across a bounded header window
+    // (transcript-meta.ts). `undefined` still means the same thing either
+    // way: no readable header at all yet.
     if (meta !== undefined) {
       if (this.metaMemo.size >= META_MEMO_MAX_ENTRIES) this.metaMemo.clear();
       this.metaMemo.set(input.transcriptPath, entry);

@@ -42,12 +42,18 @@ capture:
     # Claude Code >=2.1.x writes Agent-SDK-launched sessions (e.g. the
     # security-review plugin's Python-SDK review agents) into the same
     # ~/.claude/projects/<slug>/*.jsonl transcript tree as interactive
-    # sessions, as top-level files. They never fire hooks, so only the
-    # reverse (disk-enumeration) sweep ever sees them. Their structural
-    # marker is `entrypoint: "sdk-py"` / `"sdk-ts"` (interactive sessions
-    # carry `entrypoint: "cli"`) — present on attachment/user records a few
-    # lines into the file, not on line 1, which is why transcript-meta.ts
-    # scans a bounded header window rather than only the first line.
+    # sessions, as top-level files. sdk-py and sdk-ts runs never fire hooks,
+    # so only the reverse (disk-enumeration) sweep ever sees them. Their
+    # structural marker is `entrypoint: "sdk-py"` / `"sdk-ts"` (interactive
+    # sessions carry `entrypoint: "cli"`) — present on attachment/user
+    # records a few lines into the file, not on line 1, which is why
+    # transcript-meta.ts scans a bounded header window rather than only the
+    # first line.
+    #
+    # A third entrypoint value, `sdk-cli`, also exists — but that surface
+    # DOES fire hooks (hook_success observed), so it's already captured
+    # through the normal path. No rule targets it here: dropping an
+    # already-captured session would discard real data.
     #
     # Layer 1 — stop the phantom from ever being registered.
     - event: session_start

@@ -1,6 +1,11 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { evaluateSessionStartRules, evaluateUserPromptRules } from '@myco/hooks/capture-rules.js';
+import { readTranscriptMeta } from '@myco/hooks/transcript-meta.js';
 
 /**
  * Integration test exercising the REAL claude-code.yaml manifest through
@@ -111,6 +116,41 @@ describe('claude-code.yaml SDK-entrypoint capture rules', () => {
         transcriptMeta: { entrypoint: 'sdk-py' },
       });
       expect(result).toEqual({ action: 'pass', prompt: 'anything' });
+    });
+  });
+
+  describe('end-to-end with a real oversized-line-1 transcript', () => {
+    let dir: string;
+
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-code-sdk-oversized-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('drops via the rules even when entrypoint sits past an oversized (>128KB) line 1', () => {
+      // Real sdk-py transcripts embed the full review prompt on line 1
+      // (87KB+ observed), pushing `entrypoint` past a single fixed 128KB
+      // read — transcript-meta.ts's chunked header scan must still surface
+      // it, and the manifest rule must still drop on it.
+      const file = path.join(dir, 'session.jsonl');
+      const lines = [
+        { type: 'queue-operation', id: 'op1', prompt: 'x'.repeat(150_000) },
+        { type: 'last-prompt', value: null },
+        { type: 'attachment', cwd: '/repo/proj', entrypoint: 'sdk-py' },
+      ];
+      fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+
+      const transcriptMeta = readTranscriptMeta(file) ?? undefined;
+      expect(transcriptMeta?.entrypoint).toBe('sdk-py');
+
+      const result = evaluateSessionStartRules(loadManifests(), 'claude-code', {
+        transcriptPath: file,
+        transcriptMeta,
+      });
+      expect(result).toEqual({ action: 'drop', reason: 'noninteractive-sdk' });
     });
   });
 });
