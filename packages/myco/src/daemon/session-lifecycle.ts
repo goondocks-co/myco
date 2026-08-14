@@ -126,6 +126,11 @@ export interface EnsureSessionParams {
   logger: Logger;
   /** Code path that invoked this — see {@link ENSURE_SESSION_SOURCE}. */
   source: EnsureSessionSource;
+  /**
+   * `transcript_path` carried by the event driving this ensure. Preferred over
+   * manifest discovery — see {@link ensureTranscriptPath}.
+   */
+  transcriptPath?: string;
 }
 
 /**
@@ -148,23 +153,37 @@ export interface EnsureSessionParams {
 const transcriptLookupAttempted = new Set<string>();
 
 /**
- * Fill in `sessions.transcript_path` when the hook payload did not carry one.
+ * Fill in `sessions.transcript_path`, preferring the path the hook already sent.
  *
  * Capture learns a transcript's location from the hook payload field named by
- * `hookFields.transcriptPath`. An agent that omits it leaves the row with no
- * path, and mining — which reads the column — never runs for that session.
- * The manifest also declares where that agent keeps transcripts, so the path
- * is recoverable from the session id alone.
+ * `hookFields.transcriptPath`. Two sources can supply it, in this order:
  *
- * Resolution is attempted once per session per process, and only for a row
- * that has no path. An agent that stores no transcript resolves to null and is
- * not retried.
+ * 1. `hookTranscriptPath` — the value carried by the inbound event. Every
+ *    Claude Code event carries one, and it is authoritative: it is the path
+ *    the agent is writing to right now, whereas discovery only infers a path
+ *    from the session id. Preferring it also covers the case discovery cannot
+ *    reach at all — a transcript the agent has not flushed to disk yet, which
+ *    is the normal state at SessionStart for a freshly-forked session.
+ * 2. Manifest-declared discovery, when no event has carried a path. An agent
+ *    that stores no transcript resolves to null and is not retried.
+ *
+ * Both sources write only into a row with NO path. Overwriting a set value is
+ * the Stop path's job (`stop-processing.ts`), which owns the multi-phase
+ * symbiont case; a passing tool_use event must never redirect mining at a
+ * different file mid-session.
  */
 export function ensureTranscriptPath(params: {
   sessionId: string;
   agent: string;
   logger: Logger;
+  /** `transcript_path` carried by the inbound event, when it had one. */
+  hookTranscriptPath?: string;
 }): void {
+  if (params.hookTranscriptPath) {
+    stampHookTranscriptPath(params.sessionId, params.hookTranscriptPath, params.logger);
+    return;
+  }
+
   if (transcriptLookupAttempted.has(params.sessionId)) return;
   transcriptLookupAttempted.add(params.sessionId);
 
@@ -191,6 +210,38 @@ export function ensureTranscriptPath(params: {
   }
 }
 
+/**
+ * Write an event-supplied transcript path into a row that has none.
+ *
+ * Reads the row every call rather than memoizing: a session id can be deleted
+ * and re-registered (`deleteSessionCascade` then an explicit register, which
+ * clears the tombstone), and the recreated row starts with no path. A
+ * process-lifetime memo would refuse to stamp it for as long as the daemon
+ * lives, leaving mining, lineage and re-enrichment off for that session.
+ *
+ * The row is left alone once it has a path, so a later event can never
+ * redirect mining at a different file. A missing row is a no-op — the event
+ * that creates it carries the same path.
+ */
+function stampHookTranscriptPath(sessionId: string, transcriptPath: string, logger: Logger): void {
+  try {
+    const existing = getSession(sessionId, ALL_PROJECTS_SCOPE);
+    if (!existing || existing.transcript_path) return;
+
+    updateSession(sessionId, { transcript_path: transcriptPath }, ALL_PROJECTS_SCOPE);
+    logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'stamped transcript path from hook payload', {
+      session_id: sessionId,
+      transcript_path: transcriptPath,
+    });
+  } catch (err) {
+    // Best-effort enrichment: capture proceeds without a path exactly as before.
+    logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'transcript path stamp failed', {
+      session_id: sessionId,
+      error: (err as Error).message,
+    });
+  }
+}
+
 export function ensureSession(params: EnsureSessionParams): void {
   const startedEpoch = params.startedAt
     ? Math.floor(new Date(params.startedAt).getTime() / 1000)
@@ -207,6 +258,11 @@ export function ensureSession(params: EnsureSessionParams): void {
       started_at: startedEpoch,
       created_at: now,
       machine_id: params.machineId,
+      // Carried into the upsert rather than stamped afterwards so a
+      // re-registered session id gets its path back in the same statement.
+      // `upsertSession` COALESCEs this column, so a null here preserves a
+      // path already on the row.
+      transcript_path: params.transcriptPath ?? null,
     });
   } catch (err) {
     params.logger.error(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'ensureSession: failed to persist session row', {
@@ -223,7 +279,12 @@ export function ensureSession(params: EnsureSessionParams): void {
     started_at: params.startedAt ?? new Date().toISOString(),
   });
 
-  ensureTranscriptPath({ sessionId: params.sessionId, agent: params.agent, logger: params.logger });
+  ensureTranscriptPath({
+    sessionId: params.sessionId,
+    agent: params.agent,
+    logger: params.logger,
+    hookTranscriptPath: params.transcriptPath,
+  });
 }
 
 export interface EnsureSessionRowExistsParams {
