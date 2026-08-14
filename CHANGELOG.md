@@ -2,6 +2,12 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.7] - 2026-08-14
+
+### Fixed
+
+- **A conversation that continues in a new session stays connected to the one it came from.** Claude Code carries a conversation into a fresh session when you fork it, and when it rolls over on auto-compact. Myco filed the continuation as an unrelated new session, so a single piece of work showed up in the session list as two or three unconnected entries. Continuations now record which session they came from and why. The turns you typed before the split stay with the session you typed them in rather than being copied into the new one, and a continued session's transcript is on file again — so its responses, summaries, plans, and any prompt the hooks missed are filled in as they are for any other session.
+
 ## [1.4.6] - 2026-08-13
 
 ### Fixed
