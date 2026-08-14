@@ -48,7 +48,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch, toPromptBatchOrigin, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { getSession, updateSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
 import { hasSessionTombstone, getSessionTombstone, deleteSessionTombstone, SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
-import { ensureSession, ensureSessionRowExists, ENSURE_SESSION_SOURCE } from './session-lifecycle.js';
+import { ensureSession, ensureSessionRowExists, ensureTranscriptPath, ENSURE_SESSION_SOURCE } from './session-lifecycle.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
 import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -129,6 +129,19 @@ export interface EventDispatchDeps {
 // Cap dropped-session cache to bound memory. Dropped sessions are rarely
 // revisited; FIFO eviction via Map ordering is sufficient.
 const DROP_DECISION_CACHE_MAX = 1024;
+
+/**
+ * The event's `transcript_path`, or undefined when it carries none.
+ *
+ * An empty string counts as absent: a symbiont phase that fires without a
+ * transcript sends `""` as readily as it omits the field, and every consumer
+ * here treats "no path" identically.
+ */
+function eventTranscriptPath(event: Record<string, unknown>): string | undefined {
+  return typeof event.transcript_path === 'string' && event.transcript_path.length > 0
+    ? event.transcript_path
+    : undefined;
+}
 
 export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
   const {
@@ -211,9 +224,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     decision: { action: 'pass' } | { action: 'drop'; reason?: string };
     hadTranscriptMeta: boolean;
   } {
-    const transcriptPath = typeof event.transcript_path === 'string' && event.transcript_path.length > 0
-      ? event.transcript_path
-      : undefined;
+    const transcriptPath = eventTranscriptPath(event);
     const detectedAgent = typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME;
 
     // Fail open: a manifest with a bad regex or schema error must not
@@ -443,6 +454,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           registry,
           logger,
           source: event.type === 'user_prompt' ? ENSURE_SESSION_SOURCE.USER_PROMPT : ENSURE_SESSION_SOURCE.TOOL_USE,
+          transcriptPath: eventTranscriptPath(event),
         });
         logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from event', { session_id: event.session_id });
         const autoRegisterScope = projectScopeFromRequestContext(req.requestContext);
@@ -466,6 +478,24 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         // Reconcile buffer against DB — recover any prompts lost during downtime.
         reconcileSession(event.session_id);
       }
+    }
+
+    // Stamp the transcript path from whichever event first carries one.
+    // Auto-registration above only runs for a session this process has not
+    // seen; a session registered by SessionStart before its agent had
+    // flushed a transcript would otherwise keep a NULL path for its whole
+    // life, and mining — which reads the column — would never run for it.
+    // Converges after the first carrying event (see `ensureTranscriptPath`).
+    // Only events that actually carry a path reach here: discovery stays
+    // owned by `ensureSession`, so this adds no disk I/O to the event path.
+    const carriedTranscriptPath = eventTranscriptPath(event);
+    if (carriedTranscriptPath) {
+      ensureTranscriptPath({
+        sessionId: event.session_id,
+        agent: typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME,
+        logger,
+        hookTranscriptPath: carriedTranscriptPath,
+      });
     }
 
     // Persist to disk so events survive daemon restarts. The buffer lives

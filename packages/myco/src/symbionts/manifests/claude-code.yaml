@@ -11,13 +11,21 @@ hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
 capture:
-  # Auto-compact rollover: the continuation transcript's compact-summary
-  # record carries `isCompactSummary: true` and the PREDECESSOR session id
-  # in snake_case `session_id` (its own id sits in camelCase `sessionId`).
-  # Declaring this enables the miner's lineage stitch for claude-code only.
-  compactContinuation:
-    recordFlagPath: isCompactSummary
+  # Claude Code continues one conversation under a new session id on both an
+  # auto-compact rollover and a fork. Either way it carries the transcript
+  # forward and rewrites camelCase `sessionId` on every line, leaving the
+  # predecessor id only in snake_case `session_id` on the records written
+  # before the switch. Declaring this enables the miner's lineage stitch for
+  # claude-code only.
+  sessionContinuation:
     parentSessionIdPath: session_id
+    # A fork leaves no marker record — the id divergence is the only signal.
+    defaultReason: fork
+    markers:
+      # An auto-compact rollover opens the predecessor's run with a
+      # "session is being continued" record flagged `isCompactSummary`.
+      - recordFlagPath: isCompactSummary
+        reason: compact continuation
   # One file per session under a slug of the project's absolute path.
   transcriptDiscovery:
     roots: ["~/.claude/projects"]
