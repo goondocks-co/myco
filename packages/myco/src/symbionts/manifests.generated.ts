@@ -372,9 +372,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ],
         "transcriptCwdPath": "cwd"
       },
-      "compactContinuation": {
-        "recordFlagPath": "isCompactSummary",
-        "parentSessionIdPath": "session_id"
+      "sessionContinuation": {
+        "parentSessionIdPath": "session_id",
+        "defaultReason": "fork",
+        "markers": [
+          {
+            "recordFlagPath": "isCompactSummary",
+            "reason": "compact continuation"
+          }
+        ]
       }
     },
     "registration": {

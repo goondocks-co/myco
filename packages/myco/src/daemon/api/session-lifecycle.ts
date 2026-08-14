@@ -42,6 +42,13 @@ export const RegisterBody = z.object({
   agent: z.string().optional(),
   branch: z.string().optional(),
   started_at: z.string().optional(),
+  /**
+   * Where this session's transcript lives, as the agent reported it at
+   * SessionStart. Carried here because it is the earliest and most reliable
+   * source: the agent names the file it is about to write, which manifest
+   * discovery cannot find until that file exists on disk.
+   */
+  transcript_path: z.string().optional(),
 });
 
 export const UnregisterBody = z.object({ session_id: z.string() });
@@ -132,7 +139,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     // per-project hook at request-context resolution both already cover it —
     // and unlike this call site, they also cover the tool-use and subagent
     // traffic that makes up the rest of a session.
-    const { session_id, agent, branch, started_at } = RegisterBody.parse(req.body);
+    const { session_id, agent, branch, started_at, transcript_path } = RegisterBody.parse(req.body);
     const resolvedStartedAt = started_at ?? new Date().toISOString();
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
     const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
@@ -160,6 +167,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
       registry,
       logger,
       source: ENSURE_SESSION_SOURCE.API,
+      transcriptPath: transcript_path,
     });
     // `branch` is only carried on this API path (hooks discover it via
     // git provenance separately). Apply it as a follow-up update so the

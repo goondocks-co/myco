@@ -214,6 +214,29 @@ const TranscriptDiscoverySchema = z.object({
 
 export type TranscriptDiscovery = z.infer<typeof TranscriptDiscoverySchema>;
 
+/**
+ * How an agent continues a conversation under a new session id.
+ * See `CaptureManifestSchema.sessionContinuation` for the full contract.
+ */
+const SessionContinuationSchema = z.object({
+  /** Dot-path to the PREDECESSOR session id on a pre-switch record. */
+  parentSessionIdPath: z.string(),
+  /** `parent_session_reason` when no marker identifies a more specific cause. */
+  defaultReason: z.string(),
+  /**
+   * Records that relabel the continuation. A marker applies when its flag is
+   * true on a record naming the SAME predecessor the boundary resolved to —
+   * a marker naming an older ancestor describes an earlier continuation in
+   * the chain, not this one.
+   */
+  markers: z.array(z.object({
+    recordFlagPath: z.string(),
+    reason: z.string(),
+  })).default([]),
+});
+
+export type SessionContinuation = z.infer<typeof SessionContinuationSchema>;
+
 const CaptureManifestSchema = z.object({
   planDirs: z.array(z.string()).default([]),
   planTags: z.array(z.string()).default([]),
@@ -252,22 +275,35 @@ const CaptureManifestSchema = z.object({
    */
   subagentLabelPath: z.string().optional(),
   /**
-   * Where this agent's ROLLOVER compact-summary records carry the
-   * structural continuation signal. Declaring this ENABLES the miner's
-   * compact-continuation lineage stitch for the agent; absent means the
-   * agent has no rollover concept and the stitch never runs on its
-   * transcripts — a foreign transcript that happens to carry
+   * How this agent CONTINUES one conversation under a new session id.
+   * Declaring this ENABLES the miner's session-lineage stitch for the agent;
+   * absent means the agent never reissues an id and the stitch never runs on
+   * its transcripts — a foreign transcript that happens to carry
    * similar-looking fields can never write bogus lineage.
    *
-   * `recordFlagPath` must resolve to boolean true on the summary record;
-   * `parentSessionIdPath` resolves to the PREDECESSOR session id — the
-   * stitch fires only when that value differs from the session being
-   * mined (equality = an in-place compaction, not a rollover).
+   * An agent that reissues an id carries the conversation forward verbatim,
+   * so its transcript holds a run of records naming the PREDECESSOR at
+   * `parentSessionIdPath` followed by records naming the current session.
+   * The boundary between them is the whole signal:
+   *
+   *   - The predecessor is the LAST divergent id in the file. Position is
+   *     the discriminator, because a transcript carried through several
+   *     continuations holds every ancestor — and only the last one is the
+   *     immediate parent.
+   *   - A record whose value EQUALS the session being mined was written
+   *     under the id it is stored beneath, so it marks no continuation.
+   *     This is what keeps an in-place compaction from reading as a
+   *     rollover.
+   *
+   * `markers` then label WHY, without influencing which parent was chosen.
+   * A compact rollover leaves its summary record inside the predecessor's
+   * run; a plain fork leaves no marker at all and takes `defaultReason`.
+   * Deliberately NOT precedence-ordered: an ancestor's marker survives into
+   * every later copy of the transcript, so letting a marker select the
+   * parent would make a fork of an already-compacted session report the
+   * pre-compact grandparent.
    */
-  compactContinuation: z.object({
-    recordFlagPath: z.string(),
-    parentSessionIdPath: z.string(),
-  }).optional(),
+  sessionContinuation: SessionContinuationSchema.optional(),
 });
 
 const RegistrationSchema = z.object({

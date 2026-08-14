@@ -89,6 +89,7 @@ export async function main(lockNamespace?: PerUserLockNamespace) {
       agent: symbiont,
       branch,
       started_at: new Date().toISOString(),
+      transcript_path: transcriptPath,
     });
     let latestAntigravityPrompt: string | undefined;
     if (symbiont === 'antigravity' && transcriptPath) {

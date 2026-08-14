@@ -26,8 +26,90 @@ import { assertGroveProjectId, ALL_PROJECTS_SCOPE, type GroveProjectId } from '@
 import { readTranscriptMeta } from '../hooks/transcript-meta.js';
 import { evaluateSessionCaptureRules, resolveSubagentThread } from '../hooks/capture-rules.js';
 import { getManifestByName } from '../symbionts/detect.js';
+import type { SessionContinuation } from '../symbionts/manifest-schema.js';
 import { getAtPath } from '../utils/dot-path.js';
 import { stripPlanTagEnvelopes } from '../plans/tag-envelopes.js';
+
+/**
+ * The predecessor session and the reason it was continued, or null.
+ *
+ * The parent is the LAST divergent id in the file. A transcript carried
+ * through several continuations holds every ancestor, so position is what
+ * separates the immediate parent from its forebears. Record type is not
+ * filtered — the boundary falls on a record of any type.
+ *
+ * Markers only label the result. A marker counts when it sits on a record
+ * naming the SAME predecessor the boundary resolved to; one naming an older
+ * ancestor is describing an earlier continuation and is ignored. Letting a
+ * marker pick the parent instead would make a fork of an already-compacted
+ * session report the pre-compact grandparent, because the compact summary
+ * survives verbatim into every later copy of the transcript.
+ */
+function findSessionContinuation(
+  declaration: SessionContinuation,
+  sessionId: string,
+  events: ReadonlyArray<Record<string, unknown>>,
+): { parentId: string; reason: string } | null {
+  const parentIdOf = (event: Record<string, unknown>): string | null => {
+    const value = getAtPath(event, declaration.parentSessionIdPath);
+    if (typeof value !== 'string' || value.length === 0) return null;
+    // Equality means the record was written under the id it is stored
+    // beneath — no continuation happened here.
+    return value === sessionId ? null : value;
+  };
+
+  let parentId: string | null = null;
+  for (const event of events) {
+    parentId = parentIdOf(event) ?? parentId;
+  }
+  if (!parentId) return null;
+
+  for (const marker of declaration.markers) {
+    for (const event of events) {
+      if (getAtPath(event, marker.recordFlagPath) !== true) continue;
+      if (parentIdOf(event) !== parentId) continue;
+      return { parentId, reason: marker.reason };
+    }
+  }
+  return { parentId, reason: declaration.defaultReason };
+}
+
+/**
+ * The records that are THIS session's own turns.
+ *
+ * A continuation transcript opens with the predecessor's conversation copied
+ * forward verbatim. Those turns belong to the parent session and are already
+ * captured there, so mining them here files every one of them a second time
+ * under the child — visible as the parent's prompts appearing in both halves
+ * of a lineage-linked pair.
+ *
+ * The split is POSITIONAL: everything up to and including the last record
+ * that names a predecessor was carried forward, and everything after it was
+ * written by this session. Filtering per-record on "does this name a
+ * predecessor" is not enough — an agent stamps the field on only some of the
+ * copied records, so the parent's own turns leak through wherever it is
+ * absent. A live Claude Code fork puts the parent's first prompt in exactly
+ * that gap: 45 of its records carry no `session_id` at all.
+ *
+ * Marker records stay wherever they sit: a compact summary names the
+ * predecessor but is written as the continuation's own opening context, and
+ * the established contract stores it as a system-origin turn of the child.
+ */
+function eventsOwnedBySession(
+  declaration: SessionContinuation,
+  sessionId: string,
+  events: ReadonlyArray<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  let boundary = -1;
+  events.forEach((event, index) => {
+    const value = getAtPath(event, declaration.parentSessionIdPath);
+    if (typeof value === 'string' && value.length > 0 && value !== sessionId) boundary = index;
+  });
+  if (boundary < 0) return [...events];
+  return events.filter((event, index) =>
+    index > boundary
+    || declaration.markers.some((marker) => getAtPath(event, marker.recordFlagPath) === true));
+}
 
 function promptPrefix(text: string | null | undefined): string {
   return (text ?? '').slice(0, PROMPT_PREFIX_MATCH_CHARS);
@@ -393,18 +475,20 @@ export class TranscriptMiner {
     // `transcript_meta_*` rules fire at mining time exactly as at hook time.
     const parsed = this.parseAllEvents(input.transcriptPath);
 
-    // Compact-continuation lineage: when an agent rolls a conversation into
-    // a NEW transcript at auto-compact, the continuation's summary record
-    // names its predecessor. Manifest-gated (only agents declaring
-    // `capture.compactContinuation` participate) and never run on a
-    // reattributed sub-agent mine — the target there is the PARENT session,
-    // and a child transcript must not write lineage onto it.
-    if (!reattribute) {
-      this.stitchCompactContinuationLineage(input.agent, targetSessionId, parsed.events);
+    // Session-continuation lineage: when an agent carries one conversation
+    // into a NEW session id — an auto-compact rollover, a fork — the records
+    // written before the switch still name the predecessor. Manifest-gated
+    // (only agents declaring `capture.sessionContinuation` participate) and
+    // never run on a reattributed sub-agent mine — the target there is the
+    // PARENT session, and a child transcript must not write lineage onto it.
+    const continuation = reattribute ? undefined : getManifestByName(input.agent)?.capture?.sessionContinuation;
+    if (continuation) {
+      const found = findSessionContinuation(continuation, targetSessionId, parsed.events);
+      if (found) this.recordSessionLineage(targetSessionId, found.parentId, found.reason);
     }
     const { records, droppedText, noMaskableDropRuleFound } = extractUserPromptRecordsWithDrops(
       input.agent,
-      parsed.events,
+      continuation ? eventsOwnedBySession(continuation, targetSessionId, parsed.events) : parsed.events,
       input.transcriptPath,
       gate.meta,
       reattribute ? { subagentReattribution: true } : undefined,
@@ -741,53 +825,31 @@ export class TranscriptMiner {
     }
   }
 
+
   /**
-   * Stitch compact-continuation lineage from the transcript's own records.
-   *
-   * Manifest-driven: the agent's `capture.compactContinuation` declares
-   * where the rollover flag and the predecessor id live on the summary
-   * record (Claude Code: `isCompactSummary` / snake_case `session_id`).
-   * Agents without the declaration never stitch — the miner is
-   * agent-agnostic and a foreign transcript carrying similar-looking
-   * fields cannot write bogus lineage. The rollover discriminator is the
-   * parent id DIFFERING from the session being mined; in-place
-   * compactions carry the session's own id and are skipped. NULL-guarded
-   * so a re-mine never overwrites lineage already recorded — idempotent
-   * by construction. Re-registration cannot wipe the write:
-   * `upsertSession` COALESCEs lineage columns.
+   * Persist lineage onto a session that has none. A session already carrying
+   * a parent is left untouched, so a re-mine is a no-op rather than a churn.
    */
-  private stitchCompactContinuationLineage(
-    agent: string,
-    sessionId: string,
-    events: ReadonlyArray<Record<string, unknown>>,
-  ): void {
-    const declaration = getManifestByName(agent)?.capture?.compactContinuation;
-    if (!declaration) return;
-    for (const event of events) {
-      if (event.type !== 'user') continue;
-      if (getAtPath(event, declaration.recordFlagPath) !== true) continue;
-      const parentValue = getAtPath(event, declaration.parentSessionIdPath);
-      const parentId = typeof parentValue === 'string' ? parentValue : null;
-      if (!parentId || parentId === sessionId) continue;
-      try {
-        const existing = getSession(sessionId, ALL_PROJECTS_SCOPE);
-        if (!existing || existing.parent_session_id) return;
-        updateSession(sessionId, {
-          parent_session_id: parentId,
-          parent_session_reason: 'compact continuation',
-        }, ALL_PROJECTS_SCOPE);
-        this.logger?.info(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Stitched compact-continuation lineage', {
-          session_id: sessionId,
-          parent_session_id: parentId,
-        });
-      } catch (err) {
-        this.logger?.warn(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Compact-continuation lineage stitch failed', {
-          session_id: sessionId,
-          parent_session_id: parentId,
-          error: (err as Error).message,
-        });
-      }
-      return;
+  private recordSessionLineage(sessionId: string, parentId: string, reason: string): void {
+    try {
+      const existing = getSession(sessionId, ALL_PROJECTS_SCOPE);
+      if (!existing || existing.parent_session_id) return;
+      updateSession(sessionId, {
+        parent_session_id: parentId,
+        parent_session_reason: reason,
+      }, ALL_PROJECTS_SCOPE);
+      this.logger?.info(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Stitched session-continuation lineage', {
+        session_id: sessionId,
+        parent_session_id: parentId,
+        reason,
+      });
+    } catch (err) {
+      this.logger?.warn(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Session-continuation lineage stitch failed', {
+        session_id: sessionId,
+        parent_session_id: parentId,
+        reason,
+        error: (err as Error).message,
+      });
     }
   }
 
