@@ -124,12 +124,44 @@ describe('phantom-reaper', () => {
     expect(reapPhantomSession('real2', { logger: noopLogger, findTranscript: noTranscript })).toBeNull();
   });
 
-  it('never reaps a session with a recorded transcript_path', () => {
+  it('never reaps a session whose recorded transcript_path exists on disk', () => {
     seedSession('real3', { transcriptPath: '/tmp/some-transcript.jsonl' });
     const batchId = seedSentinelBatch('real3');
     seedActivity('real3', batchId, 'myco:inject_cortex');
 
-    expect(sessionLooksInjectionOnly('real3')).toBe(false);
+    const opts = { logger: noopLogger, findTranscript: noTranscript, transcriptExists: () => true };
+    expect(sessionQualifiesForPhantomReap('real3', opts)).toBe(false);
+    expect(reapPhantomSession('real3', opts)).toBeNull();
+    expect(getSession('real3', ALL_PROJECTS_SCOPE)).not.toBeNull();
+  });
+
+  // Regression gate: `transcript_path` records the path an agent declared
+  // it would write, and SessionStart stamps it before the file exists. A
+  // predicate that reads the column as proof of content stops reaping this
+  // whole class, and phantoms accumulate silently.
+  it('reaps an injection-only session whose recorded transcript_path is absent from disk', () => {
+    seedSession('ph5', { transcriptPath: '/tmp/never-written.jsonl' });
+    const batchId = seedSentinelBatch('ph5');
+    seedActivity('ph5', batchId, 'myco:inject_cortex');
+
+    const opts = { logger: noopLogger, findTranscript: noTranscript, transcriptExists: () => false };
+    expect(sessionLooksInjectionOnly('ph5')).toBe(true);
+    expect(sessionQualifiesForPhantomReap('ph5', opts)).toBe(true);
+    expect(reapPhantomSession('ph5', opts)?.deleted).toBe(true);
+    expect(getSession('ph5', ALL_PROJECTS_SCOPE)).toBeNull();
+  });
+
+  it('refuses to reap when the existence check throws (absence unproven)', () => {
+    seedSession('ph6', { transcriptPath: '/tmp/unstattable.jsonl' });
+    const batchId = seedSentinelBatch('ph6');
+    seedActivity('ph6', batchId, 'myco:inject_cortex');
+
+    const boom = () => { throw new Error('stat failed'); };
+    expect(sessionQualifiesForPhantomReap('ph6', {
+      logger: noopLogger,
+      findTranscript: noTranscript,
+      transcriptExists: boom,
+    })).toBe(false);
   });
 
   it('never reaps when transcript discovery finds a file on disk (last-moment veto)', () => {
@@ -223,6 +255,34 @@ describe('phantom-reaper', () => {
 
       const ids = findPhantomCandidates(['registered']).map((c) => c.id);
       expect(ids).toEqual(['aged']);
+    });
+
+    it('returns a phantom whose transcript_path was stamped but never written', () => {
+      seedSession('stamped', { transcriptPath: '/tmp/stamped-never-written.jsonl' });
+      const batch = seedSentinelBatch('stamped');
+      seedActivity('stamped', batch, 'myco:inject_cortex');
+
+      expect(findPhantomCandidates([]).map((c) => c.id)).toEqual(['stamped']);
+    });
+
+    it('sweep reaps a stamped-path phantom and spares one whose file is on disk', async () => {
+      seedSession('gone', { transcriptPath: '/tmp/gone.jsonl' });
+      seedActivity('gone', seedSentinelBatch('gone'), 'myco:inject_cortex');
+      seedSession('here', { transcriptPath: '/tmp/here.jsonl' });
+      seedActivity('here', seedSentinelBatch('here'), 'myco:inject_cortex');
+
+      await runSessionMaintenance({
+        logger: noopLogger,
+        registeredSessionIds: () => [],
+        embeddingManager: { onRemoved: () => {} } as never,
+        transcriptMiner: { reconcileAndAttributeResponses: () => ({}) } as never,
+        resolveProjectVaultDir: () => null,
+        findTranscript: () => null,
+        transcriptExists: (p) => p === '/tmp/here.jsonl',
+      });
+
+      expect(getSession('gone', ALL_PROJECTS_SCOPE)).toBeNull();
+      expect(getSession('here', ALL_PROJECTS_SCOPE)).not.toBeNull();
     });
 
     it('does not return sessions with real batches or real activities', () => {

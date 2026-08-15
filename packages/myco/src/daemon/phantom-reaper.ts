@@ -13,8 +13,12 @@
  *
  *   1. Every batch is a RECOVERED-kind sentinel row.
  *   2. Every activity is a Myco-origin injection (`myco:inject_%`).
- *   3. No transcript exists: `sessions.transcript_path` is NULL AND
- *      manifest-driven discovery (`findTranscriptFor`) resolves nothing.
+ *   3. No transcript exists ON DISK: neither the path recorded in
+ *      `sessions.transcript_path` nor manifest-driven discovery
+ *      (`findTranscriptFor`) resolves to a file that is actually there.
+ *      A recorded path is a claim, not proof — SessionStart stamps
+ *      `transcript_path` from the hook payload before the agent has
+ *      written the file, so only a filesystem check settles it.
  *
  * Deletion goes through `deleteSessionCascade` — the ONLY session
  * deletion path — with its own tombstone source, so buffer replay and
@@ -26,6 +30,8 @@
  *   - `findPhantomCandidates` — the session-maintenance sweep, which
  *     also collects phantoms from before this code shipped.
  */
+
+import fs from 'node:fs';
 
 import { getDatabase } from '@myco/db/client.js';
 import { getSession, deleteSessionCascade, type DeleteCascadeResult } from '@myco/db/queries/sessions.js';
@@ -78,16 +84,19 @@ const INJECTION_TOOL_LIKE = `${INJECTION_TOOL_NAME_PREFIX.replaceAll('_', '\\_')
  * the two entry points reap different session classes).
  *
  * A session matches when ALL hold:
- *  - no recorded transcript path;
  *  - at least one batch, and every batch is a RECOVERED-kind sentinel
  *    whose `response_summary` is still NULL — a sentinel that captured a
  *    real assistant response (Stop's `last_assistant_message` lands on it
  *    via `setResponseSummary`) is preserved content, never phantom;
  *  - every activity is a Myco-origin injection.
+ *
+ * Deliberately says NOTHING about `transcript_path`. The column records
+ * the path an agent declared it would write, not a file anyone has seen,
+ * so it cannot stand in for on-disk existence; that question belongs to
+ * `sessionQualifiesForPhantomReap`, which stats the filesystem.
  */
 const PHANTOM_SHAPE_SQL = `
-       s.transcript_path IS NULL
-       AND EXISTS (SELECT 1 FROM prompt_batches pb WHERE pb.session_id = s.id)
+       EXISTS (SELECT 1 FROM prompt_batches pb WHERE pb.session_id = s.id)
        AND NOT EXISTS (
          SELECT 1 FROM prompt_batches pb
          WHERE pb.session_id = s.id
@@ -149,6 +158,14 @@ export interface PhantomReapOptions {
   /** Injectable transcript discovery — tests stub this; production uses manifest discovery. */
   findTranscript?: (agent: string, sessionId: string) => string | null;
   /**
+   * Injectable existence check for the path recorded on the session row —
+   * tests stub this; production stats the filesystem. Separate from
+   * `findTranscript` because a recorded path can sit outside every layout
+   * the agent's manifest declares, and plugin-reported agents declare no
+   * layout at all, so discovery alone would never see it.
+   */
+  transcriptExists?: (transcriptPath: string) => boolean;
+  /**
    * The reconciler's convergence probe. An unconverged buffer may hold the
    * ONLY copy of real prompt events the DB hasn't seen (daemon wedged
    * mid-session, failed startup replay) — the DB shape then lies about the
@@ -161,8 +178,11 @@ export interface PhantomReapOptions {
 
 /**
  * Full predicate: DB shape plus the on-disk transcript veto. A transcript
- * that exists anywhere (recorded path or manifest discovery) means the
- * session had, or may still gain, real content — never reap it.
+ * that exists anywhere — at the path the session recorded, or wherever
+ * manifest discovery resolves — means the session had, or may still gain,
+ * real content, so never reap it. Both directions stat the filesystem: a
+ * recorded path whose file is absent is a session the agent promised to
+ * write and never did, which is exactly the phantom shape.
  */
 export function sessionQualifiesForPhantomReap(sessionId: string, opts: PhantomReapOptions): boolean {
   if (!sessionLooksInjectionOnly(sessionId)) return false;
@@ -178,11 +198,13 @@ export function sessionQualifiesForPhantomReap(sessionId: string, opts: PhantomR
     // A failing probe is not proof of convergence — refuse to reap.
     return false;
   }
+  const exists = opts.transcriptExists ?? fs.existsSync;
   const discover = opts.findTranscript ?? findTranscriptFor;
   try {
+    if (row.transcript_path && exists(row.transcript_path)) return false;
     if (discover(row.agent, sessionId)) return false;
   } catch {
-    // Discovery failure is not proof of absence — refuse to reap.
+    // A failed stat or discovery is not proof of absence — refuse to reap.
     return false;
   }
   return true;
@@ -211,6 +233,8 @@ export interface UnregisterPhantomReapDeps {
   /** Bootstrap vault dir fallback when the request context carries no project vault. */
   fallbackVaultDir: string;
   findTranscript?: (agent: string, sessionId: string) => string | null;
+  /** See {@link PhantomReapOptions.transcriptExists}. */
+  transcriptExists?: (transcriptPath: string) => boolean;
   /** See {@link PhantomReapOptions.hasUnconvergedBuffer} — REQUIRED at the
    *  unregister site in production wiring; typed optional only so minimal
    *  test constructions compile. */
@@ -234,6 +258,7 @@ export function createUnregisterPhantomReap(deps: UnregisterPhantomReapDeps) {
       result = reapPhantomSession(sessionId, {
         logger: deps.logger,
         findTranscript: deps.findTranscript,
+        transcriptExists: deps.transcriptExists,
         hasUnconvergedBuffer: deps.hasUnconvergedBuffer,
       });
     } catch (err) {
