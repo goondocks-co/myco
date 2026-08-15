@@ -105,6 +105,23 @@ process-level mock registrations — the only cure is process isolation.
 4. **Verify.** Run `npm test` (the full suite) at least 3 times. Confirm the
    previously failing tests are consistently stable, then check CI.
 
+**Second known occurrence — prefer an env seam over mocking `node:os`:**
+- File: `tests/capture/audit/reconcile-claude-code-sdk-entrypoint.test.ts`
+- The test used `mock.module('node:os', ...)` to fake the home directory, but
+  the replacement module was partial and shared process-wide. The code under
+  test resolved the home directory via the `HOME` environment variable
+  (falling back to `os.homedir()` only when `HOME` is unset), read fresh via
+  a default parameter — so a shared test process picked up the partial
+  `node:os` mock for unrelated consumers and broke transcript-root
+  resolution. A narrower, differently-grouped test run did not catch it.
+- Fix: replace the `node:os` module mock with setting the `HOME` environment
+  variable directly for the test — since the target code already reads
+  `HOME` first, no module mock is needed at all.
+- Lesson: before reaching for `mock.module()`, check whether the code under
+  test already supports an environment-variable seam (e.g. `HOME`). If it
+  does, set the env var instead of mocking the module — it avoids the
+  process-wide partial-module hazard entirely.
+
 **Rule:** `mock.module()` should be a last resort due to its process-scope
 semantics. Prefer dependency injection, seed-based fixtures, or wrapper modules
 that accept injectable collaborators where possible.
