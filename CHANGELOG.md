@@ -2,6 +2,12 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.8] - 2026-08-15
+
+### Fixed
+
+- **Empty sessions no longer pile up in your session list.** Opening a coding agent and closing it again without typing anything still creates a session, because Myco offers it project context the moment it starts. Those sessions have never been worth keeping, and Myco has always cleaned them up — but it decided what to clean up by trusting the agent's word about where it would write its transcript, rather than checking whether the file was ever written. Sessions abandoned before the agent wrote anything slipped through and stayed in the list forever, showing a single prompt and an ID for a title. Myco now checks the disk, so they're cleared as soon as the agent exits. Anything with a real transcript is left alone, as before.
+
 ## [1.4.7] - 2026-08-14
 
 ### Fixed
