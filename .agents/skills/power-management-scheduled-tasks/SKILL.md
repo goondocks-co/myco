@@ -321,6 +321,20 @@ if (!effective.runWhenCold && context.isProjectCold?.(projectScope)) continue;
 
 Catch-up tasks (e.g. `canopy-describe`) set `runWhenCold: true` so their backlog drains even on cold projects, while the rest of the tasks stay paused by the normal cold gate.
 
+### Task-Provider Gate (`requiresTaskProvider` / `effectiveTaskScheduleEnabled`)
+
+Tasks like `canopy-describe` set `requiresTaskProvider: true` under `schedule` in their YAML definition (`packages/myco/src/agent/definitions/tasks/*.yaml`). This gate is centralized in `effectiveTaskScheduleEnabled()` (`packages/myco/src/config/capabilities.ts`), which outranks even an explicit schedule-enabled override — it also covers hand-edited configs that enable the schedule without choosing a provider:
+
+```typescript
+// packages/myco/src/config/capabilities.ts
+const requiresProvider = gate?.requiresTaskProvider
+  ?? BUNDLED_TASK_SCHEDULE_GATES.get(taskName)?.requiresTaskProvider
+  ?? false;
+if (requiresProvider && !taskHasExplicitProvider(config, taskName)) return false;
+```
+
+Consumers: `packages/myco/src/daemon/task-scheduling.ts` calls it during scheduler dispatch, `packages/myco/src/daemon/task-scheduler.ts` passes `requiresTaskProvider` through the scheduleGate, and `packages/myco/src/daemon/api/agent-tasks.ts` re-derives `effectiveScheduleEnabled` for the UI's enabled badge (defense-in-depth so a task can't appear enabled without a provider).
+
 ### Foreign-Runtime Gate (`projectRuntimeIsForeign`)
 
 `projectRuntimeIsForeign(vaultDir, mycoHome)` in `packages/myco/src/daemon/update-checker.ts` guards against a foreign `MYCO_HOME` project holding the daemon awake. It is checked at canopy scan entry (`packages/myco/src/daemon/jobs/canopy-scan.ts`) and inside the scheduled-task iteration in `packages/myco/src/daemon/task-scheduling.ts` (`if (projectRuntimeIsForeign(scope.projectVaultDir, mycoHome))`), gating both canopy scan entry points and `serviceableProjectIds` construction.

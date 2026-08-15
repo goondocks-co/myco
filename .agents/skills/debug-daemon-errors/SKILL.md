@@ -59,6 +59,7 @@ Each daemon subsystem has a distinct failure signature:
 | **Daemon restart/reconciliation** | PID conflicts, EPERM errors, MCP bridge indefinite reconnect loops |
 | **Daemon startup ordering** | "Database is locked" errors during startup due to FTS rebuild before port-claim |
 | **Scheduler task-config resolution** | Task stays disabled after grove tier config flips it on, or a grove config change never reaches a running task; config was compiled once at registration instead of per-tick/per-project |
+| **Host membership registry** | One corrupt host directory under `~/.myco-team/hosts/` throws during registry enumeration; an unguarded reconcile call at boot let that single corrupt file kill the whole daemon |
 
 ---
 
@@ -116,6 +117,24 @@ Also verify `runIn` includes all power states where the job should fire — a jo
 **Where this is reachable:** Not just deliberate operator/CLI code paths — any per-request code path that transitively calls into a lock-protected function from inside another lock-protected function on the same lock file can trigger it (e.g. project-lease or config-mutation helpers called from within another locked section).
 
 **Fix pattern:** Never call `withFileLockSync()` on a lock path that may already be held by an enclosing call on the same call stack. Keep locked sections leaf-level (no calls to other lock-acquiring helpers inside the callback), or refactor the inner operation to a lock-free variant that the outer holder can call directly.
+
+### Host Registry — Quarantine Corrupt Host Membership Instead of Crashing
+
+**Problem:** One loose-permission or malformed file under `~/.myco-team/hosts/<hostId>/` caused `reconcileHostRollbackBearers()` (`packages/myco/src/host/registry.ts`) to run unguarded at boot. Every registry enumeration threw `HostJoinStateCorruptError` on the first bad host directory and aborted the whole enumeration loop — a single corrupt file had daemon-wide blast radius and could keep the daemon from booting at all.
+
+**Fix pattern:** `readHostMembershipSnapshotsFromEntriesUnlocked()` now catches `HostJoinStateCorruptError` per-entry inside the enumeration loop, pushes the failure into a `quarantined: QuarantinedHostMembership[]` array (readable via `quarantinedHostMemberships()`), and continues to the next entry — the corrupt host fails closed (its membership just doesn't load) while every other host and the daemon boot proceed normally. Non-`HostJoinStateCorruptError` exceptions still propagate.
+
+```typescript
+try {
+  const snapshot = readHostMembershipSnapshotUnlocked(entry.name);
+  if (snapshot) results.push(snapshot);
+} catch (error) {
+  if (!(error instanceof HostJoinStateCorruptError)) throw error;
+  quarantined.push({ hostId: entry.name, detail: error.message });
+}
+```
+
+**Lesson:** Any enumeration loop over independently-owned directory entries (hosts, projects, groves) should isolate per-entry corruption instead of letting one bad entry abort the whole loop — especially one that runs at boot.
 
 ### SQLite FK Cascade — Wrong Deletion Order
 
@@ -297,6 +316,17 @@ Log the session type, parent ID, and source at creation time with structured fie
 
 Add a duplicate-detection guard at hook processing time — check for a session with the same ID created within the last 10 seconds and emit a structured warning if found. This surfaces hook double-fire without requiring a schema change.
 
+### Phantom / Split / Recovered-Empty Session Root Causes
+
+Three independent capture defects can all present as "phantom" or duplicate sessions. Diagnose which one you're looking at before picking a fix — they don't share a solution:
+
+1. **Session splitting at compaction** — Claude Code (1M-context builds) rolls a conversation into a NEW session id + transcript file when it auto-compacts ("This session is being continued from a previous conversation..."). This is a client-side session-identity change, not a capture bug — do not try to force session continuity across it.
+2. **Injection-only phantom sessions** — A symbiont launch that fires `SessionStart` but exits before any prompt still receives a Cortex/spores injection; the injection activity forces `ensureOpenBatch` to fabricate a RECOVERED-sentinel batch, producing a visible 1-prompt session with no transcript. Fixed by `packages/myco/src/daemon/phantom-reaper.ts`: `findPhantomCandidates()` (session-maintenance sweep) and the SessionEnd-time reap both delete exactly this class — every batch RECOVERED-kind, every activity `myco:inject_%`-origin, and no resolvable transcript — through `deleteSessionCascade` (the only session deletion path), tombstoned so buffer replay can't resurrect the row.
+3. **Stale-sweep false completion** — `completeStaleActiveSessions()` (`packages/myco/src/daemon/jobs/session-maintenance.ts`) used to judge freshness from `prompt_batches.started_at` alone, so a session running many tool calls under one long open batch (e.g. a 60+ minute agent turn with no new user prompt) got swept mid-flight. Fixed by also considering `MAX(activities.timestamp)`: a session is only stale once BOTH the last prompt and the last activity are past the threshold.
+4. **Mid-session fork reissues the session id** — Claude Code's `SessionStart` with `source: "fork"` reissues a brand-new session id mid-conversation (distinct from compaction and from a fresh session). Myco previously had no fork concept, so a fork showed up as an orphaned split: records under the old id stop and a new id starts with no lineage link. The manifest schema (`packages/myco/src/symbionts/manifest-schema.ts`) declares this per-agent via an optional `sessionContinuation` (`parentSessionIdPath` + `defaultReason`) — declaring it enables the miner's session-lineage stitch for that agent; an agent that never reissues an id leaves it absent so a foreign transcript can never write bogus lineage. The stitch uses **positional boundary detection, not per-record trust**: the predecessor is the LAST divergent id in the file (a transcript carried through several continuations holds every ancestor, and only the last is the immediate parent), and a record whose value equals the session being mined marks no continuation (keeps in-place compaction from reading as a rollover). `markers` label *why* a continuation happened without influencing which parent is chosen — deliberately not precedence-ordered, so a fork of an already-compacted session still reports the immediate parent, not the pre-compact grandparent. The transcript path must arrive (via the hook payload, not manifest discovery) before this boundary can even be computed — see `ensureTranscriptPath()` in `packages/myco/src/daemon/session-lifecycle.ts`.
+
+**Verification gotcha:** offline transcript-replay validation is necessary but not sufficient for hook-driven capture bugs like this one — it can confirm the stitch logic against a static transcript but can't exercise the live hook sequencing (event ordering, transcript-path arrival timing) that only a real forked session reproduces. Always follow an offline replay pass with a live smoke test (actually trigger a fork and confirm lineage in the vault) before declaring a session-lineage fix verified.
+
 ---
 
 ## Step 8 — Daemon Restart Resilience Patterns
@@ -403,6 +433,9 @@ When daemon.json exists but daemon won't start, check these four sources in orde
 | Daemon enters deep sleep despite active session work (long tool-use turn, no new user prompt) | Activity only recorded on `user_prompt` events (fixed) — verify liveness now flows through `classifyRequest()` in `packages/myco/src/daemon/server.ts`, not event-type gating | Confirm `/health`, `/ready`, and the power-state route are in `PROBE_PATHS`; a probe/assertion-source failure must fail toward staying awake (`providesHold`/`currentAssertions`), never toward silently allowing sleep |
 | Headless daemon can't resolve/auth the Claude Code CLI on a serving box (ssh/nohup, Parallels VM) | Daemon inherits a bare PATH missing `~/.local/bin`, and/or runs without an unlocked login keychain session so CLI credential lookups fail | Ensure the daemon's spawn environment sources the login shell PATH (or sets it explicitly) and that the headless session has an unlocked keychain before the CLI is invoked |
 | MCP client sees stalled/mismatched responses across the CLI, stdio bridge, or an SDK client | Response envelope wasn't echoing the request id | Fix at the shared envelope layer (the single choke point all MCP clients pass through) rather than patching each call site |
+| Daemon crashes/won't boot over one corrupt host directory | `reconcileHostRollbackBearers()` ran unguarded; first `HostJoinStateCorruptError` aborted the whole registry enumeration | Catch per-entry inside the enumeration loop, push to `quarantined`; inspect via `quarantinedHostMemberships()` |
+| Session appears duplicated/phantom after a long turn or client compaction | One of four distinct defects: client-side compaction split, injection-only phantom (no transcript), stale-sweep false completion, or a mid-session fork reissuing the session id | Disambiguate first (see Step 7), then apply the matching fix — they are not interchangeable |
+| Forked session shows as orphaned split with no lineage link | Agent's manifest lacks `sessionContinuation`, or the transcript path hadn't arrived yet when the boundary was computed | Declare `sessionContinuation` (`parentSessionIdPath`+`defaultReason`) in the agent manifest; verify with a live smoke test, not just offline replay |
 
 ---
 
