@@ -215,6 +215,12 @@ export interface SessionMaintenanceDeps {
    * exercised without touching real agent home directories.
    */
   findTranscript?: (agent: string, sessionId: string) => string | null;
+  /**
+   * Injectable existence check for the path recorded on the session row.
+   * Production stats the filesystem; tests stub it so the veto is
+   * exercised without seeding real transcript files.
+   */
+  transcriptExists?: (transcriptPath: string) => boolean;
 }
 
 /**
@@ -308,6 +314,7 @@ export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promi
     const result = reapPhantomSession(candidate.id, {
       logger,
       findTranscript: deps.findTranscript,
+      transcriptExists: deps.transcriptExists,
       hasUnconvergedBuffer: deps.hasUnconvergedBuffer,
     });
     if (!result) continue;
