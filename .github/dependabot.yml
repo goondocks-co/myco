@@ -65,6 +65,17 @@ updates:
       prefix: "deps"
 
   - package-ecosystem: "npm"
+    directory: "/packages/myco-server/worker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "npm"
     directory: "/.opencode"
     schedule:
       interval: "weekly"

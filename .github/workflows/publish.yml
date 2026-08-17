@@ -240,6 +240,7 @@ jobs:
             packages/myco/ui/package-lock.json
             packages/myco-team/worker/package-lock.json
             packages/myco-collective/worker/package-lock.json
+            packages/myco-server/worker/package-lock.json
 
       - run: npm ci
       - name: Install myco UI deps
@@ -251,7 +252,7 @@ jobs:
       - name: Install worker deps (for check:workers lint gate)
         run: |
           set -eu
-          for workspace in packages/myco-team/worker packages/myco-collective/worker; do
+          for workspace in packages/myco-team/worker packages/myco-collective/worker packages/myco-server/worker; do
             for attempt in 1 2 3; do
               if npm ci --prefix "$workspace"; then
                 break
