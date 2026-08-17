@@ -1,0 +1,21 @@
+{
+  "name": "@goondocks/myco-server-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit",
+    "schema:emit": "bun -e \"import{renderSchemaSql}from './src/db/migrate.ts';await Bun.write('schema.sql',renderSchemaSql())\"",
+    "schema:apply": "wrangler d1 execute myco-server --local --file ./schema.sql",
+    "schema:apply:remote": "wrangler d1 execute myco-server --remote --file ./schema.sql",
+    "token:mint": "bun scripts/mint-local.ts",
+    "token:revoke": "bun scripts/revoke-local.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260731.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.123.0"
+  }
+}
