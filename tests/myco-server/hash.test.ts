@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { sha256Hex } from '../../packages/myco-server/worker/src/hash.js';
+import { sha256Hex } from '@myco-server-worker/hash.js';
 
 describe('sha256Hex', () => {
   it('matches the known digest of "abc"', async () => {

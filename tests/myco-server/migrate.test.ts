@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { renderSchemaSql } from '../../packages/myco-server/worker/src/db/migrate.js';
-import { SCHEMA_DDL } from '../../packages/myco-server/worker/src/db/schema.js';
+import { renderSchemaSql } from '@myco-server-worker/db/migrate.js';
+import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 
 describe('deploy-time schema', () => {
   it('renders every statement as executable SQL', () => {

@@ -1,4 +1,5 @@
 export interface D1RunResult {
+  results: unknown[];
   meta: { changes: number };
 }
 

@@ -1,14 +1,14 @@
 import { describe, it, expect } from 'bun:test';
-import { parseEnvelope, MAX_PAYLOAD_BYTES, MAX_ID_CHARS, MAX_PAYLOAD_DEPTH, MAX_PAYLOAD_NODES } from '../../packages/myco-server/worker/src/ingest/envelope.js';
+import { parseEnvelope, MAX_PAYLOAD_BYTES, MAX_ID_CHARS, MAX_PAYLOAD_DEPTH, MAX_PAYLOAD_NODES } from '@myco-server-worker/ingest/envelope.js';
 
-const good = { eventId: 'evt_1', sessionId: 'sess_1', kind: 'prompt', createdAt: 1_000, transport: 'cli', payload: { text: 'hi' } };
+const good = { eventId: 'evt_1', sessionId: 'sess_1', kind: 'prompt', createdAt: 1_000, channel: 'cli', payload: { text: 'hi' } };
 
 describe('envelope', () => {
   it('refuses the pre-2.0 hook body shape', () => {
     const legacy = { type: 'user_prompt_submit', prompt: 'hi', session_id: 'sess_1', agent: 'claude-code', transcript_path: '/tmp/t.jsonl' };
     const p = parseEnvelope(legacy);
     expect(p.ok).toBe(false);
-    if (!p.ok) expect(p.reason).toBe('eventId must be a non-empty string');
+    if (!p.ok) expect(p.reason).toBe('unknown field type');
   });
 
   it('accepts a well-formed envelope', () => {
@@ -17,26 +17,38 @@ describe('envelope', () => {
   });
 
   it('names the offending field', () => {
-    for (const [field, value] of [['eventId', undefined], ['kind', ''], ['transport', 'pigeon']] as const) {
+    for (const [field, value] of [['eventId', undefined], ['kind', ''], ['channel', 'pigeon']] as const) {
       const p = parseEnvelope({ ...good, [field]: value });
       expect(p.ok).toBe(false);
       if (!p.ok) expect(p.reason).toContain(field);
     }
   });
 
-  it('bounds identifier length', () => {
+  it('refuses any field it does not store, naming it', () => {
+    for (const extra of ['machineId', 'projectId', 'tokenId', 'attachments', 'transport']) {
+      const p = parseEnvelope({ ...good, [extra]: 'x' });
+      expect(p.ok).toBe(false);
+      if (!p.ok) expect(p.reason).toBe(`unknown field ${extra}`);
+    }
+    expect(parseEnvelope([good]).ok).toBe(false);
+  });
+
+  it('bounds identifier length to fit a machine id and a uuid', () => {
+    expect(MAX_ID_CHARS).toBeGreaterThanOrEqual(128 + 1 + 36);
     for (const field of ['eventId', 'sessionId', 'kind'] as const) {
       const p = parseEnvelope({ ...good, [field]: 'x'.repeat(MAX_ID_CHARS + 1) });
       expect(p.ok).toBe(false);
       if (!p.ok) expect(p.reason).toContain(field);
     }
-    expect(parseEnvelope({ ...good, eventId: 'x'.repeat(MAX_ID_CHARS) }).ok).toBe(true);
+    expect(parseEnvelope({ ...good, eventId: `${'m'.repeat(128)}:${'0'.repeat(36)}` }).ok).toBe(true);
   });
 
-  it('refuses an oversized payload', () => {
+  it('refuses an oversized payload, measured in UTF-8 bytes', () => {
     const p = parseEnvelope({ ...good, payload: { b: 'x'.repeat(MAX_PAYLOAD_BYTES + 1) } });
     expect(p.ok).toBe(false);
     if (!p.ok) expect(p.reason).toContain('payload');
+    const wide = parseEnvelope({ ...good, payload: '€'.repeat(Math.floor(MAX_PAYLOAD_BYTES / 3) + 10) });
+    expect(wide.ok).toBe(false);
   });
 
   it('refuses a payload nested past the depth ceiling', () => {
@@ -57,16 +69,13 @@ describe('envelope', () => {
     expect(parseEnvelope({ ...good, payload: new Array(1_000).fill(0) }).ok).toBe(true);
   });
 
-  it('drops a caller-supplied machineId', () => {
-    const p = parseEnvelope({ ...good, machineId: 'spoofed' });
-    expect(p.ok).toBe(true);
-    if (p.ok) expect('machineId' in p.value).toBe(false);
-  });
-
-  it('carries the payload serialized once', () => {
+  it('carries the payload serialized once, with its bytes', () => {
     const p = parseEnvelope(good);
     expect(p.ok).toBe(true);
-    if (p.ok) expect(p.value.payloadJson).toBe(JSON.stringify(good.payload));
+    if (p.ok) {
+      expect(p.value.payloadJson).toBe(JSON.stringify(good.payload));
+      expect(new TextDecoder().decode(p.value.payloadBytes)).toBe(p.value.payloadJson);
+    }
     const empty = parseEnvelope({ ...good, payload: undefined });
     if (empty.ok) expect(empty.value.payloadJson).toBe('null');
   });
