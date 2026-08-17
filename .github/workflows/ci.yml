@@ -31,6 +31,7 @@ jobs:
       # check:workers without their own node_modules installed first.
       - run: npm ci --prefix packages/myco-team/worker
       - run: npm ci --prefix packages/myco-collective/worker
+      - run: npm ci --prefix packages/myco-server/worker
       - run: npm run lint
       # Build the host-target libsqlite3 so the compiled binary can embed it.
       - run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64
