@@ -1,4 +1,4 @@
-import type { RateLimiter } from '../../../packages/myco-server/worker/src/env.js';
+import type { RateLimiter } from '@myco-server-worker/env.js';
 
 export interface BoundedRateLimiter extends RateLimiter {
   size(): number;

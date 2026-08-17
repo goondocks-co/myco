@@ -2,10 +2,12 @@ export const MAX_BODY_BYTES = 327_680;
 
 export type BoundedBody = { ok: true; text: string; bytes: number } | { ok: false; reason: string };
 
-/** Reads a request body up to `max` bytes. An oversized stream is read to its end and discarded — never cancelled, never released, never left partially read. */
+const decoder = new TextDecoder();
+
+/** Reads a request body up to `max` bytes. A body whose declared content-length exceeds `max` is refused without being read. Once reading has begun, an oversized stream is read to its end and discarded — never cancelled, never released, never left partially read. */
 export async function readBoundedBody(request: Request, max: number): Promise<BoundedBody> {
-  const declared = Number(request.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > max) {
+  const declared = request.headers.get('content-length');
+  if (declared !== null && Number(declared) > max) {
     return { ok: false, reason: `body exceeds ${max} bytes` };
   }
   if (!request.body) return { ok: true, text: '', bytes: 0 };
@@ -23,7 +25,15 @@ export async function readBoundedBody(request: Request, max: number): Promise<Bo
     }
     chunks.push(value);
   }
-  return { ok: true, text: await new Blob(chunks).text(), bytes: total };
+  return { ok: true, text: decoder.decode(concat(chunks, total)), bytes: total };
+}
+
+function concat(chunks: Uint8Array[], total: number): Uint8Array {
+  if (chunks.length === 1) return chunks[0];
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) { joined.set(c, offset); offset += c.byteLength; }
+  return joined;
 }
 
 /** Discards the rest of a stream to its end. */

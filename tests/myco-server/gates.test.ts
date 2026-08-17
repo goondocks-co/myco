@@ -2,16 +2,16 @@ import { describe, it, expect } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROUTES } from '../../packages/myco-server/worker/src/routes.js';
-import worker from '../../packages/myco-server/worker/src/index.js';
+import { ROUTES } from '@myco-server-worker/routes.js';
+import worker from '@myco-server-worker/index.js';
 import { createIngestThrottle } from './helpers/throttle.js';
 import { sqliteD1, seededSqlite } from './helpers/d1.js';
-import { issueMemberToken } from '../../packages/myco-server/worker/src/auth/tokens.js';
-import { MEMBER_TOKEN_BYTE_QUOTA, RETRY_AFTER_SECONDS, SERVER_SCHEMA_VERSION } from '../../packages/myco-server/worker/src/constants.js';
-import { renderSchemaSql } from '../../packages/myco-server/worker/src/db/migrate.js';
-import { SCHEMA_DDL } from '../../packages/myco-server/worker/src/db/schema.js';
-import { cloudflareSourceOf } from '../../packages/myco-server/worker/src/platform/cloudflare.js';
-import { sha256Hex } from '../../packages/myco-server/worker/src/hash.js';
+import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { MEMBER_TOKEN_BYTE_QUOTA, RETRY_AFTER_SECONDS, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { renderSchemaSql } from '@myco-server-worker/db/migrate.js';
+import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
+import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare.js';
+import { sha256Hex } from '@myco-server-worker/hash.js';
 import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
 
 const WORKER = fileURLToPath(new URL('../../packages/myco-server/worker/', import.meta.url));
@@ -102,7 +102,7 @@ function sqliteEnv(opts: { staleBytesWritten?: number } = {}) {
 }
 
 const envelope = (over: Record<string, unknown> = {}) =>
-  JSON.stringify({ eventId: 'evt_1', sessionId: 'sess_1', kind: 'prompt', createdAt: 5, transport: 'cli', payload: { t: 'hi' }, ...over });
+  JSON.stringify({ eventId: 'evt_1', sessionId: 'sess_1', kind: 'prompt', createdAt: 5, channel: 'cli', payload: { t: 'hi' }, ...over });
 const memberPost = (token: string, body: string) =>
   withSource('/events', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body });
 
@@ -139,11 +139,14 @@ describe('gates', () => {
       new Request(`https://s/events?projectId=proj_1&tokenId=${t1.tokenId}&machineId=machine_1`, {
         method: 'POST',
         headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', 'x-myco-project': 'proj_1', 'x-myco-machine': 'machine_1', 'x-myco-token': t1.tokenId },
-        body: JSON.stringify({ eventId: 'evt_1', sessionId: 'sess_1', kind: 'prompt', createdAt: 5, transport: 'cli', payload: { t: 'hi' }, ...spoof }),
+        body: JSON.stringify({ eventId: 'evt_1', sessionId: 'sess_1', kind: 'prompt', createdAt: 5, channel: 'cli', payload: { t: 'hi' }, ...spoof }),
       });
-    const spoof = { projectId: 'proj_1', tokenId: t1.tokenId, machineId: 'machine_1' };
     expect(await (await worker.fetch(post(t1.token, {}), e)).json()).toEqual({ persisted: true });
-    expect(await (await worker.fetch(post(t2.token, spoof), e)).json()).toEqual({ persisted: true });
+    expect(await (await worker.fetch(post(t2.token, {}), e)).json()).toEqual({ persisted: true });
+    for (const spoof of [{ projectId: 'proj_1' }, { tokenId: t1.tokenId }, { machineId: 'machine_1' }]) {
+      const res = await worker.fetch(post(t2.token, { ...spoof, eventId: 'evt_spoof' }), e);
+      expect(await res.json()).toEqual({ persisted: false, reason: `unknown field ${Object.keys(spoof)[0]}` });
+    }
     const sessions = sqlite.query(`SELECT project_id, machine_id, created_by_token_id FROM sessions ORDER BY project_id`).all();
     expect(sessions).toEqual([
       { project_id: 'proj_1', machine_id: 'machine_1', created_by_token_id: t1.tokenId },
@@ -151,6 +154,29 @@ describe('gates', () => {
     ]);
     const events = sqlite.query(`SELECT project_id, token_id FROM events ORDER BY project_id`).all();
     expect(events).toEqual([{ project_id: 'proj_1', token_id: t1.tokenId }, { project_id: 'proj_2', token_id: t2.tokenId }]);
+  });
+
+  it('projects sessions only from stored events, so an unstored request by another token cannot open or move a session', async () => {
+    const { env: e, db, sqlite } = sqliteEnv();
+    const t1 = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, Date.now());
+    const t3 = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_3' }, Date.now());
+    expect(await (await worker.fetch(memberPost(t1.token, envelope()), e)).json()).toEqual({ persisted: true });
+    const before = sqlite.query(`SELECT * FROM sessions`).all();
+    expect(await (await worker.fetch(memberPost(t3.token, envelope({ createdAt: 0, payload: { t: 'squat' } })), e)).json()).toEqual({ persisted: false, reason: 'event id conflict' });
+    expect(await (await worker.fetch(memberPost(t3.token, envelope({ sessionId: 'sess_new', payload: { t: 'squat' } })), e)).json()).toEqual({ persisted: false, reason: 'event id conflict' });
+    expect(await (await worker.fetch(memberPost(t3.token, envelope()), e)).json()).toEqual({ persisted: true, duplicate: true });
+    expect(sqlite.query(`SELECT * FROM sessions`).all()).toEqual(before);
+    expect((sqlite.query(`SELECT COUNT(*) c FROM sessions`).get() as any).c).toBe(1);
+  });
+
+  it('answers 401 to an authenticated member on an unmatched route without charging the source bucket', async () => {
+    const { env: e, db, sourceKeys } = sqliteEnv();
+    const t1 = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, Date.now());
+    for (const path of ['/nope', '/events/stop', '/v2/events']) {
+      const res = await worker.fetch(withSource(path, { method: 'POST', headers: { authorization: `Bearer ${t1.token}` }, body: '{}' }), e);
+      expect(res.status).toBe(401);
+    }
+    expect(sourceKeys).toEqual([]);
   });
 
   it('keys the token limiter on the issued token id and never on credential material', async () => {
@@ -183,7 +209,7 @@ describe('gates', () => {
     const { env: e, db, sqlite } = sqliteEnv({ staleBytesWritten: 0 });
     const t1 = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, Date.now());
     sqlite.query(`UPDATE member_tokens SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA - 100, t1.tokenId);
-    const body = JSON.stringify({ eventId: 'evt_1', sessionId: 'sess_1', kind: 'prompt', createdAt: 5, transport: 'cli', payload: { t: 'x'.repeat(200) } });
+    const body = JSON.stringify({ eventId: 'evt_1', sessionId: 'sess_1', kind: 'prompt', createdAt: 5, channel: 'cli', payload: { t: 'x'.repeat(200) } });
     const res = await worker.fetch(withSource('/events', { method: 'POST', headers: { authorization: `Bearer ${t1.token}` }, body }), e);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ persisted: false, reason: 'token write quota exceeded' });
@@ -260,6 +286,12 @@ describe('gates', () => {
     expect(src('2001:db8:1:2::1')).not.toBe(src('2001:db8:1:3::1'));
     expect(src('1.2.3.4')).not.toBe(src('1.2.3.5'));
     expect(src('::ffff:1.2.3.4')).toBe('1.2.3.4');
+    expect(src('::ffff:01.02.03.04')).toBe('1.2.3.4');
+    expect(src('::FFFF:1.2.3.4')).toBe('1.2.3.4');
+    expect(src('::ffff:999.1.1.1')).toBeNull();
+    expect(src('01.02.03.04')).toBe('1.2.3.4');
+    expect(src('999.1.1.1')).toBeNull();
+    expect(src('1.2.3')).toBeNull();
     expect(src('2001:0db8:0001:0002::1')).toBe(src('2001:db8:1:2::1'));
     expect(src('2001:DB8:1:2::1')).toBe(src('2001:db8:1:2::1'));
     expect(src('2001:db8:1:2::1.2.3.4')).toBe(src('2001:db8:1:2::1'));

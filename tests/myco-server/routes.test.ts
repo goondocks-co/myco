@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { ROUTES, matchRoute } from '../../packages/myco-server/worker/src/routes.js';
+import { ROUTES, matchRoute } from '@myco-server-worker/routes.js';
 
 describe('route table', () => {
   it('declares an auth kind for every route', () => {

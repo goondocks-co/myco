@@ -1,7 +1,7 @@
 import type { Env } from './env.js';
 import { matchRoute } from './routes.js';
 import { authenticateServerMemberToken, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
-import { MEMBER_TOKEN_BYTE_QUOTA, RETRY_AFTER_SECONDS } from './constants.js';
+import { HSTS_MAX_AGE_SECONDS, MEMBER_TOKEN_BYTE_QUOTA, RETRY_AFTER_SECONDS } from './constants.js';
 import { sha256Hex } from './hash.js';
 import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
 import { classify, emit, SchemaMismatchError } from './telemetry.js';
@@ -14,7 +14,7 @@ export interface ServerDeps {
 const SECURITY_HEADERS: Record<string, string> = {
   'cache-control': 'no-store',
   'x-content-type-options': 'nosniff',
-  'strict-transport-security': 'max-age=31536000',
+  'strict-transport-security': `max-age=${HSTS_MAX_AGE_SECONDS}`,
 };
 
 function stamp(res: Response): Response {
@@ -27,6 +27,7 @@ const RETRY_AFTER = { 'retry-after': String(RETRY_AFTER_SECONDS) };
 const unauthorized = () => Response.json({ error: 'unauthorized' }, { status: 401, headers: { 'www-authenticate': 'Bearer realm="myco"' } });
 const unavailable = () => Response.json({ error: 'unavailable' }, { status: 503, headers: RETRY_AFTER });
 const limited = () => Response.json({ error: 'rate limited' }, { status: 429, headers: RETRY_AFTER });
+const QUOTA_REASON = 'token write quota exceeded';
 
 /** A terminal refusal of the caller's own request: 200, never retried. */
 function refuse(auth: MemberAuth, reason: string): Response {
@@ -42,7 +43,13 @@ function bearer(request: Request): string | null {
   return MEMBER_TOKEN_PATTERN.test(match[1]) ? match[1] : null;
 }
 
-/** Order: route → public → source identity → credential → authenticate → token limit → body → quota → handler. The source bucket is charged only when a request is refused without a member identity: that refusal answers 429 once the bucket is exhausted and 401 before; an authenticated member never charges and is never refused by source. After authentication, a failure of the caller's own request answers 200 with a reason and is never retried; a failure on the server's side answers 503 with retry-after and is retried. */
+/** True when the token's stored volume plus this body would exceed the quota; read fresh after a constraint failure. */
+async function overQuota(env: Env, tokenId: string, bodyBytes: number): Promise<boolean> {
+  const row = await env.MYCO_DB.prepare(`SELECT bytes_written FROM member_tokens WHERE id = ?`).bind(tokenId).first<{ bytes_written: number }>();
+  return row !== null && row.bytes_written + bodyBytes > MEMBER_TOKEN_BYTE_QUOTA;
+}
+
+/** Order: route → public → source identity → credential shape → authenticate → route kind → token limit → body → quota → handler. The source bucket is charged only when a request ends without a member identity (no credential, malformed credential, or a digest that matches no live token): that refusal answers 429 once the bucket is exhausted and 401 before. An authenticated member never charges the source bucket and is never refused by source, on matched and unmatched routes alike. After authentication, a failure of the caller's own request answers 200 with a reason and is never retried; a failure on the server's side answers 503 with retry-after and is retried. */
 export function createServer(deps: ServerDeps) {
   async function run(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -59,7 +66,7 @@ export function createServer(deps: ServerDeps) {
     const anonymous = async () => ((await env.SOURCE_LIMIT.limit({ key: source })).success ? unauthorized() : limited());
 
     const presented = bearer(request);
-    if (!presented || !route) return anonymous();
+    if (!presented) return anonymous();
 
     let auth: MemberAuth | null;
     try {
@@ -70,22 +77,26 @@ export function createServer(deps: ServerDeps) {
       return unavailable();
     }
     if (!auth) {
-      emit({ kind: 'auth_failed', route: route.path, source });
+      emit({ kind: 'auth_failed', matched: route !== null, source: (await sha256Hex(source)).slice(0, 16) });
       return anonymous();
     }
+    if (!route) return unauthorized();
     if (!(await env.TOKEN_LIMIT.limit({ key: auth.tokenId })).success) return limited();
 
+    let bodyBytes = 0;
     try {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
       if (!body.ok) return refuse(auth, body.reason);
-      if (auth.bytesWritten + body.bytes > MEMBER_TOKEN_BYTE_QUOTA) return refuse(auth, 'token write quota exceeded');
+      bodyBytes = body.bytes;
+      if (auth.bytesWritten + body.bytes > MEMBER_TOKEN_BYTE_QUOTA) return refuse(auth, QUOTA_REASON);
       return await route.handler(env, {
         projectId: auth.projectId, machineId: auth.machineId, tokenId: auth.tokenId,
         body: body.text, bodyBytes: body.bytes, now,
       });
     } catch (err) {
       const errorClass = classify(err);
-      if (errorClass === 'quota') return refuse(auth, 'token write quota exceeded');
+      if (errorClass === 'quota') return refuse(auth, QUOTA_REASON);
+      if (errorClass === 'constraint' && (await overQuota(env, auth.tokenId, bodyBytes))) return refuse(auth, QUOTA_REASON);
       emit({ kind: 'ingest_error', projectId: auth.projectId, tokenId: auth.tokenId, error_class: errorClass });
       return Response.json({ persisted: false, reason: 'unavailable' }, { status: 503, headers: RETRY_AFTER });
     }

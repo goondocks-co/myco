@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { handleRequest } from '../../packages/myco-server/worker/src/index.js';
+import { handleRequest } from '@myco-server-worker/index.js';
 
 describe('health route', () => {
   it('answers 200 with ok:true', async () => {

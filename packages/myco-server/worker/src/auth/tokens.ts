@@ -1,12 +1,12 @@
 import type { D1Like } from '../env.js';
-import { SERVER_SCHEMA_VERSION } from '../constants.js';
+import { SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
 import { sha256Hex } from '../hash.js';
 import { SchemaMismatchError } from '../telemetry.js';
 
 export const MEMBER_TOKEN_BYTES = 32;
 export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-/** Shape of every minted token: 32 random bytes as unpadded base64url. The same wire shape is minted by `packages/myco/src/team-host/member-tokens.ts` for the 1.x team host; the two modules share no code. */
-export const MEMBER_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+/** Shape of every minted token: `MEMBER_TOKEN_BYTES` random bytes as unpadded base64url. */
+export const MEMBER_TOKEN_PATTERN = new RegExp(`^[A-Za-z0-9_-]{${Math.ceil((MEMBER_TOKEN_BYTES * 4) / 3)}}$`);
 
 export interface MemberAuth {
   projectId: string;
@@ -21,14 +21,14 @@ export interface IssuedMemberToken {
   expiresAt: number;
 }
 
-interface MemberTokenRow {
-  id: string;
-  project_id: string;
+interface AuthRow {
+  schema_version: string;
+  id: string | null;
+  project_id: string | null;
   machine_id: string | null;
-  expires_at: number;
+  expires_at: number | null;
   revoked_at: number | null;
-  bytes_written: number;
-  schema_version: string | null;
+  bytes_written: number | null;
 }
 
 function base64url(bytes: Uint8Array): string {
@@ -44,7 +44,7 @@ export async function issueMemberToken(
   db: D1Like, member: { projectId: string; machineId: string | null }, nowMs: number,
 ): Promise<IssuedMemberToken> {
   const token = mintMemberToken();
-  const tokenId = `mt_${base64url(crypto.getRandomValues(new Uint8Array(12)))}`;
+  const tokenId = `${TOKEN_ID_PREFIX}${base64url(crypto.getRandomValues(new Uint8Array(TOKEN_ID_BYTES)))}`;
   const expiresAt = nowMs + MEMBER_TOKEN_TTL_MS;
   await db
     .prepare(`INSERT INTO member_tokens (id, project_id, machine_id, token_hash, expires_at, revoked_at, bytes_written)
@@ -63,19 +63,22 @@ export async function revokeMemberToken(db: D1Like, tokenId: string, nowMs: numb
   return { revoked: result.meta.changes === 1 };
 }
 
-/** Resolves a token digest to its live member row; the same read carries the database schema version, which must equal this build's. */
+/** One read: the database schema version, joined to the member row for the digest when one exists. The version must equal this build's before any token decision is made; a missing version row is a mismatch. */
 export async function authenticateServerMemberToken(
   db: D1Like, digest: string, nowMs: number,
 ): Promise<MemberAuth | null> {
   const row = await db
-    .prepare(`SELECT id, project_id, machine_id, expires_at, revoked_at, bytes_written,
-                     (SELECT value FROM schema_meta WHERE key = 'version') AS schema_version
-                FROM member_tokens WHERE token_hash = ?`)
+    .prepare(`SELECT s.value AS schema_version,
+                     t.id, t.project_id, t.machine_id, t.expires_at, t.revoked_at, t.bytes_written
+                FROM schema_meta s
+                LEFT JOIN member_tokens t ON t.token_hash = ?
+               WHERE s.key = 'version'`)
     .bind(digest)
-    .first<MemberTokenRow>();
+    .first<AuthRow>();
 
-  if (!row) return null;
+  if (!row) throw new SchemaMismatchError(SERVER_SCHEMA_VERSION, null);
   if (row.schema_version !== String(SERVER_SCHEMA_VERSION)) throw new SchemaMismatchError(SERVER_SCHEMA_VERSION, row.schema_version);
+  if (row.id === null || row.project_id === null || row.expires_at === null || row.bytes_written === null) return null;
   if (row.revoked_at !== null) return null;
   if (row.expires_at <= nowMs) return null;
   return { projectId: row.project_id, tokenId: row.id, machineId: row.machine_id, bytesWritten: row.bytes_written };
