@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'bun:test';
-import { parseEnvelope, MAX_PAYLOAD_BYTES, MAX_ID_CHARS, MAX_PAYLOAD_DEPTH, MAX_PAYLOAD_NODES } from '@myco-server-worker/ingest/envelope.js';
+import { parseEnvelope as parse, MAX_PAYLOAD_BYTES, MAX_ID_CHARS, MAX_PAYLOAD_DEPTH, MAX_PAYLOAD_NODES, PAYLOAD_CAP_REASON, ID_GRAMMAR } from '@myco-server-worker/ingest/envelope.js';
+import { MAX_CLOCK_SKEW_MS } from '@myco-server-worker/constants.js';
+import { envelope, uuid, PRODUCER } from './helpers/fixtures.js';
 
-const good = { eventId: 'evt_1', sessionId: 'sess_1', kind: 'prompt', createdAt: 1_000, channel: 'cli', payload: { text: 'hi' } };
+const NOW = 1_000_000;
+const parseEnvelope = (input: unknown, now = NOW) => parse(input, now);
+const good = envelope();
 
 describe('envelope', () => {
   it('refuses the pre-2.0 hook body shape', () => {
@@ -11,9 +15,10 @@ describe('envelope', () => {
     if (!p.ok) expect(p.reason).toBe('unknown field type');
   });
 
-  it('accepts a well-formed envelope', () => {
+  it('accepts a well-formed envelope and carries the producer', () => {
     const p = parseEnvelope(good);
     expect(p.ok).toBe(true);
+    if (p.ok) expect(p.value.producer).toEqual(PRODUCER);
   });
 
   it('names the offending field', () => {
@@ -33,20 +38,44 @@ describe('envelope', () => {
     expect(parseEnvelope([good]).ok).toBe(false);
   });
 
-  it('bounds identifier length to fit a machine id and a uuid', () => {
-    expect(MAX_ID_CHARS).toBeGreaterThanOrEqual(128 + 1 + 36);
-    for (const field of ['eventId', 'sessionId', 'kind'] as const) {
+  it('requires a producer block of two bounded identifiers and nothing else', () => {
+    const cases: [Record<string, unknown>, string][] = [
+      [{ ...good, producer: undefined }, 'producer must be an object'],
+      [{ ...good, producer: 'claude-code' }, 'producer must be an object'],
+      [{ ...good, producer: { adapter: 'claude-code' } }, 'producer.version must be an identifier of at most 64 characters'],
+      [{ ...good, producer: { adapter: 'claude code', version: '1' } }, 'producer.adapter must be an identifier of at most 64 characters'],
+      [{ ...good, producer: { adapter: 'a'.repeat(65), version: '1' } }, 'producer.adapter must be an identifier of at most 64 characters'],
+      [{ ...good, producer: { ...PRODUCER, extra: 1 } }, 'unknown field producer.extra'],
+    ];
+    for (const [input, reason] of cases) {
+      const p = parseEnvelope(input);
+      expect(p.ok).toBe(false);
+      if (!p.ok) expect(p.reason).toBe(reason);
+    }
+    expect(parseEnvelope({ ...good, producer: { adapter: 'migration-1.4', version: '2.0.0' } }).ok).toBe(true);
+  });
+
+  it('enforces the id grammar on eventId and bounds every identifier to 128 characters', () => {
+    expect(MAX_ID_CHARS).toBe(128);
+    for (const bad of ['evt_1', '1', 'x'.repeat(36), 'ABCDEF01-0000-7000-8000-000000000001', `${'m'.repeat(20)}:${uuid(1)}`]) {
+      const p = parseEnvelope({ ...good, eventId: bad });
+      expect(p.ok).toBe(false);
+      if (!p.ok) expect(p.reason).toBe('eventId must match the id grammar');
+    }
+    expect(ID_GRAMMAR.test(uuid(7))).toBe(true);
+    for (const field of ['sessionId', 'kind'] as const) {
       const p = parseEnvelope({ ...good, [field]: 'x'.repeat(MAX_ID_CHARS + 1) });
       expect(p.ok).toBe(false);
       if (!p.ok) expect(p.reason).toContain(field);
     }
-    expect(parseEnvelope({ ...good, eventId: `${'m'.repeat(128)}:${'0'.repeat(36)}` }).ok).toBe(true);
+    expect(parseEnvelope({ ...good, sessionId: 'x'.repeat(MAX_ID_CHARS) }).ok).toBe(true);
   });
 
-  it('refuses an oversized payload, measured in UTF-8 bytes', () => {
+  it('refuses an oversized payload, measured in UTF-8 bytes, naming the blob route', () => {
     const p = parseEnvelope({ ...good, payload: { b: 'x'.repeat(MAX_PAYLOAD_BYTES + 1) } });
     expect(p.ok).toBe(false);
-    if (!p.ok) expect(p.reason).toContain('payload');
+    if (!p.ok) expect(p.reason).toBe(PAYLOAD_CAP_REASON);
+    expect(PAYLOAD_CAP_REASON).toContain('POST /blobs/{sha256}');
     const wide = parseEnvelope({ ...good, payload: '€'.repeat(Math.floor(MAX_PAYLOAD_BYTES / 3) + 10) });
     expect(wide.ok).toBe(false);
   });
@@ -69,12 +98,13 @@ describe('envelope', () => {
     expect(parseEnvelope({ ...good, payload: new Array(1_000).fill(0) }).ok).toBe(true);
   });
 
-  it('carries the payload serialized once, with its bytes', () => {
+  it('carries the payload serialized once, with its bytes and its parsed value', () => {
     const p = parseEnvelope(good);
     expect(p.ok).toBe(true);
     if (p.ok) {
       expect(p.value.payloadJson).toBe(JSON.stringify(good.payload));
       expect(new TextDecoder().decode(p.value.payloadBytes)).toBe(p.value.payloadJson);
+      expect(p.value.payload).toEqual(good.payload);
     }
     const empty = parseEnvelope({ ...good, payload: undefined });
     if (empty.ok) expect(empty.value.payloadJson).toBe('null');
@@ -87,5 +117,11 @@ describe('envelope', () => {
       if (!p.ok) expect(p.reason).toContain('createdAt');
     }
     expect(parseEnvelope({ ...good, createdAt: 0 }).ok).toBe(true);
+  });
+
+  it('refuses a createdAt further ahead of the server clock than the skew bound, and accepts one at the bound', () => {
+    expect(parseEnvelope({ ...good, createdAt: NOW + MAX_CLOCK_SKEW_MS }).ok).toBe(true);
+    const ahead = parseEnvelope({ ...good, createdAt: NOW + MAX_CLOCK_SKEW_MS + 1 });
+    expect(ahead).toEqual({ ok: false, reason: `createdAt is more than ${MAX_CLOCK_SKEW_MS} ms ahead of the server clock`, classifier: 'clock_skew' });
   });
 });

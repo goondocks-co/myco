@@ -1,9 +1,10 @@
-import type { D1Like, RateLimiter } from '../env.js';
+import type { BlobStoreLike, D1Like, RateLimiter } from '../env.js';
 
 // Compile-time proof that the platform bindings satisfy the adapter interfaces.
 type AssertAssignable<A, B extends A> = B;
 export type _D1Satisfies = AssertAssignable<D1Like, D1Database>;
 export type _RateLimitSatisfies = AssertAssignable<RateLimiter, RateLimit>;
+export type _BlobStoreSatisfies = AssertAssignable<BlobStoreLike, R2Bucket>;
 
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 

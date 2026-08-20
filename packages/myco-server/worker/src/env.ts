@@ -18,8 +18,25 @@ export interface RateLimiter {
   limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
+export interface StoredObjectLike {
+  size: number;
+}
+
+export interface BlobPutOptions {
+  sha256?: string;
+  httpMetadata?: { contentType?: string };
+}
+
+/** The blob store: content-addressed objects under project-prefixed keys. */
+export interface BlobStoreLike {
+  head(key: string): Promise<StoredObjectLike | null>;
+  put(key: string, value: ReadableStream | null, options?: BlobPutOptions): Promise<StoredObjectLike>;
+  delete(key: string): Promise<void>;
+}
+
 export interface Env {
   MYCO_DB: D1Like;
+  BUCKET: BlobStoreLike;
   SOURCE_LIMIT: RateLimiter;
   TOKEN_LIMIT: RateLimiter;
 }

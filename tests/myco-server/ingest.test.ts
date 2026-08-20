@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { sqliteD1, seededSqlite } from './helpers/d1.js';
+import { ENVELOPE_FIELDS, PRODUCER_FIELDS } from '@myco-server-worker/ingest/envelope.js';
+import { envelope, uuid, PRODUCER } from './helpers/fixtures.js';
 
 function realDb() {
   const sqlite = seededSqlite();
@@ -11,30 +13,34 @@ function realDb() {
 
 const ctx = { projectId: 'proj_1', machineId: 'machine_1', tokenId: 'mt_1', bodyBytes: 100, now: 2_000 };
 const at = (now: number, over: Partial<typeof ctx> = {}) => ({ ...ctx, ...over, now });
-const good = { eventId: 'evt_1', sessionId: 'sess_1', kind: 'prompt', createdAt: 1_000, channel: 'cli', payload: { t: 'hi' } };
+const good = envelope();
 const count = (s: any, t: string) => (s.query(`SELECT COUNT(*) c FROM ${t}`).get() as any).c;
 const bytes = (s: any, id: string) => (s.query(`SELECT bytes_written b FROM member_tokens WHERE id=?`).get(id) as any).b;
 const sessions = (s: any) => s.query('SELECT project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at FROM sessions ORDER BY project_id, session_id').all();
 
 describe('ingest', () => {
-  it('persists, attributes the write, and stamps receipt time', async () => {
+  it('persists, attributes the write, stamps receipt time, and records the producer and payload bytes', async () => {
     const { db, sqlite } = realDb();
-    expect(await ingestEvent(db, ctx, good)).toEqual({ persisted: true });
+    expect(await ingestEvent(db, ctx, good)).toEqual({ persisted: true, projected: true });
     expect(count(sqlite, 'events')).toBe(1);
-    const row = sqlite.query('SELECT token_id, channel, created_at, received_at FROM events').get() as any;
-    expect(row).toEqual({ token_id: 'mt_1', channel: 'cli', created_at: 1_000, received_at: 2_000 });
+    const row = sqlite.query('SELECT token_id, channel, created_at, received_at, producer_adapter, producer_version, blob_key, payload_bytes FROM events').get() as any;
+    expect(row).toEqual({
+      token_id: 'mt_1', channel: 'cli', created_at: 1_000, received_at: 2_000,
+      producer_adapter: PRODUCER.adapter, producer_version: PRODUCER.version, blob_key: null,
+      payload_bytes: new TextEncoder().encode(JSON.stringify(good.payload)).byteLength,
+    });
   });
 
   it('charges the body bytes to the token in the same batch', async () => {
     const { db, sqlite } = realDb();
     await ingestEvent(db, ctx, good);
-    await ingestEvent(db, { ...ctx, bodyBytes: 50 }, { ...good, eventId: 'evt_2' });
+    await ingestEvent(db, { ...ctx, bodyBytes: 50 }, envelope({ eventId: uuid(2), payload: { promptId: uuid(3), text: 'x', origin: 'user' } }));
     expect(bytes(sqlite, 'mt_1')).toBe(150);
   });
 
   it('converges on replay, reports the duplicate, and charges nothing for it', async () => {
     const { db, sqlite } = realDb();
-    expect(await ingestEvent(db, ctx, good)).toEqual({ persisted: true });
+    expect(await ingestEvent(db, ctx, good)).toEqual({ persisted: true, projected: true });
     expect(await ingestEvent(db, at(3_000), good)).toEqual({ persisted: true, duplicate: true });
     expect(count(sqlite, 'events')).toBe(1);
     expect(bytes(sqlite, 'mt_1')).toBe(100);
@@ -43,84 +49,103 @@ describe('ingest', () => {
   it('refuses a reused event id carrying a different payload and keeps the first', async () => {
     const { db, sqlite } = realDb();
     await ingestEvent(db, ctx, good);
-    expect(await ingestEvent(db, at(3_000), { ...good, payload: { t: 'changed' } })).toEqual({ persisted: false, reason: 'event id conflict' });
+    expect(await ingestEvent(db, at(3_000), envelope({ payload: { promptId: uuid(2), text: 'changed', origin: 'user' } }))).toEqual({ persisted: false, reason: 'event id conflict' });
     expect(count(sqlite, 'events')).toBe(1);
-    expect((sqlite.query('SELECT payload FROM events').get() as any).payload).toBe(JSON.stringify({ t: 'hi' }));
+    expect((sqlite.query('SELECT payload FROM events').get() as any).payload).toBe(JSON.stringify(good.payload));
   });
 
-  it('treats a reused event id with any other envelope field changed as a conflict, not a duplicate', async () => {
-    for (const change of [{ sessionId: 'sess_2' }, { kind: 'tool_result' }, { createdAt: 7_000 }, { channel: 'http' }]) {
-      const { db, sqlite } = realDb();
-      await ingestEvent(db, ctx, good);
-      expect(await ingestEvent(db, at(3_000), { ...good, ...change })).toEqual({ persisted: false, reason: 'event id conflict' });
-      expect(count(sqlite, 'events')).toBe(1);
-      expect(count(sqlite, 'sessions')).toBe(1);
+  it('treats a reused event id with any other envelope field changed as a conflict, not a duplicate — every field of the envelope and of its producer block, taken from the envelope\'s own field list', async () => {
+    // One change per field the envelope declares, so a field added to the envelope without a change here fails.
+    const changes: Record<string, Record<string, unknown>[]> = {
+      sessionId: [{ sessionId: 'sess_2' }],
+      kind: [{ kind: 'response', payload: { responseId: uuid(9), text: 'x' } }],
+      createdAt: [{ createdAt: 7_000 }],
+      channel: [{ channel: 'http' }],
+      payload: [{ payload: { promptId: uuid(2), text: 'changed', origin: 'user' } }],
+      producer: PRODUCER_FIELDS.map((field) => ({ producer: { ...PRODUCER, [field]: `${PRODUCER[field]}-changed` } })),
+    };
+    expect(Object.keys(changes).sort()).toEqual(ENVELOPE_FIELDS.filter((f) => f !== 'eventId').sort());
+    for (const [field, cases] of Object.entries(changes)) {
+      for (const change of cases) {
+        const { db, sqlite } = realDb();
+        await ingestEvent(db, ctx, good);
+        expect({ field, change, res: await ingestEvent(db, at(3_000), { ...good, ...change }) }).toEqual({ field, change, res: { persisted: false, reason: 'event id conflict' } });
+        expect(count(sqlite, 'events')).toBe(1);
+        expect(count(sqlite, 'sessions')).toBe(1);
+      }
     }
   });
 
   it('projects sessions from stored events only: server receipt times, first inserter attribution', async () => {
     const { db, sqlite } = realDb();
-    await ingestEvent(db, at(2_000), { ...good, createdAt: 5_000 });
-    await ingestEvent(db, at(3_000), { ...good, eventId: 'evt_2', createdAt: 1_000 });
-    await ingestEvent(db, at(4_000, { tokenId: 'mt_3', machineId: 'machine_3' }), { ...good, eventId: 'evt_3', createdAt: 9_000 });
-    expect(sessions(sqlite)).toEqual([
-      { project_id: 'proj_1', session_id: 'sess_1', machine_id: 'machine_1', created_by_token_id: 'mt_1', first_received_at: 2_000, last_received_at: 4_000 },
-    ]);
+    await ingestEvent(db, ctx, good);
+    await ingestEvent(db, at(5_000), envelope({ eventId: uuid(4), createdAt: 999, payload: { promptId: uuid(5), text: 'later', origin: 'user' } }));
+    expect(sessions(sqlite)).toEqual([{ project_id: 'proj_1', session_id: 'sess_1', machine_id: 'machine_1', created_by_token_id: 'mt_1', first_received_at: 2_000, last_received_at: 5_000 }]);
   });
 
-  it('writes and mutates no session row for a duplicate, a conflict, or a malformed envelope', async () => {
+  it('writes and mutates no session row for a duplicate, a conflict, a refused kind, or a malformed envelope', async () => {
     const { db, sqlite } = realDb();
-    await ingestEvent(db, at(2_000), good);
+    await ingestEvent(db, ctx, good);
     const before = sessions(sqlite);
-    await ingestEvent(db, at(3_000), good);
-    await ingestEvent(db, at(4_000, { tokenId: 'mt_3', machineId: 'machine_3' }), { ...good, sessionId: 'sess_9', payload: { t: 'squat' } });
-    await ingestEvent(db, at(5_000), { ...good, eventId: 'evt_bad', kind: '' });
-    await ingestEvent(db, at(6_000, { tokenId: 'mt_3', machineId: 'machine_3' }), { ...good, createdAt: 0 });
+    await ingestEvent(db, at(9_000), good);
+    await ingestEvent(db, at(9_000), envelope({ createdAt: 0, payload: { promptId: uuid(2), text: 'squat', origin: 'user' } }));
+    expect(await ingestEvent(db, at(9_000), envelope({ eventId: uuid(6), sessionId: 'sess_9', kind: 'made.up', payload: {} }))).toEqual({ persisted: false, reason: 'unknown kind made.up' });
+    expect(await ingestEvent(db, at(9_000), { ...good, eventId: uuid(7), sessionId: 'sess_9', payload: { promptId: '1', text: 'x', origin: 'user' } })).toEqual({ persisted: false, reason: 'promptId must match the id grammar' });
+    await ingestEvent(db, at(9_000), { ...good, eventId: uuid(8), sessionId: 'sess_9', kind: '' });
     expect(sessions(sqlite)).toEqual(before);
-    expect(count(sqlite, 'sessions')).toBe(1);
+    expect(count(sqlite, 'events')).toBe(1);
   });
 
-  it('reports a same-project replay by another token as a duplicate', async () => {
+  it('refuses an event into a session another machine opened, storing nothing and charging nothing', async () => {
     const { db, sqlite } = realDb();
     await ingestEvent(db, ctx, good);
-    expect(await ingestEvent(db, at(3_000, { tokenId: 'mt_3', machineId: 'machine_3' }), good)).toEqual({ persisted: true, duplicate: true });
-    expect((sqlite.query('SELECT token_id FROM events').get() as any).token_id).toBe('mt_1');
+    const other = envelope({ eventId: uuid(10), payload: { promptId: uuid(11), text: 'mine', origin: 'user' } });
+    expect(await ingestEvent(db, at(3_000, { machineId: 'machine_3', tokenId: 'mt_3' }), other)).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(count(sqlite, 'events')).toBe(1);
     expect(bytes(sqlite, 'mt_3')).toBe(0);
+    expect(await ingestEvent(db, at(4_000, { machineId: 'machine_3', tokenId: 'mt_3' }), { ...other, eventId: uuid(12), sessionId: 'sess_3' })).toEqual({ persisted: true, projected: true });
+    expect(await ingestEvent(db, at(5_000), other)).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(await ingestEvent(db, at(6_000), { ...other, payload: { promptId: uuid(13), text: 'mine', origin: 'user' } })).toEqual({ persisted: true, projected: true });
+    expect(count(sqlite, 'events')).toBe(3);
   });
 
-  it('keeps distinct events sharing a millisecond', async () => {
+  it('names the raw row by a per-request nonce: a duplicate or a conflict in the same millisecond re-fires no projection', async () => {
     const { db, sqlite } = realDb();
+    const plan = envelope({ eventId: uuid(20), kind: 'plan', payload: { planKey: uuid(21), content: 'one', tags: ['a'] } });
+    expect(await ingestEvent(db, at(7_000), plan)).toEqual({ persisted: true, projected: true });
+    expect(await ingestEvent(db, at(7_000), plan)).toEqual({ persisted: true, duplicate: true });
+    const conflicting = envelope({ eventId: uuid(20), kind: 'plan', createdAt: 1_000, payload: { planKey: uuid(21), content: 'two', tags: ['b'] } });
+    expect(await ingestEvent(db, at(7_000), conflicting)).toEqual({ persisted: false, reason: 'event id conflict' });
+    expect(sqlite.query(`SELECT content FROM plans`).get()).toEqual({ content: 'one' });
+    expect(sqlite.query(`SELECT tag FROM tags`).all()).toEqual([{ tag: 'a' }]);
+    expect((sqlite.query(`SELECT COUNT(*) c FROM events WHERE ingest_nonce = ''`).get() as any).c).toBe(0);
+  });
+
+  it('reports a replay by another token of the same machine as a duplicate, and answers another machine nothing about the stored event', async () => {
+    const { db, sqlite } = realDb();
+    sqlite.query(`INSERT INTO member_tokens (id,project_id,machine_id,token_hash,expires_at,revoked_at,bytes_written) VALUES ('mt_1b','proj_1','machine_1','h1b',9,NULL,0)`).run();
     await ingestEvent(db, ctx, good);
-    await ingestEvent(db, ctx, { ...good, eventId: 'evt_2' });
-    expect(count(sqlite, 'events')).toBe(2);
+    expect(await ingestEvent(db, at(3_000, { machineId: 'machine_1', tokenId: 'mt_1b' }), good)).toEqual({ persisted: true, duplicate: true });
+    expect(await ingestEvent(db, at(3_000, { machineId: 'machine_3', tokenId: 'mt_3' }), good)).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    const conflicting = { ...good, payload: { promptId: uuid(2), text: 'guess', origin: 'user' } };
+    expect(await ingestEvent(db, at(3_000, { machineId: 'machine_3', tokenId: 'mt_3' }), conflicting)).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(count(sqlite, 'events')).toBe(1);
+    expect(bytes(sqlite, 'mt_3')).toBe(0);
+    expect(bytes(sqlite, 'mt_1b')).toBe(0);
   });
 
   it('cannot touch another project session row', async () => {
     const { db, sqlite } = realDb();
     await ingestEvent(db, ctx, good);
-    await ingestEvent(db, at(3_000, { projectId: 'proj_2', tokenId: 'mt_2', machineId: 'machine_2' }), good);
+    expect(await ingestEvent(db, at(3_000, { projectId: 'proj_2', machineId: 'machine_2', tokenId: 'mt_2' }), good)).toEqual({ persisted: true, projected: true });
     expect(count(sqlite, 'sessions')).toBe(2);
+    expect(count(sqlite, 'events')).toBe(2);
     expect((sqlite.query(`SELECT machine_id FROM sessions WHERE project_id='proj_1'`).get() as any).machine_id).toBe('machine_1');
   });
 
   it('takes machine identity from the token and refuses a caller-supplied one as an unknown field', async () => {
     const { db, sqlite } = realDb();
     expect(await ingestEvent(db, ctx, { ...good, machineId: 'spoofed' })).toEqual({ persisted: false, reason: 'unknown field machineId' });
-    await ingestEvent(db, ctx, good);
-    expect((sqlite.query('SELECT machine_id FROM sessions').get() as any).machine_id).toBe('machine_1');
-  });
-
-  it('refuses caller-supplied projectId and tokenId as unknown fields', async () => {
-    const { db, sqlite } = realDb();
-    expect((await ingestEvent(db, ctx, { ...good, projectId: 'proj_2' })).reason).toBe('unknown field projectId');
-    expect((await ingestEvent(db, ctx, { ...good, tokenId: 'mt_2' })).reason).toBe('unknown field tokenId');
-    expect(count(sqlite, 'events')).toBe(0);
-  });
-
-  it('refuses a malformed envelope and persists nothing', async () => {
-    const { db, sqlite } = realDb();
-    const r = await ingestEvent(db, ctx, { ...good, kind: '' });
-    expect(r.persisted).toBe(false);
     expect(count(sqlite, 'events')).toBe(0);
     expect(bytes(sqlite, 'mt_1')).toBe(0);
   });

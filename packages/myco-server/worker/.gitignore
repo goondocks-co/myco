@@ -1,3 +1,4 @@
 *.env
 mint*.sql
 wrangler.deploy.toml
+wrangler.smoke.toml

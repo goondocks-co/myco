@@ -18,7 +18,39 @@ export function classify(err: unknown): ErrorClass {
   return 'unknown';
 }
 
+export type BlobStoreFailure = 'digest' | 'other';
+
+/** The R2 error code for a digest that did not match the received bytes. */
+export const R2_BAD_DIGEST_CODE = 10037;
+
+/** How a blob store put failed: the received bytes did not match the declared digest (R2 error code 10037, or the observed message text), or something else. */
+export function classifyBlobStore(err: unknown): BlobStoreFailure {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.includes(`(${R2_BAD_DIGEST_CODE})`) || /checksum you specified did not match/i.test(message)) return 'digest';
+  return 'other';
+}
+
+/** The fixed reasons telemetry may carry; a caller's text never becomes one. */
+export type Classifier =
+  | 'refused' | 'parse' | 'quota' | 'body_cap' | 'blob_cap' | 'content_length' | 'media_type' | 'digest_mismatch' | 'empty_body'
+  | 'blob_absent' | 'offset_gap' | 'offset_overlap' | 'identity_mismatch' | 'no_machine_identity' | 'blob_length_mismatch'
+  | 'unknown_kind' | 'unknown_field' | 'id_grammar' | 'clock_skew';
+
+/** A terminal refusal of the caller's own request: the text the caller reads, and the classifier telemetry reports for it. A refusal is made with its classifier where it is decided; nothing re-derives one from its text. */
+export interface Refusal {
+  reason: string;
+  classifier: Classifier;
+}
+
+export const refusal = (reason: string, classifier: Classifier = 'refused'): Refusal => ({ reason, classifier });
+
+export interface TelemetryEvent {
+  kind: string;
+  reason?: Classifier;
+  [key: string]: unknown;
+}
+
 /** Emits a structured event. Values are classifiers, server-issued identifiers, or digests of caller identity — never a request body, path, or address. */
-export function emit(event: { kind: string; [key: string]: unknown }): void {
+export function emit(event: TelemetryEvent): void {
   console.log(JSON.stringify(event));
 }
