@@ -7,9 +7,9 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "check": "tsc --noEmit",
-    "schema:emit": "bun -e \"import{renderSchemaSql}from './src/db/migrate.ts';await Bun.write('schema.sql',renderSchemaSql())\"",
-    "schema:apply": "wrangler d1 execute myco-server --local --file ./schema.sql",
-    "schema:apply:remote": "wrangler d1 execute myco-server --remote --file ./schema.sql",
+    "migrations:emit": "bun scripts/emit-migrations.ts",
+    "migrations:apply": "wrangler d1 migrations apply myco-server --local",
+    "migrations:apply:remote": "wrangler d1 migrations apply myco-server --remote -c wrangler.deploy.toml",
     "token:mint": "bun scripts/mint-local.ts",
     "token:revoke": "bun scripts/revoke-local.ts"
   },
