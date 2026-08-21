@@ -40,6 +40,7 @@ Commands:
   attach <project> --host <h>   Route a project to a Team Host (going-forward)
   detach <project>         Clear a project's Team Host mapping (resolves local again)
   host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key|members|revoke)
+  member <op>              2.0 member: drain [--all] | status [--all]
   version                  Show plugin version
   mcp                     Start the MCP stdio server
   hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact, error-occurred, notification)
@@ -113,6 +114,7 @@ const DELEGATED_HELP: Record<string, () => Promise<string>> = {
   join: async () => (await import('./cli/join.js')).JOIN_HELP,
   leave: async () => (await import('./cli/join.js')).LEAVE_HELP,
   host: async () => (await import('./cli/host.js')).HOST_HELP,
+  member: async () => (await import('./cli/member.js')).MEMBER_HELP,
 };
 
 async function helpForCommand(command: string, args: readonly string[] = []): Promise<string> {
@@ -239,6 +241,10 @@ async function main(): Promise<void> {
   // Funnel) and writes machine-tier config, not a project vault, so like
   // `join`/`attach` it sits above the myco.yaml gate and works from any cwd.
   if (cmd === 'host') return (await import('./cli/host.js')).runHostCommand(args);
+
+  // 2.0 member operations — registry and spool under MYCO_HOME, never a project
+  // vault, so they sit above the myco.yaml gate and work from any cwd.
+  if (cmd === 'member') return (await import('./cli/member.js')).run(args);
 
   if (cmd === 'doctor') {
     const vaultDir = resolveVaultDir();

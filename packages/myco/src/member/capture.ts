@@ -10,6 +10,7 @@ import { writeHookResponse, type HookResponse } from '../hooks/response.js';
 import { resolveHookBudget, type HookBudget } from './budget.js';
 import { parseCredentialFlag, resolveCredential, type CredentialRecord, type CredentialSource } from './credential.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
+import { applySpoolRetention } from './retention.js';
 import { MemberSpool } from './spool.js';
 import { ServerClient, type FetchLike } from './transport.js';
 
@@ -82,6 +83,8 @@ export async function runMemberHook(
     if (budget.drains) {
       await spool.drainSession(sessionId, client, budget, { force: outcome.probe, now });
       if (outcome.afterDrain) await outcome.afterDrain(run);
+      // Probing hooks (Stop/SessionEnd) also apply spool retention for the project.
+      if (outcome.probe) applySpoolRetention(spool, now());
     }
   } catch (error) {
     process.stderr.write(`[myco] ${hookName} error: ${(error as Error).message}\n`);
