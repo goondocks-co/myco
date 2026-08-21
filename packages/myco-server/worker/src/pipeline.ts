@@ -73,13 +73,13 @@ async function overQuota(env: Env, tokenId: string, bytes: number): Promise<bool
   return row !== null && row.bytes_written + bytes > MEMBER_TOKEN_BYTE_QUOTA;
 }
 
-/** A handler failure on any member route, classified once for all. On a route charged to the quota, a quota violation — raised by the charge, or reported as a constraint while the token's stored volume plus this request's bytes stands over the quota — is a terminal refusal; any other failure answers 503 in the route's shape and is retried. */
+/** A handler failure on any member route, classified once for all. On a route charged to the quota, a quota violation — raised by the charge, or reported as a constraint while the token's stored volume plus this request's bytes stands over the quota — is a terminal refusal; any other failure — a token revoked between its authentication and a write that requires it live included — answers 503 in the route's shape and is retried; the retry meets the token's new state at authentication. */
 async function failed(env: Env, auth: MemberAuth, route: MemberRoute, err: unknown, bytes: number): Promise<Response> {
   const shape = shapeOf(route);
   const errorClass = classify(err);
   const charged = route.quotaPrecheck !== false;
   if (charged && (errorClass === 'quota' || (errorClass === 'constraint' && (await overQuota(env, auth.tokenId, bytes))))) return refuse(auth, shape, QUOTA_REASON, 'quota');
-  emit({ kind: shape === 'stored' ? 'blob_error' : 'ingest_error', projectId: auth.projectId, tokenId: auth.tokenId, error_class: errorClass });
+  emit({ kind: shape === 'stored' ? 'blob_error' : shape === 'refreshed' ? 'refresh_error' : 'ingest_error', projectId: auth.projectId, tokenId: auth.tokenId, error_class: errorClass });
   return unavailableFor(route);
 }
 
@@ -145,9 +145,9 @@ export function createServer(deps: ServerDeps) {
 
     if (route.bodyMode === 'stream') {
       const declared = request.headers.get('content-length');
-      if (declared === null || !PROTOCOL_VALUE.test(declared)) return refuse(auth, route.shape, 'content-length required', 'content_length');
+      if (declared === null || !PROTOCOL_VALUE.test(declared)) return refuse(auth, shapeOf(route), 'content-length required', 'content_length');
       const contentLength = Number(declared);
-      if (contentLength > route.maxBodyBytes) return refuse(auth, route.shape, `blob exceeds ${route.maxBodyBytes} bytes`, 'blob_cap');
+      if (contentLength > route.maxBodyBytes) return refuse(auth, shapeOf(route), `blob exceeds ${route.maxBodyBytes} bytes`, 'blob_cap');
       try {
         return await route.handler(env, request, { projectId: auth.projectId, machineId: auth.machineId, tokenId: auth.tokenId, now, clock: deps.now, contentLength, params });
       } catch (err) {
@@ -158,9 +158,9 @@ export function createServer(deps: ServerDeps) {
     let bodyBytes = 0;
     try {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
-      if (!body.ok) return refuse(auth, route.shape, body.reason, 'body_cap');
+      if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
       bodyBytes = body.bytes;
-      if (route.quotaPrecheck !== false && auth.bytesWritten + body.bytes > MEMBER_TOKEN_BYTE_QUOTA) return refuse(auth, route.shape, QUOTA_REASON, 'quota');
+      if (route.quotaPrecheck !== false && auth.bytesWritten + body.bytes > MEMBER_TOKEN_BYTE_QUOTA) return refuse(auth, shapeOf(route), QUOTA_REASON, 'quota');
       return await route.handler(env, {
         projectId: auth.projectId, machineId: auth.machineId, tokenId: auth.tokenId,
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt,

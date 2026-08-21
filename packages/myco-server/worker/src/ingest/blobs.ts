@@ -11,17 +11,10 @@ const TOKEN = String.raw`[A-Za-z0-9!#$%&'*+.^_\`|~-]+`;
 const QUOTED = String.raw`"[^"\\;=\x00-\x1F\x7F]*"`;
 const MEDIA_TYPE = new RegExp(String.raw`^(${TOKEN})/(${TOKEN})((?:\s*;\s*${TOKEN}=(?:${QUOTED}|${TOKEN}))*)\s*$`);
 
-export interface BlobResult {
-  stored: boolean;
-  duplicate?: boolean;
-  key?: string;
-  size?: number;
-  /** The media type on the blob row: the first uploader's; a duplicate upload with another type sees the stored one here. */
-  mediaType?: string;
-  /** The stable class of a refusal; present whenever `reason` is. */
-  code?: Classifier;
-  reason?: string;
-}
+/** Stored — `mediaType` is the blob row's, the first uploader's, so a duplicate upload with another type sees the stored one — or refused with its stable `code`: a refusal without a `code` cannot be built. */
+export type BlobResult =
+  | { stored: true; duplicate: boolean; key: string; size: number; mediaType: string }
+  | { stored: false; code: Classifier; reason: string };
 
 const TEXT_PLAIN = 'text/plain';
 const TEXT_PLAIN_UTF8 = 'text/plain; charset=utf-8';

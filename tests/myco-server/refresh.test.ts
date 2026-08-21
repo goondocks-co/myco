@@ -223,6 +223,45 @@ describe('token refresh', () => {
     expect(bytesWritten(r.e.sqlite, successor.tokenId)).toBe(0);
   });
 
+  it('mints nothing when a lineage revoke lands between a refresh\'s authentication and its insert: 503 in the refreshed shape, no live row under the revoked root, and the presented token answers 401 next', async () => {
+    let hook: ((sqlite: Database) => void) | null = null;
+    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('INSERT INTO member_tokens')) { const h = hook; hook = null; h(sqlite); } } });
+    const s1 = await successorOf(r, r.root.token, r.root.expiresAt);
+    r.clock.now += 1;
+    const revokedAt = r.clock.now;
+    hook = (sqlite) => {
+      sqlite.query(`UPDATE member_tokens SET revoked_at = ? WHERE lineage_root = (SELECT lineage_root FROM member_tokens WHERE id = ?) AND revoked_at IS NULL`).run(revokedAt, r.root.tokenId);
+    };
+    const res = await r.capture(() => r.refresh(r.root.token));
+    expect(hook).toBeNull();
+    expect({ status: res.status, body: await json(res) }).toEqual({ status: 503, body: { refreshed: false, code: 'unavailable', reason: 'unavailable' } });
+    expect(r.emitted('refresh_error')).toEqual([{ kind: 'refresh_error', projectId: 'proj_1', tokenId: r.root.tokenId, error_class: 'revoked' }]);
+    expect(r.emitted('token_refreshed')).toEqual([]);
+    expect(count(r.e.sqlite, 'member_tokens')).toBe(2);
+    expect(r.e.sqlite.query(`SELECT id FROM member_tokens WHERE lineage_root = ? AND revoked_at IS NULL`).all(r.root.tokenId)).toEqual([]);
+    expect(r.row(s1.tokenId)).toMatchObject({ revoked_at: revokedAt });
+    expect((await r.refresh(r.root.token)).status).toBe(401);
+    expect((await r.post(r.root.token, 1)).status).toBe(401);
+  });
+
+  it('refuses a predecessor\'s upload whose reservation is taken after activation: the reservation insert admits nothing for a revoked token, no row and no put', async () => {
+    let hook: ((sqlite: Database) => void) | null = null;
+    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('INSERT INTO blob_reservations')) { const h = hook; hook = null; h(sqlite); } } });
+    const successor = await successorOf(r, r.root.token, r.root.expiresAt);
+    const activation = r.clock.now + 1;
+    hook = (sqlite) => {
+      sqlite.query(`UPDATE member_tokens SET bytes_written = (SELECT bytes_written FROM member_tokens WHERE id = ?), first_used_at = ? WHERE id = ?`).run(r.root.tokenId, activation, successor.tokenId);
+      sqlite.query(`UPDATE member_tokens SET revoked_at = ? WHERE id = ?`).run(activation, r.root.tokenId);
+    };
+    const payload = new Uint8Array(64).fill(3);
+    expect(await json(await r.fetch(blobPost(r.root.token, await sha256HexOf(payload), payload)))).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
+    expect(hook).toBeNull();
+    expect(count(r.e.sqlite, 'blob_reservations')).toBe(0);
+    expect(count(r.e.sqlite, 'blobs')).toBe(0);
+    expect(r.e.bucket.puts).toEqual([]);
+    expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: activation, bytes_written: 0 });
+  });
+
   it('never reads a constraint failure as a quota refusal on the exempt refresh route: 503 unavailable, while /events at quota answers quota', async () => {
     const r = await rig({ staleBytesWritten: 0 });
     r.e.sqlite.query(`UPDATE member_tokens SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, r.root.tokenId);

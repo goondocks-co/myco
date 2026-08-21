@@ -7,15 +7,16 @@ import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js'
 import { planKind, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { withinQuota } from './quota.js';
 
-export interface IngestResult {
-  persisted: boolean;
-  duplicate?: boolean;
-  projected?: boolean;
-  /** The stable class of a refusal or a conflict; present whenever `reason` is. */
-  code?: Classifier;
-  reason?: string;
+/** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
+export interface TranscriptExtra {
   transcript?: { size: number; segmentCount: number };
 }
+
+/** Stored (projected, or a duplicate), stored but not projected (a conflict with its stable `code`), or refused with its stable `code`: a refusal or a conflict without a `code` cannot be built. */
+export type IngestResult =
+  | ({ persisted: true; duplicate?: boolean; projected?: true } & TranscriptExtra)
+  | ({ persisted: true; projected: false; code: Classifier; reason: string } & TranscriptExtra)
+  | ({ persisted: false; code: Classifier; reason: string } & TranscriptExtra);
 
 export type IngestContext = Pick<RouteContext, 'projectId' | 'machineId' | 'tokenId' | 'bodyBytes' | 'now'>;
 

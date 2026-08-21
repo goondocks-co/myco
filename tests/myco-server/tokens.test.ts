@@ -36,23 +36,23 @@ describe('member tokens', () => {
     expect(MEMBER_TOKEN_BYTE_QUOTA).toBeGreaterThan(0);
   });
 
-  it('issues a root token whose row expires exactly one TTL after issue, roots its own lineage at issue, and stores only the digest', async () => {
+  it('issues a root token whose row expires exactly one TTL after issue, roots its own lineage at issue, always lands, and stores only the digest', async () => {
     const { db, calls } = recordingDb();
     const issued = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, 5_000);
     expect(issued.expiresAt - 5_000).toBe(MEMBER_TOKEN_TTL_MS);
     expect(issued.tokenId.startsWith(TOKEN_ID_PREFIX)).toBe(true);
     expect(calls).toHaveLength(1);
     expect(calls[0].sql).toMatch(/INSERT INTO member_tokens \(id, project_id, machine_id, token_hash, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at\)/);
-    expect(calls[0].sql).toMatch(/VALUES \(\?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL\)/);
-    expect(calls[0].params).toEqual([issued.tokenId, 'proj_1', 'machine_1', await sha256Hex(issued.token), issued.expiresAt, null, issued.tokenId, 5_000]);
+    expect(calls[0].sql).toMatch(/SELECT \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL\s+WHERE \? IS NULL OR EXISTS \(SELECT 1 FROM member_tokens WHERE id = \? AND revoked_at IS NULL\)/);
+    expect(calls[0].params).toEqual([issued.tokenId, 'proj_1', 'machine_1', await sha256Hex(issued.token), issued.expiresAt, null, issued.tokenId, 5_000, null, null]);
     expect(calls[0].params).not.toContain(issued.token);
   });
 
-  it('issues a successor into its predecessor\'s lineage, expiring one TTL from now or at the lineage ceiling, whichever is sooner', async () => {
+  it('issues a successor into its predecessor\'s lineage, only while the predecessor is live, expiring one TTL from now or at the lineage ceiling, whichever is sooner', async () => {
     const { db, calls } = recordingDb();
     const inside = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, 5_000, { predecessorId: 'mt_pred', lineageRoot: 'mt_root', lineageStartedAt: 1_000 });
     expect(inside.expiresAt).toBe(5_000 + MEMBER_TOKEN_TTL_MS);
-    expect(calls[0].params).toEqual([inside.tokenId, 'proj_1', 'machine_1', await sha256Hex(inside.token), inside.expiresAt, 'mt_pred', 'mt_root', 1_000]);
+    expect(calls[0].params).toEqual([inside.tokenId, 'proj_1', 'machine_1', await sha256Hex(inside.token), inside.expiresAt, 'mt_pred', 'mt_root', 1_000, 'mt_pred', 'mt_pred']);
     const startedAt = 5_000 - MEMBER_TOKEN_MAX_LINEAGE_MS + 10;
     const clamped = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, 5_000, { predecessorId: 'mt_pred', lineageRoot: 'mt_root', lineageStartedAt: startedAt });
     expect(clamped.expiresAt).toBe(startedAt + MEMBER_TOKEN_MAX_LINEAGE_MS);

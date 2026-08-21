@@ -2,7 +2,7 @@ import type { D1Like, D1StatementLike } from '../env.js';
 import { SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
 import { sha256Hex } from '../hash.js';
 import { heldBytes } from '../ingest/quota.js';
-import { SchemaMismatchError, type Classifier } from '../telemetry.js';
+import { SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
 
 export const MEMBER_TOKEN_BYTES = 32;
 export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -77,17 +77,19 @@ export function mintMemberToken(): string {
   return base64url(crypto.getRandomValues(new Uint8Array(MEMBER_TOKEN_BYTES)));
 }
 
-/** The one INSERT into member_tokens, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now or at the lineage ceiling, whichever is sooner. */
+/** The one INSERT into member_tokens, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now or at the lineage ceiling, whichever is sooner. A successor's row is written only while its predecessor is still live at the instant of the insert (the statement's change count says whether it was); a root has no predecessor and always lands. */
 function memberTokenInsert(
   db: D1Like, member: { projectId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, tokenId: string, digest: string,
 ): { statement: D1StatementLike; expiresAt: number } {
+  const predecessorId = lineage === null ? null : lineage.predecessorId;
   const lineageRoot = lineage === null ? tokenId : lineage.lineageRoot;
   const lineageStartedAt = lineage === null ? nowMs : lineage.lineageStartedAt;
   const expiresAt = Math.min(nowMs + MEMBER_TOKEN_TTL_MS, lineageStartedAt + MEMBER_TOKEN_MAX_LINEAGE_MS);
   const statement = db
     .prepare(`INSERT INTO member_tokens (id, project_id, machine_id, token_hash, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at)
-              VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL)`)
-    .bind(tokenId, member.projectId, member.machineId, digest, expiresAt, lineage === null ? null : lineage.predecessorId, lineageRoot, lineageStartedAt);
+              SELECT ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL
+               WHERE ? IS NULL OR EXISTS (SELECT 1 FROM member_tokens WHERE id = ? AND revoked_at IS NULL)`)
+    .bind(tokenId, member.projectId, member.machineId, digest, expiresAt, predecessorId, lineageRoot, lineageStartedAt, predecessorId, predecessorId);
   return { statement, expiresAt };
 }
 
@@ -126,17 +128,18 @@ export async function revokeMemberLineage(db: D1Like, tokenId: string, nowMs: nu
   return { revoked: result.meta.changes };
 }
 
-/** The window opens at `expires_at − MEMBER_TOKEN_REFRESH_WINDOW_MS`; earlier, the answer is `refresh_too_early` with the instant it opens. A token that already expires at its lineage ceiling answers `lineage_expired`: no successor could outlive it. Past both checks, one batch revokes the live, never-used successor this token may already have and inserts the new one — expiring one TTL from now or at the ceiling, whichever is sooner — and the answer carries the successor's own window start as `refreshAfter`. The presented token stays live; the successor's first authenticated use revokes it. */
+/** The window opens at `expires_at − MEMBER_TOKEN_REFRESH_WINDOW_MS`; earlier, the answer is `refresh_too_early` with the instant it opens. A token that already expires at its lineage ceiling answers `lineage_expired`: no successor could outlive it. Past both checks, one batch revokes the live, never-used successor this token may already have and inserts the new one — expiring one TTL from now or at the ceiling, whichever is sooner — and the answer carries the successor's own window start as `refreshAfter`. The insert lands only while the presented token is still live at that instant; a token revoked in between raises `TokenRevokedError` and no successor exists. The presented token stays live; the successor's first authenticated use revokes it. */
 export async function refreshMemberToken(db: D1Like, subject: RefreshSubject, nowMs: number): Promise<RefreshResult> {
   const opensAt = windowOpensAt(subject.expiresAt);
   if (nowMs < opensAt) return { refreshed: false, code: 'refresh_too_early', reason: REFRESH_TOO_EARLY, refreshAfter: opensAt };
   if (subject.lineageStartedAt + MEMBER_TOKEN_MAX_LINEAGE_MS <= subject.expiresAt) return { refreshed: false, code: 'lineage_expired', reason: LINEAGE_EXPIRED };
   const successor = await mintInsert(db, { projectId: subject.projectId, machineId: subject.machineId }, nowMs,
     { predecessorId: subject.tokenId, lineageRoot: subject.lineageRoot, lineageStartedAt: subject.lineageStartedAt });
-  await db.batch([
+  const [, inserted] = await db.batch([
     db.prepare(`UPDATE member_tokens SET revoked_at = ? WHERE predecessor_id = ? AND revoked_at IS NULL AND first_used_at IS NULL`).bind(nowMs, subject.tokenId),
     successor.statement,
   ]);
+  if (inserted.meta.changes !== 1) throw new TokenRevokedError(subject.tokenId);
   return { refreshed: true, ...successor.issued, refreshAfter: windowOpensAt(successor.issued.expiresAt) };
 }
 

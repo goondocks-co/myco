@@ -129,7 +129,7 @@ sql "UPDATE member_tokens SET bytes_written = <PREVIOUS> WHERE id = '<TOKEN_ID_1
 | T4 | first `post "$S2"` (any `prompt`) | `{persisted:true, …}`; `<SID2>` has `first_used_at` set and `bytes_written` = `<TOKEN_ID_1>`'s before the request plus this body; `<TOKEN_ID_1>` has `revoked_at` set; `post "$T1"` → `401` |
 | T5 | `sql "UPDATE member_tokens SET expires_at = <now + 3600000>, lineage_started_at = <now + 3600000> - 7776000000 WHERE id = '<SID2>'"` (one statement: the token sits at its lineage ceiling inside the window), then `refresh "$S2"` | `{refreshed:false, code:'lineage_expired', reason:'token lineage expired'}`; no new row |
 | T6 | `refresh "$S2"` with body `not json` | `{refreshed:false, code:'parse', reason:'body must be JSON'}` |
-| T7 | `sql "$(npm run -s token:revoke -- <SID2> --lineage)"` | reports 1 row changed (`<SID2>` was the chain's only live token); `post "$S2"` → `401`; `post "$T2"` (another lineage, into its own session) still `{persisted:true, …}` |
+| T7 | `sql "$(npm run -s token:revoke -- <SID2> --lineage)"`, then `post "$S2"` and `post "$T2"` with a `session.start` whose `sessionId` is new (machine_2's own session) | reports 1 row changed (`<SID2>` was the chain's only live token); `post "$S2"` → `401`; `post "$T2"` (another lineage) `{persisted:true, projected:true}` |
 | M1 | `migrations apply` on a fresh database | `0001 ✅ 0002 ✅ 0003 ✅`, `schema_meta.version = 3` |
 | M2 | `migrations apply` on a v1 database holding `bad/id` | `CHECK constraint failed: ok = 1`; `d1_migrations` keeps only `0001`; version stays `1` |
 | M3 | the row repaired, `migrations apply` again | `0002 ✅ 0003 ✅`, version `3`, two triggers, `member_tokens` carries `lineage_root = id` on every row |
@@ -140,13 +140,13 @@ sql "UPDATE member_tokens SET bytes_written = <PREVIOUS> WHERE id = '<TOKEN_ID_1
 Run on 2026-08-21 through the in-process worker (`tests/myco-server/helpers/d1.ts` over the migrated schema, `index.ts default.fetch`, real clock), with the `expires_at`/`lineage_started_at` moves of the rows above applied by SQL; raw tokens redacted, ids as issued. No edge output yet.
 
 ```
-T1 {"refreshed":false,"code":"refresh_too_early","reason":"refresh window not yet open","refreshAfter":1787733922356} [200]
-T2 {"refreshed":true,"token":"<S1>","tokenId":"mt_cahT64SpjD_5yZLV","expiresAt":1787885122359,"refreshAfter":1787733922359} [200]; row {"id":"mt_cahT64SpjD_5yZLV","predecessor_id":"mt_iG5ojkEarMgZD9x3","lineage_root":"mt_iG5ojkEarMgZD9x3","first_used_at":null,"revoked_at":null,"bytes_written":0}; post T1 {"persisted":true,"projected":true} [200]
-T3 {"refreshed":true,"token":"<S2>","tokenId":"mt_DiFY2rJ6_M0gFnLd","expiresAt":1787885122360,"refreshAfter":1787733922360} [200]; S1 row {…,"first_used_at":null,"revoked_at":1787280322360,"bytes_written":0}; live successors [{"c":1}]
-T4 post S2 {"persisted":true,"projected":true} [200]; T1 before {…,"revoked_at":null,"bytes_written":269}; T1 after {…,"revoked_at":1787280322360,"bytes_written":269}; S2 {…,"first_used_at":1787280322360,"revoked_at":null,"bytes_written":538}; post T1 {"error":"unauthorized"} [401]
+T1 {"refreshed":false,"code":"refresh_too_early","reason":"refresh window not yet open","refreshAfter":1787736226465} [200]
+T2 {"refreshed":true,"token":"<S1>","tokenId":"mt_yTZw1yNg2Srz2hrV","expiresAt":1787887426468,"refreshAfter":1787736226468} [200]; row {"id":"mt_yTZw1yNg2Srz2hrV","predecessor_id":"mt_KHkF-P67KgqsruOB","lineage_root":"mt_KHkF-P67KgqsruOB","first_used_at":null,"revoked_at":null,"bytes_written":0}; post T1 {"persisted":true,"projected":true} [200]
+T3 {"refreshed":true,"token":"<S2>","tokenId":"mt_ZKoIVrjsSOpfH5FE","expiresAt":1787887426470,"refreshAfter":1787736226470} [200]; S1 row {…,"first_used_at":null,"revoked_at":1787282626470,"bytes_written":0}; live successors [{"c":1}]
+T4 post S2 {"persisted":true,"projected":true} [200]; T1 before {…,"revoked_at":null,"bytes_written":269}; T1 after {…,"revoked_at":1787282626470,"bytes_written":269}; S2 {…,"first_used_at":1787282626470,"revoked_at":null,"bytes_written":538}; post T1 {"error":"unauthorized"} [401]
 T5 {"refreshed":false,"code":"lineage_expired","reason":"token lineage expired"} [200]; rows [{"c":4}]
 T6 {"refreshed":false,"code":"parse","reason":"body must be JSON"} [200]
-T7 revoked {"revoked":1}; post S2 {"error":"unauthorized"} [401]; post T2 {"persisted":false,"code":"identity_mismatch","reason":"machine identity mismatch"} [200] — T2 authenticated and reached the handler (this run wrote it into machine_1's session; the edge row uses T2's own session)
+T7 revoked {"revoked":1}; post S2 {"error":"unauthorized"} [401]; post T2 (own session) {"persisted":true,"projected":true} [200]
 ```
 
 ## Last observed output — edge

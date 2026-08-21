@@ -1,4 +1,4 @@
-export type ErrorClass = 'parse' | 'quota' | 'constraint' | 'schema' | 'db' | 'unknown';
+export type ErrorClass = 'parse' | 'quota' | 'constraint' | 'schema' | 'db' | 'revoked' | 'unknown';
 
 /** Raised when the database reports a schema version other than this build's. */
 export class SchemaMismatchError extends Error {
@@ -8,9 +8,18 @@ export class SchemaMismatchError extends Error {
   }
 }
 
+/** Raised when the presented token is found revoked between its authentication and a write that requires it live. */
+export class TokenRevokedError extends Error {
+  constructor(readonly tokenId: string) {
+    super('token revoked');
+    this.name = 'TokenRevokedError';
+  }
+}
+
 export function classify(err: unknown): ErrorClass {
   if (err instanceof SyntaxError || err instanceof RangeError) return 'parse';
   if (err instanceof SchemaMismatchError) return 'schema';
+  if (err instanceof TokenRevokedError) return 'revoked';
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes('member_tokens_quota')) return 'quota';
   if (/constraint failed|SQLITE_CONSTRAINT/i.test(message)) return 'constraint';
