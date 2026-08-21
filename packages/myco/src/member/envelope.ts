@@ -62,8 +62,8 @@ export interface EnvelopeContext {
 export const TEXT_MEDIA_TYPE = 'text/plain; charset=utf-8';
 export const JSON_MEDIA_TYPE = 'application/json';
 
-/** Server-side string bounds the builders truncate to. */
-const BOUNDS = {
+/** Server-side string bounds the builders truncate to (pinned against the worker catalogue by `tests/member/protocol-pins.test.ts`). */
+export const BOUNDS = {
   agent: 64, branch: 256, originPath: 1024, parentReason: 64, toolName: 64, output: 4096, errorMessage: 4096,
   mycoTool: 64, mycoOp: 64, agentType: 64, trigger: 64, message: 4096, level: 64, threadLabel: 256, title: 256,
   description: 4096, fileItem: 1024, tagItem: 64,
@@ -116,27 +116,28 @@ const trunc = (value: unknown, max: number): string | undefined =>
 
 const sha256Hex = (bytes: Uint8Array): string => crypto.createHash('sha256').update(bytes).digest('hex');
 
-/** The inline field, or the blob reference when the text exceeds the inline ceiling. */
+/** True when the value's JSON serialization — the size the server measures — fits under the inline ceiling. */
+export function fitsInline(value: unknown): boolean {
+  return Buffer.byteLength(JSON.stringify(value ?? null), 'utf-8') <= MEMBER_INLINE_TEXT_MAX_BYTES;
+}
+
+/** The inline field, or the blob reference when the text's serialized size exceeds the inline ceiling. */
 function inlineOrBlob(ctx: EnvelopeContext, field: string, text: string): { fields: Record<string, unknown>; blobSource?: BlobSource } {
-  const bytes = Buffer.from(text, 'utf-8');
-  if (bytes.byteLength <= MEMBER_INLINE_TEXT_MAX_BYTES) return { fields: { [field]: text } };
-  const source = ctx.stage(bytes, TEXT_MEDIA_TYPE);
+  if (fitsInline(text)) return { fields: { [field]: text } };
+  const source = ctx.stage(Buffer.from(text, 'utf-8'), TEXT_MEDIA_TYPE);
   return { fields: { blob: source.sha256 }, blobSource: source };
 }
 
 /** The inline JSON field, or the blob reference when its serialization exceeds the inline ceiling. */
 function inlineJsonOrBlob(ctx: EnvelopeContext, field: string, value: unknown): { fields: Record<string, unknown>; blobSource?: BlobSource } {
-  const json = JSON.stringify(value ?? null);
-  const bytes = Buffer.from(json, 'utf-8');
-  if (bytes.byteLength <= MEMBER_INLINE_TEXT_MAX_BYTES) return { fields: { [field]: value ?? null } };
-  const source = ctx.stage(bytes, JSON_MEDIA_TYPE);
+  if (fitsInline(value)) return { fields: { [field]: value ?? null } };
+  const source = ctx.stage(Buffer.from(JSON.stringify(value ?? null), 'utf-8'), JSON_MEDIA_TYPE);
   return { fields: { blob: source.sha256 }, blobSource: source };
 }
 
 /** An open JSON value bounded by its serialized size; over the ceiling it is replaced by a size marker. */
 function boundedJson(value: unknown): unknown {
-  const json = JSON.stringify(value ?? null);
-  return Buffer.byteLength(json, 'utf-8') <= MEMBER_INLINE_TEXT_MAX_BYTES ? value : { truncated: true, bytes: Buffer.byteLength(json, 'utf-8') };
+  return fitsInline(value) ? value : { truncated: true, bytes: Buffer.byteLength(JSON.stringify(value ?? null), 'utf-8') };
 }
 
 function compact(payload: Record<string, unknown>): Record<string, unknown> {
@@ -367,6 +368,7 @@ export function attachmentEvent(ctx: EnvelopeContext, facts: {
 export function transcriptSegmentEvent(ctx: EnvelopeContext, facts: {
   transcriptId: string; baseOffset: number; blobSource: BlobSource; originPath?: string;
 }): OutboundEvent {
+  if (facts.blobSource.size < 1) throw new Error('transcriptSegmentEvent: a segment carries at least one byte');
   return envelope(ctx, 'transcript.segment', {
     transcriptId: facts.transcriptId,
     baseOffset: facts.baseOffset,

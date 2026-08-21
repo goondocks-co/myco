@@ -1,103 +1,44 @@
-import { createHookDaemonClient } from './client.js';
-import { captureCriticalEvent } from './send-event.js';
-import { readHookInput } from './input.js';
-import { evaluateUserPromptRules } from './capture-rules.js';
+import { evaluateUserPromptRules, resolveSubagentThread } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
-import { resolveProvisionedVaultDir } from './vault-gate.js';
-import { writeHookResponse } from './response.js';
-import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
+import { runMemberHook, type HookMainOptions } from '../member/capture.js';
+import { deriveId, mintId, promptEvent } from '../member/envelope.js';
+import { readSessionState, updateSessionState } from '../member/session-state.js';
+import { sha256Text } from '../member/transcript.js';
 
-export async function main(lockNamespace?: PerUserLockNamespace) {
-  const VAULT_DIR = resolveProvisionedVaultDir(undefined, lockNamespace);
-  if (!VAULT_DIR) return;
-
-  let symbiont: string | undefined;
-  try {
-    const input = await readHookInput();
-    symbiont = input.agent;
+export async function main(opts: HookMainOptions = {}) {
+  await runMemberHook('user-prompt-submit', opts, (run) => {
+    const { input, sessionId, agent, ctx, spool } = run;
+    // `Session::` line matches the daemon's injection format (Branch::, Session::).
+    const response = { additionalContext: `Session:: \`${sessionId}\`` };
     const rawPrompt = input.prompt ?? '';
-    const sessionId = input.sessionId;
-    if (!sessionId) return;
-
     const transcriptMeta = input.transcriptPath ? readTranscriptMeta(input.transcriptPath) : undefined;
-    const decision = evaluateUserPromptRules(input.agent, {
+    const decision = evaluateUserPromptRules(agent, {
       prompt: rawPrompt,
       transcriptPath: input.transcriptPath,
       transcriptMeta: transcriptMeta ?? undefined,
     });
-
-    const client = createHookDaemonClient(VAULT_DIR, { sessionId }, lockNamespace);
-    // Await health so context injection on the first prompt after a reboot
-    // actually gets a response; capture falls back to the buffer path on timeout.
-    await client.ensureRunning();
-
     if (decision.action === 'drop') {
-      // Drop rule fired — cascade-delete the session row SessionStart
-      // registered, under the phantom-delete contract: {expect_empty: true}
-      // makes the daemon refuse unless the session captured zero human
-      // prompts. Guards against the codex subagent-spawn confusion where
-      // the hook receives the PARENT session_id with the CHILD's transcript
-      // — the drop rule fires correctly but sessionId names a real session.
-      // Session-maintenance sweep catches any stragglers if this request
-      // fails or is refused.
       process.stderr.write(`[myco] user-prompt-submit: dropped (${decision.reason ?? 'rule'})\n`);
-      const deleteResult = await client.delete(`/api/sessions/${sessionId}`, { expect_empty: true });
-      if (!deleteResult.ok) {
-        const refusedNotEmpty = (deleteResult.data as { error?: string } | undefined)?.error === 'session_not_empty';
-        process.stderr.write(refusedNotEmpty
-          ? '[myco] user-prompt-submit: drop-delete refused (session has captured content) — leaving cleanup to the maintenance sweep\n'
-          : '[myco] user-prompt-submit: drop-delete did not complete (transport or lookup failure) — leaving cleanup to the maintenance sweep\n');
-      }
-      writeHookResponse(symbiont, 'user-prompt-submit');
-      return;
+      return { events: [], response };
     }
-
-    const prompt = decision.action === 'rewrite' ? decision.prompt : rawPrompt;
+    const text = decision.action === 'rewrite' ? decision.prompt : rawPrompt;
     if (decision.action === 'rewrite') {
       process.stderr.write(`[myco] user-prompt-submit: rewritten (${decision.reason ?? 'rule'})\n`);
     }
-    // Forward `origin` only when the rule actually classified it. The daemon's
-    // toPromptBatchOrigin coerces missing/invalid values to 'human', so omitting
-    // is equivalent — and keeps a single source of truth for the default.
-    const originField = decision.origin ? { origin: decision.origin } : undefined;
 
-    // Kind classification happens on the daemon; Stop-time reconciler repairs it.
-    // Buffer fallback (shouldBufferFallback): a transport failure buffers, and
-    // replay re-applies the capture rule (classifyNextPromptDecision,
-    // capture/event-policy.ts `regate`) so a buffered prompt is re-filtered
-    // rather than blindly re-inserted. Reuse the warmed client.
-    await captureCriticalEvent({
-      vaultDir: VAULT_DIR,
-      sessionId,
-      hookName: 'user-prompt-submit',
-      endpoint: '/events',
-      postBody: {
-        type: 'user_prompt',
-        prompt,
-        ...originField,
-        session_id: sessionId,
-        agent: input.agent,
-        transcript_path: input.transcriptPath,
-      },
-      bufferEvent: { type: 'user_prompt', prompt, ...originField, transcript_path: input.transcriptPath },
-      client,
-      lockNamespace,
+    // A sub-agent thread's prompt names its parent session's current prompt and its own thread.
+    const thread = resolveSubagentThread(agent, transcriptMeta ?? undefined);
+    const parentPromptId = thread ? readSessionState(spool.dir, thread.parentSessionId).promptId : undefined;
+    const threadId = thread?.threadId ? deriveId('thread', thread.threadId) : undefined;
+
+    const promptId = mintId();
+    updateSessionState(spool.dir, sessionId, (state) => {
+      state.promptId = promptId;
+      state.prompts[sha256Text(text)] = promptId;
     });
-
-    const contextResult = await client.post('/context/prompt', {
-      prompt,
-      session_id: sessionId,
-    });
-
-    // `Session::` line matches daemon context injection format (Branch::, Session::).
-    const sessionLine = `Session:: \`${sessionId}\``;
-    const contextText = contextResult.ok && contextResult.data?.text
-      ? `${contextResult.data.text}\n${sessionLine}`
-      : sessionLine;
-
-    writeHookResponse(symbiont, 'user-prompt-submit', { additionalContext: contextText });
-  } catch (error) {
-    process.stderr.write(`[myco] user-prompt-submit error: ${(error as Error).message}\n`);
-    writeHookResponse(symbiont, 'user-prompt-submit');
-  }
+    return {
+      events: [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })],
+      response,
+    };
+  });
 }

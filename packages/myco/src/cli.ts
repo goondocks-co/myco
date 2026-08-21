@@ -185,7 +185,7 @@ async function main(): Promise<void> {
   if (cmd === 'hook') {
     runLaunchPreamble('hook', args);
     const hookName = args[0];
-    const HOOK_DISPATCH: Record<string, () => Promise<{ main: () => Promise<void> }>> = {
+    const HOOK_DISPATCH: Record<string, () => Promise<{ main: (opts: import('./member/capture.js').HookMainOptions) => Promise<void> }>> = {
       'session-start': () => import('./hooks/session-start.js'),
       'session-end': () => import('./hooks/session-end.js'),
       'stop': () => import('./hooks/stop.js'),
@@ -207,7 +207,10 @@ async function main(): Promise<void> {
       console.error(`Unknown hook: ${hookName}. Available: ${Object.keys(HOOK_DISPATCH).join(', ')}`);
       process.exit(1);
     }
-    return (await loader()).main();
+    // The credential source is declared on the hook command (`--credential
+    // registry|env`) and handed down; a hook never infers it.
+    const { parseCredentialFlag } = await import('./member/credential.js');
+    return (await loader()).main({ credential: parseCredentialFlag(args) });
   }
   if (cmd === 'daemon') return (await import('./daemon/main.js')).main();
   // Supervisor lifecycle — manages the platform service + daemon binary, never a

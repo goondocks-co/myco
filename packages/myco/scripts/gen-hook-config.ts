@@ -69,6 +69,7 @@ interface HookConfigEntry {
   subagentParentPath?: string;
   subagentThreadIdPath?: string;
   subagentLabelPath?: string;
+  sessionContinuation?: unknown;
 }
 
 /** Matches the hook name in a rendered hook command (`… hook session-start --symbiont x`). */
@@ -172,6 +173,7 @@ function hookConfigEntryFor(manifest: SymbiontManifest): HookConfigEntry {
   if (manifest.capture?.subagentParentPath) entry.subagentParentPath = manifest.capture.subagentParentPath;
   if (manifest.capture?.subagentThreadIdPath) entry.subagentThreadIdPath = manifest.capture.subagentThreadIdPath;
   if (manifest.capture?.subagentLabelPath) entry.subagentLabelPath = manifest.capture.subagentLabelPath;
+  if (manifest.capture?.sessionContinuation) entry.sessionContinuation = manifest.capture.sessionContinuation;
   return entry;
 }
 
@@ -205,6 +207,7 @@ export function renderHookConfigSources(): HookConfigSources {
 import type {
   CapturePrompts,
   CaptureRule,
+  SessionContinuation,
   SymbiontManifest,
   SymbiontRegistration,
   TranscriptDiscovery,
@@ -239,6 +242,7 @@ export interface HookConfigEntry {
   subagentParentPath?: string;
   subagentThreadIdPath?: string;
   subagentLabelPath?: string;
+  sessionContinuation?: SessionContinuation;
 }
 
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = ${body} as const;

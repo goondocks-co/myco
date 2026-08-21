@@ -138,6 +138,27 @@ describe('member envelope — field rules', () => {
     expect(row.text).toBeNull();
   });
 
+  it('measures the inline ceiling on the serialized text: worst-case escaping at the ceiling still lands persisted', async () => {
+    // Raw bytes under the ceiling, serialized bytes over it: every char escapes to two.
+    const escaped = '"\n'.repeat(Math.floor(MEMBER_INLINE_TEXT_MAX_BYTES / 2) - 100);
+    expect(Buffer.byteLength(escaped)).toBeLessThan(MEMBER_INLINE_TEXT_MAX_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(escaped))).toBeGreaterThan(MEMBER_INLINE_TEXT_MAX_BYTES);
+    const out = promptEvent(ctx(), { promptId: mintId(), text: escaped });
+    expect(out.blobSource).toBeDefined();
+    const rig = await memberRig();
+    expect(await deliver(rig, out)).toMatchObject({ persisted: true });
+    // The same escaping under the serialized ceiling stays inline and lands.
+    const underCeiling = '"\n'.repeat(Math.floor(MEMBER_INLINE_TEXT_MAX_BYTES / 4) - 100);
+    const inline = promptEvent(ctx(), { promptId: mintId(), text: underCeiling });
+    expect(inline.blobSource).toBeUndefined();
+    expect(await deliver(rig, inline)).toMatchObject({ persisted: true });
+  });
+
+  it('refuses to build an empty transcript segment', () => {
+    expect(() => transcriptSegmentEvent(ctx(), { transcriptId: `tx_${'a'.repeat(32)}`, baseOffset: 0, blobSource: stager.stage(new Uint8Array(0), 'text/plain') }))
+      .toThrow('at least one byte');
+  });
+
   it('puts level only on notification and error', () => {
     expect(notificationEvent(ctx(), input({ message: 'm', level: 'info' })).envelope.payload.level).toBe('info');
     expect(errorEvent(ctx(), input({ message: 'm', code: 'E' })).envelope.payload.level).toBe('E');

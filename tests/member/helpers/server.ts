@@ -41,7 +41,14 @@ export async function memberRig(opts: { now?: number; projectId?: string; machin
   const projectId = opts.projectId ?? TEST_PROJECT_ID;
   const machineId = opts.machineId ?? TEST_MACHINE_ID;
   const issued = await issueMemberToken(env.db, { projectId, machineId }, now);
-  const fetch = (input: string | URL | Request, init?: RequestInit) => worker.fetch(new Request(input, init), env.env);
+  // The edge supplies the source identity header; the member transport never sets it.
+  const fetch = (input: string | URL | Request, init?: RequestInit) => {
+    const req = new Request(input, init);
+    if (req.headers.has('cf-connecting-ip')) return worker.fetch(req, env.env);
+    const headers = new Headers(req.headers);
+    headers.set('cf-connecting-ip', '1.2.3.4');
+    return worker.fetch(new Request(req, { headers }), env.env);
+  };
   const headers = (extra: Record<string, string> = {}) => ({
     authorization: `Bearer ${issued.token}`,
     'cf-connecting-ip': '1.2.3.4',

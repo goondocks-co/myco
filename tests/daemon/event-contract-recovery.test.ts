@@ -13,7 +13,6 @@ import { getDatabase } from '@myco/db/client.js';
 import { countActivities, listActivities } from '@myco/db/queries/activities.js';
 import { listBatchesBySession } from '@myco/db/queries/batches.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
-import { shouldBufferFallback } from '@myco/hooks/send-event.js';
 import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 
 /**
@@ -131,9 +130,6 @@ describe('honest /events contract — end-to-end recovery loop', () => {
     }
     expect(toolRes.body).toEqual({ ok: true, persisted: false, buffered: true });
 
-    // The hook-side decision table reads that response and refuses to
-    // re-buffer — the daemon-appended copy is the durable one.
-    expect(shouldBufferFallback({ ok: true, data: toolRes.body }, 'tool_use')).toBe(false);
     const bufferLines = fs.readFileSync(path.join(bufferDir, `${sessionId}.jsonl`), 'utf-8')
       .trim().split('\n');
     expect(bufferLines).toHaveLength(2); // prompt + tool_use, daemon copies only

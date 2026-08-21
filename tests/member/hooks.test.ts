@@ -1,0 +1,159 @@
+/**
+ * Every hook's `main()` driven with stdin fixtures through the in-process
+ * worker: the envelope lands `persisted:true` with its projected row; a drop
+ * rule emits nothing; UserPromptSubmit keeps the `Session::` line; no retired
+ * daemon route is ever dialled; PreToolUse answers the empty response and
+ * never dials; Stop carries the response, the transcript-derived prompts,
+ * plans, images, and the transcript segments.
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { resetMachineIdCache } from '@myco/machine-id.js';
+import { MemberSpool } from '@myco/member/spool.js';
+import { readSessionState } from '@myco/member/session-state.js';
+import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
+import { registerTestMember, recordingFetch, runHook } from './helpers/hooks.js';
+
+let mycoHome: string;
+let rig: MemberRig;
+let fetchSpy: ReturnType<typeof recordingFetch>;
+const savedHome = process.env.MYCO_HOME;
+
+beforeEach(async () => {
+  mycoHome = tempMycoHome();
+  process.env.MYCO_HOME = mycoHome;
+  resetMachineIdCache();
+  rig = await memberRig();
+  registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
+  fetchSpy = recordingFetch(rig.fetch);
+});
+afterEach(() => {
+  process.env.MYCO_HOME = savedHome;
+  resetMachineIdCache();
+});
+
+const RETIRED = ['/sessions/register', '/sessions/unregister', '/events/stop', '/events/sync-transcript-prompts', '/context', '/context/prompt', '/context/subagent', '/canopy/inject', '/api/sessions'];
+const dialled = () => fetchSpy.requests.map((r) => r.path);
+const assertNoRetired = () => { for (const p of dialled()) for (const r of RETIRED) expect(p.startsWith(r)).toBe(false); };
+const session = 'sess-hooks-1';
+const transcript = (lines: unknown[]): string => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-tx-')), `${session}.jsonl`);
+  fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  return file;
+};
+const run = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>, argv?: string[]) =>
+  runHook(name, { session_id: session, hook_event_name: raw.hook_event_name ?? undefined, ...raw }, { fetch: fetchSpy.fetch, argv });
+
+describe('member hooks through the worker', () => {
+  it('runs the whole session in hook order and projects every kind; no retired route is dialled', async () => {
+    const tx = transcript([{ type: 'user', cwd: '/work/repo', message: { role: 'user', content: 'hello' }, uuid: 'u1', timestamp: '2026-01-01T00:00:00Z' }]);
+    await run('session-start', { hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' });
+    expect(rig.rows('sessions')).toBe(1);
+    const ups = await run('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', transcript_path: tx, prompt: 'hello' });
+    expect(ups.stdout).toContain(`Session:: \`${session}\``);
+    expect(rig.rows('prompt_batches')).toBe(1);
+    const promptId = readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, session).promptId;
+    expect(promptId).toBeDefined();
+    await run('post-tool-use', { hook_event_name: 'PostToolUse', transcript_path: tx, tool_name: 'Read', tool_input: { file_path: '/work/repo/a.ts' }, tool_output: 'contents' });
+    await run('post-tool-use-failure', { hook_event_name: 'PostToolUseFailure', transcript_path: tx, tool_name: 'Bash', tool_input: { command: 'false' }, error: 'exit 1' });
+    expect(rig.rows('tool_calls')).toBe(2);
+    expect((rig.env.sqlite.query('SELECT prompt_id FROM tool_calls').all() as Array<{ prompt_id: string }>).every((r) => r.prompt_id === promptId)).toBe(true);
+    await run('subagent-start', { hook_event_name: 'SubagentStart', transcript_path: tx, agent_id: 'a1', agent_type: 'Explore' });
+    await run('subagent-stop', { hook_event_name: 'SubagentStop', transcript_path: tx, agent_id: 'a1', agent_type: 'Explore', last_assistant_message: 'done' });
+    await run('pre-compact', { hook_event_name: 'PreCompact', transcript_path: tx, trigger: 'auto' });
+    await run('post-compact', { hook_event_name: 'PostCompact', transcript_path: tx, trigger: 'auto', compact_summary: 's' });
+    await run('task-completed', { hook_event_name: 'TaskCompleted', transcript_path: tx, task_id: 't', task_subject: 'Ship' });
+    await run('stop-failure', { hook_event_name: 'StopFailure', transcript_path: tx, error: 'boom' });
+    await run('notification', { transcript_path: tx, message: 'attention', level: 'warn' }, []);
+    await run('error-occurred', { transcript_path: tx, message: 'err' }, []);
+    await run('stop', { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'The answer.' });
+    expect(rig.rows('responses')).toBe(1);
+    expect(rig.rows('transcript_segments')).toBe(1);
+    await run('session-end', { hook_event_name: 'SessionEnd', transcript_path: tx });
+    const sessionRow = rig.env.sqlite.query('SELECT branch, origin_path, ended_at FROM sessions WHERE session_id = ?').get(session) as { origin_path: string; ended_at: number | null };
+    expect(sessionRow.origin_path).toBe('/work/repo');
+    expect(sessionRow.ended_at).toBeGreaterThan(0);
+    const kinds = (rig.env.sqlite.query('SELECT kind FROM events ORDER BY received_at, rowid').all() as Array<{ kind: string }>).map((r) => r.kind);
+    expect(new Set(kinds)).toEqual(new Set([
+      'session.start', 'prompt', 'tool.use', 'tool.failure', 'subagent.start', 'subagent.stop', 'compaction.pre', 'compaction.post',
+      'task.completed', 'stop.failure', 'notification', 'error', 'response', 'transcript.segment', 'session.end',
+    ]));
+    assertNoRetired();
+    expect(new Set(dialled())).toEqual(new Set(['/events', ...dialled().filter((p) => p.startsWith('/blobs/'))]));
+    // Every spool file is gone: each hook drained its own events.
+    expect(new MemberSpool('proj_1', { mycoHome }).sessionIds()).toEqual([]);
+  });
+
+  it('a session-start drop rule and a user-prompt drop rule emit nothing and dial nothing', async () => {
+    // Claude Code's `sdk-py` entrypoint drop rule (transcript meta) — session_start.
+    const tx = transcript([{ type: 'user', entrypoint: 'sdk-py', message: { role: 'user', content: 'x' } }]);
+    const ss = await run('session-start', { transcript_path: tx });
+    expect(ss.stderr).toContain('session-start: dropped');
+    expect(dialled()).toEqual([]);
+    expect(rig.rows('events')).toBe(0);
+    // A `<local-command-stdout>` envelope is dropped by the user_prompt rule; no delete is dialled either.
+    const tx2 = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
+    const ups = await run('user-prompt-submit', { transcript_path: tx2, prompt: '<local-command-stdout>ls</local-command-stdout>' });
+    expect(ups.stderr).toContain('user-prompt-submit: dropped');
+    expect(ups.stdout).toContain('Session::');
+    expect(dialled()).toEqual([]);
+    expect(rig.rows('events')).toBe(0);
+  });
+
+  it('pre-tool-use writes the empty response and dials nothing', async () => {
+    const r = await run('pre-tool-use', { tool_name: 'Read', tool_input: { file_path: '/x' } });
+    expect(r.stdout).toBe('');
+    expect(dialled()).toEqual([]);
+    expect(new MemberSpool('proj_1', { mycoHome }).sessionIds()).toEqual([]);
+  });
+
+  it('Stop mines the transcript: a queued command becomes a derived-id prompt, a plan tag a plan, an image an attachment, and the bytes ship as segments', async () => {
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]).toString('base64');
+    const tx = transcript([
+      { type: 'user', uuid: 'u1', promptId: 'p1', timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: [{ type: 'text', text: 'typed prompt' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png } }] } },
+      { type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:01Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Here is a plan <ultraplan>\n# Plan A\n\nstep one\n</ultraplan> done' }], stop_reason: 'end_turn' } },
+      { type: 'attachment', uuid: 'q1', timestamp: '2026-01-01T00:00:02Z', attachment: { type: 'queued_command', prompt: 'queued steer' } },
+      { type: 'assistant', uuid: 'a2', timestamp: '2026-01-01T00:00:03Z', message: { role: 'assistant', content: [{ type: 'text', text: 'final words' }], stop_reason: 'end_turn' } },
+    ]);
+    await run('session-start', { transcript_path: tx, cwd: '/work/repo' });
+    await run('user-prompt-submit', { transcript_path: tx, prompt: 'typed prompt' });
+    await run('stop', { transcript_path: tx, last_assistant_message: '' });
+    const kinds = (rig.env.sqlite.query('SELECT kind, COUNT(*) n FROM events GROUP BY kind').all() as Array<{ kind: string; n: number }>);
+    const byKind = Object.fromEntries(kinds.map((k) => [k.kind, k.n]));
+    expect(byKind).toMatchObject({ 'session.start': 1, prompt: 2, plan: 1, attachment: 1, response: 1, 'transcript.segment': 1 });
+    const prompts = rig.env.sqlite.query('SELECT text, origin FROM prompt_batches ORDER BY created_at').all() as Array<{ text: string; origin: string }>;
+    expect(prompts.map((p) => p.text).sort()).toEqual(['queued steer', 'typed prompt']);
+    const plan = rig.env.sqlite.query('SELECT title, content FROM plans').get() as { title: string; content: string };
+    expect(plan).toEqual({ title: 'Plan A', content: '# Plan A\n\nstep one' });
+    const response = rig.env.sqlite.query('SELECT text FROM responses').get() as { text: string };
+    expect(response.text).toBe('final words');
+    const segment = rig.env.sqlite.query('SELECT base_offset, length FROM transcript_segments').get() as { base_offset: number; length: number };
+    expect(segment).toEqual({ base_offset: 0, length: fs.statSync(tx).size });
+    // A second Stop on an unchanged transcript emits nothing new and ships nothing.
+    const before = rig.rows('events');
+    await run('stop', { transcript_path: tx, last_assistant_message: '' });
+    expect(rig.rows('events')).toBe(before);
+    // A transcript that grows ships only the tail, at the server's held offset.
+    fs.appendFileSync(tx, JSON.stringify({ type: 'user', uuid: 'u9', message: { role: 'user', content: 'later' } }) + '\n');
+    await run('stop', { transcript_path: tx, last_assistant_message: 'ok' });
+    const segments = rig.env.sqlite.query('SELECT base_offset, length FROM transcript_segments ORDER BY base_offset').all() as Array<{ base_offset: number; length: number }>;
+    expect(segments).toHaveLength(2);
+    expect(segments[1].base_offset).toBe(segments[0].length);
+    expect(segments[0].length + segments[1].length).toBe(fs.statSync(tx).size);
+    assertNoRetired();
+  });
+
+  it('windsurf --phases: the response phase emits only the response, the transcript phase only the transcript work', async () => {
+    const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
+    // Windsurf's own field names: trajectory_id, tool_info.transcript_path, tool_info.response.
+    const raw = { trajectory_id: session, tool_info: { transcript_path: tx, response: 'resp' } };
+    await runHook('stop', raw, { fetch: fetchSpy.fetch, symbiont: 'windsurf', argv: ['--phases', 'response'] });
+    expect(rig.rows('responses')).toBe(1);
+    expect(rig.rows('transcript_segments')).toBe(0);
+    await runHook('stop', raw, { fetch: fetchSpy.fetch, symbiont: 'windsurf', argv: ['--phases', 'transcript'] });
+    expect(rig.rows('responses')).toBe(1);
+    expect(rig.rows('transcript_segments')).toBe(1);
+  });
+});

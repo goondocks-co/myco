@@ -1,10 +1,6 @@
-import { sendEvent } from './send-event.js';
-import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
+import { runMemberHook, type HookMainOptions } from '../member/capture.js';
+import { compactionEvent } from '../member/envelope.js';
 
-export async function main(lockNamespace?: PerUserLockNamespace) {
-  await sendEvent('post-compact', (input) => ({
-    type: 'post_compact',
-    trigger: input.raw.trigger,
-    compact_summary: input.raw.compact_summary,
-  }), lockNamespace);
+export async function main(opts: HookMainOptions = {}) {
+  await runMemberHook('post-compact', opts, (run) => ({ events: [compactionEvent(run.ctx, 'post', run.input)] }));
 }

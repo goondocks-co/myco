@@ -55,8 +55,23 @@ const ALLOWLIST: readonly string[] = [
   'member/**',
   'capture/buffer.ts',
   'capture/transcript-id.ts',
+  // Transcript-derived capture: the prompt walker, session lineage, and plan-tag envelopes.
+  'capture/prompt-kind.ts',
+  'capture/session-continuation.ts',
+  'plans/tag-envelopes.ts',
+  // The transcript parsers and the per-symbiont turn extraction they back.
   'symbionts/parsers/**',
   'symbionts/adapter.ts',
+  'symbionts/registry.ts',
+  'symbionts/claude-code.ts',
+  'symbionts/cursor.ts',
+  'symbionts/codex.ts',
+  'symbionts/antigravity.ts',
+  'symbionts/windsurf.ts',
+  'symbionts/copilot.ts',
+  'symbionts/transcript-discovery.ts',
+  'symbionts/envelope-prefixes.ts',
+  'symbionts/manifests.generated.ts',
   'paths/home.ts',
   'project-root.ts',
   'machine-id.ts',
@@ -82,6 +97,8 @@ const FORBIDDEN_LITERALS: readonly string[] = ['127.0.0.1', 'daemon.json', 'daem
 
 /** Leaves whose closure is enforced (paths relative to packages/myco/src; `/**` = every file under). */
 const ENFORCED_LEAVES: readonly string[] = [
+  'hooks/**',
+  'member/**',
   'paths/home.ts',
   'project-root.ts',
   'machine-id.ts',
@@ -401,7 +418,7 @@ describe('member seam boundary (transitive)', () => {
   const hookEntries = listTs(path.join(SRC_ROOT, 'hooks')).filter((f) => path.dirname(f) === path.join(SRC_ROOT, 'hooks'));
   const memberEntries = listTs(path.join(SRC_ROOT, 'member'));
 
-  it('walks every hooks/ and member/ entry and reports the closure outside the allowlist (report mode)', () => {
+  it('walks every hooks/ and member/ entry and keeps the whole closure inside the allowlist (enforced)', () => {
     expect(hookEntries.length).toBeGreaterThan(0);
     const closure = closureOf([...hookEntries, ...memberEntries]);
     const violations = [...moduleViolationsOf(closure), ...externalViolationsOf(closure), ...unknowableViolationsOf(closure)];
@@ -409,15 +426,15 @@ describe('member seam boundary (transitive)', () => {
     const literals = violations.filter((v) => v.reason.startsWith('contains literal'));
     const externals = violations.filter((v) => v.reason === 'external package');
     const unknowable = violations.filter((v) => v.reason.startsWith('unknowable dynamic import'));
-    // REPORT MODE: the hooks closure is printed, not asserted — the list is
-    // what the member rewiring clears before this block becomes an assertion.
     console.log(
-      `[member-seam] report: ${closure.modules.size} modules in the hooks closure, `
+      `[member-seam] ${closure.modules.size} modules in the hooks+member closure, `
       + `${outside.size} outside the allowlist, ${literals.length} forbidden-literal hits, `
-      + `${externals.length} external packages reached, ${unknowable.length} modules with unknowable dynamic imports\n`
-      + formatViolations(violations),
+      + `${externals.length} external packages reached, ${unknowable.length} modules with unknowable dynamic imports`,
     );
-    expect(Array.isArray(violations)).toBe(true);
+    if (violations.length > 0) {
+      throw new Error(`the hooks+member closure reaches outside the member seam allowlist:\n${formatViolations(violations)}`);
+    }
+    expect(violations).toEqual([]);
   });
 
   for (const leaf of ENFORCED_LEAVES) {

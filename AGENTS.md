@@ -22,8 +22,8 @@ Myco captures project memory in a local vault and serves it back through context
 ## Core Invariants
 
 - `AGENTS.md` is the canonical rules file. Agent-specific instruction files should stay thin and point back here.
-- Hooks in `src/hooks/` must stay thin and delegate to the daemon. Do not put business logic or long-running processing in hook entry points.
-- The daemon is the authority for event processing, session recording, spores, and digest work.
+- Hooks in `src/hooks/` must stay thin and delegate to the member seam (`src/member/`): build the envelope, append it to the spool, drain under the hook's own budget. Do not put business logic or long-running processing in hook entry points. The hooks+member import closure is gated (`tests/meta/member-seam-boundary.test.ts`): no daemon, grove, vault, db, host, or installer code behind a hook.
+- The server is the authority for event processing, session recording, spores, and digest work in 2.0 member mode; the daemon remains so for 1.4-era local vaults until Plan 6.
 - Recurring daemon work must go through the PowerManager. Do not add ad hoc polling timers.
 - Session ID is the durable key. Do not tie persistent state to hook lifecycle events.
 - Write paths must be additive and idempotent. Do not overwrite or delete accumulated vault history casually.

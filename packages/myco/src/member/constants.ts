@@ -38,10 +38,17 @@ export const MEMBER_INLINE_TEXT_MAX_BYTES = 196_608;
 /** A transcript is shipped in segments of at most this many bytes. Under the server blob cap. */
 export const TRANSCRIPT_SLICE_BYTES = 8 * 1024 * 1024;
 
+/** Shape of every member token the server mints (32 random bytes as unpadded base64url). */
+export const MEMBER_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
 /** Milliseconds a hook keeps back from its declared harness timeout. */
 export const HOOK_BUDGET_MARGIN_MS = 1_000;
 /** Ceiling on the per-request connect timeout. */
 export const CONNECT_TIMEOUT_CAP_MS = 2_000;
+/** The timeout assumed for a harness event whose template declares none. */
+export const MEMBER_DEFAULT_HOOK_TIMEOUT_MS = 5_000;
+/** Per-request timeout when no harness budget applies (`myco member drain`). */
+export const UNBOUNDED_REQUEST_TIMEOUT_MS = 60_000;
 /** The most transcript work SessionEnd does inside its budget. */
 export const SESSION_END_TRANSCRIPT_BUDGET_MS = 4_000;
 /** Harness events the member registers; PreToolUse is never among them. */
