@@ -24,7 +24,7 @@ import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js'
 const TEST_LABEL = serviceLabel(TEST_MYCO_HOME);
 
 // Mock child_process.spawn at module-boundary so the `spawn` import inside
-// hooks/client.ts resolves to our spy. vi.spyOn doesn't work here — the
+// daemon/client.ts resolves to our spy. vi.spyOn doesn't work here — the
 // named import captures the real function at parse time.
 const spawnMock = vi.fn(() => ({ unref: () => {} }));
 const childProcessActual = { ...childProcessActual__ns };
@@ -48,7 +48,7 @@ afterAll(() => {
 });
 
 // Late import so the mock is in place before client.ts evaluates.
-const { DaemonClient } = await import('@myco/hooks/client');
+const { DaemonClient } = await import('@myco/daemon/client');
 
 // The coalesce tests below use `noServiceManager()` to take the legacy
 // (no-service) spawn path regardless of whether the host has the real

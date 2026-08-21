@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { DaemonClient } from '@myco/hooks/client';
+import { DaemonClient } from '@myco/daemon/client';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
 import { ensureProjectManifest } from '@myco/config/project-manifest';
 

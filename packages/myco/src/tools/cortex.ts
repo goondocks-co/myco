@@ -4,7 +4,7 @@
 
 import { parseCanopyRecordId } from '@myco/canopy/hydrate.js';
 import { readCanopyEntry } from '@myco/canopy/read-service.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { handleCanopyMap, type CanopyMapResult } from './canopy-map.js';
 import { requestContextHeaders, requireProjectId, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { buildEndpoint } from './shared.js';

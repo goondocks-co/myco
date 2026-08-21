@@ -5,7 +5,7 @@
  * their own token budget, cost, reasoning level, and phase checkpoints.
  */
 
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { extractErrorMessage } from './error.js';
 import { buildEndpoint } from './shared.js';
 import { requestContextHeaders, type MycoRequestContext } from '@myco/grove/request-context.js';

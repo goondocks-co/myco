@@ -20,7 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, type Database } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { createMycoTools } from '@myco/tools/index.js';
 import { isToolError } from '@myco/tools/error.js';
 import {

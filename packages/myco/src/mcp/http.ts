@@ -1,7 +1,7 @@
 import type http from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Database } from '../db/client.js';
-import { DaemonClient } from '../hooks/client.js';
+import { DaemonClient } from '../daemon/client.js';
 import { createMycoTools } from '../tools/index.js';
 import {
   ForeignGroveError,

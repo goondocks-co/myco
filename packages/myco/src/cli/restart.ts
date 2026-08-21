@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
 import { writeRestartIntent } from '../daemon/intent.js';
-import { DaemonClient } from '../hooks/client.js';
+import { DaemonClient } from '../daemon/client.js';
 import { serviceLabel } from '../service/labels.js';
 
 const RESTART_CONVERGE_DEADLINE_MS = 15_000;

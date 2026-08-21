@@ -11,7 +11,7 @@ import {
 } from '@myco/grove/request-context.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 
 const FIXTURE_PROJECT_ID = assertGroveProjectId(createProjectId());
 

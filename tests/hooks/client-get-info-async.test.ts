@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { DaemonClient } from '@myco/hooks/client';
+import { DaemonClient } from '@myco/daemon/client';
 import { ensureProjectManifest } from '@myco/config/project-manifest';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
 import { resolveGlobalDaemonPort } from '@myco/daemon/service-state';

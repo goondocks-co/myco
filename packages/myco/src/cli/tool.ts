@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
-import { DaemonClient } from '@myco/hooks/client.js';
+import { DaemonClient } from '@myco/daemon/client.js';
 import { buildBridgeRequestHeaders } from '@myco/mcp/stdio-bridge.js';
 import { getPluginVersion } from '@myco/version.js';
 

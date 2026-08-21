@@ -462,7 +462,7 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   // --- localhost-only: operator control plane / local-install management (§1d, §1e).
   //     Served on whichever daemon received the request; never crosses the overlay. ---
   // Readiness of THIS daemon's request pipeline (§1d) — each client probes its own
-  // local daemon (`hooks/client.ts` dials 127.0.0.1/ready); members confirm host
+  // local daemon (`daemon/client.ts` dials 127.0.0.1/ready); members confirm host
   // reachability via the raw, bearer-gated /health, never the host's /ready.
   { method: 'GET', pattern: '/ready', stamp: 'localhost-only', capability: HOST_ADMIN },
   { method: 'GET', pattern: '/api/logs/*', stamp: 'localhost-only', capability: HOST_ADMIN },

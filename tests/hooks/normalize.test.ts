@@ -1,19 +1,37 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { vi } from '../helpers/vi-shim.js';
 import { normalizeHookInput, readSymbiontFlag, _resetManifestCache } from '@myco/hooks/normalize.js';
 
-// Mock loadManifests to avoid file system access during tests
-mock.module('@myco/symbionts/detect.js', () => ({
-  loadManifests: vi.fn().mockReturnValue([]),
-}));
+// Detection reads the build-time generated hook config; mock it with a
+// mutable table so each test declares exactly the symbionts it needs.
+const HOOK_CONFIG: Record<string, unknown> = {};
+mock.module('@myco/hooks/hook-config.generated.js', () => ({ HOOK_CONFIG }));
 
-import { loadManifests } from '@myco/symbionts/detect.js';
+interface TestSymbiont {
+  name: string;
+  configDir: string;
+  pluginRootEnvVar: string;
+  hookFields: Record<string, unknown>;
+}
 
-const mockLoadManifests = vi.mocked(loadManifests);
+/** Replace the mocked generated config with entries for the given symbionts. */
+function setHookConfig(symbionts: TestSymbiont[]): void {
+  for (const key of Object.keys(HOOK_CONFIG)) delete HOOK_CONFIG[key];
+  for (const m of symbionts) {
+    HOOK_CONFIG[m.name] = {
+      pluginRootEnvVar: m.pluginRootEnvVar,
+      configDir: m.configDir,
+      hookFields: m.hookFields,
+      hookEvents: {},
+      planDirs: [],
+      planTags: [],
+      capabilities: { preToolUseInjection: false, sessionStartInjection: false, subagentStartInjection: false },
+    };
+  }
+}
 
 describe('normalizeHookInput', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    setHookConfig([]);
     _resetManifestCache();
     delete process.env.MYCO_SESSION_ID;
     delete process.env.CLAUDE_PLUGIN_ROOT;
@@ -32,14 +50,14 @@ describe('normalizeHookInput', () => {
 
   describe('default mapping (no agent detected)', () => {
     it('maps session_id from Claude Code format', () => {
-      mockLoadManifests.mockReturnValue([]);
+      setHookConfig([]);
       const result = normalizeHookInput({ session_id: 'abc123', prompt: 'hello' });
       expect(result.sessionId).toBe('abc123');
       expect(result.prompt).toBe('hello');
     });
 
     it('maps transcript_path and last_assistant_message', () => {
-      mockLoadManifests.mockReturnValue([]);
+      setHookConfig([]);
       const result = normalizeHookInput({
         session_id: 's1',
         transcript_path: '/path/to/transcript',
@@ -50,7 +68,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('maps tool fields', () => {
-      mockLoadManifests.mockReturnValue([]);
+      setHookConfig([]);
       const result = normalizeHookInput({
         session_id: 's1',
         tool_name: 'Bash',
@@ -63,7 +81,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('preserves raw input', () => {
-      mockLoadManifests.mockReturnValue([]);
+      setHookConfig([]);
       const raw = { session_id: 's1', custom_field: 'value' };
       const result = normalizeHookInput(raw);
       expect(result.raw).toBe(raw);
@@ -73,20 +91,20 @@ describe('normalizeHookInput', () => {
 
   describe('session ID fallbacks', () => {
     it('falls back to MYCO_SESSION_ID env var', () => {
-      mockLoadManifests.mockReturnValue([]);
+      setHookConfig([]);
       process.env.MYCO_SESSION_ID = 'env-session';
       const result = normalizeHookInput({});
       expect(result.sessionId).toBe('env-session');
     });
 
     it('leaves sessionId undefined when none is provided', () => {
-      mockLoadManifests.mockReturnValue([]);
+      setHookConfig([]);
       const result = normalizeHookInput({});
       expect(result.sessionId).toBeUndefined();
     });
 
     it('prefers input over env var', () => {
-      mockLoadManifests.mockReturnValue([]);
+      setHookConfig([]);
       process.env.MYCO_SESSION_ID = 'env-session';
       const result = normalizeHookInput({ session_id: 'input-session' });
       expect(result.sessionId).toBe('input-session');
@@ -129,7 +147,7 @@ describe('normalizeHookInput', () => {
     };
 
     it('maps trajectory_id to sessionId for Windsurf', () => {
-      mockLoadManifests.mockReturnValue([windsurfManifest]);
+      setHookConfig([windsurfManifest]);
       process.env.WINDSURF_PLUGIN_ROOT = '/some/path';
       const result = normalizeHookInput({ trajectory_id: 'traj-42', prompt: 'test' });
       expect(result.sessionId).toBe('traj-42');
@@ -137,7 +155,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('does not fabricate a sessionId for a known symbiont with an empty payload', () => {
-      mockLoadManifests.mockReturnValue([windsurfManifest]);
+      setHookConfig([windsurfManifest]);
       process.env.WINDSURF_PLUGIN_ROOT = '/some/path';
       const result = normalizeHookInput({ prompt: 'test' });
       expect(result.agent).toBe('windsurf');
@@ -145,7 +163,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('derives Cursor sessionId from transcript_path when conversation_id is missing', () => {
-      mockLoadManifests.mockReturnValue([cursorManifest]);
+      setHookConfig([cursorManifest]);
       process.env.CURSOR_PLUGIN_ROOT = '/some/path';
       const result = normalizeHookInput({
         transcript_path: '/Users/chris/.Cursor/projects/Users-chris-Repos-myco/agent-transcripts/94f4087c-1121-463e-bc1b-9d5248e48d27/94f4087c-1121-463e-bc1b-9d5248e48d27.jsonl',
@@ -155,7 +173,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('does not derive a Cursor sessionId from an unsupported transcript path', () => {
-      mockLoadManifests.mockReturnValue([cursorManifest]);
+      setHookConfig([cursorManifest]);
       process.env.CURSOR_PLUGIN_ROOT = '/some/path';
       const result = normalizeHookInput({
         transcript_path: '/tmp/not-a-cursor-transcript.jsonl',
@@ -182,7 +200,7 @@ describe('normalizeHookInput', () => {
           sessionIdEnv: 'GEMINI_SESSION_ID',
         },
       };
-      mockLoadManifests.mockReturnValue([geminiManifest]);
+      setHookConfig([geminiManifest]);
       process.env.GEMINI_SESSION_ID = 'gemini-sess-123';
       // No session_id in input, no GEMINI_PLUGIN_ROOT — detect via sessionIdEnv
       const result = normalizeHookInput({});
@@ -207,7 +225,7 @@ describe('normalizeHookInput', () => {
           sessionIdEnv: 'GEMINI_SESSION_ID',
         },
       };
-      mockLoadManifests.mockReturnValue([geminiManifest]);
+      setHookConfig([geminiManifest]);
       process.env.GEMINI_SESSION_ID = 'env-sid';
       const result = normalizeHookInput({ session_id: 'input-sid' });
       expect(result.sessionId).toBe('input-sid');
@@ -230,7 +248,7 @@ describe('normalizeHookInput', () => {
           toolOutput: 'tool_output',
         },
       };
-      mockLoadManifests.mockReturnValue([copilotManifest]);
+      setHookConfig([copilotManifest]);
       process.env.COPILOT_PLUGIN_ROOT = '/some/path';
       const result = normalizeHookInput({ session_id: 'copilot-session-1' });
       expect(result.sessionId).toBe('copilot-session-1');
@@ -255,7 +273,7 @@ describe('normalizeHookInput', () => {
           toolOutput: 'tool_info.output',
         },
       };
-      mockLoadManifests.mockReturnValue([manifest]);
+      setHookConfig([manifest]);
       process.env.NESTED_PLUGIN_ROOT = '/some/path';
 
       const result = normalizeHookInput({
@@ -277,7 +295,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('returns undefined for missing nested paths', () => {
-      mockLoadManifests.mockReturnValue([]);
+      setHookConfig([]);
       const result = normalizeHookInput({ session_id: 's1' });
       expect(result.transcriptPath).toBeUndefined();
       expect(result.toolName).toBeUndefined();
@@ -286,12 +304,26 @@ describe('normalizeHookInput', () => {
   });
 
   describe('caching', () => {
-    it('caches manifest detection across calls', () => {
-      mockLoadManifests.mockReturnValue([]);
-      normalizeHookInput({ session_id: 's1' });
-      normalizeHookInput({ session_id: 's2' });
-      // loadManifests should only be called once (cached after first call)
-      expect(mockLoadManifests).toHaveBeenCalledTimes(1);
+    it('caches symbiont detection across calls', () => {
+      setHookConfig([{
+        name: 'windsurf',
+        configDir: '.windsurf',
+        pluginRootEnvVar: 'WINDSURF_PLUGIN_ROOT',
+        hookFields: {
+          sessionId: 'trajectory_id',
+          transcriptPath: 'transcript_path',
+          lastResponse: 'last_assistant_message',
+          prompt: 'prompt',
+          toolName: 'tool_name',
+          toolInput: 'tool_input',
+          toolOutput: 'tool_output',
+        },
+      }]);
+      process.env.WINDSURF_PLUGIN_ROOT = '/some/path';
+      expect(normalizeHookInput({ session_id: 's1' }).agent).toBe('windsurf');
+      // The signal disappears, but the first detection is what this process keeps.
+      delete process.env.WINDSURF_PLUGIN_ROOT;
+      expect(normalizeHookInput({ session_id: 's2' }).agent).toBe('windsurf');
     });
   });
 
@@ -378,7 +410,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('uses --symbiont codex from argv as the primary signal', () => {
-      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      setHookConfig([claudeManifest, codexManifest]);
       process.argv = ['node', 'myco-run', 'hook', 'session-start', '--symbiont', 'codex'];
       const result = normalizeHookInput({ session_id: 'abc' });
       expect(result.agent).toBe('codex');
@@ -387,7 +419,7 @@ describe('normalizeHookInput', () => {
     it('argv flag wins over a misleading CLAUDE_PLUGIN_ROOT env var', () => {
       // Regression guard: the installer owns agent identity; runtime env
       // must not override the explicit installer declaration.
-      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      setHookConfig([claudeManifest, codexManifest]);
       process.env.CLAUDE_PLUGIN_ROOT = '/fake/claude/plugin';
       process.argv = ['node', 'myco-run', 'hook', 'session-start', '--symbiont', 'codex'];
       const result = normalizeHookInput({ session_id: 'abc' });
@@ -395,7 +427,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('argv flag wins over a transcript_path that looks like claude', () => {
-      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      setHookConfig([claudeManifest, codexManifest]);
       process.argv = ['node', 'myco-run', 'hook', 'session-start', '--symbiont', 'codex'];
       const result = normalizeHookInput({
         session_id: 'abc',
@@ -405,7 +437,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('uses Cursor argv attribution while accepting embedded Claude-style session_id payloads', () => {
-      mockLoadManifests.mockReturnValue([claudeManifest, cursorManifest]);
+      setHookConfig([claudeManifest, cursorManifest]);
       process.argv = ['node', 'myco-run', 'hook', 'post-tool-use', '--symbiont', 'cursor'];
       const result = normalizeHookInput({
         session_id: 'cursor-embedded-runtime-session',
@@ -420,7 +452,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('prefers the primary field when a manifest declares ordered aliases', () => {
-      mockLoadManifests.mockReturnValue([cursorManifest]);
+      setHookConfig([cursorManifest]);
       process.argv = ['node', 'myco-run', 'hook', 'post-tool-use', '--symbiont', 'cursor'];
       const result = normalizeHookInput({
         conversation_id: 'cursor-native-session',
@@ -431,7 +463,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('falls through an empty primary alias to a populated secondary alias', () => {
-      mockLoadManifests.mockReturnValue([cursorManifest]);
+      setHookConfig([cursorManifest]);
       process.argv = ['node', 'myco-run', 'hook', 'post-tool-use', '--symbiont', 'cursor'];
       const result = normalizeHookInput({
         conversation_id: '',
@@ -442,7 +474,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('unknown --symbiont value falls through to heuristic detection', () => {
-      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      setHookConfig([claudeManifest, codexManifest]);
       process.argv = ['node', 'myco-run', 'hook', 'session-start', '--symbiont', 'bogus'];
       // No env var, no transcript match → defaults to claude-code.
       const result = normalizeHookInput({ session_id: 'abc' });
@@ -450,7 +482,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('falls back to env var when --symbiont flag is absent', () => {
-      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      setHookConfig([claudeManifest, codexManifest]);
       process.env.CLAUDE_PLUGIN_ROOT = '/some/path';
       process.argv = ['node', 'myco-run', 'hook', 'session-start'];
       const result = normalizeHookInput({ session_id: 'abc' });
@@ -461,7 +493,7 @@ describe('normalizeHookInput', () => {
       // Pre-flag installation safety net: a Codex session that somehow
       // skipped the update should still be correctly attributed via
       // configDir matching against the transcript_path.
-      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      setHookConfig([claudeManifest, codexManifest]);
       process.argv = ['node', 'myco-run', 'hook', 'session-start'];
       const result = normalizeHookInput({
         session_id: 'abc',
@@ -513,7 +545,7 @@ describe('normalizeHookInput', () => {
     };
 
     it('detects codex from transcript_path pointing into ~/.codex/', () => {
-      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      setHookConfig([claudeManifest, codexManifest]);
       const result = normalizeHookInput({
         session_id: '019d7d62',
         transcript_path: '/Users/chris/.codex/sessions/2026/04/11/rollout-019d7d62.jsonl',
@@ -523,7 +555,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('detects claude-code from transcript_path pointing into ~/.claude/', () => {
-      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      setHookConfig([claudeManifest, codexManifest]);
       const result = normalizeHookInput({
         session_id: 'abc',
         transcript_path: '/Users/chris/.claude/projects/-Users-chris-Repos-foo/abc.jsonl',
@@ -533,7 +565,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('falls back to cwd when transcript_path is absent', () => {
-      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      setHookConfig([claudeManifest, codexManifest]);
       const result = normalizeHookInput({
         session_id: 'abc',
         cwd: '/Users/chris/.codex/projects/some-repo',
@@ -543,7 +575,7 @@ describe('normalizeHookInput', () => {
     });
 
     it('defaults to claude-code when neither env var, transcript_path, nor cwd carry a marker', () => {
-      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      setHookConfig([claudeManifest, codexManifest]);
       const result = normalizeHookInput({ session_id: 'abc', prompt: 'hi' });
       // Falls through to the DEFAULT_AGENT_NAME default.
       expect(result.agent).toBe('claude-code');
@@ -553,7 +585,7 @@ describe('normalizeHookInput', () => {
       // A Claude Code session with CLAUDE_PLUGIN_ROOT set should be
       // attributed to claude-code even if some weird payload mentions
       // ".codex/" — env-var is the strongest signal.
-      mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
+      setHookConfig([claudeManifest, codexManifest]);
       process.env.CLAUDE_PLUGIN_ROOT = '/some/path';
       const result = normalizeHookInput({
         session_id: 'abc',

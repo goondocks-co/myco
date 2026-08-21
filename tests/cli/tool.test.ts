@@ -9,7 +9,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { run } from '@myco/cli/tool.js';
 import { createStreamableMcpHttpHandler } from '@myco/mcp/http.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { openDatabase, withDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';

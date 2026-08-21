@@ -76,7 +76,7 @@ Create the handler in `packages/myco/src/tools/my-new-tool.ts`:
 
 1. **Import required types and client**:
    ```typescript
-   import type { DaemonClient } from '@myco/hooks/client.js';
+   import type { DaemonClient } from '@myco/daemon/client.js';
    import { buildEndpoint } from './shared.js';
    import { ToolFailure } from './error.js';
    ```

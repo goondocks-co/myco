@@ -220,7 +220,7 @@ async function main(): Promise<void> {
   // `service`/`subsystem`. The command name is load-bearing: the affiliation hint
   // tells users to run exactly `myco join <host>`. `resolveVaultDir()` is safe to
   // call unconditionally (falls back to cwd/.myco, never throws) — it's only used
-  // to locate the local daemon (`hooks/client.ts` DaemonClient), a machine-global
+  // to locate the local daemon (`daemon/client.ts` DaemonClient), a machine-global
   // singleton these commands are now a thin fallback wrapper over (Task D-2).
   if (cmd === 'join') return (await import('./cli/join.js')).runJoin(args, resolveVaultDir());
   if (cmd === 'leave') return (await import('./cli/join.js')).runLeave(args, resolveVaultDir());

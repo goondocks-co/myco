@@ -333,7 +333,7 @@ async function runForProject(projectRoot: string | undefined, options: RunForPro
   let daemonHealthy = false;
   let daemonError: string | null = null;
   try {
-    const { DaemonClient } = await import('../hooks/client.js');
+    const { DaemonClient } = await import('../daemon/client.js');
     const daemonVaultDir = resolveVaultDir(resolvedProjectRoot);
     const client = new DaemonClient(daemonVaultDir);
     daemonHealthy = await client.ensureRunning();

@@ -23,7 +23,7 @@ const { fakeDaemon } = vi.hoisted(() => {
   return { fakeDaemon };
 });
 
-mock.module('@myco/hooks/client.js', () => ({
+mock.module('@myco/daemon/client.js', () => ({
   DaemonClient: class {
     constructor(_vaultDir: string, _options?: unknown) {}
     async ensureRunning() { fakeDaemon.ensureRunningCalls += 1; return true; }

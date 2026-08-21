@@ -12,7 +12,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleMycoPlans } from '@myco/tools/plans.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getPlan, upsertPlan } from '@myco/db/queries/plans.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';

@@ -57,7 +57,7 @@ import { createSecretsOperations } from '@myco/config/secrets';
 import { loadMachineConfig, saveMachineConfig } from '@myco/config/loader';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET } from '@myco/constants';
 import type { HostServeRuntime } from '@myco/daemon/host-serve';
-import type { DaemonClient } from '@myco/hooks/client';
+import type { DaemonClient } from '@myco/daemon/client';
 import { vi } from '../helpers/vi-shim.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { seedExternalMcpConfig } from '../helpers/external-mcp-config-fixture.js';

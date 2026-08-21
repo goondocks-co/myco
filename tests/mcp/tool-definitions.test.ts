@@ -22,7 +22,7 @@ import {
 } from '@myco/tools/definitions.js';
 import { RETRIEVAL_GUIDANCE } from '@myco/context/cortex-brief.js';
 import { handleMycoSearch } from '@myco/tools/search.js';
-import { DaemonClient } from '@myco/hooks/client.js';
+import { DaemonClient } from '@myco/daemon/client.js';
 
 function mockClient(data: unknown = {}, ok = true): DaemonClient {
   return {

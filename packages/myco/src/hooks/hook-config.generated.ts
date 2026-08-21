@@ -4,15 +4,40 @@
 // This file bakes the hook-relevant subset of every symbiont manifest into
 // a typed const so hooks don't pay for YAML I/O + Zod parsing on every
 // short-lived hook process. Keep it checked into git so tests don't need
-// a build step.
+// a build step. tests/meta/hook-config-generated-fresh.test.ts fails when
+// this file drifts from the manifests or hook templates.
 
 import type {
   CapturePrompts,
   CaptureRule,
+  SymbiontManifest,
   SymbiontRegistration,
+  TranscriptDiscovery,
 } from '../symbionts/manifest-schema.js';
 
+/** One harness event: the Myco hook its template wires and the declared timeout (seconds). */
+export interface HookEventEntry {
+  hook: string;
+  timeout?: number;
+}
+
+/** The capability flags hook responses are gated on. */
+export interface HookCapabilities {
+  preToolUseInjection: boolean;
+  sessionStartInjection: boolean;
+  subagentStartInjection: boolean;
+}
+
 export interface HookConfigEntry {
+  pluginRootEnvVar: string;
+  configDir: string;
+  hookFields: SymbiontManifest['hookFields'];
+  /** Keyed by the harness's own event name (e.g. `Stop`, `post_cascade_response`). */
+  hookEvents: Record<string, HookEventEntry>;
+  planDirs: string[];
+  planTags: string[];
+  capabilities: HookCapabilities;
+  transcriptDiscovery?: TranscriptDiscovery;
   hookResponse?: NonNullable<SymbiontRegistration['hookResponse']>;
   capturePrompts?: CapturePrompts;
   captureRules?: CaptureRule[];
@@ -23,11 +48,141 @@ export interface HookConfigEntry {
 
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
   "antigravity": {
+    "pluginRootEnvVar": "ANTIGRAVITY_PLUGIN_ROOT",
+    "configDir": ".agents/plugins/myco",
+    "hookFields": {
+      "sessionId": "conversationId",
+      "transcriptPath": "transcriptPath",
+      "lastResponse": "last_assistant_message",
+      "prompt": "prompt",
+      "toolName": "toolCall.name",
+      "toolInput": "toolCall.args",
+      "toolOutput": "tool_output"
+    },
+    "hookEvents": {
+      "PostToolUse": {
+        "hook": "post-tool-use",
+        "timeout": 5
+      },
+      "PreInvocation": {
+        "hook": "session-start",
+        "timeout": 10
+      },
+      "Stop": {
+        "hook": "stop",
+        "timeout": 30
+      }
+    },
+    "planDirs": [
+      ".agents/plugins/myco/plans/"
+    ],
+    "planTags": [],
+    "capabilities": {
+      "preToolUseInjection": false,
+      "sessionStartInjection": true,
+      "subagentStartInjection": false
+    },
+    "transcriptDiscovery": {
+      "roots": [
+        "~/.gemini/antigravity-cli",
+        "~/.gemini/antigravity",
+        "~/.gemini/antigravity-ide"
+      ],
+      "patterns": [
+        "brain/{sessionId}/.system_generated/logs/transcript_full.jsonl"
+      ]
+    },
     "hookResponse": {
       "format": "antigravity-inject-steps"
     }
   },
   "claude-code": {
+    "pluginRootEnvVar": "CLAUDE_PLUGIN_ROOT",
+    "configDir": ".claude",
+    "hookFields": {
+      "sessionId": "session_id",
+      "transcriptPath": "transcript_path",
+      "lastResponse": "last_assistant_message",
+      "prompt": "prompt",
+      "toolName": "tool_name",
+      "toolInput": "tool_input",
+      "toolOutput": "tool_output"
+    },
+    "hookEvents": {
+      "PostCompact": {
+        "hook": "post-compact",
+        "timeout": 5
+      },
+      "PostToolUse": {
+        "hook": "post-tool-use",
+        "timeout": 5
+      },
+      "PostToolUseFailure": {
+        "hook": "post-tool-use-failure",
+        "timeout": 5
+      },
+      "PreCompact": {
+        "hook": "pre-compact",
+        "timeout": 5
+      },
+      "PreToolUse": {
+        "hook": "pre-tool-use",
+        "timeout": 3
+      },
+      "SessionEnd": {
+        "hook": "session-end",
+        "timeout": 10
+      },
+      "SessionStart": {
+        "hook": "session-start",
+        "timeout": 10
+      },
+      "Stop": {
+        "hook": "stop",
+        "timeout": 30
+      },
+      "StopFailure": {
+        "hook": "stop-failure",
+        "timeout": 10
+      },
+      "SubagentStart": {
+        "hook": "subagent-start",
+        "timeout": 5
+      },
+      "SubagentStop": {
+        "hook": "subagent-stop",
+        "timeout": 10
+      },
+      "TaskCompleted": {
+        "hook": "task-completed",
+        "timeout": 5
+      },
+      "UserPromptSubmit": {
+        "hook": "user-prompt-submit",
+        "timeout": 5
+      }
+    },
+    "planDirs": [
+      "~/.claude/plans/",
+      ".claude/plans/"
+    ],
+    "planTags": [
+      "ultraplan"
+    ],
+    "capabilities": {
+      "preToolUseInjection": true,
+      "sessionStartInjection": true,
+      "subagentStartInjection": true
+    },
+    "transcriptDiscovery": {
+      "roots": [
+        "~/.claude/projects"
+      ],
+      "patterns": [
+        "*/{sessionId}.jsonl"
+      ],
+      "transcriptCwdPath": "cwd"
+    },
     "capturePrompts": {
       "shapes": [
         {
@@ -244,6 +399,25 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     ]
   },
   "cline": {
+    "pluginRootEnvVar": "CLINE_PLUGIN_ROOT",
+    "configDir": ".cline",
+    "hookFields": {
+      "sessionId": "conversationId",
+      "transcriptPath": "transcript_path",
+      "lastResponse": "last_assistant_message",
+      "prompt": "prompt",
+      "toolName": "tool_name",
+      "toolInput": "tool_input",
+      "toolOutput": "tool_output"
+    },
+    "hookEvents": {},
+    "planDirs": [],
+    "planTags": [],
+    "capabilities": {
+      "preToolUseInjection": false,
+      "sessionStartInjection": true,
+      "subagentStartInjection": false
+    },
     "captureRules": [
       {
         "event": "user_prompt",
@@ -276,6 +450,62 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     ]
   },
   "codex": {
+    "pluginRootEnvVar": "CODEX_PLUGIN_ROOT",
+    "configDir": ".codex",
+    "hookFields": {
+      "sessionId": "session_id",
+      "transcriptPath": "transcript_path",
+      "lastResponse": "last_assistant_message",
+      "prompt": "prompt",
+      "toolName": "tool_name",
+      "toolInput": "tool_input",
+      "toolOutput": "tool_output"
+    },
+    "hookEvents": {
+      "PostToolUse": {
+        "hook": "post-tool-use",
+        "timeout": 5
+      },
+      "PreToolUse": {
+        "hook": "pre-tool-use",
+        "timeout": 3
+      },
+      "SessionStart": {
+        "hook": "session-start",
+        "timeout": 10
+      },
+      "Stop": {
+        "hook": "stop",
+        "timeout": 30
+      },
+      "SubagentStart": {
+        "hook": "subagent-start",
+        "timeout": 5
+      },
+      "UserPromptSubmit": {
+        "hook": "user-prompt-submit",
+        "timeout": 5
+      }
+    },
+    "planDirs": [],
+    "planTags": [
+      "proposed_plan"
+    ],
+    "capabilities": {
+      "preToolUseInjection": true,
+      "sessionStartInjection": true,
+      "subagentStartInjection": true
+    },
+    "transcriptDiscovery": {
+      "roots": [
+        "~/.codex/sessions"
+      ],
+      "patterns": [
+        "*/*/*/rollout-*-{sessionId}.jsonl"
+      ],
+      "sessionIdPattern": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+      "transcriptCwdPath": "payload.cwd"
+    },
     "capturePrompts": {
       "shapes": [
         {
@@ -445,8 +675,156 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "subagentThreadIdPath": "id",
     "subagentLabelPath": "source.subagent.thread_spawn"
   },
-  "copilot": {},
+  "copilot": {
+    "pluginRootEnvVar": "COPILOT_PLUGIN_ROOT",
+    "configDir": ".vscode",
+    "hookFields": {
+      "sessionId": "session_id",
+      "transcriptPath": "transcript_path",
+      "lastResponse": "last_assistant_message",
+      "prompt": "prompt",
+      "toolName": "tool_name",
+      "toolInput": "tool_input",
+      "toolOutput": "tool_response"
+    },
+    "hookEvents": {
+      "ErrorOccurred": {
+        "hook": "error-occurred",
+        "timeout": 5
+      },
+      "Notification": {
+        "hook": "notification",
+        "timeout": 5
+      },
+      "PostToolUse": {
+        "hook": "post-tool-use",
+        "timeout": 5
+      },
+      "PostToolUseFailure": {
+        "hook": "post-tool-use-failure",
+        "timeout": 5
+      },
+      "PreCompact": {
+        "hook": "pre-compact",
+        "timeout": 5
+      },
+      "PreToolUse": {
+        "hook": "pre-tool-use",
+        "timeout": 5
+      },
+      "SessionEnd": {
+        "hook": "session-end",
+        "timeout": 10
+      },
+      "SessionStart": {
+        "hook": "session-start",
+        "timeout": 10
+      },
+      "Stop": {
+        "hook": "stop",
+        "timeout": 30
+      },
+      "SubagentStart": {
+        "hook": "subagent-start",
+        "timeout": 5
+      },
+      "SubagentStop": {
+        "hook": "subagent-stop",
+        "timeout": 10
+      },
+      "UserPromptSubmit": {
+        "hook": "user-prompt-submit",
+        "timeout": 5
+      }
+    },
+    "planDirs": [],
+    "planTags": [],
+    "capabilities": {
+      "preToolUseInjection": true,
+      "sessionStartInjection": true,
+      "subagentStartInjection": true
+    },
+    "transcriptDiscovery": {
+      "roots": [
+        "~/.copilot/session-state"
+      ],
+      "patterns": [
+        "{sessionId}/events.jsonl"
+      ]
+    }
+  },
   "cursor": {
+    "pluginRootEnvVar": "CURSOR_PLUGIN_ROOT",
+    "configDir": ".cursor",
+    "hookFields": {
+      "sessionId": [
+        "conversation_id",
+        "session_id"
+      ],
+      "transcriptPath": "transcript_path",
+      "lastResponse": "last_assistant_message",
+      "prompt": "prompt",
+      "toolName": "tool_name",
+      "toolInput": "tool_input",
+      "toolOutput": "tool_output"
+    },
+    "hookEvents": {
+      "beforeSubmitPrompt": {
+        "hook": "user-prompt-submit",
+        "timeout": 5
+      },
+      "postToolUse": {
+        "hook": "post-tool-use",
+        "timeout": 5
+      },
+      "postToolUseFailure": {
+        "hook": "post-tool-use-failure",
+        "timeout": 5
+      },
+      "preCompact": {
+        "hook": "pre-compact",
+        "timeout": 5
+      },
+      "sessionEnd": {
+        "hook": "session-end",
+        "timeout": 10
+      },
+      "sessionStart": {
+        "hook": "session-start",
+        "timeout": 10
+      },
+      "stop": {
+        "hook": "stop",
+        "timeout": 30
+      },
+      "subagentStart": {
+        "hook": "subagent-start",
+        "timeout": 5
+      },
+      "subagentStop": {
+        "hook": "subagent-stop",
+        "timeout": 10
+      }
+    },
+    "planDirs": [
+      "~/.cursor/plans/",
+      ".cursor/plans/"
+    ],
+    "planTags": [],
+    "capabilities": {
+      "preToolUseInjection": false,
+      "sessionStartInjection": true,
+      "subagentStartInjection": false
+    },
+    "transcriptDiscovery": {
+      "roots": [
+        "~/.cursor/projects"
+      ],
+      "patterns": [
+        "*/agent-transcripts/{sessionId}.txt",
+        "*/agent-transcripts/{sessionId}/{sessionId}.jsonl"
+      ]
+    },
     "hookResponse": {
       "format": "json",
       "fieldNames": {
@@ -475,7 +853,97 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       }
     ]
   },
-  "opencode": {},
-  "pi": {},
-  "windsurf": {}
+  "opencode": {
+    "pluginRootEnvVar": "OPENCODE_PLUGIN_ROOT",
+    "configDir": ".opencode",
+    "hookFields": {
+      "sessionId": "session_id",
+      "transcriptPath": "transcript_path",
+      "lastResponse": "last_assistant_message",
+      "prompt": "prompt",
+      "toolName": "tool_name",
+      "toolInput": "tool_input",
+      "toolOutput": "tool_output"
+    },
+    "hookEvents": {},
+    "planDirs": [
+      ".opencode/plans/"
+    ],
+    "planTags": [],
+    "capabilities": {
+      "preToolUseInjection": false,
+      "sessionStartInjection": true,
+      "subagentStartInjection": false
+    }
+  },
+  "pi": {
+    "pluginRootEnvVar": "PI_PLUGIN_ROOT",
+    "configDir": ".pi",
+    "hookFields": {
+      "sessionId": "session_id",
+      "transcriptPath": "transcript_path",
+      "lastResponse": "last_assistant_message",
+      "prompt": "prompt",
+      "toolName": "tool_name",
+      "toolInput": "tool_input",
+      "toolOutput": "tool_output"
+    },
+    "hookEvents": {},
+    "planDirs": [
+      ".pi/plans/"
+    ],
+    "planTags": [],
+    "capabilities": {
+      "preToolUseInjection": false,
+      "sessionStartInjection": true,
+      "subagentStartInjection": false
+    }
+  },
+  "windsurf": {
+    "pluginRootEnvVar": "WINDSURF_PLUGIN_ROOT",
+    "configDir": ".windsurf",
+    "hookFields": {
+      "sessionId": "trajectory_id",
+      "transcriptPath": "tool_info.transcript_path",
+      "lastResponse": "tool_info.response",
+      "prompt": "tool_info.user_prompt",
+      "toolName": "agent_action_name",
+      "toolInput": "tool_info",
+      "toolOutput": "tool_output"
+    },
+    "hookEvents": {
+      "post_cascade_response": {
+        "hook": "stop"
+      },
+      "post_cascade_response_with_transcript": {
+        "hook": "stop"
+      },
+      "post_run_command": {
+        "hook": "post-tool-use"
+      },
+      "post_write_code": {
+        "hook": "post-tool-use"
+      },
+      "pre_user_prompt": {
+        "hook": "user-prompt-submit"
+      }
+    },
+    "planDirs": [
+      "~/.windsurf/plans/"
+    ],
+    "planTags": [],
+    "capabilities": {
+      "preToolUseInjection": false,
+      "sessionStartInjection": false,
+      "subagentStartInjection": false
+    },
+    "transcriptDiscovery": {
+      "roots": [
+        "~/.windsurf/transcripts"
+      ],
+      "patterns": [
+        "{sessionId}.jsonl"
+      ]
+    }
+  }
 } as const;

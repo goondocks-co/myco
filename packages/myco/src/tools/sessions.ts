@@ -6,7 +6,7 @@
  * (the surface the daemon UI also consumes).
  */
 
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { listSessionsForMcp, type SessionSummary } from '@myco/sessions/list-for-mcp.js';
 import { requestContextHeaders, type MycoRequestContext } from '@myco/grove/request-context.js';
 import type { ToolFailure } from './error.js';

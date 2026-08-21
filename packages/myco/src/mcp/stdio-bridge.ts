@@ -54,7 +54,7 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { resolveVaultDir } from '../vault/resolve.js';
-import { DaemonClient } from '../hooks/client.js';
+import { DaemonClient } from '../daemon/client.js';
 import {
   REQUEST_CONTEXT_AUTH_HEADER,
   requestContextFromEnvironment,

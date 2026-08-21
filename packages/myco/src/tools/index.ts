@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import type { Database } from '@myco/db/client.js';
 import { ToolError, isToolError } from './error.js';
 import { isMutatingToolCall, assertProjectAdmitsToolWrite } from './lease-admission.js';

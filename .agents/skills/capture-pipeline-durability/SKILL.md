@@ -173,7 +173,7 @@ const selfReconcileLoop = startSelfReconcileLoop(logger, { ... });
 - **Independent failure recovery** without PowerManager intervention
 - **Configurable interval** per Grove (no longer fixed at daemon startup)
 
-**Implementation in `packages/myco/src/hooks/client.ts`:**
+**Implementation in `packages/myco/src/daemon/client.ts`:**
 
 `DaemonClient.capturePost()` wraps `postWithRecovery` with `{ captureCritical: true }`, which triggers service manager restart (not just `spawnDaemon()`) when the managed daemon is alive but wedged.
 
@@ -418,7 +418,7 @@ const key = eventDedupKey(event);
 
 **Buffer tombstones prevent resurrection:** Deleted sessions produce tombstones (`TOMBSTONE_RETENTION_MS = 14 days` in `packages/myco/src/constants.ts`). Quarantined buffer files for deleted sessions are pruned at tombstone expiry. Do not attempt to replay buffer events for tombstoned sessions — the replay will be silently dropped.
 
-**Three-tier recovery probe before forced restart:** `DaemonClient.daemonConfirmedAlive()` in `packages/myco/src/hooks/client.ts` probes `DAEMON_RECOVERY_PROBE_ATTEMPTS = 3` times across three tiers — daemon.json state file, daemon.lock lifecycle lock (alternate port check), and health-endpoint discovery — before concluding a service manager restart is needed. A genuinely dead daemon fails each probe with immediate connection refusal; `DAEMON_RECOVERY_PROBE_DELAY_MS` pauses absorb momentarily-busy daemons. Don't treat a delayed restart decision as evidence that recovery failed.
+**Three-tier recovery probe before forced restart:** `DaemonClient.daemonConfirmedAlive()` in `packages/myco/src/daemon/client.ts` probes `DAEMON_RECOVERY_PROBE_ATTEMPTS = 3` times across three tiers — daemon.json state file, daemon.lock lifecycle lock (alternate port check), and health-endpoint discovery — before concluding a service manager restart is needed. A genuinely dead daemon fails each probe with immediate connection refusal; `DAEMON_RECOVERY_PROBE_DELAY_MS` pauses absorb momentarily-busy daemons. Don't treat a delayed restart decision as evidence that recovery failed.
 
 **No-protocol-skew contract:** Hook buffer-fallback logic in `packages/myco/src/hooks/send-event.ts` is vintage-blind — it does not inspect hook or daemon version numbers. This is safe because the update installer rewrites every hook and plugin file synchronously before restarting the daemon, ensuring hooks and daemon always co-ship at the same version. The only skew window is seconds-long during an in-flight update, and content-keyed convergence collapses any duplicate buffered events on replay.
 

@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleCortexDigest } from '@myco/tools/cortex.js';
-import { DaemonClient } from '@myco/hooks/client.js';
+import { DaemonClient } from '@myco/daemon/client.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
   const client = {

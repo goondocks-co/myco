@@ -15,7 +15,7 @@ import os from 'node:os';
 import { handleMycoPlans } from '@myco/tools/plans.js';
 import { acquireProjectLease } from '@myco/grove/project-lease.js';
 import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
-import { DaemonClient } from '@myco/hooks/client.js';
+import { DaemonClient } from '@myco/daemon/client.js';
 import { DaemonServer } from '@myco/daemon/server.js';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
 import { DaemonLogger } from '@myco/daemon/logger.js';

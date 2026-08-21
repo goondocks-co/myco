@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { resolveProjectRoot } from '../../vault/resolve.js';
-import { resolveCliEntryPath } from '../../hooks/client.js';
+import { resolveCliEntryPath } from '../client.js';
 import type { RouteResponse } from '../router.js';
 import type { ProgressTracker } from './progress.js';
 import { RESTART_RESPONSE_FLUSH_MS } from '../../constants.js';

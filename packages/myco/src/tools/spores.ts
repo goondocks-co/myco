@@ -6,7 +6,7 @@
  * back the daemon UI).
  */
 
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { saveSpore, supersedeSpore, consolidateSpores, obsoleteSpore } from '@myco/spores/write.js';
 import { requestContextHeaders, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { type ToolFailure } from './error.js';

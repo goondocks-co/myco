@@ -8,7 +8,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import {
   createStreamableMcpHttpHandler as createStreamableMcpHttpHandlerWithDefaults,
 } from '@myco/mcp/http.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { requestContextHeaders, resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import { markTeamRequest } from '@myco/daemon/host-serve.js';
 import { managedBinaryPath } from '@myco/install/managed-binary.js';

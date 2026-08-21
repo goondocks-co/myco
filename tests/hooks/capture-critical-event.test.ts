@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { captureCriticalEvent, shouldBufferFallback } from '@myco/hooks/send-event.js';
 import { readCollectRoute } from '@myco/capture/collect-buffer-route.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveProjectBufferDir } from '@myco/grove/paths.js';
 import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
