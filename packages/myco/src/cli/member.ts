@@ -6,7 +6,9 @@
  */
 import { resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from '../member/budget.js';
+import { MEMBER_TOKEN_REFRESH_WINDOW_MS } from '../member/constants.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
+import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { listRegistryEntries, readRegistryEntry, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention, lastActivityAt } from '../member/retention.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
@@ -19,6 +21,8 @@ Ops:
                      no harness budget, the offline latch is ignored, retention is applied first.
   status [--all]     The registry entry (token redacted), expiry, spool depth per session,
                      last acknowledgement and refusal, and the offline latch.
+  refresh [--all]    Rotate the member token when its refresh window is open. The predecessor keeps
+                     working until the successor is first used; an env-sourced token is never rotated.
 `;
 
 export interface MemberCliDeps {
@@ -74,7 +78,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     out(`server:     ${entry.serverUrl}`);
     out(`token:      ${redact(entry.token)}${entry.tokenId ? ` (${entry.tokenId})` : ''}`);
     out(`expires:    ${when(entry.expiresAt)}${entry.expiresAt !== undefined && entry.expiresAt <= now() ? ' (EXPIRED)' : ''}`);
-    out(`refresh:    ${entry.refreshAfter === undefined ? 'not yet announced' : `after ${when(entry.refreshAfter)}`}`);
+    out(`refresh:    ${entry.refreshTerminal ? 'unavailable — re-provision with `myco member join`' : entry.refreshAfter === undefined ? 'not yet announced' : `after ${when(entry.refreshAfter)}`}`);
     out(`machine:    ${entry.machineId}`);
     out(`joined:     ${when(entry.joinedAt)}`);
     const sessions = spool.sessionIds();
@@ -96,11 +100,41 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
   }
 }
 
+export async function runRefresh(args: readonly string[], deps: MemberCliDeps = {}): Promise<RefreshReport[]> {
+  const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
+  const now = deps.now ?? Date.now;
+  const reports: RefreshReport[] = [];
+  for (const entry of entriesFor(args, deps)) {
+    const report = await refreshMemberCredential(entry.root, { mycoHome: deps.mycoHome, fetch: deps.fetch, now, budget: unboundedBudget() });
+    out(`${entry.projectId}: ${refreshLine(report)}`);
+    reports.push(report);
+  }
+  return reports;
+}
+
+function refreshLine(report: RefreshReport): string {
+  const entry = report.entry;
+  switch (report.status) {
+    case 'refreshed': return `rotated to ${report.tokenId ?? '—'}, expires ${when(entry?.expiresAt)}; the previous token works until this one is first used`;
+    case 'not-due': return `not due — refresh window opens ${when(entry?.refreshAfter ?? (entry?.expiresAt === undefined ? undefined : entry.expiresAt - MEMBER_TOKEN_REFRESH_WINDOW_MS))}`;
+    case 'too-early': return `the server is not ready to rotate yet — retry after ${when(entry?.refreshAfter)}`;
+    case 'busy': return 'another myco process is rotating this token';
+    case 'lineage-expired': return 'this token chain has reached its lifetime — re-provision with `myco member join`';
+    case 'unauthorized': return 'the server refused this token — re-provision with `myco member join`';
+    case 'terminal': return 'the server refused to rotate this token — re-provision with `myco member join`';
+    case 'route-missing': return 'this server does not rotate member tokens';
+    case 'protocol': return 'the server refuses this build\'s member protocol — upgrade myco';
+    case 'no-entry': return 'no registry entry';
+    default: return 'the server could not be reached — try again later';
+  }
+}
+
 export async function run(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
   const [op, ...rest] = args;
   switch (op) {
     case 'drain': await runDrain(rest, deps); return;
     case 'status': runStatus(rest, deps); return;
+    case 'refresh': await runRefresh(rest, deps); return;
     default:
       (deps.stderr ?? ((l) => process.stderr.write(`${l}\n`)))(MEMBER_HELP.trimEnd());
       process.exitCode = 2;

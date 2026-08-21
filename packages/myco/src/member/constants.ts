@@ -40,6 +40,10 @@ export const TRANSCRIPT_SLICE_BYTES = 8 * 1024 * 1024;
 
 /** Shape of every member token the server mints (32 random bytes as unpadded base64url). */
 export const MEMBER_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+/** The tail of a token's life in which the server admits a refresh (the last quarter of the 7-day TTL); the member reads it only until the server announces a `refreshAfter`. */
+export const MEMBER_TOKEN_REFRESH_WINDOW_MS = (7 * 24 * 60 * 60 * 1000) / 4;
+/** How often the `route_missing` refresh diagnostic repeats on stderr. */
+export const ROUTE_MISSING_NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /** Milliseconds a hook keeps back from its declared harness timeout. */
 export const HOOK_BUDGET_MARGIN_MS = 1_000;

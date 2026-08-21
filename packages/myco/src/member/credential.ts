@@ -20,6 +20,7 @@ export interface CredentialRecord {
   projectId: string;
   expiresAt?: number;
   refreshAfter?: number;
+  refreshTerminal?: boolean;
   source: CredentialSource;
   /** The project root the registry entry is keyed on; absent for env-sourced records. */
   root?: string;
@@ -88,7 +89,7 @@ export function resolveCredential(
   }
   return {
     serverUrl: entry.serverUrl, token: entry.token, tokenId: entry.tokenId, projectId: entry.projectId,
-    expiresAt: entry.expiresAt, refreshAfter: entry.refreshAfter, source: 'registry', root,
+    expiresAt: entry.expiresAt, refreshAfter: entry.refreshAfter, refreshTerminal: entry.refreshTerminal, source: 'registry', root,
   };
 }
 

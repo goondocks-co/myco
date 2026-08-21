@@ -25,6 +25,10 @@ export interface RegistryEntry {
   expiresAt?: number;
   /** The server-announced instant the token's refresh window opens; absent until the first window answer. */
   refreshAfter?: number;
+  /** When the `route_missing` refresh diagnostic was last printed. */
+  routeMissingNoticedAt?: number;
+  /** Set once the server has refused this token's rotation terminally; nothing dials again until the entry is re-provisioned. */
+  refreshTerminal?: boolean;
   /** The worktree-aware project root this entry is keyed on. */
   root: string;
   machineId: string;

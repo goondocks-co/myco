@@ -7,12 +7,13 @@
 import { readHookInput } from '../hooks/input.js';
 import type { NormalizedHookInput } from '../hooks/normalize.js';
 import { writeHookResponse, type HookResponse } from '../hooks/response.js';
-import { resolveHookBudget, type HookBudget } from './budget.js';
+import { canStartRequest, clippedRequestBudget, resolveHookBudget, type HookBudget } from './budget.js';
 import { parseCredentialFlag, resolveCredential, type CredentialRecord, type CredentialSource } from './credential.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
+import { refreshDue, refreshMemberCredential, refreshableRoot, rotatedCredential } from './refresh.js';
 import { applySpoolRetention } from './retention.js';
 import { MemberSpool } from './spool.js';
-import { ServerClient, type FetchLike } from './transport.js';
+import { ServerClient, type ClientRecord, type FetchLike } from './transport.js';
 
 export interface HookMainOptions {
   /** The declared credential source; read from `--credential` on argv when absent. */
@@ -81,10 +82,21 @@ export async function runMemberHook(
     response = outcome.response ?? {};
     for (const event of outcome.events) spool.append(sessionId, event);
     if (budget.drains) {
-      await spool.drainSession(sessionId, client, budget, { force: outcome.probe, now });
+      const fetchImpl = opts.fetch ?? globalThis.fetch;
+      const root = refreshableRoot(credential);
+      // A 401 on a live send: another hook may have rotated this root's token, so the registry is re-read and the record retried once.
+      const recovery = root === null ? {} : {
+        onUnauthorized: async (): Promise<ClientRecord | null> => rotatedCredential(root, credential),
+        clientFor: (record: ClientRecord) => new ServerClient(record, fetchImpl),
+      };
+      await spool.drainSession(sessionId, client, budget, { force: outcome.probe, now, ...recovery });
       if (outcome.afterDrain) await outcome.afterDrain(run);
       // Probing hooks (Stop/SessionEnd) also apply spool retention for the project.
       if (outcome.probe) applySpoolRetention(spool, now());
+      // Registry-sourced credentials rotate after the hook's main work, inside what remains of the budget; env-sourced ones never do.
+      if (root !== null && refreshDue(credential, now()) && canStartRequest(budget, now())) {
+        await refreshMemberCredential(root, { fetch: fetchImpl, now, budget: clippedRequestBudget(budget, now()) });
+      }
     }
   } catch (error) {
     process.stderr.write(`[myco] ${hookName} error: ${(error as Error).message}\n`);

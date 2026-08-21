@@ -8,9 +8,9 @@ import { MAX_BLOB_BYTES, MIN_COMPAT_MEMBER_PROTOCOL, PROTOCOL_HEADER as SERVER_P
 import { CLASSIFIERS, UNAVAILABLE } from '@myco-server-worker/telemetry.js';
 import { ID_GRAMMAR, MAX_PAYLOAD_BYTES } from '@myco-server-worker/ingest/envelope.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
-import { MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN } from '@myco-server-worker/auth/tokens.js';
+import { MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
 import {
-  MEMBER_CODES, MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES, MEMBER_PROTOCOL, MEMBER_TOKEN_PATTERN, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, TRANSCRIPT_SLICE_BYTES,
+  MEMBER_CODES, MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES, MEMBER_PROTOCOL, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, TRANSCRIPT_SLICE_BYTES,
 } from '@myco/member/constants.js';
 import { BOUNDS } from '@myco/member/envelope.js';
 
@@ -65,6 +65,10 @@ describe('member ↔ worker pins', () => {
 
   it('the token shape the member checks is the shape the server mints', () => {
     expect(MEMBER_TOKEN_PATTERN.source).toBe(SERVER_TOKEN_PATTERN.source);
+  });
+
+  it('the window the member assumes before the server announces one is the window the server keeps', () => {
+    expect(MEMBER_TOKEN_REFRESH_WINDOW_MS).toBe(SERVER_REFRESH_WINDOW_MS);
   });
 
   it('every member string bound equals the worker bound on the field it truncates for', () => {
