@@ -45,7 +45,7 @@ const OUTPUT_PATH = path.resolve(PACKAGE_ROOT, 'src/hooks/hook-config.generated.
 const FULL_MANIFESTS_OUTPUT_PATH = path.resolve(PACKAGE_ROOT, 'src/symbionts/manifests.generated.ts');
 
 /** One harness event: the Myco hook its template wires and the declared timeout (seconds). */
-interface HookEventEntry {
+export interface HookEventEntry {
   hook: string;
   timeout?: number;
 }
@@ -86,7 +86,7 @@ const HOOK_COMMAND_PATTERN = /\bhook\s+([a-z][a-z-]*)/;
  * harness event, so a budget read by hook name has exactly one answer); a
  * template that disagrees with itself is a generator error, not a silent pick.
  */
-function collectHookEvents(template: unknown, templatePath: string): Record<string, HookEventEntry> {
+export function collectHookEvents(template: unknown, templatePath: string): Record<string, HookEventEntry> {
   const collected: Record<string, HookEventEntry> = {};
   const timeoutByHook = new Map<string, number | undefined>();
   const visit = (node: unknown, event: string | undefined): void => {

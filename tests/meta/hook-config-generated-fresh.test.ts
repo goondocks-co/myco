@@ -16,7 +16,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderHookConfigSources } from '../../packages/myco/scripts/gen-hook-config';
+import { collectHookEvents, renderHookConfigSources } from '../../packages/myco/scripts/gen-hook-config';
 import { HOOK_CONFIG } from '../../packages/myco/src/hooks/hook-config.generated';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -74,5 +74,32 @@ describe('generated hook config freshness', () => {
     expect(HOOK_CONFIG.windsurf.hookEvents.post_cascade_response).toEqual({ hook: 'stop' });
     // Plugin-file symbionts have no hooks.json template.
     expect(HOOK_CONFIG.opencode.hookEvents).toEqual({});
+  });
+
+  it('refuses a template that wires one hook name with two different timeouts', () => {
+    // A hook process knows its hook name, not the harness event, so a budget
+    // read by hook name must have exactly one answer per symbiont.
+    const twoTimeouts = {
+      post_cascade_response: [{ command: '{{mycoLauncher}} hook stop --symbiont windsurf --phases response', timeout: 7 }],
+      post_cascade_response_with_transcript: [{ command: '{{mycoLauncher}} hook stop --symbiont windsurf --phases transcript', timeout: 9 }],
+    };
+    expect(() => collectHookEvents(twoTimeouts, 'windsurf/hooks.json'))
+      .toThrow('windsurf/hooks.json: hook stop is wired with different timeouts across events');
+
+    const oneDeclaredOneOmitted = {
+      post_cascade_response: [{ command: '{{mycoLauncher}} hook stop --symbiont windsurf --phases response', timeout: 7 }],
+      post_cascade_response_with_transcript: [{ command: '{{mycoLauncher}} hook stop --symbiont windsurf --phases transcript' }],
+    };
+    expect(() => collectHookEvents(oneDeclaredOneOmitted, 'windsurf/hooks.json'))
+      .toThrow('windsurf/hooks.json: hook stop is wired with different timeouts across events');
+
+    const consistent = {
+      post_cascade_response: [{ command: '{{mycoLauncher}} hook stop --symbiont windsurf --phases response' }],
+      post_cascade_response_with_transcript: [{ command: '{{mycoLauncher}} hook stop --symbiont windsurf --phases transcript' }],
+    };
+    expect(collectHookEvents(consistent, 'windsurf/hooks.json')).toEqual({
+      post_cascade_response: { hook: 'stop' },
+      post_cascade_response_with_transcript: { hook: 'stop' },
+    });
   });
 });

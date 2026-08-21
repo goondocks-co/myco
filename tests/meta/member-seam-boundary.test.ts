@@ -19,14 +19,21 @@
  *     reach no package outside `ALLOWED_EXTERNALS`, so a `grove/`, `yaml`, or
  *     workspace-package import in one of them fails by name.
  *
+ * Edges and comment-free code come from the runtime's own parser, never a
+ * hand-rolled lexer: `Bun.Transpiler.scanImports` lists every specifier the
+ * transpiled module still imports (static, `export … from`, side-effect,
+ * literal `import()` / `require()`), so an import the transpiler elides — a
+ * type-only import — is not an edge, and everything else is; `transformSync`
+ * yields the module's code without comments (regex- and string-aware) for the
+ * literal scan.
+ *
  * Resolution: `node:*` and `bun:*` are built-ins; `@myco/*` and every other
  * `tsconfig.json` path alias that points inside `packages/` (the workspace
  * packages) are walked and literal-scanned like source; bare npm specifiers are
  * externals — named in the report, forbidden on an enforced leaf.
  *
  * Static source scan (node:fs), no daemon boot — same shape as
- * `tests/meta/host-transport-seam-singularity.test.ts`. Type-only imports are
- * erased at runtime and are not edges.
+ * `tests/meta/host-transport-seam-singularity.test.ts`.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -44,7 +51,6 @@ const ALLOWLIST: readonly string[] = [
   'capture/transcript-id.ts',
   'symbionts/parsers/**',
   'symbionts/adapter.ts',
-  'hooks/hook-config.generated.ts',
   'paths/home.ts',
   'project-root.ts',
   'machine-id.ts',
@@ -82,38 +88,45 @@ const ENFORCED_LEAVES: readonly string[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Specifier extraction
+// Specifier extraction — the runtime's parser
 // ---------------------------------------------------------------------------
 
-/**
- * `import … from '…'` / `export … from '…'` statements. The clause is one of:
- * default, `{ … }`, `default, { … }`, `* as ns`, or `*` (export only).
- */
-const STATIC_FROM = /^[ \t]*(import|export)\s+(type\s+)?(\*\s+as\s+[\w$]+|\*|[\w$]+\s*,\s*\{[^}]*\}|\{[^}]*\}|[\w$]+)\s+from\s+['"]([^'"]+)['"]/gm;
-/** `import '…'` side-effect imports. */
-const SIDE_EFFECT = /^[ \t]*import\s+['"]([^'"]+)['"]/gm;
-/** `import('…')` dynamic imports. */
-const DYNAMIC = /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g;
+type Loader = 'ts' | 'tsx' | 'js' | 'jsx';
 
-/** True when a `{ … }` clause names only `type` members — erased at runtime. */
-function braceClauseIsTypeOnly(clause: string): boolean {
-  const body = clause.slice(clause.indexOf('{') + 1, clause.lastIndexOf('}'));
-  const members = body.split(',').map((m) => m.trim()).filter((m) => m.length > 0);
-  return members.length > 0 && members.every((m) => /^type\s/.test(m));
+const LOADER_BY_EXT: Record<string, Loader> = {
+  '.ts': 'ts',
+  '.tsx': 'tsx',
+  '.js': 'js',
+  '.mjs': 'js',
+  '.cjs': 'js',
+  '.jsx': 'jsx',
+};
+
+const transpilers = new Map<Loader, InstanceType<typeof Bun.Transpiler>>();
+
+function transpilerFor(file: string): InstanceType<typeof Bun.Transpiler> {
+  const loader = LOADER_BY_EXT[path.extname(file)] ?? 'ts';
+  let t = transpilers.get(loader);
+  if (!t) {
+    t = new Bun.Transpiler({ loader });
+    transpilers.set(loader, t);
+  }
+  return t;
 }
 
-/** Runtime import specifiers of one module, in source order (type-only edges dropped). */
-export function runtimeSpecifiers(source: string): string[] {
-  const out: string[] = [];
-  for (const m of source.matchAll(STATIC_FROM)) {
-    const [, , typeKeyword, clause, specifier] = m;
-    if (typeKeyword) continue;
-    if (clause.startsWith('{') && braceClauseIsTypeOnly(clause)) continue;
-    out.push(specifier);
-  }
-  for (const m of source.matchAll(SIDE_EFFECT)) out.push(m[1]);
-  for (const m of source.matchAll(DYNAMIC)) out.push(m[1]);
-  return out;
+/**
+ * Every specifier the transpiled module imports, in source order. Type-only
+ * imports are elided by the transpiler and therefore absent; static imports,
+ * `export … from`, side-effect imports, literal `import()` and `require()` are
+ * present.
+ */
+export function runtimeSpecifiers(source: string, file = 'module.ts'): string[] {
+  return transpilerFor(file).scanImports(source).map((entry) => entry.path);
+}
+
+/** The module's code with comments removed by the transpiler (regex- and string-aware). */
+export function codeOf(source: string, file = 'module.ts'): string {
+  return transpilerFor(file).transformSync(source);
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +259,7 @@ function closureOf(entries: readonly string[]): Closure {
   while (queue.length > 0) {
     const file = queue.shift()!;
     const source = fs.readFileSync(file, 'utf-8');
-    for (const specifier of runtimeSpecifiers(source)) {
+    for (const specifier of runtimeSpecifiers(source, file)) {
       const resolved = resolveSpecifier(file, specifier);
       if (resolved.kind === 'builtin') continue;
       if (resolved.kind === 'external') {
@@ -287,7 +300,8 @@ function moduleViolationsOf(closure: Closure): Violation[] {
     if (!matchesAllowlist(key)) {
       out.push({ module: key, reason: 'outside allowlist', chain: chainTo(closure, key) });
     }
-    const code = stripComments(fs.readFileSync(closure.modules.get(key)!, 'utf-8'));
+    const file = closure.modules.get(key)!;
+    const code = codeOf(fs.readFileSync(file, 'utf-8'), file);
     for (const literal of FORBIDDEN_LITERALS) {
       if (code.includes(literal)) {
         out.push({ module: key, reason: `contains literal ${literal}`, chain: chainTo(closure, key) });
@@ -303,50 +317,6 @@ function externalViolationsOf(closure: Closure): Violation[] {
   for (const [specifier, importer] of [...closure.externals.entries()].sort()) {
     if (ALLOWED_EXTERNALS.includes(specifier)) continue;
     out.push({ module: specifier, reason: 'external package', chain: [importer, ...chainTo(closure, importer)] });
-  }
-  return out;
-}
-
-/**
- * Drop `// …` and `/* … *\/` comments, keeping string and template literals
- * intact — a literal mentioned in a comment dials nothing, one in code might.
- */
-export function stripComments(source: string): string {
-  let out = '';
-  let i = 0;
-  let quote: string | null = null;
-  while (i < source.length) {
-    const ch = source[i];
-    const next = source[i + 1];
-    if (quote) {
-      out += ch;
-      if (ch === '\\') {
-        out += next ?? '';
-        i += 2;
-        continue;
-      }
-      if (ch === quote) quote = null;
-      i += 1;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === '`') {
-      quote = ch;
-      out += ch;
-      i += 1;
-      continue;
-    }
-    if (ch === '/' && next === '/') {
-      const end = source.indexOf('\n', i);
-      i = end === -1 ? source.length : end;
-      continue;
-    }
-    if (ch === '/' && next === '*') {
-      const end = source.indexOf('*/', i + 2);
-      i = end === -1 ? source.length : end + 2;
-      continue;
-    }
-    out += ch;
-    i += 1;
   }
   return out;
 }
@@ -421,23 +391,29 @@ describe('member seam boundary (transitive)', () => {
     expect(ALIASES.exact.react).toBeUndefined();
   });
 
-  it('scans literals in code, not in comments', () => {
-    expect(stripComments("// daemon.json\nconst a = 1; /* 127.0.0.1 */\nconst b = 'x';")).not.toContain('daemon.json');
-    expect(stripComments("const url = 'http://127.0.0.1';")).toContain('127.0.0.1');
-    expect(stripComments('const t = `see // not a comment`;')).toContain('not a comment');
+  it('scans literals in code, not in comments — regex- and string-aware', () => {
+    expect(codeOf("// daemon.json\nconst a = 1; /* 127.0.0.1 */\nexport const b = 'x';")).not.toContain('daemon.json');
+    expect(codeOf("export const url = 'http://127.0.0.1';")).toContain('127.0.0.1');
+    expect(codeOf('export const t = `see // not a comment`;')).toContain('not a comment');
+    expect(codeOf("export const Q = /'/;\nexport const H = 'http://' + '127.0.0.1';")).toContain('127.0.0.1');
+    expect(codeOf("export const R = /[//]/; export const H2 = 'daemon.json';")).toContain('daemon.json');
   });
 
-  it('drops type-only imports and keeps runtime ones', () => {
+  it('takes edges from the transpiler: type-only imports are elided, every other form is seen', () => {
     const sample = [
       "import type { A } from './a.js';",
       "import { type B, type C } from './b.js';",
       "import { type D, e } from './d.js';",
       "import f from './f.js';",
+      "import dc, * as ns from './dcns.js';",
       "export * from './g.js';",
       "export type { H } from './h.js';",
       "import './i.js';",
       "const j = await import('./j.js');",
+      "const k = await import(`./k.js`);",
+      "const l = await import(/* c */ './l.js');",
+      "void e; void f; void dc; void ns; void j; void k; void l;",
     ].join('\n');
-    expect(runtimeSpecifiers(sample)).toEqual(['./d.js', './f.js', './g.js', './i.js', './j.js']);
+    expect(runtimeSpecifiers(sample)).toEqual(['./d.js', './f.js', './dcns.js', './g.js', './i.js', './j.js', './k.js', './l.js']);
   });
 });
