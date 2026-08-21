@@ -42,7 +42,7 @@ mock.module('@myco/cli/bootstrap.js', () => ({
 }));
 
 const ensureRunningMock = vi.fn();
-mock.module('@myco/hooks/client.js', () => ({
+mock.module('@myco/daemon/client.js', () => ({
   DaemonClient: vi.fn(function MockDaemonClient() {
     return {
       ensureRunning: ensureRunningMock,

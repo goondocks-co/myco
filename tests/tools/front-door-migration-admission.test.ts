@@ -30,7 +30,7 @@ import { createSchema, isSchemaMigrationPending, SCHEMA_VERSION } from '@myco/db
 import { acquireProjectLease } from '@myco/grove/project-lease.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const PROJECT = assertGroveProjectId('proj_' + '8'.repeat(32));

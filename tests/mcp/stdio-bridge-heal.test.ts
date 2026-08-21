@@ -32,7 +32,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { probeDaemonHealth } from '@myco/mcp/stdio-bridge.js';
-import { DaemonClient } from '@myco/hooks/client.js';
+import { DaemonClient } from '@myco/daemon/client.js';
 
 // ---------------------------------------------------------------------------
 // Fake daemon — minimal /health endpoint

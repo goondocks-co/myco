@@ -15,7 +15,7 @@ import { createMycoTools } from '@myco/tools/index.js';
 import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { managedBinaryPath } from '@myco/install/managed-binary.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 const FIXTURE_VAULT = '/tmp/myco-vault';

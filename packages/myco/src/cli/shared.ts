@@ -4,7 +4,7 @@ import os from 'node:os';
 import { OllamaBackend } from '../intelligence/ollama.js';
 import { LmStudioBackend } from '../intelligence/lm-studio.js';
 
-import { DaemonClient } from '../hooks/client.js';
+import { DaemonClient } from '../daemon/client.js';
 import { initDatabase, closeDatabase, vaultDbPath } from '../db/client.js';
 import { requestContextFromEnvironment } from '../grove/request-context.js';
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createMycoTools } from '@myco/tools/index';
-import { DaemonClient } from '@myco/hooks/client';
+import { DaemonClient } from '@myco/daemon/client';
 import { ensureProjectManifest } from '@myco/config/project-manifest';
 import fs from 'node:fs';
 import path from 'node:path';

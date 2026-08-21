@@ -6,7 +6,7 @@
  */
 
 import { MCP_SEARCH_DEFAULT_LIMIT } from '@myco/constants.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import type {
   ReleaseConfidence,
   ReleaseStateValue,

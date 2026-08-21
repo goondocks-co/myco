@@ -7,7 +7,7 @@ import {
   DaemonClient,
   type DaemonClientOptions,
   type RestartDeps,
-} from '@myco/hooks/client';
+} from '@myco/daemon/client';
 import { ensureProjectManifest } from '@myco/config/project-manifest';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
 // Service-manager fake routes restart() through the legacy raw-spawn path so

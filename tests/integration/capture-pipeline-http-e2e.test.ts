@@ -40,7 +40,7 @@ import { SessionRegistry } from '@myco/daemon/lifecycle.js';
 import { PowerManager } from '@myco/daemon/power.js';
 import { DaemonLogger } from '@myco/daemon/logger.js';
 import { DaemonServer } from '@myco/daemon/server.js';
-import { DaemonClient } from '@myco/hooks/client.js';
+import { DaemonClient } from '@myco/daemon/client.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';

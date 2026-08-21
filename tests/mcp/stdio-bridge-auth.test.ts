@@ -8,7 +8,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import {
   createStreamableMcpHttpHandler as createStreamableMcpHttpHandlerWithDefaults,
 } from '@myco/mcp/http.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import {
   REQUEST_CONTEXT_AUTH_ENV,
   REQUEST_CONTEXT_ENV,

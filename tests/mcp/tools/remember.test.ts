@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleMycoSpores } from '@myco/tools/spores.js';
-import { DaemonClient } from '@myco/hooks/client.js';
+import { DaemonClient } from '@myco/daemon/client.js';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';

@@ -7,7 +7,7 @@ import { openDatabase, withDatabase, type Database } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { createMycoTools } from '@myco/tools/index.js';
 import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
