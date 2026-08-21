@@ -472,4 +472,3 @@ export function resolveProjectLocalManifestPath(projectVaultDir: string): string
 export function resolveMachineRuntimeCommandPath(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, MACHINE_RUNTIME_COMMAND_FILENAME);
 }
-
