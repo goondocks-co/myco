@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BUFFER_QUARANTINE_DIRNAME } from '@myco/capture/buffer.js';
-import { unboundedBudget } from '@myco/member/budget.js';
+import { longestDeclaredHookTimeoutMs, unboundedBudget } from '@myco/member/budget.js';
 import { MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS } from '@myco/member/constants.js';
 import { attachmentEvent, mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { applySpoolRetention, lastAckAt, unacknowledgedSince } from '@myco/member/retention.js';
@@ -111,20 +111,44 @@ describe('spool retention', () => {
     expect(lastAckAt(spool, 'sess-ack')).toBe(acked);
   });
 
-  it('releases staged blob bytes when their record is acknowledged, and sweeps what a stopped drain left', async () => {
+  it('releases staged blob bytes once no live hook could still name them, and sweeps what a stopped drain left', async () => {
     const rig = await memberRig();
     const spool = new MemberSpool('proj_1', { mycoHome });
-    const stage = spool.stagerFor('sess-blob');
-    const source = stage(new Uint8Array([137, 80, 78, 71]), 'image/png');
-    expect(fs.existsSync(source.path)).toBe(true);
+    const source = spool.stagerFor('sess-blob')(new Uint8Array([137, 80, 78, 71]), 'image/png');
     spool.append('sess-blob', attachmentEvent(ctxFor(spool, 'sess-blob'), { blobSource: source, attachmentId: mintId() }));
-    await spool.drainSession('sess-blob', new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch), unboundedBudget(), { force: true });
-    expect(fs.existsSync(source.path)).toBe(false);
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
 
-    // Bytes staged by a hook whose drain never ran are collected by the sweep.
-    const orphan = spool.stagerFor('sess-orphan')(new Uint8Array([1, 2, 3]), 'application/octet-stream');
+    // Freshly staged: the drain acknowledges the record but leaves the bytes,
+    // because a hook still running could append another record naming them.
+    await spool.drainSession('sess-blob', client, unboundedBudget(), { force: true });
+    expect(fs.existsSync(source.path)).toBe(true);
+    expect(applySpoolRetention(spool).releasedBlobs).toBe(0);
+
+    // Past the longest timeout a hook can declare, nobody can still name them.
+    const settled = (Date.now() - longestDeclaredHookTimeoutMs() - 60_000) / 1000;
+    fs.utimesSync(source.path, settled, settled);
     expect(applySpoolRetention(spool).releasedBlobs).toBe(1);
-    expect(fs.existsSync(orphan.path)).toBe(false);
+    expect(fs.existsSync(source.path)).toBe(false);
+  });
+
+  it('never reclaims bytes another session staged and has not committed yet: the attachment still uploads', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    // Session A's Stop is mid-parse: the bytes are staged, the record and its
+    // `attachmentKeys` receipt have not been committed.
+    const source = spool.stagerFor('sess-A')(new Uint8Array([137, 80, 78, 71, 1, 2, 3]), 'image/png');
+
+    // Session B's probing hook runs retention over the whole project.
+    const swept = applySpoolRetention(spool);
+    expect(swept.releasedBlobs).toBe(0);
+    expect(fs.existsSync(source.path)).toBe(true);
+
+    // A commits, and the record it committed can still be delivered.
+    spool.append('sess-A', attachmentEvent(ctxFor(spool, 'sess-A'), { blobSource: source, attachmentId: mintId() }));
+    const result = await spool.drainSession('sess-A', new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch), unboundedBudget(), { force: true });
+    expect({ acked: result.acked, refused: result.refused }).toEqual({ acked: 1, refused: 0 });
+    expect(rig.rows('attachments')).toBe(1);
+    expect(spool.readRefused()).toEqual([]);
   });
 
   it('does not reuse cleanStaleBuffers (1.4 age-delete) anywhere under member/', () => {

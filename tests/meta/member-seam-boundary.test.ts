@@ -431,7 +431,24 @@ describe('member seam boundary (transitive)', () => {
     }
     expect({ outside: outside.size, literals: literals.length, externals: externals.length, unknowable: unknowable.length })
       .toEqual({ outside: 0, literals: 0, externals: 0, unknowable: 0 });
-    expect(closure.modules.size).toBeGreaterThan(hookEntries.length + memberEntries.length);
+  });
+
+  it('reports the closure and keeps it whole — a gate over a collapsed graph proves nothing', () => {
+    const closure = closureOf([...hookEntries, ...memberEntries]);
+    const modules = new Set(closure.modules.keys());
+    // Named, not counted: a count churns whenever a file is added, while an
+    // empty allowlist passes trivially over a graph that stopped reaching the
+    // member at all. These are the modules a hook MUST still reach to capture.
+    for (const required of [
+      'member/spool.ts', 'member/transport.ts', 'member/envelope.ts', 'member/capture.ts', 'member/transcript.ts',
+      'hooks/normalize.ts', 'hooks/capture-rules.ts', 'capture/prompt-kind.ts', 'symbionts/adapter.ts',
+    ]) {
+      expect({ required, reached: modules.has(required) }).toEqual({ required, reached: true });
+    }
+    process.stdout.write(
+      `[member-seam] ${closure.modules.size} modules in the hooks+member closure from ${hookEntries.length + memberEntries.length} entries, `
+      + `0 outside the allowlist, 0 forbidden-literal hits, 0 external packages reached\n`,
+    );
   });
 
   for (const leaf of ENFORCED_LEAVES) {

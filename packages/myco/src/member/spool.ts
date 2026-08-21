@@ -16,7 +16,7 @@ import path from 'node:path';
 import { EventBuffer, listBufferSessionIds } from '../capture/buffer.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
-import { canStartRequest, clippedRequestBudget, type HookBudget } from './budget.js';
+import { canStartRequest, clippedRequestBudget, longestDeclaredHookTimeoutMs, type HookBudget } from './budget.js';
 import {
   MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSED_LOG_MAX_BYTES, type MemberCode,
 } from './constants.js';
@@ -327,15 +327,23 @@ export class MemberSpool {
       for (const record of records) {
         if (record?._blobSource) staged.set(record._blobSource.sha256, (staged.get(record._blobSource.sha256) ?? 0) + 1);
       }
+      const settled = now() - longestDeclaredHookTimeoutMs();
       const release = (record: SpoolRecord | null) => {
         const source = record?._blobSource;
         if (!source) return;
         const remaining = (staged.get(source.sha256) ?? 1) - 1;
         staged.set(source.sha256, remaining);
+        // `staged` counts the records this pass read. A hook still running can
+        // append another record naming the same bytes, so the count is a
+        // floor, not the truth — bytes younger than the longest hook timeout
+        // are left for the retention sweep, which runs once nobody can.
         if (remaining > 0) return;
         // Only bytes this spool staged: a source outside the session's staging dir belongs to someone else.
         if (path.dirname(path.resolve(source.path)) !== path.resolve(this.blobsDirFor(sessionId))) return;
-        try { fs.unlinkSync(source.path); } catch { /* already gone */ }
+        try {
+          if (fs.statSync(source.path).mtimeMs > settled) return;
+          fs.unlinkSync(source.path);
+        } catch { /* already gone */ }
       };
       const persist = (highWater: number, acked?: boolean) => updateSessionState(this.dir, sessionId, (s) => {
         s.highWater = highWater;
@@ -436,6 +444,11 @@ export class MemberSpool {
    * place that decides what each outcome does (latch, diagnostic, neither).
    * Public because the transcript-segment path ends its own passes and must
    * not carry a second copy of the policy.
+   *
+   * Refusal LOGGING is not here and belongs to the caller: `refused` does not
+   * end a pass on the event path (the high-water advances past it and the
+   * drain continues), and only the caller holds the event whose id, kind and
+   * code `refused.jsonl` records. Every caller that can be refused logs it.
    */
   endPass(outcome: Outcome, now: number): DrainEnd {
     switch (outcome.class) {

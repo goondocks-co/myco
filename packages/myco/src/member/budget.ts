@@ -77,6 +77,23 @@ export function resolveHookBudget(
   };
 }
 
+/**
+ * The longest timeout any symbiont template declares, in ms. A hook cannot
+ * outlive its own declared timeout — the harness kills it there — so this is
+ * the ceiling on how long a hook that has staged bytes can still be running
+ * without having committed the record that references them. Reclaiming staged
+ * bytes younger than this would delete what a live hook is about to name.
+ */
+export function longestDeclaredHookTimeoutMs(): number {
+  let longest = MEMBER_DEFAULT_HOOK_TIMEOUT_MS;
+  for (const entry of Object.values(HOOK_CONFIG)) {
+    for (const event of Object.values(entry.hookEvents)) {
+      if (event.timeout !== undefined) longest = Math.max(longest, event.timeout * 1000);
+    }
+  }
+  return longest;
+}
+
 /** No harness deadline: `myco member drain` and the CLI commands. */
 export function unboundedBudget(): HookBudget {
   return {

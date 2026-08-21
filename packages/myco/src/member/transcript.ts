@@ -275,6 +275,11 @@ export async function shipTranscriptSegments(
         if (!persist({ ...pointer, nextOffset: outcome.heldSize })) return { shipped, endedBy: 'done' };
         continue;
       default:
+        // The caller logs its own refusal: `endPass` owns the latch and the
+        // diagnostics, and only this frame knows which segment was refused.
+        if (outcome.class === 'refused') {
+          spool.appendRefused({ eventId: event.envelope.eventId, sessionId, kind: event.envelope.kind, code: outcome.code, reason: outcome.reason, at: now() });
+        }
         spool.endPass(outcome, now());
         return { shipped, endedBy: outcome.class };
     }

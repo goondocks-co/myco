@@ -49,6 +49,13 @@ export interface HookOutcome {
    * Applied WITH the append, under one hold of the session's buffer lock: a
    * handler that writes a receipt itself makes a crash before the append a
    * permanent loss, because nothing re-derives an event already receipted.
+   *
+   * The closure runs INSIDE that lock, which `withFileLockSync` takes as a
+   * blocking `LOCK_EX` on a fresh fd. It must therefore touch no
+   * `…SessionState` helper and nothing else that takes the same lock: a second
+   * acquisition from this process blocks on the first and the hook hangs until
+   * the harness kills it. Mutate the state object it is handed, and nothing
+   * else.
    */
   record?: (state: SessionState) => void;
   response?: HookResponse;

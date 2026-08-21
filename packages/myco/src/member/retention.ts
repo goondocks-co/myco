@@ -13,11 +13,13 @@
  *
  * Staged blob bytes are swept here too: the drain releases a record's bytes
  * when its high-water advances, and this sweep collects whatever a drain that
- * never finished left behind.
+ * never finished left behind — but never bytes young enough that a live hook
+ * could still commit a record naming them.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { BUFFER_QUARANTINE_DIRNAME, pruneQuarantinedBuffers, quarantineBufferFile } from '../capture/buffer.js';
+import { longestDeclaredHookTimeoutMs } from './budget.js';
 import { MEMBER_DIR_MODE, MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS } from './constants.js';
 import { readSessionState, removeSessionState } from './session-state.js';
 import type { MemberSpool } from './spool.js';
@@ -50,18 +52,44 @@ export function unacknowledgedSince(spool: MemberSpool, sessionId: string): numb
   }
 }
 
-/** Delete staged blob bytes no record of that session still references, and the staging dir of a session whose spool is gone. */
-export function sweepStagedBlobs(spool: MemberSpool, sessionIds: readonly string[]): number {
+/**
+ * Delete staged blob bytes nothing references, and the staging dir of a session
+ * whose spool is gone.
+ *
+ * "Nothing references" is only knowable for bytes no live hook could still
+ * name. A hook stages during its parse and commits the record — and the
+ * receipt that stops it being derived again — later; retention runs from a
+ * DIFFERENT session's probing hook and sees neither. Deleting a file staged
+ * seconds ago therefore destroys what a hook in another session is about to
+ * reference, and its receipt makes that permanent. Anything younger than the
+ * longest timeout a hook can declare is left alone: past that the harness has
+ * killed whoever staged it, so "unreferenced" is a fact rather than a race.
+ */
+export function sweepStagedBlobs(spool: MemberSpool, sessionIds: readonly string[], now: number = Date.now()): number {
   let released = 0;
-  let staged: string[];
+  let staged: fs.Dirent[];
   try {
-    staged = fs.readdirSync(spool.blobsDir);
+    staged = fs.readdirSync(spool.blobsDir, { withFileTypes: true });
   } catch {
     return 0;
   }
+  const settled = now - longestDeclaredHookTimeoutMs();
+  const reclaim = (file: string): void => {
+    try {
+      if (fs.statSync(file).mtimeMs > settled) return;
+      fs.unlinkSync(file);
+      released += 1;
+    } catch { /* already gone */ }
+  };
   const live = new Set(sessionIds);
-  for (const sessionId of staged) {
-    const dir = spool.blobsDirFor(sessionId);
+  for (const entry of staged) {
+    // Bytes a project-wide-dir build staged sit directly under `blobs/`; no
+    // record of this build names them by that path, so they are reclaimable.
+    if (!entry.isDirectory()) {
+      reclaim(path.join(spool.blobsDir, entry.name));
+      continue;
+    }
+    const dir = spool.blobsDirFor(entry.name);
     let files: string[];
     try {
       files = fs.readdirSync(dir);
@@ -69,17 +97,17 @@ export function sweepStagedBlobs(spool: MemberSpool, sessionIds: readonly string
       continue;
     }
     const referenced = new Set<string>();
-    if (live.has(sessionId)) {
-      for (const record of spool.readRecords(sessionId)) {
+    if (live.has(entry.name)) {
+      for (const record of spool.readRecords(entry.name)) {
         if (record?._blobSource) referenced.add(record._blobSource.sha256);
       }
     }
     for (const file of files) {
       if (referenced.has(file)) continue;
-      try { fs.unlinkSync(path.join(dir, file)); released += 1; } catch { /* already gone */ }
+      reclaim(path.join(dir, file));
     }
     if (referenced.size === 0) {
-      try { fs.rmdirSync(dir); } catch { /* not empty, or in use */ }
+      try { fs.rmdirSync(dir); } catch { /* not empty, or still in use */ }
     }
   }
   return released;
@@ -99,6 +127,6 @@ export function applySpoolRetention(spool: MemberSpool, now: number = Date.now()
     process.stderr.write(`[myco] member: spool for session ${sessionId} had no acknowledgement for ${Math.round(MEMBER_SPOOL_QUARANTINE_MS / 86_400_000)} days — quarantined at ${target}\n`);
   }
   result.pruned = pruneQuarantinedBuffers(spool.dir, MEMBER_SPOOL_QUARANTINE_PRUNE_MS);
-  result.releasedBlobs = sweepStagedBlobs(spool, spool.sessionIds());
+  result.releasedBlobs = sweepStagedBlobs(spool, spool.sessionIds(), now);
   return result;
 }
