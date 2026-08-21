@@ -1,6 +1,5 @@
-import { HOOK_CONFIG } from './hook-config.generated.js';
+import { HOOK_CONFIG, type HookCapabilities } from './hook-config.generated.js';
 import type { SymbiontRegistration } from '../symbionts/manifest-schema.js';
-import { symbiontHasCapability } from '../symbionts/capabilities.js';
 
 export interface HookResponse {
   additionalContext?: string;
@@ -26,6 +25,19 @@ export interface HookResponse {
 }
 
 type SemanticField = keyof HookResponse;
+
+/**
+ * Read a response-gating capability flag off the generated hook config.
+ * Unknown symbiont or absent flag reads as `false`, so a new capability never
+ * silently activates for an existing symbiont.
+ */
+function symbiontHasCapability(
+  symbiont: string | undefined,
+  capability: keyof HookCapabilities,
+): boolean {
+  if (!symbiont) return false;
+  return HOOK_CONFIG[symbiont]?.capabilities[capability] === true;
+}
 
 export function writeHookResponse(
   symbiont: string | undefined,

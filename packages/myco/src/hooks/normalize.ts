@@ -3,13 +3,14 @@
  *
  * Each agent sends different field names in hook stdin (e.g., Claude Code uses
  * `session_id`, VS Code uses `sessionId`, Windsurf uses `trajectory_id`).
- * This module detects the active agent, loads its manifest, and maps the
- * raw input to a canonical shape that all hooks can consume uniformly.
+ * This module detects the active agent from the build-time generated hook
+ * config (`hook-config.generated.ts` — no YAML or Zod on the hook hot path)
+ * and maps the raw input to a canonical shape that all hooks can consume
+ * uniformly.
  */
 
-import { loadManifests } from '../symbionts/detect.js';
+import { HOOK_CONFIG, type HookConfigEntry } from './hook-config.generated.js';
 import type { HookFieldPath } from '../symbionts/adapter.js';
-import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 import { getAtPath } from '../utils/dot-path.js';
 import path from 'node:path';
 
@@ -42,8 +43,26 @@ export interface NormalizedHookInput {
 /** Default agent name when no manifest is detected. */
 const DEFAULT_AGENT_NAME = 'claude-code';
 
-/** Cached manifest for the detected agent — resolved once per process. */
-let cachedManifest: SymbiontManifest | null | undefined;
+/** The identity facts detection reads for one symbiont, from the generated hook config. */
+interface HookSymbiont {
+  name: string;
+  pluginRootEnvVar: HookConfigEntry['pluginRootEnvVar'];
+  configDir: HookConfigEntry['configDir'];
+  hookFields: HookConfigEntry['hookFields'];
+}
+
+/** Every symbiont the generated hook config knows, in its (manifest-name) order. */
+function hookSymbionts(): HookSymbiont[] {
+  return Object.entries(HOOK_CONFIG).map(([name, entry]) => ({
+    name,
+    pluginRootEnvVar: entry.pluginRootEnvVar,
+    configDir: entry.configDir,
+    hookFields: entry.hookFields,
+  }));
+}
+
+/** Cached identity for the detected agent — resolved once per process. */
+let cachedManifest: HookSymbiont | null | undefined;
 
 /**
  * Parse `--symbiont <name>` from process argv.
@@ -99,10 +118,10 @@ export function readSymbiontFlag(argv: readonly string[]): string | undefined {
  * short-lived Node process. `input` is optional so callers that just
  * want env-based detection (e.g., at module import time) still work.
  */
-function detectManifest(input?: Record<string, unknown>): SymbiontManifest | null {
+function detectManifest(input?: Record<string, unknown>): HookSymbiont | null {
   if (cachedManifest !== undefined) return cachedManifest;
 
-  const manifests = loadManifests();
+  const manifests = hookSymbionts();
 
   // 1) Primary: explicit --symbiont flag from the installer-rendered
   //    hook command. This is the source of truth when present.
@@ -160,7 +179,7 @@ function detectManifest(input?: Record<string, unknown>): SymbiontManifest | nul
  * Falls back to Claude Code field names if no agent is detected.
  */
 function deriveSessionIdFromTranscriptPath(
-  manifest: SymbiontManifest | null,
+  manifest: HookSymbiont | null,
   transcriptPath: string | undefined,
 ): string | undefined {
   if (!manifest || !transcriptPath) return undefined;
