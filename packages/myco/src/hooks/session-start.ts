@@ -5,7 +5,7 @@ import { AntigravityJsonlParser } from '../symbionts/parsers/antigravity-jsonl.j
 import { runGit } from '../utils/git.js';
 import { runMemberHook, type HookMainOptions } from '../member/capture.js';
 import { deriveId, promptEvent, sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
-import { updateSessionState } from '../member/session-state.js';
+import { readSessionState } from '../member/session-state.js';
 import { sessionLineage, sha256Text } from '../member/transcript.js';
 
 const antigravityParser = new AntigravityJsonlParser();
@@ -61,22 +61,28 @@ export async function main(opts: HookMainOptions = {}) {
     })];
 
     // Antigravity has no UserPromptSubmit equivalent: its prompts live in the
-    // transcript and are captured here, each once, under a derived id.
+    // transcript and are captured here, each once, under a derived id. The
+    // receipts travel back with the events so neither can outlive the other.
+    const captured: Array<[string, string]> = [];
     if (agent === 'antigravity' && transcriptPath) {
+      const seen = readSessionState(run.spool.dir, sessionId).prompts;
       const prompts = await readAntigravityPromptsWithRetry(transcriptPath);
-      if (prompts.length > 0) {
-        updateSessionState(run.spool.dir, sessionId, (state) => {
-          prompts.forEach((text, position) => {
-            const hash = sha256Text(text);
-            if (state.prompts[hash]) return;
-            const promptId = deriveId('transcript-prompt', sessionId, String(position));
-            state.prompts[hash] = promptId;
-            state.promptId = promptId;
-            events.push(promptEvent(ctx, { promptId, text }));
-          });
-        });
-      }
+      prompts.forEach((text, position) => {
+        const hash = sha256Text(text);
+        if (seen[hash] || captured.some(([h]) => h === hash)) return;
+        const promptId = deriveId('transcript-prompt', sessionId, String(position));
+        captured.push([hash, promptId]);
+        events.push(promptEvent(ctx, { promptId, text }));
+      });
     }
-    return { events };
+    return {
+      events,
+      record: captured.length === 0 ? undefined : (state) => {
+        for (const [hash, promptId] of captured) {
+          state.prompts[hash] = promptId;
+          state.promptId = promptId;
+        }
+      },
+    };
   });
 }

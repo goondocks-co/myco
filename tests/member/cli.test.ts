@@ -27,7 +27,7 @@ afterEach(() => {
   (process.stderr as unknown as { write: unknown }).write = origErr;
 });
 
-const ctxFor = (spool: MemberSpool, sessionId: string): EnvelopeContext => ({ agent: 'claude-code', sessionId, stage: spool.stage, version: '2.0.0-test' });
+const ctxFor = (spool: MemberSpool, sessionId: string): EnvelopeContext => ({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: '2.0.0-test' });
 
 describe('myco member drain / status', () => {
   it('drain delivers every spooled event for the current project, ignoring the latch; status reports the redacted entry and an empty spool afterwards', async () => {

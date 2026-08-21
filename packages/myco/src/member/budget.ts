@@ -27,7 +27,15 @@ export interface HookBudget extends RequestBudget {
   drains: boolean;
 }
 
-/** The template timeout (ms) for `(symbiont, hookName)`: by the harness event when known, else through the single-valued inverse index. */
+/**
+ * The template timeout (ms) for `(symbiont, hookName)`: by the harness event
+ * when known, else through the inverse index. That index is single-valued by
+ * construction, not by luck — the generator refuses a template that wires one
+ * hook name with two different timeouts, gated by
+ * `tests/meta/hook-config-generated-fresh.test.ts` ("refuses a template that
+ * wires one hook name with two different timeouts"), which regenerates in
+ * memory on every run.
+ */
 export function declaredTimeoutMs(symbiont: string, hookName: string, hookEventName?: string): number | null {
   const events = HOOK_CONFIG[symbiont]?.hookEvents ?? {};
   if (hookEventName && events[hookEventName]?.hook === hookName) {

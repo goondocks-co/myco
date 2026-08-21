@@ -37,6 +37,10 @@ export interface SessionState {
   planTagCount: number;
   /** Blob keys of attachments already emitted. */
   attachmentKeys: string[];
+  /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */
+  startedAt?: number;
+  /** When the server last acknowledged one of this session's records. */
+  lastAckAt?: number;
   updatedAt: number;
 }
 

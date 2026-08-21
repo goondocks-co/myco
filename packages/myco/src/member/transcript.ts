@@ -76,6 +76,14 @@ export interface DerivedCapture {
   events: OutboundEvent[];
   /** The last assistant text the parser saw, for a Stop that carried none. */
   lastAssistantText?: string;
+  /**
+   * The receipts for `events`: the prompt hashes, plan hashes, attachment keys
+   * and parsed size that stop them being derived a second time. Returned
+   * rather than written, so the caller can apply them with the append — a
+   * receipt that outlives its event is an event nothing will ever derive
+   * again.
+   */
+  record: (state: SessionState) => void;
 }
 
 const firstHeading = (content: string): string | undefined => /^#\s+(.+)$/m.exec(content)?.[1]?.trim();
@@ -83,20 +91,25 @@ const firstHeading = (content: string): string | undefined => /^#\s+(.+)$/m.exec
 /**
  * The events the transcript holds that hooks never delivered: prompts not yet
  * captured (by text hash), plan-tag plans from assistant turns, and images.
- * Mutates `state` (captured prompts, plan hashes, attachment keys, parsed
- * size); the caller persists it. A transcript whose size is unchanged since
- * the last parse yields nothing.
+ * `state` is READ — the receipts come back in `record` for the caller to apply
+ * with the append. A transcript whose size is unchanged since the last parse
+ * yields nothing.
  */
 export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: string, state: SessionState): DerivedCapture {
+  const noop = { events: [], record: () => {} };
   let content: string;
   let size: number;
   try {
     size = fs.statSync(transcriptPath).size;
-    if (state.transcript && state.transcript.path === transcriptPath && state.transcript.parsedSize === size) return { events: [] };
+    if (state.transcript && state.transcript.path === transcriptPath && state.transcript.parsedSize === size) return noop;
     content = fs.readFileSync(transcriptPath, 'utf-8');
   } catch {
-    return { events: [] };
+    return noop;
   }
+  const capturedPrompts: Array<[string, string]> = [];
+  const capturedPlans: Array<[string, string]> = [];
+  const capturedAttachments: string[] = [];
+  let planTagCount = state.planTagCount;
   const { agent, sessionId } = ctx;
   const events: OutboundEvent[] = [];
   const lines = parseTranscriptLines(content);
@@ -111,7 +124,7 @@ export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: st
     if (state.prompts[hash]) return;
     const promptId = record.dedupeKey ? queuedPromptIdFor(sessionId, record.dedupeKey) : deriveId('transcript-prompt', sessionId, String(position));
     events.push(promptEvent(ctx, { promptId, text: record.text, origin: record.origin }));
-    state.prompts[hash] = promptId;
+    capturedPrompts.push([hash, promptId]);
   });
 
   // Plan-tag plans from assistant turns, and images from user turns.
@@ -133,9 +146,9 @@ export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: st
           if (!planContent) continue;
           const hash = sha256Text(planContent);
           if (state.planHashes[hash]) continue;
-          const planKey = planKeyForTag(sessionId, tag, state.planTagCount);
-          state.planTagCount += 1;
-          state.planHashes[hash] = planKey;
+          const planKey = planKeyForTag(sessionId, tag, planTagCount);
+          planTagCount += 1;
+          capturedPlans.push([hash, planKey]);
           events.push(planEvent(ctx, { planKey, content: planContent, title: firstHeading(planContent), status: 'active', tags: [tag] }));
         }
       }
@@ -145,18 +158,25 @@ export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: st
       try { bytes = Buffer.from(image.data, 'base64'); } catch { continue; }
       if (bytes.byteLength === 0) continue;
       const source = ctx.stage(bytes, image.mediaType);
-      if (state.attachmentKeys.includes(source.sha256)) continue;
-      state.attachmentKeys.push(source.sha256);
+      if (state.attachmentKeys.includes(source.sha256) || capturedAttachments.includes(source.sha256)) continue;
+      capturedAttachments.push(source.sha256);
+      const promptHash = sha256Text(turn.prompt);
       events.push(attachmentEvent(ctx, {
         blobSource: source,
         attachmentId: deriveId('attachment', sessionId, source.sha256),
-        promptId: state.prompts[sha256Text(turn.prompt)],
+        promptId: state.prompts[promptHash] ?? capturedPrompts.find(([hash]) => hash === promptHash)?.[1],
       }));
     }
   }
 
-  if (state.transcript && state.transcript.path === transcriptPath) state.transcript.parsedSize = size;
-  return { events, lastAssistantText };
+  const record = (next: SessionState): void => {
+    for (const [hash, promptId] of capturedPrompts) next.prompts[hash] = promptId;
+    for (const [hash, planKey] of capturedPlans) next.planHashes[hash] = planKey;
+    for (const key of capturedAttachments) if (!next.attachmentKeys.includes(key)) next.attachmentKeys.push(key);
+    next.planTagCount = Math.max(next.planTagCount, planTagCount);
+    if (next.transcript && next.transcript.path === transcriptPath) next.transcript.parsedSize = size;
+  };
+  return { events, lastAssistantText, record };
 }
 
 export interface ShipResult {
@@ -206,7 +226,9 @@ export async function shipTranscriptSegments(
 
     const blob = await client.postBlob(bytes, source.sha256, source.mediaType, clippedRequestBudget(budget, now()));
     if (blob.class !== 'acked') {
-      if (blob.class === 'retry') spool.markOffline(now(), blob.retryAfterMs);
+      // One policy for what an outcome does: the spool's `endPass` owns the
+      // latch and the diagnostics, here as much as on the event path.
+      if (blob.class !== 'reslice') spool.endPass(blob, now());
       return { shipped, endedBy: blob.class === 'reslice' ? 'refused' : blob.class };
     }
     const event = transcriptSegmentEvent(ctx, { transcriptId: pointer.transcriptId, baseOffset: offset, blobSource: source, originPath: pointer.path });
@@ -222,10 +244,8 @@ export async function shipTranscriptSegments(
         lastReslice = outcome.heldSize;
         persist({ ...pointer, nextOffset: outcome.heldSize });
         continue;
-      case 'retry':
-        spool.markOffline(now(), outcome.retryAfterMs);
-        return { shipped, endedBy: 'retry' };
       default:
+        spool.endPass(outcome, now());
         return { shipped, endedBy: outcome.class };
     }
   }

@@ -12,6 +12,7 @@ import { parseCredentialFlag, resolveCredential, type CredentialRecord, type Cre
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
 import { refreshDue, refreshMemberCredential, refreshableRoot, rotatedCredential } from './refresh.js';
 import { applySpoolRetention } from './retention.js';
+import type { SessionState } from './session-state.js';
 import { MemberSpool } from './spool.js';
 import { ServerClient, type ClientRecord, type FetchLike } from './transport.js';
 
@@ -42,6 +43,14 @@ export interface HookRun {
 
 export interface HookOutcome {
   events: OutboundEvent[];
+  /**
+   * The receipts for `events` — the prompt hashes, plan hashes, attachment
+   * keys and transcript parsed size that stop them being derived twice.
+   * Applied WITH the append, under one hold of the session's buffer lock: a
+   * handler that writes a receipt itself makes a crash before the append a
+   * permanent loss, because nothing re-derives an event already receipted.
+   */
+  record?: (state: SessionState) => void;
   response?: HookResponse;
   /** Dial even while the offline latch is set (Stop/SessionEnd always probe). */
   probe?: boolean;
@@ -74,13 +83,13 @@ export async function runMemberHook(
     const now = opts.now ?? Date.now;
     const budget = resolveHookBudget(input.agent, hookName, { hookEventName: harnessEventOf(input), startedAt: opts.startedAt });
     const spool = new MemberSpool(credential.projectId);
-    const ctx: EnvelopeContext = { agent: input.agent, sessionId, stage: spool.stage, now };
+    const ctx: EnvelopeContext = { agent: input.agent, sessionId, stage: spool.stagerFor(sessionId), now };
     const client = new ServerClient(credential, opts.fetch ?? globalThis.fetch);
     const run: HookRun = { hookName, input, sessionId, agent: input.agent, credential, spool, ctx, budget, client, now, argv };
 
     const outcome = await handle(run);
     response = outcome.response ?? {};
-    for (const event of outcome.events) spool.append(sessionId, event);
+    spool.appendAndRecord(sessionId, outcome.events, outcome.record, now());
     if (budget.drains) {
       const fetchImpl = opts.fetch ?? globalThis.fetch;
       const root = refreshableRoot(credential);

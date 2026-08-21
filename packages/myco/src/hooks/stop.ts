@@ -1,7 +1,7 @@
 import { getMachineId } from '../machine-id.js';
 import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { responseEvent, type OutboundEvent } from '../member/envelope.js';
-import { readSessionState, updateSessionState } from '../member/session-state.js';
+import { readSessionState, type SessionState } from '../member/session-state.js';
 import { deriveTranscriptCapture, shipTranscriptSegments, transcriptPointerFor } from '../member/transcript.js';
 
 export type StopPhase = 'response' | 'transcript';
@@ -19,28 +19,37 @@ export function parsePhasesArg(argv: readonly string[]): StopPhase[] {
   return valid.length > 0 ? valid : [...ALL_PHASES];
 }
 
+export interface TranscriptPhase {
+  events: OutboundEvent[];
+  lastAssistantText?: string;
+  /** The receipts for `events`; applied with the append, never before it. */
+  record: (state: SessionState) => void;
+  afterDrain: (run: HookRun, until?: number) => Promise<void>;
+}
+
 /**
- * The transcript phase shared by Stop and SessionEnd: record the transcript
+ * The transcript phase shared by Stop and SessionEnd: resolve the transcript
  * pointer, derive the events the transcript holds (queued prompts, plans,
- * images), and ship segments after the drain. Returns the derived events and
- * the parser's last assistant text.
+ * images), and ship segments after the drain. Nothing is written here — the
+ * pointer and the derivation's receipts travel back as `record` so they land
+ * with the append, because a receipt written first turns a crash into
+ * permanent loss: the rerun skips by hash and by parsed size.
  */
-export function transcriptPhase(run: HookRun): { events: OutboundEvent[]; lastAssistantText?: string; afterDrain: (run: HookRun, until?: number) => Promise<void> } {
+export function transcriptPhase(run: HookRun): TranscriptPhase {
   const { input, sessionId, ctx, spool } = run;
   const transcriptPath = input.transcriptPath;
-  if (!transcriptPath) return { events: [], afterDrain: async () => {} };
-  const events: OutboundEvent[] = [];
-  let lastAssistantText: string | undefined;
-  updateSessionState(spool.dir, sessionId, (state) => {
-    const pointer = transcriptPointerFor(transcriptPath, getMachineId(), state.transcript);
-    if (pointer) state.transcript = pointer;
-    const derived = deriveTranscriptCapture(ctx, transcriptPath, state);
-    events.push(...derived.events);
-    lastAssistantText = derived.lastAssistantText;
-  }, run.now());
+  const noop: TranscriptPhase = { events: [], record: () => {}, afterDrain: async () => {} };
+  if (!transcriptPath) return noop;
+  const state = readSessionState(spool.dir, sessionId);
+  const pointer = transcriptPointerFor(transcriptPath, getMachineId(), state.transcript);
+  const derived = deriveTranscriptCapture(ctx, transcriptPath, pointer ? { ...state, transcript: pointer } : state);
   return {
-    events,
-    lastAssistantText,
+    events: derived.events,
+    lastAssistantText: derived.lastAssistantText,
+    record: (next) => {
+      if (pointer) next.transcript = next.transcript && next.transcript.path === pointer.path && next.transcript.inode === pointer.inode ? next.transcript : pointer;
+      derived.record(next);
+    },
     afterDrain: async (r, until) => { await shipTranscriptSegments(r.ctx, r.spool, r.client, r.budget, { now: r.now, until }); },
   };
 }
@@ -61,6 +70,7 @@ export async function main(opts: HookMainOptions = {}) {
     if (transcript) events.push(...transcript.events);
     return {
       events,
+      record: transcript?.record,
       probe: true,
       afterDrain: transcript ? (r) => transcript.afterDrain(r) : undefined,
     };

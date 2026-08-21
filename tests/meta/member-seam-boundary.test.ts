@@ -12,12 +12,12 @@
  * compiles, so the gate walks the IMPORT GRAPH rather than grepping one file:
  * a forbidden import two hops deep is the same violation as a direct one.
  *
- * Two modes, one walker:
- *   - the closure of every `src/hooks/*.ts` entry (and of `src/member/**`) is
- *     REPORTED — the violation list is printed and the test passes;
- *   - the closure of each ENFORCED LEAF must sit inside the allowlist and
- *     reach no package outside `ALLOWED_EXTERNALS`, so a `grove/`, `yaml`, or
- *     workspace-package import in one of them fails by name.
+ * One walker, everything enforced: the closure of every `src/hooks/*.ts`
+ * entry and of `src/member/**` must sit inside the allowlist and reach no
+ * package outside `ALLOWED_EXTERNALS` — a `grove/`, `yaml`, or
+ * workspace-package import anywhere in it fails by name — and each enforced
+ * leaf is walked again on its own so a violation is reported against the leaf
+ * that introduced it, not only against the whole graph.
  *
  * Edges and comment-free code come from the runtime's own parser, never a
  * hand-rolled lexer: `Bun.Transpiler.scanImports` lists every specifier the
@@ -426,15 +426,12 @@ describe('member seam boundary (transitive)', () => {
     const literals = violations.filter((v) => v.reason.startsWith('contains literal'));
     const externals = violations.filter((v) => v.reason === 'external package');
     const unknowable = violations.filter((v) => v.reason.startsWith('unknowable dynamic import'));
-    console.log(
-      `[member-seam] ${closure.modules.size} modules in the hooks+member closure, `
-      + `${outside.size} outside the allowlist, ${literals.length} forbidden-literal hits, `
-      + `${externals.length} external packages reached, ${unknowable.length} modules with unknowable dynamic imports`,
-    );
     if (violations.length > 0) {
       throw new Error(`the hooks+member closure reaches outside the member seam allowlist:\n${formatViolations(violations)}`);
     }
-    expect(violations).toEqual([]);
+    expect({ outside: outside.size, literals: literals.length, externals: externals.length, unknowable: unknowable.length })
+      .toEqual({ outside: 0, literals: 0, externals: 0, unknowable: 0 });
+    expect(closure.modules.size).toBeGreaterThan(hookEntries.length + memberEntries.length);
   });
 
   for (const leaf of ENFORCED_LEAVES) {

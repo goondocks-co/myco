@@ -2,7 +2,7 @@ import { evaluateUserPromptRules, resolveSubagentThread } from './capture-rules.
 import { readTranscriptMeta } from './transcript-meta.js';
 import { runMemberHook, type HookMainOptions } from '../member/capture.js';
 import { deriveId, mintId, promptEvent } from '../member/envelope.js';
-import { readSessionState, updateSessionState } from '../member/session-state.js';
+import { readSessionState } from '../member/session-state.js';
 import { sha256Text } from '../member/transcript.js';
 
 export async function main(opts: HookMainOptions = {}) {
@@ -32,12 +32,15 @@ export async function main(opts: HookMainOptions = {}) {
     const threadId = thread?.threadId ? deriveId('thread', thread.threadId) : undefined;
 
     const promptId = mintId();
-    updateSessionState(spool.dir, sessionId, (state) => {
-      state.promptId = promptId;
-      state.prompts[sha256Text(text)] = promptId;
-    });
+    const hash = sha256Text(text);
     return {
       events: [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })],
+      // The receipt lands with the event: recorded first, a crash in between
+      // would leave the transcript pass skipping this prompt by hash forever.
+      record: (state) => {
+        state.promptId = promptId;
+        state.prompts[hash] = promptId;
+      },
       response,
     };
   });

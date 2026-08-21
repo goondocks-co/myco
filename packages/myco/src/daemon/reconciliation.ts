@@ -807,9 +807,8 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
    *
    *   1. Intra-buffer collapse — the live dispatcher's content+window
    *      dedup applied over the whole file, so the daemon-appended copy
-   *      and the hook CLI's duplicate copy (written whenever the daemon
-   *      returns `ignored: 'duplicate'` — see `hooks/send-event.ts`)
-   *      count as ONE logical event.
+   *      and a hook CLI's duplicate copy (written whenever the daemon
+   *      returns `ignored: 'duplicate'`) count as ONE logical event.
    *   2. Exact content match — the event's convergence key consumes one
    *      unconsumed DB row with the same key. user_prompt events key on
    *      the candidate replay text (the rewritten form the live hook

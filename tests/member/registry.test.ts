@@ -92,7 +92,7 @@ describe('member registry', () => {
     spool.append('sess-1', { envelope: { eventId: '00000000-0000-7000-8000-000000000001', sessionId: 'sess-1', kind: 'session.end', createdAt: 1, channel: 'cli', producer: { adapter: 'a', version: '1' }, payload: {} } });
     expect(mode(path.join(spool.dir, 'sess-1.jsonl'))).toBe(0o600);
     expect(mode(path.join(spool.dir, '.sess-1.lock'))).toBe(0o600);
-    const staged = spool.stage(new Uint8Array([1, 2, 3]), 'application/octet-stream');
+    const staged = spool.stagerFor('sess-1')(new Uint8Array([1, 2, 3]), 'application/octet-stream');
     expect(mode(staged.path)).toBe(0o600);
     spool.markOffline(Date.now());
     expect(mode(path.join(spool.dir, 'offline.json'))).toBe(0o600);

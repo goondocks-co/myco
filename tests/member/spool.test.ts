@@ -13,8 +13,9 @@ import { MEMBER_TOKEN_BYTE_QUOTA } from '@myco-server-worker/constants.js';
 import { unboundedBudget, resolveHookBudget } from '@myco/member/budget.js';
 import { MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSED_LOG_MAX_BYTES } from '@myco/member/constants.js';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
-import { readSessionState } from '@myco/member/session-state.js';
+import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { MemberSpool, WIRE_FIELDS, toWire, type SpoolRecord } from '@myco/member/spool.js';
+import { shipTranscriptSegments } from '@myco/member/transcript.js';
 import { ServerClient, type FetchLike } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { recordingFetch } from './helpers/hooks.js';
@@ -35,7 +36,7 @@ afterEach(() => {
 });
 
 const clientFor = (rig: MemberRig, fetch: FetchLike = rig.fetch, token = rig.token) => new ServerClient({ serverUrl: 'https://s', token, projectId: 'proj_1' }, fetch);
-const ctxFor = (spool: MemberSpool, sessionId: string): EnvelopeContext => ({ agent: 'claude-code', sessionId, stage: spool.stage, version: '2.0.0-test' });
+const ctxFor = (spool: MemberSpool, sessionId: string): EnvelopeContext => ({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: '2.0.0-test' });
 const prompts = (ctx: EnvelopeContext, n: number) => Array.from({ length: n }, (_, i) => promptEvent(ctx, { promptId: mintId(), text: `p${i}` }));
 
 describe('member spool', () => {
@@ -226,6 +227,48 @@ describe('member spool', () => {
     for (const line of fs.readFileSync(file, 'utf-8').split('\n').filter(Boolean)) {
       expect(Object.keys(JSON.parse(line)).sort()).toEqual(['at', 'code', 'eventId', 'kind', 'reason', 'sessionId']);
     }
+  });
+
+  it('the transcript-segment path ends its passes through the same policy: route_missing latches and names itself', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const sessionId = 'sess-ship';
+    const file = path.join(mycoHome, 'ship.jsonl');
+    fs.writeFileSync(file, '{"type":"user"}\n');
+    updateSessionState(spool.dir, sessionId, (s) => {
+      s.transcript = { path: file, transcriptId: `tx_${'b'.repeat(32)}`, inode: fs.statSync(file).ino, nextOffset: 0, parsedSize: 0 };
+    });
+    // A 401 WITH the protocol header on a capture route: `route_missing`. The
+    // event path latches and names it; before the policy was shared, the
+    // segment path did neither.
+    const client = new ServerClient({ serverUrl: 'https://s/v9', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+    const ctx: EnvelopeContext = { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: '2.0.0-test' };
+
+    const result = await shipTranscriptSegments(ctx, spool, client, unboundedBudget());
+
+    expect(result).toEqual({ shipped: 0, endedBy: 'route_missing' });
+    expect(spool.readLatch()).not.toBeNull();
+    expect(stderrLines.join('')).toContain('contract bug');
+  });
+
+  it('drainAll stops at the first outcome that will answer the same way for every other session', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    for (const sessionId of ['sess-a', 'sess-b', 'sess-c']) {
+      spool.append(sessionId, promptEvent(ctxFor(spool, sessionId), { promptId: mintId(), text: 'x' }));
+    }
+    const seen: string[] = [];
+    const client = new ServerClient({ serverUrl: 'https://s/v9', token: rig.token, projectId: 'proj_1' }, async (input, init) => {
+      seen.push(new URL(new Request(input, init).url).pathname);
+      return rig.fetch(input, init);
+    });
+
+    const results = await spool.drainAll(client, unboundedBudget(), { force: true });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].endedBy).toBe('route_missing');
+    expect(seen).toHaveLength(1);
+    expect(spool.sessionIds()).toHaveLength(3);
   });
 
   it('a hook budget stops the pass before the deadline and leaves the rest spooled', async () => {

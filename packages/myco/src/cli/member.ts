@@ -16,7 +16,7 @@ import { MEMBER_TOKEN_REFRESH_WINDOW_MS, PROJECT_ID_PATTERN } from '../member/co
 import { isHttpsUrl, isMemberTokenShape, resolveMemberProjectRoot } from '../member/credential.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { listRegistryEntries, readRegistryEntry, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
-import { applySpoolRetention, lastActivityAt } from '../member/retention.js';
+import { applySpoolRetention, lastAckAt } from '../member/retention.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
@@ -206,7 +206,7 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
   for (const entry of entriesFor(args, deps)) {
     const spool = new MemberSpool(entry.projectId, { mycoHome: deps.mycoHome });
     const retention = applySpoolRetention(spool, now());
-    if (retention.quarantined.length > 0 || retention.pruned > 0) out(`${entry.projectId}: quarantined ${retention.quarantined.length}, pruned ${retention.pruned}`);
+    if (retention.quarantined.length > 0 || retention.pruned > 0 || retention.releasedBlobs > 0) out(`${entry.projectId}: quarantined ${retention.quarantined.length}, pruned ${retention.pruned}, released ${retention.releasedBlobs} staged file(s)`);
     const client = new ServerClient(entry, deps.fetch ?? globalThis.fetch);
     const drained = await spool.drainAll(client, unboundedBudget(), { force: true, now });
     for (const r of drained) {
@@ -237,7 +237,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     for (const sessionId of sessions) {
       const d = spool.depth(sessionId);
       depth += d;
-      lastAck = Math.max(lastAck, lastActivityAt(spool, sessionId));
+      lastAck = Math.max(lastAck, lastAckAt(spool, sessionId));
       out(`spool:      ${sessionId} — ${d} un-acknowledged`);
     }
     out(`spool:      ${sessions.length} session file(s), ${depth} un-acknowledged event(s)`);

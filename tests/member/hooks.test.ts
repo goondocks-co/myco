@@ -11,6 +11,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
+import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
+import { evaluateUserPromptRules, resolveSubagentThread } from '@myco/hooks/capture-rules.js';
+import { deriveId, mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
@@ -143,6 +146,49 @@ describe('member hooks through the worker', () => {
     expect(segments[1].base_offset).toBe(segments[0].length);
     expect(segments[0].length + segments[1].length).toBe(fs.statSync(tx).size);
     assertNoRetired();
+  });
+
+  it('post-tool-use with no tool name is dropped: a non-tool step records nothing and dials nothing', async () => {
+    const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
+    const r = await run('post-tool-use', { hook_event_name: 'PostToolUse', transcript_path: tx, tool_input: { file_path: '/x' }, tool_output: 'body' });
+    expect(r.stderr).toContain('post-tool-use dropped (no tool_name)');
+    expect(dialled()).toEqual([]);
+    expect(rig.rows('tool_calls')).toBe(0);
+    expect(new MemberSpool('proj_1', { mycoHome }).sessionIds()).toEqual([]);
+  });
+
+  it('a hook under an unknown symbiont takes its default budget, records nothing, and never dials', async () => {
+    const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
+    const pre = await runHook('pre-tool-use', { session_id: session, hook_event_name: 'PreToolUse', transcript_path: tx, tool_name: 'Read', tool_input: { file_path: '/x' } }, { fetch: fetchSpy.fetch, symbiont: 'not-a-symbiont' });
+    expect(pre.stdout).toBe('');
+    expect(dialled()).toEqual([]);
+    expect(rig.rows('events')).toBe(0);
+  });
+
+  it('a prompt carrying sub-agent thread fields projects them — but codex, the only symbiont that declares the paths, drops those prompts first', async () => {
+    // Half one: the fields the hook would set travel end-to-end.
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const parentPromptId = mintId();
+    const ctx: EnvelopeContext = { agent: 'codex', sessionId: 'sess-parent-thread', stage: spool.stagerFor('sess-parent-thread'), version: '2.0.0-test' };
+    await rig.postEvent(promptEvent(ctx, { promptId: parentPromptId, text: 'parent asks' }).envelope);
+    const childCtx: EnvelopeContext = { ...ctx, sessionId: 'sess-child-thread', stage: spool.stagerFor('sess-child-thread') };
+    await rig.postEvent(promptEvent(childCtx, { promptId: mintId(), text: 'child works', parentPromptId, threadId: deriveId('thread', 'thr_child'), threadLabel: 'Explorer' }).envelope);
+    const row = rig.env.sqlite.query('SELECT parent_prompt_id, thread_id, thread_label FROM prompt_batches WHERE text = ?').get('child works') as { parent_prompt_id: string; thread_id: string; thread_label: string };
+    expect(row).toEqual({ parent_prompt_id: parentPromptId, thread_id: deriveId('thread', 'thr_child'), thread_label: 'Explorer' });
+
+    // Half two, and the reason there is no hook-level end-to-end gate: every
+    // symbiont that declares `subagentParentPath` also declares a rule that
+    // drops a prompt whose transcript meta carries the sub-agent marker the
+    // resolution reads, so `resolveSubagentThread` is unreachable from the
+    // hook path today. If a manifest ever stops dropping them, this fails and
+    // the end-to-end gate becomes both possible and required.
+    const declaring = Object.entries(HOOK_CONFIG).filter(([, entry]) => entry.subagentParentPath !== undefined).map(([name]) => name);
+    expect(declaring).not.toEqual([]);
+    for (const agent of declaring) {
+      const meta = { source: { subagent: { thread_spawn: { parent_thread_id: 'sess-parent-thread', agent_nickname: 'Explorer' } } } };
+      expect({ agent, thread: resolveSubagentThread(agent, meta)?.parentSessionId }).toEqual({ agent, thread: 'sess-parent-thread' });
+      expect({ agent, action: evaluateUserPromptRules(agent, { prompt: 'child works', transcriptMeta: meta }).action }).toEqual({ agent, action: 'drop' });
+    }
   });
 
   it('windsurf --phases: the response phase emits only the response, the transcript phase only the transcript work', async () => {

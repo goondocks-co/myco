@@ -79,6 +79,12 @@ export class ServerClient {
           ...init.headers,
         },
         body: init.body,
+        // A redirect is an error, never a hop. Following one ships the capture
+        // body to whatever host the response names and answers in that host's
+        // shape — a `{persisted:true}` from anywhere would read as `acked` and
+        // delete the durable copy. `error` surfaces as a transport failure,
+        // which classifies `retry`, so the events stay spooled.
+        redirect: 'error',
         signal: controller.signal,
       });
       clearTimeout(connectTimer);
@@ -130,7 +136,7 @@ export class ServerClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), budget.requestTimeoutMs);
     try {
-      const res = await this.fetchImpl(`${this.base}${HEALTH_PATH}`, { method: 'GET', signal: controller.signal });
+      const res = await this.fetchImpl(`${this.base}${HEALTH_PATH}`, { method: 'GET', redirect: 'error', signal: controller.signal });
       return res.status === 200;
     } catch {
       return false;

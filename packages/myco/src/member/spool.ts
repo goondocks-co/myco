@@ -21,7 +21,7 @@ import {
   MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSED_LOG_MAX_BYTES, type MemberCode,
 } from './constants.js';
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
-import { bufferLockPath, readSessionState, readSessionStateUnlocked, updateSessionState, writeSessionStateUnlocked } from './session-state.js';
+import { bufferLockPath, readSessionState, readSessionStateUnlocked, updateSessionState, writeSessionStateUnlocked, type SessionState } from './session-state.js';
 import { ensureMemberDir, ensurePrivateFile, memberRoot, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 import type { ClientRecord, Outcome, ServerClient } from './transport.js';
 
@@ -104,13 +104,29 @@ export class MemberSpool {
     ensureMemberDir(this.blobsDir, this.mycoHome);
   }
 
-  /** Stage bytes under `blobs/<sha256>` (0600) for the drain to upload; an existing file is reused. */
-  readonly stage: BlobStager = (bytes, mediaType) => {
-    const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
-    const file = path.join(this.blobsDir, sha256);
-    if (!fs.existsSync(file)) fs.writeFileSync(file, bytes, { mode: MEMBER_FILE_MODE });
-    return { path: file, sha256, mediaType, size: bytes.byteLength };
-  };
+  /** The blob staging dir of one session: staged bytes belong to the session that staged them. */
+  blobsDirFor(sessionId: string): string {
+    return path.join(this.blobsDir, sessionId);
+  }
+
+  /**
+   * A stager for one session: bytes land in `blobs/<sessionId>/<sha256>`
+   * (0600) for the drain to upload. Staging is per session, not per project,
+   * so the drain can delete a record's bytes the moment the record is
+   * acknowledged — with one project-wide dir, two sessions staging identical
+   * bytes would share a file and the first drain would delete it under the
+   * second, whose upload would then answer `blob_absent`.
+   */
+  stagerFor(sessionId: string): BlobStager {
+    const dir = this.blobsDirFor(sessionId);
+    return (bytes, mediaType) => {
+      ensureMemberDir(dir, this.mycoHome);
+      const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+      const file = path.join(dir, sha256);
+      if (!fs.existsSync(file)) fs.writeFileSync(file, bytes, { mode: MEMBER_FILE_MODE });
+      return { path: file, sha256, mediaType, size: bytes.byteLength };
+    };
+  }
 
   private spoolFile(sessionId: string): string {
     return path.join(this.dir, `${sessionId}.jsonl`);
@@ -127,10 +143,44 @@ export class MemberSpool {
     return new EventBuffer(this.dir, sessionId);
   }
 
-  /** Write-ahead: append the record before anything is sent. */
+  /** Write-ahead: append one record before anything is sent. */
   append(sessionId: string, out: OutboundEvent): void {
-    const record: SpoolRecord = { ...out.envelope, _memberProtocol: MEMBER_PROTOCOL, ...(out.blobSource ? { _blobSource: out.blobSource } : {}) };
-    this.buffer(sessionId).append(record as unknown as Record<string, unknown>);
+    this.appendAndRecord(sessionId, [out]);
+  }
+
+  /**
+   * The commit point. The events and the state that records them having been
+   * captured land together, under ONE hold of the session's buffer lock.
+   *
+   * A handler that derives an event also writes its receipt — the prompt hash,
+   * the plan hash, the attachment key, the transcript's parsed size — and
+   * nothing re-derives an event whose receipt is already on disk. Writing the
+   * receipt before the append therefore makes a crash between the two a
+   * permanent loss, not a retry: the rerun reads the receipt, derives nothing,
+   * and the event exists nowhere. Appending first and recording in the same
+   * locked section makes the durable copy the thing that cannot be missing.
+   */
+  appendAndRecord(sessionId: string, events: readonly OutboundEvent[], record?: (state: SessionState) => void, now: number = Date.now()): void {
+    if (events.length === 0 && !record) return;
+    const lock = bufferLockPath(this.dir, sessionId);
+    const file = this.spoolFile(sessionId);
+    ensurePrivateFile(lock);
+    ensurePrivateFile(file);
+    withFileLockSync(lock, () => {
+      for (const out of events) {
+        const line: SpoolRecord & { timestamp: string } = {
+          ...out.envelope,
+          _memberProtocol: MEMBER_PROTOCOL,
+          ...(out.blobSource ? { _blobSource: out.blobSource } : {}),
+          timestamp: new Date(now).toISOString(),
+        };
+        fs.appendFileSync(file, JSON.stringify(line) + '\n', { mode: MEMBER_FILE_MODE });
+      }
+      const state = readSessionStateUnlocked(this.dir, sessionId);
+      if (state.startedAt === undefined) state.startedAt = now;
+      record?.(state);
+      writeSessionStateUnlocked(this.dir, sessionId, state, now);
+    });
   }
 
   /** Session ids with a spool file. */
@@ -270,7 +320,27 @@ export class MemberSpool {
       let sawUnauthorized = false;
       let retriedAfterUnauthorized = false;
       let activeClient = client;
-      const persist = (highWater: number) => updateSessionState(this.dir, sessionId, (s) => { s.highWater = highWater; }, now());
+      // How many records still reference each staged blob; the last one to be
+      // drained releases the bytes. Without the count a repeat sha would be
+      // unlinked under a record that has not been sent yet.
+      const staged = new Map<string, number>();
+      for (const record of records) {
+        if (record?._blobSource) staged.set(record._blobSource.sha256, (staged.get(record._blobSource.sha256) ?? 0) + 1);
+      }
+      const release = (record: SpoolRecord | null) => {
+        const source = record?._blobSource;
+        if (!source) return;
+        const remaining = (staged.get(source.sha256) ?? 1) - 1;
+        staged.set(source.sha256, remaining);
+        if (remaining > 0) return;
+        // Only bytes this spool staged: a source outside the session's staging dir belongs to someone else.
+        if (path.dirname(path.resolve(source.path)) !== path.resolve(this.blobsDirFor(sessionId))) return;
+        try { fs.unlinkSync(source.path); } catch { /* already gone */ }
+      };
+      const persist = (highWater: number, acked?: boolean) => updateSessionState(this.dir, sessionId, (s) => {
+        s.highWater = highWater;
+        if (acked) s.lastAckAt = now();
+      }, now());
 
       pass: while (i < records.length) {
         if (!canStartRequest(budget, now())) { result.endedBy = 'budget'; break; }
@@ -301,13 +371,15 @@ export class MemberSpool {
             this.clearLatch();
             result.acked += 1;
             i += 1;
-            persist(i);
+            release(record);
+            persist(i, true);
             continue;
           case 'refused':
             this.appendRefused({ eventId: record.eventId, sessionId, kind: record.kind, code: outcome.code, reason: outcome.reason, at: now() });
             stderr(`${record.kind} ${record.eventId} refused by the server (${outcome.code}): ${outcome.reason}`);
             result.refused += 1;
             i += 1;
+            release(record);
             persist(i);
             continue;
           case 'reslice':
@@ -359,8 +431,13 @@ export class MemberSpool {
     }
   }
 
-  /** Side effects and the end class for an outcome that stops the pass. */
-  private endPass(outcome: Outcome, now: number): DrainEnd {
+  /**
+   * Side effects and the end class for an outcome that stops a pass — the one
+   * place that decides what each outcome does (latch, diagnostic, neither).
+   * Public because the transcript-segment path ends its own passes and must
+   * not carry a second copy of the policy.
+   */
+  endPass(outcome: Outcome, now: number): DrainEnd {
     switch (outcome.class) {
       case 'parked':
         stderr('write quota exceeded — capture parked');
@@ -390,7 +467,9 @@ export class MemberSpool {
     for (const sessionId of this.sessionIds()) {
       const r = await this.drainSession(sessionId, client, budget, opts);
       results.push(r);
-      if (r.endedBy === 'budget' || r.endedBy === 'retry' || r.endedBy === 'parked' || r.endedBy === 'unauthorized' || r.endedBy === 'protocol') break;
+      // Anything that will answer the same way for the next session ends the
+      // walk: a mis-deployed server must cost one request, not one per session.
+      if (r.endedBy !== 'drained' && r.endedBy !== 'reslice' && r.endedBy !== 'refused' && r.endedBy !== 'acked') break;
     }
     return results;
   }

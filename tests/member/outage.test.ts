@@ -34,7 +34,7 @@ describe('outage convergence', () => {
     const rig = await memberRig();
     const spool = new MemberSpool('proj_1', { mycoHome });
     const sessions = Array.from({ length: SESSIONS }, (_, i) => `sess-outage-${i}`);
-    const ctxs = new Map(sessions.map((s) => [s, { agent: 'claude-code', sessionId: s, stage: spool.stage, version: '2.0.0-test' } as EnvelopeContext]));
+    const ctxs = new Map(sessions.map((s) => [s, { agent: 'claude-code', sessionId: s, stage: spool.stagerFor(s), version: '2.0.0-test' } as EnvelopeContext]));
 
     // Write-ahead: every event is appended before any drain.
     const ids = new Set<string>();
