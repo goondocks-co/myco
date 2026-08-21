@@ -1,4 +1,4 @@
-export const SERVER_SCHEMA_VERSION = 2;
+export const SERVER_SCHEMA_VERSION = 3;
 export const SERVER_PROTOCOL = 1;
 export const MIN_COMPAT_MEMBER_PROTOCOL = 1;
 export const PROTOCOL_HEADER = 'x-myco-protocol';

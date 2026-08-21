@@ -49,7 +49,7 @@ describe('ingest', () => {
   it('refuses a reused event id carrying a different payload and keeps the first', async () => {
     const { db, sqlite } = realDb();
     await ingestEvent(db, ctx, good);
-    expect(await ingestEvent(db, at(3_000), envelope({ payload: { promptId: uuid(2), text: 'changed', origin: 'user' } }))).toEqual({ persisted: false, reason: 'event id conflict' });
+    expect(await ingestEvent(db, at(3_000), envelope({ payload: { promptId: uuid(2), text: 'changed', origin: 'user' } }))).toEqual({ persisted: false, code: 'event_id_conflict', reason: 'event id conflict' });
     expect(count(sqlite, 'events')).toBe(1);
     expect((sqlite.query('SELECT payload FROM events').get() as any).payload).toBe(JSON.stringify(good.payload));
   });
@@ -69,7 +69,7 @@ describe('ingest', () => {
       for (const change of cases) {
         const { db, sqlite } = realDb();
         await ingestEvent(db, ctx, good);
-        expect({ field, change, res: await ingestEvent(db, at(3_000), { ...good, ...change }) }).toEqual({ field, change, res: { persisted: false, reason: 'event id conflict' } });
+        expect({ field, change, res: await ingestEvent(db, at(3_000), { ...good, ...change }) }).toEqual({ field, change, res: { persisted: false, code: 'event_id_conflict', reason: 'event id conflict' } });
         expect(count(sqlite, 'events')).toBe(1);
         expect(count(sqlite, 'sessions')).toBe(1);
       }
@@ -89,8 +89,8 @@ describe('ingest', () => {
     const before = sessions(sqlite);
     await ingestEvent(db, at(9_000), good);
     await ingestEvent(db, at(9_000), envelope({ createdAt: 0, payload: { promptId: uuid(2), text: 'squat', origin: 'user' } }));
-    expect(await ingestEvent(db, at(9_000), envelope({ eventId: uuid(6), sessionId: 'sess_9', kind: 'made.up', payload: {} }))).toEqual({ persisted: false, reason: 'unknown kind made.up' });
-    expect(await ingestEvent(db, at(9_000), { ...good, eventId: uuid(7), sessionId: 'sess_9', payload: { promptId: '1', text: 'x', origin: 'user' } })).toEqual({ persisted: false, reason: 'promptId must match the id grammar' });
+    expect(await ingestEvent(db, at(9_000), envelope({ eventId: uuid(6), sessionId: 'sess_9', kind: 'made.up', payload: {} }))).toEqual({ persisted: false, code: 'unknown_kind', reason: 'unknown kind made.up' });
+    expect(await ingestEvent(db, at(9_000), { ...good, eventId: uuid(7), sessionId: 'sess_9', payload: { promptId: '1', text: 'x', origin: 'user' } })).toEqual({ persisted: false, code: 'id_grammar', reason: 'promptId must match the id grammar' });
     await ingestEvent(db, at(9_000), { ...good, eventId: uuid(8), sessionId: 'sess_9', kind: '' });
     expect(sessions(sqlite)).toEqual(before);
     expect(count(sqlite, 'events')).toBe(1);
@@ -100,11 +100,11 @@ describe('ingest', () => {
     const { db, sqlite } = realDb();
     await ingestEvent(db, ctx, good);
     const other = envelope({ eventId: uuid(10), payload: { promptId: uuid(11), text: 'mine', origin: 'user' } });
-    expect(await ingestEvent(db, at(3_000, { machineId: 'machine_3', tokenId: 'mt_3' }), other)).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(await ingestEvent(db, at(3_000, { machineId: 'machine_3', tokenId: 'mt_3' }), other)).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     expect(count(sqlite, 'events')).toBe(1);
     expect(bytes(sqlite, 'mt_3')).toBe(0);
     expect(await ingestEvent(db, at(4_000, { machineId: 'machine_3', tokenId: 'mt_3' }), { ...other, eventId: uuid(12), sessionId: 'sess_3' })).toEqual({ persisted: true, projected: true });
-    expect(await ingestEvent(db, at(5_000), other)).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(await ingestEvent(db, at(5_000), other)).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     expect(await ingestEvent(db, at(6_000), { ...other, payload: { promptId: uuid(13), text: 'mine', origin: 'user' } })).toEqual({ persisted: true, projected: true });
     expect(count(sqlite, 'events')).toBe(3);
   });
@@ -115,7 +115,7 @@ describe('ingest', () => {
     expect(await ingestEvent(db, at(7_000), plan)).toEqual({ persisted: true, projected: true });
     expect(await ingestEvent(db, at(7_000), plan)).toEqual({ persisted: true, duplicate: true });
     const conflicting = envelope({ eventId: uuid(20), kind: 'plan', createdAt: 1_000, payload: { planKey: uuid(21), content: 'two', tags: ['b'] } });
-    expect(await ingestEvent(db, at(7_000), conflicting)).toEqual({ persisted: false, reason: 'event id conflict' });
+    expect(await ingestEvent(db, at(7_000), conflicting)).toEqual({ persisted: false, code: 'event_id_conflict', reason: 'event id conflict' });
     expect(sqlite.query(`SELECT content FROM plans`).get()).toEqual({ content: 'one' });
     expect(sqlite.query(`SELECT tag FROM tags`).all()).toEqual([{ tag: 'a' }]);
     expect((sqlite.query(`SELECT COUNT(*) c FROM events WHERE ingest_nonce = ''`).get() as any).c).toBe(0);
@@ -126,9 +126,9 @@ describe('ingest', () => {
     sqlite.query(`INSERT INTO member_tokens (id,project_id,machine_id,token_hash,expires_at,revoked_at,bytes_written) VALUES ('mt_1b','proj_1','machine_1','h1b',9,NULL,0)`).run();
     await ingestEvent(db, ctx, good);
     expect(await ingestEvent(db, at(3_000, { machineId: 'machine_1', tokenId: 'mt_1b' }), good)).toEqual({ persisted: true, duplicate: true });
-    expect(await ingestEvent(db, at(3_000, { machineId: 'machine_3', tokenId: 'mt_3' }), good)).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(await ingestEvent(db, at(3_000, { machineId: 'machine_3', tokenId: 'mt_3' }), good)).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     const conflicting = { ...good, payload: { promptId: uuid(2), text: 'guess', origin: 'user' } };
-    expect(await ingestEvent(db, at(3_000, { machineId: 'machine_3', tokenId: 'mt_3' }), conflicting)).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(await ingestEvent(db, at(3_000, { machineId: 'machine_3', tokenId: 'mt_3' }), conflicting)).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     expect(count(sqlite, 'events')).toBe(1);
     expect(bytes(sqlite, 'mt_3')).toBe(0);
     expect(bytes(sqlite, 'mt_1b')).toBe(0);
@@ -145,7 +145,7 @@ describe('ingest', () => {
 
   it('takes machine identity from the token and refuses a caller-supplied one as an unknown field', async () => {
     const { db, sqlite } = realDb();
-    expect(await ingestEvent(db, ctx, { ...good, machineId: 'spoofed' })).toEqual({ persisted: false, reason: 'unknown field machineId' });
+    expect(await ingestEvent(db, ctx, { ...good, machineId: 'spoofed' })).toEqual({ persisted: false, code: 'unknown_field', reason: 'unknown field machineId' });
     expect(count(sqlite, 'events')).toBe(0);
     expect(bytes(sqlite, 'mt_1')).toBe(0);
   });

@@ -11,15 +11,10 @@ const TOKEN = String.raw`[A-Za-z0-9!#$%&'*+.^_\`|~-]+`;
 const QUOTED = String.raw`"[^"\\;=\x00-\x1F\x7F]*"`;
 const MEDIA_TYPE = new RegExp(String.raw`^(${TOKEN})/(${TOKEN})((?:\s*;\s*${TOKEN}=(?:${QUOTED}|${TOKEN}))*)\s*$`);
 
-export interface BlobResult {
-  stored: boolean;
-  duplicate?: boolean;
-  key?: string;
-  size?: number;
-  /** The media type on the blob row: the first uploader's; a duplicate upload with another type sees the stored one here. */
-  mediaType?: string;
-  reason?: string;
-}
+/** Stored — `mediaType` is the blob row's, the first uploader's, so a duplicate upload with another type sees the stored one — or refused with its stable `code`: a refusal without a `code` cannot be built. */
+export type BlobResult =
+  | { stored: true; duplicate: boolean; key: string; size: number; mediaType: string }
+  | { stored: false; code: Classifier; reason: string };
 
 const TEXT_PLAIN = 'text/plain';
 const TEXT_PLAIN_UTF8 = 'text/plain; charset=utf-8';
@@ -42,7 +37,7 @@ const objectKey = (projectId: string, key: string) => `${projectId}/${key}`;
 /** A terminal refusal on the stream route. An unread request body needs no handling: the platform rejects a body that never completes before the Worker is invoked, and absorbs one that did. */
 function refuse(ctx: StreamContext, reason: string, classifier: Classifier): Response {
   emit({ kind: 'blob_refused', projectId: ctx.projectId, tokenId: ctx.tokenId, reason: classifier });
-  return Response.json({ stored: false, reason } satisfies BlobResult);
+  return Response.json({ stored: false, code: classifier, reason } satisfies BlobResult);
 }
 
 /** Content-addressed upload: hold a reservation row against the token's quota, decide duplicate from the blobs row, stream the bytes into the store under the digest, reconcile the reservation to the size the store recorded, then record the row, charge the token and release the reservation in one batch. A digest mismatch is a terminal refusal. Admission is `withinQuota` — the one expression every writer of the counter admits through — so a token already at the ceiling from event traffic is refused before any byte reaches the store. Nothing a request does before its row lands can leave a permanent charge: a reservation that outlives its request stops counting when it expires, every upload re-admits at reconcile with the reservation held for a fresh TTL, and a terminal refusal after the store holds the bytes deletes an object this request put when no row claims it — an adopted object stays for the next uploader with room. */

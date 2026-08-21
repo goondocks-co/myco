@@ -27,6 +27,19 @@ npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
 
 Rows and objects written by a revoked token are never deleted by this procedure.
 
+# Break-glass: revoking a token lineage
+
+A member token refreshes itself inside the last quarter of its TTL (`POST /tokens/refresh`), so a leaked token may already have a successor — and its successor another — each a live credential with its own digest. Every token of a chain carries `lineage_root`, the id of the operator-minted token the chain began with; `revokeMemberLineage` sets `revoked_at` on every live row of that lineage in one statement, and `npm run token:revoke -- <TOKEN_ID> --lineage` prints it for any id in the chain. Read the chain first, then revoke it whole, then confirm the count of changed rows matches the live rows you read:
+
+```bash
+cd packages/myco-server/worker
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "SELECT id, predecessor_id, lineage_root, expires_at, first_used_at, revoked_at, bytes_written FROM member_tokens WHERE lineage_root = (SELECT lineage_root FROM member_tokens WHERE id = '<TOKEN_ID>') ORDER BY expires_at"
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(npm run -s token:revoke -- <TOKEN_ID> --lineage)"
+```
+
+`first_used_at` on a successor is the instant it first authenticated — the instant its predecessor was revoked — and `predecessor_id` names which token refreshed it; a successor the owner never used, on a lineage the owner never refreshed, is the thief's. Revoking one token (`token:revoke` without `--lineage`) is right only when its successors are known to be the owner's; it leaves them live. After a lineage revoke the member is re-provisioned: mint a new root with `token:mint`. Attribution is unchanged — every `events` row names the `token_id` that wrote it, so the footprint of each token in the chain is the query above.
+
 # Break-glass: a migration that failed part-way
 
 Two records say what the database is: the ledger `d1_migrations` (which files wrangler considers applied) and `schema_meta.version` (the version the request path demands, [src/db/schema.ts](src/db/schema.ts)). A request whose token row reports a different version than `SCHEMA_VERSION` is answered 503, so a half-applied migration takes the server offline rather than serving a torn schema.

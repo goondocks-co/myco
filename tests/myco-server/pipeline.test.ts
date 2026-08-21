@@ -145,10 +145,10 @@ describe('pipeline (via the deployed entry)', () => {
     expect({ status: anonymous.status, body: await anonymous.json(), protocol: anonymous.headers.get(PROTOCOL_HEADER) }).toEqual({ status: 503, body: { error: 'unavailable' }, protocol: null });
     const events = await worker.fetch(post(token), await envFor(token, { tokenLimitThrows: true }));
     expect({ status: events.status, body: await events.json(), protocol: events.headers.get(PROTOCOL_HEADER), retry: events.headers.get('retry-after') })
-      .toEqual({ status: 503, body: { persisted: false, reason: 'unavailable' }, protocol: String(SERVER_PROTOCOL), retry: String(RETRY_AFTER_SECONDS) });
+      .toEqual({ status: 503, body: { persisted: false, code: 'unavailable', reason: 'unavailable' }, protocol: String(SERVER_PROTOCOL), retry: String(RETRY_AFTER_SECONDS) });
     const blobs = await worker.fetch(blobPost(token, 'b'.repeat(64), new Uint8Array([1])), await envFor(token, { tokenLimitThrows: true }));
     expect({ status: blobs.status, body: await blobs.json(), protocol: blobs.headers.get(PROTOCOL_HEADER) })
-      .toEqual({ status: 503, body: { stored: false, reason: 'unavailable' }, protocol: String(SERVER_PROTOCOL) });
+      .toEqual({ status: 503, body: { stored: false, code: 'unavailable', reason: 'unavailable' }, protocol: String(SERVER_PROTOCOL) });
     const unmatched = await worker.fetch(new Request('https://s/nope', { method: 'POST', body: '{}', headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', ...PROTOCOL } }), await envFor(token, { tokenLimitThrows: true }));
     expect({ status: unmatched.status, body: await unmatched.json(), protocol: unmatched.headers.get(PROTOCOL_HEADER) }).toEqual({ status: 503, body: { error: 'unavailable' }, protocol: String(SERVER_PROTOCOL) });
   });
@@ -196,7 +196,7 @@ describe('pipeline (via the deployed entry)', () => {
     const res = await worker.fetch(post(token), await envFor(token, { writeThrows: true }));
     expect(res.status).toBe(503);
     expect(res.headers.get('retry-after')).toBe(String(RETRY_AFTER_SECONDS));
-    expect(await res.json()).toEqual({ persisted: false, reason: 'unavailable' });
+    expect(await res.json()).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
   });
 
   it('turns a post-auth body stream failure into a retryable 503 with a reason', async () => {
@@ -205,7 +205,7 @@ describe('pipeline (via the deployed entry)', () => {
     const req = new Request('https://s/events', { method: 'POST', body, headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', ...PROTOCOL }, duplex: 'half' } as any);
     const res = await worker.fetch(req, await envFor(token));
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ persisted: false, reason: 'unavailable' });
+    expect(await res.json()).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
   });
 
   it('answers 503 when the database schema version is not this build\'s, before any write and before any token decision', async () => {
@@ -248,9 +248,9 @@ describe('pipeline (via the deployed entry)', () => {
     const blob = () => blobPost(token, 'b'.repeat(64), new Uint8Array([1, 2]));
     for (const [route, request, shape] of [['events', post, 'persisted'], ['blobs', blob, 'stored']] as const) {
       const atQuota = await worker.fetch(request(token), await constraintEnv(MEMBER_TOKEN_BYTE_QUOTA - 1));
-      expect({ route, status: atQuota.status, body: await atQuota.json() }).toEqual({ route, status: 200, body: { [shape]: false, reason: 'token write quota exceeded' } });
+      expect({ route, status: atQuota.status, body: await atQuota.json() }).toEqual({ route, status: 200, body: { [shape]: false, code: 'quota', reason: 'token write quota exceeded' } });
       const under = await worker.fetch(request(token), await constraintEnv(0));
-      expect({ route, status: under.status, body: await under.json() }).toEqual({ route, status: 503, body: { [shape]: false, reason: 'unavailable' } });
+      expect({ route, status: under.status, body: await under.json() }).toEqual({ route, status: 503, body: { [shape]: false, code: 'unavailable', reason: 'unavailable' } });
     }
   });
 
@@ -267,7 +267,7 @@ describe('pipeline (via the deployed entry)', () => {
     const token = mintMemberToken();
     const res = await worker.fetch(post(token), await envFor(token, { bytesWritten: MEMBER_TOKEN_BYTE_QUOTA - 1, writeThrows: true }));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ persisted: false, reason: 'token write quota exceeded' });
+    expect(await res.json()).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
   });
 
   it('stamps security headers on 200, 401, 429, and 503', async () => {
@@ -324,14 +324,14 @@ describe('pipeline (via the deployed entry)', () => {
     const body = new ReadableStream({ pull(c) { c.enqueue(new Uint8Array([1])); c.close(); } });
     const noLength = new Request(`https://s/blobs/${key}`, { method: 'POST', body, headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', 'content-type': 'text/plain', ...PROTOCOL }, duplex: 'half' } as any);
     const res = await worker.fetch(noLength, env);
-    expect(await res.json()).toEqual({ stored: false, reason: 'content-length required' });
+    expect(await res.json()).toEqual({ stored: false, code: 'content_length', reason: 'content-length required' });
     expect(res.headers.get(PROTOCOL_HEADER)).toBe(String(SERVER_PROTOCOL));
     expect({ used: noLength.bodyUsed, locked: noLength.body?.locked }).toEqual({ used: false, locked: false });
     const big = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', 'content-type': 'text/plain', 'content-length': String(MAX_BLOB_BYTES + 1), ...PROTOCOL } });
-    expect(await (await worker.fetch(big, env)).json()).toEqual({ stored: false, reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
+    expect(await (await worker.fetch(big, env)).json()).toEqual({ stored: false, code: 'blob_cap', reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
     for (const bad of ['-1', '1.5', 'x']) {
       const req = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', 'content-type': 'text/plain', 'content-length': bad, ...PROTOCOL } });
-      expect(await (await worker.fetch(req, env)).json()).toEqual({ stored: false, reason: 'content-length required' });
+      expect(await (await worker.fetch(req, env)).json()).toEqual({ stored: false, code: 'content_length', reason: 'content-length required' });
     }
   });
 

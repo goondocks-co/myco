@@ -1,6 +1,7 @@
 import type { Env } from './env.js';
 import type { RouteContext, StreamContext } from './context.js';
 import { MAX_BLOB_BYTES } from './constants.js';
+import { handleRefresh } from './auth/refresh.js';
 import { handleBlob } from './ingest/blobs.js';
 import { handleEvents } from './ingest/events.js';
 
@@ -11,10 +12,14 @@ export type MemberHandler = (env: Env, ctx: RouteContext) => Promise<Response>;
 /** Member handlers on stream routes receive the unread request; the handler alone consumes the body. */
 export type StreamHandler = (env: Env, request: Request, ctx: StreamContext) => Promise<Response>;
 
+/** The key a member route answers under: `{<shape>: true|false, …}` on every outcome after authentication, refusals and 503s included. */
+export type Shape = 'persisted' | 'stored' | 'refreshed';
+
+/** `quotaPrecheck: false` marks a member route whose writes are not charged to the byte quota: the pipeline skips the byte pre-check and never reads a constraint failure as a quota refusal. Absent, the route is charged. */
 export type Route =
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
-  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; handler: MemberHandler }
-  | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; maxBodyBytes: number; handler: StreamHandler };
+  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted' | 'refreshed'; quotaPrecheck?: boolean; handler: MemberHandler }
+  | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; quotaPrecheck?: boolean; maxBodyBytes: number; handler: StreamHandler };
 
 async function health(): Promise<Response> {
   return Response.json({ ok: true });
@@ -22,8 +27,9 @@ async function health(): Promise<Response> {
 
 export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/health', auth: 'public', bodyMode: 'none', handler: health },
-  { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', handler: handleEvents },
-  { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
+  { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
+  { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
+  { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, handler: handleRefresh },
 ];
 
 /** A 1.4.x wire route the server does not serve; each names the event kinds (or the blob route) that carry the same capture in 2.0. A retired path is unmatched and answers 401 like any other absent path. */

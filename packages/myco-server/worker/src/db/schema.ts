@@ -1,4 +1,5 @@
 import { MEMBER_TOKEN_BYTE_QUOTA } from '../constants.js';
+import { MEMBER_TOKEN_TTL_MS } from '../auth/tokens.js';
 
 /** The project-id grammar as SQL over a column expression: one to sixty-four characters from `[A-Za-z0-9._-]`. */
 export const projectIdGrammar = (column: string): string => `${column} NOT GLOB '*[^A-Za-z0-9._-]*' AND length(${column}) BETWEEN 1 AND 64 AND ${column} NOT IN ('.', '..')`;
@@ -229,12 +230,24 @@ const V2_STATEMENTS: readonly string[] = [
      WHERE machine_id IS NULL`,
 ];
 
+/** Schema v3: token lineage on `member_tokens` — the predecessor a token succeeded, the root and start of its chain, and the instant of its first authenticated use — with an index over the root for lineage revocation and a partial unique index holding one live successor per predecessor; every existing row is its own root and its lineage started one TTL before it expires. */
+const V3_STATEMENTS: readonly string[] = [
+  `ALTER TABLE member_tokens ADD COLUMN predecessor_id TEXT`,
+  `ALTER TABLE member_tokens ADD COLUMN lineage_root TEXT`,
+  `ALTER TABLE member_tokens ADD COLUMN lineage_started_at INTEGER`,
+  `ALTER TABLE member_tokens ADD COLUMN first_used_at INTEGER`,
+  `CREATE INDEX IF NOT EXISTS idx_member_tokens_lineage ON member_tokens (lineage_root)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_tokens_live_successor ON member_tokens (predecessor_id) WHERE revoked_at IS NULL`,
+  `UPDATE member_tokens SET lineage_root = id WHERE lineage_root IS NULL`,
+  `UPDATE member_tokens SET lineage_started_at = expires_at - ${MEMBER_TOKEN_TTL_MS} WHERE lineage_started_at IS NULL`,
+];
+
 function withStamp(version: number, statements: readonly string[]): SchemaStep {
   return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
 }
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

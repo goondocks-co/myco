@@ -8,6 +8,7 @@ import { migrationFileName, readSchemaVersion, renderMigrationFile, renderMigrat
 import { applySchemaSteps } from './helpers/migrate.js';
 import { SCHEMA_STEPS, type SchemaStep } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
 import { sqliteD1 } from './helpers/d1.js';
 
 const MIGRATIONS = fileURLToPath(new URL('../../packages/myco-server/worker/migrations/', import.meta.url));
@@ -16,6 +17,7 @@ const MIGRATIONS = fileURLToPath(new URL('../../packages/myco-server/worker/migr
 const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0001_v1.sql': '999b696d37063feb2126cdd716f57e8a15c9a177c4204eae3101ff4926fdaa02',
   '0002_v2.sql': '9a8cee5f16d76d37f2997148525de27e9716b1997263a67f7f4fecc3499a3ea4',
+  '0003_v3.sql': 'ff2773c613c61ecedcc9bbb236c739c43b1811ae89e1b89c7547a7ed9f7e741b',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -68,7 +70,7 @@ describe('versioned schema steps', () => {
     }
   });
 
-  it('converges: applied to a fresh database once or twice, or on top of a v1 database, the schema is identical and the version is the build\'s', async () => {
+  it('converges: applied to a fresh database once or twice, or on top of a v1 or a v2 database, the schema is identical and the version is the build\'s', async () => {
     const once = fresh();
     await applySchemaSteps(sqliteD1(once));
     const twice = fresh();
@@ -80,13 +82,31 @@ describe('versioned schema steps', () => {
     fromV1.query(`INSERT INTO member_tokens (id, project_id, machine_id, token_hash, expires_at, revoked_at, bytes_written) VALUES ('mt_1', 'proj_1', 'm', 'h', 1, NULL, 0)`).run();
     expect(await readSchemaVersion(sqliteD1(fromV1))).toBe(1);
     expect(await applySchemaSteps(sqliteD1(fromV1))).toEqual(SCHEMA_STEPS.slice(1).map((s) => s.version));
-    for (const db of [once, twice, fromV1]) {
+    const fromV2 = fresh();
+    await applySchemaSteps(sqliteD1(fromV2), SCHEMA_STEPS.slice(0, 2));
+    fromV2.query(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'one', 0)`).run();
+    fromV2.query(`INSERT INTO member_tokens (id, project_id, machine_id, token_hash, expires_at, revoked_at, bytes_written) VALUES ('mt_v2', 'proj_1', 'm', 'h', ${MEMBER_TOKEN_TTL_MS + 5_000}, NULL, 7)`).run();
+    expect(await readSchemaVersion(sqliteD1(fromV2))).toBe(2);
+    expect(await applySchemaSteps(sqliteD1(fromV2))).toEqual(SCHEMA_STEPS.slice(2).map((s) => s.version));
+    for (const db of [once, twice, fromV1, fromV2]) {
       expect(shape(db)).toEqual(shape(once));
       expect(version(db)).toBe(String(SERVER_SCHEMA_VERSION));
     }
     expect(fromV1.query(`SELECT project_id, name FROM projects`).all()).toEqual([{ project_id: 'proj_1', name: 'one' }]);
     expect(fromV1.query(`SELECT project_id FROM member_tokens`).all()).toEqual([{ project_id: 'proj_1' }]);
     expect(await readSchemaVersion(sqliteD1(fresh()))).toBe(0);
+  });
+
+  it('backfills every pre-v3 token as the root of its own lineage, started one TTL before it expires, and leaves predecessor and first use unset', async () => {
+    const sqlite = fresh();
+    await applySchemaSteps(sqliteD1(sqlite), SCHEMA_STEPS.slice(0, 2));
+    sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'one', 0)`).run();
+    sqlite.query(`INSERT INTO member_tokens (id, project_id, machine_id, token_hash, expires_at, revoked_at, bytes_written) VALUES ('mt_a', 'proj_1', 'm', 'ha', ${MEMBER_TOKEN_TTL_MS + 1_000}, NULL, 0), ('mt_b', 'proj_1', 'm', 'hb', ${MEMBER_TOKEN_TTL_MS + 2_000}, 5, 9)`).run();
+    await applySchemaSteps(sqliteD1(sqlite));
+    expect(sqlite.query(`SELECT id, predecessor_id, lineage_root, lineage_started_at, first_used_at, bytes_written FROM member_tokens ORDER BY id`).all()).toEqual([
+      { id: 'mt_a', predecessor_id: null, lineage_root: 'mt_a', lineage_started_at: 1_000, first_used_at: null, bytes_written: 0 },
+      { id: 'mt_b', predecessor_id: null, lineage_root: 'mt_b', lineage_started_at: 2_000, first_used_at: null, bytes_written: 9 },
+    ]);
   });
 
   it('is expand-only from step 2 on: every step after 2 keeps every earlier table and column with the same type, and a table dropped by step 2 is one it creates itself or one whose rows it copied first', () => {
@@ -114,7 +134,7 @@ describe('versioned schema steps', () => {
     good.exec(renderMigrationFile(SCHEMA_STEPS[0]));
     good.query(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj-1.ok', 'one', 0)`).run();
     step(good, SCHEMA_STEPS[1]);
-    expect(version(good)).toBe(String(SERVER_SCHEMA_VERSION));
+    expect(version(good)).toBe('2');
 
     const bad = fresh();
     bad.exec(renderMigrationFile(SCHEMA_STEPS[0]));
@@ -124,7 +144,7 @@ describe('versioned schema steps', () => {
 
     bad.query(`UPDATE projects SET project_id = 'good.id' WHERE project_id = 'bad/id'`).run();
     step(bad, SCHEMA_STEPS[1]);
-    expect(version(bad)).toBe(String(SERVER_SCHEMA_VERSION));
+    expect(version(bad)).toBe('2');
     expect(bad.query(`SELECT COUNT(*) c FROM sqlite_master WHERE type='trigger'`).get()).toEqual({ c: 2 });
   });
 
@@ -146,7 +166,7 @@ describe('versioned schema steps', () => {
 
     sqlite.query(`UPDATE sessions SET machine_id = 'machine_recovered' WHERE session_id = 'sess_orphan'`).run();
     step(sqlite, SCHEMA_STEPS[1]);
-    expect(version(sqlite)).toBe(String(SERVER_SCHEMA_VERSION));
+    expect(version(sqlite)).toBe('2');
     // The backfill carried the session whose token names a machine; the repair stands on the one it could not reach.
     expect(sqlite.query(`SELECT session_id, machine_id FROM sessions ORDER BY session_id`).all())
       .toEqual([{ session_id: 'sess_ok', machine_id: 'machine_1' }, { session_id: 'sess_orphan', machine_id: 'machine_recovered' }]);

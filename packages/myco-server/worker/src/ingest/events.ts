@@ -1,26 +1,29 @@
 import type { D1Like, D1StatementLike, Env } from '../env.js';
 import type { RouteContext } from '../context.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
-import { emit, refusal, type Refusal } from '../telemetry.js';
+import { emit, refusal, type Classifier, type Refusal } from '../telemetry.js';
 import { parseEnvelope, type CaptureEnvelope } from './envelope.js';
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
 import { planKind, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { withinQuota } from './quota.js';
 
-export interface IngestResult {
-  persisted: boolean;
-  duplicate?: boolean;
-  projected?: boolean;
-  reason?: string;
+/** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
+export interface TranscriptExtra {
   transcript?: { size: number; segmentCount: number };
 }
 
-export type IngestContext = Omit<RouteContext, 'body'>;
+/** Stored (projected, or a duplicate), stored but not projected (a conflict with its stable `code`), or refused with its stable `code`: a refusal or a conflict without a `code` cannot be built. */
+export type IngestResult =
+  | ({ persisted: true; duplicate?: boolean; projected?: true } & TranscriptExtra)
+  | ({ persisted: true; projected: false; code: Classifier; reason: string } & TranscriptExtra)
+  | ({ persisted: false; code: Classifier; reason: string } & TranscriptExtra);
 
-/** A terminal refusal of the caller's own request: 200 `{persisted:false, reason}` plus one `ingest_refused` event carrying the refusal's classifier only. */
+export type IngestContext = Pick<RouteContext, 'projectId' | 'machineId' | 'tokenId' | 'bodyBytes' | 'now'>;
+
+/** A terminal refusal of the caller's own request: 200 `{persisted:false, code, reason}` plus one `ingest_refused` event carrying the refusal's classifier only. */
 export function refused(ctx: Pick<IngestContext, 'projectId' | 'tokenId'>, { reason, classifier }: Refusal): IngestResult {
   emit({ kind: 'ingest_refused', projectId: ctx.projectId, tokenId: ctx.tokenId, reason: classifier });
-  return { persisted: false, reason };
+  return { persisted: false, code: classifier, reason };
 }
 
 /** Digest of the whole envelope: session, kind, caller time, channel, producer, and the serialized payload. */
@@ -114,7 +117,7 @@ export async function ingestEvent(db: D1Like, ctx: IngestContext, body: unknown)
     if (plan.projections.length > 0 && projectionResults.every((r) => r.meta.changes === 0)) {
       const reason = plan.conflict ? plan.conflict(reads) : 'projection did not apply';
       emit({ kind: 'projection_conflict', projectId: ctx.projectId, tokenId: ctx.tokenId, eventKind: e.kind });
-      return { persisted: true, projected: false, reason, ...extra };
+      return { persisted: true, projected: false, code: 'projection_conflict', reason, ...extra };
     }
     emit({ kind: 'ingest_ok', projectId: ctx.projectId, tokenId: ctx.tokenId, eventKind: e.kind });
     return plan.projections.length > 0 ? { persisted: true, projected: true, ...extra } : { persisted: true, ...extra };
@@ -125,7 +128,7 @@ export async function ingestEvent(db: D1Like, ctx: IngestContext, body: unknown)
       return { persisted: true, duplicate: true, ...extra };
     }
     emit({ kind: 'ingest_conflict', projectId: ctx.projectId, tokenId: ctx.tokenId });
-    return { persisted: false, reason: 'event id conflict', ...extra };
+    return { persisted: false, code: 'event_id_conflict', reason: 'event id conflict', ...extra };
   }
   if (plan.heldDuplicate && plan.heldDuplicate(reads)) {
     emit({ kind: 'ingest_duplicate', projectId: ctx.projectId, tokenId: ctx.tokenId });

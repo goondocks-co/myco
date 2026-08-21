@@ -57,7 +57,11 @@ post() { curl -sS -m 25 -w ' [%{http_code}]\n' -X POST "$BASE/events" \
   -H "authorization: Bearer $1" -H 'x-myco-protocol: 1' -H 'content-type: application/json' --data "$2"; }
 blob() { curl -sS -m 25 -w ' [%{http_code}]\n' -X POST "$BASE/blobs/$2" \
   -H "authorization: Bearer $1" -H 'x-myco-protocol: 1' -H "content-type: ${4:-text/plain}" --data-binary "$3"; }
+refresh() { curl -sS -m 25 -w ' [%{http_code}]\n' -X POST "$BASE/tokens/refresh" \
+  -H "authorization: Bearer $1" -H 'x-myco-protocol: 1' -H 'content-type: application/json' --data "${2:-{\}}"; }
 ```
+
+`T2`–`T7` move the token's `expires_at` into the refresh window with `sql` (the window is the last quarter of a 7-day TTL; waiting is not a procedure) and keep each successor's raw token from the `refresh` answer in a mode-600 file next to the minted ones (`S1`, `S2` below).
 
 `D1` is the one row whose request curl cannot build from its body: it declares a length it does not send. Override the header and hand curl a body that ends early, so the edge sees a truncated request:
 
@@ -85,46 +89,69 @@ sql "UPDATE member_tokens SET bytes_written = <PREVIOUS> WHERE id = '<TOKEN_ID_1
 | A2 | `prompt` | `{persisted:true, projected:true}` |
 | A3 | `response` for that prompt | `{persisted:true, projected:true}`; `prompt_batches.ended_at` settles |
 | A4 | A2 replayed byte for byte | `{persisted:true, duplicate:true}` |
-| A5 | A2's event id with another `createdAt` | `{persisted:false, reason:'event id conflict'}` |
-| A6 | A2's envelope replayed by machine_2 (same project) | `{persisted:false, reason:'machine identity mismatch'}` |
-| A7 | `createdAt` far ahead of the server clock — a fixed far-future constant (`4102444800000`, the year 2100), so a replay never drifts into the past | `{persisted:false, reason:'createdAt is more than 300000 ms ahead of the server clock'}` |
-| A8 | an unknown kind | `{persisted:false, reason:'unknown kind made.up'}` |
-| A9 | an unknown payload field | `{persisted:false, reason:'unknown field payload.nope'}` |
+| A5 | A2's event id with another `createdAt` | `{persisted:false, code:'event_id_conflict', reason:'event id conflict'}` |
+| A6 | A2's envelope replayed by machine_2 (same project) | `{persisted:false, code:'identity_mismatch', reason:'machine identity mismatch'}` |
+| A7 | `createdAt` far ahead of the server clock — a fixed far-future constant (`4102444800000`, the year 2100), so a replay never drifts into the past | `{persisted:false, code:'clock_skew', reason:'createdAt is more than 300000 ms ahead of the server clock'}` |
+| A8 | an unknown kind | `{persisted:false, code:'unknown_kind', reason:'unknown kind made.up'}` |
+| A9 | an unknown payload field | `{persisted:false, code:'unknown_field', reason:'unknown field payload.nope'}` |
 | B1 | blob upload | `{stored:true, duplicate:false, …, mediaType:'text/plain; charset=utf-8'}` |
 | B2 | the same key presented as `image/png` | `{stored:true, duplicate:true, …, mediaType:'text/plain; charset=utf-8'}` — the row's type |
-| B3 | bytes that do not match the key | `{stored:false, reason:'digest mismatch'}` |
-| B4 | `content-length: 0` | `{stored:false, reason:'empty body'}` |
-| B5 | an unparseable `content-type` | `{stored:false, reason:'invalid content-type'}` |
+| B3 | bytes that do not match the key | `{stored:false, code:'digest_mismatch', reason:'digest mismatch'}` |
+| B4 | `content-length: 0` | `{stored:false, code:'empty_body', reason:'empty body'}` |
+| B5 | an unparseable `content-type` | `{stored:false, code:'media_type', reason:'invalid content-type'}` |
 | B6 | an uppercase key in the path | `401` — the key grammar is lowercase hex |
 | C1 | `transcript.segment` at offset 0 | `{persisted:true, projected:true, transcript:{size:10, segmentCount:1}}` |
 | C2 | C1 replayed under its own event id | `{persisted:true, duplicate:true, transcript:{size:10, segmentCount:1}}` — unchanged |
-| C3 | a segment past the held size | `{persisted:false, reason:'transcript offset gap', transcript:{…}}` |
-| C4 | a segment from machine_2 (same project) | `{persisted:false, reason:'machine identity mismatch'}` |
+| C3 | a segment past the held size | `{persisted:false, code:'offset_gap', reason:'transcript offset gap', transcript:{…}}` |
+| C4 | a segment from machine_2 (same project) | `{persisted:false, code:'identity_mismatch', reason:'machine identity mismatch'}` |
 | C5 | `x-myco-protocol: 99` | `409 {error:'protocol_version_unsupported', …}` |
 | C6 | no protocol header | `409 {error:'protocol_version_unsupported', …}` |
 | C7 | `GET /health` | no `x-myco-protocol` header |
 | D1 | `content-length: 26214401` with 100 bytes sent, then closed | `400` from the edge; the Worker is never invoked |
 | D2 | `GET /health` after D1 | `{ok:true}` |
-| D3 | an honest 25 MiB + 1 body (declared == sent) | `{stored:false, reason:'blob exceeds 26214400 bytes'}` |
+| D3 | an honest 25 MiB + 1 body (declared == sent) | `{stored:false, code:'blob_cap', reason:'blob exceeds 26214400 bytes'}` |
 | D4 | a `409` (protocol) with 25 MiB in flight | `409`, read cleanly by the client |
 | D5 | `GET /health` after all of D | `{ok:true}` |
 | D6 | a normal store after all of D | `{stored:true, duplicate:false, …}` |
-| E1 | a blob upload by a token whose quota is spent on event bodies | `{stored:false, reason:'token write quota exceeded'}`; no `blobs` row appears and `bytes_written` does not move |
-| E2 | `session.start` with `startedAt` at `4102444800000` | `{persisted:false, reason:'startedAt is more than 300000 ms ahead of the server clock'}` |
-| E3 | `session.end` with `endedAt` recomputed at run time as `now + 10*60*1000` (never the recorded absolute value, which sits in the past on replay) | `{persisted:false, reason:'endedAt is more than 300000 ms ahead of the server clock'}` |
+| E1 | a blob upload by a token whose quota is spent on event bodies | `{stored:false, code:'quota', reason:'token write quota exceeded'}`; no `blobs` row appears and `bytes_written` does not move |
+| E2 | `session.start` with `startedAt` at `4102444800000` | `{persisted:false, code:'clock_skew', reason:'startedAt is more than 300000 ms ahead of the server clock'}` |
+| E3 | `session.end` with `endedAt` recomputed at run time as `now + 10*60*1000` (never the recorded absolute value, which sits in the past on replay) | `{persisted:false, code:'clock_skew', reason:'endedAt is more than 300000 ms ahead of the server clock'}` |
 | E4 | `session.start` with `startedAt: 0` | `{persisted:true, projected:true}`; `sessions.started_at = 0` — history replays, only the future is bounded |
 | E5 | an expired `blob_reservations` row seeded for the token, then any upload | the expired row is gone and the live ones remain |
-| X1 | a token whose `member_tokens.machine_id` is NULL, on `/blobs` and on `/events` | `{stored:false, reason:'token has no machine identity'}` and `{persisted:false, reason:'token has no machine identity'}`; no blob, event, or session row |
+| X1 | a token whose `member_tokens.machine_id` is NULL, on `/blobs` and on `/events` | `{stored:false, code:'no_machine_identity', reason:'token has no machine identity'}` and `{persisted:false, code:'no_machine_identity', reason:'token has no machine identity'}`; no blob, event, or session row |
 | X2 | three `prompt` events on one `promptId` (e1 < e2 < e3 by `createdAt`; e2 carries `threadLabel` only, e3 `promptKind` only), delivered e1,e2,e3 to one prompt and e3,e1,e2 to another | both rows column-identical but for `prompt_id`/`event_id`/`received_at`: `prompt_kind` = e3's, `thread_label` NULL (e3 carried none), `created_at` = e1's, `updated_at` = e3's — the ranked winner supplies every merged column |
-| X3 | a live `blob_reservations` row seeded for the token at `quota − bytes_written − 5`, then a 14-byte upload; the row deleted, the same upload again | first `{stored:false, reason:'token write quota exceeded'}` with `bytes_written` unmoved and the live row untouched; then `{stored:true, …}` and `bytes_written` + 14 |
+| X3 | a live `blob_reservations` row seeded for the token at `quota − bytes_written − 5`, then a 14-byte upload; the row deleted, the same upload again | first `{stored:false, code:'quota', reason:'token write quota exceeded'}` with `bytes_written` unmoved and the live row untouched; then `{stored:true, …}` and `bytes_written` + 14 |
 | R1 | `/events` with a revoked token | `401` |
 | R2 | `/blobs` with a revoked token | `401` |
-| M1 | `migrations apply` on a fresh database | `0001 ✅ 0002 ✅`, `schema_meta.version = 2` |
+| T1 | `refresh "$T1"` on a token minted today | `{refreshed:false, code:'refresh_too_early', reason:'refresh window not yet open', refreshAfter:<expires_at − 151200000>}` |
+| T2 | `expires_at` of `<TOKEN_ID_1>` moved to now + 1 h (`sql "UPDATE member_tokens SET expires_at = <now + 3600000> WHERE id = '<TOKEN_ID_1>'"`), then `refresh "$T1"` | `{refreshed:true, token:<S1>, tokenId:<SID1>, expiresAt:<now + 604800000>, refreshAfter:<expiresAt − 151200000>}`; a new row with `predecessor_id = <TOKEN_ID_1>`, `lineage_root = <TOKEN_ID_1>`, `first_used_at NULL`, `bytes_written 0`; `post "$T1"` still `{persisted:true, …}` |
+| T3 | `refresh "$T1"` again | a second successor `<SID2>`; `<SID1>` has `revoked_at` set; `SELECT COUNT(*) FROM member_tokens WHERE predecessor_id = '<TOKEN_ID_1>' AND revoked_at IS NULL` = 1 |
+| T4 | first `post "$S2"` (any `prompt`) | `{persisted:true, …}`; `<SID2>` has `first_used_at` set and `bytes_written` = `<TOKEN_ID_1>`'s before the request plus this body; `<TOKEN_ID_1>` has `revoked_at` set; `post "$T1"` → `401` |
+| T5 | `sql "UPDATE member_tokens SET expires_at = <now + 3600000>, lineage_started_at = <now + 3600000> - 7776000000 WHERE id = '<SID2>'"` (one statement: the token sits at its lineage ceiling inside the window), then `refresh "$S2"` | `{refreshed:false, code:'lineage_expired', reason:'token lineage expired'}`; no new row |
+| T6 | `refresh "$S2"` with body `not json` | `{refreshed:false, code:'parse', reason:'body must be JSON'}` |
+| T7 | `sql "$(npm run -s token:revoke -- <SID2> --lineage)"`, then `post "$S2"` and `post "$T2"` with a `session.start` whose `sessionId` is new (machine_2's own session) | reports 1 row changed (`<SID2>` was the chain's only live token); `post "$S2"` → `401`; `post "$T2"` (another lineage) `{persisted:true, projected:true}` |
+| M1 | `migrations apply` on a fresh database | `0001 ✅ 0002 ✅ 0003 ✅`, `schema_meta.version = 3` |
 | M2 | `migrations apply` on a v1 database holding `bad/id` | `CHECK constraint failed: ok = 1`; `d1_migrations` keeps only `0001`; version stays `1` |
-| M3 | the row repaired, `migrations apply` again | `0002 ✅`, version `2`, two triggers |
+| M3 | the row repaired, `migrations apply` again | `0002 ✅ 0003 ✅`, version `3`, two triggers, `member_tokens` carries `lineage_root = id` on every row |
 | M4 | `migrations apply` on a v1 database holding a session whose token has no `machine_id` | `CHECK constraint failed: ok = 1`; version stays `1`; `events` has no `producer_adapter` column (the guard runs ahead of every `ADD COLUMN`); repaired per BREAK-GLASS, `migrations apply` again completes |
 
+## Last observed output — in-process (T1–T7)
+
+Run on 2026-08-21 through the in-process worker (`tests/myco-server/helpers/d1.ts` over the migrated schema, `index.ts default.fetch`, real clock), with the `expires_at`/`lineage_started_at` moves of the rows above applied by SQL; raw tokens redacted, ids as issued. No edge output yet.
+
+```
+T1 {"refreshed":false,"code":"refresh_too_early","reason":"refresh window not yet open","refreshAfter":1787736226465} [200]
+T2 {"refreshed":true,"token":"<S1>","tokenId":"mt_yTZw1yNg2Srz2hrV","expiresAt":1787887426468,"refreshAfter":1787736226468} [200]; row {"id":"mt_yTZw1yNg2Srz2hrV","predecessor_id":"mt_KHkF-P67KgqsruOB","lineage_root":"mt_KHkF-P67KgqsruOB","first_used_at":null,"revoked_at":null,"bytes_written":0}; post T1 {"persisted":true,"projected":true} [200]
+T3 {"refreshed":true,"token":"<S2>","tokenId":"mt_ZKoIVrjsSOpfH5FE","expiresAt":1787887426470,"refreshAfter":1787736226470} [200]; S1 row {…,"first_used_at":null,"revoked_at":1787282626470,"bytes_written":0}; live successors [{"c":1}]
+T4 post S2 {"persisted":true,"projected":true} [200]; T1 before {…,"revoked_at":null,"bytes_written":269}; T1 after {…,"revoked_at":1787282626470,"bytes_written":269}; S2 {…,"first_used_at":1787282626470,"revoked_at":null,"bytes_written":538}; post T1 {"error":"unauthorized"} [401]
+T5 {"refreshed":false,"code":"lineage_expired","reason":"token lineage expired"} [200]; rows [{"c":4}]
+T6 {"refreshed":false,"code":"parse","reason":"body must be JSON"} [200]
+T7 revoked {"revoked":1}; post S2 {"error":"unauthorized"} [401]; post T2 (own session) {"persisted":true,"projected":true} [200]
+```
+
 ## Last observed output — edge
+
+Recorded before refusal bodies carried `code` and before `POST /tokens/refresh` existed; the `## Rows` table above is the current contract, and `T1`–`T7` have no edge output yet.
 
 Run on 2026-08-18 against `myco-server-smoke7` (worker `myco-server-smoke7`, its own D1 `myco-server-smoke7`, the shared `myco-server-blobs` bucket; worker, database and every object this run stored were deleted afterwards — teardown proof at the end of this section). Deployed version `f1ea6451-0931-408d-8be1-829c3c14f89b`; migrations `0001 ✅ 0002 ✅` applied remotely before deploy. Tokens: `machine_1`/`machine_2` in `proj_1` (`mt_MSugzSw07q-Y1WmQ`, `mt_J-23zh2xeVD_k69w`), `machine_9` in `proj_2` (`mt_v_sLCLQrS3TrhjA6`); raw tokens redacted as `<T1>`/`<T2>`/`<T9>`. Every member request carries `authorization: Bearer <token>`, `x-myco-protocol: 1`, and `content-type: application/json` (events), sent with the `post`/`blob` helpers of `## Requests`; **every request body is recorded verbatim under its row**, so each row reproduces from this file alone — the two clock-relative rows excepted: `A7`'s `createdAt` and `E3`'s `endedAt` are recomputed against the server clock at run time (the values recorded here were the wall-clock values on 2026-08-18 and now sit in the past), per the recipe in their `## Rows` entries. Result: PASS, 0 failed rows, no edge-error retries.
 
