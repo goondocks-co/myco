@@ -17,13 +17,16 @@ export function heldBytes(ctx: QuotaContext, except: string | null = null): Frag
   };
 }
 
+/** A token that is still live, as SQL over one bound id: the one predicate the quota admission, the successor insert, and the refresh batch place on the token they act for. */
+export const TOKEN_LIVE = 'EXISTS (SELECT 1 FROM member_tokens WHERE id = ? AND revoked_at IS NULL)';
+
 /** The one admission for the one counter: the token is live, and its held volume plus `bytes` stays inside the quota. Every admission — the event raw insert, the blob reservation, and the reservation reconcile — reads this fragment and no other, so a token revoked after a request authenticated admits nothing more: its raw insert writes no row and its upload fails at reconcile. A charge that follows an admission lands on the admitted row whether or not it is still live by then; the successor's carry covers that row's held volume. */
 export function withinQuota(ctx: QuotaContext, bytes: number, except: string | null = null): Fragment {
   const held = heldBytes(ctx, except);
   return {
     sql: `${held.sql}
           + ? <= ${MEMBER_TOKEN_BYTE_QUOTA}
-          AND EXISTS (SELECT 1 FROM member_tokens WHERE id = ? AND revoked_at IS NULL)`,
+          AND ${TOKEN_LIVE}`,
     params: [...held.params, bytes, ctx.tokenId],
   };
 }

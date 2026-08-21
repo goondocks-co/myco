@@ -447,6 +447,16 @@ describe('gates', () => {
     }
   });
 
+  it('inserts into member_tokens from exactly one statement under src, and that statement lands only while the presented token is live', () => {
+    const inserting = files(SRC).filter((f) => /INTO member_tokens\b/.test(readFileSync(f, 'utf8')));
+    expect(inserting).toEqual([join(SRC, 'auth', 'tokens.ts')]);
+    const tokens = readFileSync(join(SRC, 'auth', 'tokens.ts'), 'utf8');
+    expect(tokens.match(/INTO member_tokens\b/g)).toHaveLength(1);
+    expect(tokens).toMatch(/INSERT INTO member_tokens \([^)]*\)\s+SELECT \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL\s+WHERE \? IS NULL OR \$\{TOKEN_LIVE\}`/);
+    expect(tokens).toMatch(/UPDATE member_tokens SET revoked_at = \? WHERE predecessor_id = \? AND revoked_at IS NULL AND first_used_at IS NULL AND \$\{TOKEN_LIVE\}`/);
+    expect(readFileSync(join(SRC, 'ingest', 'quota.ts'), 'utf8')).toMatch(/export const TOKEN_LIVE = 'EXISTS \(SELECT 1 FROM member_tokens WHERE id = \? AND revoked_at IS NULL\)';/);
+  });
+
   it('emits only fixed classifiers as telemetry reasons', () => {
     // `reason?: Classifier` on the event type is the proof; this holds the type in place and reads each call whole.
     // The argument is taken to its matching brace, never to the first one, so a nested object cannot hide the tail

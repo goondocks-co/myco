@@ -244,6 +244,25 @@ describe('token refresh', () => {
     expect((await r.post(r.root.token, 1)).status).toBe(401);
   });
 
+  it('changes nothing when a single-token revoke of the presented token lands between a refresh\'s authentication and its batch: 503, its banked unused successor stays live and keeps working, and the presented token answers 401 next', async () => {
+    let hook: ((sqlite: Database) => void) | null = null;
+    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('UPDATE member_tokens SET revoked_at = ? WHERE predecessor_id = ?')) { const h = hook; hook = null; h(sqlite); } } });
+    const s1 = await successorOf(r, r.root.token, r.root.expiresAt);
+    r.clock.now += 1;
+    const revokedAt = r.clock.now;
+    hook = (sqlite) => { sqlite.query(`UPDATE member_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`).run(revokedAt, r.root.tokenId); };
+    const res = await r.refresh(r.root.token);
+    expect(hook).toBeNull();
+    expect({ status: res.status, body: await json(res) }).toEqual({ status: 503, body: { refreshed: false, code: 'unavailable', reason: 'unavailable' } });
+    expect(count(r.e.sqlite, 'member_tokens')).toBe(2);
+    expect(r.row(s1.tokenId)).toMatchObject({ revoked_at: null, first_used_at: null });
+    expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: revokedAt });
+    expect((await r.post(r.root.token, 1)).status).toBe(401);
+    r.clock.now += 1;
+    expect((await json(await r.post(s1.token, 2))).persisted).toBe(true);
+    expect(r.row(s1.tokenId)).toMatchObject({ revoked_at: null, first_used_at: r.clock.now });
+  });
+
   it('refuses a predecessor\'s upload whose reservation is taken after activation: the reservation insert admits nothing for a revoked token, no row and no put', async () => {
     let hook: ((sqlite: Database) => void) | null = null;
     const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('INSERT INTO blob_reservations')) { const h = hook; hook = null; h(sqlite); } } });
