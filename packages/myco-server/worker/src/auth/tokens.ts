@@ -52,6 +52,9 @@ export type RefreshResult =
 export const REFRESH_TOO_EARLY = 'refresh window not yet open';
 export const LINEAGE_EXPIRED = 'token lineage expired';
 
+/** The instant a token's refresh window opens: `MEMBER_TOKEN_REFRESH_WINDOW_MS` before it expires. Every `refreshAfter` on the wire is this instant for some token. */
+export const windowOpensAt = (expiresAt: number): number => expiresAt - MEMBER_TOKEN_REFRESH_WINDOW_MS;
+
 interface AuthRow {
   schema_version: string;
   id: string | null;
@@ -125,8 +128,8 @@ export async function revokeMemberLineage(db: D1Like, tokenId: string, nowMs: nu
 
 /** The window opens at `expires_at − MEMBER_TOKEN_REFRESH_WINDOW_MS`; earlier, the answer is `refresh_too_early` with the instant it opens. A token that already expires at its lineage ceiling answers `lineage_expired`: no successor could outlive it. Past both checks, one batch revokes the live, never-used successor this token may already have and inserts the new one — expiring one TTL from now or at the ceiling, whichever is sooner — and the answer carries the successor's own window start as `refreshAfter`. The presented token stays live; the successor's first authenticated use revokes it. */
 export async function refreshMemberToken(db: D1Like, subject: RefreshSubject, nowMs: number): Promise<RefreshResult> {
-  const windowOpensAt = subject.expiresAt - MEMBER_TOKEN_REFRESH_WINDOW_MS;
-  if (nowMs < windowOpensAt) return { refreshed: false, code: 'refresh_too_early', reason: REFRESH_TOO_EARLY, refreshAfter: windowOpensAt };
+  const opensAt = windowOpensAt(subject.expiresAt);
+  if (nowMs < opensAt) return { refreshed: false, code: 'refresh_too_early', reason: REFRESH_TOO_EARLY, refreshAfter: opensAt };
   if (subject.lineageStartedAt + MEMBER_TOKEN_MAX_LINEAGE_MS <= subject.expiresAt) return { refreshed: false, code: 'lineage_expired', reason: LINEAGE_EXPIRED };
   const successor = await mintInsert(db, { projectId: subject.projectId, machineId: subject.machineId }, nowMs,
     { predecessorId: subject.tokenId, lineageRoot: subject.lineageRoot, lineageStartedAt: subject.lineageStartedAt });
@@ -134,14 +137,14 @@ export async function refreshMemberToken(db: D1Like, subject: RefreshSubject, no
     db.prepare(`UPDATE member_tokens SET revoked_at = ? WHERE predecessor_id = ? AND revoked_at IS NULL AND first_used_at IS NULL`).bind(nowMs, subject.tokenId),
     successor.statement,
   ]);
-  return { refreshed: true, ...successor.issued, refreshAfter: successor.issued.expiresAt - MEMBER_TOKEN_REFRESH_WINDOW_MS };
+  return { refreshed: true, ...successor.issued, refreshAfter: windowOpensAt(successor.issued.expiresAt) };
 }
 
-/** A successor's first authenticated use, as one batch: the successor takes over what its predecessor holds against the quota (`heldBytes`: the charged counter plus live blob reservations) and records the instant; the predecessor is revoked. Every statement guards itself, so a repeat changes nothing. */
+/** A successor's first authenticated use, as one batch: the successor takes over what its predecessor holds against the quota (`heldBytes`: the charged counter plus live blob reservations; nothing when the predecessor row is gone) and records the instant; the predecessor is revoked. Every statement guards itself, so a repeat changes nothing. */
 export async function activateSuccessor(db: D1Like, auth: Pick<MemberAuth, 'projectId' | 'tokenId'> & { predecessorId: string }, nowMs: number): Promise<void> {
   const held = heldBytes({ projectId: auth.projectId, tokenId: auth.predecessorId, now: nowMs });
   await db.batch([
-    db.prepare(`UPDATE member_tokens SET bytes_written = ${held.sql}, first_used_at = ? WHERE id = ? AND first_used_at IS NULL`).bind(...held.params, nowMs, auth.tokenId),
+    db.prepare(`UPDATE member_tokens SET bytes_written = COALESCE(${held.sql}, 0), first_used_at = ? WHERE id = ? AND first_used_at IS NULL`).bind(...held.params, nowMs, auth.tokenId),
     db.prepare(`UPDATE member_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`).bind(nowMs, auth.predecessorId),
   ]);
 }

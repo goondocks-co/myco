@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import type { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare.js';
@@ -7,15 +8,16 @@ import {
   issueMemberToken, revokeMemberLineage, revokeMemberToken,
 } from '@myco-server-worker/auth/tokens.js';
 import { BLOB_RESERVATION_TTL_MS, MEMBER_TOKEN_BYTE_QUOTA, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
-import { bytesWritten, count, envelope, memberHeaders, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { sha256HexOf } from '@myco-server-worker/hash.js';
+import { blobPost, bytesWritten, count, envelope, memberHeaders, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
 const T0 = 1_700_000_000_000;
 const WINDOW_OPENS = T0 + MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS;
 
 /** A server over a clock the test moves, with a member of machine_1 minted at T0. */
-async function rig() {
-  const e = sqliteEnv();
+async function rig(opts: Parameters<typeof sqliteEnv>[0] = {}) {
+  const e = sqliteEnv(opts);
   const clock = { now: T0 };
   const server = createServer({ now: () => clock.now, sourceOf: cloudflareSourceOf });
   const root = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_1' }, T0);
@@ -160,6 +162,80 @@ describe('token refresh', () => {
     expect((await r.post(successor.token, 1)).status).toBe(429);
     expect(r.row(successor.tokenId)).toMatchObject({ first_used_at: r.clock.now });
     expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: r.clock.now });
+  });
+
+  it('carries nothing and still activates when the predecessor row is gone', async () => {
+    const r = await rig();
+    expect((await json(await r.post(r.root.token, 1))).persisted).toBe(true);
+    const successor = await successorOf(r, r.root.token, r.root.expiresAt);
+    r.e.sqlite.query(`DELETE FROM member_tokens WHERE id = ?`).run(r.root.tokenId);
+    r.clock.now += 1;
+    expect((await json(await r.post(successor.token, 2))).persisted).toBe(true);
+    const own = bytesWritten(r.e.sqlite, successor.tokenId);
+    expect(own).toBeGreaterThan(0);
+    expect(r.row(successor.tokenId)).toMatchObject({ first_used_at: r.clock.now, revoked_at: null });
+    expect((await json(await r.post(successor.token, 3))).persisted).toBe(true);
+    expect(bytesWritten(r.e.sqlite, successor.tokenId)).toBe(own * 2);
+  });
+
+  it('refuses a predecessor\'s stalled upload that completes after activation: the reconcile admits nothing for a revoked token, the object it put is deleted, no row lands and no counter moves', async () => {
+    const r = await rig();
+    const payload = new Uint8Array(4096).fill(7);
+    const key = await sha256HexOf(payload);
+    let release!: () => void;
+    const gate = new Promise<void>((res) => { release = res; });
+    const body = new ReadableStream<Uint8Array>({ async pull(c) { await gate; c.enqueue(payload); c.close(); } });
+    r.clock.now = WINDOW_OPENS;
+    const inflight = r.fetch(new Request(`https://s/blobs/${key}`, { method: 'POST', headers: memberHeaders(r.root.token, { 'content-type': 'text/plain', 'content-length': String(payload.byteLength) }), body, duplex: 'half' } as any));
+    await new Promise((res) => setTimeout(res, 10));
+    expect(count(r.e.sqlite, 'blob_reservations')).toBe(1);
+    const successor = await successorOf(r, r.root.token, r.root.expiresAt);
+    r.clock.now += BLOB_RESERVATION_TTL_MS + 1;
+    const firstUse = r.clock.now;
+    expect((await json(await r.post(successor.token, 1))).persisted).toBe(true);
+    const carried = bytesWritten(r.e.sqlite, successor.tokenId);
+    expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: firstUse, bytes_written: 0 });
+    release();
+    expect(await json(await inflight)).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
+    expect(bytesWritten(r.e.sqlite, r.root.tokenId)).toBe(0);
+    expect(bytesWritten(r.e.sqlite, successor.tokenId)).toBe(carried);
+    expect(count(r.e.sqlite, 'blobs')).toBe(0);
+    expect(count(r.e.sqlite, 'blob_reservations')).toBe(0);
+    expect(r.e.bucket.deletes).toEqual([`proj_1/${key}`]);
+    expect(r.e.bucket.objects.size).toBe(0);
+    r.clock.now += 1;
+    expect((await json(await r.fetch(blobPost(successor.token, key, payload)))).stored).toBe(true);
+  });
+
+  it('refuses a predecessor\'s event that authenticated before activation and wrote after it: the raw insert admits nothing for a revoked token', async () => {
+    let hook: ((sqlite: Database) => void) | null = null;
+    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('INSERT INTO events')) { const h = hook; hook = null; h(sqlite); } } });
+    const successor = await successorOf(r, r.root.token, r.root.expiresAt);
+    const activation = r.clock.now + 1;
+    hook = (sqlite) => {
+      sqlite.query(`UPDATE member_tokens SET bytes_written = (SELECT bytes_written FROM member_tokens WHERE id = ?), first_used_at = ? WHERE id = ?`).run(r.root.tokenId, activation, successor.tokenId);
+      sqlite.query(`UPDATE member_tokens SET revoked_at = ? WHERE id = ?`).run(activation, r.root.tokenId);
+    };
+    expect(await json(await r.post(r.root.token, 1))).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
+    expect(hook).toBeNull();
+    expect(count(r.e.sqlite, 'events')).toBe(0);
+    expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: activation, bytes_written: 0 });
+    expect(bytesWritten(r.e.sqlite, successor.tokenId)).toBe(0);
+  });
+
+  it('never reads a constraint failure as a quota refusal on the exempt refresh route: 503 unavailable, while /events at quota answers quota', async () => {
+    const r = await rig({ staleBytesWritten: 0 });
+    r.e.sqlite.query(`UPDATE member_tokens SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, r.root.tokenId);
+    r.e.env.MYCO_DB = {
+      ...r.e.db,
+      prepare: (sql: string) => (sql.includes('SELECT bytes_written FROM member_tokens') ? { bind: () => ({ first: async () => ({ bytes_written: MEMBER_TOKEN_BYTE_QUOTA }) }) } : r.e.db.prepare(sql)),
+      batch: async () => { throw new Error('UNIQUE constraint failed: member_tokens.predecessor_id'); },
+    };
+    r.clock.now = WINDOW_OPENS;
+    const res = await r.refresh(r.root.token);
+    expect({ status: res.status, body: await json(res) }).toEqual({ status: 503, body: { refreshed: false, code: 'unavailable', reason: 'unavailable' } });
+    const events = await r.post(r.root.token, 1);
+    expect({ status: events.status, body: await json(events) }).toEqual({ status: 200, body: { persisted: false, code: 'quota', reason: 'token write quota exceeded' } });
   });
 
   it('revokes a whole lineage by any id in the chain, refusing every token of it afterwards and nothing outside it', async () => {

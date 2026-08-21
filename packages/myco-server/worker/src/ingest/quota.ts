@@ -17,12 +17,13 @@ export function heldBytes(ctx: QuotaContext, except: string | null = null): Frag
   };
 }
 
-/** The one admission for the one counter: the token's held volume plus `bytes` stays inside the quota. Every writer of the counter — the event raw insert, the blob reservation, and the reservation reconcile — admits through this fragment and no other. */
+/** The one admission for the one counter: the token is live, and its held volume plus `bytes` stays inside the quota. Every writer of the counter — the event raw insert, the blob reservation, and the reservation reconcile — admits through this fragment and no other, so a token revoked after a request authenticated charges nothing: its raw insert writes no row and its upload fails at reconcile. */
 export function withinQuota(ctx: QuotaContext, bytes: number, except: string | null = null): Fragment {
   const held = heldBytes(ctx, except);
   return {
     sql: `${held.sql}
-          + ? <= ${MEMBER_TOKEN_BYTE_QUOTA}`,
-    params: [...held.params, bytes],
+          + ? <= ${MEMBER_TOKEN_BYTE_QUOTA}
+          AND EXISTS (SELECT 1 FROM member_tokens WHERE id = ? AND revoked_at IS NULL)`,
+    params: [...held.params, bytes, ctx.tokenId],
   };
 }
