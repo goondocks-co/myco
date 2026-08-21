@@ -30,11 +30,16 @@ export function classifyBlobStore(err: unknown): BlobStoreFailure {
   return 'other';
 }
 
-/** The fixed reasons telemetry may carry; a caller's text never becomes one. */
-export type Classifier =
-  | 'refused' | 'parse' | 'quota' | 'body_cap' | 'blob_cap' | 'content_length' | 'media_type' | 'digest_mismatch' | 'empty_body'
-  | 'blob_absent' | 'offset_gap' | 'offset_overlap' | 'identity_mismatch' | 'no_machine_identity' | 'blob_length_mismatch'
-  | 'unknown_kind' | 'unknown_field' | 'id_grammar' | 'clock_skew';
+/** The fixed reasons telemetry may carry, and the `code` every terminal refusal answers with beside its `reason`; a caller's text never becomes one. */
+export const CLASSIFIERS = [
+  'refused', 'parse', 'quota', 'body_cap', 'blob_cap', 'content_length', 'media_type', 'digest_mismatch', 'empty_body',
+  'blob_absent', 'offset_gap', 'offset_overlap', 'identity_mismatch', 'no_machine_identity', 'blob_length_mismatch',
+  'unknown_kind', 'unknown_field', 'id_grammar', 'clock_skew', 'event_id_conflict', 'projection_conflict',
+] as const;
+export type Classifier = (typeof CLASSIFIERS)[number];
+
+/** The `code` and `reason` of a server-side failure: answered 503 with retry-after and retried, never a refusal. */
+export const UNAVAILABLE = 'unavailable';
 
 /** A terminal refusal of the caller's own request: the text the caller reads, and the classifier telemetry reports for it. A refusal is made with its classifier where it is decided; nothing re-derives one from its text. */
 export interface Refusal {

@@ -5,7 +5,7 @@ import { HSTS_MAX_AGE_SECONDS, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOC
 import { sha256Hex } from './hash.js';
 import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
 import { QUOTA_REASON } from './ingest/events.js';
-import { classify, emit, SchemaMismatchError, type Classifier } from './telemetry.js';
+import { classify, emit, SchemaMismatchError, UNAVAILABLE, type Classifier } from './telemetry.js';
 
 export interface ServerDeps {
   now: () => number;
@@ -33,23 +33,23 @@ function withProtocol(res: Response): Response {
 
 const RETRY_AFTER = { 'retry-after': String(RETRY_AFTER_SECONDS) };
 const unauthorized = () => Response.json({ error: 'unauthorized' }, { status: 401, headers: { 'www-authenticate': 'Bearer realm="myco"' } });
-const unavailable = () => Response.json({ error: 'unavailable' }, { status: 503, headers: RETRY_AFTER });
+const unavailable = () => Response.json({ error: UNAVAILABLE }, { status: 503, headers: RETRY_AFTER });
 type MemberRoute = { bodyMode: 'json' | 'stream' };
 type Shape = 'persisted' | 'stored';
 /** The refusal shape of a member route: `persisted` on json routes, `stored` on stream routes. */
 const shapeOf = (route: MemberRoute): Shape => (route.bodyMode === 'stream' ? 'stored' : 'persisted');
 /** A server-side failure in the route's refusal shape. Only an authenticated member sees it; before authentication every failure answers the same bare error, so the shape discloses nothing about the route table. */
-const unavailableFor = (route: MemberRoute): Response => Response.json({ [shapeOf(route)]: false, reason: 'unavailable' }, { status: 503, headers: RETRY_AFTER });
+const unavailableFor = (route: MemberRoute): Response => Response.json({ [shapeOf(route)]: false, code: UNAVAILABLE, reason: UNAVAILABLE }, { status: 503, headers: RETRY_AFTER });
 const limited = () => Response.json({ error: 'rate limited' }, { status: 429, headers: RETRY_AFTER });
 const unsupportedProtocol = () =>
   Response.json({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL }, { status: 409 });
 export const NO_MACHINE_IDENTITY = 'token has no machine identity';
 const PROTOCOL_VALUE = /^[0-9]+$/;
 
-/** A terminal refusal of the caller's own request: 200, never retried, in the route's refusal shape (`persisted` on json routes, `stored` on stream routes). The telemetry reason is a fixed classifier. */
+/** A terminal refusal of the caller's own request: 200, never retried, in the route's refusal shape (`persisted` on json routes, `stored` on stream routes), carrying the classifier as its `code` beside the `reason`; telemetry carries the classifier only. */
 function refuse(auth: MemberAuth, shape: Shape, reason: string, classifier: Classifier): Response {
   emit({ kind: shape === 'stored' ? 'blob_refused' : 'ingest_refused', projectId: auth.projectId, tokenId: auth.tokenId, reason: classifier });
-  return Response.json({ [shape]: false, reason });
+  return Response.json({ [shape]: false, code: classifier, reason });
 }
 
 /** The presented credential, or null unless it has the minted token shape. The scheme name is case-insensitive. */

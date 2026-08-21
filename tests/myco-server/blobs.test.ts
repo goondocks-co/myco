@@ -59,7 +59,7 @@ describe('blob route', () => {
     fillQuota(e, t.tokenId, bytes.byteLength - 1);
     const key = await keyOf(bytes);
     const res = await worker.fetch(blobPost(t.token, key, bytes), e.env);
-    expect(await json(res)).toEqual({ stored: false, reason: 'token write quota exceeded' });
+    expect(await json(res)).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(e.bucket.puts).toEqual([]);
     expect(count(e.sqlite, 'blobs')).toBe(1);
     expect(reservations(e)).toBe(0);
@@ -79,7 +79,7 @@ describe('blob route', () => {
     const key = await keyOf(bytes);
     const res = await worker.fetch(blobPost(t.token, key, bytes), e.env);
     expect(res.status).toBe(200);
-    expect(await json(res)).toEqual({ stored: false, reason: 'token write quota exceeded' });
+    expect(await json(res)).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(e.bucket.puts).toEqual([]);
     expect(count(e.sqlite, 'blobs')).toBe(0);
     expect(reservations(e)).toBe(0);
@@ -98,7 +98,7 @@ describe('blob route', () => {
     const key = await keyOf(bytes);
     const res = await worker.fetch(blobPost(t.token, key, bytes), e.env);
     expect(res.status).toBe(200);
-    expect(await json(res)).toEqual({ stored: false, reason: 'token write quota exceeded' });
+    expect(await json(res)).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(count(e.sqlite, 'blobs')).toBe(0);
     expect(reservations(e)).toBe(0);
   });
@@ -153,7 +153,7 @@ describe('blob route', () => {
       headers: memberHeaders(t.token, { 'content-type': 'text/plain; charset=utf-8', 'content-length': '1' }),
       body: 'x',
     }), e.env);
-    expect(await json(res)).toEqual({ stored: false, reason: 'token write quota exceeded' });
+    expect(await json(res)).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(count(e.sqlite, 'blobs')).toBe(1);
     expect(reservations(e)).toBe(0);
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(storedSum(e, t.tokenId));
@@ -194,14 +194,14 @@ describe('blob route', () => {
       return head(objectKey);
     };
     const upload = await json(await worker.fetch(blobPost(t.token, key, bytes), e.env));
-    expect(interleaved).toEqual({ persisted: false, reason: 'token write quota exceeded' });
+    expect(interleaved).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(upload).toEqual({ stored: true, duplicate: false, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' });
     expect(count(e.sqlite, 'events')).toBe(0);
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(MEMBER_TOKEN_BYTE_QUOTA - eventBytes + 1);
     expect(reservations(e)).toBe(0);
     const rowed = new Set((e.sqlite.query(`SELECT project_id || '/' || key k FROM blobs`).all() as { k: string }[]).map((r) => r.k));
     expect([...e.bucket.objects.keys()].filter((k) => !rowed.has(k))).toEqual([]);
-    expect(await json(await worker.fetch(memberPost(t.token, event), e.env))).toEqual({ persisted: false, reason: 'token write quota exceeded' });
+    expect(await json(await worker.fetch(memberPost(t.token, event), e.env))).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
   });
 
   it('holds a second upload in flight to the size the first adopted, not the length it declared: the second is refused at admission, before any byte reaches the store', async () => {
@@ -235,7 +235,7 @@ describe('blob route', () => {
       headers: memberHeaders(t.token, { 'content-type': 'text/plain; charset=utf-8', 'content-length': '1' }),
       body: 'x',
     }), e.env));
-    expect(second).toEqual({ stored: false, reason: 'token write quota exceeded' });
+    expect(second).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(first).toEqual({ stored: true, duplicate: false, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' });
     expect(e.bucket.puts).toEqual([]);
     expect(count(e.sqlite, 'blobs')).toBe(1);
@@ -264,7 +264,7 @@ describe('blob route', () => {
     };
     const res = await json(await server.handleRequest(blobPost(t.token, key, bytes), e.env));
     expect(during).toEqual({ persisted: true, projected: true });
-    expect(res).toEqual({ stored: false, reason: 'token write quota exceeded' });
+    expect(res).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(e.bucket.objects.has(`proj_1/${key}`)).toBe(false);
     expect(e.bucket.deletes).toEqual([`proj_1/${key}`]);
     expect(count(e.sqlite, 'blobs')).toBe(0);
@@ -301,7 +301,7 @@ describe('blob route', () => {
       },
     };
     const res = await json(await server.handleRequest(blobPost(t.token, key, bytes), e.env));
-    expect(during).toEqual({ persisted: false, reason: 'token write quota exceeded' });
+    expect(during).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(res).toEqual({ stored: true, duplicate: false, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' });
     expect(count(e.sqlite, 'events')).toBe(0);
     expect(count(e.sqlite, 'blobs')).toBe(1);
@@ -325,7 +325,7 @@ describe('blob route', () => {
     const key = await keyOf(bytes);
     racedKey = key;
     const res = await json(await worker.fetch(blobPost(t.token, key, bytes), e.env));
-    expect(res).toEqual({ stored: false, reason: 'token write quota exceeded' });
+    expect(res).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(e.bucket.objects.has(`proj_1/${key}`)).toBe(true);
     expect(e.bucket.deletes).toEqual([]);
     expect(blobRow(e, key)).toEqual({ size: bytes.byteLength, media_type: 'text/plain; charset=utf-8', token_id: 'other' });
@@ -397,7 +397,7 @@ describe('blob route', () => {
       body: 'x',
     }), e.env);
     expect(res.status).toBe(200);
-    expect(await json(res)).toEqual({ stored: false, reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
+    expect(await json(res)).toEqual({ stored: false, code: 'blob_cap', reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
     expect(count(e.sqlite, 'blobs')).toBe(0);
     expect(reservations(e)).toBe(0);
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
@@ -428,7 +428,7 @@ describe('blob route', () => {
     e.sqlite.query(`DROP TABLE blobs`).run();
     const res = await worker.fetch(blobPost(t.token, key, bytes), e.env);
     expect(res.status).toBe(503);
-    expect(await json(res)).toEqual({ stored: false, reason: 'unavailable' });
+    expect(await json(res)).toEqual({ stored: false, code: 'unavailable', reason: 'unavailable' });
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
   });
 
@@ -450,15 +450,15 @@ describe('blob route', () => {
     const wrongKey = await keyOf(utf8('not these bytes'));
     const res = await worker.fetch(blobPost(t.token, wrongKey, bytes), e.env);
     expect(res.status).toBe(200);
-    expect(await json(res)).toEqual({ stored: false, reason: 'digest mismatch' });
+    expect(await json(res)).toEqual({ stored: false, code: 'digest_mismatch', reason: 'digest mismatch' });
     expect(e.bucket.objects.size).toBe(0);
     expect(count(e.sqlite, 'blobs')).toBe(0);
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
     e.bucket.failNextPut = 'put: The SHA-256 checksum you specified did not match what we received. (10037)';
     const key = await keyOf(bytes);
-    expect(await json(await worker.fetch(blobPost(t.token, key, bytes), e.env))).toEqual({ stored: false, reason: 'digest mismatch' });
+    expect(await json(await worker.fetch(blobPost(t.token, key, bytes), e.env))).toEqual({ stored: false, code: 'digest_mismatch', reason: 'digest mismatch' });
     e.bucket.failNextPut = 'R2 put failed (10037)';
-    expect(await json(await worker.fetch(blobPost(t.token, key, bytes), e.env))).toEqual({ stored: false, reason: 'digest mismatch' });
+    expect(await json(await worker.fetch(blobPost(t.token, key, bytes), e.env))).toEqual({ stored: false, code: 'digest_mismatch', reason: 'digest mismatch' });
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
     expect(classifyBlobStore(new Error('anything (10037)'))).toBe('digest');
     expect(classifyBlobStore(new Error('put: length of the provided value does not match the declared length'))).toBe('other');
@@ -471,7 +471,7 @@ describe('blob route', () => {
     e.bucket.failNextPut = 'R2 is having a moment';
     const res = await worker.fetch(blobPost(t.token, key, bytes), e.env);
     expect(res.status).toBe(503);
-    expect(await json(res)).toEqual({ stored: false, reason: 'unavailable' });
+    expect(await json(res)).toEqual({ stored: false, code: 'unavailable', reason: 'unavailable' });
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
     expect(await json(await worker.fetch(blobPost(t.token, key, bytes), e.env))).toEqual({ stored: true, duplicate: false, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' });
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(bytes.byteLength);
@@ -491,7 +491,7 @@ describe('blob route', () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_1' }, Date.now());
     const empty = new Uint8Array(0);
-    expect(await json(await worker.fetch(blobPost(t.token, await keyOf(empty), empty), e.env))).toEqual({ stored: false, reason: 'empty body' });
+    expect(await json(await worker.fetch(blobPost(t.token, await keyOf(empty), empty), e.env))).toEqual({ stored: false, code: 'empty_body', reason: 'empty body' });
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
     expect(e.bucket.puts).toEqual([]);
   });
@@ -500,13 +500,13 @@ describe('blob route', () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_1' }, Date.now());
     const key = await keyOf(bytes);
-    expect(await json(await worker.fetch(blobPost(t.token, key, bytes, 'nonsense'), e.env))).toEqual({ stored: false, reason: 'invalid content-type' });
+    expect(await json(await worker.fetch(blobPost(t.token, key, bytes, 'nonsense'), e.env))).toEqual({ stored: false, code: 'media_type', reason: 'invalid content-type' });
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
     const noType = new Request(`https://s/blobs/${key}`, { method: 'POST', headers: memberHeaders(t.token, { 'content-length': String(bytes.byteLength) }), body: bytes });
     noType.headers.delete('content-type');
-    expect(await json(await worker.fetch(noType, e.env))).toEqual({ stored: false, reason: 'invalid content-type' });
+    expect(await json(await worker.fetch(noType, e.env))).toEqual({ stored: false, code: 'media_type', reason: 'invalid content-type' });
     const big = new Request(`https://s/blobs/${key}`, { method: 'POST', headers: memberHeaders(t.token, { 'content-type': 'text/plain', 'content-length': String(MAX_BLOB_BYTES + 1) }), body: bytes });
-    expect(await json(await worker.fetch(big, e.env))).toEqual({ stored: false, reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
+    expect(await json(await worker.fetch(big, e.env))).toEqual({ stored: false, code: 'blob_cap', reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
     expect(e.bucket.puts).toEqual([]);
   });
 
