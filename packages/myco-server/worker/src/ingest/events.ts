@@ -17,7 +17,7 @@ export interface IngestResult {
   transcript?: { size: number; segmentCount: number };
 }
 
-export type IngestContext = Omit<RouteContext, 'body'>;
+export type IngestContext = Pick<RouteContext, 'projectId' | 'machineId' | 'tokenId' | 'bodyBytes' | 'now'>;
 
 /** A terminal refusal of the caller's own request: 200 `{persisted:false, code, reason}` plus one `ingest_refused` event carrying the refusal's classifier only. */
 export function refused(ctx: Pick<IngestContext, 'projectId' | 'tokenId'>, { reason, classifier }: Refusal): IngestResult {

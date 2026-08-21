@@ -5,13 +5,18 @@ import { MAX_BLOB_BYTES } from '@myco-server-worker/constants.js';
 const KEY = 'a'.repeat(64);
 
 describe('route table', () => {
-  it('declares an auth kind and a body mode for every route', () => {
+  it('declares an auth kind and a body mode for every route, a shape for every member route, and exempts only the refresh route from the quota', () => {
     for (const r of ROUTES) {
       expect(['public', 'member']).toContain(r.auth);
       expect(['none', 'json', 'stream']).toContain(r.bodyMode);
       if (r.auth === 'public') expect(r.bodyMode).toBe('none');
       if (r.bodyMode === 'stream') expect(r.maxBodyBytes).toBe(MAX_BLOB_BYTES);
+      if (r.auth === 'member') {
+        expect({ path: r.path, shape: r.shape }).toEqual({ path: r.path, shape: r.bodyMode === 'stream' ? 'stored' : r.path === '/tokens/refresh' ? 'refreshed' : 'persisted' });
+        expect({ path: r.path, quotaPrecheck: r.quotaPrecheck }).toEqual({ path: r.path, quotaPrecheck: r.path === '/tokens/refresh' ? false : undefined });
+      }
     }
+    expect(ROUTES.map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh']);
   });
 
   it('permits exactly the enumerated public paths', () => {
@@ -22,6 +27,9 @@ describe('route table', () => {
     expect(matchRoute('GET', '/health')?.route.path).toBe('/health');
     expect(matchRoute('POST', '/health')).toBeNull();
     expect(matchRoute('POST', '/events')?.route.bodyMode).toBe('json');
+    expect(matchRoute('POST', '/tokens/refresh')?.route.bodyMode).toBe('json');
+    expect(matchRoute('GET', '/tokens/refresh')).toBeNull();
+    expect(matchRoute('POST', '/tokens/refresh/')).toBeNull();
     const blob = matchRoute('POST', `/blobs/${KEY}`);
     expect(blob?.route.bodyMode).toBe('stream');
     expect(blob?.params).toEqual({ key: KEY });

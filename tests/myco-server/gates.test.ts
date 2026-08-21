@@ -8,6 +8,7 @@ import worker from '@myco-server-worker/index.js';
 import { createIngestThrottle } from './helpers/throttle.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MEMBER_TOKEN_BYTE_QUOTA, RETRY_AFTER_SECONDS, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare.js';
@@ -28,7 +29,7 @@ const files = (dir: string): string[] => allFiles(dir).filter((f) => f.endsWith(
 const sharedFiles = () => files(SRC).filter((f) => !f.includes(`${join(SRC, 'platform')}/`));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 17;
+const EMIT_CALLS = 20;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -396,15 +397,17 @@ describe('gates', () => {
     for (const f of renderMigrationFiles()) expect(readFileSync(join(WORKER, MIGRATIONS_DIR, f.name), 'utf8')).toBe(f.sql);
   });
 
-  it('declares an auth kind and a body mode for every route, and drives every non-public route through the deployed entry from its own fixture: a malformed request is refused in the route\'s shape, and a token without a machine identity is refused every write, storing nothing and charging nothing', async () => {
+  it('declares an auth kind, a body mode and a shape for every route, and drives every non-public route through the deployed entry from its own fixture: a malformed request is refused in the route\'s shape with a code, and a token without a machine identity is refused every write, storing nothing and charging nothing', async () => {
     const { env: e, db, sqlite, bucket } = sqliteEnv();
-    const t1 = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, Date.now());
-    const anonymous = await issueMemberToken(db, { projectId: 'proj_1', machineId: null }, Date.now());
+    /** Issued far enough back that the refresh window is open now, and far enough forward that the tokens are live. */
+    const issuedAt = Date.now() - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2);
+    const t1 = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, issuedAt);
+    const anonymous = await issueMemberToken(db, { projectId: 'proj_1', machineId: null }, issuedAt);
     const KEY = 'a'.repeat(64);
     const bytes = new TextEncoder().encode('blob-bytes');
     const key = await sha256Hex('blob-bytes');
     /** Per non-public route: a malformed request the route refuses, and a well-formed one it would store. */
-    const FIXTURES: Record<string, { shape: 'persisted' | 'stored'; malformed: (token: string) => Request; wellFormed: (token: string) => Request }> = {
+    const FIXTURES: Record<string, { shape: 'persisted' | 'stored' | 'refreshed'; malformed: (token: string) => Request; wellFormed: (token: string) => Request }> = {
       'POST /events': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/events', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -415,6 +418,11 @@ describe('gates', () => {
         malformed: (token) => new Request(`https://s/blobs/${KEY}`, { method: 'POST', headers: memberHeaders(token, { 'content-type': 'nonsense', 'content-length': '2' }), body: '{}' }),
         wellFormed: (token) => new Request(`https://s/blobs/${key}`, { method: 'POST', headers: memberHeaders(token, { 'content-type': 'text/plain', 'content-length': String(bytes.byteLength) }), body: bytes }),
       },
+      'POST /tokens/refresh': {
+        shape: 'refreshed',
+        malformed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+      },
     };
     expect(ROUTES.filter((r) => r.auth !== 'public').map((r) => `${r.method} ${r.path}`).sort()).toEqual(Object.keys(FIXTURES).sort());
     const machineless: Record<string, unknown>[] = [];
@@ -423,10 +431,11 @@ describe('gates', () => {
       expect(['none', 'json', 'stream']).toContain(r.bodyMode);
       if (r.auth === 'public') continue;
       const fixture = FIXTURES[`${r.method} ${r.path}`];
+      expect({ route: r.path, shape: r.shape }).toEqual({ route: r.path, shape: fixture.shape });
       const res = await worker.fetch(fixture.malformed(t1.token), e);
       expect({ route: r.path, status: res.status }).toEqual({ route: r.path, status: 200 });
       const body = await res.json() as Record<string, unknown>;
-      expect({ route: r.path, refused: body[fixture.shape] === false }).toEqual({ route: r.path, refused: true });
+      expect({ route: r.path, refused: body[fixture.shape] === false, coded: typeof body.code === 'string' }).toEqual({ route: r.path, refused: true, coded: true });
       const refused = await worker.fetch(fixture.wellFormed(anonymous.token), e);
       machineless.push({ route: r.path, status: refused.status, body: await refused.json() });
     }

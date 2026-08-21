@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken, MEMBER_TOKEN_MAX_LINEAGE_MS, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
 import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, MEMBER_TOKEN_BYTE_QUOTA } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
@@ -16,6 +16,8 @@ async function rig() {
   const t1 = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_1' }, now);
   const t2 = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_2' }, now);
   const anonymous = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: null }, now);
+  /** A member of machine_1 whose refresh window is open now. */
+  const windowed = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_1' }, now - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2));
   const fetch = (req: Request) => worker.fetch(req, e.env);
   const post = (token: string, over: Record<string, unknown>) => fetch(memberPost(token, envelope(over)));
   const upload = async (bytes: Uint8Array) => {
@@ -35,7 +37,7 @@ async function rig() {
     expect((await json(await segment(0, 0, ka, a.byteLength))).persisted).toBe(true);
     return { a, b, ka, kb };
   };
-  return { e, t1, t2, anonymous, fetch, post, upload, segment, transcript };
+  return { e, t1, t2, anonymous, windowed, fetch, post, upload, segment, transcript };
 }
 type Rig = Awaited<ReturnType<typeof rig>>;
 
@@ -79,6 +81,11 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
     expect((await json(await r.post(r.t1.token, {}))).persisted).toBe(true);
     return r.post(r.t1.token, { eventId: uuid(5), createdAt: 2_000, payload: { promptId: uuid(2), text: 'rewritten', origin: 'user' } });
   },
+  refresh_too_early: (r) => r.fetch(memberPost(r.t1.token, '{}', '/tokens/refresh')),
+  lineage_expired: (r) => {
+    r.e.sqlite.query(`UPDATE member_tokens SET lineage_started_at = expires_at - ? WHERE id = ?`).run(MEMBER_TOKEN_MAX_LINEAGE_MS, r.windowed.tokenId);
+    return r.fetch(memberPost(r.windowed.token, '{}', '/tokens/refresh'));
+  },
 };
 
 describe('refusal codes', () => {
@@ -96,7 +103,7 @@ describe('refusal codes', () => {
         res = await DRIVERS[classifier](r);
       } finally { console.log = orig; }
       const body = await json(res);
-      const refusing = body.persisted === false || body.stored === false || body.projected === false;
+      const refusing = body.persisted === false || body.stored === false || body.refreshed === false || body.projected === false;
       observed.push({ classifier, status: res.status, code: body.code, refusing, reason: typeof body.reason === 'string' && body.reason.length > 0 });
       const last = JSON.parse(lines[lines.length - 1]) as Record<string, unknown>;
       if ('reason' in last) expect({ classifier, telemetry: last.reason }).toEqual({ classifier, telemetry: classifier });
