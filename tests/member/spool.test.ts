@@ -251,6 +251,65 @@ describe('member spool', () => {
     expect(stderrLines.join('')).toContain('contract bug');
   });
 
+  it('the transcript pointer moves only its own transcript: a value committed mid-flight does not regress', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const sessionId = 'sess-cas-1';
+    const file = path.join(mycoHome, 'cas.jsonl');
+    fs.writeFileSync(file, '{"type":"user"}\n{"type":"assistant"}\n');
+    const transcriptId = `tx_${'c'.repeat(32)}`;
+    updateSessionState(spool.dir, sessionId, (s) => {
+      s.transcript = { path: file, transcriptId, inode: fs.statSync(file).ino, nextOffset: 0, parsedSize: 0 };
+    });
+    // Another hook's committer advances `parsedSize` while the segment is in
+    // flight; the ship path holds a snapshot that still says 0.
+    const parsed = fs.statSync(file).size;
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname === '/events') {
+        updateSessionState(spool.dir, sessionId, (s) => { if (s.transcript) s.transcript.parsedSize = parsed; });
+      }
+      return rig.fetch(request);
+    });
+    const ctx: EnvelopeContext = { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: '2.0.0-test' };
+
+    const result = await shipTranscriptSegments(ctx, spool, client, unboundedBudget());
+
+    expect(result).toEqual({ shipped: 1, endedBy: 'done' });
+    const stored = readSessionState(spool.dir, sessionId).transcript!;
+    expect(stored.parsedSize).toBe(parsed);
+    expect(stored.nextOffset).toBe(parsed);
+    expect(stored.transcriptId).toBe(transcriptId);
+  });
+
+  it('the transcript pointer moves only its own transcript: a rotation committed mid-flight survives untouched', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const sessionId = 'sess-cas-2';
+    const file = path.join(mycoHome, 'cas2.jsonl');
+    fs.writeFileSync(file, '{"type":"user"}\n{"type":"assistant"}\n');
+    const before = { path: file, transcriptId: `tx_${'d'.repeat(32)}`, inode: fs.statSync(file).ino, nextOffset: 0, parsedSize: 0 };
+    const rotated = { path: file, transcriptId: `tx_${'e'.repeat(32)}`, inode: before.inode + 1, nextOffset: 0, parsedSize: 0 };
+    updateSessionState(spool.dir, sessionId, (s) => { s.transcript = before; });
+    // The transcript rotates while the segment is in flight: another hook
+    // commits a pointer for the NEW file, under a new id.
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname === '/events') {
+        updateSessionState(spool.dir, sessionId, (s) => { s.transcript = rotated; });
+      }
+      return rig.fetch(request);
+    });
+    const ctx: EnvelopeContext = { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: '2.0.0-test' };
+
+    const result = await shipTranscriptSegments(ctx, spool, client, unboundedBudget());
+
+    expect(result.endedBy).toBe('done');
+    // The rotated pointer is exactly as committed: this path's offset, which
+    // belongs to the old transcript, never reaches it.
+    expect(readSessionState(spool.dir, sessionId).transcript).toEqual(rotated);
+  });
+
   it('drainAll stops at the first outcome that will answer the same way for every other session', async () => {
     const rig = await memberRig();
     const spool = new MemberSpool('proj_1', { mycoHome });

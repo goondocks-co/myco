@@ -209,7 +209,35 @@ export async function shipTranscriptSegments(
   const { sessionId } = ctx;
   let pointer = readSessionState(spool.dir, sessionId).transcript;
   if (!pointer) return { shipped: 0, endedBy: 'absent' };
-  const persist = (next: TranscriptPointer) => { updateSessionState(spool.dir, sessionId, (s) => { s.transcript = next; }, now()); pointer = next; };
+  /**
+   * Move THIS transcript's offset, computed under the lock against what is
+   * stored — never against the snapshot read above. Two rules:
+   *
+   *   - the stored pointer wins whenever it names another transcript. A
+   *     rotation, or a newer pointer another hook commits, describes a
+   *     different file; writing this path's offset onto it claims the new
+   *     transcript holds bytes that belong to its predecessor.
+   *     `transcriptPointerFor` re-detects the new inode and re-ships it from
+   *     0 under its own id, which is the correct outcome.
+   *   - only `nextOffset` is this path's to write. It takes the value the
+   *     server's answer reported and is NOT clamped monotonic: `offset_gap`
+   *     moves it BACK to the size the server holds, and that is how a member
+   *     that ran ahead recovers.
+   *
+   * Everything else — the identity fields and `parsedSize`, which the
+   * committer owns — is kept as stored, so a stale snapshot cannot regress a
+   * value another hook committed while this pass was in flight.
+   */
+  const persist = (next: TranscriptPointer): boolean => {
+    let applied = false;
+    updateSessionState(spool.dir, sessionId, (s) => {
+      if (s.transcript?.transcriptId !== next.transcriptId) return;
+      s.transcript = { ...s.transcript, nextOffset: next.nextOffset };
+      applied = true;
+    }, now());
+    if (applied) pointer = next;
+    return applied;
+  };
   let shipped = 0;
   let lastReslice = -1;
   for (;;) {
@@ -237,12 +265,14 @@ export async function shipTranscriptSegments(
       case 'acked':
         spool.clearLatch();
         shipped += 1;
-        persist({ ...pointer, nextOffset: outcome.transcript?.size ?? offset + bytes.byteLength });
+        // A pointer that no longer names this transcript ends the pass: the
+        // session moved on, and whoever moved it ships what it names now.
+        if (!persist({ ...pointer, nextOffset: outcome.transcript?.size ?? offset + bytes.byteLength })) return { shipped, endedBy: 'done' };
         continue;
       case 'reslice':
         if (outcome.heldSize === lastReslice) return { shipped, endedBy: 'refused' };
         lastReslice = outcome.heldSize;
-        persist({ ...pointer, nextOffset: outcome.heldSize });
+        if (!persist({ ...pointer, nextOffset: outcome.heldSize })) return { shipped, endedBy: 'done' };
         continue;
       default:
         spool.endPass(outcome, now());
