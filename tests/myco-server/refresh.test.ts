@@ -152,6 +152,16 @@ describe('token refresh', () => {
     expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: r.clock.now });
   });
 
+  it('activates ahead of the token limiter: a successor refused by its own bucket still revokes its predecessor', async () => {
+    const r = await rig();
+    const successor = await successorOf(r, r.root.token, r.root.expiresAt);
+    r.e.env.TOKEN_LIMIT = { limit: async () => ({ success: false }) };
+    r.clock.now += 5;
+    expect((await r.post(successor.token, 1)).status).toBe(429);
+    expect(r.row(successor.tokenId)).toMatchObject({ first_used_at: r.clock.now });
+    expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: r.clock.now });
+  });
+
   it('revokes a whole lineage by any id in the chain, refusing every token of it afterwards and nothing outside it', async () => {
     const r = await rig();
     const s1 = await successorOf(r, r.root.token, r.root.expiresAt);
