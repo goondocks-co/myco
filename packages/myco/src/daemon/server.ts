@@ -70,8 +70,8 @@ import {
   HOST_ENROLL_ROUTE,
   HOST_RESIGN_ROUTE,
   REFUSAL_LOG_THROTTLE_INTERVAL_MS,
-  TEAM_LISTEN_ADDRESS,
 } from '../constants.js';
+import { TEAM_LISTEN_ADDRESS } from '../team-host/listen-address.js';
 import { shouldLogOncePerInterval } from './log-throttle.js';
 import { type DaemonState } from './service-state.js';
 import {
