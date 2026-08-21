@@ -18,7 +18,7 @@ import { planTagEnvelopeRegex } from '../plans/tag-envelopes.js';
 import { SymbiontRegistry } from '../symbionts/registry.js';
 import type { TranscriptTurn } from '../symbionts/adapter.js';
 import { canStartRequest, clippedRequestBudget, type HookBudget } from './budget.js';
-import { TRANSCRIPT_SLICE_BYTES } from './constants.js';
+import { TRANSCRIPT_SLICE_BYTES, type MemberCode } from './constants.js';
 import {
   attachmentEvent, deriveId, planEvent, planKeyForTag, promptEvent, queuedPromptIdFor, transcriptSegmentEvent, TEXT_MEDIA_TYPE,
   type EnvelopeContext, type OutboundEvent,
@@ -252,14 +252,21 @@ export async function shipTranscriptSegments(
     if (bytes.byteLength === 0) return { shipped, endedBy: 'done' };
     const source = { path: pointer.path, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), mediaType: TEXT_MEDIA_TYPE, size: bytes.byteLength };
 
+    // Built before the upload so both refusal paths can name the segment they lost.
+    const event = transcriptSegmentEvent(ctx, { transcriptId: pointer.transcriptId, baseOffset: offset, blobSource: source, originPath: pointer.path });
+    const logRefusal = (code: MemberCode, reason: string): void => {
+      spool.appendRefused({ eventId: event.envelope.eventId, sessionId, kind: event.envelope.kind, code, reason, at: now() });
+    };
+
     const blob = await client.postBlob(bytes, source.sha256, source.mediaType, clippedRequestBudget(budget, now()));
     if (blob.class !== 'acked') {
       // One policy for what an outcome does: the spool's `endPass` owns the
-      // latch and the diagnostics, here as much as on the event path.
+      // latch and the diagnostics, here as much as on the event path — and,
+      // as `endPass` documents, the caller logs its own refusal.
+      if (blob.class === 'refused') logRefusal(blob.code, blob.reason);
       if (blob.class !== 'reslice') spool.endPass(blob, now());
       return { shipped, endedBy: blob.class === 'reslice' ? 'refused' : blob.class };
     }
-    const event = transcriptSegmentEvent(ctx, { transcriptId: pointer.transcriptId, baseOffset: offset, blobSource: source, originPath: pointer.path });
     const outcome = await client.postEvent(event.envelope, clippedRequestBudget(budget, now()));
     switch (outcome.class) {
       case 'acked':
@@ -277,9 +284,7 @@ export async function shipTranscriptSegments(
       default:
         // The caller logs its own refusal: `endPass` owns the latch and the
         // diagnostics, and only this frame knows which segment was refused.
-        if (outcome.class === 'refused') {
-          spool.appendRefused({ eventId: event.envelope.eventId, sessionId, kind: event.envelope.kind, code: outcome.code, reason: outcome.reason, at: now() });
-        }
+        if (outcome.class === 'refused') logRefusal(outcome.code, outcome.reason);
         spool.endPass(outcome, now());
         return { shipped, endedBy: outcome.class };
     }

@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
-import { canStartRequest, clippedRequestBudget, declaredTimeoutMs, remainingMs, resolveHookBudget, unboundedBudget } from '@myco/member/budget.js';
+import { canStartRequest, clippedRequestBudget, declaredTimeoutMs, longestDeclaredHookTimeoutMs, remainingMs, resolveHookBudget, unboundedBudget } from '@myco/member/budget.js';
 import { CONNECT_TIMEOUT_CAP_MS, HOOK_BUDGET_MARGIN_MS, MEMBER_DEFAULT_HOOK_TIMEOUT_MS, NEVER_DRAINS_HOOK } from '@myco/member/constants.js';
 
 describe('hook budget', () => {
@@ -15,6 +15,26 @@ describe('hook budget', () => {
     expect(ups).toMatchObject({ declaredTimeoutMs: 5_000, hookBudgetMs: 4_000, connectTimeoutMs: 1_333, requestTimeoutMs: 2_000, deadline: 4_000 });
     expect(HOOK_BUDGET_MARGIN_MS).toBe(1_000);
     expect(CONNECT_TIMEOUT_CAP_MS).toBe(2_000);
+  });
+
+  it('the staging grace is the longest DECLARED timeout and never collapses to the default', () => {
+    const declared = Object.values(HOOK_CONFIG)
+      .flatMap((entry) => Object.values(entry.hookEvents))
+      .map((event) => event.timeout)
+      .filter((timeout): timeout is number => timeout !== undefined);
+    expect(declared.length).toBeGreaterThan(0);
+    expect(longestDeclaredHookTimeoutMs()).toBe(Math.max(...declared) * 1000);
+
+    // The grace rests on "a hook cannot outlive its own declared timeout", and
+    // an event that declares none (windsurf declares none on any of its five)
+    // is not covered by that argument — the value only holds because some
+    // template still declares a long one. If the templates ever lose their
+    // declarations the computed grace collapses to
+    // MEMBER_DEFAULT_HOOK_TIMEOUT_MS, and staged bytes would become
+    // reclaimable while the hook that staged them is still parsing a
+    // transcript. This floor is what fails first if that happens.
+    expect(longestDeclaredHookTimeoutMs()).toBeGreaterThanOrEqual(30_000);
+    expect(longestDeclaredHookTimeoutMs()).toBeGreaterThan(MEMBER_DEFAULT_HOOK_TIMEOUT_MS);
   });
 
   it('reads the timeout by harness event when the input names one and by the inverse index otherwise', () => {

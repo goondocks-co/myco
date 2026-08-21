@@ -123,7 +123,16 @@ export class MemberSpool {
       ensureMemberDir(dir, this.mycoHome);
       const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
       const file = path.join(dir, sha256);
-      if (!fs.existsSync(file)) fs.writeFileSync(file, bytes, { mode: MEMBER_FILE_MODE });
+      if (fs.existsSync(file)) {
+        // Content-addressed, so the bytes are already right — but the mtime is
+        // what says "a hook may still name this", and reclaiming reads it. A
+        // second staging of the same sha restarts that clock, or the grace
+        // could expire while the hook that just staged it is still running.
+        const now = new Date();
+        try { fs.utimesSync(file, now, now); } catch { /* vanished under us; the write below is not worth racing */ }
+      } else {
+        fs.writeFileSync(file, bytes, { mode: MEMBER_FILE_MODE });
+      }
       return { path: file, sha256, mediaType, size: bytes.byteLength };
     };
   }

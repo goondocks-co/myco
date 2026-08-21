@@ -14,7 +14,9 @@
  * Staged blob bytes are swept here too: the drain releases a record's bytes
  * when its high-water advances, and this sweep collects whatever a drain that
  * never finished left behind — but never bytes young enough that a live hook
- * could still commit a record naming them.
+ * could still commit a record naming them, and never the bytes a quarantined
+ * spool references, which move into quarantine with it and are pruned with
+ * it.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,7 +24,7 @@ import { BUFFER_QUARANTINE_DIRNAME, pruneQuarantinedBuffers, quarantineBufferFil
 import { longestDeclaredHookTimeoutMs } from './budget.js';
 import { MEMBER_DIR_MODE, MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS } from './constants.js';
 import { readSessionState, removeSessionState } from './session-state.js';
-import type { MemberSpool } from './spool.js';
+import { BLOBS_DIRNAME, type MemberSpool } from './spool.js';
 
 export interface RetentionResult {
   quarantined: string[];
@@ -113,6 +115,45 @@ export function sweepStagedBlobs(spool: MemberSpool, sessionIds: readonly string
   return released;
 }
 
+/**
+ * Move a session's staged bytes with the spool that names them, under
+ * `quarantine/blobs/<quarantined file's base name>`.
+ *
+ * A quarantined spool is RETAINED — it is the only durable copy of events
+ * nothing acknowledged — so destroying the payloads it references would empty
+ * it of exactly what it was kept for. The name follows the quarantined file
+ * (which `quarantineBufferFile` may suffix on collision), so the two stay
+ * paired and the prune can tie their lifetimes together.
+ */
+function quarantineStagedBlobs(spool: MemberSpool, sessionId: string, quarantinedFile: string): void {
+  const from = spool.blobsDirFor(sessionId);
+  if (!fs.existsSync(from)) return;
+  const dir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME, BLOBS_DIRNAME);
+  fs.mkdirSync(dir, { recursive: true, mode: MEMBER_DIR_MODE });
+  try {
+    fs.renameSync(from, path.join(dir, path.basename(quarantinedFile, '.jsonl')));
+  } catch { /* nothing staged, or already moved */ }
+}
+
+/** Delete quarantined staged bytes whose spool the prune has taken: the bytes live exactly as long as the events that name them. */
+function pruneQuarantinedStagedBlobs(spool: MemberSpool): number {
+  const quarantineDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
+  const blobsDir = path.join(quarantineDir, BLOBS_DIRNAME);
+  let pruned = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(blobsDir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (fs.existsSync(path.join(quarantineDir, `${entry.name}.jsonl`))) continue;
+    try { fs.rmSync(path.join(blobsDir, entry.name), { recursive: true, force: true }); pruned += 1; } catch { /* concurrent removal */ }
+  }
+  return pruned;
+}
+
 /** Quarantine every session spool unacknowledged past the cap, prune quarantined files past the prune cap, and release staged bytes nothing references. */
 export function applySpoolRetention(spool: MemberSpool, now: number = Date.now()): RetentionResult {
   const result: RetentionResult = { quarantined: [], pruned: 0, releasedBlobs: 0 };
@@ -122,11 +163,14 @@ export function applySpoolRetention(spool: MemberSpool, now: number = Date.now()
     const quarantineDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
     if (!fs.existsSync(quarantineDir)) fs.mkdirSync(quarantineDir, { mode: MEMBER_DIR_MODE });
     const target = quarantineBufferFile(spool.dir, `${sessionId}.jsonl`);
+    quarantineStagedBlobs(spool, sessionId, target);
     removeSessionState(spool.dir, sessionId);
     result.quarantined.push(target);
     process.stderr.write(`[myco] member: spool for session ${sessionId} had no acknowledgement for ${Math.round(MEMBER_SPOOL_QUARANTINE_MS / 86_400_000)} days — quarantined at ${target}\n`);
   }
   result.pruned = pruneQuarantinedBuffers(spool.dir, MEMBER_SPOOL_QUARANTINE_PRUNE_MS);
+  // After the prune, whatever no quarantined spool still names goes with it.
+  pruneQuarantinedStagedBlobs(spool);
   result.releasedBlobs = sweepStagedBlobs(spool, spool.sessionIds(), now);
   return result;
 }

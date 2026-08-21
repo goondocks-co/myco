@@ -151,6 +151,62 @@ describe('spool retention', () => {
     expect(spool.readRefused()).toEqual([]);
   });
 
+  it('re-staging a sha restarts its grace: the mtime says when a hook last named the bytes, not when they were first written', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const stage = spool.stagerFor('sess-restage');
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const source = stage(bytes, 'application/octet-stream');
+    // Age the file past the grace, as a long-lived session would.
+    const stale = (Date.now() - longestDeclaredHookTimeoutMs() - 60_000) / 1000;
+    fs.utimesSync(source.path, stale, stale);
+    expect(fs.statSync(source.path).mtimeMs).toBeLessThan(Date.now() - longestDeclaredHookTimeoutMs());
+
+    // A second hook stages the same content: the bytes are reusable, the clock is not.
+    const again = stage(bytes, 'application/octet-stream');
+    expect(again.path).toBe(source.path);
+    expect(fs.statSync(source.path).mtimeMs).toBeGreaterThan(Date.now() - longestDeclaredHookTimeoutMs());
+    expect(applySpoolRetention(spool).releasedBlobs).toBe(0);
+    expect(fs.existsSync(source.path)).toBe(true);
+  });
+
+  it('a bare file left directly under blobs/ by a project-wide-dir build is reclaimed under the same grace', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const legacy = path.join(spool.blobsDir, 'a'.repeat(64));
+    fs.mkdirSync(spool.blobsDir, { recursive: true });
+    fs.writeFileSync(legacy, 'bytes', { mode: 0o600 });
+    // Fresh: still inside the grace, so it stays.
+    expect(applySpoolRetention(spool).releasedBlobs).toBe(0);
+    const stale = (Date.now() - longestDeclaredHookTimeoutMs() - 60_000) / 1000;
+    fs.utimesSync(legacy, stale, stale);
+    expect(applySpoolRetention(spool).releasedBlobs).toBe(1);
+    expect(fs.existsSync(legacy)).toBe(false);
+  });
+
+  it('a quarantined spool keeps the bytes it references, and they are pruned only with it', async () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const t0 = Date.now();
+    const source = spool.stagerFor('sess-q')(new Uint8Array([137, 80, 78, 71, 9]), 'image/png');
+    spool.appendAndRecord('sess-q', [attachmentEvent(ctxFor(spool, 'sess-q'), { blobSource: source, attachmentId: mintId() })], undefined, t0);
+
+    // Nothing ever acknowledged it: quarantined, not deleted — and the bytes go with it.
+    const quarantined = applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY);
+    expect(quarantined.quarantined).toHaveLength(1);
+    expect(fs.existsSync(source.path)).toBe(false);
+    const moved = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME, 'blobs', 'sess-q', source.sha256);
+    expect(fs.readFileSync(moved)).toEqual(Buffer.from([137, 80, 78, 71, 9]));
+
+    // A later sweep leaves them alone: the spool that names them is retained.
+    expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + 2 * DAY).releasedBlobs).toBe(0);
+    expect(fs.existsSync(moved)).toBe(true);
+
+    // The prune takes the spool at 60 days, and the bytes go with it.
+    const past = (Date.now() - MEMBER_SPOOL_QUARANTINE_PRUNE_MS - DAY) / 1000;
+    fs.utimesSync(quarantined.quarantined[0], past, past);
+    expect(applySpoolRetention(spool).pruned).toBe(1);
+    expect(fs.existsSync(moved)).toBe(false);
+    expect(fs.existsSync(path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME, 'blobs', 'sess-q'))).toBe(false);
+  });
+
   it('does not reuse cleanStaleBuffers (1.4 age-delete) anywhere under member/', () => {
     const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const full = path.join(dir, entry.name);
