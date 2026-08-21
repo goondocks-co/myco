@@ -8,10 +8,10 @@
  */
 import { resolveProjectRoot, resolveVaultDir } from '../project-root.js';
 import { resolveMycoHome } from '../paths/home.js';
-import { MEMBER_TOKEN_PATTERN } from './constants.js';
+import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, MEMBER_TOKEN_PATTERN, type CredentialSource } from './constants.js';
 import { readRegistryEntry } from './registry.js';
 
-export type CredentialSource = 'registry' | 'env';
+export { CREDENTIAL_FLAG, type CredentialSource };
 
 export interface CredentialRecord {
   serverUrl: string;
@@ -29,8 +29,6 @@ export interface CredentialRecord {
 export const ENV_SERVER_URL = 'MYCO_SERVER_URL';
 export const ENV_MEMBER_TOKEN = 'MYCO_MEMBER_TOKEN';
 export const ENV_PROJECT = 'MYCO_PROJECT';
-export const CREDENTIAL_FLAG = '--credential';
-const SOURCES: readonly CredentialSource[] = ['registry', 'env'];
 
 /** The declared source on a hook command line (`--credential registry`, `--credential=env`), or null when absent or not a known source. */
 export function parseCredentialFlag(argv: readonly string[]): CredentialSource | null {
@@ -39,7 +37,7 @@ export function parseCredentialFlag(argv: readonly string[]): CredentialSource |
     let value: string | undefined;
     if (arg === CREDENTIAL_FLAG) value = argv[i + 1];
     else if (arg.startsWith(`${CREDENTIAL_FLAG}=`)) value = arg.slice(CREDENTIAL_FLAG.length + 1);
-    if (value !== undefined) return (SOURCES as readonly string[]).includes(value) ? (value as CredentialSource) : null;
+    if (value !== undefined) return (CREDENTIAL_SOURCES as readonly string[]).includes(value) ? (value as CredentialSource) : null;
   }
   return null;
 }

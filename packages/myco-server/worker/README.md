@@ -26,6 +26,38 @@ Order on every later deploy: `migrations:apply:remote` first, then `wrangler dep
 
 Local development: `npm run migrations:apply` (local D1) then `npm run dev`. `smoke.md` is the local smoke procedure and its last observed output.
 
+## Members
+
+A member is one machine's membership of one project: a server URL, a token, and the project id the token carries. Nothing is enrolled server-side — the operator mints the token (`npm run token:mint`), the machine records it, and capture starts.
+
+```bash
+MYCO_MEMBER_TOKEN=<token> myco member join https://myco-server.example \
+  --project proj_… --token-env MYCO_MEMBER_TOKEN --provision claude-code
+myco member status                                  # entry (token redacted), expiry, spool depth, last ack/refusal, latch
+myco member drain                                   # deliver everything spooled, ignoring the offline latch
+myco member refresh                                 # rotate early; hooks do it on their own inside the window
+myco member leave [--purge]                         # forget the membership; --purge also drops the spool and the hooks
+```
+
+The token is read from stdin (`--token-stdin`) or from the named environment variable (`--token-env NAME`) — never from the command line, where it would be recorded in process listings and in lock metadata. Join verifies before it records and writes nothing to the server: the URL must be `https:`, the token must have the shape the server mints, and `GET /health` must answer.
+
+`--provision <agent>` writes that agent's hooks for the project into the agent's member settings file (Claude Code: `.claude/settings.local.json`), rendered with the absolute path of this binary, `--credential registry`, and no PreToolUse hook — the member injects nothing before a tool call. Foreign hooks and the file's other keys are preserved, the 1.4 files (`.claude/settings.json`, `~/.claude/settings.json`) are never touched, and a target git does not already ignore is added to `.git/info/exclude`.
+
+A sandbox is provisioned differently: it holds no registry, so it declares its credential in the environment.
+
+```bash
+claude -p "$TASK" \
+  --setting-sources "" \
+  --settings "$(myco settings --harness claude-code --project "$MYCO_PROJECT")" \
+  --session-id "$RUN_ID" --output-format stream-json --verbose --include-hook-events
+```
+
+`myco settings` prints the same hook block with `--credential env`; the process must carry `MYCO_SERVER_URL`, `MYCO_MEMBER_TOKEN` and `MYCO_PROJECT` — all three or none. The settings carry no credential, so the printed block is safe to log. `--bare` removes every hook silently and must never appear in a provisioned launch.
+
+The credential source is whatever the hook command declares and is never inferred: a `--credential registry` hook reads the registry entry for its project root and nothing from the environment, so a repository's own settings cannot redirect a laptop's capture. An env-sourced token is the orchestrator's and is never rotated — a successor's first use revokes its predecessor, which would lock out every other sandbox holding it.
+
+Events a hook cannot deliver are spooled under `<MYCO_HOME>/member/spool/<project>/` and delivered by the next hook, or by `myco member drain`. A spool is never age-deleted while un-acknowledged: 30 days without an acknowledgement quarantines it, 60 days prunes the quarantined copy.
+
 ## Routes
 
 `POST /events` — one capture event per request, `200 {persisted:true[, projected:true][, transcript:{size, segmentCount}]}` stored; `200 {persisted:true, duplicate:true}` a replay of an identical envelope; `200 {persisted:true, projected:false, code:'projection_conflict', reason}` stored but its projection did not apply; `200 {persisted:false, code, reason}` a terminal refusal of that request — never retry it (malformed or unknown-field envelope, unknown kind or payload field, a bound, size, depth or node cap, a `createdAt` more than 300000 ms ahead of the server clock, an event id already stored with a different envelope, an absent blob, a session, plan, transcript, or referenced prompt owned by another machine, a token without a machine identity, a transcript offset gap or overlap, write quota); `503 {persisted:false, code:'unavailable', reason:'unavailable'}` with `retry-after` a server-side failure — retry it. Every refusal and conflict carries `code`: one of `CLASSIFIERS` (`src/telemetry.ts`), the stable class a member acts on (`offset_gap`/`offset_overlap` re-slice, `quota` parks, everything else is terminal) — `reason` is text for people and is never matched. `401`/`429` before authentication; `401` to an authenticated member on a route this build does not serve; `409 {error:'protocol_version_unsupported', server_protocol, min_compat_member_protocol}` to an authenticated member whose `x-myco-protocol` header is missing, non-integer, or outside the window. Every response after authentication carries `x-myco-protocol: <server protocol>`; `/health` and `401` do not.

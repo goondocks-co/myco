@@ -38,6 +38,14 @@ export const MEMBER_INLINE_TEXT_MAX_BYTES = 196_608;
 /** A transcript is shipped in segments of at most this many bytes. Under the server blob cap. */
 export const TRANSCRIPT_SLICE_BYTES = 8 * 1024 * 1024;
 
+/**
+ * What may be presented as a project id. The server treats the id as opaque —
+ * it is whatever the token row carries — so this only refuses what could not
+ * be one: whitespace, path separators, control characters, and anything past
+ * the server's id ceiling.
+ */
+export const PROJECT_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+
 /** Shape of every member token the server mints (32 random bytes as unpadded base64url). */
 export const MEMBER_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 /** The tail of a token's life in which the server admits a refresh (the last quarter of the 7-day TTL); the member reads it only until the server announces a `refreshAfter`. */
@@ -57,6 +65,18 @@ export const UNBOUNDED_REQUEST_TIMEOUT_MS = 60_000;
 export const SESSION_END_TRANSCRIPT_BUDGET_MS = 4_000;
 /** Harness events the member registers; PreToolUse is never among them. */
 export const NEVER_DRAINS_HOOK = 'pre-tool-use';
+
+/** Where a hook's credential comes from. Declared by the emitted hook command, never inferred from the environment. */
+export type CredentialSource = 'registry' | 'env';
+export const CREDENTIAL_SOURCES: readonly CredentialSource[] = ['registry', 'env'];
+/** The flag every emitted member hook command carries. */
+export const CREDENTIAL_FLAG = '--credential';
+/** The hook name in a rendered hook command (`… hook session-start --symbiont x`). */
+export const HOOK_COMMAND_PATTERN = /\bhook\s+([a-z][a-z-]*)/;
+/** The myco hook a rendered command runs, or null when it runs none. */
+export function hookNameInCommand(command: string): string | null {
+  return HOOK_COMMAND_PATTERN.exec(command)?.[1] ?? null;
+}
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 /** An un-acked spool file older than this is quarantined, never deleted. */
