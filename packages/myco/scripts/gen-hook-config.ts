@@ -81,11 +81,14 @@ const HOOK_COMMAND_PATTERN = /\bhook\s+([a-z][a-z-]*)/;
  * array; Antigravity nests its events under a `myco` key; Cursor and Windsurf
  * list commands directly), so the walk keys an entry by the nearest enclosing
  * object key that is not the `hooks` wrapper. Two entries for one event must
- * agree on hook and timeout; a template that wires the same event twice with
- * different values is a generator error, not a silent pick.
+ * agree on hook and timeout, and every event that wires one hook name must
+ * declare the same timeout (a hook process knows its hook name, not the
+ * harness event, so a budget read by hook name has exactly one answer); a
+ * template that disagrees with itself is a generator error, not a silent pick.
  */
 function collectHookEvents(template: unknown, templatePath: string): Record<string, HookEventEntry> {
   const collected: Record<string, HookEventEntry> = {};
+  const timeoutByHook = new Map<string, number | undefined>();
   const visit = (node: unknown, event: string | undefined): void => {
     if (Array.isArray(node)) {
       for (const item of node) visit(item, event);
@@ -103,6 +106,10 @@ function collectHookEvents(template: unknown, templatePath: string): Record<stri
       if (existing && (existing.hook !== entry.hook || existing.timeout !== entry.timeout)) {
         throw new Error(`${templatePath}: event ${event} wires conflicting hook entries`);
       }
+      if (timeoutByHook.has(entry.hook) && timeoutByHook.get(entry.hook) !== entry.timeout) {
+        throw new Error(`${templatePath}: hook ${entry.hook} is wired with different timeouts across events`);
+      }
+      timeoutByHook.set(entry.hook, entry.timeout);
       collected[event] = entry;
       return;
     }

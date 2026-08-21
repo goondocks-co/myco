@@ -1,24 +1,28 @@
 /**
  * Meta gate: the member seam boundary — transitive.
  *
- * A 2.0 member hook may only reach the modules the spec allowlists: the hook
- * and member code itself, the extracted leaves (paths/home, project-root,
+ * A member hook may only reach the modules the spec allowlists: the hook and
+ * member code itself, the extracted leaves (paths/home, project-root,
  * machine-id, capture/transcript-id, the transcript parser, the generated hook
- * config), the three utils the hooks actually use, constants/version, and
- * built-ins. It must not reach daemon/, service/, grove/, vault/, db/, host/,
- * mcp/, tools/, agent/, the installer, or the YAML manifest loader — and no
- * module in its closure may carry the local-daemon literals `127.0.0.1`,
- * `daemon.json`, `daemon.lock`. That closure is exactly what the thin-binary
- * spike compiles, so the gate walks the IMPORT GRAPH rather than grepping one
- * file: a forbidden import two hops deep is the same violation as a direct one.
+ * config), the three utils the hooks use, constants/version, and built-ins. It
+ * must not reach daemon/, service/, grove/, vault/, db/, host/, mcp/, tools/,
+ * agent/, the installer, or the YAML manifest loader — and no module in its
+ * closure may carry the local-daemon literals `127.0.0.1`, `daemon.json`,
+ * `daemon.lock` in code. That closure is exactly what a thin member binary
+ * compiles, so the gate walks the IMPORT GRAPH rather than grepping one file:
+ * a forbidden import two hops deep is the same violation as a direct one.
  *
  * Two modes, one walker:
- *   - every `src/hooks/*.ts` entry (and `src/member/**` once it exists) runs in
- *     WARN mode — the violation list is printed (it is the map the destructive
- *     layer must clear) and the test passes;
- *   - the extracted LEAVES are ENFORCED now — their closure must already sit
- *     inside the allowlist, so a `grove/` import sneaking back into one of them
- *     fails by name.
+ *   - the closure of every `src/hooks/*.ts` entry (and of `src/member/**`) is
+ *     REPORTED — the violation list is printed and the test passes;
+ *   - the closure of each ENFORCED LEAF must sit inside the allowlist and
+ *     reach no package outside `ALLOWED_EXTERNALS`, so a `grove/`, `yaml`, or
+ *     workspace-package import in one of them fails by name.
+ *
+ * Resolution: `node:*` and `bun:*` are built-ins; `@myco/*` and every other
+ * `tsconfig.json` path alias that points inside `packages/` (the workspace
+ * packages) are walked and literal-scanned like source; bare npm specifiers are
+ * externals — named in the report, forbidden on an enforced leaf.
  *
  * Static source scan (node:fs), no daemon boot — same shape as
  * `tests/meta/host-transport-seam-singularity.test.ts`. Type-only imports are
@@ -53,10 +57,16 @@ const ALLOWLIST: readonly string[] = [
   'constants/**',
 ];
 
-/** Literals that name the local daemon; none may appear in the closure. */
+/**
+ * Bare package specifiers an enforced leaf may import. Empty: the leaves reach
+ * built-ins and allowlisted source only. Widening this list is a reviewed act.
+ */
+const ALLOWED_EXTERNALS: readonly string[] = [];
+
+/** Literals that name the local daemon; none may appear in code in the closure. */
 const FORBIDDEN_LITERALS: readonly string[] = ['127.0.0.1', 'daemon.json', 'daemon.lock'];
 
-/** Leaves whose closure is enforced NOW (paths relative to packages/myco/src; `/**` = every file under). */
+/** Leaves whose closure is enforced (paths relative to packages/myco/src; `/**` = every file under). */
 const ENFORCED_LEAVES: readonly string[] = [
   'paths/home.ts',
   'project-root.ts',
@@ -110,24 +120,41 @@ export function runtimeSpecifiers(source: string): string[] {
 // Resolution
 // ---------------------------------------------------------------------------
 
-interface TsconfigPaths {
-  [prefix: string]: string;
+interface AliasTable {
+  /** `@scope/*` → absolute dir (the `*` part is appended). */
+  prefixes: Record<string, string>;
+  /** `@scope/name` → absolute file (workspace packages mapped to one entry file). */
+  exact: Record<string, string>;
 }
 
-/** `compilerOptions.paths` entries of the shape `@scope/*` → `./dir/*`, as prefix → absolute dir. */
-function loadAliasPrefixes(): TsconfigPaths {
+/**
+ * `compilerOptions.paths` from the root tsconfig. Prefix aliases (`@myco/*`)
+ * map a subtree; exact aliases map one specifier to one file — those that
+ * point inside `packages/` are workspace source and are walked; those that
+ * point into `node_modules` (react, react-router, …) are installed packages
+ * and stay externals.
+ */
+function loadAliases(): AliasTable {
   const tsconfig = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'tsconfig.json'), 'utf-8')) as {
     compilerOptions?: { paths?: Record<string, string[]> };
   };
-  const out: TsconfigPaths = {};
+  const table: AliasTable = { prefixes: {}, exact: {} };
+  const nodeModulesSegment = `${path.sep}node_modules${path.sep}`;
   for (const [key, targets] of Object.entries(tsconfig.compilerOptions?.paths ?? {})) {
-    if (!key.endsWith('/*') || targets.length === 0 || !targets[0].endsWith('/*')) continue;
-    out[key.slice(0, -1)] = path.resolve(REPO_ROOT, targets[0].slice(0, -1));
+    if (targets.length === 0) continue;
+    if (key.endsWith('/*')) {
+      if (!targets[0].endsWith('/*')) continue;
+      table.prefixes[key.slice(0, -1)] = path.resolve(REPO_ROOT, targets[0].slice(0, -1));
+      continue;
+    }
+    const target = path.resolve(REPO_ROOT, targets[0]);
+    if (target.includes(nodeModulesSegment)) continue;
+    table.exact[key] = target;
   }
-  return out;
+  return table;
 }
 
-const ALIAS_PREFIXES = loadAliasPrefixes();
+const ALIASES = loadAliases();
 
 type Resolved =
   | { kind: 'builtin'; specifier: string }
@@ -154,7 +181,13 @@ function resolveSpecifier(fromFile: string, specifier: string): Resolved {
   if (specifier.startsWith('node:') || specifier.startsWith('bun:')) {
     return { kind: 'builtin', specifier };
   }
-  for (const [prefix, dir] of Object.entries(ALIAS_PREFIXES)) {
+  const exact = ALIASES.exact[specifier];
+  if (exact) {
+    const file = resolveFile(exact);
+    if (!file) throw new Error(`${path.relative(REPO_ROOT, fromFile)}: unresolvable alias import ${specifier}`);
+    return { kind: 'module', file };
+  }
+  for (const [prefix, dir] of Object.entries(ALIASES.prefixes)) {
     if (specifier.startsWith(prefix)) {
       const file = resolveFile(path.join(dir, specifier.slice(prefix.length)));
       if (!file) throw new Error(`${path.relative(REPO_ROOT, fromFile)}: unresolvable alias import ${specifier}`);
@@ -173,36 +206,41 @@ function resolveSpecifier(fromFile: string, specifier: string): Resolved {
 // Closure + policy
 // ---------------------------------------------------------------------------
 
-/** Path relative to packages/myco/src with forward slashes. */
-function srcRel(file: string): string {
-  return path.relative(SRC_ROOT, file).split(path.sep).join('/');
+/**
+ * Display key of a module: relative to packages/myco/src for source under it,
+ * repo-relative (`packages/myco-shared/…`) for workspace files outside it.
+ */
+function moduleKey(file: string): string {
+  const rel = path.relative(SRC_ROOT, file);
+  const key = rel.startsWith('..') ? path.relative(REPO_ROOT, file) : rel;
+  return key.split(path.sep).join('/');
 }
 
-function matchesAllowlist(rel: string): boolean {
+function matchesAllowlist(key: string): boolean {
   return ALLOWLIST.some((pattern) => (
-    pattern.endsWith('/**') ? rel.startsWith(pattern.slice(0, -2)) : rel === pattern
+    pattern.endsWith('/**') ? key.startsWith(pattern.slice(0, -2)) : key === pattern
   ));
 }
 
 interface Closure {
-  /** Every src module reached (src-relative), including the entries. */
-  modules: Set<string>;
+  /** Every module reached (display key → absolute file), including the entries. */
+  modules: Map<string, string>;
   /** First-discovered importer of each module, for a path back to an entry. */
   via: Map<string, string | null>;
-  /** Bare package specifiers reached (not walked). */
-  externals: Set<string>;
+  /** Bare package specifiers reached (not walked) → first importer. */
+  externals: Map<string, string>;
 }
 
 function closureOf(entries: readonly string[]): Closure {
-  const modules = new Set<string>();
+  const modules = new Map<string, string>();
   const via = new Map<string, string | null>();
-  const externals = new Set<string>();
+  const externals = new Map<string, string>();
   const queue: string[] = [];
   for (const entry of entries) {
-    const rel = srcRel(entry);
-    if (modules.has(rel)) continue;
-    modules.add(rel);
-    via.set(rel, null);
+    const key = moduleKey(entry);
+    if (modules.has(key)) continue;
+    modules.set(key, entry);
+    via.set(key, null);
     queue.push(entry);
   }
   while (queue.length > 0) {
@@ -212,13 +250,13 @@ function closureOf(entries: readonly string[]): Closure {
       const resolved = resolveSpecifier(file, specifier);
       if (resolved.kind === 'builtin') continue;
       if (resolved.kind === 'external') {
-        externals.add(resolved.specifier);
+        if (!externals.has(resolved.specifier)) externals.set(resolved.specifier, moduleKey(file));
         continue;
       }
-      const rel = srcRel(resolved.file);
-      if (modules.has(rel)) continue;
-      modules.add(rel);
-      via.set(rel, srcRel(file));
+      const key = moduleKey(resolved.file);
+      if (modules.has(key)) continue;
+      modules.set(key, resolved.file);
+      via.set(key, moduleKey(file));
       queue.push(resolved.file);
     }
   }
@@ -232,9 +270,9 @@ interface Violation {
   chain: string[];
 }
 
-function chainTo(closure: Closure, rel: string): string[] {
+function chainTo(closure: Closure, key: string): string[] {
   const chain: string[] = [];
-  let cursor: string | null | undefined = closure.via.get(rel);
+  let cursor: string | null | undefined = closure.via.get(key);
   while (cursor) {
     chain.push(cursor);
     cursor = closure.via.get(cursor);
@@ -242,18 +280,29 @@ function chainTo(closure: Closure, rel: string): string[] {
   return chain;
 }
 
-function violationsOf(closure: Closure): Violation[] {
+/** Allowlist + literal violations over the walked modules. */
+function moduleViolationsOf(closure: Closure): Violation[] {
   const out: Violation[] = [];
-  for (const rel of [...closure.modules].sort()) {
-    if (!matchesAllowlist(rel)) {
-      out.push({ module: rel, reason: 'outside allowlist', chain: chainTo(closure, rel) });
+  for (const key of [...closure.modules.keys()].sort()) {
+    if (!matchesAllowlist(key)) {
+      out.push({ module: key, reason: 'outside allowlist', chain: chainTo(closure, key) });
     }
-    const code = stripComments(fs.readFileSync(path.join(SRC_ROOT, rel), 'utf-8'));
+    const code = stripComments(fs.readFileSync(closure.modules.get(key)!, 'utf-8'));
     for (const literal of FORBIDDEN_LITERALS) {
       if (code.includes(literal)) {
-        out.push({ module: rel, reason: `contains literal ${literal}`, chain: chainTo(closure, rel) });
+        out.push({ module: key, reason: `contains literal ${literal}`, chain: chainTo(closure, key) });
       }
     }
+  }
+  return out;
+}
+
+/** External packages reached that are not in `ALLOWED_EXTERNALS`. */
+function externalViolationsOf(closure: Closure): Violation[] {
+  const out: Violation[] = [];
+  for (const [specifier, importer] of [...closure.externals.entries()].sort()) {
+    if (ALLOWED_EXTERNALS.includes(specifier)) continue;
+    out.push({ module: specifier, reason: 'external package', chain: [importer, ...chainTo(closure, importer)] });
   }
   return out;
 }
@@ -332,18 +381,19 @@ describe('member seam boundary (transitive)', () => {
   const hookEntries = listTs(path.join(SRC_ROOT, 'hooks')).filter((f) => path.dirname(f) === path.join(SRC_ROOT, 'hooks'));
   const memberEntries = listTs(path.join(SRC_ROOT, 'member'));
 
-  it('walks every hooks/ and member/ entry and reports the closure outside the allowlist (warn mode)', () => {
+  it('walks every hooks/ and member/ entry and reports the closure outside the allowlist (report mode)', () => {
     expect(hookEntries.length).toBeGreaterThan(0);
     const closure = closureOf([...hookEntries, ...memberEntries]);
-    const violations = violationsOf(closure);
+    const violations = [...moduleViolationsOf(closure), ...externalViolationsOf(closure)];
     const outside = new Set(violations.filter((v) => v.reason === 'outside allowlist').map((v) => v.module));
-    const literals = violations.filter((v) => v.reason !== 'outside allowlist');
-    // WARN MODE: the destructive member layer clears this list and flips the
-    // gate to enforce; until then the list is printed so the map stays visible.
+    const literals = violations.filter((v) => v.reason.startsWith('contains literal'));
+    const externals = violations.filter((v) => v.reason === 'external package');
+    // REPORT MODE: the hooks closure is printed, not asserted — the list is
+    // what the member rewiring clears before this block becomes an assertion.
     console.log(
-      `[member-seam] warn mode: ${closure.modules.size} modules in the hooks closure, `
+      `[member-seam] report: ${closure.modules.size} modules in the hooks closure, `
       + `${outside.size} outside the allowlist, ${literals.length} forbidden-literal hits, `
-      + `${closure.externals.size} external packages reached (${[...closure.externals].sort().join(', ')})\n`
+      + `${externals.length} external packages reached\n`
       + formatViolations(violations),
     );
     expect(Array.isArray(violations)).toBe(true);
@@ -356,17 +406,19 @@ describe('member seam boundary (transitive)', () => {
       for (const file of files) {
         expect(fs.existsSync(file)).toBe(true);
         const closure = closureOf([file]);
-        const violations = violationsOf(closure);
+        const violations = [...moduleViolationsOf(closure), ...externalViolationsOf(closure)];
         if (violations.length > 0) {
-          throw new Error(`${srcRel(file)} reaches outside the member seam allowlist:\n${formatViolations(violations)}`);
+          throw new Error(`${moduleKey(file)} reaches outside the member seam allowlist:\n${formatViolations(violations)}`);
         }
         expect(violations).toEqual([]);
       }
     });
   }
 
-  it('resolves every @myco/* alias through the root tsconfig', () => {
-    expect(ALIAS_PREFIXES['@myco/']).toBe(path.join(REPO_ROOT, 'packages', 'myco', 'src'));
+  it('resolves @myco/* and the workspace packages through the root tsconfig', () => {
+    expect(ALIASES.prefixes['@myco/']).toBe(path.join(REPO_ROOT, 'packages', 'myco', 'src'));
+    expect(ALIASES.exact['@goondocks/myco-shared']).toBe(path.join(REPO_ROOT, 'packages', 'myco-shared', 'src', 'index.ts'));
+    expect(ALIASES.exact.react).toBeUndefined();
   });
 
   it('scans literals in code, not in comments', () => {

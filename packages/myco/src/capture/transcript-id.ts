@@ -1,8 +1,8 @@
 /**
  * The stable transcript id every transcript producer and consumer keys on.
  *
- * A leaf: `node:crypto` only. Both the Team-Host path (`host/routed-transcript.ts`,
- * `capture/transcript-drain.ts`) and the 2.0 member import this one function —
+ * A leaf: `node:crypto` only. `capture/transcript-drain.ts` (the member drain)
+ * and `host/routed-transcript.ts` (the host ingest) import this one function —
  * the id is never re-derived "with the same inputs" anywhere else.
  */
 import crypto from 'node:crypto';

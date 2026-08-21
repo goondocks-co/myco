@@ -1,3 +1,3 @@
-// The daemon client lives in daemon/client.ts; hooks still reach it through
-// this path until the member seam replaces their daemon calls.
+// The daemon client lives in daemon/client.ts; the hooks import it through
+// this path.
 export * from '../daemon/client.js';
