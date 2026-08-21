@@ -53,7 +53,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Database } from '../db/client.js';
-import { DaemonClient } from '../hooks/client.js';
+import { DaemonClient } from './client.js';
 import { createMycoTools } from '../tools/index.js';
 import {
   ForeignGroveError,

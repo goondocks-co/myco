@@ -46,7 +46,8 @@ import {
   nativePerUserLockNamespace,
   type PerUserLockNamespace,
 } from '@myco/utils/per-user-lock-namespace.js';
-import { deriveTranscriptId, MAX_TRANSCRIPT_PUSH_BYTES } from '../host/routed-transcript.js';
+import { MAX_TRANSCRIPT_PUSH_BYTES } from '../host/routed-transcript.js';
+import { deriveTranscriptId } from './transcript-id.js';
 import { defaultDial, hostAuthority, hostProtocolCompatible } from '../daemon/host-proxy.js';
 import type { DaemonLogger } from '../daemon/logger.js';
 import { shouldLogOncePerInterval } from '../daemon/log-throttle.js';

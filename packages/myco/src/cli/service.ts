@@ -99,7 +99,7 @@ export function assertSafeServiceMutation(
  * and the failure this catches is immediate rather than slow.
  */
 async function confirmDaemonStarted(mycoHome: string, deadlineMs = 8_000): Promise<boolean> {
-  const { DaemonClient } = await import('../hooks/client.js');
+  const { DaemonClient } = await import('../daemon/client.js');
   const client = new DaemonClient(mycoHome);
   const started = Date.now();
   while (Date.now() - started < deadlineMs) {

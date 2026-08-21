@@ -31,7 +31,7 @@ import { __resetLogThrottleForTests, __setLogThrottleClockForTests } from '@myco
 import type { DaemonStateAuthority } from '@myco/daemon/daemon-state-authority.js';
 import { servedGroveRefusal, type HostServeRuntime } from '@myco/daemon/host-serve.js';
 import { createStreamableMcpHttpHandler } from '@myco/mcp/http.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry.js';
 import { HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION, REFUSAL_LOG_THROTTLE_INTERVAL_MS } from '@myco/constants.js';

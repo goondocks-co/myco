@@ -45,7 +45,7 @@ afterAll(() => {
 });
 
 // Late imports so the mock is in place before client.ts evaluates.
-const { DaemonClient, buildDaemonSpawnOptions } = await import('@myco/hooks/client');
+const { DaemonClient, buildDaemonSpawnOptions } = await import('@myco/daemon/client');
 
 // buildDaemonSpawnOptions is a pure builder: the detached+unref+ignore-stdio+
 // windowsHide contract is verifiable without spawning a process.

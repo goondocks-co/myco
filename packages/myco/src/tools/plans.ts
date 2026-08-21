@@ -6,7 +6,7 @@
  * `/api/plans/:id` REST endpoint (the surface the daemon UI also consumes).
  */
 
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { saveMcpPlan } from '@myco/plans/save-mcp.js';
 import { listPlansForMcp } from '@myco/plans/list-for-mcp.js';
 import { getPlan } from '@myco/db/queries/plans.js';

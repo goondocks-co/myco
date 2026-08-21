@@ -31,7 +31,7 @@ import { upsertSession } from '@myco/db/queries/sessions.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 
 const PROJECT_ID = assertGroveProjectId(createProjectId());
 const CREATOR_SESSION = 'behav-creator-session';

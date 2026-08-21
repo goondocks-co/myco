@@ -7,7 +7,7 @@ import { createMycoTools } from '@myco/tools/index.js';
 import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { resolveDaemonLogDir } from '@myco/daemon/service-state.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 
 const FIXTURE_VAULT = '/tmp/myco-vault';
 const FIXTURE_PROJECT_ID = assertGroveProjectId(createProjectId());

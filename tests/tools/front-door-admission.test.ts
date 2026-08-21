@@ -32,7 +32,7 @@ import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveGroveProjectsPath } from '@myco/grove/paths.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 const PROJECT = assertGroveProjectId('proj_' + '9'.repeat(32));

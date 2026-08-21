@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleMycoAgent } from '@myco/tools/agent.js';
-import type { DaemonClient } from '@myco/hooks/client.js';
+import type { DaemonClient } from '@myco/daemon/client.js';
 
 function mockClient(data: unknown = null, ok = true): DaemonClient {
   return {
