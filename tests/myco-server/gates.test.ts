@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { RETIRED_ROUTES, ROUTES } from '@myco-server-worker/routes.js';
 import worker from '@myco-server-worker/index.js';
 import { createIngestThrottle } from './helpers/throttle.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
 import { MEMBER_TOKEN_BYTE_QUOTA, RETRY_AFTER_SECONDS, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
@@ -28,7 +28,7 @@ const files = (dir: string): string[] => allFiles(dir).filter((f) => f.endsWith(
 const sharedFiles = () => files(SRC).filter((f) => !f.includes(`${join(SRC, 'platform')}/`));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 17;
+const EMIT_CALLS = 20;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -183,7 +183,7 @@ describe('gates', () => {
     expect(await (await worker.fetch(post(t2.token, {}), e)).json()).toEqual({ persisted: true, projected: true });
     for (const spoof of [{ projectId: 'proj_1' }, { tokenId: t1.tokenId }, { machineId: 'machine_1' }]) {
       const res = await worker.fetch(post(t2.token, { ...spoof, eventId: uuid(99) }), e);
-      expect(await res.json()).toEqual({ persisted: false, reason: `unknown field ${Object.keys(spoof)[0]}` });
+      expect(await res.json()).toEqual({ persisted: false, code: 'unknown_field', reason: `unknown field ${Object.keys(spoof)[0]}` });
     }
     const sessions = sqlite.query(`SELECT project_id, machine_id, created_by_token_id FROM sessions ORDER BY project_id`).all();
     expect(sessions).toEqual([
@@ -200,9 +200,9 @@ describe('gates', () => {
     const t3 = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_3' }, Date.now());
     expect(await (await worker.fetch(memberPost(t1.token, envelope()), e)).json()).toEqual({ persisted: true, projected: true });
     const before = sqlite.query(`SELECT * FROM sessions`).all();
-    expect(await (await worker.fetch(memberPost(t3.token, envelope({ createdAt: 0, payload: { promptId: uuid(2), text: 'squat', origin: 'user' } })), e)).json()).toEqual({ persisted: false, reason: 'machine identity mismatch' });
-    expect(await (await worker.fetch(memberPost(t3.token, envelope({ sessionId: 'sess_new', payload: { promptId: uuid(2), text: 'squat', origin: 'user' } })), e)).json()).toEqual({ persisted: false, reason: 'machine identity mismatch' });
-    expect(await (await worker.fetch(memberPost(t3.token, envelope()), e)).json()).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(await (await worker.fetch(memberPost(t3.token, envelope({ createdAt: 0, payload: { promptId: uuid(2), text: 'squat', origin: 'user' } })), e)).json()).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
+    expect(await (await worker.fetch(memberPost(t3.token, envelope({ sessionId: 'sess_new', payload: { promptId: uuid(2), text: 'squat', origin: 'user' } })), e)).json()).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
+    expect(await (await worker.fetch(memberPost(t3.token, envelope()), e)).json()).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     expect(sqlite.query(`SELECT * FROM sessions`).all()).toEqual(before);
     expect((sqlite.query(`SELECT COUNT(*) c FROM sessions`).get() as any).c).toBe(1);
   });
@@ -252,7 +252,7 @@ describe('gates', () => {
     const body = envelope({ payload: { promptId: uuid(2), text: 'x'.repeat(200), origin: 'user' } });
     const res = await worker.fetch(withSource('/events', { method: 'POST', headers: { authorization: `Bearer ${t1.token}`, ...PROTOCOL }, body }), e);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ persisted: false, reason: 'token write quota exceeded' });
+    expect(await res.json()).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c).toBe(0);
     expect((sqlite.query(`SELECT bytes_written b FROM member_tokens WHERE id = ?`).get(t1.tokenId) as any).b).toBe(MEMBER_TOKEN_BYTE_QUOTA - 100);
   });
@@ -266,7 +266,7 @@ describe('gates', () => {
     const charged = (sqlite.query(`SELECT bytes_written b FROM member_tokens WHERE id = ?`).get(t1.tokenId) as any).b;
     expect(charged).toBe(new TextEncoder().encode(body).byteLength);
     expect(await (await worker.fetch(memberPost(t1.token, body), e)).json()).toEqual({ persisted: true, duplicate: true });
-    expect(await (await worker.fetch(memberPost(t3.token, body), e)).json()).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(await (await worker.fetch(memberPost(t3.token, body), e)).json()).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     expect((sqlite.query(`SELECT bytes_written b FROM member_tokens WHERE id = ?`).get(t1.tokenId) as any).b).toBe(charged);
     expect((sqlite.query(`SELECT bytes_written b FROM member_tokens WHERE id = ?`).get(t3.tokenId) as any).b).toBe(0);
     expect((sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c).toBe(1);
@@ -278,7 +278,7 @@ describe('gates', () => {
     expect(await (await worker.fetch(memberPost(t1.token, envelope()), e)).json()).toEqual({ persisted: true, projected: true });
     const res = await worker.fetch(memberPost(t1.token, envelope({ payload: { promptId: uuid(2), text: 'other', origin: 'user' } })), e);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ persisted: false, reason: 'event id conflict' });
+    expect(await res.json()).toEqual({ persisted: false, code: 'event_id_conflict', reason: 'event id conflict' });
     expect((sqlite.query(`SELECT payload FROM events`).get() as any).payload).toBe(JSON.stringify(fixture().payload));
   });
 
@@ -288,7 +288,7 @@ describe('gates', () => {
     sqlite.query(`UPDATE schema_meta SET value = ? WHERE key = 'version'`).run(String(SERVER_SCHEMA_VERSION + 1));
     const res = await worker.fetch(memberPost(t1.token, envelope()), e);
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ persisted: false, reason: 'unavailable' });
+    expect(await res.json()).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c).toBe(0);
     const blob = await worker.fetch(new Request(`https://s/blobs/${'a'.repeat(64)}`, {
       method: 'POST',
@@ -296,7 +296,7 @@ describe('gates', () => {
       body: 'x',
     }), e);
     expect(blob.status).toBe(503);
-    expect(await blob.json()).toEqual({ stored: false, reason: 'unavailable' });
+    expect(await blob.json()).toEqual({ stored: false, code: 'unavailable', reason: 'unavailable' });
     sqlite.query(`DELETE FROM schema_meta`).run();
     expect((await worker.fetch(memberPost(t1.token, envelope()), e)).status).toBe(503);
   });
@@ -308,7 +308,7 @@ describe('gates', () => {
     const res = await worker.fetch(memberPost(t1.token, envelope()), e);
     expect(res.status).toBe(503);
     expect(res.headers.get('retry-after')).toBe(String(RETRY_AFTER_SECONDS));
-    expect(await res.json()).toEqual({ persisted: false, reason: 'unavailable' });
+    expect(await res.json()).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
   });
 
   it('advertises the rate-limit window it is configured with', () => {
@@ -396,15 +396,17 @@ describe('gates', () => {
     for (const f of renderMigrationFiles()) expect(readFileSync(join(WORKER, MIGRATIONS_DIR, f.name), 'utf8')).toBe(f.sql);
   });
 
-  it('declares an auth kind and a body mode for every route, and drives every non-public route through the deployed entry from its own fixture: a malformed request is refused in the route\'s shape, and a token without a machine identity is refused every write, storing nothing and charging nothing', async () => {
+  it('declares an auth kind, a body mode and a shape for every route, and drives every non-public route through the deployed entry from its own fixture: a malformed request is refused in the route\'s shape with a code, and a token without a machine identity is refused every write, storing nothing and charging nothing', async () => {
     const { env: e, db, sqlite, bucket } = sqliteEnv();
-    const t1 = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, Date.now());
-    const anonymous = await issueMemberToken(db, { projectId: 'proj_1', machineId: null }, Date.now());
+    /** Issued far enough back that the refresh window is open now, and far enough forward that the tokens are live. */
+    const issuedAt = Date.now() - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2);
+    const t1 = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, issuedAt);
+    const anonymous = await issueMemberToken(db, { projectId: 'proj_1', machineId: null }, issuedAt);
     const KEY = 'a'.repeat(64);
     const bytes = new TextEncoder().encode('blob-bytes');
     const key = await sha256Hex('blob-bytes');
     /** Per non-public route: a malformed request the route refuses, and a well-formed one it would store. */
-    const FIXTURES: Record<string, { shape: 'persisted' | 'stored'; malformed: (token: string) => Request; wellFormed: (token: string) => Request }> = {
+    const FIXTURES: Record<string, { shape: 'persisted' | 'stored' | 'refreshed'; malformed: (token: string) => Request; wellFormed: (token: string) => Request }> = {
       'POST /events': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/events', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -415,6 +417,11 @@ describe('gates', () => {
         malformed: (token) => new Request(`https://s/blobs/${KEY}`, { method: 'POST', headers: memberHeaders(token, { 'content-type': 'nonsense', 'content-length': '2' }), body: '{}' }),
         wellFormed: (token) => new Request(`https://s/blobs/${key}`, { method: 'POST', headers: memberHeaders(token, { 'content-type': 'text/plain', 'content-length': String(bytes.byteLength) }), body: bytes }),
       },
+      'POST /tokens/refresh': {
+        shape: 'refreshed',
+        malformed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+      },
     };
     expect(ROUTES.filter((r) => r.auth !== 'public').map((r) => `${r.method} ${r.path}`).sort()).toEqual(Object.keys(FIXTURES).sort());
     const machineless: Record<string, unknown>[] = [];
@@ -423,20 +430,31 @@ describe('gates', () => {
       expect(['none', 'json', 'stream']).toContain(r.bodyMode);
       if (r.auth === 'public') continue;
       const fixture = FIXTURES[`${r.method} ${r.path}`];
+      expect({ route: r.path, shape: r.shape }).toEqual({ route: r.path, shape: fixture.shape });
       const res = await worker.fetch(fixture.malformed(t1.token), e);
       expect({ route: r.path, status: res.status }).toEqual({ route: r.path, status: 200 });
       const body = await res.json() as Record<string, unknown>;
-      expect({ route: r.path, refused: body[fixture.shape] === false }).toEqual({ route: r.path, refused: true });
+      expect({ route: r.path, refused: body[fixture.shape] === false, coded: typeof body.code === 'string' }).toEqual({ route: r.path, refused: true, coded: true });
       const refused = await worker.fetch(fixture.wellFormed(anonymous.token), e);
       machineless.push({ route: r.path, status: refused.status, body: await refused.json() });
     }
-    expect(machineless).toEqual(Object.entries(FIXTURES).map(([route, f]) => ({ route: route.slice('POST '.length), status: 200, body: { [f.shape]: false, reason: 'token has no machine identity' } })));
+    expect(machineless).toEqual(Object.entries(FIXTURES).map(([route, f]) => ({ route: route.slice('POST '.length), status: 200, body: { [f.shape]: false, code: 'no_machine_identity', reason: 'token has no machine identity' } })));
     expect({ events: (sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c, blobs: (sqlite.query(`SELECT COUNT(*) c FROM blobs`).get() as any).c, puts: bucket.puts }).toEqual({ events: 0, blobs: 0, puts: [] });
     expect((sqlite.query(`SELECT bytes_written b FROM member_tokens WHERE id = ?`).get(anonymous.tokenId) as any).b).toBe(0);
     for (const [, fixture] of Object.entries(FIXTURES)) {
       const stored = await (await worker.fetch(fixture.wellFormed(t1.token), e)).json() as Record<string, unknown>;
       expect(stored[fixture.shape]).toBe(true);
     }
+  });
+
+  it('inserts into member_tokens from exactly one statement under src, and that statement lands only while the presented token is live', () => {
+    const inserting = files(SRC).filter((f) => /INTO member_tokens\b/.test(readFileSync(f, 'utf8')));
+    expect(inserting).toEqual([join(SRC, 'auth', 'tokens.ts')]);
+    const tokens = readFileSync(join(SRC, 'auth', 'tokens.ts'), 'utf8');
+    expect(tokens.match(/INTO member_tokens\b/g)).toHaveLength(1);
+    expect(tokens).toMatch(/INSERT INTO member_tokens \([^)]*\)\s+SELECT \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL\s+WHERE \? IS NULL OR \$\{TOKEN_LIVE\}`/);
+    expect(tokens).toMatch(/UPDATE member_tokens SET revoked_at = \? WHERE predecessor_id = \? AND revoked_at IS NULL AND first_used_at IS NULL AND \$\{TOKEN_LIVE\}`/);
+    expect(readFileSync(join(SRC, 'ingest', 'quota.ts'), 'utf8')).toMatch(/export const TOKEN_LIVE = 'EXISTS \(SELECT 1 FROM member_tokens WHERE id = \? AND revoked_at IS NULL\)';/);
   });
 
   it('emits only fixed classifiers as telemetry reasons', () => {

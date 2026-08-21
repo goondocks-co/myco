@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
-  MEMBER_TOKEN_BYTES, MEMBER_TOKEN_TTL_MS, MEMBER_TOKEN_PATTERN,
-  mintMemberToken, issueMemberToken, revokeMemberToken, authenticateServerMemberToken,
+  MEMBER_TOKEN_BYTES, MEMBER_TOKEN_TTL_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_MAX_LINEAGE_MS,
+  mintMemberToken, issueMemberToken, revokeMemberToken, revokeMemberLineage, authenticateServerMemberToken,
 } from '@myco-server-worker/auth/tokens.js';
 import { MEMBER_TOKEN_BYTE_QUOTA, TOKEN_ID_PREFIX } from '@myco-server-worker/constants.js';
 import { SchemaMismatchError } from '@myco-server-worker/telemetry.js';
@@ -27,21 +27,45 @@ describe('member tokens', () => {
     expect(mintMemberToken().length).toBe(Math.ceil((MEMBER_TOKEN_BYTES * 4) / 3));
   });
 
-  it('bounds the credential lifetime and write volume', () => {
+  it('bounds the credential lifetime, the refresh window, the lineage, and the write volume', () => {
     expect(MEMBER_TOKEN_TTL_MS).toBeGreaterThan(0);
     expect(MEMBER_TOKEN_TTL_MS).toBeLessThanOrEqual(30 * 24 * 60 * 60 * 1000);
+    expect(MEMBER_TOKEN_REFRESH_WINDOW_MS).toBe(MEMBER_TOKEN_TTL_MS / 4);
+    expect(MEMBER_TOKEN_MAX_LINEAGE_MS).toBe(90 * 24 * 60 * 60 * 1000);
+    expect(MEMBER_TOKEN_MAX_LINEAGE_MS).toBeGreaterThan(MEMBER_TOKEN_TTL_MS);
     expect(MEMBER_TOKEN_BYTE_QUOTA).toBeGreaterThan(0);
   });
 
-  it('issues a token whose row expires exactly one TTL after issue and stores only the digest', async () => {
+  it('issues a root token whose row expires exactly one TTL after issue, roots its own lineage at issue, always lands, and stores only the digest', async () => {
     const { db, calls } = recordingDb();
     const issued = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, 5_000);
     expect(issued.expiresAt - 5_000).toBe(MEMBER_TOKEN_TTL_MS);
     expect(issued.tokenId.startsWith(TOKEN_ID_PREFIX)).toBe(true);
     expect(calls).toHaveLength(1);
-    expect(calls[0].sql).toMatch(/INSERT INTO member_tokens/);
-    expect(calls[0].params).toEqual([issued.tokenId, 'proj_1', 'machine_1', await sha256Hex(issued.token), issued.expiresAt]);
+    expect(calls[0].sql).toMatch(/INSERT INTO member_tokens \(id, project_id, machine_id, token_hash, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at\)/);
+    expect(calls[0].sql).toMatch(/SELECT \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL\s+WHERE \? IS NULL OR EXISTS \(SELECT 1 FROM member_tokens WHERE id = \? AND revoked_at IS NULL\)/);
+    expect(calls[0].params).toEqual([issued.tokenId, 'proj_1', 'machine_1', await sha256Hex(issued.token), issued.expiresAt, null, issued.tokenId, 5_000, null, null]);
     expect(calls[0].params).not.toContain(issued.token);
+  });
+
+  it('issues a successor into its predecessor\'s lineage, only while the predecessor is live, expiring one TTL from now or at the lineage ceiling, whichever is sooner', async () => {
+    const { db, calls } = recordingDb();
+    const inside = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, 5_000, { predecessorId: 'mt_pred', lineageRoot: 'mt_root', lineageStartedAt: 1_000 });
+    expect(inside.expiresAt).toBe(5_000 + MEMBER_TOKEN_TTL_MS);
+    expect(calls[0].params).toEqual([inside.tokenId, 'proj_1', 'machine_1', await sha256Hex(inside.token), inside.expiresAt, 'mt_pred', 'mt_root', 1_000, 'mt_pred', 'mt_pred']);
+    const startedAt = 5_000 - MEMBER_TOKEN_MAX_LINEAGE_MS + 10;
+    const clamped = await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, 5_000, { predecessorId: 'mt_pred', lineageRoot: 'mt_root', lineageStartedAt: startedAt });
+    expect(clamped.expiresAt).toBe(startedAt + MEMBER_TOKEN_MAX_LINEAGE_MS);
+    expect(clamped.expiresAt).toBe(5_010);
+  });
+
+  it('revokes a whole lineage by any of its ids in one statement, counting the rows that changed', async () => {
+    const { db, calls } = recordingDb(3);
+    expect(await revokeMemberLineage(db, 'mt_mid', 9_000)).toEqual({ revoked: 3 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toMatch(/UPDATE member_tokens SET revoked_at = \? WHERE lineage_root = \(SELECT lineage_root FROM member_tokens WHERE id = \?\) AND revoked_at IS NULL/);
+    expect(calls[0].params).toEqual([9_000, 'mt_mid']);
+    expect(await revokeMemberLineage(recordingDb(0).db, 'mt_missing', 9_000)).toEqual({ revoked: 0 });
   });
 
   it('revokes by id and only once, reporting whether a live row matched', async () => {
@@ -52,17 +76,21 @@ describe('member tokens', () => {
     expect(await revokeMemberToken(recordingDb(0).db, 'mt_missing', 9_000)).toEqual({ revoked: false });
   });
 
-  it('authenticates a live token digest and returns its bound machine and volume', async () => {
+  it('authenticates a live token digest and returns its bound machine, volume, lifetime, lineage, predecessor and first use', async () => {
     const digest = await sha256Hex(mintMemberToken());
     expect(await authenticateServerMemberToken(fakeDb(authRow({ bytes_written: 42 })), digest, 1_000))
-      .toEqual({ projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', bytesWritten: 42 });
+      .toEqual({ projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', bytesWritten: 42, expiresAt: 2_000, lineageRoot: 'mt_1', lineageStartedAt: 1_000, predecessorId: null, firstUsedAt: null });
+    expect(await authenticateServerMemberToken(fakeDb(authRow({ predecessor_id: 'mt_0', lineage_root: 'mt_0', lineage_started_at: 500, first_used_at: 900 })), digest, 1_000))
+      .toMatchObject({ predecessorId: 'mt_0', lineageRoot: 'mt_0', lineageStartedAt: 500, firstUsedAt: 900 });
   });
 
-  it('rejects expired, revoked, and unknown tokens', async () => {
+  it('rejects expired, revoked, unknown, and lineage-less tokens', async () => {
     const digest = await sha256Hex(mintMemberToken());
     expect(await authenticateServerMemberToken(fakeDb(authRow({ expires_at: 500 })), digest, 1_000)).toBeNull();
     expect(await authenticateServerMemberToken(fakeDb(authRow({ revoked_at: 900 })), digest, 1_000)).toBeNull();
     expect(await authenticateServerMemberToken(fakeDb(noMemberRow()), digest, 1_000)).toBeNull();
+    expect(await authenticateServerMemberToken(fakeDb(authRow({ lineage_root: null })), digest, 1_000)).toBeNull();
+    expect(await authenticateServerMemberToken(fakeDb(authRow({ lineage_started_at: null })), digest, 1_000)).toBeNull();
   });
 
   it('refuses to authenticate against a database at another schema version, whether or not the token exists', async () => {

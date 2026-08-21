@@ -167,12 +167,12 @@ describe('kind catalogue', () => {
   it('refuses an unknown kind and an unknown payload field by name, storing nothing and charging nothing', async () => {
     const e = sqliteEnv();
     const t = await member(e);
-    expect(await json(await worker.fetch(memberPost(t.token, envelope({ kind: 'made.up', payload: {} })), e.env))).toEqual({ persisted: false, reason: 'unknown kind made.up' });
-    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), text: 'x', origin: 'user', extra: 1 } })), e.env))).toEqual({ persisted: false, reason: 'unknown field payload.extra' });
-    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), origin: 'user' } })), e.env))).toEqual({ persisted: false, reason: 'exactly one of text or blob is required' });
-    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), text: 'x', blob: 'a'.repeat(64), origin: 'user' } })), e.env))).toEqual({ persisted: false, reason: 'exactly one of text or blob is required' });
-    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), text: 'x', origin: 'human' } })), e.env))).toEqual({ persisted: false, reason: `origin must be one of ${PROMPT_ORIGINS.join(', ')}` });
-    expect(await json(await worker.fetch(memberPost(t.token, envelope({ kind: 'tool.use', payload: { toolCallId: uuid(3), toolName: 'x'.repeat(65), input: {}, success: true } })), e.env))).toEqual({ persisted: false, reason: 'toolName must be a string of at most 64 characters' });
+    expect(await json(await worker.fetch(memberPost(t.token, envelope({ kind: 'made.up', payload: {} })), e.env))).toEqual({ persisted: false, code: 'unknown_kind', reason: 'unknown kind made.up' });
+    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), text: 'x', origin: 'user', extra: 1 } })), e.env))).toEqual({ persisted: false, code: 'unknown_field', reason: 'unknown field payload.extra' });
+    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), origin: 'user' } })), e.env))).toEqual({ persisted: false, code: 'refused', reason: 'exactly one of text or blob is required' });
+    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), text: 'x', blob: 'a'.repeat(64), origin: 'user' } })), e.env))).toEqual({ persisted: false, code: 'refused', reason: 'exactly one of text or blob is required' });
+    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), text: 'x', origin: 'human' } })), e.env))).toEqual({ persisted: false, code: 'refused', reason: `origin must be one of ${PROMPT_ORIGINS.join(', ')}` });
+    expect(await json(await worker.fetch(memberPost(t.token, envelope({ kind: 'tool.use', payload: { toolCallId: uuid(3), toolName: 'x'.repeat(65), input: {}, success: true } })), e.env))).toEqual({ persisted: false, code: 'refused', reason: 'toolName must be a string of at most 64 characters' });
     expect(count(e.sqlite, 'events')).toBe(0);
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
   });
@@ -195,7 +195,7 @@ describe('kind catalogue', () => {
       ['session.end', { endedAt: now + MAX_CLOCK_SKEW_MS + 60_000 }, 'endedAt'],
     ] as [string, Record<string, unknown>, string][]) {
       const res = await json(await worker.fetch(memberPost(t.token, envelope({ kind, payload, sessionId: 'sess_skew' })), e.env));
-      expect({ kind, field, res }).toEqual({ kind, field, res: { persisted: false, reason: `${field} ${ahead}` } });
+      expect({ kind, field, res }).toEqual({ kind, field, res: { persisted: false, code: 'clock_skew', reason: `${field} ${ahead}` } });
     }
     expect(count(e.sqlite, 'events')).toBe(0);
     expect(count(e.sqlite, 'sessions')).toBe(0);
@@ -230,13 +230,13 @@ describe('kind catalogue', () => {
     ];
     for (const [kind, payload, field] of cases) {
       const res = await json(await worker.fetch(memberPost(t.token, envelope({ kind, payload })), e.env));
-      expect({ kind, res }).toEqual({ kind, res: { persisted: false, reason: `${field} must match the id grammar` } });
+      expect({ kind, res }).toEqual({ kind, res: { persisted: false, code: 'id_grammar', reason: `${field} must match the id grammar` } });
     }
     // The transcript grammar admits exactly the `tx_` form and the envelope's one lowercase id grammar: a case
     // variant of either form is refused, so a transcript can never fork into case-variant ids.
     for (const transcriptId of ['tx_short', `TX_${'0'.repeat(32)}`, `tx_${'A'.repeat(32)}`, 'ABCDEF12-3456-7000-8000-0123456789AB']) {
       const bad = await json(await worker.fetch(memberPost(t.token, envelope({ kind: 'transcript.segment', payload: { transcriptId, baseOffset: 0, length: 1, blob: 'a'.repeat(64) } })), e.env));
-      expect({ transcriptId, bad }).toEqual({ transcriptId, bad: { persisted: false, reason: 'transcriptId must match the transcript id grammar' } });
+      expect({ transcriptId, bad }).toEqual({ transcriptId, bad: { persisted: false, code: 'id_grammar', reason: 'transcriptId must match the transcript id grammar' } });
     }
     expect(count(e.sqlite, 'events')).toBe(0);
   });
@@ -248,7 +248,7 @@ describe('kind catalogue', () => {
     const atCap = await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(280), payload: { promptId: uuid(2), text: 'x'.repeat(MAX_PAYLOAD_BYTES - fixed), origin: 'user' } })), e.env));
     expect(atCap).toEqual({ persisted: true, projected: true });
     const over = await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(281), payload: { promptId: uuid(282), text: 'x'.repeat(MAX_PAYLOAD_BYTES - fixed + 1), origin: 'user' } })), e.env));
-    expect(over).toEqual({ persisted: false, reason: PAYLOAD_CAP_REASON });
+    expect(over).toEqual({ persisted: false, code: 'refused', reason: PAYLOAD_CAP_REASON });
     expect(count(e.sqlite, 'events')).toBe(1);
   });
 
@@ -258,7 +258,7 @@ describe('kind catalogue', () => {
     const bytes = utf8('a long prompt');
     const key = await sha256HexOf(bytes);
     const spilled = envelope({ eventId: uuid(40), payload: { promptId: uuid(41), blob: key, origin: 'user' } });
-    expect(await json(await worker.fetch(memberPost(t.token, spilled), e.env))).toEqual({ persisted: false, reason: `blob not present: ${key}` });
+    expect(await json(await worker.fetch(memberPost(t.token, spilled), e.env))).toEqual({ persisted: false, code: 'blob_absent', reason: `blob not present: ${key}` });
     expect(count(e.sqlite, 'events')).toBe(0);
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
     const png = await upload(e, t.token, utf8('png-bytes'), 'image/png');
@@ -268,7 +268,7 @@ describe('kind catalogue', () => {
     expect(e.sqlite.query(`SELECT blob_key, content_hash, text FROM prompt_batches WHERE prompt_id = ?`).get(uuid(41))).toEqual({ blob_key: key, content_hash: key, text: null });
     expect((e.sqlite.query(`SELECT blob_key FROM events WHERE event_id = ?`).get(uuid(40)) as any).blob_key).toBe(key);
     const att = envelope({ eventId: uuid(44), kind: 'attachment', payload: { attachmentId: uuid(45), blob: 'b'.repeat(64) } });
-    expect(await json(await worker.fetch(memberPost(t.token, att), e.env))).toEqual({ persisted: false, reason: `blob not present: ${'b'.repeat(64)}` });
+    expect(await json(await worker.fetch(memberPost(t.token, att), e.env))).toEqual({ persisted: false, code: 'blob_absent', reason: `blob not present: ${'b'.repeat(64)}` });
     expect(count(e.sqlite, 'events')).toBe(2);
   });
 
@@ -279,7 +279,7 @@ describe('kind catalogue', () => {
     const t2 = await member(e, 'proj_2', 'machine_2');
     const key = await upload(e, t1.token, utf8('shared'), 'image/png');
     expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(50), sessionId: 'sess_3', kind: 'attachment', payload: { attachmentId: uuid(51), blob: key } })), e.env))).toEqual({ persisted: true, projected: true });
-    expect(await json(await worker.fetch(memberPost(t2.token, envelope({ eventId: uuid(52), sessionId: 'sess_2', kind: 'attachment', payload: { attachmentId: uuid(53), blob: key } })), e.env))).toEqual({ persisted: false, reason: `blob not present: ${key}` });
+    expect(await json(await worker.fetch(memberPost(t2.token, envelope({ eventId: uuid(52), sessionId: 'sess_2', kind: 'attachment', payload: { attachmentId: uuid(53), blob: key } })), e.env))).toEqual({ persisted: false, code: 'blob_absent', reason: `blob not present: ${key}` });
     expect((e.sqlite.query(`SELECT media_type FROM attachments`).get() as any).media_type).toBe('image/png');
   });
 
@@ -292,7 +292,7 @@ describe('kind catalogue', () => {
     expect(await json(await worker.fetch(memberPost(t.token, live), e.env))).toEqual({ persisted: true, projected: true });
     expect(await json(await worker.fetch(memberPost(t.token, mined), e.env))).toEqual({ persisted: true, projected: true });
     expect(e.sqlite.query(`SELECT text, prompt_kind, parent_prompt_id, updated_at FROM prompt_batches`).get()).toEqual({ text: 'hi', prompt_kind: 'user', parent_prompt_id: uuid(63), updated_at: 2_000 });
-    expect(await json(await worker.fetch(memberPost(t.token, differing), e.env))).toEqual({ persisted: true, projected: false, reason: 'prompt text differs from the stored prompt' });
+    expect(await json(await worker.fetch(memberPost(t.token, differing), e.env))).toEqual({ persisted: true, projected: false, code: 'projection_conflict', reason: 'prompt text differs from the stored prompt' });
     expect(e.sqlite.query(`SELECT text FROM prompt_batches`).get()).toEqual({ text: 'hi' });
     expect(count(e.sqlite, 'events')).toBe(3);
     const older = envelope({ eventId: uuid(65), createdAt: 500, payload: { promptId: uuid(61), text: 'hi', origin: 'user', promptKind: 'system' } });
@@ -328,16 +328,16 @@ describe('kind catalogue', () => {
     const t3 = await member(e, 'proj_1', 'machine_3');
     await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(80), kind: 'session.start', payload: { agent: 'claude-code' } })), e.env);
     const foreign = envelope({ eventId: uuid(81), kind: 'session.start', payload: { agent: 'codex' } });
-    expect(await json(await worker.fetch(memberPost(t3.token, foreign), e.env))).toEqual({ persisted: false, reason: 'machine identity mismatch' });
-    expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(82), payload: { promptId: uuid(83), text: 'x', origin: 'user' } })), e.env))).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(await json(await worker.fetch(memberPost(t3.token, foreign), e.env))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
+    expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(82), payload: { promptId: uuid(83), text: 'x', origin: 'user' } })), e.env))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(84), kind: 'plan', payload: { planKey: uuid(85), content: 'mine' } })), e.env);
-    expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(86), sessionId: 'sess_3', kind: 'plan', payload: { planKey: uuid(85), content: 'theirs' } })), e.env))).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(86), sessionId: 'sess_3', kind: 'plan', payload: { planKey: uuid(85), content: 'theirs' } })), e.env))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     const seg = utf8('seg');
     const key = await upload(e, t1.token, seg);
     const tx = `tx_${'a'.repeat(32)}`;
     await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(87), kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: 0, length: seg.byteLength, blob: key } })), e.env);
     const append = await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(88), sessionId: 'sess_3', kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: seg.byteLength, length: seg.byteLength, blob: key } })), e.env));
-    expect(append).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(append).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     expect(count(e.sqlite, 'events')).toBe(3);
     expect(bytesWritten(e.sqlite, t3.tokenId)).toBe(0);
     expect(e.sqlite.query(`SELECT agent FROM sessions WHERE session_id = 'sess_1'`).get()).toEqual({ agent: 'claude-code' });
@@ -355,10 +355,10 @@ describe('kind catalogue', () => {
     const seg = (n: number, baseOffset: number, blob: string, length: number) =>
       memberPost(t.token, envelope({ eventId: uuid(90 + n), kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset, length, blob } }));
     expect(await json(await worker.fetch(seg(0, 0, ka, a.byteLength), e.env))).toEqual({ persisted: true, projected: true, transcript: { size: a.byteLength, segmentCount: 1 } });
-    expect(await json(await worker.fetch(seg(1, a.byteLength + 5, kb, b.byteLength), e.env))).toEqual({ persisted: false, reason: 'transcript offset gap', transcript: { size: a.byteLength, segmentCount: 1 } });
+    expect(await json(await worker.fetch(seg(1, a.byteLength + 5, kb, b.byteLength), e.env))).toEqual({ persisted: false, code: 'offset_gap', reason: 'transcript offset gap', transcript: { size: a.byteLength, segmentCount: 1 } });
     expect(await json(await worker.fetch(seg(2, 0, ka, a.byteLength), e.env))).toEqual({ persisted: true, duplicate: true, transcript: { size: a.byteLength, segmentCount: 1 } });
-    expect(await json(await worker.fetch(seg(3, 0, kb, b.byteLength), e.env))).toEqual({ persisted: false, reason: 'transcript offset overlap', transcript: { size: a.byteLength, segmentCount: 1 } });
-    expect(await json(await worker.fetch(seg(4, a.byteLength, kb, b.byteLength + 1), e.env))).toEqual({ persisted: false, reason: 'blob size does not match length', transcript: { size: a.byteLength, segmentCount: 1 } });
+    expect(await json(await worker.fetch(seg(3, 0, kb, b.byteLength), e.env))).toEqual({ persisted: false, code: 'offset_overlap', reason: 'transcript offset overlap', transcript: { size: a.byteLength, segmentCount: 1 } });
+    expect(await json(await worker.fetch(seg(4, a.byteLength, kb, b.byteLength + 1), e.env))).toEqual({ persisted: false, code: 'blob_length_mismatch', reason: 'blob size does not match length', transcript: { size: a.byteLength, segmentCount: 1 } });
     expect(await json(await worker.fetch(seg(5, a.byteLength, kb, b.byteLength), e.env))).toEqual({ persisted: true, projected: true, transcript: { size: a.byteLength + b.byteLength, segmentCount: 2 } });
     expect(count(e.sqlite, 'events')).toBe(2);
     expect(count(e.sqlite, 'transcript_segments')).toBe(2);
@@ -370,7 +370,7 @@ describe('kind catalogue', () => {
     const t = await member(e);
     for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
       const payload = JSON.parse(`{"promptId":"${uuid(2)}","text":"x","origin":"user","${key}":"x"}`);
-      expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload })), e.env))).toEqual({ persisted: false, reason: `unknown field payload.${key}` });
+      expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload })), e.env))).toEqual({ persisted: false, code: 'unknown_field', reason: `unknown field payload.${key}` });
     }
     expect(count(e.sqlite, 'events')).toBe(0);
   });
@@ -393,7 +393,7 @@ describe('kind catalogue', () => {
         if (spec.name === 'transcript.segment') base.length = 9;
         const extra = spec.name === 'transcript.segment' ? { transcript: { size: 0, segmentCount: 0 } } : {};
         const missing = await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(n++), kind: spec.name, payload: { ...base, [field]: absent } })), e.env));
-        expect({ kind: spec.name, field, missing }).toEqual({ kind: spec.name, field, missing: { persisted: false, reason: `blob not present: ${absent}`, ...extra } });
+        expect({ kind: spec.name, field, missing }).toEqual({ kind: spec.name, field, missing: { persisted: false, code: 'blob_absent', reason: `blob not present: ${absent}`, ...extra } });
       }
     }
     expect(driven.sort()).toEqual(BLOB_KEY_FIELDS);
@@ -437,7 +437,7 @@ describe('kind catalogue', () => {
     const before = ['tool_calls', 'responses', 'attachments'].map((t) => e.sqlite.query(`SELECT * FROM ${t}`).all());
     for (const [kind, payload] of mine) {
       const res = await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(n++), sessionId: 'sess_3', kind, createdAt: 9_000, payload })), e.env));
-      expect({ kind, res }).toEqual({ kind, res: { persisted: false, reason: 'machine identity mismatch' } });
+      expect({ kind, res }).toEqual({ kind, res: { persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' } });
     }
     expect(['tool_calls', 'responses', 'attachments'].map((t) => e.sqlite.query(`SELECT * FROM ${t}`).all())).toEqual(before);
   });
@@ -461,7 +461,7 @@ describe('kind catalogue', () => {
     let n = 410;
     for (const [kind, payload] of attacks) {
       const res = await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(n++), sessionId: 'sess_3', kind, createdAt: 9_000, payload })), e.env));
-      expect({ kind, res }).toEqual({ kind, res: { persisted: false, reason: 'machine identity mismatch' } });
+      expect({ kind, res }).toEqual({ kind, res: { persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' } });
     }
     expect(e.sqlite.query(`SELECT * FROM prompt_batches`).all()).toEqual(before);
     expect(count(e.sqlite, 'responses')).toBe(0);
@@ -485,7 +485,7 @@ describe('kind catalogue', () => {
     expect(e.sqlite.query(`SELECT ended_at FROM prompt_batches WHERE prompt_id = ?`).get(promptId)).toEqual({ ended_at: null });
     expect(await json(await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(434), kind: 'response', createdAt: 6_000, payload: { responseId: uuid(435), promptId, text: 'own' } })), e.env))).toEqual({ persisted: true, projected: true });
     expect(e.sqlite.query(`SELECT ended_at FROM prompt_batches WHERE prompt_id = ?`).get(promptId)).toEqual({ ended_at: 6_000 });
-    expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(436), sessionId: 'sess_3', kind: 'response', createdAt: 2, payload: { responseId: uuid(437), promptId, text: 'late' } })), e.env))).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(436), sessionId: 'sess_3', kind: 'response', createdAt: 2, payload: { responseId: uuid(437), promptId, text: 'late' } })), e.env))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
   });
 
   it('refuses a zero-length segment and never advances a transcript without its bytes', async () => {
@@ -493,7 +493,7 @@ describe('kind catalogue', () => {
     const t = await member(e);
     const tx = `tx_${'c'.repeat(32)}`;
     const zero = await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(420), kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: 0, length: 0, blob: 'a'.repeat(64) } })), e.env));
-    expect(zero).toEqual({ persisted: false, reason: `length must be an integer between 1 and ${MAX_BLOB_BYTES}` });
+    expect(zero).toEqual({ persisted: false, code: 'refused', reason: `length must be an integer between 1 and ${MAX_BLOB_BYTES}` });
     const a = utf8('ten-bytes!');
     const ka = await upload(e, t.token, a);
     expect(await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(421), kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: 0, length: a.byteLength, blob: ka } })), e.env))).toEqual({ persisted: true, projected: true, transcript: { size: a.byteLength, segmentCount: 1 } });
@@ -553,15 +553,15 @@ describe('kind catalogue', () => {
     const absent = 'd'.repeat(64);
     await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(899) })), e.env);
     const intoForeignSession = await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(900), kind: 'attachment', payload: { attachmentId: uuid(901), blob: absent } })), e.env));
-    expect(intoForeignSession).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(intoForeignSession).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     const seg = utf8('seg-bytes!');
     const key = await upload(e, t1.token, seg);
     const tx = `tx_${'e'.repeat(32)}`;
     await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(902), kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: 0, length: seg.byteLength, blob: key } })), e.env);
     const foreignTranscript = await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(903), sessionId: 'sess_3', kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: 0, length: seg.byteLength - 1, blob: key } })), e.env));
-    expect(foreignTranscript).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(foreignTranscript).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     const ownTranscriptBadSize = await json(await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(904), kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: seg.byteLength, length: seg.byteLength - 1, blob: key } })), e.env));
-    expect(ownTranscriptBadSize).toEqual({ persisted: false, reason: 'blob size does not match length', transcript: { size: seg.byteLength, segmentCount: 1 } });
+    expect(ownTranscriptBadSize).toEqual({ persisted: false, code: 'blob_length_mismatch', reason: 'blob size does not match length', transcript: { size: seg.byteLength, segmentCount: 1 } });
 
     // The same order holds for every continued row a kind names, with an ABSENT blob on the request: the row's
     // identity is read first, so the non-owner is not told the blob is absent.
@@ -583,9 +583,9 @@ describe('kind catalogue', () => {
     ];
     const observed: Record<string, unknown>[] = [];
     for (const [kind, payload] of foreign) observed.push({ kind, res: await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(n++), sessionId: 'sess_3', kind, payload })), e.env)) });
-    expect(observed).toEqual(foreign.map(([kind]) => ({ kind, res: { persisted: false, reason: 'machine identity mismatch' } })));
+    expect(observed).toEqual(foreign.map(([kind]) => ({ kind, res: { persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' } })));
     const ownAbsent = await json(await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(n++), kind: 'plan', payload: { planKey: uuid(905), blob: absent } })), e.env));
-    expect(ownAbsent).toEqual({ persisted: false, reason: `blob not present: ${absent}` });
+    expect(ownAbsent).toEqual({ persisted: false, code: 'blob_absent', reason: `blob not present: ${absent}` });
   });
 
   it('settles a tie on client time by the smaller event id, for session facts, prompts, and plans alike', async () => {
@@ -863,10 +863,10 @@ describe('kind catalogue', () => {
     expect((await json(await worker.fetch(memberPost(t.token, evA), e.env))).duplicate).toBe(true);
     expect(e.sqlite.query(`SELECT size, segment_count FROM transcripts`).get()).toEqual(settled);
     const foreignReplay = await json(await worker.fetch(memberPost(other.token, evA), e.env));
-    expect(foreignReplay).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(foreignReplay).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     expect(e.sqlite.query(`SELECT size, segment_count FROM transcripts`).get()).toEqual(settled);
     const foreignFresh = await json(await worker.fetch(memberPost(other.token, seg(uuid(603), a.byteLength + b.byteLength, a.byteLength, ka)), e.env));
-    expect(foreignFresh).toEqual({ persisted: false, reason: 'machine identity mismatch' });
+    expect(foreignFresh).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     expect(e.sqlite.query(`SELECT size, segment_count FROM transcripts`).get()).toEqual(settled);
 
     const c = utf8('{"c":3}\n');
