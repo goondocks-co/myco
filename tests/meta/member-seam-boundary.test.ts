@@ -64,6 +64,8 @@ const ALLOWLIST: readonly string[] = [
   'utils/dot-path.ts',
   'utils/git.ts',
   'version.ts',
+  // version.ts resolves the package root through this leaf.
+  'utils/find-package-root.ts',
   'constants.ts',
   // constants.ts re-exports its sibling files; they are the same leaf.
   'constants/**',
