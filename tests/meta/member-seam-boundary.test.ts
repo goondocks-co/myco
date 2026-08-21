@@ -25,7 +25,13 @@
  * literal `import()` / `require()`), so an import the transpiler elides — a
  * type-only import — is not an edge, and everything else is; `transformSync`
  * yields the module's code without comments (regex- and string-aware) for the
- * literal scan.
+ * literal scan. The transpiler runs with dead-code elimination OFF, so a
+ * literal behind `false ? … : …`, `x && …`, or an env-gated branch is scanned
+ * like any other — the compiled binary carries whatever the build machine's
+ * environment selects. A non-literal `import(expr)` / `require(expr)` names
+ * no module the gate can follow; each one is reported as an unknowable
+ * dynamic import and is a violation on an enforced leaf. A `.json` module is
+ * a leaf: no edges, its raw text is literal-scanned.
  *
  * Resolution: `node:*` and `bun:*` are built-ins; `@myco/*` and every other
  * `tsconfig.json` path alias that points inside `packages/` (the workspace
@@ -102,30 +108,58 @@ const LOADER_BY_EXT: Record<string, Loader> = {
   '.jsx': 'jsx',
 };
 
+// A `.tsx` module registers the JSX runtime (`react`, `react/jsx-dev-runtime`)
+// as externals through the transpiler's auto-import; no tsx module is in the
+// hooks closure today.
 const transpilers = new Map<Loader, InstanceType<typeof Bun.Transpiler>>();
 
 function transpilerFor(file: string): InstanceType<typeof Bun.Transpiler> {
   const loader = LOADER_BY_EXT[path.extname(file)] ?? 'ts';
   let t = transpilers.get(loader);
   if (!t) {
-    t = new Bun.Transpiler({ loader });
+    t = new Bun.Transpiler({ loader, deadCodeElimination: false });
     transpilers.set(loader, t);
   }
   return t;
 }
 
-/**
- * Every specifier the transpiled module imports, in source order. Type-only
- * imports are elided by the transpiler and therefore absent; static imports,
- * `export … from`, side-effect imports, literal `import()` and `require()` are
- * present.
- */
-export function runtimeSpecifiers(source: string, file = 'module.ts'): string[] {
-  return transpilerFor(file).scanImports(source).map((entry) => entry.path);
+function isJsonModule(file: string): boolean {
+  return path.extname(file) === '.json';
 }
 
-/** The module's code with comments removed by the transpiler (regex- and string-aware). */
+/** What the transpiler reports for one module. */
+export interface RuntimeEdges {
+  /** Every specifier the transpiled module imports, in source order. */
+  specifiers: string[];
+  /** `import(expr)` / `require(expr)` call sites whose specifier is not a literal — modules the gate cannot follow. */
+  unknowableDynamic: number;
+}
+
+const DYNAMIC_IMPORT_CALL = /\bimport\s*\(/g;
+const REQUIRE_CALL = /(?<![.\w$])require\s*\(/g;
+
+/**
+ * Edges of one module. Type-only imports are elided by the transpiler and
+ * therefore absent; static imports, `export … from`, side-effect imports,
+ * literal `import()` and `require()` are present. Dynamic call sites the
+ * transpiler could not resolve to a literal are counted, not guessed.
+ */
+export function runtimeEdges(source: string, file = 'module.ts'): RuntimeEdges {
+  if (isJsonModule(file)) return { specifiers: [], unknowableDynamic: 0 };
+  const transpiler = transpilerFor(file);
+  const entries = transpiler.scanImports(source);
+  const code = transpiler.transformSync(source);
+  const literalDynamic = entries.filter((e) => e.kind === 'dynamic-import' || e.kind === 'require-call').length;
+  const callSites = (code.match(DYNAMIC_IMPORT_CALL)?.length ?? 0) + (code.match(REQUIRE_CALL)?.length ?? 0);
+  return {
+    specifiers: entries.map((entry) => entry.path),
+    unknowableDynamic: Math.max(0, callSites - literalDynamic),
+  };
+}
+
+/** The module's code with comments removed by the transpiler (regex- and string-aware); JSON is scanned raw. */
 export function codeOf(source: string, file = 'module.ts'): string {
+  if (isJsonModule(file)) return source;
   return transpilerFor(file).transformSync(source);
 }
 
@@ -242,12 +276,15 @@ interface Closure {
   via: Map<string, string | null>;
   /** Bare package specifiers reached (not walked) → first importer. */
   externals: Map<string, string>;
+  /** Modules with `import(expr)` / `require(expr)` call sites the gate cannot follow → count. */
+  unknowable: Map<string, number>;
 }
 
 function closureOf(entries: readonly string[]): Closure {
   const modules = new Map<string, string>();
   const via = new Map<string, string | null>();
   const externals = new Map<string, string>();
+  const unknowable = new Map<string, number>();
   const queue: string[] = [];
   for (const entry of entries) {
     const key = moduleKey(entry);
@@ -259,7 +296,9 @@ function closureOf(entries: readonly string[]): Closure {
   while (queue.length > 0) {
     const file = queue.shift()!;
     const source = fs.readFileSync(file, 'utf-8');
-    for (const specifier of runtimeSpecifiers(source, file)) {
+    const edges = runtimeEdges(source, file);
+    if (edges.unknowableDynamic > 0) unknowable.set(moduleKey(file), edges.unknowableDynamic);
+    for (const specifier of edges.specifiers) {
       const resolved = resolveSpecifier(file, specifier);
       if (resolved.kind === 'builtin') continue;
       if (resolved.kind === 'external') {
@@ -273,7 +312,7 @@ function closureOf(entries: readonly string[]): Closure {
       queue.push(resolved.file);
     }
   }
-  return { modules, via, externals };
+  return { modules, via, externals, unknowable };
 }
 
 interface Violation {
@@ -321,6 +360,15 @@ function externalViolationsOf(closure: Closure): Violation[] {
   return out;
 }
 
+/** Dynamic call sites whose target the gate cannot follow. */
+function unknowableViolationsOf(closure: Closure): Violation[] {
+  const out: Violation[] = [];
+  for (const [key, count] of [...closure.unknowable.entries()].sort()) {
+    out.push({ module: key, reason: `unknowable dynamic import (${count})`, chain: chainTo(closure, key) });
+  }
+  return out;
+}
+
 function formatViolations(violations: Violation[]): string {
   return violations
     .map((v) => `  ${v.module} — ${v.reason}${v.chain.length > 0 ? `  (via ${v.chain.join(' <- ')})` : ''}`)
@@ -354,16 +402,17 @@ describe('member seam boundary (transitive)', () => {
   it('walks every hooks/ and member/ entry and reports the closure outside the allowlist (report mode)', () => {
     expect(hookEntries.length).toBeGreaterThan(0);
     const closure = closureOf([...hookEntries, ...memberEntries]);
-    const violations = [...moduleViolationsOf(closure), ...externalViolationsOf(closure)];
+    const violations = [...moduleViolationsOf(closure), ...externalViolationsOf(closure), ...unknowableViolationsOf(closure)];
     const outside = new Set(violations.filter((v) => v.reason === 'outside allowlist').map((v) => v.module));
     const literals = violations.filter((v) => v.reason.startsWith('contains literal'));
     const externals = violations.filter((v) => v.reason === 'external package');
+    const unknowable = violations.filter((v) => v.reason.startsWith('unknowable dynamic import'));
     // REPORT MODE: the hooks closure is printed, not asserted — the list is
     // what the member rewiring clears before this block becomes an assertion.
     console.log(
       `[member-seam] report: ${closure.modules.size} modules in the hooks closure, `
       + `${outside.size} outside the allowlist, ${literals.length} forbidden-literal hits, `
-      + `${externals.length} external packages reached\n`
+      + `${externals.length} external packages reached, ${unknowable.length} modules with unknowable dynamic imports\n`
       + formatViolations(violations),
     );
     expect(Array.isArray(violations)).toBe(true);
@@ -376,7 +425,7 @@ describe('member seam boundary (transitive)', () => {
       for (const file of files) {
         expect(fs.existsSync(file)).toBe(true);
         const closure = closureOf([file]);
-        const violations = [...moduleViolationsOf(closure), ...externalViolationsOf(closure)];
+        const violations = [...moduleViolationsOf(closure), ...externalViolationsOf(closure), ...unknowableViolationsOf(closure)];
         if (violations.length > 0) {
           throw new Error(`${moduleKey(file)} reaches outside the member seam allowlist:\n${formatViolations(violations)}`);
         }
@@ -391,12 +440,22 @@ describe('member seam boundary (transitive)', () => {
     expect(ALIASES.exact.react).toBeUndefined();
   });
 
-  it('scans literals in code, not in comments — regex- and string-aware', () => {
+  it('scans literals in code, not in comments — regex- and string-aware, dead code included', () => {
     expect(codeOf("// daemon.json\nconst a = 1; /* 127.0.0.1 */\nexport const b = 'x';")).not.toContain('daemon.json');
     expect(codeOf("export const url = 'http://127.0.0.1';")).toContain('127.0.0.1');
     expect(codeOf('export const t = `see // not a comment`;')).toContain('not a comment');
     expect(codeOf("export const Q = /'/;\nexport const H = 'http://' + '127.0.0.1';")).toContain('127.0.0.1');
     expect(codeOf("export const R = /[//]/; export const H2 = 'daemon.json';")).toContain('daemon.json');
+    expect(codeOf("export const a = false ? 'daemon.lock' : '';")).toContain('daemon.lock');
+    expect(codeOf("export const b = process.env.NODE_ENV === 'production' ? 'daemon.lock' : '';")).toContain('daemon.lock');
+    expect(codeOf('{"name":"x","state":"daemon.json"}', 'package.json')).toContain('daemon.json');
+  });
+
+  it('treats a JSON module as a leaf and counts dynamic imports it cannot follow', () => {
+    expect(runtimeEdges('{"name":"x","dependencies":{"yaml":"1"}}', 'package.json')).toEqual({ specifiers: [], unknowableDynamic: 0 });
+    expect(runtimeEdges("export const load = (spec: string) => import(spec);")).toEqual({ specifiers: [], unknowableDynamic: 1 });
+    expect(runtimeEdges("export const load = (spec: string) => require(spec); export const r = require.resolve('x');")).toEqual({ specifiers: [], unknowableDynamic: 1 });
+    expect(runtimeEdges("export const j = () => import('./j.js');")).toEqual({ specifiers: ['./j.js'], unknowableDynamic: 0 });
   });
 
   it('takes edges from the transpiler: type-only imports are elided, every other form is seen', () => {
@@ -414,6 +473,9 @@ describe('member seam boundary (transitive)', () => {
       "const l = await import(/* c */ './l.js');",
       "void e; void f; void dc; void ns; void j; void k; void l;",
     ].join('\n');
-    expect(runtimeSpecifiers(sample)).toEqual(['./d.js', './f.js', './dcns.js', './g.js', './i.js', './j.js', './k.js', './l.js']);
+    expect(runtimeEdges(sample)).toEqual({
+      specifiers: ['./d.js', './f.js', './dcns.js', './g.js', './i.js', './j.js', './k.js', './l.js'],
+      unknowableDynamic: 0,
+    });
   });
 });
