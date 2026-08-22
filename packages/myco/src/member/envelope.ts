@@ -146,6 +146,27 @@ function compact(payload: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
+/** Anything outside the server's producer grammar (`[A-Za-z0-9._-]`), and the bound it holds them to. */
+const PRODUCER_UNSAFE = /[^A-Za-z0-9._-]/g;
+const PRODUCER_MAX_CHARS = 64;
+
+/**
+ * A producer identifier the server will accept.
+ *
+ * The member produces both of these values, so it owns making them conform. A
+ * dev build's version carries semver build metadata —
+ * `0.0.0-dev+1.4.8-6-ge1c936ce-dirty` — whose `+` is outside the grammar, and
+ * the server's refusal is TERMINAL: the event is dropped, not retried, and
+ * only a `refused.jsonl` line survives it. Losing capture over the spelling of
+ * a provenance string is the wrong trade, so anything outside the class
+ * becomes `-` and the result is cut to the bound. The value stays legible —
+ * `0.0.0-dev-1.4.8-6-ge1c936ce-dirty` still names the build.
+ */
+export function producerIdentifier(value: string): string {
+  const normalized = value.replace(PRODUCER_UNSAFE, '-').slice(0, PRODUCER_MAX_CHARS);
+  return normalized.length > 0 ? normalized : 'unknown';
+}
+
 function envelope(ctx: EnvelopeContext, kind: MemberKind, payload: Record<string, unknown>, blobSource?: BlobSource): OutboundEvent {
   const env: MemberEnvelope = {
     eventId: mintId(),
@@ -153,7 +174,7 @@ function envelope(ctx: EnvelopeContext, kind: MemberKind, payload: Record<string
     kind,
     createdAt: (ctx.now ?? Date.now)(),
     channel: 'cli',
-    producer: { adapter: ctx.agent, version: ctx.version ?? getPluginVersion() },
+    producer: { adapter: producerIdentifier(ctx.agent), version: producerIdentifier(ctx.version ?? getPluginVersion()) },
     payload: compact(payload),
   };
   return blobSource ? { envelope: env, blobSource } : { envelope: env };
