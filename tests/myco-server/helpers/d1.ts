@@ -22,6 +22,10 @@ export function sqliteD1(sqlite: Database, options: { onFirst?: (sql: string, ro
     params,
     bind: (...next: unknown[]) => statement(sql, next),
     run: async () => execute(sql, params),
+    all: async <T = Record<string, unknown>,>(): Promise<{ results: T[] }> => {
+      options.onSql?.(sql);
+      return { results: sqlite.query(sql).all(...(params as any[])) as T[] };
+    },
     first: async <T,>() => {
       options.onSql?.(sql);
       const row = (sqlite.query(sql).get(...(params as any[])) as Record<string, unknown> | null) ?? null;

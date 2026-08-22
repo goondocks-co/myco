@@ -7,7 +7,8 @@ const KEY = 'a'.repeat(64);
 describe('route table', () => {
   it('declares an auth kind and a body mode for every route, a shape for every member route, and exempts only the refresh route from the quota', () => {
     for (const r of ROUTES) {
-      expect(['public', 'member']).toContain(r.auth);
+      expect(['public', 'member', 'auth', 'owner']).toContain(r.auth);
+      if (r.auth === 'auth' || r.auth === 'owner') continue;
       expect(['none', 'json', 'stream']).toContain(r.bodyMode);
       if (r.auth === 'public') expect(r.bodyMode).toBe('none');
       if (r.bodyMode === 'stream') expect(r.maxBodyBytes).toBe(MAX_BLOB_BYTES);
@@ -16,7 +17,14 @@ describe('route table', () => {
         expect({ path: r.path, quotaPrecheck: r.quotaPrecheck }).toEqual({ path: r.path, quotaPrecheck: r.path === '/tokens/refresh' ? false : undefined });
       }
     }
-    expect(ROUTES.map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh']);
+    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh']);
+  });
+
+  it('routes exactly the child segments the handler serves', async () => {
+    const { CHILD_SEGMENTS } = await import('@myco-server-worker/api/sessions.js');
+    const child = ROUTES.find((r) => r.path.endsWith('/{child}'));
+    const alternation = /\(\?<child>([^)]*)\)/.exec(String((child as { pattern: RegExp }).pattern))![1].split('|');
+    expect(alternation.sort()).toEqual([...CHILD_SEGMENTS].sort());
   });
 
   it('permits exactly the enumerated public paths', () => {

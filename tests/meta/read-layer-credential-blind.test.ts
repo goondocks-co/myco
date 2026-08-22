@@ -1,0 +1,115 @@
+/**
+ * Meta gate: the query core is credential-blind, and the facades go through it.
+ *
+ * One core with two facades — an owner session for humans, a member token for machines —
+ * is what keeps a dashboard and a sandboxed agent from disagreeing about what the vault
+ * says. Two properties hold that up, and each fails on its own:
+ *
+ *   1. The core can be called WITHOUT a credential: no module under `read/**` imports an
+ *      authenticator, a cookie module, a request-handling module, or the full `Env`.
+ *   2. The facades USE it: no module issues SQL outside `read/**` and `ingest/**`. A gate
+ *      that only proves (1) leaves `api/**` free to query D1 directly while staying green.
+ *
+ * Static source scan, no worker boot.
+ */
+import { describe, expect, it } from 'bun:test';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const SRC = fileURLToPath(new URL('../../packages/myco-server/worker/src/', import.meta.url));
+const READ_DIR = join(SRC, 'read');
+
+const allFiles = (dir: string): string[] =>
+  readdirSync(dir).flatMap((e) => {
+    const f = join(dir, e);
+    return statSync(f).isDirectory() ? allFiles(f) : [f];
+  });
+const tsFiles = (dir: string): string[] => allFiles(dir).filter((f) => f.endsWith('.ts'));
+
+/** Import specifiers in every form the language offers: quoted `from`, side-effect, and dynamic. */
+function importSpecifiers(source: string): string[] {
+  const out: string[] = [];
+  for (const m of source.matchAll(/\bfrom\s*['"]([^'"]+)['"]/g)) out.push(m[1]);
+  for (const m of source.matchAll(/\bimport\s*['"]([^'"]+)['"]/g)) out.push(m[1]);
+  for (const m of source.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g)) out.push(m[1]);
+  return out;
+}
+
+/** The modules the core is made of. A named floor, not a count: a count sails through a silent collapse. */
+const CORE_MODULES = ['blobs.ts', 'children.ts', 'meta.ts', 'scope.ts', 'sessions.ts', 'tokens.ts', 'transcript.ts'] as const;
+
+const FORBIDDEN_IMPORT = [/\/auth\//, /cookie/i, /\/pipeline\.js/, /\/routes\.js/, /\/context\.js/, /\/api\//];
+
+describe('read layer', () => {
+  it('is made of exactly the named core modules, and says so when that changes', () => {
+    const present = tsFiles(READ_DIR).map((f) => f.slice(READ_DIR.length + 1)).sort();
+    // Witness log: the assertion below pins the set, and this line makes a change legible
+    // in the run output instead of only in a diff.
+    console.log(`[read-layer gate] core modules: ${present.join(', ')}`);
+    expect(present).toEqual([...CORE_MODULES].sort());
+  });
+
+  it('imports no authenticator, cookie module, or request-handling module', () => {
+    const offenders: string[] = [];
+    for (const file of tsFiles(READ_DIR)) {
+      for (const spec of importSpecifiers(readFileSync(file, 'utf8'))) {
+        if (FORBIDDEN_IMPORT.some((p) => p.test(spec))) offenders.push(`${file.slice(READ_DIR.length + 1)} -> ${spec}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('names no Request type and takes no full Env', () => {
+    const offenders: string[] = [];
+    for (const file of tsFiles(READ_DIR)) {
+      const source = readFileSync(file, 'utf8');
+      if (/\bRequest\b/.test(source)) offenders.push(`${file.slice(READ_DIR.length + 1)}: Request`);
+      if (/\bEnv\b/.test(source)) offenders.push(`${file.slice(READ_DIR.length + 1)}: Env`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('is what every facade reads through: SQL is issued only from the named modules', () => {
+    // Scoping this to one directory would leave the next facade free. Plan 5's `/mcp` and
+    // recall sit beside `api/**`, not under it, so the scan enumerates all of `src/` and
+    // allows only the modules that own storage:
+    //   read/**       the query core
+    //   ingest/**     the write path
+    //   db/**         schema and migration
+    //   auth/tokens.ts, auth/refresh.ts   the credential store
+    //   pipeline.ts   one quota re-read on the ingest admission path
+    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^pipeline\.ts$/];
+    const offenders: string[] = [];
+    for (const file of tsFiles(SRC)) {
+      const rel = file.slice(SRC.length);
+      if (ALLOWED.some((p) => p.test(rel))) continue;
+      if (/\.prepare\s*\(/.test(readFileSync(file, 'utf8'))) offenders.push(rel);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('takes no credential-shaped argument, whatever its declared type', () => {
+    // Typed scans miss a credential arriving as a bare `string` or through an inline
+    // structural binding type. These names are what a credential is called here.
+    const CREDENTIAL_NAME = /\b(bearer|token_hash|tokenHash|cookie|sessionSecret|SESSION_SECRET|authorization)\b/i;
+    const offenders: string[] = [];
+    for (const file of tsFiles(READ_DIR)) {
+      const source = readFileSync(file, 'utf8');
+      // `tokenId` is an attribution key, not a credential; the read layer legitimately holds it.
+      const stripped = source.replace(/\btokenId\b/g, '').replace(/\btoken_id\b/g, '');
+      const m = CREDENTIAL_NAME.exec(stripped);
+      if (m) offenders.push(`${file.slice(READ_DIR.length + 1)}: ${m[0]}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('reaches member_tokens only to describe them, never to authenticate', () => {
+    const offenders: string[] = [];
+    for (const file of tsFiles(READ_DIR)) {
+      const source = readFileSync(file, 'utf8');
+      if (/token_hash/.test(source)) offenders.push(file.slice(READ_DIR.length + 1));
+    }
+    expect(offenders).toEqual([]);
+  });
+});
