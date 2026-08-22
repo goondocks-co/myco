@@ -237,9 +237,9 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     for (const sessionId of sessions) {
       const d = spool.depth(sessionId);
       depth += d;
-      lastAck = Math.max(lastAck, lastAckAt(spool, sessionId));
       out(`spool:      ${sessionId} — ${d} un-acknowledged`);
     }
+    for (const sessionId of spool.stateSessionIds()) lastAck = Math.max(lastAck, lastAckAt(spool, sessionId));
     out(`spool:      ${sessions.length} session file(s), ${depth} un-acknowledged event(s)`);
     out(`last ack:   ${lastAck > 0 ? when(lastAck) : '—'}`);
     const refused = spool.readRefused();

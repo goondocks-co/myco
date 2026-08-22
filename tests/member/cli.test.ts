@@ -59,6 +59,30 @@ describe('myco member drain / status', () => {
     expect(err).toEqual([]);
   });
 
+  it('status reports the acknowledgement of a session whose spool file the drain has already deleted, and reports none when nothing has ever been acked', async () => {
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const out: string[] = [];
+    const err: string[] = [];
+    const status = async (): Promise<string> => {
+      out.length = 0;
+      await runMemberCli(['status'], { mycoHome, fetch: rig.fetch, stdout: (l) => out.push(l), stderr: (l) => err.push(l) });
+      return out.join('\n');
+    };
+
+    spool.append('sess-acked', promptEvent(ctxFor(spool, 'sess-acked'), { promptId: mintId(), text: 'delivered' }));
+    expect(await status()).toContain('last ack:   —');
+
+    await runMemberCli(['drain'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: (l) => err.push(l) });
+    expect(spool.sessionIds()).toEqual([]);
+    expect(spool.stateSessionIds()).toContain('sess-acked');
+
+    const delivered = await status();
+    expect(delivered).toContain('spool:      0 session file(s), 0 un-acknowledged event(s)');
+    expect(delivered).not.toContain('last ack:   —');
+    expect(err).toEqual([]);
+  });
+
   it('--all walks every registry entry; without an entry for the cwd the op says so and does nothing', async () => {
     const out: string[] = [];
     const err: string[] = [];
