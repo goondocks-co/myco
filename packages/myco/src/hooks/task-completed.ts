@@ -1,11 +1,6 @@
-import { sendEvent } from './send-event.js';
-import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
+import { runMemberHook, type HookMainOptions } from '../member/capture.js';
+import { taskCompletedEvent } from '../member/envelope.js';
 
-export async function main(lockNamespace?: PerUserLockNamespace) {
-  await sendEvent('task-completed', (input) => ({
-    type: 'task_completed',
-    task_id: input.raw.task_id,
-    task_subject: input.raw.task_subject,
-    task_description: input.raw.task_description,
-  }), lockNamespace);
+export async function main(opts: HookMainOptions = {}) {
+  await runMemberHook('task-completed', opts, (run) => ({ events: [taskCompletedEvent(run.ctx, run.input)] }));
 }

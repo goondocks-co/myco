@@ -1,22 +1,7 @@
-import { sendEvent } from './send-event.js';
-import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
+import { runMemberHook, type HookMainOptions } from '../member/capture.js';
+import { notificationEvent } from '../member/envelope.js';
 
-/**
- * Copilot's `notification` hook — fires when the agent emits a
- * user-facing notification (status message, warning, info banner,
- * "needs attention" prompt, etc.). Copilot's hook contract allows
- * returning `additionalContext` to trigger further agent processing,
- * but Myco's current architecture treats notifications as capture
- * signal only — we record them as session activity for later analysis
- * without trying to inject responses back at the agent.
- *
- * Wired as capture-only for that reason. If a future Canopy/Mycelium
- * pattern surfaces (e.g., "agent paused waiting for input → inject a
- * Myco-suggested next step"), this is the right place to add it.
- */
-export async function main(lockNamespace?: PerUserLockNamespace) {
-  await sendEvent('notification', (input) => ({
-    type: 'notification',
-    payload: input.raw,
-  }), lockNamespace);
+/** Capture-only: a user-facing notification is recorded as session activity; nothing is injected back. */
+export async function main(opts: HookMainOptions = {}) {
+  await runMemberHook('notification', opts, (run) => ({ events: [notificationEvent(run.ctx, run.input)] }));
 }

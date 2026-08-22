@@ -83,20 +83,11 @@ describe('capture event policy table', () => {
     expect(captureEventPolicy(undefined).replayable).toBe(false);
   });
 
-  it('covers every event type the capture hooks and plugin templates emit (and carries no orphan rows)', () => {
-    // The dispatcher's daemon-side buffer append is type-agnostic — every
-    // event a hook POSTs gets appended. The set of bufferable types is
-    // therefore the set of `type: '<event>'` literals in the hook sources;
-    // scan them so adding a hook event without a policy row fails here.
-    const hooksDir = path.resolve('packages/myco/src/hooks');
+  it('covers every event type the plugin templates emit', () => {
+    // The member hooks in src/hooks/ emit server envelopes, not daemon event
+    // types; the daemon's policy table serves buffers written by 1.4 binaries
+    // and by the plugin-file symbionts, whose templates are scanned here.
     const emitted = new Set<string>();
-    for (const file of fs.readdirSync(hooksDir).filter((f) => f.endsWith('.ts'))) {
-      const source = fs.readFileSync(path.join(hooksDir, file), 'utf-8');
-      for (const match of source.matchAll(/\btype: '([a-z_]+)'/g)) {
-        emitted.add(match[1]);
-      }
-    }
-    expect(emitted.size).toBeGreaterThan(0);
 
     // Plugin templates (opencode, pi) emit daemon events too, outside the
     // hook CLI. A daemon event is an object literal carrying BOTH a `type:`
@@ -123,8 +114,5 @@ describe('capture event policy table', () => {
     const tableTypes = new Set(Object.keys(CAPTURE_EVENT_POLICY));
     const missingFromTable = [...emitted].filter((type) => !tableTypes.has(type));
     expect(missingFromTable).toEqual([]);
-
-    const orphanRows = [...tableTypes].filter((type) => !emitted.has(type));
-    expect(orphanRows).toEqual([]);
   });
 });

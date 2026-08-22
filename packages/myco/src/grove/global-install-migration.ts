@@ -695,15 +695,15 @@ export function runGlobalInstallMigrationPass(
  * project the daemon serves. Runs BEFORE `getMachineId()` so the legacy
  * project-scope value wins over a fresh derivation — without this,
  * `getMachineId()` writes a brand-new global `machine_id` on first boot,
- * then `propagateLegacyMachineId(vaultDir)` later (from vault-gate's
- * per-event migration) bails because the global file now exists. Result:
+ * then `propagateLegacyMachineId(vaultDir)` later (from the per-project
+ * migration pass) bails because the global file now exists. Result:
  * historic capture rows stamped with the legacy id are orphaned from the
  * live identity.
  *
  * No-op when the global cache already exists (idempotent). Touches only
  * the machine_id file — does NOT run archive / strip / sentinel writes.
  * Per-project full migration still runs on its own schedule via
- * `runGlobalInstallMigrationPass` or `vault-gate`.
+ * `runGlobalInstallMigrationPass`.
  *
  * Returns the projectRoot the value came from (for audit logging),
  * or `null` when no legacy machine_id was found anywhere.

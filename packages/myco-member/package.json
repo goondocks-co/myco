@@ -1,0 +1,12 @@
+{
+  "name": "@goondocks/myco-member",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Bounded spike: what a member-only binary costs. Compiled for measurement, never published.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "spike:compile": "bun build --compile src/index.ts --outfile target/myco-member",
+    "spike:size": "bun build src/index.ts --target=bun --outfile target/bundle.js"
+  }
+}

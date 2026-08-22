@@ -18,6 +18,9 @@ import {
 import { manifestToolTransport } from './capabilities.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
+import { hookCommands, memberHookTemplate } from './member-hooks.js';
+import { CREDENTIAL_FLAG, type CredentialSource } from '../member/constants.js';
+import { runGit } from '../utils/git.js';
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
 import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
@@ -308,7 +311,7 @@ export interface ManagedProjectFilesResult {
   skillSymlinks: number;
 }
 
-export type InstallScope = 'project' | 'global';
+export type InstallScope = 'project' | 'global' | 'member-project';
 
 /**
  * Per-scope capability switch. Centralizes the "which operations run
@@ -344,6 +347,14 @@ const SCOPE_CAPABILITIES: Record<InstallScope, ScopeCapabilities> = {
   global: {
     agentsMd: false, gitignore: false, instructions: false, pluginPackage: false,
     globalLauncher: true, flatSkills: true, detectionGate: true,
+  },
+  // The 2.0 member scope writes ONE file: the symbiont's memberHooksTarget.
+  // Every project-content surface, the launchers, skills, MCP and the settings
+  // template are off, so no path through this scope can reach the file a 1.4
+  // project install owns.
+  'member-project': {
+    agentsMd: false, gitignore: false, instructions: false, pluginPackage: false,
+    globalLauncher: false, flatSkills: false, detectionGate: false,
   },
 };
 
@@ -431,6 +442,13 @@ export class SymbiontInstaller {
         : (reg.globalSettingsTarget ?? null);
       if (!target) return null;
       return expandHome(target);
+    }
+    if (this.installScope === 'member-project') {
+      // The member scope has exactly one surface. Anything else resolves to
+      // null so a stray call writes nothing rather than falling back to the
+      // 1.4 project target.
+      if (field !== 'hooks' || !reg.memberHooksTarget) return null;
+      return path.join(this.projectRoot, reg.memberHooksTarget);
     }
     const target = field === 'hooks' ? reg.hooksTarget
       : field === 'skills' ? reg.skillsTarget
@@ -741,6 +759,7 @@ export class SymbiontInstaller {
 
   /** Run all registration steps. */
   install(): InstallResult {
+    if (this.installScope === 'member-project') return { ...emptyInstallResult(), hooks: this.installMemberHooks() };
     if (this.deferGlobalSymbiontConfig()) return emptyInstallResult();
     const reg = this.manifest.registration;
     if (this.capabilities.detectionGate && !this.isAvailableForScope()) {
@@ -1615,6 +1634,112 @@ export class SymbiontInstaller {
       settings.version = reg.hooksConfigVersion;
     }
     return writeJsonFile(targetPath, settings);
+  }
+
+  /**
+   * The member's hook block for `source`, rendered from this symbiont's own
+   * hook template — never written, so `myco settings` and the `member-project`
+   * scope print and install the same bytes. Null when the manifest declares no
+   * member surface (`memberHooksTarget`) or its hooks are a plugin file, which
+   * Plan 3 leaves out of member scope entirely.
+   */
+  renderMemberHooks(source: CredentialSource): Record<string, unknown> | null {
+    const reg = this.manifest.registration;
+    if (!reg?.memberHooksTarget) return null;
+    if (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE) return null;
+    const rawTemplate = this.loadTemplate('hooks');
+    if (!rawTemplate) return null;
+    const block = this.resolveHookTemplatePlaceholders(memberHookTemplate(rawTemplate, source));
+    for (const command of hookCommands(block)) {
+      if (!command.includes(`${CREDENTIAL_FLAG} ${source}`)) {
+        throw new Error(`Refusing to emit member hooks: a command declares no ${CREDENTIAL_FLAG} ${source} (${command})`);
+      }
+    }
+    return block;
+  }
+
+  /**
+   * Write the member's hook block into the manifest's `memberHooksTarget`,
+   * preserving every key the file already holds and every hook group Myco
+   * does not own. The target must be ignored by git — a settings file with a
+   * machine-absolute binary path and this machine's credential source is not
+   * shareable — so an unignored target is added to `.git/info/exclude`, which
+   * needs no commit and no consent from the repo's own `.gitignore`.
+   */
+  installMemberHooks(): boolean {
+    const block = this.renderMemberHooks('registry');
+    if (block === null) return false;
+    const targetPath = this.resolveAbsoluteTarget('hooks');
+    if (targetPath === null) return false;
+
+    const settings = readJsonFile(targetPath);
+    const existingHooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
+    const mergedHooks: Record<string, unknown[]> = {};
+    for (const [event, groups] of Object.entries(existingHooks)) {
+      const foreign = (groups as Array<Record<string, unknown>>).filter((group) => !isMycoHookGroup(group));
+      if (foreign.length > 0) mergedHooks[event] = foreign;
+    }
+    for (const [event, groups] of Object.entries(block)) {
+      mergedHooks[event] = [...(mergedHooks[event] ?? []), ...(groups as unknown[])];
+    }
+    settings.hooks = mergedHooks;
+    const written = writeJsonFile(targetPath, settings);
+    this.ensureGitIgnored(targetPath);
+    return written;
+  }
+
+  /**
+   * Strip Myco's hook groups from the member target, deleting the file when
+   * nothing but an empty hooks map is left. The inverse of
+   * `installMemberHooks`, so `myco member leave --purge` removes what
+   * provisioning wrote and never touches a key the agent owns.
+   */
+  uninstallMemberHooks(): boolean {
+    const targetPath = this.resolveAbsoluteTarget('hooks');
+    if (targetPath === null || !fs.existsSync(targetPath)) return false;
+    const settings = readJsonFile(targetPath);
+    const existingHooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
+    const kept: Record<string, unknown[]> = {};
+    let removed = false;
+    for (const [event, groups] of Object.entries(existingHooks)) {
+      const foreign = (groups as Array<Record<string, unknown>>).filter((group) => !isMycoHookGroup(group));
+      if (foreign.length !== (groups as unknown[]).length) removed = true;
+      if (foreign.length > 0) kept[event] = foreign;
+    }
+    if (!removed) return false;
+    if (Object.keys(kept).length > 0) {
+      settings.hooks = kept;
+    } else {
+      delete settings.hooks;
+    }
+    if (Object.keys(settings).length === 0) {
+      fs.rmSync(targetPath, { force: true });
+      return true;
+    }
+    return writeJsonFile(targetPath, settings);
+  }
+
+  /** Add `targetPath` to `.git/info/exclude` when git does not already ignore it. A path outside any repository needs nothing. */
+  private ensureGitIgnored(targetPath: string): void {
+    const relative = path.relative(this.projectRoot, targetPath).split(path.sep).join('/');
+    try {
+      runGit(['check-ignore', '-q', '--', relative], this.projectRoot);
+      return;
+    } catch {
+      // Not ignored, or not a repository — the next call tells the two apart.
+    }
+    let gitDir: string;
+    try {
+      gitDir = path.resolve(this.projectRoot, runGit(['rev-parse', '--git-dir'], this.projectRoot));
+    } catch {
+      return;
+    }
+    const excludeFile = path.join(gitDir, 'info', 'exclude');
+    let existing = '';
+    try { existing = fs.readFileSync(excludeFile, 'utf-8'); } catch { /* first entry */ }
+    if (existing.split('\n').some((line) => line.trim() === relative)) return;
+    fs.mkdirSync(path.dirname(excludeFile), { recursive: true });
+    fs.writeFileSync(excludeFile, `${existing}${existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''}${relative}\n`, 'utf-8');
   }
 
   /**

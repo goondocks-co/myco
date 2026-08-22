@@ -30,6 +30,8 @@ export interface UserPromptRecord {
    */
   origin: PromptOrigin;
   text: string;
+  /** The shape's dedupe identity (`<shape>:<dedupeBy value>`) when the shape declares one. */
+  dedupeKey?: string;
 }
 
 export type { UserPromptRecord as PromptRecord };
@@ -205,10 +207,11 @@ function walkTranscript(
     const shape = findMatchingShape(config.shapes, event);
     if (!shape) continue;
 
+    let dedupeKey: string | undefined;
     if (shape.dedupeBy) {
-      const key = toKey(shape.name ?? shape.match.type, getAtPath(event, shape.dedupeBy));
-      if (seenDedupe.has(key)) continue;
-      seenDedupe.add(key);
+      dedupeKey = toKey(shape.name ?? shape.match.type, getAtPath(event, shape.dedupeBy));
+      if (seenDedupe.has(dedupeKey)) continue;
+      seenDedupe.add(dedupeKey);
     }
 
     const rawText = extractText(event, shape);
@@ -251,7 +254,7 @@ function walkTranscript(
         ? 'initial'
         : 'steering';
 
-    records.push({ kind, origin, text });
+    records.push(dedupeKey === undefined ? { kind, origin, text } : { kind, origin, text, dedupeKey });
     priorTurnEnded = false;
   }
 

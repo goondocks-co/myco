@@ -1,12 +1,10 @@
-import { sendEvent } from './send-event.js';
-import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
+import { runMemberHook, type HookMainOptions } from '../member/capture.js';
+import { toolFailureEvent } from '../member/envelope.js';
+import { readSessionState } from '../member/session-state.js';
 
-export async function main(lockNamespace?: PerUserLockNamespace) {
-  await sendEvent('post-tool-use-failure', (input) => ({
-    type: 'tool_failure',
-    tool_name: input.toolName,
-    tool_input: input.toolInput,
-    error: input.raw.error,
-    is_interrupt: input.raw.is_interrupt,
-  }), lockNamespace);
+export async function main(opts: HookMainOptions = {}) {
+  await runMemberHook('post-tool-use-failure', opts, (run) => {
+    const promptId = readSessionState(run.spool.dir, run.sessionId).promptId;
+    return { events: [toolFailureEvent(run.ctx, run.input, { promptId })] };
+  });
 }

@@ -36,6 +36,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { SymbiontManifestSchema, type SymbiontManifest } from '../src/symbionts/manifest-schema.js';
+import { hookNameInCommand } from '../src/member/constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
@@ -69,10 +70,8 @@ interface HookConfigEntry {
   subagentParentPath?: string;
   subagentThreadIdPath?: string;
   subagentLabelPath?: string;
+  sessionContinuation?: unknown;
 }
-
-/** Matches the hook name in a rendered hook command (`… hook session-start --symbiont x`). */
-const HOOK_COMMAND_PATTERN = /\bhook\s+([a-z][a-z-]*)/;
 
 /**
  * Walk a symbiont's hooks.json template and collect, per harness event name,
@@ -97,10 +96,10 @@ export function collectHookEvents(template: unknown, templatePath: string): Reco
     if (!node || typeof node !== 'object') return;
     const record = node as Record<string, unknown>;
     if (typeof record.command === 'string') {
-      const match = HOOK_COMMAND_PATTERN.exec(record.command);
-      if (!match) throw new Error(`${templatePath}: command does not name a myco hook: ${record.command}`);
+      const hook = hookNameInCommand(record.command);
+      if (!hook) throw new Error(`${templatePath}: command does not name a myco hook: ${record.command}`);
       if (!event) throw new Error(`${templatePath}: hook command outside any event key: ${record.command}`);
-      const entry: HookEventEntry = { hook: match[1] };
+      const entry: HookEventEntry = { hook };
       if (typeof record.timeout === 'number') entry.timeout = record.timeout;
       const existing = collected[event];
       if (existing && (existing.hook !== entry.hook || existing.timeout !== entry.timeout)) {
@@ -172,6 +171,7 @@ function hookConfigEntryFor(manifest: SymbiontManifest): HookConfigEntry {
   if (manifest.capture?.subagentParentPath) entry.subagentParentPath = manifest.capture.subagentParentPath;
   if (manifest.capture?.subagentThreadIdPath) entry.subagentThreadIdPath = manifest.capture.subagentThreadIdPath;
   if (manifest.capture?.subagentLabelPath) entry.subagentLabelPath = manifest.capture.subagentLabelPath;
+  if (manifest.capture?.sessionContinuation) entry.sessionContinuation = manifest.capture.sessionContinuation;
   return entry;
 }
 
@@ -205,6 +205,7 @@ export function renderHookConfigSources(): HookConfigSources {
 import type {
   CapturePrompts,
   CaptureRule,
+  SessionContinuation,
   SymbiontManifest,
   SymbiontRegistration,
   TranscriptDiscovery,
@@ -239,6 +240,7 @@ export interface HookConfigEntry {
   subagentParentPath?: string;
   subagentThreadIdPath?: string;
   subagentLabelPath?: string;
+  sessionContinuation?: SessionContinuation;
 }
 
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = ${body} as const;

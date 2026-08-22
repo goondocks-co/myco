@@ -1,12 +1,10 @@
-import { sendEvent } from './send-event.js';
-import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
+import { runMemberHook, type HookMainOptions } from '../member/capture.js';
+import { subagentStopEvent } from '../member/envelope.js';
+import { readSessionState } from '../member/session-state.js';
 
-export async function main(lockNamespace?: PerUserLockNamespace) {
-  await sendEvent('subagent-stop', (input) => ({
-    type: 'subagent_stop',
-    agent_id: input.raw.agent_id,
-    agent_type: input.raw.agent_type,
-    last_assistant_message: input.lastResponse,
-    agent_transcript_path: input.raw.agent_transcript_path,
-  }), lockNamespace);
+export async function main(opts: HookMainOptions = {}) {
+  await runMemberHook('subagent-stop', opts, (run) => {
+    const parentPromptId = readSessionState(run.spool.dir, run.sessionId).promptId;
+    return { events: [subagentStopEvent(run.ctx, run.input, { parentPromptId })] };
+  });
 }

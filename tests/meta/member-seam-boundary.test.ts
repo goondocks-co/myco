@@ -12,12 +12,12 @@
  * compiles, so the gate walks the IMPORT GRAPH rather than grepping one file:
  * a forbidden import two hops deep is the same violation as a direct one.
  *
- * Two modes, one walker:
- *   - the closure of every `src/hooks/*.ts` entry (and of `src/member/**`) is
- *     REPORTED — the violation list is printed and the test passes;
- *   - the closure of each ENFORCED LEAF must sit inside the allowlist and
- *     reach no package outside `ALLOWED_EXTERNALS`, so a `grove/`, `yaml`, or
- *     workspace-package import in one of them fails by name.
+ * One walker, everything enforced: the closure of every `src/hooks/*.ts`
+ * entry and of `src/member/**` must sit inside the allowlist and reach no
+ * package outside `ALLOWED_EXTERNALS` — a `grove/`, `yaml`, or
+ * workspace-package import anywhere in it fails by name — and each enforced
+ * leaf is walked again on its own so a violation is reported against the leaf
+ * that introduced it, not only against the whole graph.
  *
  * Edges and comment-free code come from the runtime's own parser, never a
  * hand-rolled lexer: `Bun.Transpiler.scanImports` lists every specifier the
@@ -55,8 +55,23 @@ const ALLOWLIST: readonly string[] = [
   'member/**',
   'capture/buffer.ts',
   'capture/transcript-id.ts',
+  // Transcript-derived capture: the prompt walker, session lineage, and plan-tag envelopes.
+  'capture/prompt-kind.ts',
+  'capture/session-continuation.ts',
+  'plans/tag-envelopes.ts',
+  // The transcript parsers and the per-symbiont turn extraction they back.
   'symbionts/parsers/**',
   'symbionts/adapter.ts',
+  'symbionts/registry.ts',
+  'symbionts/claude-code.ts',
+  'symbionts/cursor.ts',
+  'symbionts/codex.ts',
+  'symbionts/antigravity.ts',
+  'symbionts/windsurf.ts',
+  'symbionts/copilot.ts',
+  'symbionts/transcript-discovery.ts',
+  'symbionts/envelope-prefixes.ts',
+  'symbionts/manifests.generated.ts',
   'paths/home.ts',
   'project-root.ts',
   'machine-id.ts',
@@ -64,6 +79,8 @@ const ALLOWLIST: readonly string[] = [
   'utils/dot-path.ts',
   'utils/git.ts',
   'version.ts',
+  // version.ts resolves the package root through this leaf.
+  'utils/find-package-root.ts',
   'constants.ts',
   // constants.ts re-exports its sibling files; they are the same leaf.
   'constants/**',
@@ -80,6 +97,8 @@ const FORBIDDEN_LITERALS: readonly string[] = ['127.0.0.1', 'daemon.json', 'daem
 
 /** Leaves whose closure is enforced (paths relative to packages/myco/src; `/**` = every file under). */
 const ENFORCED_LEAVES: readonly string[] = [
+  'hooks/**',
+  'member/**',
   'paths/home.ts',
   'project-root.ts',
   'machine-id.ts',
@@ -399,7 +418,7 @@ describe('member seam boundary (transitive)', () => {
   const hookEntries = listTs(path.join(SRC_ROOT, 'hooks')).filter((f) => path.dirname(f) === path.join(SRC_ROOT, 'hooks'));
   const memberEntries = listTs(path.join(SRC_ROOT, 'member'));
 
-  it('walks every hooks/ and member/ entry and reports the closure outside the allowlist (report mode)', () => {
+  it('walks every hooks/ and member/ entry and keeps the whole closure inside the allowlist (enforced)', () => {
     expect(hookEntries.length).toBeGreaterThan(0);
     const closure = closureOf([...hookEntries, ...memberEntries]);
     const violations = [...moduleViolationsOf(closure), ...externalViolationsOf(closure), ...unknowableViolationsOf(closure)];
@@ -407,15 +426,29 @@ describe('member seam boundary (transitive)', () => {
     const literals = violations.filter((v) => v.reason.startsWith('contains literal'));
     const externals = violations.filter((v) => v.reason === 'external package');
     const unknowable = violations.filter((v) => v.reason.startsWith('unknowable dynamic import'));
-    // REPORT MODE: the hooks closure is printed, not asserted — the list is
-    // what the member rewiring clears before this block becomes an assertion.
-    console.log(
-      `[member-seam] report: ${closure.modules.size} modules in the hooks closure, `
-      + `${outside.size} outside the allowlist, ${literals.length} forbidden-literal hits, `
-      + `${externals.length} external packages reached, ${unknowable.length} modules with unknowable dynamic imports\n`
-      + formatViolations(violations),
+    if (violations.length > 0) {
+      throw new Error(`the hooks+member closure reaches outside the member seam allowlist:\n${formatViolations(violations)}`);
+    }
+    expect({ outside: outside.size, literals: literals.length, externals: externals.length, unknowable: unknowable.length })
+      .toEqual({ outside: 0, literals: 0, externals: 0, unknowable: 0 });
+  });
+
+  it('reports the closure and keeps it whole — a gate over a collapsed graph proves nothing', () => {
+    const closure = closureOf([...hookEntries, ...memberEntries]);
+    const modules = new Set(closure.modules.keys());
+    // Named, not counted: a count churns whenever a file is added, while an
+    // empty allowlist passes trivially over a graph that stopped reaching the
+    // member at all. These are the modules a hook MUST still reach to capture.
+    for (const required of [
+      'member/spool.ts', 'member/transport.ts', 'member/envelope.ts', 'member/capture.ts', 'member/transcript.ts',
+      'hooks/normalize.ts', 'hooks/capture-rules.ts', 'capture/prompt-kind.ts', 'symbionts/adapter.ts',
+    ]) {
+      expect({ required, reached: modules.has(required) }).toEqual({ required, reached: true });
+    }
+    process.stdout.write(
+      `[member-seam] ${closure.modules.size} modules in the hooks+member closure from ${hookEntries.length + memberEntries.length} entries, `
+      + `0 outside the allowlist, 0 forbidden-literal hits, 0 external packages reached\n`,
     );
-    expect(Array.isArray(violations)).toBe(true);
   });
 
   for (const leaf of ENFORCED_LEAVES) {

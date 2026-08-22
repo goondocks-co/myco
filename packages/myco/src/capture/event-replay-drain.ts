@@ -386,9 +386,9 @@ export interface EventReplayDrainDeps {
    *  (consolidation Task C-2, item 6). Implementations MUST hold the same
    *  per-session flock `EventBuffer.append()` takes, RE-READ the buffer
    *  inside the lock, and delete only when `shouldDelete` approves the
-   *  re-read records — the hook-fallback subprocess (`hooks/send-event.ts`
-   *  buffering via `resolveProjectBufferDirFromRoot`) is a real cross-process
-   *  appender to this exact file for attached projects, and an unlocked
+   *  re-read records — a hook subprocess buffering through
+   *  `resolveProjectBufferDirFromRoot` is a real cross-process appender to
+   *  this exact file for attached projects, and an unlocked
    *  check-then-delete destroys a straggler append landing between the check
    *  and the unlink (never-acked, never-forwarded bytes, unrecoverable once
    *  the high-water entry is removed with the file). Default is

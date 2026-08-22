@@ -4,10 +4,9 @@
  * and in what mode.
  *
  * The daemon's reconciler derives its replayable set from this table. The
- * hook-side buffer-fallback decision (`shouldBufferFallback` in
- * `src/hooks/send-event.ts`) is response-shape-driven and does not consult
- * the table — encoding replay semantics per event type in one place is what
- * keeps the reconciler and the hooks from drifting on what survives downtime.
+ * 2.0 member never consults it — its spool is write-ahead, so every event it
+ * holds is replayable by construction (`src/member/spool.ts`) — and the table
+ * governs the 1.4 daemon path alone.
  */
 
 /** How reconciliation replays a buffered event of this type. */
