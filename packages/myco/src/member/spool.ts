@@ -30,6 +30,8 @@ export const BLOBS_DIRNAME = 'blobs';
 export const OFFLINE_LATCH_FILE = 'offline.json';
 export const REFUSED_LOG_FILE = 'refused.jsonl';
 const DRAIN_LEASE_SUFFIX = '.drain.lock';
+/** Suffix of a session's state file, the sibling of its spool file. */
+const STATE_FILE_SUFFIX = '.state.json';
 
 /** The seven envelope fields; nothing else leaves the spool. */
 export const WIRE_FIELDS = ['eventId', 'sessionId', 'kind', 'createdAt', 'channel', 'producer', 'payload'] as const;
@@ -195,6 +197,21 @@ export class MemberSpool {
   /** Session ids with a spool file. */
   sessionIds(): string[] {
     return listBufferSessionIds(this.dir).filter((id) => id !== path.basename(REFUSED_LOG_FILE, '.jsonl'));
+  }
+
+  /**
+   * Session ids with a state file. A fully delivered session keeps its state
+   * after the drain deletes its spool file, so the acknowledgement it records
+   * is only reachable through this set.
+   */
+  stateSessionIds(): string[] {
+    try {
+      return fs.readdirSync(this.dir)
+        .filter((file) => file.endsWith(STATE_FILE_SUFFIX))
+        .map((file) => file.slice(0, -STATE_FILE_SUFFIX.length));
+    } catch {
+      return [];
+    }
   }
 
   /** Every record of the session's spool, read under the append lock; a torn line reads as null. */
