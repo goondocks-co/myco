@@ -309,6 +309,14 @@ const CaptureManifestSchema = z.object({
 const RegistrationSchema = z.object({
   hooksTarget: z.string().optional(),
   /**
+   * Project-relative path where the `member-project` scope writes the 2.0
+   * member's hook block. Separate from `hooksTarget` on purpose: the member
+   * scope must never touch the file a 1.4 project-scope install owns, so the
+   * two scopes can never collapse each other's hooks. Absent means the
+   * symbiont has no member surface and the scope installs nothing.
+   */
+  memberHooksTarget: z.string().optional(),
+  /**
    * Absolute path (with `~` expansion) where Myco writes hook config when
    * installing under global scope. May point at a file the agent shares with
    * user content (e.g. `~/.claude/settings.json`) — settings-merge.ts owns

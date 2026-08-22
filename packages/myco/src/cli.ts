@@ -40,6 +40,8 @@ Commands:
   attach <project> --host <h>   Route a project to a Team Host (going-forward)
   detach <project>         Clear a project's Team Host mapping (resolves local again)
   host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key|members|revoke)
+  member <op>              2.0 member: join | leave | drain | status | refresh
+  settings                 Print harness settings for a sandboxed agent (--harness <name> --project <id>)
   version                  Show plugin version
   mcp                     Start the MCP stdio server
   hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact, error-occurred, notification)
@@ -113,6 +115,8 @@ const DELEGATED_HELP: Record<string, () => Promise<string>> = {
   join: async () => (await import('./cli/join.js')).JOIN_HELP,
   leave: async () => (await import('./cli/join.js')).LEAVE_HELP,
   host: async () => (await import('./cli/host.js')).HOST_HELP,
+  member: async () => (await import('./cli/member.js')).MEMBER_HELP,
+  settings: async () => (await import('./cli/settings.js')).SETTINGS_HELP,
 };
 
 async function helpForCommand(command: string, args: readonly string[] = []): Promise<string> {
@@ -185,7 +189,7 @@ async function main(): Promise<void> {
   if (cmd === 'hook') {
     runLaunchPreamble('hook', args);
     const hookName = args[0];
-    const HOOK_DISPATCH: Record<string, () => Promise<{ main: () => Promise<void> }>> = {
+    const HOOK_DISPATCH: Record<string, () => Promise<{ main: (opts: import('./member/capture.js').HookMainOptions) => Promise<void> }>> = {
       'session-start': () => import('./hooks/session-start.js'),
       'session-end': () => import('./hooks/session-end.js'),
       'stop': () => import('./hooks/stop.js'),
@@ -207,7 +211,10 @@ async function main(): Promise<void> {
       console.error(`Unknown hook: ${hookName}. Available: ${Object.keys(HOOK_DISPATCH).join(', ')}`);
       process.exit(1);
     }
-    return (await loader()).main();
+    // The credential source is declared on the hook command (`--credential
+    // registry|env`) and handed down; a hook never infers it.
+    const { parseCredentialFlag } = await import('./member/credential.js');
+    return (await loader()).main({ credential: parseCredentialFlag(args) });
   }
   if (cmd === 'daemon') return (await import('./daemon/main.js')).main();
   // Supervisor lifecycle — manages the platform service + daemon binary, never a
@@ -236,6 +243,13 @@ async function main(): Promise<void> {
   // Funnel) and writes machine-tier config, not a project vault, so like
   // `join`/`attach` it sits above the myco.yaml gate and works from any cwd.
   if (cmd === 'host') return (await import('./cli/host.js')).runHostCommand(args);
+
+  // 2.0 member operations — registry and spool under MYCO_HOME, never a project
+  // vault, so they sit above the myco.yaml gate and work from any cwd.
+  if (cmd === 'member') return (await import('./cli/member.js')).run(args);
+
+  // The sandbox settings emitter reads no vault and writes nothing.
+  if (cmd === 'settings') return (await import('./cli/settings.js')).run(args);
 
   if (cmd === 'doctor') {
     const vaultDir = resolveVaultDir();

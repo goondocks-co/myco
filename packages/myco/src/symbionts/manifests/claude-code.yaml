@@ -319,6 +319,10 @@ capture:
     interruptMarker: "[Request interrupted by user for tool use]"
 registration:
   hooksTarget: .claude/settings.json
+  # The 2.0 member scope writes here and nowhere else: settings.local.json is
+  # git-ignored and is not the file a 1.4 project install owns, so a `myco
+  # update` under the project scope cannot collapse the member's hooks.
+  memberHooksTarget: .claude/settings.local.json
   globalHooksTarget: ~/.claude/settings.json
   mcpTarget: .mcp.json
   globalMcpTarget: ~/.claude/settings.json

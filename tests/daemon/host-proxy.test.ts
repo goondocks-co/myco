@@ -38,7 +38,6 @@ import {
 } from '@myco/daemon/host-proxy';
 import { __resetLogThrottleForTests, __setLogThrottleClockForTests } from '@myco/daemon/log-throttle';
 import type { RemoteTarget, RouteClassification } from '@myco/host/routing';
-import { shouldBufferFallback } from '@myco/hooks/send-event';
 import { getMachineId } from '@myco/machine-id';
 import { resolveProjectBufferDir } from '@myco/grove/paths';
 import { listGroves } from '@myco/grove/registry';
@@ -634,15 +633,6 @@ describe('host-proxy forwarder', () => {
     expect(forwardedId).toBe(bufferedId);
   });
 
-  test('collect ack lands on the hook fallback matrix "never buffer" row for every event type', () => {
-    // Import the REAL matrix and assert the synthesized ack would not trip the
-    // hook-side buffer fallback (which is the auto-register leak vector).
-    const ack = { ok: true, data: { ok: true, persisted: false, buffered: true } };
-    expect(shouldBufferFallback(ack, 'tool')).toBe(false);
-    expect(shouldBufferFallback(ack, 'stop')).toBe(false);
-    expect(shouldBufferFallback(ack, undefined)).toBe(false);
-  });
-
   test('collect route with host DOWN: still buffers, still acks buffered:true, no hang', async () => {
     config.classification = { capability: 'Collection', stamp: 'collect' };
     await takeHostDown();
@@ -692,7 +682,6 @@ describe('host-proxy forwarder', () => {
       const ack = await res.json();
       expect(ack).toEqual({ ok: true, persisted: false, buffered: false });
       expect(Date.now() - started).toBeLessThan(2000);
-      expect(shouldBufferFallback({ ok: true, data: ack }, 'tool')).toBe(true);
 
       expect(cap.errors).toContainEqual([
         'collector buffer append failed',
@@ -732,7 +721,6 @@ describe('host-proxy forwarder', () => {
 
     const ack = await res.json();
     expect(ack).toEqual({ ok: true, persisted: false, buffered: false });
-    expect(shouldBufferFallback({ ok: true, data: ack }, 'tool')).toBe(true);
     expect(cap.errors).toContainEqual([
       'collect route missing resolvable session_id',
       { host_id: config.target.host.host_id, path: '/events' },

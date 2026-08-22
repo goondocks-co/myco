@@ -10,6 +10,7 @@
 import type {
   CapturePrompts,
   CaptureRule,
+  SessionContinuation,
   SymbiontManifest,
   SymbiontRegistration,
   TranscriptDiscovery,
@@ -44,6 +45,7 @@ export interface HookConfigEntry {
   subagentParentPath?: string;
   subagentThreadIdPath?: string;
   subagentLabelPath?: string;
+  sessionContinuation?: SessionContinuation;
 }
 
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
@@ -396,7 +398,17 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "trim": true,
         "set_origin": "system"
       }
-    ]
+    ],
+    "sessionContinuation": {
+      "parentSessionIdPath": "session_id",
+      "defaultReason": "fork",
+      "markers": [
+        {
+          "recordFlagPath": "isCompactSummary",
+          "reason": "compact continuation"
+        }
+      ]
+    }
   },
   "cline": {
     "pluginRootEnvVar": "CLINE_PLUGIN_ROOT",

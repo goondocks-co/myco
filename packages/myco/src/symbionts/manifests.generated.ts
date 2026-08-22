@@ -385,6 +385,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".claude/settings.json",
+      "memberHooksTarget": ".claude/settings.local.json",
       "globalHooksTarget": "~/.claude/settings.json",
       "globalMcpTarget": [
         {
