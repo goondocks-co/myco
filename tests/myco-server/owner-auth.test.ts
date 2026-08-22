@@ -215,9 +215,15 @@ describe('sign-in', () => {
 });
 
 describe('owner session cookie', () => {
+  it('refuses a payload signed for another purpose with the same key', async () => {
+    const { signPayload } = await import('@myco-server-worker/auth/owner/cookie.js');
+    const foreign = await signPayload(SECRET, 'oauth_state', { sub: '1234567', iat: 1_000, exp: 9_000 } as never);
+    expect(await verifySession(SECRET, foreign, 5_000)).toBeNull();
+  });
+
   it('round-trips a session', async () => {
     const signed = await signSession(SECRET, { sub: '1234567', iat: 1_000, exp: 9_000 });
-    expect(await verifySession(SECRET, signed, 5_000)).toEqual({ sub: '1234567', iat: 1_000, exp: 9_000 });
+    expect(await verifySession(SECRET, signed, 5_000)).toMatchObject({ sub: '1234567', iat: 1_000, exp: 9_000 });
   });
 
   it('refuses a session signed with another secret', async () => {

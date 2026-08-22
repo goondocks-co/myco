@@ -1,5 +1,8 @@
 import type { OwnerConfig } from './config.js';
 
+/** The payload type an OAuth state carries inside its signature. */
+export const OAUTH_STATE_TYP = 'oauth_state';
+
 /** A state this server minted: a nonce plus the instant it stops being accepted. */
 export interface OAuthState {
   nonce: string;

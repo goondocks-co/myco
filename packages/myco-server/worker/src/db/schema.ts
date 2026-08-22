@@ -242,9 +242,9 @@ const V3_STATEMENTS: readonly string[] = [
   `UPDATE member_tokens SET lineage_started_at = expires_at - ${MEMBER_TOKEN_TTL_MS} WHERE lineage_started_at IS NULL`,
 ];
 
-/** Schema v4: the ordered path a project's session list reads. */
+/** Schema v4: the ordered path a project's session list reads — sessions carry only their primary key `(project_id, session_id)`, so "newest first" had no index before the read API existed. The key is `first_received_at`, which stays with the first writer: a keyset page over `last_received_at` would skip any session an ingest moves above the cursor between two pages. */
 const V4_STATEMENTS: readonly string[] = [
-  `CREATE INDEX IF NOT EXISTS idx_sessions_recent ON sessions (project_id, last_received_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_recent ON sessions (project_id, first_received_at)`,
 ];
 
 function withStamp(version: number, statements: readonly string[]): SchemaStep {

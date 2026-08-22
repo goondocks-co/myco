@@ -1,14 +1,14 @@
 import type { Env } from '../env.js';
 import type { OwnerContext } from '../context.js';
-import { createProject, listProjects } from '../read/sessions.js';
-import { badRequest, ok } from './scope.js';
+import { createProject } from '../read/sessions.js';
+import { badRequest, listVisibleProjects, ok } from './scope.js';
 
 /** The project-id grammar the schema enforces (`db/schema.ts:5`), applied before a write reaches a CHECK constraint. */
 const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
 const RESERVED = new Set(['.', '..']);
 
-export async function handleProjects(env: Env, _ctx: OwnerContext): Promise<Response> {
-  return ok({ projects: await listProjects(env.MYCO_DB) });
+export async function handleProjects(env: Env, ctx: OwnerContext): Promise<Response> {
+  return ok({ projects: await listVisibleProjects(env.MYCO_DB, ctx.session) });
 }
 
 /** Create a project. The owner API onboards a project so a first token can be minted for it; `scripts/mint-local.ts` remains the break-glass mirror. */

@@ -20,6 +20,13 @@ describe('route table', () => {
     expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh']);
   });
 
+  it('routes exactly the child segments the handler serves', async () => {
+    const { CHILD_SEGMENTS } = await import('@myco-server-worker/api/sessions.js');
+    const child = ROUTES.find((r) => r.path.endsWith('/{child}'));
+    const alternation = /\(\?<child>([^)]*)\)/.exec(String((child as { pattern: RegExp }).pattern))![1].split('|');
+    expect(alternation.sort()).toEqual([...CHILD_SEGMENTS].sort());
+  });
+
   it('permits exactly the enumerated public paths', () => {
     expect(ROUTES.filter((r) => r.auth === 'public').map((r) => r.path)).toEqual(['/health']);
   });

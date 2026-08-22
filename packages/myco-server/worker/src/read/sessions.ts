@@ -78,7 +78,7 @@ export async function listProjects(db: D1Like): Promise<ProjectRow[]> {
   }));
 }
 
-/** A project's sessions, most recent receipt first, over `idx_sessions_recent`. */
+/** A project's sessions, most recently started first, over `idx_sessions_recent`. The key is `first_received_at` paired with `session_id`: a keyset page must order by a column no later write moves, or an actively capturing session slips above the cursor between two pages and appears on neither. */
 export async function listSessions(db: D1Like, scope: ReadScope, opts: { limit?: number; cursor?: string } = {}): Promise<Page<SessionRow>> {
   const limit = clampLimit(opts.limit);
   const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
@@ -87,15 +87,15 @@ export async function listSessions(db: D1Like, scope: ReadScope, opts: { limit?:
     ? db
         .prepare(
           `SELECT ${SESSION_COLUMNS} FROM sessions
-            WHERE project_id = ? AND (last_received_at < ? OR (last_received_at = ? AND session_id < ?))
-            ORDER BY last_received_at DESC, session_id DESC LIMIT ?`
+            WHERE project_id = ? AND (first_received_at < ? OR (first_received_at = ? AND session_id < ?))
+            ORDER BY first_received_at DESC, session_id DESC LIMIT ?`
         )
         .bind(scope.projectId, after.createdAt, after.createdAt, after.id, limit + 1)
     : db
-        .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE project_id = ? ORDER BY last_received_at DESC, session_id DESC LIMIT ?`)
+        .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE project_id = ? ORDER BY first_received_at DESC, session_id DESC LIMIT ?`)
         .bind(scope.projectId, limit + 1);
   const { results } = await statement.all<Record<string, unknown>>();
-  return page(results.map(toSession), limit, (r) => ({ createdAt: r.lastReceivedAt, id: r.sessionId }));
+  return page(results.map(toSession), limit, (r) => ({ createdAt: r.firstReceivedAt, id: r.sessionId }));
 }
 
 /** One session inside the scope, or null — including when the session exists under another project. */

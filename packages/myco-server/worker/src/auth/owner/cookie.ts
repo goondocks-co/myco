@@ -28,14 +28,14 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
 }
 
 /** `<base64url(payload)>.<base64url(hmac)>` over any JSON payload carrying an `exp`. */
-export async function signPayload<T extends { exp: number }>(secret: string, payload: T): Promise<string> {
-  const body = b64url(ENCODER.encode(JSON.stringify(payload)));
+export async function signPayload<T extends { exp: number }>(secret: string, typ: string, payload: T): Promise<string> {
+  const body = b64url(ENCODER.encode(JSON.stringify({ ...payload, typ })));
   const signature = new Uint8Array(await crypto.subtle.sign('HMAC', await hmacKey(secret), ENCODER.encode(body)));
   return `${body}.${b64url(signature)}`;
 }
 
 /** The payload a well-signed, unexpired value carries, or null. Every malformed shape answers null rather than throwing. */
-export async function verifyPayload<T extends { exp: number }>(secret: string, value: string, now: number): Promise<T | null> {
+export async function verifyPayload<T extends { exp: number }>(secret: string, typ: string, value: string, now: number): Promise<T | null> {
   const split = value.indexOf('.');
   if (split <= 0 || split === value.length - 1) return null;
   const body = value.slice(0, split);
@@ -52,18 +52,24 @@ export async function verifyPayload<T extends { exp: number }>(secret: string, v
   } catch {
     return null;
   }
-  const parsed = payload as T;
+  const parsed = payload as T & { typ?: unknown };
+  // One key signs both the session cookie and the OAuth state, and the state travels in a
+  // URL the caller sees. The type travels inside the signature, so neither can be presented
+  // as the other however their shapes evolve.
+  if (parsed?.typ !== typ) return null;
   return typeof parsed?.exp === 'number' && parsed.exp > now ? parsed : null;
 }
 
 /** `<base64url(payload)>.<base64url(hmac)>`. */
+export const SESSION_TYP = 'session';
+
 export async function signSession(secret: string, session: OwnerSession): Promise<string> {
-  return signPayload(secret, session);
+  return signPayload(secret, SESSION_TYP, session);
 }
 
 /** The session carried by a well-signed, unexpired value, or null. */
 export async function verifySession(secret: string, value: string, now: number): Promise<OwnerSession | null> {
-  const session = await verifyPayload<OwnerSession>(secret, value, now);
+  const session = await verifyPayload<OwnerSession>(secret, SESSION_TYP, value, now);
   if (session === null) return null;
   return typeof session.sub === 'string' && typeof session.iat === 'number' ? session : null;
 }

@@ -19,10 +19,10 @@ describe('read/sessions', () => {
     const { db, sqlite } = sqliteEnv();
     seedSessions(sqlite);
     const { rows, cursor } = await listSessions(db, { projectId: 'proj_1' });
-    expect(rows.map((r) => r.sessionId)).toEqual(['s2', 's3', 's1']);
+    expect(rows.map((r) => r.sessionId)).toEqual(['s3', 's2', 's1']);
     expect(rows[0]).toEqual({
-      sessionId: 's2', machineId: 'm1', createdByTokenId: 'tok_2', firstReceivedAt: 2, lastReceivedAt: 30,
-      agent: 'claude-code', branch: 'main', startedAt: 2, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null,
+      sessionId: 's3', machineId: 'm2', createdByTokenId: 'tok_1', firstReceivedAt: 3, lastReceivedAt: 20,
+      agent: 'claude-code', branch: 'main', startedAt: 3, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null,
     });
     expect(cursor).toBeNull();
   });
@@ -31,7 +31,7 @@ describe('read/sessions', () => {
     const { db, sqlite } = sqliteEnv();
     seedSessions(sqlite);
     const first = await listSessions(db, { projectId: 'proj_1' }, { limit: 2 });
-    expect(first.rows.map((r) => r.sessionId)).toEqual(['s2', 's3']);
+    expect(first.rows.map((r) => r.sessionId)).toEqual(['s3', 's2']);
     expect(first.cursor).not.toBeNull();
     const second = await listSessions(db, { projectId: 'proj_1' }, { limit: 2, cursor: first.cursor! });
     expect(second.rows.map((r) => r.sessionId)).toEqual(['s1']);
@@ -198,5 +198,22 @@ describe('read/transcript', () => {
     expect(t?.transcriptId).toBe('tr1');
     sqlite.run(`INSERT INTO transcript_segments (${segCols.map((c) => c.name).join(',')}) VALUES (${segCols.map((c) => value(c.name)).join(',')})`);
     expect((await listSegments(db, { projectId: 'proj_1' }, 'tr1')).length).toBe(1);
+  });
+});
+
+describe('paging is stable under live capture', () => {
+  it('returns every session even when one receives events between pages', async () => {
+    const { db, sqlite } = sqliteEnv();
+    for (let i = 1; i <= 6; i++) {
+      sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+                  VALUES ('proj_1','s${i}','m','t',${i},${i})`);
+    }
+    const first = await listSessions(db, { projectId: 'proj_1' }, { limit: 3 });
+    // The oldest-started session becomes the most recently active mid-page, the way a live
+    // capture rewrites last_received_at while an owner is paging.
+    sqlite.run(`UPDATE sessions SET last_received_at = 9999 WHERE session_id = 's1'`);
+    const second = await listSessions(db, { projectId: 'proj_1' }, { limit: 3, cursor: first.cursor! });
+    const seen = [...first.rows, ...second.rows].map((r) => r.sessionId).sort();
+    expect(seen).toEqual(['s1', 's2', 's3', 's4', 's5', 's6']);
   });
 });

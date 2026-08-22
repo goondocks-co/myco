@@ -261,3 +261,18 @@ describe('owner request bodies are bounded', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('finding 1 closed: an exotic session id opens', () => {
+  it('serves a session whose id ingest accepts but the old grammar refused', async () => {
+    const e = sqliteEnv();
+    const weird = 'agent run #7 (café)+~';
+    e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+                  VALUES ('proj_1',?,'m','t',1,2)`, [weird] as never);
+    const res = await worker.fetch(
+      new Request(`https://s/api/projects/proj_1/sessions/${encodeURIComponent(weird)}`, { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }),
+      { ...e.env, ...OWNER_ENV }
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json() as { session: { sessionId: string } }).session.sessionId).toBe(weird);
+  });
+});
