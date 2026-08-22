@@ -11,10 +11,12 @@ export function sqlCapture(): { db: D1Like; statements: string[] } {
       bind: (...values: unknown[]) => ({
         run: async () => { let i = 0; statements.push(text.replace(/\?/g, () => literal(values[i++]))); return { results: [], meta: { changes: 1 } }; },
         first: async () => null,
+        all: async () => ({ results: [] }),
         bind: () => { throw new Error('rebind unsupported'); },
       }),
       run: async () => ({ results: [], meta: { changes: 1 } }),
       first: async () => null,
+      all: async () => ({ results: [] }),
     }),
     batch: async () => { throw new Error('batch unsupported'); },
   };

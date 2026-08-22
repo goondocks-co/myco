@@ -119,6 +119,15 @@ export async function revokeMemberToken(db: D1Like, tokenId: string, nowMs: numb
   return { revoked: result.meta.changes === 1 };
 }
 
+/** Revoke a token that belongs to one project. The unscoped form above is the break-glass path, where the operator has already named the token; anything reached through a credential scopes the write, so a caller can never revoke a token outside what it may see. */
+export async function revokeProjectMemberToken(db: D1Like, projectId: string, tokenId: string, nowMs: number): Promise<{ revoked: boolean }> {
+  const result = await db
+    .prepare(`UPDATE member_tokens SET revoked_at = ? WHERE id = ? AND project_id = ? AND revoked_at IS NULL`)
+    .bind(nowMs, tokenId, projectId)
+    .run();
+  return { revoked: result.meta.changes === 1 };
+}
+
 /** Revokes every live token of the lineage `tokenId` belongs to — the named token, its predecessors, and its successors — in one statement; `revoked` counts the rows that changed. */
 export async function revokeMemberLineage(db: D1Like, tokenId: string, nowMs: number): Promise<{ revoked: number }> {
   const result = await db

@@ -6,10 +6,14 @@ import { sha256Hex } from './hash.js';
 import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
 import { QUOTA_REASON } from './ingest/events.js';
 import { classify, emit, SchemaMismatchError, UNAVAILABLE, type Classifier } from './telemetry.js';
+import { ownerConfig } from './auth/owner/config.js';
+import { readCookie, verifySession } from './auth/owner/cookie.js';
 
 export interface ServerDeps {
   now: () => number;
   sourceOf: (request: Request) => string | null;
+  /** Outbound fetch for the OAuth exchange; injected rather than taken from the global so the dance is testable, matching how `now` and `sourceOf` are supplied. */
+  fetchImpl: typeof fetch;
 }
 
 const SECURITY_HEADERS: Record<string, string> = {
@@ -20,7 +24,10 @@ const SECURITY_HEADERS: Record<string, string> = {
 
 function stamp(res: Response): Response {
   const headers = new Headers(res.headers);
-  for (const [k, v] of Object.entries(SECURITY_HEADERS)) headers.set(k, v);
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
+    if (k === 'cache-control' && res.headers.has('cache-control')) continue;
+    headers.set(k, v);
+  }
   return new Response(res.body, { status: res.status, headers });
 }
 
@@ -40,6 +47,29 @@ const shapeOf = (route: MemberRoute): Shape => route.shape;
 /** A server-side failure in the route's refusal shape. Only an authenticated member sees it; before authentication every failure answers the same bare error, so the shape discloses nothing about the route table. */
 const unavailableFor = (route: MemberRoute): Response => Response.json({ [shapeOf(route)]: false, code: UNAVAILABLE, reason: UNAVAILABLE }, { status: 503, headers: RETRY_AFTER });
 const limited = () => Response.json({ error: 'rate limited' }, { status: 429, headers: RETRY_AFTER });
+const forbidden = () => Response.json({ error: 'forbidden' }, { status: 403 });
+const refuseOversized = () => Response.json({ error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` }, { status: 400 });
+
+/** The request with its body read under the same cap the member path enforces, or null when it exceeds it. A body-less method passes through untouched. */
+async function boundedOwnerRequest(request: Request): Promise<Request | null> {
+  if (request.method === 'GET' || request.method === 'HEAD') return request;
+  const body = await readBoundedBody(request, MAX_BODY_BYTES);
+  if (!body.ok) return null;
+  return new Request(request.url, { method: request.method, headers: request.headers, body: body.text });
+}
+
+/**
+ * True when a state-changing owner request came from this origin. `SameSite=Lax` already
+ * blocks cross-site POST, but SameSite is evaluated on the registrable domain while the
+ * `__Host-` cookie is origin-scoped: on a custom domain any sibling subdomain is same-site
+ * and could mint a token with the owner's cookie attached. Safe methods are exempt.
+ */
+function sameOrigin(request: Request, url: URL): boolean {
+  if (request.method === 'GET' || request.method === 'HEAD') return true;
+  const site = request.headers.get('sec-fetch-site');
+  if (site !== null) return site === 'same-origin';
+  return request.headers.get('origin') === url.origin;
+}
 const unsupportedProtocol = () =>
   Response.json({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL }, { status: 409 });
 export const NO_MACHINE_IDENTITY = 'token has no machine identity';
@@ -99,6 +129,31 @@ export function createServer(deps: ServerDeps) {
     }
     const anonymous = async () => ((await env.SOURCE_LIMIT.limit({ key: source })).success ? unauthorized() : limited());
 
+    // The human surface sits BELOW source identity so it is metered like any other
+    // credential-free traffic: an auth route makes an outbound call to GitHub, and an
+    // owner route without a valid cookie is as cheap to send as an anonymous member
+    // request. Above this point neither would charge the bucket at all.
+    if (matched?.route.auth === 'auth' || matched?.route.auth === 'owner') {
+      const config = ownerConfig(env);
+      if (config === null) return anonymous();
+      if (matched.route.auth === 'auth') {
+        if (!(await env.SOURCE_LIMIT.limit({ key: source })).success) return limited();
+        return matched.route.handler(request, { config, fetchImpl: deps.fetchImpl, now, origin: url.origin });
+      }
+      const presented = readCookie(request.headers.get('cookie'));
+      const session = presented === null ? null : await verifySession(config.sessionSecret, presented, now);
+      if (session === null || session.sub !== config.ownerGithubId) return anonymous();
+      if (!sameOrigin(request, url)) return forbidden();
+      const bounded = await boundedOwnerRequest(request);
+      if (bounded === null) return refuseOversized();
+      try {
+        return await matched.route.handler(env, { request: bounded, session, config, params: matched.params, url, now });
+      } catch (err) {
+        emit({ kind: 'request_error', error_class: classify(err) });
+        return unavailable();
+      }
+    }
+
     const presented = bearer(request);
     if (!presented) return anonymous();
 
@@ -124,7 +179,7 @@ export function createServer(deps: ServerDeps) {
       return await admitted(request, env, auth, matched, now);
     } catch (err) {
       emit({ kind: 'request_error', error_class: classify(err), projectId: auth.projectId, tokenId: auth.tokenId });
-      return matched && matched.route.auth !== 'public' ? unavailableFor(matched.route) : unavailable();
+      return matched && matched.route.auth === 'member' ? unavailableFor(matched.route) : unavailable();
     }
   }
 
@@ -141,6 +196,7 @@ export function createServer(deps: ServerDeps) {
     if (!matched) return unauthorized();
     const { route, params } = matched;
     if (route.auth === 'public') return route.handler(request);
+    if (route.auth !== 'member') return unauthorized();
     if (auth.machineId === null) return refuse(auth, shapeOf(route), NO_MACHINE_IDENTITY, 'no_machine_identity');
 
     if (route.bodyMode === 'stream') {

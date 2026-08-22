@@ -68,6 +68,19 @@ export function memoryBlobStore(): MemoryBlobStore {
       const o = store.objects.get(key);
       return o ? ({ size: o.size } satisfies StoredObjectLike) : null;
     },
+    async get(key) {
+      const o = store.objects.get(key);
+      if (!o) return null;
+      return {
+        size: o.size,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(o.size));
+            controller.close();
+          },
+        }),
+      };
+    },
     async put(key, value, options) {
       store.puts.push(key);
       if (store.failNextPut) { const m = store.failNextPut; store.failNextPut = null; throw new Error(m); }

@@ -14,7 +14,8 @@ import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
-import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL } from './helpers/fixtures.js';
+import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL, count } from './helpers/fixtures.js';
+import { OWNER_ENV as OWNER_ENV2, ownerCookie as ownerCookie2 } from './helpers/owner.js';
 
 const WORKER = fileURLToPath(new URL('../../packages/myco-server/worker/', import.meta.url));
 const SRC = join(WORKER, 'src');
@@ -28,7 +29,7 @@ const files = (dir: string): string[] => allFiles(dir).filter((f) => f.endsWith(
 const sharedFiles = () => files(SRC).filter((f) => !f.includes(`${join(SRC, 'platform')}/`));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 20;
+const EMIT_CALLS = 21;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -104,7 +105,7 @@ const CANONICAL_ENTRY = `
 import type { Env } from './env.js';
 import { createServer } from './pipeline.js';
 import { cloudflareSourceOf } from './platform/cloudflare.js';
-const server = createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf });
+const server = createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf, fetchImpl: (input, init) => fetch(input, init) });
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   return server.handleRequest(request, env);
 }
@@ -423,10 +424,11 @@ describe('gates', () => {
         wellFormed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
       },
     };
-    expect(ROUTES.filter((r) => r.auth !== 'public').map((r) => `${r.method} ${r.path}`).sort()).toEqual(Object.keys(FIXTURES).sort());
+    expect(ROUTES.filter((r) => r.auth === 'member').map((r) => `${r.method} ${r.path}`).sort()).toEqual(Object.keys(FIXTURES).sort());
     const machineless: Record<string, unknown>[] = [];
     for (const r of ROUTES) {
-      expect(['public', 'member']).toContain(r.auth);
+      expect(['public', 'member', 'auth', 'owner']).toContain(r.auth);
+      if (r.auth === 'auth' || r.auth === 'owner') continue;
       expect(['none', 'json', 'stream']).toContain(r.bodyMode);
       if (r.auth === 'public') continue;
       const fixture = FIXTURES[`${r.method} ${r.path}`];
@@ -543,5 +545,99 @@ describe('gates', () => {
     const toml = readFileSync(join(WORKER, 'wrangler.toml'), 'utf8');
     expect(toml).toMatch(/\[observability\]\s*\nenabled = true/);
     expect(toml).toMatch(/\[observability\.logs\]\s*\ninvocation_logs = false/);
+  });
+  it('pins the credential-free route set, so it cannot grow silently', () => {
+    const free = ROUTES.filter((r) => r.auth === 'public' || r.auth === 'auth').map((r) => `${r.method} ${r.path}`).sort();
+    expect(free).toEqual(['GET /auth/callback', 'GET /auth/login', 'GET /health']);
+  });
+
+  it('gives no credential-free route access to the bindings by type', () => {
+    const source = readFileSync(join(SRC, 'routes.ts'), 'utf8');
+    expect(source).toContain('export type PublicHandler = (request: Request) => Promise<Response>');
+    expect(source).toContain('export type AuthHandler = (request: Request, ctx: AuthContext) => Promise<Response>');
+    expect(source).not.toMatch(/AuthHandler = \([^)]*Env/);
+  });
+
+  it('answers every owner route without disclosing the protocol number', async () => {
+    const owner = ROUTES.filter((r) => r.auth === 'owner');
+    expect(owner.length).toBeGreaterThan(0);
+    const { OWNER_ENV, ownerCookie } = await import('./helpers/owner.js');
+    const cookie = await ownerCookie();
+    for (const r of owner) {
+      const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{tokenId}', 'mt_x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64));
+      const e = sqliteEnv();
+      const res = await worker.fetch(
+        new Request(`https://s${path}`, { method: r.method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' }, body: r.method === 'POST' ? '{}' : undefined }),
+        { ...e.env, ...OWNER_ENV }
+      );
+      expect({ path, protocol: res.headers.get('x-myco-protocol') }).toEqual({ path, protocol: null });
+    }
+  });
+
+  it('keeps the deploy config well formed: every line is a comment, a table header, or a key', () => {
+    // An edit that leaves debris in wrangler.toml breaks every deploy and every `wrangler dev`,
+    // and no test reads this file for shape. A bare array line survived one such edit here.
+    const toml = readFileSync(join(WORKER, 'wrangler.toml'), 'utf8');
+    const malformed = toml
+      .split('\n')
+      .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+      .filter(({ line }) => line.length > 0 && !line.startsWith('#'))
+      .filter(({ line }) => !/^\[\[?[A-Za-z0-9_.]+\]\]?$/.test(line) && !/^[A-Za-z0-9_]+\s*=/.test(line) && !/^[\]}]/.test(line) && !/^["'\d]/.test(line));
+    expect(malformed).toEqual([]);
+  });
+
+  it('pins the full route table, so no route of any kind is added without a decision', () => {
+    expect(ROUTES.map((r) => `${r.auth} ${r.method} ${r.path}`).sort()).toEqual([
+      'auth GET /auth/callback',
+      'auth GET /auth/login',
+      'member POST /blobs/{sha256}',
+      'member POST /events',
+      'member POST /tokens/refresh',
+      'owner GET /api/projects',
+      'owner GET /api/projects/{projectId}/blobs/{key}',
+      'owner GET /api/projects/{projectId}/sessions',
+      'owner GET /api/projects/{projectId}/sessions/{sessionId}',
+      'owner GET /api/projects/{projectId}/sessions/{sessionId}/transcript',
+      'owner GET /api/projects/{projectId}/sessions/{sessionId}/{child}',
+      'owner GET /api/projects/{projectId}/tokens',
+      'owner GET /api/projects/{projectId}/tokens/{tokenId}/activity',
+      'owner GET /api/status',
+      'owner POST /api/projects',
+      'owner POST /api/projects/{projectId}/tokens',
+      'owner POST /api/projects/{projectId}/tokens/{tokenId}/revoke',
+      'owner POST /auth/logout',
+      'public GET /health',
+    ]);
+  });
+
+  it('declares every required binding that Env requires, and no more', () => {
+    const status = readFileSync(join(SRC, 'api', 'status.ts'), 'utf8');
+    const required = [...(/REQUIRED_BINDINGS = \[([^\]]*)\]/.exec(status)?.[1] ?? '').matchAll(/'(\w+)'/g)].map((m) => m[1]).sort();
+    const envSource = readFileSync(join(SRC, 'env.ts'), 'utf8');
+    const block = /export interface Env \{([\s\S]*?)\n\}/.exec(envSource);
+    const mandatory = [...block![1].matchAll(/^\s*(\w+):/gm)].map((m) => m[1]).sort();
+    expect(required).toEqual(mandatory);
+  });
+
+  it('verifies no cookie on the member path', () => {
+    const pipeline = readFileSync(join(SRC, 'pipeline.ts'), 'utf8');
+    // The member path starts where the owner branch closes inside `run()`, not at
+    // `member()` — the bearer read and the anonymous refusal live above that function,
+    // and a slice starting there would never see the code it is meant to constrain.
+    const memberSection = pipeline.slice(pipeline.indexOf('const presented = bearer(request);'));
+    expect(memberSection).not.toContain('verifySession');
+    expect(memberSection).not.toContain('readCookie');
+    expect(memberSection).not.toContain('ownerConfig');
+  });
+  it('leaves owner routes ingest-neutral', async () => {
+    const e = sqliteEnv();
+    const before = count(e.sqlite, 'events');
+    const res = await worker.fetch(
+      new Request('https://s/api/projects', { headers: { cookie: await ownerCookie2(), 'cf-connecting-ip': '1.2.3.4' } }),
+      { ...e.env, ...OWNER_ENV2 }
+    );
+    expect(res.status).toBe(200);
+    expect(count(e.sqlite, 'events')).toBe(before);
+    expect(e.executed.filter((sql) => /UPDATE\s+member_tokens/i.test(sql))).toEqual([]);
   });
 });
