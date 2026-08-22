@@ -203,6 +203,27 @@ describe('member envelope — field rules', () => {
     expect(answer).toMatchObject({ persisted: false, code: 'unknown_field' });
   });
 
+  it('an event from a dev build is persisted: the producer version a real binary reports reaches the server intact', async () => {
+    const rig = await memberRig();
+    // The exact value a dev binary reports — semver build metadata and all.
+    // Every hermetic fixture until now passed a clean version string, which is
+    // why six review rounds and the whole suite never met this: the grammar
+    // was only ever fed values that already satisfied it.
+    const devBuild: EnvelopeContext = { agent: 'claude-code', sessionId: SESSION, stage: stager.stage, version: '0.0.0-dev+1.4.8-6-ge1c936ce-dirty' };
+    const out = promptEvent(devBuild, { promptId: mintId(), text: 'from a dev build' });
+
+    const answer = await rig.postEvent(out.envelope);
+
+    expect(answer).toMatchObject({ persisted: true });
+    expect(rig.rows('prompt_batches')).toBe(1);
+    expect((rig.env.sqlite.query('SELECT producer_version FROM events').get() as { producer_version: string }).producer_version)
+      .toBe('0.0.0-dev-1.4.8-6-ge1c936ce-dirty');
+
+    // And the version this very build reports, whatever it is, is accepted.
+    const real = promptEvent({ ...devBuild, version: undefined }, { promptId: mintId(), text: 'from this build' });
+    expect(await rig.postEvent(real.envelope)).toMatchObject({ persisted: true });
+  });
+
   it('queued prompts and subagents derive the same id on a second machine', () => {
     expect(queuedPromptIdFor('sess', 'att-1')).toBe(deriveId('queued-prompt', 'sess', 'att-1'));
     expect(subagentStartEvent(ctx(), input({ agent_id: 'A' })).envelope.payload.subagentId).toBe(subagentIdFor(SESSION, 'A'));

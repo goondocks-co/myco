@@ -6,13 +6,15 @@
 import { describe, expect, it } from 'bun:test';
 import { MAX_BLOB_BYTES, MIN_COMPAT_MEMBER_PROTOCOL, PROTOCOL_HEADER as SERVER_PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { CLASSIFIERS, UNAVAILABLE } from '@myco-server-worker/telemetry.js';
-import { ID_GRAMMAR, MAX_PAYLOAD_BYTES } from '@myco-server-worker/ingest/envelope.js';
+import { ID_GRAMMAR, MAX_PAYLOAD_BYTES, PRODUCER_GRAMMAR } from '@myco-server-worker/ingest/envelope.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
 import {
   MEMBER_CODES, MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES, MEMBER_PROTOCOL, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, TRANSCRIPT_SLICE_BYTES,
 } from '@myco/member/constants.js';
-import { BOUNDS } from '@myco/member/envelope.js';
+import { BOUNDS, producerIdentifier } from '@myco/member/envelope.js';
+import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
+import { getPluginVersion } from '@myco/version.js';
 
 /** Where each member bound lands in the worker catalogue: [kind, field]. */
 const BOUND_FIELDS: Record<keyof typeof BOUNDS, [string, string] | [string, string, 'item']> = {
@@ -65,6 +67,33 @@ describe('member ↔ worker pins', () => {
 
   it('the token shape the member checks is the shape the server mints', () => {
     expect(MEMBER_TOKEN_PATTERN.source).toBe(SERVER_TOKEN_PATTERN.source);
+  });
+
+  it('every producer identifier the member can emit satisfies the grammar the server holds it to', () => {
+    // The value that broke a live run: a dev build's version carries semver
+    // build metadata, and `+` is outside the class. The refusal is terminal,
+    // so the event is dropped rather than retried.
+    const shapes = [
+      '0.0.0-dev+1.4.8-6-ge1c936ce-dirty',
+      '1.4.8',
+      `${'9'.repeat(90)}.0.0`,
+      'has a space',
+      'slash/and+plus',
+      '',
+      '…unicode…',
+      getPluginVersion(),
+    ];
+    for (const shape of shapes) {
+      const identifier = producerIdentifier(shape);
+      expect({ shape, matches: PRODUCER_GRAMMAR.test(identifier) }).toEqual({ shape, matches: true });
+    }
+    // Legible, not just legal: the build is still identifiable afterwards.
+    expect(producerIdentifier('0.0.0-dev+1.4.8-6-ge1c936ce-dirty')).toBe('0.0.0-dev-1.4.8-6-ge1c936ce-dirty');
+    // Every symbiont the member can run under passes too — the grammar covers
+    // the adapter name as well as the version.
+    for (const agent of Object.keys(HOOK_CONFIG)) {
+      expect({ agent, matches: PRODUCER_GRAMMAR.test(producerIdentifier(agent)) }).toEqual({ agent, matches: true });
+    }
   });
 
   it('the window the member assumes before the server announces one is the window the server keeps', () => {
