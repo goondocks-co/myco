@@ -14,7 +14,7 @@
     "token:revoke": "bun scripts/revoke-local.ts"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260731.1",
+    "@cloudflare/workers-types": "^5.20260820.1",
     "typescript": "^7.0.2",
     "wrangler": "^4.123.0"
   }
