@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "bun"
+    ]
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/platform/cloudflare/**",
+    "src/entry/cloudflare.ts",
+    "src/index.ts",
+    "scripts/**"
+  ]
+}

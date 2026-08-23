@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { mintMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -350,8 +351,8 @@ describe('pipeline (via the deployed entry)', () => {
   it('takes source identity from the injected adapter', async () => {
     const server = createServer({ now: () => Date.now(), sourceOf: () => 'shared' });
     const env = await envFor(mintMemberToken(), { sourceLimit: 1 });
-    await server.handleRequest(post(mintMemberToken(), { source: '1.1.1.1' }), env);
-    const res = await server.handleRequest(post(mintMemberToken(), { source: '2.2.2.2' }), env);
+    await server.handleRequest(post(mintMemberToken(), { source: '1.1.1.1' }), serverEnvFromBindings(env as never));
+    const res = await server.handleRequest(post(mintMemberToken(), { source: '2.2.2.2' }), serverEnvFromBindings(env as never));
     expect(res.status).toBe(429);
   });
 });

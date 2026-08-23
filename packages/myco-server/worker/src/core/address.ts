@@ -1,10 +1,12 @@
-import type { BlobStoreLike, D1Like, RateLimiter } from '../env.js';
-
-// Compile-time proof that the platform bindings satisfy the adapter interfaces.
-type AssertAssignable<A, B extends A> = B;
-export type _D1Satisfies = AssertAssignable<D1Like, D1Database>;
-export type _RateLimitSatisfies = AssertAssignable<RateLimiter, RateLimit>;
-export type _BlobStoreSatisfies = AssertAssignable<BlobStoreLike, R2Bucket>;
+/**
+ * Canonical form of a client network address.
+ *
+ * An address is not a platform concept: every deployment target has to reduce a
+ * client address to a stable rate-limit key the same way, and a key space that
+ * differs per target is a metering difference between targets. Text that is not an
+ * address yields no identity, so an adapter can never hand an arbitrary caller
+ * string into a bucket key.
+ */
 
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 
@@ -42,10 +44,13 @@ function ipv6Groups(address: string): string[] | null {
   return groups.map((g) => parseInt(g, 16).toString(16));
 }
 
-/** Source identity on Cloudflare: the edge-set client address in canonical form — IPv4 as a dotted quad without leading zeros, IPv4-mapped IPv6 as that quad, IPv6 collapsed to its canonical /64. Any other text yields no identity. */
-export function cloudflareSourceOf(request: Request): string | null {
-  const address = request.headers.get('cf-connecting-ip');
-  if (address === null || address === '') return null;
+/**
+ * The canonical form of `address` — IPv4 as a dotted quad without leading zeros,
+ * IPv4-mapped IPv6 as that quad, IPv6 collapsed to its canonical /64 — or null
+ * when the text is not an address.
+ */
+export function canonicalAddress(address: string): string | null {
+  if (address === '') return null;
   const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(address);
   const quad = mapped ? mapped[1] : address.includes(':') ? null : address;
   if (quad !== null) {

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
-import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare.js';
+import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import {
   MEMBER_TOKEN_MAX_LINEAGE_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS,
   issueMemberToken, revokeMemberLineage, revokeMemberToken,
@@ -21,7 +21,7 @@ async function rig(opts: Parameters<typeof sqliteEnv>[0] = {}) {
   const clock = { now: T0 };
   const server = createServer({ now: () => clock.now, sourceOf: cloudflareSourceOf });
   const root = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_1' }, T0);
-  const fetch = (req: Request) => server.handleRequest(req, e.env);
+  const fetch = (req: Request) => server.handleRequest(req, e.serverEnv);
   const refresh = (token: string, body = '{}') => fetch(memberPost(token, body, '/tokens/refresh'));
   const post = (token: string, n: number) => fetch(memberPost(token, envelope({ eventId: uuid(n), payload: { promptId: uuid(1_000 + n), text: `p${n}`, origin: 'user' } })));
   const row = (tokenId: string) => e.sqlite.query(`SELECT id, predecessor_id, lineage_root, lineage_started_at, first_used_at, expires_at, revoked_at, bytes_written FROM member_tokens WHERE id = ?`).get(tokenId) as Record<string, unknown>;

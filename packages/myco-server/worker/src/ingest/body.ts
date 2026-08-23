@@ -36,8 +36,8 @@ function concat(chunks: Uint8Array[], total: number): Uint8Array {
   return joined;
 }
 
-/** Discards the rest of a stream to its end. */
-async function drain(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+/** Discards the rest of a stream to its end. Typed structurally: a runtime may add its own methods to the reader, and this needs only `read`. */
+async function drain(reader: { read(): Promise<{ done: boolean }> }): Promise<void> {
   for (;;) {
     const { done } = await reader.read();
     if (done) return;

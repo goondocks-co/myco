@@ -1,4 +1,4 @@
-import type { Env } from '../env.js';
+import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { emit, refusal, type Refusal } from '../telemetry.js';
 import { refreshMemberToken, type RefreshResult } from './tokens.js';
@@ -28,8 +28,8 @@ function answer(ctx: RouteContext, result: RefreshResult): Response {
 }
 
 /** `POST /tokens/refresh`: the presented token asks for its successor. */
-export async function handleRefresh(env: Env, ctx: RouteContext): Promise<Response> {
+export async function handleRefresh(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const malformed = parseRefreshBody(ctx.body);
   if (malformed !== null) return answer(ctx, { refreshed: false, code: malformed.classifier, reason: malformed.reason });
-  return answer(ctx, await refreshMemberToken(env.MYCO_DB, ctx, ctx.now));
+  return answer(ctx, await refreshMemberToken(env.db, ctx, ctx.now));
 }

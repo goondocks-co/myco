@@ -10,7 +10,7 @@ import { issueMemberToken, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS }
 import { MEMBER_TOKEN_BYTE_QUOTA, RETRY_AFTER_SECONDS, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
-import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare.js';
+import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
@@ -26,7 +26,15 @@ const allFiles = (dir: string): string[] =>
     return statSync(f).isDirectory() ? allFiles(f) : [f];
   });
 const files = (dir: string): string[] => allFiles(dir).filter((f) => f.endsWith('.ts'));
-const sharedFiles = () => files(SRC).filter((f) => !f.includes(`${join(SRC, 'platform')}/`));
+/**
+ * Shared code: everything that is neither a platform adapter nor an entry point.
+ * Those are the only places a platform may be named. `src/index.ts` counts as an
+ * entry point — it is the module the hosted deployment names as its main — and a
+ * separate gate pins it to a single re-export so it cannot grow logic.
+ */
+const sharedFiles = () =>
+  files(SRC).filter((f) =>
+    !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
 const EMIT_CALLS = 21;
@@ -102,15 +110,16 @@ const stripComments = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, ''
 const normalize = (source: string) => stripComments(source).replace(/\s+/g, ' ').trim();
 
 const CANONICAL_ENTRY = `
-import type { Env } from './env.js';
-import { createServer } from './pipeline.js';
-import { cloudflareSourceOf } from './platform/cloudflare.js';
+import { createServer } from '../pipeline.js';
+import { cloudflareSourceOf, serverEnvFromBindings, type CloudflareBindings } from '../platform/cloudflare/env.js';
 const server = createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf, fetchImpl: (input, init) => fetch(input, init) });
-export async function handleRequest(request: Request, env: Env): Promise<Response> {
-  return server.handleRequest(request, env);
+export async function handleRequest(request: Request, bindings: CloudflareBindings): Promise<Response> {
+  return server.handleRequest(request, serverEnvFromBindings(bindings));
 }
 export default { fetch: handleRequest };
 `;
+
+const CANONICAL_INDEX = `export { default, handleRequest } from './entry/cloudflare.js';`;
 
 const env = () => ({
   MYCO_DB: { prepare: () => ({ bind: () => ({ first: async () => null, run: async () => ({}) }) }) },
@@ -166,8 +175,25 @@ describe('gates', () => {
     }
   });
 
+  it('keeps every entry point to wiring: the pipeline and its own platform, and nothing that decides', () => {
+    const entries = files(join(SRC, 'entry'));
+    expect(entries.length).toBeGreaterThan(1);
+    for (const f of entries) {
+      const imports = [...readFileSync(f, 'utf8').matchAll(/from '([^']+)'/g)].map((m) => m[1]);
+      expect({ file: f, imports: imports.length }).not.toEqual({ file: f, imports: 0 });
+      // An entry may reach only ITS OWN platform, derived from its filename, so one
+      // target's entry cannot quietly depend on the other target's adapter.
+      const own = `/platform/${f.split('/').pop()!.replace(/\.ts$/, '')}/`;
+      for (const spec of imports) {
+        const allowed = spec.endsWith('/pipeline.js') || spec.includes(own) || spec.startsWith('bun:');
+        expect({ file: f, spec, allowed, own }).toEqual({ file: f, spec, allowed: true, own });
+      }
+    }
+  });
+
   it('keeps the entry point identical to the canonical wiring shape', () => {
-    expect(normalize(readFileSync(join(SRC, 'index.ts'), 'utf8'))).toBe(normalize(CANONICAL_ENTRY));
+    expect(normalize(readFileSync(join(SRC, 'entry', 'cloudflare.ts'), 'utf8'))).toBe(normalize(CANONICAL_ENTRY));
+    expect(normalize(readFileSync(join(SRC, 'index.ts'), 'utf8'))).toBe(normalize(CANONICAL_INDEX));
   });
 
   it('takes tenancy and attribution from the authenticated token only, via the deployed entry', async () => {
@@ -357,6 +383,8 @@ describe('gates', () => {
       /\bAi\b/, /\bVectorizeIndex\b/, /\bDispatchNamespace\b/, /\bAnalyticsEngineDataset\b/, /\bHyperdrive\b/,
       /\bExecutionContext\b/, /\bScheduledController\b/, /\bEmailMessage\b/,
       /cf-connecting-ip/i, /x-forwarded-for/i, /x-real-ip/i, /true-client-ip/i, /x-client-ip/i, /\bforwarded\b/i, /x-cluster-client-ip/i,
+      /\bD1_ERROR\b/, /\bD1\b/, /\bR2\b/, /\bcloudflare\b/i, /\bwrangler\b/i, /\bvectorize\b/i, /\bworkers?\.dev\b/i,
+      /\bdurable object\b/i, /from ['"]node:/, /import\(\s*['"]node:/,
     ];
     for (const f of sharedFiles()) {
       const t = readFileSync(f, 'utf8');
@@ -482,7 +510,7 @@ describe('gates', () => {
   // The compile-time proof itself is `npm run check`, which is a separate lane from this suite. This gate holds the
   // declarations in place so the proof cannot be deleted silently; it asserts their presence, not their satisfaction.
   it('keeps a declared adapter proof for every platform binding, so the compile-time check has something to prove', () => {
-    const platform = readFileSync(join(SRC, 'platform', 'cloudflare.ts'), 'utf8');
+    const platform = readFileSync(join(SRC, 'platform', 'cloudflare', 'env.ts'), 'utf8');
     // Each proof names two types, and the gate reads both: an adapter checked against itself compiles and proves
     // nothing, so the second argument must be the platform's own type. Those types come from the platform's ambient
     // declarations, which the adapter file never imports — a name it did import would not be the platform's.
@@ -490,9 +518,9 @@ describe('gates', () => {
       [...platform.matchAll(/export type (_\w+) = AssertAssignable<\s*(\w+)\s*,\s*(\w+)\s*>;/g)].map((m) => [m[1], [m[2], m[3]]] as const),
     );
     for (const [proof, adapter, binding] of [
-      ['_D1Satisfies', 'D1Like', 'D1Database'],
+      ['_RelationalSatisfies', 'RelationalStore', 'D1Database'],
       ['_RateLimitSatisfies', 'RateLimiter', 'RateLimit'],
-      ['_BlobStoreSatisfies', 'BlobStoreLike', 'R2Bucket'],
+      ['_BlobStoreSatisfies', 'BlobStore', 'R2Bucket'],
     ]) {
       expect({ proof, args: declared.get(proof) ?? null }).toEqual({ proof, args: [adapter, binding] });
       expect({ proof, imported: new RegExp(`\\b${binding}\\b`).test(platform.slice(0, platform.indexOf('type AssertAssignable'))) })
@@ -526,8 +554,8 @@ describe('gates', () => {
   });
 
   it('binds every Env key in wrangler.toml, declares no binding Env does not name, and applies migrations from the directory the schema gates verify', () => {
-    const envSource = readFileSync(join(SRC, 'env.ts'), 'utf8');
-    const block = /export interface Env \{([^}]*)\}/.exec(envSource);
+    const envSource = readFileSync(join(SRC, 'platform', 'cloudflare', 'env.ts'), 'utf8');
+    const block = /export interface CloudflareBindings extends OwnerBindings \{([^}]*)\}/.exec(envSource);
     expect(block).not.toBeNull();
     const keys = [...block![1].matchAll(/^\s*(\w+):/gm)].map((m) => m[1]).sort();
     expect(keys.length).toBeGreaterThan(0);
@@ -610,13 +638,21 @@ describe('gates', () => {
     ]);
   });
 
-  it('declares every required binding that Env requires, and no more', () => {
-    const status = readFileSync(join(SRC, 'api', 'status.ts'), 'utf8');
-    const required = [...(/REQUIRED_BINDINGS = \[([^\]]*)\]/.exec(status)?.[1] ?? '').matchAll(/'(\w+)'/g)].map((m) => m[1]).sort();
-    const envSource = readFileSync(join(SRC, 'env.ts'), 'utf8');
-    const block = /export interface Env \{([\s\S]*?)\n\}/.exec(envSource);
+  it('declares every required binding that the adapter requires, and no more', () => {
+    const envSource = readFileSync(join(SRC, 'platform', 'cloudflare', 'env.ts'), 'utf8');
+    const required = [...(/REQUIRED_BINDINGS = \[([^\]]*)\]/.exec(envSource)?.[1] ?? '').matchAll(/'(\w+)'/g)].map((m) => m[1]).sort();
+    const block = /export interface CloudflareBindings extends OwnerBindings \{([\s\S]*?)\n\}/.exec(envSource);
     const mandatory = [...block![1].matchAll(/^\s*(\w+):/gm)].map((m) => m[1]).sort();
     expect(required).toEqual(mandatory);
+    expect(required.length).toBeGreaterThan(0);
+  });
+
+  it('names no platform binding in shared code: the status surface reports what the platform declares', () => {
+    const status = readFileSync(join(SRC, 'api', 'status.ts'), 'utf8');
+    expect(status).not.toMatch(/REQUIRED_BINDINGS = \[/);
+    for (const name of ['MYCO_DB', 'BUCKET', 'SOURCE_LIMIT', 'TOKEN_LIMIT']) {
+      expect({ name, named: new RegExp(`\\b${name}\\b`).test(status) }).toEqual({ name, named: false });
+    }
   });
 
   it('verifies no cookie on the member path', () => {
