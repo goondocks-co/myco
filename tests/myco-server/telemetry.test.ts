@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
 import { classify, emit, SchemaMismatchError } from '@myco-server-worker/telemetry.js';
 
 describe('telemetry', () => {
@@ -14,7 +15,9 @@ describe('telemetry', () => {
   });
 
   it('classifies database failures', () => {
-    expect(classify(new Error('D1_ERROR: no such table: events'))).toBe('db');
+    // The D1 error prefix is Cloudflare's to recognise, not the shared classifier's.
+    expect(classify(new Error('D1_ERROR: no such table: events'))).toBe('unknown');
+    expect(classify(new Error('D1_ERROR: no such table: events'), classifyD1Error)).toBe('db');
     expect(classify(new Error('something else'))).toBe('unknown');
   });
 

@@ -1,3 +1,5 @@
+import { asBufferSource } from '../../hash.js';
+
 /** The owner's session cookie. The `__Host-` prefix makes `Secure`, `Path=/` and the absence of `Domain` browser-enforced rather than merely intended. */
 export const SESSION_COOKIE = '__Host-myco_session';
 
@@ -17,7 +19,7 @@ const DECODER = new TextDecoder();
 const b64url = (bytes: Uint8Array): string =>
   btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
-const unb64url = (text: string): Uint8Array => {
+const unb64url = (text: string): Uint8Array<ArrayBuffer> => {
   const padded = text.replace(/-/g, '+').replace(/_/g, '/');
   const binary = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4));
   return Uint8Array.from(binary, (c) => c.charCodeAt(0));
@@ -46,7 +48,7 @@ export async function verifyPayload<T extends { exp: number }>(secret: string, t
   } catch {
     return null;
   }
-  if (!(await crypto.subtle.verify('HMAC', await hmacKey(secret), signature, ENCODER.encode(body)))) return null;
+  if (!(await crypto.subtle.verify('HMAC', await hmacKey(secret), asBufferSource(signature), asBufferSource(ENCODER.encode(body))))) return null;
   try {
     payload = JSON.parse(DECODER.decode(unb64url(body)));
   } catch {

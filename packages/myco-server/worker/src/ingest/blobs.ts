@@ -1,4 +1,4 @@
-import type { Env } from '../env.js';
+import type { ServerEnv } from '../core/adapters.js';
 import type { StreamContext } from '../context.js';
 import { BLOB_RESERVATION_TTL_MS, MAX_BLOB_BYTES } from '../constants.js';
 import { classifyBlobStore, emit, type Classifier } from '../telemetry.js';
@@ -41,13 +41,13 @@ function refuse(ctx: StreamContext, reason: string, classifier: Classifier): Res
 }
 
 /** Content-addressed upload: hold a reservation row against the token's quota, decide duplicate from the blobs row, stream the bytes into the store under the digest, reconcile the reservation to the size the store recorded, then record the row, charge the token and release the reservation in one batch. A digest mismatch is a terminal refusal. Admission is `withinQuota` — the one expression every writer of the counter admits through — so a token already at the ceiling from event traffic is refused before any byte reaches the store. Nothing a request does before its row lands can leave a permanent charge: a reservation that outlives its request stops counting when it expires, every upload re-admits at reconcile with the reservation held for a fresh TTL, and a terminal refusal after the store holds the bytes deletes an object this request put when no row claims it — an adopted object stays for the next uploader with room. */
-export async function handleBlob(env: Env, request: Request, ctx: StreamContext): Promise<Response> {
+export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamContext): Promise<Response> {
   const key = ctx.params.key;
   const mediaType = canonicalMediaType(request.headers.get('content-type'));
   if (mediaType === null) return refuse(ctx, 'invalid content-type', 'media_type');
   const size = ctx.contentLength;
   if (size === 0) return refuse(ctx, 'empty body', 'empty_body');
-  const db = env.MYCO_DB;
+  const db = env.db;
 
   const reservationId = crypto.randomUUID();
   const expiresAt = ctx.now + BLOB_RESERVATION_TTL_MS;
@@ -82,7 +82,7 @@ export async function handleBlob(env: Env, request: Request, ctx: StreamContext)
   /** A terminal refusal after the bytes reached the store: an object this request put and no row claims is deleted with it, so a refused upload leaves no orphan; an adopted object stays, held for the next uploader with room to charge it. */
   const refuseStored = async (reason: string, classifier: Classifier): Promise<Response> => {
     if (put && (await db.prepare(`SELECT 1 FROM blobs WHERE project_id = ? AND key = ?`).bind(ctx.projectId, key).first()) === null) {
-      await env.BUCKET.delete(objectKey(ctx.projectId, key));
+      await env.blobs.delete(objectKey(ctx.projectId, key));
     }
     return refuse(ctx, reason, classifier);
   };
@@ -91,16 +91,16 @@ export async function handleBlob(env: Env, request: Request, ctx: StreamContext)
     if (existing) return duplicate(existing);
 
     let storedSize: number;
-    const held = await env.BUCKET.head(objectKey(ctx.projectId, key));
+    const held = await env.blobs.head(objectKey(ctx.projectId, key));
     if (held) {
       storedSize = held.size;
     } else {
       try {
-        const object = await env.BUCKET.put(objectKey(ctx.projectId, key), request.body, { sha256: key, httpMetadata: { contentType: mediaType } });
+        const object = await env.blobs.put(objectKey(ctx.projectId, key), request.body, { sha256: key, httpMetadata: { contentType: mediaType } });
         put = true;
         storedSize = object.size;
       } catch (err) {
-        if (classifyBlobStore(err) === 'digest') return refuse(ctx, 'digest mismatch', 'digest_mismatch');
+        if (classifyBlobStore(err, env.platform?.classifyBlobFailure) === 'digest') return refuse(ctx, 'digest mismatch', 'digest_mismatch');
         throw err;
       }
     }

@@ -1,4 +1,4 @@
-import type { D1Like } from '../env.js';
+import type { RelationalStore } from '../core/adapters.js';
 import { clampLimit, decodeCursor, page, type Page, type ReadScope } from './scope.js';
 
 export interface TokenRow {
@@ -22,7 +22,7 @@ export interface ActivityRow {
 }
 
 /** Every token minted for the scope's project. The token hash is never selected — nothing outside authentication reads it. */
-export async function listTokens(db: D1Like, scope: ReadScope): Promise<TokenRow[]> {
+export async function listTokens(db: RelationalStore, scope: ReadScope): Promise<TokenRow[]> {
   const { results } = await db
     .prepare(
       `SELECT id, machine_id, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at
@@ -44,7 +44,7 @@ export async function listTokens(db: D1Like, scope: ReadScope): Promise<TokenRow
 }
 
 /** What one token wrote, newest first, over `idx_events_token (project_id, token_id, created_at)`. */
-export async function tokenActivity(db: D1Like, scope: ReadScope, tokenId: string, opts: { limit?: number; cursor?: string } = {}): Promise<Page<ActivityRow>> {
+export async function tokenActivity(db: RelationalStore, scope: ReadScope, tokenId: string, opts: { limit?: number; cursor?: string } = {}): Promise<Page<ActivityRow>> {
   const limit = clampLimit(opts.limit);
   const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
   if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };

@@ -1,7 +1,7 @@
-import type { D1Like, D1StatementLike, Env } from '../env.js';
+import type { RelationalStore, PreparedStatement, ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
-import { emit, refusal, type Classifier, type Refusal } from '../telemetry.js';
+import { emit, refusal, StorageContractError, type Classifier, type Refusal } from '../telemetry.js';
 import { parseEnvelope, type CaptureEnvelope } from './envelope.js';
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
 import { planKind, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
@@ -53,7 +53,7 @@ export const QUOTA_REASON = 'token write quota exceeded';
 const OVER_QUOTA: Refusal = refusal(QUOTA_REASON, 'quota');
 
 /** Stores one event in a single transaction. The raw insert carries every admission precondition — the quota (`withinQuota`: the one counter plus the token's live blob reservations, so event traffic never takes the room an upload in flight holds), the shared checks derived from the catalogue and the kind's declared identities (session identity, the continued rows the kind names, referenced blobs present, referenced prompts owned by this machine — in that order) and the kind's own — so a refused event leaves no row and no charge; the quota charge, the session receipt, and the kind's projections apply only to the raw row this request wrote, named by a per-request nonce; same-batch reads decide the response. A stored event is read through its session's machine, so a duplicate or a conflict is answered only to the machine that wrote it and another machine's event id is refused like any other unstored one. */
-export async function ingestEvent(db: D1Like, ctx: IngestContext, body: unknown): Promise<IngestResult> {
+export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body: unknown): Promise<IngestResult> {
   const parsed = parseEnvelope(body, ctx.now);
   if (!parsed.ok) return refused(ctx, parsed);
   const e = parsed.value;
@@ -101,9 +101,9 @@ export async function ingestEvent(db: D1Like, ctx: IngestContext, body: unknown)
 
   const admitted = db.prepare(`SELECT ${quotaAdmission.sql} AS within_quota`).bind(...quotaAdmission.params);
   const shared = checks.map((c) => db.prepare(c.read.sql).bind(...c.read.params));
-  const statements: D1StatementLike[] = [raw, quota, receipt, ...plan.projections, stored, admitted, ...shared, ...plan.reads];
+  const statements: PreparedStatement[] = [raw, quota, receipt, ...plan.projections, stored, admitted, ...shared, ...plan.reads];
   const results = await db.batch(statements);
-  if (results.length !== statements.length) throw new Error(`D1_ERROR: batch returned ${results.length} results`);
+  if (results.length !== statements.length) throw new StorageContractError(`batch answered ${results.length} results for ${statements.length} statements`);
 
   const projectionResults = results.slice(3, 3 + plan.projections.length);
   const storedRow = results[3 + plan.projections.length].results[0] as { envelope_hash?: string } | undefined;
@@ -139,12 +139,12 @@ export async function ingestEvent(db: D1Like, ctx: IngestContext, body: unknown)
   return { ...refused(ctx, sharedRefusal ?? plan.refusal(reads)), ...extra };
 }
 
-export async function handleEvents(env: Env, ctx: RouteContext): Promise<Response> {
+export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(ctx.body);
   } catch {
     return Response.json(refused(ctx, refusal('body must be JSON', 'parse')));
   }
-  return Response.json(await ingestEvent(env.MYCO_DB, ctx, parsed));
+  return Response.json(await ingestEvent(env.db, ctx, parsed));
 }

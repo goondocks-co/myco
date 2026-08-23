@@ -1,4 +1,4 @@
-import type { D1Like } from '../env.js';
+import type { RelationalStore } from '../core/adapters.js';
 import type { ReadScope } from './scope.js';
 
 export interface TranscriptRow {
@@ -21,7 +21,7 @@ export interface SegmentRow {
 }
 
 /** The transcript recorded for a session inside the scope, or null. */
-export async function getTranscript(db: D1Like, scope: ReadScope, sessionId: string): Promise<TranscriptRow | null> {
+export async function getTranscript(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<TranscriptRow | null> {
   const row = await db
     .prepare(
       `SELECT transcript_id, session_id, machine_id, agent, origin_path, size, segment_count, first_received_at, last_received_at
@@ -44,7 +44,7 @@ export async function getTranscript(db: D1Like, scope: ReadScope, sessionId: str
 }
 
 /** A transcript's segments in offset order. */
-export async function listSegments(db: D1Like, scope: ReadScope, transcriptId: string): Promise<SegmentRow[]> {
+export async function listSegments(db: RelationalStore, scope: ReadScope, transcriptId: string): Promise<SegmentRow[]> {
   const { results } = await db
     .prepare(
       `SELECT base_offset, length, blob_key, created_at FROM transcript_segments

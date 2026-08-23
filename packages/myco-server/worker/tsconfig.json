@@ -20,5 +20,9 @@
   "include": [
     "src/**/*.ts",
     "scripts/**/*.ts"
+  ],
+  "exclude": [
+    "src/platform/bun/**",
+    "src/entry/bun.ts"
   ]
 }

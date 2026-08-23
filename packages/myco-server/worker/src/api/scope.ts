@@ -1,4 +1,4 @@
-import type { D1Like } from '../env.js';
+import type { RelationalStore } from '../core/adapters.js';
 import type { OwnerSession } from '../auth/owner/cookie.js';
 import type { ReadScope } from '../read/scope.js';
 import { listProjects, projectExists, sessionInScope as coreSessionInScope, type ProjectRow } from '../read/sessions.js';
@@ -12,7 +12,7 @@ import { listProjects, projectExists, sessionInScope as coreSessionInScope, type
 export type Principal = OwnerSession;
 
 /** The scope a project id resolves to for this principal, or null when there is no such project it may see. A project the principal does not hold is indistinguishable from one that does not exist. */
-export async function resolveProjectScope(db: D1Like, _principal: Principal, projectId: string): Promise<ReadScope | null> {
+export async function resolveProjectScope(db: RelationalStore, _principal: Principal, projectId: string): Promise<ReadScope | null> {
   return (await projectExists(db, projectId)) ? { projectId } : null;
 }
 
@@ -20,7 +20,7 @@ export async function resolveProjectScope(db: D1Like, _principal: Principal, pro
 export const sessionInScope = coreSessionInScope;
 
 /** Every project this principal may see. The one read that answers "what is visible at all" rather than "what is in this scope", so it takes the principal for the same reason `resolveProjectScope` does: phase 2's grant query lands here and nowhere else. */
-export async function listVisibleProjects(db: D1Like, _principal: Principal): Promise<ProjectRow[]> {
+export async function listVisibleProjects(db: RelationalStore, _principal: Principal): Promise<ProjectRow[]> {
   return listProjects(db);
 }
 

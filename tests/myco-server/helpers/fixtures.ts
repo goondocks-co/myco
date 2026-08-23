@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite';
-import type { BlobStoreLike, StoredObjectLike } from '@myco-server-worker/env.js';
+import type { BlobStore, StoredObject } from '@myco-server-worker/core/adapters.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { sqliteD1, seededSqlite } from './d1.js';
@@ -46,7 +47,7 @@ export function recordingLimiter() {
   return { keys, limit: async ({ key }: { key: string }) => { keys.push(key); return { success: true }; } };
 }
 
-export interface MemoryBlobStore extends BlobStoreLike {
+export interface MemoryBlobStore extends BlobStore {
   objects: Map<string, { size: number; contentType?: string }>;
   puts: string[];
   heads: string[];
@@ -66,7 +67,7 @@ export function memoryBlobStore(): MemoryBlobStore {
     async head(key) {
       store.heads.push(key);
       const o = store.objects.get(key);
-      return o ? ({ size: o.size } satisfies StoredObjectLike) : null;
+      return o ? ({ size: o.size } satisfies StoredObject) : null;
     },
     async get(key) {
       const o = store.objects.get(key);
@@ -111,8 +112,21 @@ export function sqliteEnv(opts: { staleBytesWritten?: number; onSql?: (sql: stri
   const source = recordingLimiter();
   const token = recordingLimiter();
   const bucket = memoryBlobStore();
+  // The Cloudflare BINDINGS shape: `worker.fetch` is the deployed Cloudflare entry
+  // point and maps bindings itself. The store behind MYCO_DB is bun:sqlite, which makes
+  // these tests a check of the shared core rather than of D1. The both-targets proof
+  // lives in `tests/myco-server/contract/`.
   const e = { MYCO_DB: db, BUCKET: bucket, SOURCE_LIMIT: source, TOKEN_LIMIT: token } as any;
-  return { env: e, db, sqlite, bucket, sourceKeys: source.keys, tokenKeys: token.keys, executed };
+  // `env` is what the deployed Cloudflare entry receives; `serverEnv` is the same
+  // deployment mapped into the vocabulary the core speaks, for tests that drive the
+  // core handler directly rather than through an entry point. It re-maps on every
+  // access, exactly as the entry point maps per request — so a test that swaps a
+  // binding to inject a storage failure is reflected, as it would be in production.
+  return {
+    env: e,
+    get serverEnv() { return serverEnvFromBindings(e); },
+    db, sqlite, bucket, sourceKeys: source.keys, tokenKeys: token.keys, executed,
+  };
 }
 
 export const count = (sqlite: Database, table: string): number => (sqlite.query(`SELECT COUNT(*) c FROM ${table}`).get() as { c: number }).c;

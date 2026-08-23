@@ -1,4 +1,4 @@
-import type { D1Like } from '../env.js';
+import type { RelationalStore } from '../core/adapters.js';
 import { clampLimit, decodeCursor, page, type Page, type ReadScope } from './scope.js';
 
 export interface ProjectRow {
@@ -58,7 +58,7 @@ function toSession(row: Record<string, unknown>): SessionRow {
 }
 
 /** Every project with its session count and most recent receipt, most recently active first. Unscoped: the caller decides which projects its credential may see. */
-export async function listProjects(db: D1Like): Promise<ProjectRow[]> {
+export async function listProjects(db: RelationalStore): Promise<ProjectRow[]> {
   const { results } = await db
     .prepare(
       `SELECT p.project_id, p.name, p.created_at,
@@ -79,7 +79,7 @@ export async function listProjects(db: D1Like): Promise<ProjectRow[]> {
 }
 
 /** A project's sessions, most recently started first, over `idx_sessions_recent`. The key is `first_received_at` paired with `session_id`: a keyset page must order by a column no later write moves, or an actively capturing session slips above the cursor between two pages and appears on neither. */
-export async function listSessions(db: D1Like, scope: ReadScope, opts: { limit?: number; cursor?: string } = {}): Promise<Page<SessionRow>> {
+export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } = {}): Promise<Page<SessionRow>> {
   const limit = clampLimit(opts.limit);
   const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
   if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
@@ -99,7 +99,7 @@ export async function listSessions(db: D1Like, scope: ReadScope, opts: { limit?:
 }
 
 /** One session inside the scope, or null — including when the session exists under another project. */
-export async function getSession(db: D1Like, scope: ReadScope, sessionId: string): Promise<SessionRow | null> {
+export async function getSession(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<SessionRow | null> {
   const row = await db
     .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE project_id = ? AND session_id = ?`)
     .bind(scope.projectId, sessionId)
@@ -108,7 +108,7 @@ export async function getSession(db: D1Like, scope: ReadScope, sessionId: string
 }
 
 /** How many of each child a session holds. One statement per table rather than a join: the projections have no common key and a five-way LEFT JOIN would multiply rows. */
-export async function sessionCounts(db: D1Like, scope: ReadScope, sessionId: string): Promise<SessionCounts> {
+export async function sessionCounts(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<SessionCounts> {
   const tables = [
     ['prompts', 'prompt_batches'],
     ['toolCalls', 'tool_calls'],
@@ -128,13 +128,13 @@ export async function sessionCounts(db: D1Like, scope: ReadScope, sessionId: str
 }
 
 /** True when the project exists. The core answers what is there; a facade decides whether its caller may see it. */
-export async function projectExists(db: D1Like, projectId: string): Promise<boolean> {
+export async function projectExists(db: RelationalStore, projectId: string): Promise<boolean> {
   const row = await db.prepare(`SELECT 1 AS present FROM projects WHERE project_id = ?`).bind(projectId).first<{ present: number }>();
   return row !== null;
 }
 
 /** True when the session exists inside the scope. `sessions` is keyed `(project_id, session_id)`, so containment is the only safe question to ask of a session id. */
-export async function sessionInScope(db: D1Like, scope: ReadScope, sessionId: string): Promise<boolean> {
+export async function sessionInScope(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<boolean> {
   const row = await db
     .prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ?`)
     .bind(scope.projectId, sessionId)
@@ -143,7 +143,7 @@ export async function sessionInScope(db: D1Like, scope: ReadScope, sessionId: st
 }
 
 /** Insert a project, answering false when one already carries the id. */
-export async function createProject(db: D1Like, projectId: string, name: string, nowMs: number): Promise<boolean> {
+export async function createProject(db: RelationalStore, projectId: string, name: string, nowMs: number): Promise<boolean> {
   const result = await db
     .prepare(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`)
     .bind(projectId, name, nowMs)

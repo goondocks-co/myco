@@ -1,4 +1,4 @@
-import type { Env } from './env.js';
+import type { ErrorClassifier, ServerEnv } from './core/adapters.js';
 import { matchRoute, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
 import { HSTS_MAX_AGE_SECONDS, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from './constants.js';
@@ -8,6 +8,18 @@ import { QUOTA_REASON } from './ingest/events.js';
 import { classify, emit, SchemaMismatchError, UNAVAILABLE, type Classifier } from './telemetry.js';
 import { ownerConfig } from './auth/owner/config.js';
 import { readCookie, verifySession } from './auth/owner/cookie.js';
+
+/**
+ * The platform's error recogniser, read defensively.
+ *
+ * Every use sits on a failure path — including the outermost catch, which exists
+ * precisely to handle a world that is already malformed. A last-resort handler
+ * that can itself throw converts a handled failure into an unhandled one, so this
+ * never assumes the descriptor is present even though `ServerEnv` requires it.
+ * A missing descriptor costs only the platform-specific half of the classification;
+ * the platform-independent causes are decided without it.
+ */
+const errorClassifierOf = (env: ServerEnv): ErrorClassifier | undefined => env.platform?.classifyError;
 
 export interface ServerDeps {
   now: () => number;
@@ -98,15 +110,15 @@ function protocolSupported(request: Request): boolean {
 }
 
 /** True when the token's stored volume plus this request's bytes would exceed the quota; read fresh after a constraint failure. */
-async function overQuota(env: Env, tokenId: string, bytes: number): Promise<boolean> {
-  const row = await env.MYCO_DB.prepare(`SELECT bytes_written FROM member_tokens WHERE id = ?`).bind(tokenId).first<{ bytes_written: number }>();
+async function overQuota(env: ServerEnv, tokenId: string, bytes: number): Promise<boolean> {
+  const row = await env.db.prepare(`SELECT bytes_written FROM member_tokens WHERE id = ?`).bind(tokenId).first<{ bytes_written: number }>();
   return row !== null && row.bytes_written + bytes > MEMBER_TOKEN_BYTE_QUOTA;
 }
 
 /** A handler failure on any member route, classified once for all. On a route charged to the quota, a quota violation — raised by the charge, or reported as a constraint while the token's stored volume plus this request's bytes stands over the quota — is a terminal refusal; any other failure — a token revoked between its authentication and a write that requires it live included — answers 503 in the route's shape and is retried; the retry meets the token's new state at authentication. */
-async function failed(env: Env, auth: MemberAuth, route: MemberRoute, err: unknown, bytes: number): Promise<Response> {
+async function failed(env: ServerEnv, auth: MemberAuth, route: MemberRoute, err: unknown, bytes: number): Promise<Response> {
   const shape = shapeOf(route);
-  const errorClass = classify(err);
+  const errorClass = classify(err, errorClassifierOf(env));
   const charged = route.quotaPrecheck !== false;
   if (charged && (errorClass === 'quota' || (errorClass === 'constraint' && (await overQuota(env, auth.tokenId, bytes))))) return refuse(auth, shape, QUOTA_REASON, 'quota');
   emit({ kind: shape === 'stored' ? 'blob_error' : shape === 'refreshed' ? 'refresh_error' : 'ingest_error', projectId: auth.projectId, tokenId: auth.tokenId, error_class: errorClass });
@@ -115,7 +127,7 @@ async function failed(env: Env, auth: MemberAuth, route: MemberRoute, err: unkno
 
 /** Order: route → public → source identity → credential shape → authenticate → successor activation (a successor's first authenticated use takes over its predecessor's held bytes and revokes it, once) → token limit → protocol window → route kind → machine identity (a token without one is refused every write, on every member route, in the route's shape) → body (json routes: bounded read and, on a charged route, the quota pre-check; stream routes: content-length required and capped, body left to the handler) → handler. The source bucket is charged only when a request ends without a member identity: that refusal answers 429 once the bucket is exhausted and 401 before. An authenticated member never charges the source bucket and is never refused by source, on matched and unmatched routes alike. After authentication, a failure of the caller's own request answers 200 with a reason and is never retried; a failure on the server's side — a limiter, a handler, or the storage behind it — answers 503 with retry-after and is retried, in the route's own refusal shape once the route is known. Every response after authentication carries the server's protocol number; responses before it do not. */
 export function createServer(deps: ServerDeps) {
-  async function run(request: Request, env: Env): Promise<Response> {
+  async function run(request: Request, env: ServerEnv): Promise<Response> {
     const url = new URL(request.url);
     const matched = matchRoute(request.method, url.pathname);
     const now = deps.now();
@@ -127,7 +139,7 @@ export function createServer(deps: ServerDeps) {
       emit({ kind: 'no_source_identity', matched: matched !== null });
       return unavailable();
     }
-    const anonymous = async () => ((await env.SOURCE_LIMIT.limit({ key: source })).success ? unauthorized() : limited());
+    const anonymous = async () => ((await env.sourceLimit.limit({ key: source })).success ? unauthorized() : limited());
 
     // The human surface sits BELOW source identity so it is metered like any other
     // credential-free traffic: an auth route makes an outbound call to GitHub, and an
@@ -137,7 +149,7 @@ export function createServer(deps: ServerDeps) {
       const config = ownerConfig(env);
       if (config === null) return anonymous();
       if (matched.route.auth === 'auth') {
-        if (!(await env.SOURCE_LIMIT.limit({ key: source })).success) return limited();
+        if (!(await env.sourceLimit.limit({ key: source })).success) return limited();
         return matched.route.handler(request, { config, fetchImpl: deps.fetchImpl, now, origin: url.origin });
       }
       const presented = readCookie(request.headers.get('cookie'));
@@ -149,7 +161,7 @@ export function createServer(deps: ServerDeps) {
       try {
         return await matched.route.handler(env, { request: bounded, session, config, params: matched.params, url, now });
       } catch (err) {
-        emit({ kind: 'request_error', error_class: classify(err) });
+        emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
         return unavailable();
       }
     }
@@ -159,7 +171,7 @@ export function createServer(deps: ServerDeps) {
 
     let auth: MemberAuth | null;
     try {
-      auth = await authenticateServerMemberToken(env.MYCO_DB, await sha256Hex(presented), now);
+      auth = await authenticateServerMemberToken(env.db, await sha256Hex(presented), now);
     } catch (err) {
       if (!(err instanceof SchemaMismatchError)) throw err;
       emit({ kind: 'schema_mismatch', expected: err.expected, found: err.found });
@@ -174,21 +186,21 @@ export function createServer(deps: ServerDeps) {
   }
 
   /** Every failure after authentication answers in the route's shape once the route is known, and carries the protocol number; only what `admitted` returns leaves here. */
-  async function member(request: Request, env: Env, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, now: number): Promise<Response> {
+  async function member(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, now: number): Promise<Response> {
     try {
       return await admitted(request, env, auth, matched, now);
     } catch (err) {
-      emit({ kind: 'request_error', error_class: classify(err), projectId: auth.projectId, tokenId: auth.tokenId });
+      emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)), projectId: auth.projectId, tokenId: auth.tokenId });
       return matched && matched.route.auth === 'member' ? unavailableFor(matched.route) : unavailable();
     }
   }
 
-  async function admitted(request: Request, env: Env, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, now: number): Promise<Response> {
+  async function admitted(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, now: number): Promise<Response> {
     if (auth.predecessorId !== null && auth.firstUsedAt === null) {
-      await activateSuccessor(env.MYCO_DB, { projectId: auth.projectId, tokenId: auth.tokenId, predecessorId: auth.predecessorId }, now);
+      await activateSuccessor(env.db, { projectId: auth.projectId, tokenId: auth.tokenId, predecessorId: auth.predecessorId }, now);
       emit({ kind: 'successor_activated', projectId: auth.projectId, tokenId: auth.tokenId, predecessorId: auth.predecessorId });
     }
-    if (!(await env.TOKEN_LIMIT.limit({ key: auth.tokenId })).success) return limited();
+    if (!(await env.tokenLimit.limit({ key: auth.tokenId })).success) return limited();
     if (!protocolSupported(request)) {
       emit({ kind: 'protocol_unsupported', projectId: auth.projectId, tokenId: auth.tokenId });
       return unsupportedProtocol();
@@ -227,11 +239,11 @@ export function createServer(deps: ServerDeps) {
     }
   }
 
-  async function handleRequest(request: Request, env: Env): Promise<Response> {
+  async function handleRequest(request: Request, env: ServerEnv): Promise<Response> {
     try {
       return stamp(await run(request, env));
     } catch (err) {
-      emit({ kind: 'request_error', error_class: classify(err) });
+      emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
       return stamp(unavailable());
     }
   }

@@ -1,7 +1,7 @@
-import type { D1Like } from '../env.js';
+import type { RelationalStore } from '../core/adapters.js';
 import { SCHEMA_STEPS, type SchemaStep } from './schema.js';
 
-/** The file name a step is emitted under; wrangler applies migration files in name order and records each one once. */
+/** The file name a step is emitted under; migration files are applied in name order and each is recorded once. */
 export function migrationFileName(step: SchemaStep): string {
   return `${String(step.version).padStart(4, '0')}_v${step.version}.sql`;
 }
@@ -17,7 +17,7 @@ export function renderMigrationFiles(): { name: string; sql: string }[] {
 }
 
 /** The stamped schema version of a database, or 0 when the meta table or the row is absent. */
-export async function readSchemaVersion(db: D1Like): Promise<number> {
+export async function readSchemaVersion(db: RelationalStore): Promise<number> {
   try {
     const row = await db.prepare(`SELECT value FROM schema_meta WHERE key = 'version'`).first<{ value: string }>();
     return row ? Number(row.value) : 0;
