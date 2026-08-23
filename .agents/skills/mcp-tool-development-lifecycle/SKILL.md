@@ -26,7 +26,7 @@ Define the tool interface in `packages/myco/src/tools/definitions.ts` (shared to
    export const TOOL_MY_NEW_TOOL = 'myco_my_new_tool';
    ```
 
-2. **Add schema entry** to `TOOL_DEFINITIONS` (the single local tool-definition array — there is no separate cloud/Collective array; the daemon's Collective MCP integration was removed):
+2. **Add schema entry** to `TOOL_DEFINITIONS` — the single tool-definition array:
    ```typescript
    {
      name: TOOL_MY_NEW_TOOL,
@@ -64,7 +64,7 @@ Define the tool interface in `packages/myco/src/tools/definitions.ts` (shared to
 
 5. **Set annotations correctly** — `readOnlyHint: true` for read-only tools, `destructiveHint: true` for tools that can destroy data.
 
-6. **Configure cortex metadata** — set `priority` and `guidance` to help agent tool-selection; there is no Collective-connection gate to configure (that conditional-enablement mechanism was removed with the daemon's Collective integration).
+6. **Configure cortex metadata** — set `priority` and `guidance` to help agent tool-selection. There is no conditional-enablement gate: a registered tool is available.
 
 7. **Avoid OpenAI strict mode incompatibilities** — OpenAI's strict JSON Schema mode rejects `oneOf`, `anyOf`, `allOf`, `enum`, and `not` keywords at the top level. Use simple types with clear descriptions instead.
 
@@ -123,7 +123,7 @@ Implement systematic checks to catch schema-handler-documentation drift across t
 5. **Tool name canonicalization validation**:
    ```typescript
    test('tool names follow canonical prefixes across all transports', () => {
-     const allTools = [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS];
+     const allTools = [...TOOL_DEFINITIONS];
      
      allTools.forEach(tool => {
        // Fail on legacy double-prefix or bare names from pre-unification
@@ -152,12 +152,8 @@ Handle incomplete or placeholder tools appropriately:
 
 ## Procedure G: Per-Symbiont Transport Decisions
 
-There is a single local tool surface (`TOOL_DEFINITIONS`) — the daemon's Collective MCP
-integration (a separate `COLLECTIVE_TOOL_DEFINITIONS` array, `collective_*` tools, and their
-conditional connection-state enablement) was removed when Collective integration was retired
-from the main binary. `packages/myco-collective` itself still exists as a standalone,
-dormant-but-buildable package with its own tools — but it is no longer wired into the
-daemon's MCP surface, so new daemon tools always go in `TOOL_DEFINITIONS`.
+There is a single tool surface, `TOOL_DEFINITIONS`. A tool registered there is available;
+there is no second array and no connection-state gate.
 
 What still varies per-symbiont is **transport**, not placement:
 

@@ -608,10 +608,6 @@ export const TEAM_API_KEY_SECRET = 'MYCO_TEAM_API_KEY';
  * standalone `myco-team` provisioning CLI alongside {@link TEAM_API_KEY_SECRET}.
  */
 export const TEAM_MCP_TOKEN_SECRET = 'MYCO_TEAM_MCP_TOKEN';
-/** Secrets key for the Collective admin token in secrets.env. */
-export const COLLECTIVE_ADMIN_TOKEN_SECRET = 'MYCO_COLLECTIVE_ADMIN_TOKEN';
-/** Secrets key for the Collective MCP token in secrets.env. */
-export const COLLECTIVE_MCP_TOKEN_SECRET = 'MYCO_COLLECTIVE_MCP_TOKEN';
 /**
  * Timeout for wrangler CLI commands (ms). Live: used by the standalone
  * `myco-team` provisioning CLI (`packages/myco-team/src/cli.ts`) to bound

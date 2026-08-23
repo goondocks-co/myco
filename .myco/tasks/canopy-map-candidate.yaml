@@ -1,0 +1,59 @@
+name: canopy-map-candidate
+displayName: Canopy Map (entry-free candidate)
+description: 'Prototype for GitHub #910: build the Canopy Map by exploring the repository directly, with
+  no dependency on per-file LLM descriptions.'
+agent: myco-agent
+prompt: 'Build a markdown architectural overview of this project by exploring the repository directly.
+  There is no pre-assembled input: discover everything with the exploration tools.'
+isDefault: false
+reasoningLevel: low
+maxTurns: 60
+timeoutSeconds: 1500
+phases:
+- name: render
+  prompt: "Produce a compact markdown architectural overview of THIS project by reading\nthe repository.\
+    \ You have no pre-computed file descriptions — every statement\nmust be grounded in evidence you gather\
+    \ yourself.\n\nHow to explore, in this order. Breadth first; go deep only where a domain is\nstill\
+    \ ambiguous.\n\n1. `fs_tree` at the repository root, depth 2, for the shape.\n2. `fs_read` the rules\
+    \ files (AGENTS.md, CLAUDE.md, README.md) and the root\n   package manifest with its workspaces. These\
+    \ carry the project's own\n   vocabulary — use it rather than inventing your own.\n3. `fs_list` or\
+    \ `fs_tree` the source directories the manifest names, to find\n   where the weight actually sits.\n\
+    4. `code_grep` for the seams that reveal domains: command or route\n   registration tables, task and\
+    \ tool definition lists, entry points, schema\n   definitions. A file that other files register into\
+    \ is worth more than a\n   file with many lines.\n5. `fs_read` a few representative files per domain\
+    \ — enough to state each\n   one's role from its imports, exports and header documentation. Never\
+    \ infer\n   a file's purpose from its name alone.\n\nRequired structure, matching the map this project\
+    \ already publishes:\n\n# <Project> — Project Architecture\nOne paragraph: what the system is and\
+    \ the surfaces it spans.\n\n## Project Rules\nOne bullet per rules file: **NAME.md** — what it governs.\n\
+    \n## Directory Structure\nOne bullet per top-level directory: `dir/` — what lives there. Shape, not\n\
+    exhaustiveness. Collapse deep branches the way a senior engineer would\ndescribe the project to a\
+    \ new hire.\n\n## Key Domains\n4-8 clusters. Each is a `###` heading naming the domain in the project's\
+    \ own\nvocabulary, then 2-4 bullets of `path` — annotation. Every annotation must be\ngrounded in\
+    \ something you actually read.\n\n## Map Provenance\nA fenced json block holding {\"groundedIn\":\
+    \ [{\"path\": \"...\", \"sha256\": \"...\"}]}\nfor every file you read to ground an annotation, with\
+    \ the content hash you\nobserved. A later run re-hashes these and revisits only the domains whose\n\
+    grounding files changed, instead of rebuilding the whole map. Where you cannot\nobtain a hash, record\
+    \ null rather than inventing one.\n\nUse `vault_spores` at most twice, to cite an architectural decision\
+    \ that\nexplains a structure the code alone does not.\n\nOutput budget: 1500-3000 tokens of markdown.\
+    \ Terse. Bullets carry the weight;\nprose only where it earns its keep.\n\nWhen the map is ready,\
+    \ call `vault_report` with:\n- action: \"canopy_map\"\n- summary: one sentence on what this map covers\n\
+    - details.content: the final markdown (the entire map)\n\nDo not call vault_report more than once.\
+    \ Stop after the report.\n"
+  tools:
+  - fs_tree
+  - fs_list
+  - fs_read
+  - code_grep
+  - vault_spores
+  - vault_report
+  maxTurns: 55
+  reasoningLevel: low
+  required: true
+  requiresProjectTree: true
+  onItemError: skip
+schedule:
+  enabled: false
+  intervalSeconds: 21600
+  runIn:
+  - idle
+  - sleep

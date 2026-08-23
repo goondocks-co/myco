@@ -458,7 +458,7 @@ Manage build outputs and ensure proper cleanup across workspaces.
 ```bash
 # Clean all package dist directories
 make clean
-# Removes: packages/myco/dist packages/myco-team/dist packages/myco-collective/dist packages/myco-hub/dist packages/myco-shared/dist
+# Removes: packages/myco/dist packages/myco-team/dist packages/myco-hub/dist packages/myco-shared/dist
 ```
 
 2. **Validate workspace build order**:

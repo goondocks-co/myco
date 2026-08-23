@@ -103,7 +103,6 @@ myco/
 │   │   ├── ui/                       # React + Tailwind dashboard (Vite build → dist/ui/)
 │   │   └── skills/                   # Skill markdown files (subdirectory per skill)
 │   ├── myco-team/                    # DORMANT — operator CLI for the retired Team Sync stack (kept for reference)
-│   ├── myco-collective/              # DORMANT — Collective operator CLI, pending redesign around Team Host
 │   └── myco-deploy/                  # Private shared deploy helpers used by the two dormant operator CLIs
 ├── tests/                            # Mirrors packages/myco/src/ structure
 ├── docs/                             # Lifecycle, quickstart, agent tools
@@ -125,7 +124,7 @@ One package is actively published to [npmjs.org](https://www.npmjs.com/) under t
 
 - [`@goondocks/myco`](https://www.npmjs.com/package/@goondocks/myco) — main CLI, daemon, hooks, and dashboard (plus its per-platform binary packages)
 
-`@goondocks/myco-team` and `@goondocks/myco-collective` exist on npm but are **dormant** — the Team Sync stack they operated was retired in favor of Team Host, and they are not released alongside Myco. `@goondocks/myco-deploy` under `packages/` is private.
+`@goondocks/myco-team` exists on npm but is **dormant** — the Team Sync stack it operated was retired in favor of Team Host, and it is not released alongside Myco. `@goondocks/myco-collective` was retired and removed from this repository; its published versions and release tags remain, which is why the updater still filters the `myco-collective/v*` tag namespace. `@goondocks/myco-deploy` under `packages/` is private.
 
 1. Push to `main` — CI runs lint + tests
 2. Tag a release (`myco/vX.Y.Z`) — triggers the publish workflow

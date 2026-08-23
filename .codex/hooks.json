@@ -1,0 +1,110 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MYCO_TRAMPOLINED=1 MYCO_HOME=/Users/chris/.myco-dev /Users/chris/.myco-dev/bin/myco-2.0 hook post-tool-use --symbiont claude-code --credential registry --myco-managed",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MYCO_TRAMPOLINED=1 MYCO_HOME=/Users/chris/.myco-dev /Users/chris/.myco-dev/bin/myco-2.0 hook pre-compact --symbiont claude-code --credential registry --myco-managed",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MYCO_TRAMPOLINED=1 MYCO_HOME=/Users/chris/.myco-dev /Users/chris/.myco-dev/bin/myco-2.0 hook post-compact --symbiont claude-code --credential registry --myco-managed",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MYCO_TRAMPOLINED=1 MYCO_HOME=/Users/chris/.myco-dev /Users/chris/.myco-dev/bin/myco-2.0 hook session-start --symbiont claude-code --credential registry --myco-managed",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MYCO_TRAMPOLINED=1 MYCO_HOME=/Users/chris/.myco-dev /Users/chris/.myco-dev/bin/myco-2.0 hook session-end --symbiont claude-code --credential registry --myco-managed",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MYCO_TRAMPOLINED=1 MYCO_HOME=/Users/chris/.myco-dev /Users/chris/.myco-dev/bin/myco-2.0 hook user-prompt-submit --symbiont claude-code --credential registry --myco-managed",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MYCO_TRAMPOLINED=1 MYCO_HOME=/Users/chris/.myco-dev /Users/chris/.myco-dev/bin/myco-2.0 hook subagent-start --symbiont claude-code --credential registry --myco-managed",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MYCO_TRAMPOLINED=1 MYCO_HOME=/Users/chris/.myco-dev /Users/chris/.myco-dev/bin/myco-2.0 hook subagent-stop --symbiont claude-code --credential registry --myco-managed",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MYCO_TRAMPOLINED=1 MYCO_HOME=/Users/chris/.myco-dev /Users/chris/.myco-dev/bin/myco-2.0 hook stop --symbiont claude-code --credential registry --myco-managed",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

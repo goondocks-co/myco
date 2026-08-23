@@ -29,7 +29,7 @@ import { execSync } from 'node:child_process';
 test('the daemon has no user-session dependencies (native notifications, login keychain)', () => {
   const hits = execSync(
     "grep -rnE 'osascript|terminal-notifier|notify-send|security find-generic-password|node-keytar|keytar' "
-    + '--include="*.ts" packages/myco/src packages/myco-collective 2>/dev/null || true',
+    + '--include="*.ts" packages/myco/src 2>/dev/null || true',
     { cwd: process.cwd(), encoding: 'utf-8' },
   ).trim().split('\n').filter(Boolean);
   expect(hits).toEqual([]);

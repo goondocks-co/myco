@@ -16,7 +16,7 @@
  *       running exe) so the copy never targets the CLI's own running image.
  *       The temp copy runs the adopt orchestration detached.
  *
- * Operator-npm (myco-team / myco-collective) logic is intentionally absent —
+ * Operator-npm (myco-team) logic is intentionally absent —
  * the adopt path is ONLY about the staged binary; npm installs are the update
  * path's job.
  */
