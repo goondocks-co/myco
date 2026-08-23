@@ -31,16 +31,6 @@ updates:
     commit-message:
       prefix: "deps"
 
-  - package-ecosystem: "npm"
-    directory: "/packages/myco-collective/ui"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-    commit-message:
-      prefix: "deps"
 
   - package-ecosystem: "npm"
     directory: "/packages/myco-team/worker"
@@ -53,16 +43,6 @@ updates:
     commit-message:
       prefix: "deps"
 
-  - package-ecosystem: "npm"
-    directory: "/packages/myco-collective/worker"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-    commit-message:
-      prefix: "deps"
 
   - package-ecosystem: "npm"
     directory: "/packages/myco-server/worker"

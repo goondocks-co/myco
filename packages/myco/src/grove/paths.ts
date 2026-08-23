@@ -154,7 +154,7 @@ export const MYCO_TEAM_HOME_ENV = 'MYCO_TEAM_HOME';
 /**
  * Machine-scoped home for the team registry. Independent of MYCO_HOME so a
  * machine running more than one daemon home (~/.myco + ~/.myco-dev) shares one
- * team registry — mirrors the Collective home (~/.myco-collective). Override
+ * team registry. Override
  * via MYCO_TEAM_HOME for hermetic tests. Default: ~/.myco-team.
  */
 export function resolveTeamsHome(options: MycoHomeOptions = {}): string {

@@ -5,7 +5,6 @@ release_provenance:
   production_refs:
     - refs/tags/myco/v*
     - refs/tags/myco-team/v*
-    - refs/tags/myco-collective/v*
     - refs/tags/myco-shared/v*
   integration_refs:
     - origin/main
@@ -20,8 +19,6 @@ release_provenance:
       tag_pattern: refs/tags/myco/v*
     - path_glob: packages/myco-team/
       tag_pattern: refs/tags/myco-team/v*
-    - path_glob: packages/myco-collective/
-      tag_pattern: refs/tags/myco-collective/v*
     - path_glob: packages/myco-shared/
       tag_pattern: refs/tags/myco-shared/v*
 cortex:

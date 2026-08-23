@@ -72,8 +72,6 @@ function manifestPaths(): string[] {
   for (const nested of [
     'packages/myco/ui/package.json',
     'packages/myco-team/worker/package.json',
-    'packages/myco-collective/ui/package.json',
-    'packages/myco-collective/worker/package.json',
     'packages/myco-server/worker/package.json',
   ]) {
     paths.add(nested);

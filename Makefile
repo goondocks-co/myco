@@ -1,4 +1,4 @@
-.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-refresh dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
+.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-refresh dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev ui-dev daemon-dev dev ui ui-myco
 
 # `make build` runs the fast unit-test profile + build. Integration / smoke
 # tests are deliberately excluded from the inner dev loop — they pair real
@@ -71,18 +71,15 @@ watch:
 clean:
 	rm -rf packages/myco/dist packages/myco-shared/dist
 
-# Build every UI bundle (myco daemon UI + collective UI) without running the
+# Build the daemon UI bundle without running the
 # rest of the quality gate or the host-target compile. Useful when iterating
 # on frontend changes that ship inside the daemon binary — re-run after
 # editing UI source so `bun packages/myco/src/entries/cli.ts daemon` picks up
 # the freshly built `dist/`.
-ui: ui-myco ui-collective
+ui: ui-myco
 
 ui-myco:
 	cd packages/myco/ui && npx vite build
-
-ui-collective:
-	cd packages/myco-collective/ui && npx vite build
 
 install:
 	npm install
@@ -96,18 +93,6 @@ ui-dev:
 	echo "Proxying API to daemon on port $$port (override with MYCO_DAEMON_PORT=<port> make ui-dev)"; \
 	cd packages/myco/ui && MYCO_DAEMON_PORT=$$port npx vite dev
 
-collective-ui-dev:
-	@collective_name=$${COLLECTIVE_NAME:-oss}; \
-	target=$${COLLECTIVE_UI_PROXY_TARGET:-$$(COLLECTIVE_NAME=$$collective_name node -e ' \
-		var fs=require("fs"),p=require("path"),os=require("os"); \
-		var name=process.env.COLLECTIVE_NAME||"oss"; \
-		var file=p.join(os.homedir(),".myco-collective",name,"config.json"); \
-		if(!fs.existsSync(file)){process.stderr.write("Missing Collective config at "+file+"\\n");process.exit(1)} \
-		var config=JSON.parse(fs.readFileSync(file,"utf-8")); \
-		if(!config.worker_url){process.stderr.write("Collective config at "+file+" is missing worker_url\\n");process.exit(1)} \
-		process.stdout.write(config.worker_url)')}; \
-	echo "Proxying Collective UI to $$target (override with COLLECTIVE_UI_PROXY_TARGET=<url> or COLLECTIVE_NAME=<name> make collective-ui-dev)"; \
-	cd packages/myco-collective/ui && COLLECTIVE_UI_PROXY_TARGET="$$target" npx vite dev
 
 daemon-dev:
 	@proxy=$${MYCO_UI_DEV_PROXY_TARGET:-http://127.0.0.1:5173}; \
