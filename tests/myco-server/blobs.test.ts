@@ -3,6 +3,7 @@ import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { BLOB_RESERVATION_TTL_MS, MAX_BLOB_BYTES, MEMBER_TOKEN_BYTE_QUOTA } from '@myco-server-worker/constants.js';
+import { classifyR2BlobFailure } from '@myco-server-worker/platform/cloudflare/env.js';
 import { classifyBlobStore } from '@myco-server-worker/telemetry.js';
 import { canonicalMediaType, MAX_MEDIA_TYPE_CHARS } from '@myco-server-worker/ingest/blobs.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
@@ -259,10 +260,10 @@ describe('blob route', () => {
     const putReal = e.bucket.put.bind(e.bucket);
     e.bucket.put = async (k, v, o) => {
       now += BLOB_RESERVATION_TTL_MS + 1;
-      during = await json(await server.handleRequest(memberPost(t.token, event), e.env));
+      during = await json(await server.handleRequest(memberPost(t.token, event), e.serverEnv));
       return putReal(k, v, o);
     };
-    const res = await json(await server.handleRequest(blobPost(t.token, key, bytes), e.env));
+    const res = await json(await server.handleRequest(blobPost(t.token, key, bytes), e.serverEnv));
     expect(during).toEqual({ persisted: true, projected: true });
     expect(res).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(e.bucket.objects.has(`proj_1/${key}`)).toBe(false);
@@ -295,12 +296,12 @@ describe('blob route', () => {
           ...statement,
           bind: (...params: unknown[]) => {
             const bound = statement.bind(...params);
-            return { ...bound, run: async () => { const moved = await bound.run(); if (!fired) { fired = true; during = await json(await server.handleRequest(memberPost(t.token, event), e.env)); } return moved; } };
+            return { ...bound, run: async () => { const moved = await bound.run(); if (!fired) { fired = true; during = await json(await server.handleRequest(memberPost(t.token, event), e.serverEnv)); } return moved; } };
           },
         };
       },
     };
-    const res = await json(await server.handleRequest(blobPost(t.token, key, bytes), e.env));
+    const res = await json(await server.handleRequest(blobPost(t.token, key, bytes), e.serverEnv));
     expect(during).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(res).toEqual({ stored: true, duplicate: false, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' });
     expect(count(e.sqlite, 'events')).toBe(0);
@@ -460,7 +461,10 @@ describe('blob route', () => {
     e.bucket.failNextPut = 'R2 put failed (10037)';
     expect(await json(await worker.fetch(blobPost(t.token, key, bytes), e.env))).toEqual({ stored: false, code: 'digest_mismatch', reason: 'digest mismatch' });
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
-    expect(classifyBlobStore(new Error('anything (10037)'))).toBe('digest');
+    // The R2 error code is Cloudflare's to recognise, not the shared classifier's:
+    // shared code matches the digest TEXT, the adapter matches the CODE.
+    expect(classifyBlobStore(new Error('anything (10037)'))).toBe('other');
+    expect(classifyBlobStore(new Error('anything (10037)'), classifyR2BlobFailure)).toBe('digest');
     expect(classifyBlobStore(new Error('put: length of the provided value does not match the declared length'))).toBe('other');
   });
 

@@ -1,4 +1,4 @@
-import type { Env } from '../env.js';
+import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { getBlob } from '../read/blobs.js';
 import { notFound, resolveProjectScope } from './scope.js';
@@ -31,15 +31,15 @@ const BLOB_SECURITY: Record<string, string> = {
 /**
  * Blob bytes inside the resolved scope.
  *
- * Blobs are content-addressed and project-prefixed in R2, and the `blobs` row is keyed
+ * Blobs are content-addressed and project-prefixed in the blob store, and the `blobs` row is keyed
  * `(project_id, key)`, so the project is in the path and the row is read before the object.
  */
-export async function handleBlobRead(env: Env, ctx: OwnerContext): Promise<Response> {
-  const scope = await resolveProjectScope(env.MYCO_DB, ctx.session, ctx.params.projectId);
+export async function handleBlobRead(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
   if (scope === null) return notFound();
-  const row = await getBlob(env.MYCO_DB, scope, ctx.params.key);
+  const row = await getBlob(env.db, scope, ctx.params.key);
   if (row === null) return notFound();
-  const object = await env.BUCKET.get(`${scope.projectId}/${ctx.params.key}`);
+  const object = await env.blobs.get(`${scope.projectId}/${ctx.params.key}`);
   if (object === null) return notFound();
   const renderable = RENDERABLE.has(row.mediaType);
   return new Response(object.body, {

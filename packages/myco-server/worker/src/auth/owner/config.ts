@@ -1,4 +1,4 @@
-import type { Env } from '../../env.js';
+import type { ServerEnv } from '../../core/adapters.js';
 
 export interface OwnerConfig {
   ownerGithubId: string;
@@ -19,11 +19,11 @@ const present = (value: string | undefined): string | null => {
 };
 
 /** The deploy-time owner configuration, or null when it is incomplete. */
-export function ownerConfig(env: Env): OwnerConfig | null {
-  const ownerGithubId = present(env.OWNER_GITHUB_ID);
-  const clientId = present(env.GITHUB_CLIENT_ID);
-  const clientSecret = present(env.GITHUB_CLIENT_SECRET);
-  const sessionSecret = present(env.SESSION_SECRET);
+export function ownerConfig(env: ServerEnv): OwnerConfig | null {
+  const ownerGithubId = present(env.secrets?.OWNER_GITHUB_ID);
+  const clientId = present(env.secrets?.GITHUB_CLIENT_ID);
+  const clientSecret = present(env.secrets?.GITHUB_CLIENT_SECRET);
+  const sessionSecret = present(env.secrets?.SESSION_SECRET);
   if (ownerGithubId === null || clientId === null || clientSecret === null || sessionSecret === null) return null;
   if (!ACCOUNT_ID.test(ownerGithubId)) return null;
   if (sessionSecret.length < MIN_SESSION_SECRET_LENGTH) return null;

@@ -1,41 +1,42 @@
 import { Database } from 'bun:sqlite';
-import type { D1Like, D1StatementLike, D1RunResult } from '@myco-server-worker/env.js';
+import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 
-interface Captured extends D1StatementLike {
-  sql: string;
-  params: unknown[];
-}
+/**
+ * The shipped self-hosted relational store, with test observation hooks wrapped
+ * around it. The store itself is never reimplemented here: a semantics fix in the
+ * production adapter must reach the store the suite exercises, which it cannot do
+ * if the suite carries its own copy.
+ */
+export function sqliteD1(
+  sqlite: Database,
+  options: { onFirst?: (sql: string, row: Record<string, unknown> | null) => Record<string, unknown> | null; onSql?: (sql: string) => void } = {},
+): RelationalStore {
+  const store = sqliteRelationalStore(sqlite);
 
-const isRead = (sql: string) => /^\s*SELECT\b/i.test(sql);
-
-/** A `D1Like` over an in-memory bun:sqlite database: `batch` runs in one transaction, every write result carries the real row-change count, and every read result carries its rows. */
-export function sqliteD1(sqlite: Database, options: { onFirst?: (sql: string, row: Record<string, unknown> | null) => Record<string, unknown> | null; onSql?: (sql: string) => void } = {}): D1Like {
-  const execute = (sql: string, params: unknown[]): D1RunResult => {
-    options.onSql?.(sql);
-    return isRead(sql)
-      ? { results: sqlite.query(sql).all(...(params as any[])) as unknown[], meta: { changes: 0 } }
-      : { results: [], meta: { changes: sqlite.query(sql).run(...(params as any[])).changes } };
-  };
-  const statement = (sql: string, params: unknown[]): Captured => ({
-    sql,
-    params,
-    bind: (...next: unknown[]) => statement(sql, next),
-    run: async () => execute(sql, params),
-    all: async <T = Record<string, unknown>,>(): Promise<{ results: T[] }> => {
-      options.onSql?.(sql);
-      return { results: sqlite.query(sql).all(...(params as any[])) as T[] };
-    },
+  // The inner statement is spread, not replaced: `batch` reads fields the shipped
+  // store puts on its own statements, and an observed statement must still carry them.
+  const observe = (sql: string, statement: PreparedStatement): PreparedStatement => ({
+    ...statement,
+    bind: (...values: unknown[]) => observe(sql, statement.bind(...values)),
+    run: async () => { options.onSql?.(sql); return statement.run(); },
+    all: async <T = Record<string, unknown>>(): Promise<{ results: T[] }> => { options.onSql?.(sql); return statement.all<T>(); },
     first: async <T,>() => {
       options.onSql?.(sql);
-      const row = (sqlite.query(sql).get(...(params as any[])) as Record<string, unknown> | null) ?? null;
+      const row = (await statement.first<Record<string, unknown>>()) ?? null;
       return (options.onFirst ? options.onFirst(sql, row) : row) as T | null;
     },
   });
-  const runBatch = sqlite.transaction((stmts: Captured[]): D1RunResult[] => stmts.map((s) => execute(s.sql, s.params)));
+
   return {
-    prepare: (sql: string) => statement(sql, []),
-    batch: async (stmts: D1StatementLike[]) => runBatch(stmts as Captured[]),
+    prepare: (sql: string) => observe(sql, store.prepare(sql)),
+    batch: (statements: PreparedStatement[]) => {
+      // Statements inside a batch are executed too, and the gates that inspect the
+      // executed SQL must see them.
+      for (const statement of statements) options.onSql?.((statement as unknown as { sql: string }).sql);
+      return store.batch(statements);
+    },
   };
 }
 

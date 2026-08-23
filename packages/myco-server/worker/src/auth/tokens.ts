@@ -1,4 +1,4 @@
-import type { D1Like, D1StatementLike } from '../env.js';
+import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
 import { SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
 import { sha256Hex } from '../hash.js';
 import { heldBytes, TOKEN_LIVE } from '../ingest/quota.js';
@@ -79,8 +79,8 @@ export function mintMemberToken(): string {
 
 /** The one INSERT into member_tokens, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now or at the lineage ceiling, whichever is sooner. A successor's row is written only while its predecessor is still live at the instant of the insert (the statement's change count says whether it was); a root has no predecessor and always lands. */
 function memberTokenInsert(
-  db: D1Like, member: { projectId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, tokenId: string, digest: string,
-): { statement: D1StatementLike; expiresAt: number } {
+  db: RelationalStore, member: { projectId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, tokenId: string, digest: string,
+): { statement: PreparedStatement; expiresAt: number } {
   const predecessorId = lineage === null ? null : lineage.predecessorId;
   const lineageRoot = lineage === null ? tokenId : lineage.lineageRoot;
   const lineageStartedAt = lineage === null ? nowMs : lineage.lineageStartedAt;
@@ -94,7 +94,7 @@ function memberTokenInsert(
 }
 
 /** A fresh raw token and its id, with the insert that stores the digest. */
-async function mintInsert(db: D1Like, member: { projectId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null): Promise<{ statement: D1StatementLike; issued: IssuedMemberToken }> {
+async function mintInsert(db: RelationalStore, member: { projectId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null): Promise<{ statement: PreparedStatement; issued: IssuedMemberToken }> {
   const token = mintMemberToken();
   const tokenId = `${TOKEN_ID_PREFIX}${base64url(crypto.getRandomValues(new Uint8Array(TOKEN_ID_BYTES)))}`;
   const { statement, expiresAt } = memberTokenInsert(db, member, nowMs, lineage, tokenId, await sha256Hex(token));
@@ -103,7 +103,7 @@ async function mintInsert(db: D1Like, member: { projectId: string; machineId: st
 
 /** Sole inserter of member_tokens rows. Stores the digest; returns the raw token once. Without `lineage` the token roots a lineage of its own; with it, the token succeeds `lineage.predecessorId` and expires no later than the lineage ceiling. */
 export async function issueMemberToken(
-  db: D1Like, member: { projectId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null = null,
+  db: RelationalStore, member: { projectId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null = null,
 ): Promise<IssuedMemberToken> {
   const { statement, issued } = await mintInsert(db, member, nowMs, lineage);
   await statement.run();
@@ -111,7 +111,7 @@ export async function issueMemberToken(
 }
 
 /** Marks a token revoked; a revoked token never authenticates again. `revoked` is false when no live row matched the id. */
-export async function revokeMemberToken(db: D1Like, tokenId: string, nowMs: number): Promise<{ revoked: boolean }> {
+export async function revokeMemberToken(db: RelationalStore, tokenId: string, nowMs: number): Promise<{ revoked: boolean }> {
   const result = await db
     .prepare(`UPDATE member_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`)
     .bind(nowMs, tokenId)
@@ -120,7 +120,7 @@ export async function revokeMemberToken(db: D1Like, tokenId: string, nowMs: numb
 }
 
 /** Revoke a token that belongs to one project. The unscoped form above is the break-glass path, where the operator has already named the token; anything reached through a credential scopes the write, so a caller can never revoke a token outside what it may see. */
-export async function revokeProjectMemberToken(db: D1Like, projectId: string, tokenId: string, nowMs: number): Promise<{ revoked: boolean }> {
+export async function revokeProjectMemberToken(db: RelationalStore, projectId: string, tokenId: string, nowMs: number): Promise<{ revoked: boolean }> {
   const result = await db
     .prepare(`UPDATE member_tokens SET revoked_at = ? WHERE id = ? AND project_id = ? AND revoked_at IS NULL`)
     .bind(nowMs, tokenId, projectId)
@@ -129,7 +129,7 @@ export async function revokeProjectMemberToken(db: D1Like, projectId: string, to
 }
 
 /** Revokes every live token of the lineage `tokenId` belongs to — the named token, its predecessors, and its successors — in one statement; `revoked` counts the rows that changed. */
-export async function revokeMemberLineage(db: D1Like, tokenId: string, nowMs: number): Promise<{ revoked: number }> {
+export async function revokeMemberLineage(db: RelationalStore, tokenId: string, nowMs: number): Promise<{ revoked: number }> {
   const result = await db
     .prepare(`UPDATE member_tokens SET revoked_at = ? WHERE lineage_root = (SELECT lineage_root FROM member_tokens WHERE id = ?) AND revoked_at IS NULL`)
     .bind(nowMs, tokenId)
@@ -138,7 +138,7 @@ export async function revokeMemberLineage(db: D1Like, tokenId: string, nowMs: nu
 }
 
 /** The window opens at `expires_at − MEMBER_TOKEN_REFRESH_WINDOW_MS`; earlier, the answer is `refresh_too_early` with the instant it opens. A token that already expires at its lineage ceiling answers `lineage_expired`: no successor could outlive it. Past both checks, one batch revokes the live, never-used successor this token may already have and inserts the new one — expiring one TTL from now or at the ceiling, whichever is sooner — and the answer carries the successor's own window start as `refreshAfter`. Both statements act only while the presented token is still live at that instant (`TOKEN_LIVE` on each): a token revoked in between changes nothing — its banked successor stays as it is — and raises `TokenRevokedError`. The presented token stays live; the successor's first authenticated use revokes it. */
-export async function refreshMemberToken(db: D1Like, subject: RefreshSubject, nowMs: number): Promise<RefreshResult> {
+export async function refreshMemberToken(db: RelationalStore, subject: RefreshSubject, nowMs: number): Promise<RefreshResult> {
   const opensAt = windowOpensAt(subject.expiresAt);
   if (nowMs < opensAt) return { refreshed: false, code: 'refresh_too_early', reason: REFRESH_TOO_EARLY, refreshAfter: opensAt };
   if (subject.lineageStartedAt + MEMBER_TOKEN_MAX_LINEAGE_MS <= subject.expiresAt) return { refreshed: false, code: 'lineage_expired', reason: LINEAGE_EXPIRED };
@@ -153,7 +153,7 @@ export async function refreshMemberToken(db: D1Like, subject: RefreshSubject, no
 }
 
 /** A successor's first authenticated use, as one batch: the successor takes over what its predecessor holds against the quota (`heldBytes`: the charged counter plus live blob reservations; nothing when the predecessor row is gone) and records the instant; the predecessor is revoked. Every statement guards itself, so a repeat changes nothing. */
-export async function activateSuccessor(db: D1Like, auth: Pick<MemberAuth, 'projectId' | 'tokenId'> & { predecessorId: string }, nowMs: number): Promise<void> {
+export async function activateSuccessor(db: RelationalStore, auth: Pick<MemberAuth, 'projectId' | 'tokenId'> & { predecessorId: string }, nowMs: number): Promise<void> {
   const held = heldBytes({ projectId: auth.projectId, tokenId: auth.predecessorId, now: nowMs });
   await db.batch([
     db.prepare(`UPDATE member_tokens SET bytes_written = COALESCE(${held.sql}, 0), first_used_at = ? WHERE id = ? AND first_used_at IS NULL`).bind(...held.params, nowMs, auth.tokenId),
@@ -163,7 +163,7 @@ export async function activateSuccessor(db: D1Like, auth: Pick<MemberAuth, 'proj
 
 /** One read: the database schema version, joined to the member row for the digest when one exists. The version must equal this build's before any token decision is made; a missing version row is a mismatch. A row without its lineage columns never authenticates. */
 export async function authenticateServerMemberToken(
-  db: D1Like, digest: string, nowMs: number,
+  db: RelationalStore, digest: string, nowMs: number,
 ): Promise<MemberAuth | null> {
   const row = await db
     .prepare(`SELECT s.value AS schema_version,

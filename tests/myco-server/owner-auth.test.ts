@@ -10,23 +10,23 @@ const FULL = { OWNER_GITHUB_ID: '583231', GITHUB_CLIENT_ID: 'cid', GITHUB_CLIENT
 
 describe('owner config', () => {
   it('resolves when every value is present', () => {
-    expect(ownerConfig(FULL as never)).toEqual({ ownerGithubId: '583231', clientId: 'cid', clientSecret: 'csecret', sessionSecret: SESSION_SECRET });
+    expect(ownerConfig({ secrets: FULL } as never)).toEqual({ ownerGithubId: '583231', clientId: 'cid', clientSecret: 'csecret', sessionSecret: SESSION_SECRET });
   });
 
   it('is absent when any value is missing or blank — no partial human surface', () => {
     for (const key of Object.keys(FULL)) {
-      expect(ownerConfig({ ...FULL, [key]: undefined } as never)).toBeNull();
-      expect(ownerConfig({ ...FULL, [key]: '  ' } as never)).toBeNull();
+      expect(ownerConfig({ secrets: { ...FULL, [key]: undefined } } as never)).toBeNull();
+      expect(ownerConfig({ secrets: { ...FULL, [key]: '  ' } } as never)).toBeNull();
     }
   });
 
   it('is absent when the session secret is too short to resist offline attack', () => {
-    expect(ownerConfig({ ...FULL, SESSION_SECRET: 'x'.repeat(31) } as never)).toBeNull();
-    expect(ownerConfig({ ...FULL, SESSION_SECRET: 'x'.repeat(32) } as never)).not.toBeNull();
+    expect(ownerConfig({ secrets: { ...FULL, SESSION_SECRET: 'x'.repeat(31) } } as never)).toBeNull();
+    expect(ownerConfig({ secrets: { ...FULL, SESSION_SECRET: 'x'.repeat(32) } } as never)).not.toBeNull();
   });
 
   it('is absent when the owner id is not a numeric account id', () => {
-    for (const bad of ['octocat', '12a', '', '-1', '1.5']) expect(ownerConfig({ ...FULL, OWNER_GITHUB_ID: bad } as never)).toBeNull();
+    for (const bad of ['octocat', '12a', '', '-1', '1.5']) expect(ownerConfig({ secrets: { ...FULL, OWNER_GITHUB_ID: bad } } as never)).toBeNull();
   });
 });
 
@@ -76,7 +76,8 @@ describe('github oauth', () => {
 
 import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
-import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare.js';
+import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 
@@ -141,7 +142,8 @@ import { OAUTH_STATE_COOKIE } from '@myco-server-worker/auth/owner/github.js';
 
 /** Drives the worker with a supplied outbound fetch, the way the entry supplies the real one. */
 const withFetch = (request: Request, env: unknown, fetchImpl: typeof fetch) =>
-  createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf, fetchImpl }).handleRequest(request, env as never);
+  createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf, fetchImpl })
+    .handleRequest(request, serverEnvFromBindings(env as never));
 
 const cookieValue = (header: string, name: string): string | null => {
   for (const set of header.split(/,(?=[^ ;]+=)/)) {
@@ -172,7 +174,7 @@ describe('sign-in', () => {
           ? Response.json({ id: 583231, login: 'octocat' })
           : Response.json({ access_token: 'gho_test' }))) as unknown as typeof fetch }).handleRequest(
       new Request(`https://s/auth/callback?code=the-code&state=${state}`, { headers: { 'cf-connecting-ip': '1.2.3.4', cookie: `${OAUTH_STATE_COOKIE}=${state}` } }),
-      env
+      serverEnvFromBindings(env as never)
     );
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe('/');
@@ -189,7 +191,7 @@ describe('sign-in', () => {
           ? Response.json({ id: 999999, login: 'octocat' })
           : Response.json({ access_token: 'gho_test' }))) as unknown as typeof fetch }).handleRequest(
       new Request(`https://s/auth/callback?code=c&state=${state}`, { headers: { 'cf-connecting-ip': '1.2.3.4', cookie: `${OAUTH_STATE_COOKIE}=${state}` } }),
-      env
+      serverEnvFromBindings(env as never)
     );
     expect(res.status).toBe(403);
     expect(res.headers.get('set-cookie') ?? '').not.toContain(SESSION_COOKIE);

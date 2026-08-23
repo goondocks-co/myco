@@ -1,4 +1,4 @@
-import type { Env } from '../env.js';
+import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { getSession, listSessions, sessionCounts } from '../read/sessions.js';
 import { badRequest, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
@@ -43,44 +43,44 @@ export function paging(url: URL): { limit?: number; cursor?: string } | Response
   return { limit: rawLimit === null ? undefined : Number(rawLimit), cursor: rawCursor ?? undefined };
 }
 
-export async function handleProjectSessions(env: Env, ctx: OwnerContext): Promise<Response> {
-  const scope = await resolveProjectScope(env.MYCO_DB, ctx.session, ctx.params.projectId);
+export async function handleProjectSessions(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
   if (scope === null) return notFound();
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
-  return ok(await listSessions(env.MYCO_DB, scope, page));
+  return ok(await listSessions(env.db, scope, page));
 }
 
-export async function handleSession(env: Env, ctx: OwnerContext): Promise<Response> {
+export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();
-  const scope = await resolveProjectScope(env.MYCO_DB, ctx.session, ctx.params.projectId);
+  const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
   if (scope === null) return notFound();
-  const session = await getSession(env.MYCO_DB, scope, sessionId);
+  const session = await getSession(env.db, scope, sessionId);
   if (session === null) return notFound();
-  return ok({ session, counts: await sessionCounts(env.MYCO_DB, scope, sessionId), projectId: scope.projectId });
+  return ok({ session, counts: await sessionCounts(env.db, scope, sessionId), projectId: scope.projectId });
 }
 
-export async function handleSessionChildren(env: Env, ctx: OwnerContext): Promise<Response> {
+export async function handleSessionChildren(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();
   const query = CHILDREN[ctx.params.child as keyof typeof CHILDREN];
   if (query === undefined) return notFound();
-  const scope = await resolveProjectScope(env.MYCO_DB, ctx.session, ctx.params.projectId);
+  const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
   if (scope === null) return notFound();
-  if (!(await sessionInScope(env.MYCO_DB, scope, sessionId))) return notFound();
+  if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
-  return ok(await query(env.MYCO_DB, scope, ctx.params.sessionId, page));
+  return ok(await query(env.db, scope, ctx.params.sessionId, page));
 }
 
-/** A session's transcript record and its segments. The bytes live in R2 and are fetched per segment through the blob route. */
-export async function handleTranscript(env: Env, ctx: OwnerContext): Promise<Response> {
+/** A session's transcript record and its segments. The bytes live in the blob store and are fetched per segment through the blob route. */
+export async function handleTranscript(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();
-  const scope = await resolveProjectScope(env.MYCO_DB, ctx.session, ctx.params.projectId);
+  const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
   if (scope === null) return notFound();
-  const transcript = await getTranscript(env.MYCO_DB, scope, sessionId);
+  const transcript = await getTranscript(env.db, scope, sessionId);
   if (transcript === null) return notFound();
-  return ok({ transcript, segments: await listSegments(env.MYCO_DB, scope, transcript.transcriptId) });
+  return ok({ transcript, segments: await listSegments(env.db, scope, transcript.transcriptId) });
 }

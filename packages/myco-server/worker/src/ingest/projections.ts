@@ -1,4 +1,4 @@
-import type { D1Like, D1StatementLike } from '../env.js';
+import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
 import type { CaptureEnvelope } from './envelope.js';
 import { blobFields, promptReferenceFields, type KindSpec, type Payload } from './kinds.js';
 import { refusal, type Refusal } from '../telemetry.js';
@@ -35,9 +35,9 @@ export interface KindPlan {
   /** Preconditions placed on the raw insert beyond the shared ones (identities, blob presence, prompt ownership); all must hold for the event to be stored. */
   admission: Fragment[];
   /** Projection statements, every one gated on the raw row this request wrote (a kind's own precondition is conjoined with that gate, never substituted for it); each reports its own row change. */
-  projections: D1StatementLike[];
+  projections: PreparedStatement[];
   /** Same-batch reads that decide the response. */
-  reads: D1StatementLike[];
+  reads: PreparedStatement[];
   /** The refusal for a request that stored no row and had no stored row, once the shared refusals have been ruled out. */
   refusal(rows: ReadRows): Refusal;
   /** True when a request that stored no row is a replay of a held segment (transcripts only). */
@@ -97,7 +97,7 @@ const bool = (v: unknown): number => (v === true ? 1 : 0);
 const json = (v: unknown): string | null => (v === undefined ? null : JSON.stringify(v));
 
 interface Inputs {
-  db: D1Like;
+  db: RelationalStore;
   ctx: WriteContext;
   e: CaptureEnvelope;
   p: Payload;

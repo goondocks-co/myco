@@ -1,4 +1,4 @@
-import type { Env } from './env.js';
+import type { ServerEnv } from './core/adapters.js';
 import type { AuthContext, OwnerContext, RouteContext, StreamContext } from './context.js';
 import { clearCookie } from './auth/owner/cookie.js';
 import { handleCallback, handleLogin } from './auth/owner/routes.js';
@@ -15,13 +15,13 @@ import { handleEvents } from './ingest/events.js';
 /** Public handlers receive the request only; they cannot reach storage or bindings. */
 export type PublicHandler = (request: Request) => Promise<Response>;
 /** Member handlers on json routes receive the bindings and the consumed request as context; the request stream is spent by the pipeline. */
-export type MemberHandler = (env: Env, ctx: RouteContext) => Promise<Response>;
+export type MemberHandler = (env: ServerEnv, ctx: RouteContext) => Promise<Response>;
 /** Member handlers on stream routes receive the unread request; the handler alone consumes the body. */
-export type StreamHandler = (env: Env, request: Request, ctx: StreamContext) => Promise<Response>;
-/** Auth handlers require no credential but do need the owner configuration and outbound fetch. They receive a narrowed context and never an `Env`, so a credential-free route still cannot reach storage or bindings by type. */
+export type StreamHandler = (env: ServerEnv, request: Request, ctx: StreamContext) => Promise<Response>;
+/** Auth handlers require no credential but do need the owner configuration and outbound fetch. They receive a narrowed context and never an `ServerEnv`, so a credential-free route still cannot reach storage or bindings by type. */
 export type AuthHandler = (request: Request, ctx: AuthContext) => Promise<Response>;
 /** Owner handlers run only after a valid owner session; they receive the bindings and the resolved session. */
-export type OwnerHandler = (env: Env, ctx: OwnerContext) => Promise<Response>;
+export type OwnerHandler = (env: ServerEnv, ctx: OwnerContext) => Promise<Response>;
 
 /** The key a member route answers under: `{<shape>: true|false, …}` on every outcome after authentication, refusals and 503s included. */
 export type Shape = 'persisted' | 'stored' | 'refreshed';
