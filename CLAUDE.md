@@ -26,3 +26,17 @@ Use Claude Code agent teams for parallelizable work where teammates need to comm
 - **Require plan approval for risky changes** — use plan mode for teammates touching critical paths (auth, data, config).
 - **The lead delegates, not implements** — if the lead starts doing work itself, tell it to wait for teammates.
 - **Only the lead cleans up** — teammates must not run cleanup. Shut down all teammates before the lead cleans up the team.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues is canonical; local Markdown is an outage-only fallback. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses the canonical mattpocock/skills label vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Domain documentation uses a single-context layout. See `docs/agents/domain.md`.
