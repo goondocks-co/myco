@@ -191,7 +191,6 @@ const SAFE_NODE_BUNDLE_GROUPS = new Set([
   'tests/canopy/scanner',
   'tests/capture',
   'tests/cli/providers',
-  'tests/collective',
   'tests/config',
   'tests/constants',
   'tests/context',
@@ -240,7 +239,6 @@ const NO_ISOLATE_NODE_TARGETS = [
   'tests/canopy',
   'tests/capture',
   'tests/cli/providers',
-  'tests/collective',
   'tests/config',
   'tests/constants',
   'tests/context',
@@ -1366,7 +1364,6 @@ function formatJunitEntry(label, f) {
 function stripDuplicateReact() {
   const candidates = [
     path.join(REPO, 'packages/myco/ui/node_modules'),
-    path.join(REPO, 'packages/myco-collective/ui/node_modules'),
     path.join(REPO, 'packages/myco-team/ui/node_modules'),
   ];
   for (const base of candidates) {

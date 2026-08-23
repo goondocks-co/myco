@@ -14,7 +14,7 @@
     "build:ui": "npm run build:ui -w @goondocks/myco",
     "build:watch": "tsc --watch",
     "build:types": "tsc",
-    "check:workers": "npm run check --prefix packages/myco-team/worker && npm run check --prefix packages/myco-collective/worker && npm run check --prefix packages/myco-server/worker",
+    "check:workers": "npm run check --prefix packages/myco-team/worker && npm run check --prefix packages/myco-server/worker",
     "typecheck:ui": "npm run typecheck:ui -w @goondocks/myco",
     "test": "node scripts/run-bun-tests.mjs",
     "test:debug": "node scripts/run-bun-tests.mjs --bail=1 --only-failures",
