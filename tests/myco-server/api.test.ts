@@ -139,6 +139,9 @@ describe('tokens', () => {
     const issued = await minted.json() as { id: string };
     const res = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${issued.id}/revoke`), { ...e.env, ...OWNER_ENV });
     expect(await res.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.sub });
+    // The actor lands in the same statement that revokes: a revocation and the record of
+    // who made it cannot come apart, so an operator can always answer who ended it.
+    expect(e.sqlite.query(`SELECT revoked_by FROM member_credentials WHERE id = ?`).get(issued.id)).toEqual({ revoked_by: PRINCIPAL.sub });
     expect((e.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(issued.id) as any).revoked_at).not.toBeNull();
     // A second revoke changes nothing: the row is already revoked.
     const again = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${issued.id}/revoke`), { ...e.env, ...OWNER_ENV });

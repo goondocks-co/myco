@@ -276,6 +276,11 @@ const V4_STATEMENTS: readonly string[] = [
  * Attribution history is preserved untouched: `events.token_id` and its
  * siblings continue to resolve, now through `member_credentials`.
  *
+ * Every member may revoke any credential, so `revoked_by` records which one did.
+ * A destroy path that does not record its actor leaves denial-of-service by a
+ * member indistinguishable from an operator's own action, and flat membership is
+ * what puts that in reach of everyone rather than of one owner.
+ *
  * The quota CHECK keeps the name `member_tokens_quota` verbatim. `classify()`
  * matches that literal to mark a quota violation terminal; renaming it turns a
  * terminal refusal into a 503 the member retries forever.
@@ -317,6 +322,7 @@ const V5_STATEMENTS: readonly string[] = [
      predecessor_id     TEXT,
      first_used_at      INTEGER,
      bytes_written      INTEGER NOT NULL DEFAULT 0,
+     revoked_by         TEXT,
      CONSTRAINT member_tokens_quota CHECK (bytes_written <= ${MEMBER_TOKEN_BYTE_QUOTA}))`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_hash ON member_credentials (token_hash)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_live_successor

@@ -2,7 +2,7 @@ import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
 import { SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
 import { sha256Hex } from '../hash.js';
 import { heldBytes, TOKEN_LIVE } from '../ingest/quota.js';
-import { SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
+import { emit, SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
 
 export const MEMBER_TOKEN_BYTES = 32;
 export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -136,18 +136,22 @@ export async function revokeMemberToken(db: RelationalStore, tokenId: string, no
  * Revoke a credential on behalf of a member. Membership is flat: any member may
  * revoke any credential, so the write carries no ownership predicate.
  *
- * `revokedBy` is recorded rather than checked. Every revocation stays
- * attributable, so restricting who may revoke later is a policy change on top of
- * this record rather than a re-derivation of who owns what.
+ * `revokedBy` is recorded rather than checked, in the same statement that revokes
+ * — a revocation and the record of who made it cannot come apart. Restricting who
+ * may revoke is then a policy change on top of this record rather than a
+ * re-derivation of who owns what, and until there is one, an operator can always
+ * answer who ended a credential.
  */
 export async function revokeCredentialAsMember(
   db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number,
 ): Promise<{ revoked: boolean; revokedBy: string }> {
   const result = await db
-    .prepare(`UPDATE member_credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`)
-    .bind(nowMs, tokenId)
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND revoked_at IS NULL`)
+    .bind(nowMs, revokedBy, tokenId)
     .run();
-  return { revoked: result.meta.changes === 1, revokedBy };
+  const revoked = result.meta.changes === 1;
+  emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked });
+  return { revoked, revokedBy };
 }
 
 /** Revokes every live token of the lineage `tokenId` belongs to — the named token, its predecessors, and its successors — in one statement; `revoked` counts the rows that changed. */

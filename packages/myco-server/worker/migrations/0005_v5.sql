@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS member_credentials (
      predecessor_id     TEXT,
      first_used_at      INTEGER,
      bytes_written      INTEGER NOT NULL DEFAULT 0,
+     revoked_by         TEXT,
      CONSTRAINT member_tokens_quota CHECK (bytes_written <= 1073741824));
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_hash ON member_credentials (token_hash);
