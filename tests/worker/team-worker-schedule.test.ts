@@ -4,13 +4,16 @@ import path from 'node:path';
 import { MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION } from '@myco/constants.js';
 
 describe('team worker deployment config', () => {
-  it('declares a cron trigger for collective refresh', () => {
+  it('declares no cron trigger, the collective refresh it existed for having been retired', () => {
     const wranglerToml = fs.readFileSync(
       path.join(process.cwd(), 'packages', 'myco-team', 'worker', 'wrangler.toml'),
       'utf-8',
     );
 
-    expect(wranglerToml).toMatch(/\[triggers\][\s\S]*crons = \["\*\/5 \* \* \* \*"\]/);
+    // The 5-minute cron drove collective settings-sync and heartbeat. With the
+    // Collective retired the handler did nothing the request path does not
+    // already do — every entry point guards `schemaInitialized` itself.
+    expect(wranglerToml).not.toMatch(/\[triggers\]/);
   });
 
   it('declares MIN_COMPAT_CLIENT_VERSION matching the daemon constant and a SYNC_PROTOCOL_VERSION that accepts the current daemon client', () => {
