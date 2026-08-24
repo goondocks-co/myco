@@ -118,7 +118,23 @@ describe('versioned schema steps', () => {
         expect(after.has(table)).toBe(true);
         for (const [col, type] of cols) expect({ table, col, type: after.get(table)!.get(col) }).toEqual({ table, col, type });
       }
-      for (const s of SCHEMA_STEPS[n].statements) expect(s).not.toMatch(/\b(DROP|RENAME)\b/i);
+      // A step may DROP only a table it created in that same step — the guard-table
+      // idiom, where a CHECK-bearing scratch table aborts the step on a precondition
+      // and is cleaned up. Anything else dropped after step 2 is contraction.
+      const createdHere = new Set(
+        SCHEMA_STEPS[n].statements
+          .map((s) => /^CREATE TABLE (?:IF NOT EXISTS )?(\w+)/i.exec(s)?.[1])
+          .filter((t): t is string => t !== undefined),
+      );
+      for (const s of SCHEMA_STEPS[n].statements) {
+        const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
+        if (dropped !== undefined) {
+          expect({ step: n + 1, dropped, selfCreated: createdHere.has(dropped) })
+            .toEqual({ step: n + 1, dropped, selfCreated: true });
+          continue;
+        }
+        expect(s).not.toMatch(/\b(DROP|RENAME)\b/i);
+      }
     }
     const stepTwo = SCHEMA_STEPS[1].statements;
     stepTwo.forEach((s, i) => {

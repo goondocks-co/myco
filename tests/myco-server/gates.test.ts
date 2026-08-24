@@ -406,7 +406,11 @@ describe('gates', () => {
   });
 
   it('leads every index on a project-scoped table with project_id', () => {
-    for (const s of SCHEMA_DDL.filter((x) => /CREATE (UNIQUE )?INDEX .* ON (?!member_tokens\b)\w+/.test(x))) {
+    // Credential and membership tables are Deployment-scoped by design — a member
+    // credential belongs to a member and a Deployment, not to one project — so
+    // their indexes lead with what they are actually looked up by.
+    const deploymentScoped = /ON (member_tokens|members|member_credentials|enrollment_authorities)\b/;
+    for (const s of SCHEMA_DDL.filter((x) => /CREATE (UNIQUE )?INDEX .* ON \w+/.test(x) && !deploymentScoped.test(x))) {
       expect(s).toMatch(/\(project_id/);
     }
   });

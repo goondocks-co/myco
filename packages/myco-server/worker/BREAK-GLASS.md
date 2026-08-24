@@ -1,3 +1,41 @@
+# Break-glass: minting an enrollment authority
+
+The recovery path of last resort. Whoever controls the Deployment's infrastructure can mint an invitation directly in the store, then join normally — so losing every credential is recoverable while you still hold database access.
+
+`scripts/mint-enrollment.ts` connects to nothing and holds no credential: it renders the SQL for you to apply. The raw key goes to stderr and only with `--print-key`, so the rendered statement can be piped to a client without the secret travelling with it.
+
+```bash
+cd packages/myco-server/worker
+# Render the insert. Prints the digest, never the key.
+bun scripts/mint-enrollment.ts 30
+
+# Print the key to stderr as well, once. Nothing stores it; if you lose it, mint another.
+bun scripts/mint-enrollment.ts 30 --print-key 2>/dev/null
+```
+
+Apply it on the hosted target:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(bun scripts/mint-enrollment.ts 30)"
+```
+
+Self-hosted, apply the same statement against the SQLite file on the mounted volume.
+
+Then join with the key. It is single-use, expires on the TTL you passed, and records which runtime spent it:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "SELECT id, created_at, expires_at, used_at, used_by_runtime, revoked_at FROM enrollment_authorities ORDER BY created_at DESC LIMIT 5"
+```
+
+Revoke an unused key you no longer want outstanding:
+
+```sql
+UPDATE enrollment_authorities SET revoked_at = <now_ms> WHERE id = '<ID>' AND revoked_at IS NULL AND used_at IS NULL;
+```
+
+**Every use of this path should be a cause for investigation.** It bypasses the join flow's ordinary attribution: the resulting authority names no minting member. Mint one, use it, and let it expire — do not keep a standing key.
+
 # Break-glass: revoking a member token
 
 A leaked member token is revoked by setting `revoked_at` on its row. The pipeline refuses a revoked token on the next request; there is no cache to flush.
