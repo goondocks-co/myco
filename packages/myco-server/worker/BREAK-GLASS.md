@@ -1,17 +1,55 @@
+# Break-glass: minting an enrollment authority
+
+The recovery path of last resort. Whoever controls the Deployment's infrastructure can mint an invitation directly in the store, then join normally — so losing every credential is recoverable while you still hold database access.
+
+`scripts/mint-enrollment.ts` connects to nothing and holds no credential: it renders the SQL for you to apply. The raw key goes to stderr and only with `--print-key`, so the rendered statement can be piped to a client without the secret travelling with it.
+
+```bash
+cd packages/myco-server/worker
+# Render the insert. Prints the digest, never the key.
+bun scripts/mint-enrollment.ts 30
+
+# Print the key to stderr as well, once. Nothing stores it; if you lose it, mint another.
+bun scripts/mint-enrollment.ts 30 --print-key 2>/dev/null
+```
+
+Apply it on the hosted target:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(bun scripts/mint-enrollment.ts 30)"
+```
+
+Self-hosted, apply the same statement against the SQLite file on the mounted volume.
+
+Then join with the key. It is single-use, expires on the TTL you passed, and records which runtime spent it:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "SELECT id, created_at, expires_at, used_at, used_by_runtime, revoked_at FROM enrollment_authorities ORDER BY created_at DESC LIMIT 5"
+```
+
+Revoke an unused key you no longer want outstanding:
+
+```sql
+UPDATE enrollment_authorities SET revoked_at = <now_ms> WHERE id = '<ID>' AND revoked_at IS NULL AND used_at IS NULL;
+```
+
+**Every use of this path should be a cause for investigation.** It bypasses the join flow's ordinary attribution: the resulting authority names no minting member. Mint one, use it, and let it expire — do not keep a standing key.
+
 # Break-glass: revoking a member token
 
 A leaked member token is revoked by setting `revoked_at` on its row. The pipeline refuses a revoked token on the next request; there is no cache to flush.
 
-`revokeMemberToken` is the code path; `npm run token:revoke -- <TOKEN_ID>` prints its `UPDATE`. Find the token by project and machine, print the statement, apply it with `wrangler d1 execute`, then confirm the command reported one changed row — zero rows means no live token had that id:
+`revokeMemberToken` is the code path; `npm run token:revoke -- <TOKEN_ID>` prints its `UPDATE`. Find the credential by member and machine, print the statement, apply it with `wrangler d1 execute`, then confirm the command reported one changed row — zero rows means no live credential had that id:
 
 ```bash
 cd packages/myco-server/worker
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
-  "SELECT id, project_id, machine_id, expires_at, revoked_at, bytes_written FROM member_tokens WHERE project_id = '<PROJECT_ID>'"
+  "SELECT id, member_id, machine_id, expires_at, revoked_at, bytes_written FROM member_credentials WHERE member_id = '<MEMBER_ID>'"
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(npm run -s token:revoke -- <TOKEN_ID>)"
 ```
 
-Attribution: every `events` row carries the `token_id` that wrote it, so what a revoked token wrote is a query, not a guess. `sessions.created_by_token_id` names the token that first opened the session and is not updated by later writers; query `events`, not `sessions`, for a token's footprint:
+Attribution: every `events` row carries the `token_id` that wrote it, so what a revoked credential wrote is a query, not a guess. A credential spans the Deployment, so the query below is per Project and answers for that Project only — drop `project_id` from the predicate to see the whole footprint, at the cost of the `idx_events_token (project_id, token_id, created_at)` index it is ordered by. `sessions.created_by_token_id` names the token that first opened the session and is not updated by later writers; query `events`, not `sessions`, for a token's footprint:
 
 ```bash
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
@@ -34,7 +72,7 @@ A member token refreshes itself inside the last quarter of its TTL (`POST /token
 ```bash
 cd packages/myco-server/worker
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
-  "SELECT id, predecessor_id, lineage_root, expires_at, first_used_at, revoked_at, bytes_written FROM member_tokens WHERE lineage_root = (SELECT lineage_root FROM member_tokens WHERE id = '<TOKEN_ID>') ORDER BY expires_at"
+  "SELECT id, predecessor_id, lineage_root, expires_at, first_used_at, revoked_at, bytes_written FROM member_credentials WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = '<TOKEN_ID>') ORDER BY expires_at"
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(npm run -s token:revoke -- <TOKEN_ID> --lineage)"
 ```
 
@@ -75,6 +113,8 @@ npm run migrations:apply
 
 `ALTER TABLE ... ADD COLUMN` has no inverse in SQLite; a re-run over a column that already exists fails with `duplicate column name`. Migrations are emitted from `V*_STATEMENTS` ([src/db/schema.ts](src/db/schema.ts)) and every statement there is written `IF NOT EXISTS` where the syntax allows it, so re-application is safe for everything except `ADD COLUMN` — for those, delete the `ALTER` from the emitted file for the recovery run only, and never edit a file the ledger already records.
 
+**Do NOT drop the objects for step 5.** The rule above is for a file whose `ADD COLUMN` cannot be re-run. Step 5 has none: every statement is `IF NOT EXISTS`, `OR IGNORE` or `OR REPLACE`, and the step opens by dropping its own guard table, so re-application over an already-migrated database is a no-op. The tables it creates — `members`, `member_credentials`, `machine_claims`, `enrollment_authorities` — hold the LIVE credentials of a serving Deployment the moment it is past the backfill. Dropping them destroys every member's ability to capture and every record of who wrote what. For step 5 the recovery is `npm run migrations:apply`, and nothing else.
+
 # Break-glass: step 2 refused by a guard
 
 Step 2 opens with two guard tables, ahead of every `ADD COLUMN`, so an aborted run leaves the database at v1 and a repaired one re-applies the step whole. Both fail the same way — `CHECK constraint failed: ok` on the guard's `INSERT` — so read which rows tripped it before repairing.
@@ -113,3 +153,59 @@ npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
 ```
 
 Deleting the sessions is not one of the choices: their events are the record the projections re-derive from.
+
+**A credential the backfill cannot place.** The guard covers three columns:
+`machine_id`, `lineage_root` and `lineage_started_at`. The latter two are nullable
+at the source — v3 added them with `ADD COLUMN`, which cannot carry NOT NULL — and
+NOT NULL at the target, so a NULL in either is a row the insert would decline. A
+closing guard then aborts if the backfill placed fewer credentials than the source
+holds, whatever declined them.
+
+v5 groups credentials into members by
+`machine_id` — `mem_<machine_id>` is the member each backfilled credential joins.
+A NULL has nothing to derive from, and grouping every such row under one member
+would permanently merge distinct people, which is not reconcilable afterwards.
+The guard trips before any of v5's writes, so the step lands nothing:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "SELECT id, project_id, machine_id, lineage_root, lineage_started_at, expires_at, revoked_at FROM member_tokens WHERE machine_id IS NULL OR lineage_root IS NULL OR lineage_started_at IS NULL"
+```
+
+A row with no machine identity is one the pipeline already refuses each write
+(`no_machine_identity`), so none of those is a working credential. A row missing
+only its lineage columns may well be live — v3's backfill filled them for every
+row that existed then, so a NULL means the row was written by something that
+bypassed `issueMemberToken`. Decide per row, then re-run `npm run migrations:apply`:
+
+- **Lineage columns are NULL** — a credential is the root of its own lineage
+  unless it succeeded another, so set them from the row itself. Do this before
+  the machine-identity repair below, which may revoke the row:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "UPDATE member_tokens SET lineage_root = COALESCE(lineage_root, id), lineage_started_at = COALESCE(lineage_started_at, expires_at - 604800000) WHERE lineage_root IS NULL OR lineage_started_at IS NULL"
+```
+
+- **The machine is known from outside the database** — set it, and the credential
+  joins that machine's member:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "UPDATE member_tokens SET machine_id = '<MACHINE_ID>' WHERE id = '<TOKEN_ID>'"
+```
+
+- **The machine is not recoverable** — revoke the row. v5 writes every backfilled
+  credential revoked in any case, so revoking first changes nothing about what
+  the migration produces; it only lets the guard pass. The name carries a `:`,
+  which the machine-id grammar excludes, so the member the backfill derives from
+  it can never collide with a real machine's. Attribution is untouched:
+  `events.token_id` still names this id, and the read path resolves it:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "UPDATE member_tokens SET machine_id = 'unattributed:' || id, revoked_at = COALESCE(revoked_at, expires_at) WHERE machine_id IS NULL"
+```
+
+Deleting the rows is not one of the choices: `events.token_id` references them,
+and the owner API's activity read resolves a token id through this table.

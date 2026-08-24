@@ -12,7 +12,7 @@ import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from '../member/budget.js';
-import { MEMBER_TOKEN_REFRESH_WINDOW_MS, PROJECT_ID_PATTERN } from '../member/constants.js';
+import { isProjectId, MEMBER_TOKEN_REFRESH_WINDOW_MS } from '../member/constants.js';
 import { isHttpsUrl, isMemberTokenShape, resolveMemberProjectRoot } from '../member/credential.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { listRegistryEntries, readRegistryEntry, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
@@ -123,7 +123,7 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   if (parsed.error) return fail(parsed.error);
   if (!parsed.serverUrl || !parsed.project) { err(MEMBER_HELP.trimEnd()); process.exitCode = 2; return null; }
   if (!isHttpsUrl(parsed.serverUrl)) return fail(`${parsed.serverUrl} is not an https server URL`);
-  if (!PROJECT_ID_PATTERN.test(parsed.project)) return fail(`${parsed.project} is not a project id`);
+  if (!isProjectId(parsed.project)) return fail(`${parsed.project} is not a project id`);
   if (parsed.tokenStdin === (parsed.tokenEnv !== undefined)) return fail('pass the token with exactly one of --token-stdin or --token-env <NAME>');
 
   const token = (parsed.tokenStdin ? readStdin(deps) : env[parsed.tokenEnv!] ?? '').trim();

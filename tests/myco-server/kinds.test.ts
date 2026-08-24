@@ -1,3 +1,4 @@
+import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -52,7 +53,7 @@ const FIXTURES: Record<string, { payload: Record<string, unknown>; table: string
 };
 
 async function member(env: ReturnType<typeof sqliteEnv>, project = 'proj_1', machine = 'machine_1') {
-  return issueMemberToken(env.db, { projectId: project, machineId: machine }, Date.now());
+  return issueMemberToken(env.db, { memberId: `mem_${machine}`, machineId: machine }, Date.now());
 }
 
 /** Uploads bytes as a blob for the token and returns the key. */
@@ -75,7 +76,7 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 45;
+const PLANNED_STATEMENTS = 46;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
 const ID_ROLES = { key: 7, prompt: 8, group: 1 };
@@ -279,7 +280,7 @@ describe('kind catalogue', () => {
     const t2 = await member(e, 'proj_2', 'machine_2');
     const key = await upload(e, t1.token, utf8('shared'), 'image/png');
     expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(50), sessionId: 'sess_3', kind: 'attachment', payload: { attachmentId: uuid(51), blob: key } })), e.env))).toEqual({ persisted: true, projected: true });
-    expect(await json(await worker.fetch(memberPost(t2.token, envelope({ eventId: uuid(52), sessionId: 'sess_2', kind: 'attachment', payload: { attachmentId: uuid(53), blob: key } })), e.env))).toEqual({ persisted: false, code: 'blob_absent', reason: `blob not present: ${key}` });
+    expect(await json(await worker.fetch(memberPost(t2.token, envelope({ eventId: uuid(52), sessionId: 'sess_2', kind: 'attachment', payload: { attachmentId: uuid(53), blob: key } }), '/events', { [PROJECT_HEADER]: 'proj_2' }), e.env))).toEqual({ persisted: false, code: 'blob_absent', reason: `blob not present: ${key}` });
     expect((e.sqlite.query(`SELECT media_type FROM attachments`).get() as any).media_type).toBe('image/png');
   });
 
@@ -670,7 +671,7 @@ describe('kind catalogue', () => {
     const e = sqliteEnv();
     const t1 = await member(e);
     const t3 = await member(e, 'proj_1', 'machine_3');
-    const anonymous = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: null }, Date.now());
+    const anonymous = await issueMemberToken(e.db, { memberId: 'mem_anon', machineId: null }, Date.now());
     const seg = utf8('segment-bytes');
     const segKey = await upload(e, t1.token, seg);
     const tx = `tx_${'f'.repeat(32)}`;
@@ -704,7 +705,7 @@ describe('kind catalogue', () => {
       { name: 'media type', request: () => blob({ 'content-type': 'nonsense' }), kind: 'blob_refused', reason: 'invalid content-type', classifier: 'media_type' },
       { name: 'empty body', request: () => blob({}, new Uint8Array(0)), kind: 'blob_refused', reason: 'empty body', classifier: 'empty_body' },
       { name: 'digest mismatch', request: () => blob({}, utf8('other-bytes'), 'd'.repeat(64)), kind: 'blob_refused', reason: 'digest mismatch', classifier: 'digest_mismatch' },
-      { name: 'event quota', request: () => { e.sqlite.query(`UPDATE member_tokens SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA - 1, t1.tokenId); return post({}); }, kind: 'ingest_refused', reason: 'token write quota exceeded', classifier: 'quota' },
+      { name: 'event quota', request: () => { e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA - 1, t1.tokenId); return post({}); }, kind: 'ingest_refused', reason: 'token write quota exceeded', classifier: 'quota' },
       { name: 'blob quota', request: () => blob({}, utf8('fresh-bytes'), 'c'.repeat(64)), kind: 'blob_refused', reason: 'token write quota exceeded', classifier: 'quota' },
     ];
     const observed: Record<string, unknown>[] = [];
@@ -768,7 +769,7 @@ describe('kind catalogue', () => {
       body: 'x',
     }), e.env);
 
-    e.sqlite.query(`UPDATE member_tokens SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, t.tokenId);
+    e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, t.tokenId);
     await worker.fetch(blobPost(t.token, await sha256HexOf(utf8('over-quota')), utf8('over-quota')), e.env);
     await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(n++), kind: 'session.start', createdAt: 4_000, payload: FIXTURES['session.start'].payload })), e.env);
 
@@ -793,11 +794,15 @@ describe('kind catalogue', () => {
         const table = byTable.get(search[1]) ?? null;
         if (table !== null && !scoped.has(table)) continue;
         checked += 1;
-        const equalities = search[2].split(' AND ').filter((c) => c.endsWith('=?')).length;
-        // A lookup is narrow when the tenant leads it, or when it matches every column of a unique index and so can
-        // reach one row at most.
+        const constraints = search[2].split(' AND ');
+        const equalities = constraints.filter((c) => c.endsWith('=?')).length;
+        // A lookup is narrow when the tenant leads it, when it matches every column of a unique index and so can
+        // reach one row at most, or when a single credential leads it — a credential's rows are bounded by that
+        // credential's own byte quota, which is a tighter bound than a project's.
         const seek = unique.get(search[1]) === equalities;
-        expect({ detail: step.detail, narrowed: table === null || equalities >= 2 || seek }).toEqual({ detail: step.detail, narrowed: true });
+        const byCredential = constraints[0] === 'token_id=?';
+        expect({ detail: step.detail, narrowed: table === null || equalities >= 2 || seek || byCredential })
+          .toEqual({ detail: step.detail, narrowed: true });
       }
     }
     // `statements` is pinned exact; a dropped statement is caught here. `checked` is a floor: the planner emits a
@@ -809,7 +814,7 @@ describe('kind catalogue', () => {
   it('leaves every typed table unchanged for a duplicate, a conflict, and a refused event, for every kind', async () => {
     const e = sqliteEnv();
     const t = await member(e);
-    const other = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_2' }, Date.now());
+    const other = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, Date.now());
     const png = await upload(e, t.token, utf8('png-bytes'), 'image/png');
     const segBytes = utf8('{"line":1}\n');
     const segKey = await upload(e, t.token, segBytes);
@@ -843,7 +848,7 @@ describe('kind catalogue', () => {
   it('never moves a transcript on a replay: the same event id, an older segment, and another machine all leave size and segment count alone (a stored event is read through its session\'s machine, so a foreign replay is refused, not answered duplicate)', async () => {
     const e = sqliteEnv();
     const t = await member(e);
-    const other = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_2' }, Date.now());
+    const other = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, Date.now());
     const tx = `tx_${'b'.repeat(32)}`;
     const a = utf8('{"a":1}\n');
     const b = utf8('{"b":2}\n');

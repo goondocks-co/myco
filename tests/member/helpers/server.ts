@@ -9,7 +9,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
+import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sqliteEnv, count } from '../../myco-server/helpers/fixtures.js';
 import type { BlobSource, BlobStager, MemberEnvelope } from '@myco/member/envelope.js';
 
@@ -40,7 +40,7 @@ export async function memberRig(opts: { now?: number; projectId?: string; machin
   const now = opts.now ?? Date.now();
   const projectId = opts.projectId ?? TEST_PROJECT_ID;
   const machineId = opts.machineId ?? TEST_MACHINE_ID;
-  const issued = await issueMemberToken(env.db, { projectId, machineId }, now);
+  const issued = await issueMemberToken(env.db, { memberId: `mem_${machineId}`, machineId }, now);
   // The edge supplies the source identity header; the member transport never sets it.
   const fetch = (input: string | URL | Request, init?: RequestInit) => {
     const req = new Request(input, init);
@@ -53,6 +53,9 @@ export async function memberRig(opts: { now?: number; projectId?: string; machin
     authorization: `Bearer ${issued.token}`,
     'cf-connecting-ip': '1.2.3.4',
     [PROTOCOL_HEADER]: String(SERVER_PROTOCOL),
+    // A credential is Deployment-wide, so the rig names the Project the way the
+    // member transport does: on every request.
+    [PROJECT_HEADER]: projectId,
     ...extra,
   });
   return {
@@ -76,7 +79,7 @@ export async function memberRig(opts: { now?: number; projectId?: string; machin
       return res.json() as Promise<Record<string, unknown>>;
     },
     rows: (table) => count(env.sqlite, table),
-    otherMachine: () => issueMemberToken(env.db, { projectId, machineId: 'machine_2' }, now),
+    otherMachine: () => issueMemberToken(env.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now),
   };
 }
 

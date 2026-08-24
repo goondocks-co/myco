@@ -77,9 +77,9 @@ describe('read layer', () => {
     //   read/**       the query core
     //   ingest/**     the write path
     //   db/**         schema and migration
-    //   auth/tokens.ts, auth/refresh.ts   the credential store
+    //   auth/tokens.ts, auth/refresh.ts, auth/enrollment.ts   the credential store
     //   pipeline.ts   one quota re-read on the ingest admission path
-    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^pipeline\.ts$/];
+    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^pipeline\.ts$/];
     const offenders: string[] = [];
     for (const file of tsFiles(SRC)) {
       const rel = file.slice(SRC.length);

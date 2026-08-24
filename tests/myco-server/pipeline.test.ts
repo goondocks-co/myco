@@ -3,7 +3,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { mintMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { MAX_BLOB_BYTES, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
+import { MAX_BLOB_BYTES, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { createIngestThrottle } from './helpers/throttle.js';
 import { authRow, noMemberRow } from './helpers/rows.js';
@@ -61,7 +61,7 @@ async function envFor(token: string, opts: EnvOpts = {}) {
 const good = envelope();
 
 const post = (token?: string, opts: { source?: string | null; body?: string; protocol?: string | null } = {}) => {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { [PROJECT_HEADER]: 'proj_1' };
   if (token) headers.authorization = `Bearer ${token}`;
   if (opts.source !== null) headers['cf-connecting-ip'] = opts.source ?? '1.2.3.4';
   if (opts.protocol !== null) headers[PROTOCOL_HEADER] = opts.protocol ?? String(SERVER_PROTOCOL);
@@ -82,7 +82,7 @@ describe('pipeline (via the deployed entry)', () => {
     const token = mintMemberToken();
     const env = await envFor(token, { sourceLimit: 1 });
     for (let i = 0; i < 3; i++) {
-      const res = await worker.fetch(new Request('https://s/nope', { method: 'POST', body: '{}', headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', ...PROTOCOL } }), env);
+      const res = await worker.fetch(new Request('https://s/nope', { method: 'POST', body: '{}', headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', ...PROTOCOL } }), env);
       expect(res.status).toBe(401);
     }
     expect((await worker.fetch(post(), env)).status).toBe(401);
@@ -150,7 +150,7 @@ describe('pipeline (via the deployed entry)', () => {
     const blobs = await worker.fetch(blobPost(token, 'b'.repeat(64), new Uint8Array([1])), await envFor(token, { tokenLimitThrows: true }));
     expect({ status: blobs.status, body: await blobs.json(), protocol: blobs.headers.get(PROTOCOL_HEADER) })
       .toEqual({ status: 503, body: { stored: false, code: 'unavailable', reason: 'unavailable' }, protocol: String(SERVER_PROTOCOL) });
-    const unmatched = await worker.fetch(new Request('https://s/nope', { method: 'POST', body: '{}', headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', ...PROTOCOL } }), await envFor(token, { tokenLimitThrows: true }));
+    const unmatched = await worker.fetch(new Request('https://s/nope', { method: 'POST', body: '{}', headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', ...PROTOCOL } }), await envFor(token, { tokenLimitThrows: true }));
     expect({ status: unmatched.status, body: await unmatched.json(), protocol: unmatched.headers.get(PROTOCOL_HEADER) }).toEqual({ status: 503, body: { error: 'unavailable' }, protocol: String(SERVER_PROTOCOL) });
   });
 
@@ -203,7 +203,7 @@ describe('pipeline (via the deployed entry)', () => {
   it('turns a post-auth body stream failure into a retryable 503 with a reason', async () => {
     const token = mintMemberToken();
     const body = new ReadableStream({ pull() { throw new Error('client went away'); } });
-    const req = new Request('https://s/events', { method: 'POST', body, headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', ...PROTOCOL }, duplex: 'half' } as any);
+    const req = new Request('https://s/events', { method: 'POST', body, headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', ...PROTOCOL }, duplex: 'half' } as any);
     const res = await worker.fetch(req, await envFor(token));
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
@@ -239,7 +239,7 @@ describe('pipeline (via the deployed entry)', () => {
       env.MYCO_DB = {
         ...db,
         prepare: (sql: string) => {
-          if (sql.includes('SELECT bytes_written FROM member_tokens')) return { bind: () => ({ first: async () => ({ bytes_written: bytesWritten }) }) };
+          if (sql.includes('SELECT bytes_written FROM member_credentials')) return { bind: () => ({ first: async () => ({ bytes_written: bytesWritten }) }) };
           return db.prepare(sql);
         },
         batch: async () => { throw new Error('D1_ERROR: SQLITE_CONSTRAINT_CHECK'); },
@@ -259,7 +259,7 @@ describe('pipeline (via the deployed entry)', () => {
     const token = mintMemberToken();
     const env = await envFor(token);
     for (const scheme of ['bearer', 'BEARER', 'Bearer']) {
-      const req = new Request('https://s/events', { method: 'POST', body: JSON.stringify(good), headers: { authorization: `${scheme} ${token}`, 'cf-connecting-ip': '1.2.3.4', ...PROTOCOL } });
+      const req = new Request('https://s/events', { method: 'POST', body: JSON.stringify(good), headers: { authorization: `${scheme} ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', ...PROTOCOL } });
       expect((await worker.fetch(req, env)).status).toBe(200);
     }
   });
@@ -323,15 +323,15 @@ describe('pipeline (via the deployed entry)', () => {
     const env = await envFor(token);
     const key = 'b'.repeat(64);
     const body = new ReadableStream({ pull(c) { c.enqueue(new Uint8Array([1])); c.close(); } });
-    const noLength = new Request(`https://s/blobs/${key}`, { method: 'POST', body, headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', 'content-type': 'text/plain', ...PROTOCOL }, duplex: 'half' } as any);
+    const noLength = new Request(`https://s/blobs/${key}`, { method: 'POST', body, headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', 'content-type': 'text/plain', ...PROTOCOL }, duplex: 'half' } as any);
     const res = await worker.fetch(noLength, env);
     expect(await res.json()).toEqual({ stored: false, code: 'content_length', reason: 'content-length required' });
     expect(res.headers.get(PROTOCOL_HEADER)).toBe(String(SERVER_PROTOCOL));
     expect({ used: noLength.bodyUsed, locked: noLength.body?.locked }).toEqual({ used: false, locked: false });
-    const big = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', 'content-type': 'text/plain', 'content-length': String(MAX_BLOB_BYTES + 1), ...PROTOCOL } });
+    const big = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', 'content-type': 'text/plain', 'content-length': String(MAX_BLOB_BYTES + 1), ...PROTOCOL } });
     expect(await (await worker.fetch(big, env)).json()).toEqual({ stored: false, code: 'blob_cap', reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
     for (const bad of ['-1', '1.5', 'x']) {
-      const req = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', 'content-type': 'text/plain', 'content-length': bad, ...PROTOCOL } });
+      const req = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', 'content-type': 'text/plain', 'content-length': bad, ...PROTOCOL } });
       expect(await (await worker.fetch(req, env)).json()).toEqual({ stored: false, code: 'content_length', reason: 'content-length required' });
     }
   });

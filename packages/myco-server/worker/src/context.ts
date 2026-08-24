@@ -1,3 +1,4 @@
+import type { RuntimeClaims } from './auth/tokens.js';
 import type { OwnerConfig } from './auth/owner/config.js';
 import type { OwnerSession } from './auth/owner/cookie.js';
 
@@ -23,11 +24,15 @@ export interface OwnerContext {
 /** Context for a json route: the pipeline has read the body. `machineId` is the token's; the pipeline refuses a token without one before any handler runs. The token's lifetime and lineage travel with it for the refresh route. */
 export interface RouteContext {
   projectId: string;
+  /** The member the presented credential belongs to. */
+  memberId: string;
   machineId: string;
   tokenId: string;
   expiresAt: number;
   lineageRoot: string;
   lineageStartedAt: number;
+  /** The runtime binding the presented credential carries. A refresh hands it to the successor unchanged; nothing admits or refuses on it. */
+  runtime: RuntimeClaims;
   body: string;
   bodyBytes: number;
   now: number;

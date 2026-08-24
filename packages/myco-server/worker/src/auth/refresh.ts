@@ -19,10 +19,10 @@ function parseRefreshBody(body: string): Refusal | null {
 /** Answers in the route's shape: a refusal is 200 `{refreshed:false, code, reason[, refreshAfter]}` with one `refresh_refused` event carrying the classifier only; a success is 200 `{refreshed:true, token, tokenId, expiresAt, refreshAfter}` with one `token_refreshed` event naming the successor and its predecessor by id. */
 function answer(ctx: RouteContext, result: RefreshResult): Response {
   if (result.refreshed) {
-    emit({ kind: 'token_refreshed', projectId: ctx.projectId, tokenId: result.tokenId, predecessorId: ctx.tokenId });
+    emit({ kind: 'token_refreshed', memberId: ctx.memberId, tokenId: result.tokenId, predecessorId: ctx.tokenId });
   } else {
     const classifier = result.code;
-    emit({ kind: 'refresh_refused', projectId: ctx.projectId, tokenId: ctx.tokenId, reason: classifier });
+    emit({ kind: 'refresh_refused', memberId: ctx.memberId, tokenId: ctx.tokenId, reason: classifier });
   }
   return Response.json(result);
 }

@@ -9,7 +9,7 @@
  * `MYCO_SERVER_URL` + `MYCO_MEMBER_TOKEN` + `MYCO_PROJECT` in the environment
  * of the process it launches.
  */
-import { PROJECT_ID_PATTERN } from '../member/constants.js';
+import { isProjectId } from '../member/constants.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
 
@@ -48,7 +48,7 @@ export function run(args: readonly string[], deps: SettingsCliDeps = {}): void {
     process.exitCode = 2;
     return;
   }
-  if (!PROJECT_ID_PATTERN.test(project)) {
+  if (!isProjectId(project)) {
     err(`myco settings: ${project} is not a project id`);
     process.exitCode = 2;
     return;

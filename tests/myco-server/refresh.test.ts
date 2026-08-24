@@ -20,11 +20,11 @@ async function rig(opts: Parameters<typeof sqliteEnv>[0] = {}) {
   const e = sqliteEnv(opts);
   const clock = { now: T0 };
   const server = createServer({ now: () => clock.now, sourceOf: cloudflareSourceOf });
-  const root = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_1' }, T0);
+  const root = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, T0);
   const fetch = (req: Request) => server.handleRequest(req, e.serverEnv);
   const refresh = (token: string, body = '{}') => fetch(memberPost(token, body, '/tokens/refresh'));
   const post = (token: string, n: number) => fetch(memberPost(token, envelope({ eventId: uuid(n), payload: { promptId: uuid(1_000 + n), text: `p${n}`, origin: 'user' } })));
-  const row = (tokenId: string) => e.sqlite.query(`SELECT id, predecessor_id, lineage_root, lineage_started_at, first_used_at, expires_at, revoked_at, bytes_written FROM member_tokens WHERE id = ?`).get(tokenId) as Record<string, unknown>;
+  const row = (tokenId: string) => e.sqlite.query(`SELECT id, predecessor_id, lineage_root, lineage_started_at, first_used_at, expires_at, revoked_at, bytes_written FROM member_credentials WHERE id = ?`).get(tokenId) as Record<string, unknown>;
   const lines: string[] = [];
   const capture = async <T,>(f: () => Promise<T>): Promise<T> => {
     const orig = console.log;
@@ -52,7 +52,7 @@ describe('token refresh', () => {
       const res = await r.refresh(r.root.token);
       expect({ at, status: res.status, body: await json(res) }).toEqual({ at, status: 200, body: { refreshed: false, code: 'refresh_too_early', reason: 'refresh window not yet open', refreshAfter: WINDOW_OPENS } });
     }
-    expect(count(r.e.sqlite, 'member_tokens')).toBe(1);
+    expect(count(r.e.sqlite, 'member_credentials')).toBe(1);
     expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: null, first_used_at: null });
   });
 
@@ -70,7 +70,7 @@ describe('token refresh', () => {
       expires_at: WINDOW_OPENS + MEMBER_TOKEN_TTL_MS, revoked_at: null, bytes_written: 0,
     });
     expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: null, lineage_root: r.root.tokenId, predecessor_id: null });
-    expect(r.emitted('token_refreshed')).toEqual([{ kind: 'token_refreshed', projectId: 'proj_1', tokenId: body.tokenId, predecessorId: r.root.tokenId }]);
+    expect(r.emitted('token_refreshed')).toEqual([{ kind: 'token_refreshed', memberId: 'mem_machine_1', tokenId: body.tokenId, predecessorId: r.root.tokenId }]);
     expect(JSON.stringify(r.emitted('token_refreshed'))).not.toContain(body.token as string);
     expect((await json(await r.post(r.root.token, 1))).persisted).toBe(true);
   });
@@ -83,18 +83,18 @@ describe('token refresh', () => {
       r.clock.now += 1;
       issued.push((await successorOf(r, r.root.token, r.root.expiresAt)).tokenId);
     }
-    const live = r.e.sqlite.query(`SELECT id FROM member_tokens WHERE predecessor_id = ? AND revoked_at IS NULL`).all(r.root.tokenId) as { id: string }[];
+    const live = r.e.sqlite.query(`SELECT id FROM member_credentials WHERE predecessor_id = ? AND revoked_at IS NULL`).all(r.root.tokenId) as { id: string }[];
     expect(live).toEqual([{ id: issued[3] }]);
-    expect(r.e.sqlite.query(`SELECT id, revoked_at FROM member_tokens WHERE predecessor_id = ? ORDER BY revoked_at`).all(r.root.tokenId))
+    expect(r.e.sqlite.query(`SELECT id, revoked_at FROM member_credentials WHERE predecessor_id = ? ORDER BY revoked_at`).all(r.root.tokenId))
       .toEqual([{ id: issued[3], revoked_at: null }, { id: issued[0], revoked_at: WINDOW_OPENS + 2 }, { id: issued[1], revoked_at: WINDOW_OPENS + 3 }, { id: issued[2], revoked_at: WINDOW_OPENS + 4 }]);
-    expect(count(r.e.sqlite, 'member_tokens')).toBe(5);
+    expect(count(r.e.sqlite, 'member_credentials')).toBe(5);
     for (const stale of issued.slice(0, 3)) expect((await r.fetch(memberPost(stale, '{}', '/tokens/refresh'))).status).toBe(401);
   });
 
   it('clamps every successor to the lineage ceiling and answers lineage_expired to a token already expiring at it, without refreshAfter', async () => {
     const r = await rig();
     const startedAt = T0 - MEMBER_TOKEN_MAX_LINEAGE_MS + MEMBER_TOKEN_TTL_MS + 1_000;
-    r.e.sqlite.query(`UPDATE member_tokens SET lineage_started_at = ? WHERE id = ?`).run(startedAt, r.root.tokenId);
+    r.e.sqlite.query(`UPDATE member_credentials SET lineage_started_at = ? WHERE id = ?`).run(startedAt, r.root.tokenId);
     const ceiling = startedAt + MEMBER_TOKEN_MAX_LINEAGE_MS;
     expect(ceiling).toBeGreaterThan(r.root.expiresAt);
     r.clock.now = WINDOW_OPENS;
@@ -104,8 +104,8 @@ describe('token refresh', () => {
     r.clock.now = ceiling - MEMBER_TOKEN_REFRESH_WINDOW_MS;
     const res = await r.capture(() => r.refresh(clamped.token as string));
     expect({ status: res.status, body: await json(res) }).toEqual({ status: 200, body: { refreshed: false, code: 'lineage_expired', reason: 'token lineage expired' } });
-    expect(r.emitted('refresh_refused')).toEqual([{ kind: 'refresh_refused', projectId: 'proj_1', tokenId: clamped.tokenId, reason: 'lineage_expired' }]);
-    expect(count(r.e.sqlite, 'member_tokens')).toBe(2);
+    expect(r.emitted('refresh_refused')).toEqual([{ kind: 'refresh_refused', memberId: 'mem_machine_1', tokenId: clamped.tokenId, reason: 'lineage_expired' }]);
+    expect(count(r.e.sqlite, 'member_credentials')).toBe(2);
     r.clock.now = ceiling - 1;
     expect((await json(await r.post(clamped.token as string, 1))).persisted).toBe(true);
     r.clock.now = ceiling;
@@ -132,7 +132,7 @@ describe('token refresh', () => {
     const own = bytesWritten(r.e.sqlite, successor.tokenId) - chargedAfter - 500;
     expect(own).toBeGreaterThan(0);
     expect(successorRow).toMatchObject({ first_used_at: firstUse, revoked_at: null });
-    expect(r.emitted('successor_activated')).toEqual([{ kind: 'successor_activated', projectId: 'proj_1', tokenId: successor.tokenId, predecessorId: r.root.tokenId }]);
+    expect(r.emitted('successor_activated')).toEqual([{ kind: 'successor_activated', memberId: 'mem_machine_1', tokenId: successor.tokenId, predecessorId: r.root.tokenId }]);
     expect((await r.post(r.root.token, 4)).status).toBe(401);
     r.clock.now += 10;
     expect((await json(await r.capture(() => r.post(successor.token, 5)))).persisted).toBe(true);
@@ -168,7 +168,7 @@ describe('token refresh', () => {
     const r = await rig();
     expect((await json(await r.post(r.root.token, 1))).persisted).toBe(true);
     const successor = await successorOf(r, r.root.token, r.root.expiresAt);
-    r.e.sqlite.query(`DELETE FROM member_tokens WHERE id = ?`).run(r.root.tokenId);
+    r.e.sqlite.query(`DELETE FROM member_credentials WHERE id = ?`).run(r.root.tokenId);
     r.clock.now += 1;
     expect((await json(await r.post(successor.token, 2))).persisted).toBe(true);
     const own = bytesWritten(r.e.sqlite, successor.tokenId);
@@ -213,8 +213,8 @@ describe('token refresh', () => {
     const successor = await successorOf(r, r.root.token, r.root.expiresAt);
     const activation = r.clock.now + 1;
     hook = (sqlite) => {
-      sqlite.query(`UPDATE member_tokens SET bytes_written = (SELECT bytes_written FROM member_tokens WHERE id = ?), first_used_at = ? WHERE id = ?`).run(r.root.tokenId, activation, successor.tokenId);
-      sqlite.query(`UPDATE member_tokens SET revoked_at = ? WHERE id = ?`).run(activation, r.root.tokenId);
+      sqlite.query(`UPDATE member_credentials SET bytes_written = (SELECT bytes_written FROM member_credentials WHERE id = ?), first_used_at = ? WHERE id = ?`).run(r.root.tokenId, activation, successor.tokenId);
+      sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE id = ?`).run(activation, r.root.tokenId);
     };
     expect(await json(await r.post(r.root.token, 1))).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(hook).toBeNull();
@@ -225,20 +225,20 @@ describe('token refresh', () => {
 
   it('mints nothing when a lineage revoke lands between a refresh\'s authentication and its insert: 503 in the refreshed shape, no live row under the revoked root, and the presented token answers 401 next', async () => {
     let hook: ((sqlite: Database) => void) | null = null;
-    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('INSERT INTO member_tokens')) { const h = hook; hook = null; h(sqlite); } } });
+    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('INSERT INTO member_credentials')) { const h = hook; hook = null; h(sqlite); } } });
     const s1 = await successorOf(r, r.root.token, r.root.expiresAt);
     r.clock.now += 1;
     const revokedAt = r.clock.now;
     hook = (sqlite) => {
-      sqlite.query(`UPDATE member_tokens SET revoked_at = ? WHERE lineage_root = (SELECT lineage_root FROM member_tokens WHERE id = ?) AND revoked_at IS NULL`).run(revokedAt, r.root.tokenId);
+      sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL`).run(revokedAt, r.root.tokenId);
     };
     const res = await r.capture(() => r.refresh(r.root.token));
     expect(hook).toBeNull();
     expect({ status: res.status, body: await json(res) }).toEqual({ status: 503, body: { refreshed: false, code: 'unavailable', reason: 'unavailable' } });
-    expect(r.emitted('refresh_error')).toEqual([{ kind: 'refresh_error', projectId: 'proj_1', tokenId: r.root.tokenId, error_class: 'revoked' }]);
+    expect(r.emitted('refresh_error')).toEqual([{ kind: 'refresh_error', memberId: 'mem_machine_1', tokenId: r.root.tokenId, error_class: 'revoked' }]);
     expect(r.emitted('token_refreshed')).toEqual([]);
-    expect(count(r.e.sqlite, 'member_tokens')).toBe(2);
-    expect(r.e.sqlite.query(`SELECT id FROM member_tokens WHERE lineage_root = ? AND revoked_at IS NULL`).all(r.root.tokenId)).toEqual([]);
+    expect(count(r.e.sqlite, 'member_credentials')).toBe(2);
+    expect(r.e.sqlite.query(`SELECT id FROM member_credentials WHERE lineage_root = ? AND revoked_at IS NULL`).all(r.root.tokenId)).toEqual([]);
     expect(r.row(s1.tokenId)).toMatchObject({ revoked_at: revokedAt });
     expect((await r.refresh(r.root.token)).status).toBe(401);
     expect((await r.post(r.root.token, 1)).status).toBe(401);
@@ -246,15 +246,15 @@ describe('token refresh', () => {
 
   it('changes nothing when a single-token revoke of the presented token lands between a refresh\'s authentication and its batch: 503, its banked unused successor stays live and keeps working, and the presented token answers 401 next', async () => {
     let hook: ((sqlite: Database) => void) | null = null;
-    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('UPDATE member_tokens SET revoked_at = ? WHERE predecessor_id = ?')) { const h = hook; hook = null; h(sqlite); } } });
+    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('UPDATE member_credentials SET revoked_at = ? WHERE predecessor_id = ?')) { const h = hook; hook = null; h(sqlite); } } });
     const s1 = await successorOf(r, r.root.token, r.root.expiresAt);
     r.clock.now += 1;
     const revokedAt = r.clock.now;
-    hook = (sqlite) => { sqlite.query(`UPDATE member_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`).run(revokedAt, r.root.tokenId); };
+    hook = (sqlite) => { sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`).run(revokedAt, r.root.tokenId); };
     const res = await r.refresh(r.root.token);
     expect(hook).toBeNull();
     expect({ status: res.status, body: await json(res) }).toEqual({ status: 503, body: { refreshed: false, code: 'unavailable', reason: 'unavailable' } });
-    expect(count(r.e.sqlite, 'member_tokens')).toBe(2);
+    expect(count(r.e.sqlite, 'member_credentials')).toBe(2);
     expect(r.row(s1.tokenId)).toMatchObject({ revoked_at: null, first_used_at: null });
     expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: revokedAt });
     expect((await r.post(r.root.token, 1)).status).toBe(401);
@@ -269,8 +269,8 @@ describe('token refresh', () => {
     const successor = await successorOf(r, r.root.token, r.root.expiresAt);
     const activation = r.clock.now + 1;
     hook = (sqlite) => {
-      sqlite.query(`UPDATE member_tokens SET bytes_written = (SELECT bytes_written FROM member_tokens WHERE id = ?), first_used_at = ? WHERE id = ?`).run(r.root.tokenId, activation, successor.tokenId);
-      sqlite.query(`UPDATE member_tokens SET revoked_at = ? WHERE id = ?`).run(activation, r.root.tokenId);
+      sqlite.query(`UPDATE member_credentials SET bytes_written = (SELECT bytes_written FROM member_credentials WHERE id = ?), first_used_at = ? WHERE id = ?`).run(r.root.tokenId, activation, successor.tokenId);
+      sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE id = ?`).run(activation, r.root.tokenId);
     };
     const payload = new Uint8Array(64).fill(3);
     expect(await json(await r.fetch(blobPost(r.root.token, await sha256HexOf(payload), payload)))).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
@@ -283,10 +283,10 @@ describe('token refresh', () => {
 
   it('never reads a constraint failure as a quota refusal on the exempt refresh route: 503 unavailable, while /events at quota answers quota', async () => {
     const r = await rig({ staleBytesWritten: 0 });
-    r.e.sqlite.query(`UPDATE member_tokens SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, r.root.tokenId);
+    r.e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, r.root.tokenId);
     r.e.env.MYCO_DB = {
       ...r.e.db,
-      prepare: (sql: string) => (sql.includes('SELECT bytes_written FROM member_tokens') ? { bind: () => ({ first: async () => ({ bytes_written: MEMBER_TOKEN_BYTE_QUOTA }) }) } : r.e.db.prepare(sql)),
+      prepare: (sql: string) => (sql.includes('SELECT bytes_written FROM member_credentials') ? { bind: () => ({ first: async () => ({ bytes_written: MEMBER_TOKEN_BYTE_QUOTA }) }) } : r.e.db.prepare(sql)),
       batch: async () => { throw new Error('UNIQUE constraint failed: member_tokens.predecessor_id'); },
     };
     r.clock.now = WINDOW_OPENS;
@@ -301,12 +301,12 @@ describe('token refresh', () => {
     const s1 = await successorOf(r, r.root.token, r.root.expiresAt);
     const s2 = await successorOf(r, s1.token, s1.expiresAt);
     const s3 = await successorOf(r, s2.token, s2.expiresAt);
-    const other = await issueMemberToken(r.e.db, { projectId: 'proj_1', machineId: 'machine_1' }, r.clock.now);
+    const other = await issueMemberToken(r.e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, r.clock.now);
     for (const [pred, succ] of [[r.root, s1], [s1, s2], [s2, s3]] as const) expect(r.row(pred.tokenId).revoked_at).toBe(r.row(succ.tokenId).first_used_at);
     expect(r.row(s3.tokenId)).toMatchObject({ revoked_at: null, first_used_at: null });
-    expect(r.e.sqlite.query(`SELECT id FROM member_tokens WHERE lineage_root = ? AND revoked_at IS NULL ORDER BY expires_at`).all(r.root.tokenId)).toEqual([{ id: s2.tokenId }, { id: s3.tokenId }]);
+    expect(r.e.sqlite.query(`SELECT id FROM member_credentials WHERE lineage_root = ? AND revoked_at IS NULL ORDER BY expires_at`).all(r.root.tokenId)).toEqual([{ id: s2.tokenId }, { id: s3.tokenId }]);
     expect(await revokeMemberLineage(r.e.db, s2.tokenId, r.clock.now)).toEqual({ revoked: 2 });
-    expect(r.e.sqlite.query(`SELECT id FROM member_tokens WHERE lineage_root = ? AND revoked_at IS NULL`).all(r.root.tokenId)).toEqual([]);
+    expect(r.e.sqlite.query(`SELECT id FROM member_credentials WHERE lineage_root = ? AND revoked_at IS NULL`).all(r.root.tokenId)).toEqual([]);
     for (const t of [r.root, s1, s2, s3]) expect((await r.post(t.token, 9)).status).toBe(401);
     expect((await json(await r.post(other.token, 9))).persisted).toBe(true);
     expect(await revokeMemberLineage(r.e.db, 'mt_nobody', r.clock.now)).toEqual({ revoked: 0 });
@@ -318,18 +318,18 @@ describe('token refresh', () => {
 
   it('refuses an expired or a revoked token on the refresh route like any other: 401 without a row written', async () => {
     const r = await rig();
-    const revoked = await issueMemberToken(r.e.db, { projectId: 'proj_1', machineId: 'machine_1' }, T0);
+    const revoked = await issueMemberToken(r.e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, T0);
     await revokeMemberToken(r.e.db, revoked.tokenId, T0 + 1);
     r.clock.now = WINDOW_OPENS;
     expect((await r.refresh(revoked.token)).status).toBe(401);
     r.clock.now = r.root.expiresAt;
     expect((await r.refresh(r.root.token)).status).toBe(401);
-    expect(count(r.e.sqlite, 'member_tokens')).toBe(2);
+    expect(count(r.e.sqlite, 'member_credentials')).toBe(2);
   });
 
   it('lets a token at its write quota rotate: the refresh route is exempt from the byte pre-check while /events refuses', async () => {
     const r = await rig();
-    r.e.sqlite.query(`UPDATE member_tokens SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, r.root.tokenId);
+    r.e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, r.root.tokenId);
     r.clock.now = WINDOW_OPENS;
     expect(await json(await r.post(r.root.token, 1))).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
     const successor = await json(await r.refresh(r.root.token));
@@ -341,13 +341,13 @@ describe('token refresh', () => {
 
   it('refuses in the refreshed shape: a token without a machine identity, a non-JSON body, a non-object body, and a body with a field', async () => {
     const r = await rig();
-    const anonymous = await issueMemberToken(r.e.db, { projectId: 'proj_1', machineId: null }, T0);
+    const anonymous = await issueMemberToken(r.e.db, { memberId: 'mem_anon', machineId: null }, T0);
     r.clock.now = WINDOW_OPENS;
     expect(await json(await r.refresh(anonymous.token))).toEqual({ refreshed: false, code: 'no_machine_identity', reason: 'token has no machine identity' });
     expect(await json(await r.refresh(r.root.token, 'nope'))).toEqual({ refreshed: false, code: 'parse', reason: 'body must be JSON' });
     expect(await json(await r.refresh(r.root.token, '[]'))).toEqual({ refreshed: false, code: 'refused', reason: 'body must be an object' });
     expect(await json(await r.refresh(r.root.token, '{"token":"x"}'))).toEqual({ refreshed: false, code: 'unknown_field', reason: 'unknown field token' });
-    expect(count(r.e.sqlite, 'member_tokens')).toBe(2);
+    expect(count(r.e.sqlite, 'member_credentials')).toBe(2);
   });
 
   it('answers a storage failure on the refresh route with 503 in the refreshed shape and retry-after', async () => {
@@ -361,12 +361,12 @@ describe('token refresh', () => {
   it('serves the route through the deployed entry on the real clock', async () => {
     const e = sqliteEnv();
     const issuedAt = Date.now() - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2);
-    const t = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_1' }, issuedAt);
+    const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
     const res = await worker.fetch(new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(t.token), body: '{}' }), e.env);
     const body = await json(res);
     expect(body).toMatchObject({ refreshed: true, tokenId: expect.stringMatching(/^mt_/) });
     expect(body.expiresAt as number).toBeGreaterThan(t.expiresAt);
-    const early = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_1' }, Date.now());
+    const early = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     expect(await json(await worker.fetch(new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(early.token), body: '{}' }), e.env)))
       .toEqual({ refreshed: false, code: 'refresh_too_early', reason: 'refresh window not yet open', refreshAfter: early.expiresAt - MEMBER_TOKEN_REFRESH_WINDOW_MS });
   });
