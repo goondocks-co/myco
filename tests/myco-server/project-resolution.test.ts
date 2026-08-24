@@ -14,10 +14,12 @@ import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 const json = async (res: Response) => (await res.json()) as Record<string, unknown>;
 
-const post = (token: string, project: string, n: number) => new Request('https://s/events', {
+// A session belongs to one machine, so a second machine writing into a Project uses
+// a session of its own; sharing one would be an identity mismatch, correctly.
+const post = (token: string, project: string, n: number, sessionId = 'sess_1') => new Request('https://s/events', {
   method: 'POST',
   headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: project, [PROTOCOL_HEADER]: String(SERVER_PROTOCOL) },
-  body: JSON.stringify(envelope({ eventId: uuid(n), payload: { promptId: uuid(500 + n), text: 'hi', origin: 'user' } })),
+  body: JSON.stringify(envelope({ eventId: uuid(n), sessionId, payload: { promptId: uuid(500 + n), text: 'hi', origin: 'user' } })),
 });
 
 const rig = async () => {
@@ -105,5 +107,27 @@ describe('project resolution', () => {
     const same = await Promise.all([0, 1, 2, 3, 4].map(() => resolveProject(e2.e.db, 'shared', e2.now)));
     expect(same.every((o) => o.resolved)).toBe(true);
     expect((e2.e.sqlite.query(`SELECT COUNT(*) c FROM projects WHERE project_id = 'shared'`).get() as any).c).toBe(1);
+  });
+});
+
+describe('attribution', () => {
+  it('resolves a member for every row a member wrote, through the credential that wrote it', async () => {
+    // `events.token_id` is the durable attribution key and credentials are never
+    // deleted, so the member behind any row is a join rather than a guess. Revoking a
+    // credential must not break that: revocation ends what a credential can do, not
+    // the record of what it did.
+    const r = await rig();
+    const second = await issueMemberToken(r.e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, r.now);
+    expect((await json(await worker.fetch(post(r.token, 'proj_1', 20), r.e.env))).persisted).toBe(true);
+    expect((await json(await worker.fetch(post(second.token, 'proj_1', 21, 'sess_2'), r.e.env))).persisted).toBe(true);
+    r.e.sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE id = ?`).run(r.now, second.tokenId);
+
+    const rows = r.e.sqlite.query(`
+      SELECT e.event_id, c.member_id
+        FROM events e LEFT JOIN member_credentials c ON c.id = e.token_id
+       ORDER BY e.event_id`).all() as Array<{ event_id: string; member_id: string | null }>;
+    expect(rows).toHaveLength(2);
+    expect(rows.every((x) => x.member_id !== null)).toBe(true);
+    expect(rows.map((x) => x.member_id).sort()).toEqual(['mem_machine_1', 'mem_machine_2']);
   });
 });
