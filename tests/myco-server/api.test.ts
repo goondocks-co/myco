@@ -148,6 +148,30 @@ describe('tokens', () => {
     expect(await again.json()).toEqual({ revoked: false, revokedBy: PRINCIPAL.sub });
   });
 
+  it('denial of enrollment is attributable, not prevented: one member can revoke another\'s credential, and the record names who did', async () => {
+    // Flat membership puts revocation in reach of every member, so the threat here is
+    // denial of service rather than disclosure — a member ending somebody else's
+    // credential. That is accepted (D5) on the condition it can always be attributed:
+    // a destroy path that does not record its actor is the shape of Vault
+    // CVE-2023-24999, where an endpoint neither checked nor recorded who called it.
+    const e = sqliteEnv();
+    const theirs = await worker.fetch(await asOwnerPost('/api/projects/proj_1/tokens', { machineId: 'machine_2', memberId: 'mem_them' }), { ...e.env, ...OWNER_ENV });
+    const victim = await theirs.json() as { id: string; token: string };
+
+    const revoked = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${victim.id}/revoke`), { ...e.env, ...OWNER_ENV });
+    expect(await revoked.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.sub });
+
+    // The victim is denied — and the row says who denied them, and whose credential it was.
+    expect(e.sqlite.query(`SELECT member_id, revoked_by FROM member_credentials WHERE id = ?`).get(victim.id))
+      .toEqual({ member_id: 'mem_them', revoked_by: PRINCIPAL.sub });
+    const after = await worker.fetch(new Request('https://s/events', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${victim.token}`, 'cf-connecting-ip': '1.2.3.4', 'x-myco-project': 'proj_1', 'x-myco-protocol': '1' },
+      body: '{}',
+    }), e.env);
+    expect(after.status).toBe(401);
+  });
+
   it('refuses a mint with no machine identity', async () => {
     const e = sqliteEnv();
     const res = await worker.fetch(await asOwnerPost('/api/projects/proj_1/tokens', {}), { ...e.env, ...OWNER_ENV });

@@ -5,6 +5,7 @@ import { HSTS_MAX_AGE_SECONDS, LINEAGE_REPLAY_GRACE_MS, MEMBER_TOKEN_BYTE_QUOTA,
 import { sha256Hex } from './hash.js';
 import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
 import { QUOTA_REASON } from './ingest/events.js';
+import { resolveProject } from './ingest/projects.js';
 import { classify, emit, SchemaMismatchError, UNAVAILABLE, type Classifier } from './telemetry.js';
 import { ownerConfig } from './auth/owner/config.js';
 import { readCookie, verifySession } from './auth/owner/cookie.js';
@@ -86,6 +87,7 @@ const unsupportedProtocol = () =>
   Response.json({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL }, { status: 409 });
 export const NO_MACHINE_IDENTITY = 'token has no machine identity';
 export const NO_PROJECT = 'project header required';
+export const PROJECT_LIMIT = 'deployment is at its project limit';
 const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
 /**
@@ -262,13 +264,31 @@ export function createServer(deps: ServerDeps) {
     const projectId = requestedProject(request);
     if (projectId === null) return refuse(auth, shapeOf(route), NO_PROJECT, 'no_project');
 
+    /**
+     * Member Access spans the Deployment, so a Project the server has not seen is
+     * resolved into existence rather than refused. The bound is the Deployment's, not
+     * this member's: a credential naming fresh Projects fills a table its byte quota
+     * does not cover.
+     *
+     * This runs last among the checks, immediately before the handler. It is the first
+     * thing on this path that can WRITE, and every refusal above it is one the caller
+     * can never retry into success — running it earlier lets a storage fault during
+     * resolution answer a terminal refusal as a retryable 503, and spends a Project
+     * seat on a request that is never going to be admitted.
+     */
+    const resolved = async (): Promise<Response | null> => {
+      if ((await resolveProject(env.db, projectId, now)).resolved) return null;
+      emit({ kind: 'project_limit_reached', memberId: auth.memberId, tokenId: auth.tokenId });
+      return refuse(auth, shapeOf(route), PROJECT_LIMIT, 'project_limit');
+    };
+
     if (route.bodyMode === 'stream') {
       const declared = request.headers.get('content-length');
       if (declared === null || !PROTOCOL_VALUE.test(declared)) return refuse(auth, shapeOf(route), 'content-length required', 'content_length');
       const contentLength = Number(declared);
       if (contentLength > route.maxBodyBytes) return refuse(auth, shapeOf(route), `blob exceeds ${route.maxBodyBytes} bytes`, 'blob_cap');
       try {
-        return await route.handler(env, request, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, now, clock: deps.now, contentLength, params });
+        return await resolved() ?? await route.handler(env, request, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, now, clock: deps.now, contentLength, params });
       } catch (err) {
         return failed(env, auth, route, err, contentLength);
       }
@@ -280,6 +300,8 @@ export function createServer(deps: ServerDeps) {
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
       bodyBytes = body.bytes;
       if (route.quotaPrecheck !== false && auth.bytesWritten + body.bytes > MEMBER_TOKEN_BYTE_QUOTA) return refuse(auth, shapeOf(route), QUOTA_REASON, 'quota');
+      const limit = await resolved();
+      if (limit !== null) return limit;
       return await route.handler(env, {
         projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,

@@ -4,6 +4,27 @@ export const MIN_COMPAT_MEMBER_PROTOCOL = 1;
 export const PROTOCOL_HEADER = 'x-myco-protocol';
 /** The Project a member request acts on. A credential is Deployment-wide, so the Project travels per request. It rides a header rather than the envelope: an envelope field is a protocol bump, and a member whose spool holds records of the older protocol stops draining them entirely. */
 export const PROJECT_HEADER = 'x-myco-project';
+/**
+ * The bytes one credential may write, across the whole Deployment: 1 GiB.
+ *
+ * The ceiling is per CREDENTIAL, and a credential spans the Deployment: a machine
+ * active in three Projects holds one credential and 1 GiB in total, not one per
+ * Project. The reservation half of the count is scoped the same way (`heldBytes`
+ * keys on the credential alone) — a reservation summed per Project against a
+ * charge counted Deployment-wide would understate what a credential holds, and
+ * `withinQuota` adds the two together.
+ */
+/**
+ * The most Projects one Deployment holds.
+ *
+ * A member resolves Projects by naming them, so this is the only bound on rows in
+ * `projects`: the byte quota is per credential and counts bytes, not rows, and a
+ * credential cycling the Project header through fresh names stays inside it while
+ * filling the table. Set well above what any real Deployment reaches, so it is a
+ * backstop against a runaway or hostile runtime rather than a working limit.
+ */
+export const MAX_PROJECTS = 1_000;
+
 export const MEMBER_TOKEN_BYTE_QUOTA = 1_073_741_824;
 export const MAX_BLOB_BYTES = 26_214_400;
 /** How long an in-flight blob reservation counts against a token's quota. A request that dies between reserving and recording its row leaves a row behind; it stops counting when it expires, so an abandoned reservation heals itself. */

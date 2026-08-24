@@ -28,7 +28,7 @@ export const MEMBER_CODES = [
   'blob_absent', 'no_project', 'offset_gap', 'offset_overlap', 'identity_mismatch', 'no_machine_identity', 'blob_length_mismatch',
   'unknown_kind', 'unknown_field', 'id_grammar', 'clock_skew', 'event_id_conflict', 'projection_conflict',
   'refresh_too_early', 'lineage_expired',
-  'enrollment_unknown', 'enrollment_used', 'enrollment_expired', 'enrollment_revoked',
+  'enrollment_unknown', 'enrollment_used', 'enrollment_expired', 'enrollment_revoked', 'project_limit',
   'unavailable',
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];
