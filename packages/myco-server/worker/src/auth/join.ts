@@ -46,8 +46,13 @@ const refuse = (code: Classifier, reason: string): Response =>
  * admits or refuses anything on their basis.
  *
  * The spend runs ahead of the credential and is a single conditional update, so
- * two runtimes racing one key produce one credential and one `enrollment_used` —
- * never two credentials, and never a spent key with nothing issued against it.
+ * two runtimes racing one key produce one credential and one `enrollment_used`.
+ * Never two credentials.
+ *
+ * The spend, the member, the identity claim and the credential are four separate
+ * statements, NOT one transaction: a fault between them leaves the key spent with
+ * no credential issued, and the spend has no inverse, so that invitation is gone
+ * and the joiner needs a freshly minted one. Making the sequence atomic is #954.
  */
 export async function handleJoin(env: ServerEnv, request: Request, now: number): Promise<Response> {
   let body: JoinBody;
