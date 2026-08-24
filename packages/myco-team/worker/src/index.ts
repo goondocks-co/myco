@@ -227,8 +227,6 @@ let schemaInitialized = false;
  * Module-scope memo of last `nodes.last_seen` write per machine. Lets warm
  * Worker isolates skip the D1 UPDATE on every flush request; cold starts
  * write once and remember. The interval is intentionally identical to the
- * collective heartbeat cadence so observed last_seen lag is at most one
- * heartbeat window.
  */
 const lastSeenWritten = new Map<string, number>();
 const NODE_LAST_SEEN_UPDATE_INTERVAL_SECONDS = 5 * 60;
@@ -236,14 +234,8 @@ const NODE_LAST_SEEN_UPDATE_INTERVAL_SECONDS = 5 * 60;
 const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
 const DEFAULT_TOP_K = 10;
 const MAX_TOP_K = 50;
-const COLLECTIVE_WORKER_TOKEN_KV = 'collective_worker_token';
-const LEGACY_COLLECTIVE_API_KEY_KV = 'collective_api_key';
-const COLLECTIVE_SETTINGS_SYNC_INTERVAL_SECONDS = 5 * 60;
-const COLLECTIVE_HEARTBEAT_INTERVAL_SECONDS = 5 * 60;
-const COLLECTIVE_STALE_AFTER_SECONDS = COLLECTIVE_HEARTBEAT_INTERVAL_SECONDS * 3;
 const DEFAULT_TEAM_PACKAGE_VERSION = '0.1.0';
-const TEAM_COLLECTIVE_CAPABILITIES = ['search', 'digest', 'collective_proxy'] as const;
-const TEAM_COLLECTIVE_QUERY_TOOLS = new Set(['collective_search', 'collective_projects', 'collective_project', 'collective_settings']);
+const TEAM_CAPABILITIES = ['search', 'digest'] as const;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -299,27 +291,6 @@ async function writeTeamConfig(env: Env, entries: Record<string, string>): Promi
   }
 }
 
-function parseCollectiveSettings(config: Record<string, string>): Record<string, unknown> {
-  const raw = config.collective_settings_cache;
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}
-
-function parseCapabilities(config: Record<string, string>): string[] {
-  const raw = config.collective_capabilities_cache;
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
 function parseSchemaVersion(env: Env): number | null {
   const rawValue = env.MYCO_SCHEMA_VERSION?.trim();
   if (!rawValue) return null;
@@ -327,116 +298,14 @@ function parseSchemaVersion(env: Env): number | null {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
-function teamCollectiveMetadata(env: Env): { capabilities: string[]; package_version: string; schema_version: number | null } {
+/** What this worker reports about itself on the health surface. */
+function teamMetadata(env: Env): { capabilities: string[]; package_version: string; schema_version: number | null } {
   return {
-    capabilities: [...TEAM_COLLECTIVE_CAPABILITIES],
+    capabilities: [...TEAM_CAPABILITIES],
     package_version: env.MYCO_TEAM_PACKAGE_VERSION?.trim() || DEFAULT_TEAM_PACKAGE_VERSION,
     schema_version: parseSchemaVersion(env),
   };
 }
-
-async function syncCollectiveSettings(env: Env, force = false): Promise<Record<string, unknown>> {
-  const config = await readTeamConfig(env);
-  const enabled = config.collective_enabled === 'true';
-  const collectiveUrl = config.collective_url;
-  const lastSync = Number(config.last_collective_settings_sync ?? '0');
-
-  if (!enabled || !collectiveUrl) {
-    return parseCollectiveSettings(config);
-  }
-
-  const now = epochSeconds();
-  if (!force && lastSync > 0 && now - lastSync < COLLECTIVE_SETTINGS_SYNC_INTERVAL_SECONDS) {
-    return parseCollectiveSettings(config);
-  }
-
-  const collectiveWorkerToken = await getCollectiveWorkerToken(env);
-  if (!collectiveWorkerToken) {
-    return parseCollectiveSettings(config);
-  }
-
-  try {
-    const response = await fetch(`${collectiveUrl.replace(/\/+$/, '')}/api/worker/settings`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${collectiveWorkerToken}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    if (!response.ok) {
-      throw new Error(`Collective settings sync failed: ${response.status}`);
-    }
-
-    const body = await response.json() as {
-      settings_overrides?: Record<string, unknown>;
-      capabilities?: string[];
-      project_id?: string;
-    };
-    const settings = body.settings_overrides ?? {};
-
-    await writeTeamConfig(env, {
-      collective_enabled: 'true',
-      collective_url: collectiveUrl,
-      collective_project_id: body.project_id ?? config.collective_project_id ?? '',
-      collective_capabilities_cache: JSON.stringify(body.capabilities ?? parseCapabilities(config)),
-      collective_settings_cache: JSON.stringify(settings),
-      last_collective_settings_sync: String(now),
-    });
-
-    return settings;
-  } catch {
-    return parseCollectiveSettings(config);
-  }
-}
-
-async function sendCollectiveHeartbeat(env: Env, force = false): Promise<void> {
-  const config = await readTeamConfig(env);
-  const enabled = config.collective_enabled === 'true';
-  const collectiveUrl = config.collective_url;
-  const projectId = config.collective_project_id;
-  const lastHeartbeat = Number(config.last_collective_heartbeat ?? '0');
-
-  if (!enabled || !collectiveUrl || !projectId) return;
-
-  const now = epochSeconds();
-  if (!force && lastHeartbeat > 0 && now - lastHeartbeat < COLLECTIVE_HEARTBEAT_INTERVAL_SECONDS) {
-    return;
-  }
-
-  const collectiveWorkerToken = await getCollectiveWorkerToken(env);
-  if (!collectiveWorkerToken) return;
-
-  const metadata = teamCollectiveMetadata(env);
-
-  try {
-    const response = await fetch(`${collectiveUrl.replace(/\/+$/, '')}/api/projects/${projectId}/heartbeat`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${collectiveWorkerToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(metadata),
-    });
-    if (!response.ok) {
-      throw new Error(`Collective heartbeat failed: ${response.status}`);
-    }
-
-    const body = await response.json() as {
-      capabilities?: string[];
-      settings_overrides?: Record<string, unknown>;
-      last_seen?: number;
-    };
-
-    await writeTeamConfig(env, {
-      collective_capabilities_cache: JSON.stringify(body.capabilities ?? metadata.capabilities),
-      collective_settings_cache: JSON.stringify(body.settings_overrides ?? parseCollectiveSettings(config)),
-      last_collective_heartbeat: String(body.last_seen ?? now),
-    });
-  } catch {
-    // Best-effort heartbeat. Status pages should reflect the last successful sync.
-  }
-}
-
 
 /**
  * Build column names and placeholders for an INSERT OR REPLACE from a data object.
@@ -472,23 +341,12 @@ function buildInsertParts(
   };
 }
 
-async function getCollectiveWorkerToken(env: Env): Promise<string | null> {
-  const token = await env.MYCO_SECRETS.get(COLLECTIVE_WORKER_TOKEN_KV);
-  if (token) return token;
-
-  const legacyToken = await env.MYCO_SECRETS.get(LEGACY_COLLECTIVE_API_KEY_KV);
-  if (!legacyToken) return null;
-
-  await env.MYCO_SECRETS.put(COLLECTIVE_WORKER_TOKEN_KV, legacyToken);
-  return legacyToken;
-}
-
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
 
 async function handleHealth(env: Env): Promise<Response> {
-  const metadata = teamCollectiveMetadata(env);
+  const metadata = teamMetadata(env);
   const [countResult, storedToken] = await Promise.all([
     env.MYCO_TEAM_DB.prepare('SELECT COUNT(*) as count FROM nodes').first<{ count: number }>(),
     env.MYCO_SECRETS.get(MCP_TOKEN_KEY),
@@ -1871,67 +1729,6 @@ async function handlePutConfig(request: Request, env: Env): Promise<Response> {
   return jsonResponse({ updated: entries.length });
 }
 
-async function handleCollectiveConfigure(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json()) as {
-    collective_url?: string;
-    collective_api_key?: string;
-    project_id?: string;
-  };
-  if (!body.collective_url || !body.collective_api_key) {
-    return errorResponse('collective_url and collective_api_key are required', 400);
-  }
-
-  await env.MYCO_SECRETS.put(COLLECTIVE_WORKER_TOKEN_KV, body.collective_api_key);
-  await env.MYCO_SECRETS.put(LEGACY_COLLECTIVE_API_KEY_KV, body.collective_api_key);
-  const metadata = teamCollectiveMetadata(env);
-  await writeTeamConfig(env, {
-    collective_enabled: 'true',
-    collective_url: body.collective_url,
-    collective_project_id: body.project_id ?? '',
-    collective_capabilities_cache: JSON.stringify(metadata.capabilities),
-  });
-
-  const settings = await syncCollectiveSettings(env, true);
-  await sendCollectiveHeartbeat(env, true);
-
-  return jsonResponse({
-    connected: true,
-    collective_url: body.collective_url,
-    project_id: body.project_id ?? null,
-    settings,
-    capabilities: metadata.capabilities,
-    package_version: metadata.package_version,
-    schema_version: metadata.schema_version,
-  });
-}
-
-async function handleCollectiveSettings(env: Env): Promise<Response> {
-  const settings = await syncCollectiveSettings(env);
-  const config = await readTeamConfig(env);
-  return jsonResponse({
-    collective_enabled: config.collective_enabled === 'true',
-    settings,
-    last_sync: Number(config.last_collective_settings_sync ?? '0') || null,
-  });
-}
-
-async function handleCollectiveStatus(env: Env): Promise<Response> {
-  const config = await readTeamConfig(env);
-  const lastHeartbeat = Number(config.last_collective_heartbeat ?? '0') || null;
-  const now = epochSeconds();
-  return jsonResponse({
-    connected: config.collective_enabled === 'true'
-      && lastHeartbeat !== null
-      && now - lastHeartbeat <= COLLECTIVE_STALE_AFTER_SECONDS,
-    collective_url: config.collective_url ?? null,
-    project_id: config.collective_project_id ?? null,
-    last_settings_sync: Number(config.last_collective_settings_sync ?? '0') || null,
-    last_heartbeat: lastHeartbeat,
-    capabilities: parseCapabilities(config),
-    settings: parseCollectiveSettings(config),
-  });
-}
-
 /**
  * Operator surface for queue diagnostics + DLQ management. All endpoints
  * read from the D1 tables populated by the queue consumer (team_sync_stats,
@@ -2003,36 +1800,6 @@ async function handleDlqDiscard(request: Request, env: Env): Promise<Response> {
     `DELETE FROM team_dlq WHERE lease_id IN (${placeholders})`,
   ).bind(...leaseIds).run();
   return jsonResponse({ discarded: leaseIds.length });
-}
-
-async function handleCollectiveQuery(request: Request, env: Env): Promise<Response> {
-  const config = await readTeamConfig(env);
-  if (config.collective_enabled !== 'true' || !config.collective_url) {
-    return errorResponse('Collective is not configured for this team worker', 400);
-  }
-
-  const collectiveWorkerToken = await getCollectiveWorkerToken(env);
-  if (!collectiveWorkerToken) {
-    return errorResponse('Collective worker token is not configured', 500);
-  }
-
-  const body = await request.json() as { tool?: string; args?: Record<string, unknown> };
-  if (!body.tool || !TEAM_COLLECTIVE_QUERY_TOOLS.has(body.tool)) {
-    return errorResponse('Unsupported collective tool for team proxy', 400);
-  }
-  const response = await fetch(`${config.collective_url.replace(/\/+$/, '')}/api/worker/query`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${collectiveWorkerToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  const responseText = await response.text();
-  return new Response(responseText, {
-    status: response.status,
-    headers: JSON_HEADERS,
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2124,18 +1891,6 @@ export default {
       if (method === 'PUT' && path === '/config') {
         return await handlePutConfig(request, env);
       }
-      if (method === 'POST' && path === '/collective/configure') {
-        return await handleCollectiveConfigure(request, env);
-      }
-      if (method === 'GET' && path === '/collective/settings') {
-        return await handleCollectiveSettings(env);
-      }
-      if (method === 'GET' && path === '/collective/status') {
-        return await handleCollectiveStatus(env);
-      }
-      if (method === 'POST' && path === '/collective/query') {
-        return await handleCollectiveQuery(request, env);
-      }
       if (method === 'GET' && path === '/queue-stats') {
         return await handleQueueStats(env);
       }
@@ -2171,14 +1926,6 @@ export default {
       const message = err instanceof Error ? err.message : String(err);
       return errorResponse(message, 500);
     }
-  },
-  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    if (!schemaInitialized) {
-      await initD1Schema(env.MYCO_TEAM_DB, { minClientVersion: resolveProtocolBounds(env).minClientVersion });
-      schemaInitialized = true;
-    }
-    await syncCollectiveSettings(env);
-    await sendCollectiveHeartbeat(env);
   },
   /**
    * Queue consumer entry point. Cloudflare invokes this with a MessageBatch
