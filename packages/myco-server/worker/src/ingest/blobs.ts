@@ -52,10 +52,10 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
   const reservationId = crypto.randomUUID();
   const expiresAt = ctx.now + BLOB_RESERVATION_TTL_MS;
 
-  /** Admission and the reservation are one statement: the row is written only when `withinQuota` holds for this body. An expired reservation stopped counting the moment it expired; it is deleted here, in the same transaction, so a token whose requests keep dying accumulates rows no faster than it makes them. */
+  /** Admission and the reservation are one statement: the row is written only when `withinQuota` holds for this body. An expired reservation stopped counting the moment it expired; it is deleted here, in the same transaction, so a credential whose requests keep dying accumulates rows no faster than it makes them. The sweep is keyed on the credential alone, matching what `heldBytes` counts: a credential spans every Project, so a sweep scoped to one Project would strand the reservations it left in Projects it never uploads to again. */
   const admission = withinQuota(ctx, size);
   const [, reserved] = await db.batch([
-    db.prepare(`DELETE FROM blob_reservations WHERE project_id = ? AND token_id = ? AND expires_at <= ?`).bind(ctx.projectId, ctx.tokenId, ctx.now),
+    db.prepare(`DELETE FROM blob_reservations WHERE token_id = ? AND expires_at <= ?`).bind(ctx.tokenId, ctx.now),
     db.prepare(`INSERT INTO blob_reservations (reservation_id, project_id, key, token_id, size, expires_at)
                   SELECT ?, ?, ?, ?, ?, ? WHERE ${admission.sql}`)
       .bind(reservationId, ctx.projectId, key, ctx.tokenId, size, expiresAt, ...admission.params),
@@ -111,7 +111,7 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
     const batch = await db.batch([
       db.prepare(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (project_id, key) DO NOTHING`)
         .bind(ctx.projectId, key, storedSize, mediaType, ctx.tokenId, ctx.now),
-      db.prepare(`UPDATE member_tokens SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(storedSize, ctx.tokenId),
+      db.prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(storedSize, ctx.tokenId),
       db.prepare(`DELETE FROM blob_reservations WHERE reservation_id = ?`).bind(reservationId),
     ]);
     if (batch[0].meta.changes === 0) {

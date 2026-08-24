@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MEMBER_TOKEN_BYTE_QUOTA } from '@myco-server-worker/constants.js';
 import { unboundedBudget, resolveHookBudget } from '@myco/member/budget.js';
-import { MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSED_LOG_MAX_BYTES } from '@myco/member/constants.js';
+import { MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, PROJECT_HEADER, REFUSED_LOG_MAX_BYTES } from '@myco/member/constants.js';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { MemberSpool, WIRE_FIELDS, toWire, type SpoolRecord } from '@myco/member/spool.js';
@@ -59,6 +59,10 @@ describe('member spool', () => {
     const eventPost = requests.find((r) => r.path === '/events')!;
     expect(Object.keys(JSON.parse(eventPost.body!)).sort()).toEqual([...WIRE_FIELDS].sort());
     expect(requests.map((r) => r.path)).toEqual([`/blobs/${big.blobSource!.sha256}`, '/events']);
+    // A credential is Deployment-wide, so the Project rides on every request the member
+    // makes — the blob upload as much as the event. Without it the server refuses each
+    // one `no_project` and nothing this member captures is ever admitted.
+    expect(requests.map((r) => r.headers[PROJECT_HEADER])).toEqual(['proj_1', 'proj_1']);
     expect(rig.rows('events')).toBe(1);
     // Fully acknowledged: the file is gone and the high-water reset to 0.
     expect(fs.existsSync(path.join(spool.dir, 'sess-wire.jsonl'))).toBe(false);
@@ -130,7 +134,7 @@ describe('member spool', () => {
 
   it('parked ends the pass with the quota line on stderr and keeps every event spooled; nothing reaches refused.jsonl', async () => {
     const rig = await memberRig();
-    rig.env.sqlite.query(`UPDATE member_tokens SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, rig.tokenId);
+    rig.env.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, rig.tokenId);
     const spool = new MemberSpool('proj_1', { mycoHome });
     const ctx = ctxFor(spool, 'sess-parked');
     for (const e of prompts(ctx, 3)) spool.append('sess-parked', e);

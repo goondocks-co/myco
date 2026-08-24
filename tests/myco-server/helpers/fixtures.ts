@@ -1,7 +1,7 @@
 import type { Database } from 'bun:sqlite';
 import type { BlobStore, StoredObject } from '@myco-server-worker/core/adapters.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
-import { PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
+import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { sqliteD1, seededSqlite } from './d1.js';
 
@@ -24,7 +24,11 @@ export function envelope(over: Record<string, unknown> = {}): Record<string, unk
 
 /** The headers of an authenticated member request from source 1.2.3.4 at the current protocol. */
 export function memberHeaders(token: string, extra: Record<string, string> = {}): Record<string, string> {
-  return { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', ...PROTOCOL, ...extra };
+  // A credential is Deployment-wide, so every member request names the Project it
+  // acts on. `extra` overrides it, which is how a test drives another Project; an
+  // empty value drops the header, which is how a test sends none at all.
+  const headers: Record<string, string> = { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', ...PROTOCOL, ...extra };
+  return Object.fromEntries(Object.entries(headers).filter(([, v]) => v !== ''));
 }
 
 /** A member POST of a JSON body to `/events` (or another path). */
@@ -106,7 +110,7 @@ export function sqliteEnv(opts: { staleBytesWritten?: number; onSql?: (sql: stri
   const executed: string[] = [];
   const db = sqliteD1(sqlite, {
     onFirst: (sql, row) =>
-      row && opts.staleBytesWritten !== undefined && sql.includes('member_tokens') ? { ...row, bytes_written: opts.staleBytesWritten } : row,
+      row && opts.staleBytesWritten !== undefined && sql.includes('member_credentials') ? { ...row, bytes_written: opts.staleBytesWritten } : row,
     onSql: (sql) => { executed.push(sql); opts.onSql?.(sql, sqlite); },
   });
   const source = recordingLimiter();
@@ -130,4 +134,4 @@ export function sqliteEnv(opts: { staleBytesWritten?: number; onSql?: (sql: stri
 }
 
 export const count = (sqlite: Database, table: string): number => (sqlite.query(`SELECT COUNT(*) c FROM ${table}`).get() as { c: number }).c;
-export const bytesWritten = (sqlite: Database, tokenId: string): number => (sqlite.query(`SELECT bytes_written b FROM member_tokens WHERE id = ?`).get(tokenId) as { b: number }).b;
+export const bytesWritten = (sqlite: Database, tokenId: string): number => (sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(tokenId) as { b: number }).b;

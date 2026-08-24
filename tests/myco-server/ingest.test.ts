@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'bun:test';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { sqliteD1, seededSqlite } from './helpers/d1.js';
+import { sqliteD1, seededSqlite, seedCredential } from './helpers/d1.js';
 import { ENVELOPE_FIELDS, PRODUCER_FIELDS } from '@myco-server-worker/ingest/envelope.js';
 import { envelope, uuid, PRODUCER } from './helpers/fixtures.js';
 
 function realDb() {
   const sqlite = seededSqlite();
-  sqlite.query(`INSERT INTO member_tokens (id,project_id,machine_id,token_hash,expires_at,revoked_at,bytes_written)
-                VALUES ('mt_1','proj_1','machine_1','h1',9,NULL,0),('mt_2','proj_2','machine_2','h2',9,NULL,0),('mt_3','proj_1','machine_3','h3',9,NULL,0)`).run();
+  seedCredential(sqlite, { id: 'mt_1', machineId: 'machine_1', hash: 'h1' });
+  seedCredential(sqlite, { id: 'mt_2', machineId: 'machine_2', hash: 'h2' });
+  seedCredential(sqlite, { id: 'mt_3', machineId: 'machine_3', hash: 'h3' });
   return { db: sqliteD1(sqlite), sqlite };
 }
 
@@ -15,7 +16,7 @@ const ctx = { projectId: 'proj_1', machineId: 'machine_1', tokenId: 'mt_1', body
 const at = (now: number, over: Partial<typeof ctx> = {}) => ({ ...ctx, ...over, now });
 const good = envelope();
 const count = (s: any, t: string) => (s.query(`SELECT COUNT(*) c FROM ${t}`).get() as any).c;
-const bytes = (s: any, id: string) => (s.query(`SELECT bytes_written b FROM member_tokens WHERE id=?`).get(id) as any).b;
+const bytes = (s: any, id: string) => (s.query(`SELECT bytes_written b FROM member_credentials WHERE id=?`).get(id) as any).b;
 const sessions = (s: any) => s.query('SELECT project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at FROM sessions ORDER BY project_id, session_id').all();
 
 describe('ingest', () => {
@@ -123,7 +124,7 @@ describe('ingest', () => {
 
   it('reports a replay by another token of the same machine as a duplicate, and answers another machine nothing about the stored event', async () => {
     const { db, sqlite } = realDb();
-    sqlite.query(`INSERT INTO member_tokens (id,project_id,machine_id,token_hash,expires_at,revoked_at,bytes_written) VALUES ('mt_1b','proj_1','machine_1','h1b',9,NULL,0)`).run();
+    seedCredential(sqlite, { id: 'mt_1b', machineId: 'machine_1', hash: 'h1b' });
     await ingestEvent(db, ctx, good);
     expect(await ingestEvent(db, at(3_000, { machineId: 'machine_1', tokenId: 'mt_1b' }), good)).toEqual({ persisted: true, duplicate: true });
     expect(await ingestEvent(db, at(3_000, { machineId: 'machine_3', tokenId: 'mt_3' }), good)).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });

@@ -97,9 +97,9 @@ describe('owner route dispatch', () => {
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
   });
 
-  it('refuses a member token on an owner route WITHOUT reading member_tokens', async () => {
+  it('refuses a member token on an owner route WITHOUT reading member_credentials', async () => {
     const e = sqliteEnv();
-    const minted = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_1' }, Date.now());
+    const minted = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     e.executed.length = 0;
     const res = await worker.fetch(
       new Request('https://s/auth/logout', { method: 'POST', headers: { authorization: `Bearer ${minted.token}`, 'cf-connecting-ip': '1.2.3.4' } }),

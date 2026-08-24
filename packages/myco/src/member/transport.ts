@@ -6,7 +6,7 @@
  * connect timeout bounds the wait for response headers, the request timeout
  * bounds the whole exchange.
  */
-import { MEMBER_CODES, MEMBER_PROTOCOL, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, type MemberCode } from './constants.js';
+import { MEMBER_CODES, MEMBER_PROTOCOL, PARKED_CODE, PROJECT_HEADER, PROTOCOL_HEADER, RESLICE_CODES, type MemberCode } from './constants.js';
 import type { RequestBudget } from './budget.js';
 import type { MemberEnvelope } from './envelope.js';
 
@@ -63,7 +63,7 @@ export class ServerClient {
     return this.record.projectId;
   }
 
-  /** The one authenticated request: bearer + protocol header, bounded by the budget, answered raw. */
+  /** The one authenticated request: bearer, protocol and Project headers, bounded by the budget, answered raw. */
   async request(method: string, path: string, init: { body?: BodyInit; headers?: Record<string, string>; budget: RequestBudget }): Promise<RawAnswer> {
     const controller = new AbortController();
     let phase: 'connect' | 'request' = 'connect';
@@ -76,6 +76,7 @@ export class ServerClient {
         headers: {
           authorization: `Bearer ${this.record.token}`,
           [PROTOCOL_HEADER]: String(this.protocol),
+          [PROJECT_HEADER]: this.record.projectId,
           ...init.headers,
         },
         body: init.body,

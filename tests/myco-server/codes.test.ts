@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken, MEMBER_TOKEN_MAX_LINEAGE_MS, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
-import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, MEMBER_TOKEN_BYTE_QUOTA } from '@myco-server-worker/constants.js';
+import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { CLASSIFIERS, UNAVAILABLE, type Classifier } from '@myco-server-worker/telemetry.js';
+import { ENROLLMENT_TTL_MS, issueEnrollmentAuthority, revokeEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { blobPost, envelope, memberHeaders, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
@@ -13,11 +14,11 @@ const json = async (res: Response) => res.json() as Promise<Record<string, unkno
 async function rig() {
   const e = sqliteEnv();
   const now = Date.now();
-  const t1 = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_1' }, now);
-  const t2 = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_2' }, now);
-  const anonymous = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: null }, now);
+  const t1 = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
+  const t2 = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now);
+  const anonymous = await issueMemberToken(e.db, { memberId: 'mem_anon', machineId: null }, now);
   /** A member of machine_1 whose refresh window is open now. */
-  const windowed = await issueMemberToken(e.db, { projectId: 'proj_1', machineId: 'machine_1' }, now - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2));
+  const windowed = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2));
   const fetch = (req: Request) => worker.fetch(req, e.env);
   const post = (token: string, over: Record<string, unknown>) => fetch(memberPost(token, envelope(over)));
   const upload = async (bytes: Uint8Array) => {
@@ -37,7 +38,10 @@ async function rig() {
     expect((await json(await segment(0, 0, ka, a.byteLength))).persisted).toBe(true);
     return { a, b, ka, kb };
   };
-  return { e, t1, t2, anonymous, windowed, fetch, post, upload, segment, transcript };
+  /** A join presenting `key`, from a machine of its own so no join can collide with another. */
+  const join = (key: string, machineId = 'machine_join') =>
+    fetch(new Request('https://s/members/join', { method: 'POST', headers: { 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json' }, body: JSON.stringify({ key, machineId }) }));
+  return { e, t1, t2, anonymous, windowed, now, fetch, post, upload, segment, transcript, join };
 }
 type Rig = Awaited<ReturnType<typeof rig>>;
 
@@ -48,7 +52,7 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   refused: (r) => r.post(r.t1.token, { createdAt: -1 }),
   parse: (r) => r.fetch(memberPost(r.t1.token, 'not json')),
   quota: async (r) => {
-    r.e.sqlite.query(`UPDATE member_tokens SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, r.t1.tokenId);
+    r.e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, r.t1.tokenId);
     return r.post(r.t1.token, {});
   },
   body_cap: (r) => r.fetch(memberPost(r.t1.token, 'x'.repeat(MAX_BODY_BYTES + 1))),
@@ -69,6 +73,28 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
     return r.post(r.t2.token, { eventId: uuid(3), payload: { promptId: uuid(4), text: 'theirs', origin: 'user' } });
   },
   no_machine_identity: (r) => r.post(r.anonymous.token, {}),
+  no_project: (r) => r.fetch(memberPost(r.t1.token, envelope({}), '/events', { [PROJECT_HEADER]: '' })),
+  enrollment_unknown: (r) => r.join('u'.repeat(43)),
+  identity_claimed: async (r) => {
+    const held = await issueEnrollmentAuthority(r.e.db, r.now);
+    expect((await json(await r.join(held.key, 'machine_held'))).joined).toBe(true);
+    const other = await issueEnrollmentAuthority(r.e.db, r.now);
+    return r.join(other.key, 'machine_held');
+  },
+  enrollment_used: async (r) => {
+    const key = await issueEnrollmentAuthority(r.e.db, r.now);
+    expect((await json(await r.join(key.key, 'machine_used'))).joined).toBe(true);
+    return r.join(key.key, 'machine_used2');
+  },
+  enrollment_expired: async (r) => {
+    const key = await issueEnrollmentAuthority(r.e.db, r.now - ENROLLMENT_TTL_MS * 2);
+    return r.join(key.key, 'machine_expired');
+  },
+  enrollment_revoked: async (r) => {
+    const key = await issueEnrollmentAuthority(r.e.db, r.now);
+    expect(await revokeEnrollmentAuthority(r.e.db, key.id, r.now)).toEqual({ revoked: true });
+    return r.join(key.key, 'machine_revoked');
+  },
   unknown_kind: (r) => r.post(r.t1.token, { kind: 'made.up', payload: {} }),
   unknown_field: (r) => r.post(r.t1.token, { extra: 1 }),
   id_grammar: (r) => r.post(r.t1.token, { eventId: 'not-a-uuid' }),
@@ -83,7 +109,7 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   },
   refresh_too_early: (r) => r.fetch(memberPost(r.t1.token, '{}', '/tokens/refresh')),
   lineage_expired: (r) => {
-    r.e.sqlite.query(`UPDATE member_tokens SET lineage_started_at = expires_at - ? WHERE id = ?`).run(MEMBER_TOKEN_MAX_LINEAGE_MS, r.windowed.tokenId);
+    r.e.sqlite.query(`UPDATE member_credentials SET lineage_started_at = expires_at - ? WHERE id = ?`).run(MEMBER_TOKEN_MAX_LINEAGE_MS, r.windowed.tokenId);
     return r.fetch(memberPost(r.windowed.token, '{}', '/tokens/refresh'));
   },
 };
@@ -103,7 +129,9 @@ describe('refusal codes', () => {
         res = await DRIVERS[classifier](r);
       } finally { console.log = orig; }
       const body = await json(res);
-      const refusing = body.persisted === false || body.stored === false || body.refreshed === false || body.projected === false;
+      // Each member route answers under its own key, and the join route under `joined`;
+      // a refusal is that key false, never an absent key or a bare error object.
+      const refusing = body.persisted === false || body.stored === false || body.refreshed === false || body.projected === false || body.joined === false;
       observed.push({ classifier, status: res.status, code: body.code, refusing, reason: typeof body.reason === 'string' && body.reason.length > 0 });
       const last = JSON.parse(lines[lines.length - 1]) as Record<string, unknown>;
       if ('reason' in last) expect({ classifier, telemetry: last.reason }).toEqual({ classifier, telemetry: classifier });

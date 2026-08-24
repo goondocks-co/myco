@@ -247,12 +247,156 @@ const V4_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_sessions_recent ON sessions (project_id, first_received_at)`,
 ];
 
+/**
+ * Flat membership (#912, model approved in #907). A credential belongs to a
+ * MEMBER and a Deployment, not to a project: `project_id` leaves the credential
+ * and project scope is resolved per request.
+ *
+ * The step is guarded at BOTH ends, in the V2 idiom.
+ *
+ * The opening guard aborts when any existing credential carries a column the
+ * backfill cannot place. `machine_id` decides the member — the grouping is
+ * `mem_<machine_id>`, so a NULL would fuse every such row into one member,
+ * permanently merging distinct humans, which #907 rule 3 forbids reconciling
+ * afterwards. `lineage_root` and `lineage_started_at` are nullable at the source,
+ * V3 having added them with ADD COLUMN, and NOT NULL at the target. Those rows
+ * are also the ones the pipeline already refuses every write, so the guard fails
+ * loudly rather than promoting dead credentials into a live identity.
+ *
+ * The closing guard aborts when the backfill placed fewer credentials than the
+ * source holds. The insert is `OR IGNORE` so a re-run after a mid-step failure
+ * is idempotent, and `OR IGNORE` cannot tell a duplicate from a constraint it
+ * silently declined — a row dropped that way would leave `events.token_id`
+ * dangling against a step that reported success. Counting is what makes the
+ * difference visible without having to enumerate which constraint fired.
+ *
+ * BREAK-GLASS.md carries the repair for both.
+
+ * `machine_id` stays nullable past the guard. The guard is a precondition on
+ * the BACKFILL — it derives the member grouping from machine identity and has
+ * nothing to derive from when the column is NULL. Credentials issued after it
+ * take their member from enrollment instead, so the derivation no longer
+ * applies, and the pipeline keeps refusing a credential with no machine
+ * identity as `no_machine_identity`. A NOT NULL here would make that refusal
+ * unreachable while the member, telemetry and both-target contract still carry
+ * the code, leaving a refusal no gate could ever exercise.
+ *
+ * Backfilled credentials are written REVOKED. Preserving a live `token_hash`
+ * would let an existing bearer keep authenticating while silently gaining
+ * Deployment-wide authority beyond the one project it is pinned to — the silent
+ * escalation #912's acceptance forbids. Re-join is the migration path.
+ * Attribution history is preserved untouched: `events.token_id` and its
+ * siblings continue to resolve, now through `member_credentials`.
+ *
+ * `machine_claims` is what makes a machine identity belong to ONE member. Every
+ * ownership predicate the ingest path applies keys on `machine_id`, not on
+ * `member_id` — a continued session, prompt, plan or transcript may only be
+ * written by the machine that owns it — so a member free to present any machine
+ * identity it likes could append into another member's sessions in every Project
+ * of the Deployment. A machine id is a label, not a secret: it appears in
+ * `mem_<machine_id>` and in the owner's credential list.
+ *
+ * The claim is a PRIMARY KEY rather than a check the join performs, so two joins
+ * racing for one identity resolve in the database and not in whoever reads first.
+ * It is permanent: a machine id regenerates on reinstall or a home wipe, so a
+ * genuinely new runtime brings a new identity to claim rather than needing this
+ * one released.
+ *
+ * A revoked member's row is never deleted. `events.token_id` resolves through
+ * `member_credentials` to `members`, so removing one would make the history it
+ * wrote unattributable — revocation ends what a member can do, not the record of
+ * what they did. Only `enrollment_authorities` has a retention sweep: nothing
+ * resolves through a spent invitation.
+ *
+ * Every member may revoke any credential, so `revoked_by` records which one did —
+ * a member id, or the owner acting through the dashboard under `owner:<id>`. The
+ * two namespaces are told apart by prefix, or an operator reading the column
+ * cannot answer which kind of actor ended the credential.
+ * A destroy path that does not record its actor leaves denial-of-service by a
+ * member indistinguishable from an operator's own action, and flat membership is
+ * what puts that in reach of everyone rather than of one owner.
+ *
+ * The quota CHECK keeps the name `member_tokens_quota` verbatim. `classify()`
+ * matches that literal to mark a quota violation terminal; renaming it turns a
+ * terminal refusal into a 503 the member retries forever.
+ */
+const V5_STATEMENTS: readonly string[] = [
+  `DROP TABLE IF EXISTS _v5_guard_credential_backfillable`,
+  `CREATE TABLE _v5_guard_credential_backfillable (ok INTEGER NOT NULL CHECK (ok = 1))`,
+  `INSERT INTO _v5_guard_credential_backfillable (ok)
+     SELECT CASE WHEN EXISTS (
+       SELECT 1 FROM member_tokens
+        WHERE machine_id IS NULL OR lineage_root IS NULL OR lineage_started_at IS NULL
+     ) THEN 0 ELSE 1 END`,
+  `DROP TABLE _v5_guard_credential_backfillable`,
+  `CREATE TABLE IF NOT EXISTS members (
+     id         TEXT PRIMARY KEY,
+     label      TEXT,
+     created_at INTEGER NOT NULL,
+     revoked_at INTEGER)`,
+  `CREATE TABLE IF NOT EXISTS machine_claims (
+     machine_id TEXT PRIMARY KEY,
+     member_id  TEXT NOT NULL REFERENCES members(id),
+     claimed_at INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS enrollment_authorities (
+     id                TEXT PRIMARY KEY,
+     key_hash          TEXT NOT NULL,
+     created_at        INTEGER NOT NULL,
+     expires_at        INTEGER NOT NULL,
+     used_at           INTEGER,
+     used_by_runtime   TEXT,
+     revoked_at        INTEGER,
+     created_by_member TEXT,
+     member_id         TEXT REFERENCES members(id))`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollment_authorities_hash ON enrollment_authorities (key_hash)`,
+  `CREATE TABLE IF NOT EXISTS member_credentials (
+     id                 TEXT PRIMARY KEY,
+     member_id          TEXT NOT NULL REFERENCES members(id),
+     token_hash         TEXT NOT NULL,
+     machine_id         TEXT,
+     runtime_label      TEXT,
+     runtime_kind       TEXT,
+     issued_at          INTEGER NOT NULL,
+     expires_at         INTEGER NOT NULL,
+     revoked_at         INTEGER,
+     lineage_root       TEXT NOT NULL,
+     lineage_started_at INTEGER NOT NULL,
+     predecessor_id     TEXT,
+     first_used_at      INTEGER,
+     bytes_written      INTEGER NOT NULL DEFAULT 0,
+     revoked_by         TEXT,
+     CONSTRAINT member_tokens_quota CHECK (bytes_written <= ${MEMBER_TOKEN_BYTE_QUOTA}))`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_hash ON member_credentials (token_hash)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_live_successor
+     ON member_credentials (predecessor_id) WHERE revoked_at IS NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_member_credentials_lineage ON member_credentials (lineage_root)`,
+  `CREATE INDEX IF NOT EXISTS idx_blob_reservations_credential ON blob_reservations (token_id, expires_at)`,
+  `INSERT OR IGNORE INTO members (id, label, created_at, revoked_at)
+     SELECT DISTINCT 'mem_' || machine_id, machine_id, 0, NULL FROM member_tokens WHERE machine_id IS NOT NULL`,
+  `INSERT OR IGNORE INTO machine_claims (machine_id, member_id, claimed_at)
+     SELECT DISTINCT machine_id, 'mem_' || machine_id, 0 FROM member_tokens WHERE machine_id IS NOT NULL`,
+  `INSERT OR IGNORE INTO member_credentials
+     (id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at,
+      revoked_at, lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written)
+     SELECT t.id, 'mem_' || t.machine_id, t.token_hash, t.machine_id, NULL, NULL,
+            t.lineage_started_at, t.expires_at,
+            COALESCE(t.revoked_at, t.expires_at),
+            t.lineage_root, t.lineage_started_at, t.predecessor_id, t.first_used_at, t.bytes_written
+       FROM member_tokens t WHERE t.machine_id IS NOT NULL`,
+  `DROP TABLE IF EXISTS _v5_guard_backfill_complete`,
+  `CREATE TABLE _v5_guard_backfill_complete (ok INTEGER NOT NULL CHECK (ok = 1))`,
+  `INSERT INTO _v5_guard_backfill_complete (ok)
+     SELECT CASE WHEN (SELECT COUNT(*) FROM member_credentials)
+                    >= (SELECT COUNT(*) FROM member_tokens) THEN 1 ELSE 0 END`,
+  `DROP TABLE _v5_guard_backfill_complete`,
+];
+
 function withStamp(version: number, statements: readonly string[]): SchemaStep {
   return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
 }
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

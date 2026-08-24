@@ -51,7 +51,7 @@ afterEach(() => {
 const nearExpiryRig = (): Promise<MemberRig> => memberRig({ now: Date.now() - 6.5 * DAY_MS });
 
 const tokenRow = (rig: MemberRig, id: string): Record<string, unknown> =>
-  rig.env.sqlite.query('SELECT predecessor_id, lineage_root, first_used_at, revoked_at FROM member_tokens WHERE id = ?').get(id) as Record<string, unknown>;
+  rig.env.sqlite.query('SELECT predecessor_id, lineage_root, first_used_at, revoked_at FROM member_credentials WHERE id = ?').get(id) as Record<string, unknown>;
 
 const refreshCalls = (spy: ReturnType<typeof recordingFetch>): number => spy.requests.filter((r) => r.path === '/tokens/refresh').length;
 const eventCalls = (spy: ReturnType<typeof recordingFetch>): number => spy.requests.filter((r) => r.path === '/events').length;
@@ -106,7 +106,7 @@ describe('member token rotation', () => {
     expect(out.stderr).toBe('');
     expect(rig.rows('prompt_batches')).toBe(1);
     expect(refreshCalls(spy)).toBe(0);
-    expect(rig.rows('member_tokens')).toBe(1);
+    expect(rig.rows('member_credentials')).toBe(1);
     expect(readRegistryEntry(root, mycoHome)!.token).toBe(rig.token);
     expect(refreshableRoot({ source: 'env', root })).toBeNull();
   });
@@ -123,7 +123,7 @@ describe('member token rotation', () => {
 
     expect([a.status, b.status].sort()).toEqual(['busy', 'refreshed']);
     expect(refreshCalls(spy)).toBe(1);
-    expect(rig.rows('member_tokens')).toBe(2);
+    expect(rig.rows('member_credentials')).toBe(2);
     const winner = a.status === 'refreshed' ? a : b;
     const loser = a.status === 'refreshed' ? b : a;
     expect(loser.entry!.token).toBe(rig.token);
@@ -148,7 +148,7 @@ describe('member token rotation', () => {
 
     await refreshMemberCredential(root, { mycoHome, fetch: spy.fetch, now: () => announced + 1, budget: budget() });
     expect(refreshCalls(spy)).toBe(2);
-    expect(rig.rows('member_tokens')).toBe(1);
+    expect(rig.rows('member_credentials')).toBe(1);
   });
 
   it('a 401 on a live send re-reads the registry and retries the record once with the rotated token', async () => {
@@ -198,7 +198,7 @@ describe('member token rotation', () => {
     out.length = 0;
     await runMemberCli(['refresh'], { mycoHome, fetch: rig.fetch, stdout: (l) => out.push(l), stderr: (l) => err.push(l) });
     expect(out.join('\n')).toContain('not due — refresh window opens');
-    expect(rig.rows('member_tokens')).toBe(2);
+    expect(rig.rows('member_credentials')).toBe(2);
   });
 
   it('a terminal refusal stops every further dial until the entry is re-provisioned', () => {

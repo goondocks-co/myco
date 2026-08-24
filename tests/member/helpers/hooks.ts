@@ -92,13 +92,13 @@ export function registerTestMember(opts: { mycoHome: string; token: string; toke
 }
 
 /** A fetch that records every request it sees before forwarding it. */
-export function recordingFetch(inner: FetchLike): { fetch: FetchLike; requests: Array<{ method: string; path: string; body?: string }> } {
-  const requests: Array<{ method: string; path: string; body?: string }> = [];
+export function recordingFetch(inner: FetchLike): { fetch: FetchLike; requests: Array<{ method: string; path: string; body?: string; headers: Record<string, string> }> } {
+  const requests: Array<{ method: string; path: string; body?: string; headers: Record<string, string> }> = [];
   const fetch: FetchLike = async (input, init) => {
     const req = new Request(input, init);
     const url = new URL(req.url);
     const body = req.method === 'POST' ? await req.clone().text() : undefined;
-    requests.push({ method: req.method, path: url.pathname, body });
+    requests.push({ method: req.method, path: url.pathname, body, headers: Object.fromEntries(req.headers) });
     return inner(req);
   };
   return { fetch, requests };

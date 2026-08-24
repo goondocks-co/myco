@@ -82,7 +82,7 @@ export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body:
           ...admission.flatMap((a) => a.params));
 
   const quota = db
-    .prepare(`UPDATE member_tokens SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`)
+    .prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`)
     .bind(ctx.bodyBytes, ctx.tokenId);
 
   const receipt = db

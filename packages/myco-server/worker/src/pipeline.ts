@@ -1,10 +1,11 @@
 import type { ErrorClassifier, ServerEnv } from './core/adapters.js';
 import { matchRoute, type Route, type Shape } from './routes.js';
-import { activateSuccessor, authenticateServerMemberToken, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
-import { HSTS_MAX_AGE_SECONDS, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from './constants.js';
+import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
+import { HSTS_MAX_AGE_SECONDS, LINEAGE_REPLAY_GRACE_MS, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from './constants.js';
 import { sha256Hex } from './hash.js';
 import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
 import { QUOTA_REASON } from './ingest/events.js';
+import { resolveProject } from './ingest/projects.js';
 import { classify, emit, SchemaMismatchError, UNAVAILABLE, type Classifier } from './telemetry.js';
 import { ownerConfig } from './auth/owner/config.js';
 import { readCookie, verifySession } from './auth/owner/cookie.js';
@@ -63,7 +64,7 @@ const forbidden = () => Response.json({ error: 'forbidden' }, { status: 403 });
 const refuseOversized = () => Response.json({ error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` }, { status: 400 });
 
 /** The request with its body read under the same cap the member path enforces, or null when it exceeds it. A body-less method passes through untouched. */
-async function boundedOwnerRequest(request: Request): Promise<Request | null> {
+async function boundedRequest(request: Request): Promise<Request | null> {
   if (request.method === 'GET' || request.method === 'HEAD') return request;
   const body = await readBoundedBody(request, MAX_BODY_BYTES);
   if (!body.ok) return null;
@@ -85,11 +86,34 @@ function sameOrigin(request: Request, url: URL): boolean {
 const unsupportedProtocol = () =>
   Response.json({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL }, { status: 409 });
 export const NO_MACHINE_IDENTITY = 'token has no machine identity';
+export const NO_PROJECT = 'project header required';
+/** What may be presented as a Project id on the wire. Exported so the member can be pinned against it: the member decides a Project id at `myco member join` and the server never sees it until the first capture, so a member that admits more than this prints "joined" and is then refused every request. */
+export const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** The two names the grammar admits but a Project may not carry. */
+export const RESERVED_PROJECT_IDS: readonly string[] = ['.', '..'];
+
+/** Whether `value` may be a Project id: in grammar and not reserved. The one predicate both the wire check and the member's own validation answer to. */
+export const isProjectId = (value: string): boolean => PROJECT_ID.test(value) && !RESERVED_PROJECT_IDS.includes(value);
+
+/**
+ * The Project this request acts on, named by the member in a header.
+ *
+ * A credential is Deployment-wide, so the Project cannot come from the
+ * credential. It is a per-request assertion, admitted on the strength of
+ * Deployment-wide Member Access — never on the caller's say-so. The grammar is
+ * checked here so nothing downstream sees caller text it did not validate.
+ */
+function requestedProject(request: Request): string | null {
+  const value = request.headers.get(PROJECT_HEADER);
+  if (value === null || !isProjectId(value)) return null;
+  return value;
+}
 const PROTOCOL_VALUE = /^[0-9]+$/;
 
 /** A terminal refusal of the caller's own request: 200, never retried, in the route's refusal shape, carrying the classifier as its `code` beside the `reason`; telemetry carries the classifier only. */
 function refuse(auth: MemberAuth, shape: Shape, reason: string, classifier: Classifier): Response {
-  emit({ kind: shape === 'stored' ? 'blob_refused' : 'ingest_refused', projectId: auth.projectId, tokenId: auth.tokenId, reason: classifier });
+  emit({ kind: shape === 'stored' ? 'blob_refused' : 'ingest_refused', memberId: auth.memberId, tokenId: auth.tokenId, reason: classifier });
   return Response.json({ [shape]: false, code: classifier, reason });
 }
 
@@ -111,7 +135,7 @@ function protocolSupported(request: Request): boolean {
 
 /** True when the token's stored volume plus this request's bytes would exceed the quota; read fresh after a constraint failure. */
 async function overQuota(env: ServerEnv, tokenId: string, bytes: number): Promise<boolean> {
-  const row = await env.db.prepare(`SELECT bytes_written FROM member_tokens WHERE id = ?`).bind(tokenId).first<{ bytes_written: number }>();
+  const row = await env.db.prepare(`SELECT bytes_written FROM member_credentials WHERE id = ?`).bind(tokenId).first<{ bytes_written: number }>();
   return row !== null && row.bytes_written + bytes > MEMBER_TOKEN_BYTE_QUOTA;
 }
 
@@ -121,11 +145,11 @@ async function failed(env: ServerEnv, auth: MemberAuth, route: MemberRoute, err:
   const errorClass = classify(err, errorClassifierOf(env));
   const charged = route.quotaPrecheck !== false;
   if (charged && (errorClass === 'quota' || (errorClass === 'constraint' && (await overQuota(env, auth.tokenId, bytes))))) return refuse(auth, shape, QUOTA_REASON, 'quota');
-  emit({ kind: shape === 'stored' ? 'blob_error' : shape === 'refreshed' ? 'refresh_error' : 'ingest_error', projectId: auth.projectId, tokenId: auth.tokenId, error_class: errorClass });
+  emit({ kind: shape === 'stored' ? 'blob_error' : shape === 'refreshed' ? 'refresh_error' : 'ingest_error', memberId: auth.memberId, tokenId: auth.tokenId, error_class: errorClass });
   return unavailableFor(route);
 }
 
-/** Order: route → public → source identity → credential shape → authenticate → successor activation (a successor's first authenticated use takes over its predecessor's held bytes and revokes it, once) → token limit → protocol window → route kind → machine identity (a token without one is refused every write, on every member route, in the route's shape) → body (json routes: bounded read and, on a charged route, the quota pre-check; stream routes: content-length required and capped, body left to the handler) → handler. The source bucket is charged only when a request ends without a member identity: that refusal answers 429 once the bucket is exhausted and 401 before. An authenticated member never charges the source bucket and is never refused by source, on matched and unmatched routes alike. After authentication, a failure of the caller's own request answers 200 with a reason and is never retried; a failure on the server's side — a limiter, a handler, or the storage behind it — answers 503 with retry-after and is retried, in the route's own refusal shape once the route is known. Every response after authentication carries the server's protocol number; responses before it do not. */
+/** Order: route → public → source identity → credential shape → authenticate → successor activation (a successor's first authenticated use takes over its predecessor's held bytes and revokes it, once) → token limit → protocol window → route kind → machine identity (a token without one is refused every write, on every member route, in the route's shape) → project header (a request naming no Project in grammar is refused before its body is read) → body (json routes: bounded read and, on a charged route, the quota pre-check; stream routes: content-length required and capped, body left to the handler) → project resolution (the first write on the path, so it runs after every refusal the caller cannot retry into success; a Deployment at its Project ceiling answers 503 with retry-after rather than a refusal: nothing the caller sends differs next time) → handler. The source bucket is charged only when a request ends without a member identity: that refusal answers 429 once the bucket is exhausted and 401 before. An authenticated member never charges the source bucket and is never refused by source, on matched and unmatched routes alike. After authentication, a failure of the caller's own request answers 200 with a reason and is never retried; a failure on the server's side — a limiter, a handler, or the storage behind it — answers 503 with retry-after and is retried, in the route's own refusal shape once the route is known. Every response after authentication carries the server's protocol number; responses before it do not. */
 export function createServer(deps: ServerDeps) {
   async function run(request: Request, env: ServerEnv): Promise<Response> {
     const url = new URL(request.url);
@@ -145,6 +169,23 @@ export function createServer(deps: ServerDeps) {
     // credential-free traffic: an auth route makes an outbound call to GitHub, and an
     // owner route without a valid cookie is as cheap to send as an anonymous member
     // request. Above this point neither would charge the bucket at all.
+    // Enrollment sits with the other credential-free surfaces and is metered like them.
+    // It is the one route that reaches storage without an authenticated member, and it
+    // mints a credential — so the source bucket is charged BEFORE the key is looked at,
+    // and a guesser is answered 429 rather than being allowed to keep guessing at the
+    // cost of one conditional update each time.
+    if (matched?.route.auth === 'enroll') {
+      if (!(await env.sourceLimit.limit({ key: source })).success) return limited();
+      const bounded = await boundedRequest(request);
+      if (bounded === null) return refuseOversized();
+      try {
+        return await matched.route.handler(env, bounded, now);
+      } catch (err) {
+        emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
+        return unavailable();
+      }
+    }
+
     if (matched?.route.auth === 'auth' || matched?.route.auth === 'owner') {
       const config = ownerConfig(env);
       if (config === null) return anonymous();
@@ -156,7 +197,7 @@ export function createServer(deps: ServerDeps) {
       const session = presented === null ? null : await verifySession(config.sessionSecret, presented, now);
       if (session === null || session.sub !== config.ownerGithubId) return anonymous();
       if (!sameOrigin(request, url)) return forbidden();
-      const bounded = await boundedOwnerRequest(request);
+      const bounded = await boundedRequest(request);
       if (bounded === null) return refuseOversized();
       try {
         return await matched.route.handler(env, { request: bounded, session, config, params: matched.params, url, now });
@@ -179,7 +220,20 @@ export function createServer(deps: ServerDeps) {
       return unavailableFor(matched.route);
     }
     if (!auth) {
+      const digest = await sha256Hex(presented);
       emit({ kind: 'auth_failed', matched: matched !== null, source: (await sha256Hex(source)).slice(0, 16) });
+      // A superseded credential answers 401 like any other, and the answer is the same
+      // to the holder either way. The record is what differs: this names which lineage
+      // is still being presented after it moved on, and how long after.
+      const replay = await detectLineageReplay(env.db, digest, now);
+      if (replay !== null) {
+        emit({
+          kind: 'lineage_replayed', memberId: replay.memberId, tokenId: replay.tokenId,
+          lineageRoot: replay.lineageRoot, successorId: replay.successorId,
+          sinceActivationMs: now - replay.activatedAt,
+          withinHookRace: now - replay.activatedAt <= LINEAGE_REPLAY_GRACE_MS,
+        });
+      }
       return anonymous();
     }
     return withProtocol(await member(request, env, auth, matched, now));
@@ -190,19 +244,19 @@ export function createServer(deps: ServerDeps) {
     try {
       return await admitted(request, env, auth, matched, now);
     } catch (err) {
-      emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)), projectId: auth.projectId, tokenId: auth.tokenId });
+      emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)), memberId: auth.memberId, tokenId: auth.tokenId });
       return matched && matched.route.auth === 'member' ? unavailableFor(matched.route) : unavailable();
     }
   }
 
   async function admitted(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, now: number): Promise<Response> {
     if (auth.predecessorId !== null && auth.firstUsedAt === null) {
-      await activateSuccessor(env.db, { projectId: auth.projectId, tokenId: auth.tokenId, predecessorId: auth.predecessorId }, now);
-      emit({ kind: 'successor_activated', projectId: auth.projectId, tokenId: auth.tokenId, predecessorId: auth.predecessorId });
+      await activateSuccessor(env.db, { tokenId: auth.tokenId, predecessorId: auth.predecessorId }, now);
+      emit({ kind: 'successor_activated', memberId: auth.memberId, tokenId: auth.tokenId, predecessorId: auth.predecessorId });
     }
     if (!(await env.tokenLimit.limit({ key: auth.tokenId })).success) return limited();
     if (!protocolSupported(request)) {
-      emit({ kind: 'protocol_unsupported', projectId: auth.projectId, tokenId: auth.tokenId });
+      emit({ kind: 'protocol_unsupported', memberId: auth.memberId, tokenId: auth.tokenId });
       return unsupportedProtocol();
     }
     if (!matched) return unauthorized();
@@ -211,13 +265,44 @@ export function createServer(deps: ServerDeps) {
     if (route.auth !== 'member') return unauthorized();
     if (auth.machineId === null) return refuse(auth, shapeOf(route), NO_MACHINE_IDENTITY, 'no_machine_identity');
 
+    // The Project is resolved once, ahead of both body modes, so a request that
+    // names none is refused before anything reads its body.
+    const projectId = requestedProject(request);
+    if (projectId === null) return refuse(auth, shapeOf(route), NO_PROJECT, 'no_project');
+
+    /**
+     * Member Access spans the Deployment, so a Project the server has not seen is
+     * resolved into existence rather than refused. The bound is the Deployment's, not
+     * this member's: a credential naming fresh Projects fills a table its byte quota
+     * does not cover.
+     *
+     * This runs last among the checks, immediately before the handler. It is the first
+     * thing on this path that can WRITE, and every refusal above it is one the caller
+     * can never retry into success — running it earlier lets a storage fault during
+     * resolution answer a terminal refusal as a retryable 503, and spends a Project
+     * seat on a request that is never going to be admitted.
+     */
+    const resolved = async (): Promise<Response | null> => {
+      if ((await resolveProject(env.db, projectId, now)).resolved) return null;
+      emit({ kind: 'project_limit_reached', memberId: auth.memberId, tokenId: auth.tokenId });
+      // 503 with retry-after, NOT a terminal refusal. The ceiling is the Deployment's
+      // and only an operator can clear it — nothing the member sends differs next time,
+      // which is the definition of the retryable side of this route's contract. A
+      // terminal answer here is read by the member as its own request being wrong: the
+      // spool drops the event for good, and a refusal carrying no `refreshAfter` marks
+      // the credential's rotation terminal, so the machine never rotates again either.
+      return unavailableFor(route);
+    };
+
     if (route.bodyMode === 'stream') {
       const declared = request.headers.get('content-length');
       if (declared === null || !PROTOCOL_VALUE.test(declared)) return refuse(auth, shapeOf(route), 'content-length required', 'content_length');
       const contentLength = Number(declared);
       if (contentLength > route.maxBodyBytes) return refuse(auth, shapeOf(route), `blob exceeds ${route.maxBodyBytes} bytes`, 'blob_cap');
       try {
-        return await route.handler(env, request, { projectId: auth.projectId, machineId: auth.machineId, tokenId: auth.tokenId, now, clock: deps.now, contentLength, params });
+        const limit = await resolved();
+        if (limit !== null) return limit;
+        return await route.handler(env, request, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, now, clock: deps.now, contentLength, params });
       } catch (err) {
         return failed(env, auth, route, err, contentLength);
       }
@@ -229,9 +314,11 @@ export function createServer(deps: ServerDeps) {
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
       bodyBytes = body.bytes;
       if (route.quotaPrecheck !== false && auth.bytesWritten + body.bytes > MEMBER_TOKEN_BYTE_QUOTA) return refuse(auth, shapeOf(route), QUOTA_REASON, 'quota');
+      const limit = await resolved();
+      if (limit !== null) return limit;
       return await route.handler(env, {
-        projectId: auth.projectId, machineId: auth.machineId, tokenId: auth.tokenId,
-        expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt,
+        projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
+        expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
         body: body.text, bodyBytes: body.bytes, now,
       });
     } catch (err) {
