@@ -49,7 +49,7 @@ npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(npm run -s token:revoke -- <TOKEN_ID>)"
 ```
 
-Attribution: every `events` row carries the `token_id` that wrote it, so what a revoked token wrote is a query, not a guess. `sessions.created_by_token_id` names the token that first opened the session and is not updated by later writers; query `events`, not `sessions`, for a token's footprint:
+Attribution: every `events` row carries the `token_id` that wrote it, so what a revoked credential wrote is a query, not a guess. A credential spans the Deployment, so the query below is per Project and answers for that Project only — drop `project_id` from the predicate to see the whole footprint, at the cost of the `idx_events_token (project_id, token_id, created_at)` index it is ordered by. `sessions.created_by_token_id` names the token that first opened the session and is not updated by later writers; query `events`, not `sessions`, for a token's footprint:
 
 ```bash
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
@@ -113,6 +113,8 @@ npm run migrations:apply
 
 `ALTER TABLE ... ADD COLUMN` has no inverse in SQLite; a re-run over a column that already exists fails with `duplicate column name`. Migrations are emitted from `V*_STATEMENTS` ([src/db/schema.ts](src/db/schema.ts)) and every statement there is written `IF NOT EXISTS` where the syntax allows it, so re-application is safe for everything except `ADD COLUMN` — for those, delete the `ALTER` from the emitted file for the recovery run only, and never edit a file the ledger already records.
 
+**Do NOT drop the objects for step 5.** The rule above is for a file whose `ADD COLUMN` cannot be re-run. Step 5 has none: every statement is `IF NOT EXISTS`, `OR IGNORE` or `OR REPLACE`, and the step opens by dropping its own guard table, so re-application over an already-migrated database is a no-op. The tables it creates — `members`, `member_credentials`, `machine_claims`, `enrollment_authorities` — hold the LIVE credentials of a serving Deployment the moment it is past the backfill. Dropping them destroys every member's ability to capture and every record of who wrote what. For step 5 the recovery is `npm run migrations:apply`, and nothing else.
+
 # Break-glass: step 2 refused by a guard
 
 Step 2 opens with two guard tables, ahead of every `ADD COLUMN`, so an aborted run leaves the database at v1 and a repaired one re-applies the step whole. Both fail the same way — `CHECK constraint failed: ok` on the guard's `INSERT` — so read which rows tripped it before repairing.
@@ -152,7 +154,14 @@ npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
 
 Deleting the sessions is not one of the choices: their events are the record the projections re-derive from.
 
-**A credential with no machine identity.** v5 groups credentials into members by
+**A credential the backfill cannot place.** The guard covers three columns:
+`machine_id`, `lineage_root` and `lineage_started_at`. The latter two are nullable
+at the source — v3 added them with `ADD COLUMN`, which cannot carry NOT NULL — and
+NOT NULL at the target, so a NULL in either is a row the insert would decline. A
+closing guard then aborts if the backfill placed fewer credentials than the source
+holds, whatever declined them.
+
+v5 groups credentials into members by
 `machine_id` — `mem_<machine_id>` is the member each backfilled credential joins.
 A NULL has nothing to derive from, and grouping every such row under one member
 would permanently merge distinct people, which is not reconcilable afterwards.
@@ -160,12 +169,23 @@ The guard trips before any of v5's writes, so the step lands nothing:
 
 ```bash
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
-  "SELECT id, project_id, expires_at, revoked_at, bytes_written FROM member_tokens WHERE machine_id IS NULL"
+  "SELECT id, project_id, machine_id, lineage_root, lineage_started_at, expires_at, revoked_at FROM member_tokens WHERE machine_id IS NULL OR lineage_root IS NULL OR lineage_started_at IS NULL"
 ```
 
-Every row the pipeline already refuses each write (`no_machine_identity`), so
-none of them is a working credential. Decide per row, then re-run
-`npm run migrations:apply`:
+A row with no machine identity is one the pipeline already refuses each write
+(`no_machine_identity`), so none of those is a working credential. A row missing
+only its lineage columns may well be live — v3's backfill filled them for every
+row that existed then, so a NULL means the row was written by something that
+bypassed `issueMemberToken`. Decide per row, then re-run `npm run migrations:apply`:
+
+- **Lineage columns are NULL** — a credential is the root of its own lineage
+  unless it succeeded another, so set them from the row itself. Do this before
+  the machine-identity repair below, which may revoke the row:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "UPDATE member_tokens SET lineage_root = COALESCE(lineage_root, id), lineage_started_at = COALESCE(lineage_started_at, expires_at - 604800000) WHERE lineage_root IS NULL OR lineage_started_at IS NULL"
+```
 
 - **The machine is known from outside the database** — set it, and the credential
   joins that machine's member:

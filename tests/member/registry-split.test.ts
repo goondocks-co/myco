@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   deploymentPath, deploymentsDir, listRegistryEntries, migrateRegistry, projectsDir, readDeploymentMembership,
-  readRegistryEntry, registryEntryPath, registryKeyFor, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry,
+  readRegistryEntry, registryEntryPath, registryKeyFor, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry,
 } from '@myco/member/registry.js';
 import { ensureMemberDir } from '@myco/member/store.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
@@ -114,9 +114,28 @@ describe('registry v1 → v2', () => {
     expect(readRegistryEntry(root, mycoHome)).toBeNull();
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(stderrLines.join('')).toContain('not upgradable from v1');
+    // Reported once, on the retry — never as a verdict on whether this call's upgrade
+    // happened to move anything, which is a different question and is another hook's.
+    expect(stderrLines.filter((l) => l.includes('not upgradable from v1'))).toHaveLength(1);
     // The file is left as it is: nothing half-upgraded, and no membership invented for it.
     expect(read(registryEntryPath(root, mycoHome)).version).toBe(1);
     expect(fs.existsSync(deploymentsDir(mycoHome)) && fs.readdirSync(deploymentsDir(mycoHome)).filter((f) => f.endsWith('.json'))).toEqual([]);
+  });
+
+  it('reads an entry another hook upgraded a moment earlier, rather than calling it malformed', () => {
+    // Two hooks read the same v1 file before either takes the lock; one upgrades. The
+    // loser's own upgrade then finds nothing left to do — which says nothing about
+    // whether ITS file is readable now. Testing this call's upgrade count instead of
+    // re-reading is what turns a won race into "malformed" and skips the capture.
+    const root = path.join(mycoHome, 'repo');
+    writeV1(root);
+    expect(migrateRegistry(mycoHome).upgraded).toBe(1);
+
+    // Put a second v1 file back and read the FIRST one: the upgrade this read triggers
+    // reports work for a different file entirely, and the read must still succeed.
+    writeV1(path.join(mycoHome, 'other'), { projectId: 'proj_2' });
+    expect(readRegistryEntry(root, mycoHome)).toMatchObject({ projectId: 'proj_1', token: 'tok-v1' });
+    expect(stderrLines.join('')).not.toContain('not upgradable');
   });
 
   it('runs twice with no further effect, so hooks racing the upgrade is not a problem', () => {
@@ -173,6 +192,19 @@ describe('registry split', () => {
     expect(listRegistryEntries(mycoHome).map((e) => e.token)).toEqual(['rotated', 'rotated', 'rotated']);
   });
 
+  it('keeps the instant this machine joined the Deployment, whatever a later project binding says', () => {
+    // A membership's `joinedAt` is about the Deployment, not about whichever project
+    // was bound most recently. Binding a second project must not restate it as today,
+    // or an operator reading the file is told this machine joined at a moment it did not.
+    const first = path.join(mycoHome, 'p1');
+    writeRegistryEntry(entry(first, { joinedAt: 100, updatedAt: 100 }), { mycoHome });
+    writeRegistryEntry(entry(path.join(mycoHome, 'p2'), { projectId: 'proj_2', joinedAt: 900, updatedAt: 900 }), { mycoHome });
+
+    expect(readDeploymentMembership('https://s.example', mycoHome)!.joinedAt).toBe(100);
+    // The second project's own binding still records when IT was bound.
+    expect(read(registryEntryPath(path.join(mycoHome, 'p2'), mycoHome)).joinedAt).toBe(900);
+  });
+
   it('refuses a binding whose Deployment membership is gone, by name, rather than reporting no membership at all', () => {
     const root = path.join(mycoHome, 'repo');
     writeRegistryEntry(entry(root), { mycoHome });
@@ -197,5 +229,72 @@ describe('registry split', () => {
     expect(listRegistryEntries(mycoHome)).toEqual([]);
     // And it is left exactly as the newer build wrote it: a downgrade never rewrites forward-written state.
     expect(read(registryEntryPath(root, mycoHome))).toMatchObject({ version: REGISTRY_VERSION + 1, projectId: 'proj_from_the_future' });
+  });
+
+  it('merges into an existing membership instead of replacing it, so binding a second project keeps the first project working', () => {
+    // One membership serves every project on a Deployment. A write on behalf of one
+    // project that replaced it would swap the live credential for whatever that call
+    // carried, drop the rotation state so the next hook refreshes immediately, and
+    // strand the displaced credential live on the server with no id left to revoke it.
+    const a = path.join(mycoHome, 'a');
+    writeRegistryEntry(entry(a, { token: 'live', tokenId: 'mt_live', expiresAt: 5_000, refreshAfter: 4_000 }), { mycoHome });
+
+    // `myco member join` for a second project builds an entry carrying no tokenId,
+    // expiresAt or refreshAfter — exactly what the CLI does.
+    writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_2', serverUrl: 'https://s.example', token: 'live', root: path.join(mycoHome, 'b'), machineId: 'm1', joinedAt: 2, updatedAt: 2 }, { mycoHome });
+
+    const held = readDeploymentMembership('https://s.example', mycoHome)!;
+    expect({ tokenId: held.tokenId, expiresAt: held.expiresAt, refreshAfter: held.refreshAfter }).toEqual({ tokenId: 'mt_live', expiresAt: 5_000, refreshAfter: 4_000 });
+    expect(readRegistryEntry(a, mycoHome)).toMatchObject({ token: 'live', tokenId: 'mt_live', projectId: 'proj_1' });
+  });
+
+  it('takes the credential with the last binding that named it, and not before', () => {
+    const a = path.join(mycoHome, 'a');
+    const b = path.join(mycoHome, 'b');
+    writeRegistryEntry(entry(a), { mycoHome });
+    writeRegistryEntry(entry(b, { projectId: 'proj_2' }), { mycoHome });
+
+    expect(removeRegistryEntry(a, mycoHome)).toBe(true);
+    // Still bound by b: the credential stays and b keeps capturing.
+    expect(fs.existsSync(deploymentPath('https://s.example', mycoHome))).toBe(true);
+    expect(readRegistryEntry(b, mycoHome)).not.toBeNull();
+
+    expect(removeRegistryEntry(b, mycoHome)).toBe(true);
+    // Nothing names it now. Leaving the token behind is leaving a live secret on disk
+    // that nothing references and no local record names well enough to revoke.
+    expect(fs.existsSync(deploymentPath('https://s.example', mycoHome))).toBe(false);
+  });
+
+  it('leaves a membership alone when the upgrade re-runs, so a crash inside the binding loop cannot promote an older credential', () => {
+    // The upgrade recomputes its winner from whichever v1 files remain. If the newest
+    // entry's file has already been rewritten as a binding and an older one has not —
+    // the state a crash mid-loop leaves — a second run would otherwise pick the older.
+    const roots = [1, 2].map((n) => path.join(mycoHome, `r${n}`));
+    writeV1(roots[0], { token: 'newest', updatedAt: 30 });
+    writeV1(roots[1], { token: 'older', updatedAt: 10 });
+    expect(migrateRegistry(mycoHome).upgraded).toBe(2);
+    expect(readDeploymentMembership('https://s.example', mycoHome)!.token).toBe('newest');
+
+    // Put the older entry back at v1, as an interrupted run or an older build would.
+    writeV1(roots[1], { token: 'older', updatedAt: 10 });
+    migrateRegistry(mycoHome);
+    expect(readDeploymentMembership('https://s.example', mycoHome)!.token).toBe('newest');
+  });
+
+  it('refuses a binding whose membership records a different Deployment, rather than sending its capture there', () => {
+    const root = path.join(mycoHome, 'repo');
+    writeRegistryEntry(entry(root), { mycoHome });
+    const file = deploymentPath('https://s.example', mycoHome);
+    const held = read(file);
+    fs.writeFileSync(file, `${JSON.stringify({ ...held, serverUrl: 'https://elsewhere.example' }, null, 2)}\n`, { mode: 0o600 });
+    expect(readRegistryEntry(root, mycoHome)).toBeNull();
+  });
+
+  it('carries the member id through the split, so it is not erased by the next write', () => {
+    const root = path.join(mycoHome, 'repo');
+    writeRegistryEntry(entry(root, { memberId: 'mem_abc' }), { mycoHome });
+    expect(readRegistryEntry(root, mycoHome)).toMatchObject({ memberId: 'mem_abc' });
+    writeRegistryEntry(entry(path.join(mycoHome, 'other'), { projectId: 'proj_2' }), { mycoHome });
+    expect(readRegistryEntry(root, mycoHome)).toMatchObject({ memberId: 'mem_abc' });
   });
 });

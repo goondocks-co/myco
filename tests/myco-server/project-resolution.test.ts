@@ -64,10 +64,14 @@ describe('project resolution', () => {
     r.e.sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES ${rows}`).run();
     expect(r.count()).toBe(MAX_PROJECTS);
 
+    // 503 and retryable, not a terminal refusal: only an operator can clear the
+    // ceiling, so nothing the member sends differs next time. A terminal answer would
+    // have the spool drop the event for good.
     const refused = await worker.fetch(post(r.token, 'proj_over', 4), r.e.env);
-    expect({ status: refused.status, body: await refused.json() }).toEqual({
-      status: 200,
-      body: { persisted: false, code: 'project_limit', reason: 'deployment is at its project limit' },
+    expect({ status: refused.status, body: await refused.json(), retryAfter: refused.headers.get('retry-after') !== null }).toEqual({
+      status: 503,
+      body: { persisted: false, code: 'unavailable', reason: 'unavailable' },
+      retryAfter: true,
     });
     expect(r.count()).toBe(MAX_PROJECTS);
     expect((r.e.sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c).toBe(0);

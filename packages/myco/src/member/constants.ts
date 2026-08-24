@@ -28,7 +28,7 @@ export const MEMBER_CODES = [
   'blob_absent', 'no_project', 'offset_gap', 'offset_overlap', 'identity_mismatch', 'no_machine_identity', 'blob_length_mismatch',
   'unknown_kind', 'unknown_field', 'id_grammar', 'clock_skew', 'event_id_conflict', 'projection_conflict',
   'refresh_too_early', 'lineage_expired',
-  'enrollment_unknown', 'enrollment_used', 'enrollment_expired', 'enrollment_revoked', 'project_limit',
+  'enrollment_unknown', 'enrollment_used', 'enrollment_expired', 'enrollment_revoked', 'identity_claimed',
   'unavailable',
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];
@@ -47,12 +47,24 @@ export const MEMBER_INLINE_TEXT_MAX_BYTES = 196_608;
 export const TRANSCRIPT_SLICE_BYTES = 8 * 1024 * 1024;
 
 /**
- * What may be presented as a project id. The server treats the id as opaque —
- * it is whatever the token row carries — so this only refuses what could not
- * be one: whitespace, path separators, control characters, and anything past
- * the server's id ceiling.
+ * What may be presented as a project id.
+ *
+ * This must be EXACTLY what the server admits, not a superset. The Project now
+ * travels in a header on every request, and `myco member join` records it without
+ * the server ever seeing it — its only server contact is a body-less health check.
+ * A member that admits an id the server refuses therefore prints "joined" and is
+ * then refused every request afterwards, which the spool reads as terminal: the
+ * events are dropped and the credential's rotation is marked terminal too.
+ *
+ * `tests/member/protocol-pins.test.ts` holds this against the server's own export.
  */
-export const PROJECT_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+export const PROJECT_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** Project ids the grammar admits but the server refuses; `.` and `..` are path, not names. */
+export const RESERVED_PROJECT_IDS: readonly string[] = ['.', '..'];
+
+/** Whether `value` may be a project id: in grammar and not reserved. */
+export const isProjectId = (value: string): boolean => PROJECT_ID_PATTERN.test(value) && !RESERVED_PROJECT_IDS.includes(value);
 
 /** Shape of every member token the server mints (32 random bytes as unpadded base64url). */
 export const MEMBER_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;

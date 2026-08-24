@@ -87,8 +87,14 @@ const unsupportedProtocol = () =>
   Response.json({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL }, { status: 409 });
 export const NO_MACHINE_IDENTITY = 'token has no machine identity';
 export const NO_PROJECT = 'project header required';
-export const PROJECT_LIMIT = 'deployment is at its project limit';
-const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
+/** What may be presented as a Project id on the wire. Exported so the member can be pinned against it: the member decides a Project id at `myco member join` and the server never sees it until the first capture, so a member that admits more than this prints "joined" and is then refused every request. */
+export const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** The two names the grammar admits but a Project may not carry. */
+export const RESERVED_PROJECT_IDS: readonly string[] = ['.', '..'];
+
+/** Whether `value` may be a Project id: in grammar and not reserved. The one predicate both the wire check and the member's own validation answer to. */
+export const isProjectId = (value: string): boolean => PROJECT_ID.test(value) && !RESERVED_PROJECT_IDS.includes(value);
 
 /**
  * The Project this request acts on, named by the member in a header.
@@ -100,7 +106,7 @@ const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
  */
 function requestedProject(request: Request): string | null {
   const value = request.headers.get(PROJECT_HEADER);
-  if (value === null || !PROJECT_ID.test(value) || value === '.' || value === '..') return null;
+  if (value === null || !isProjectId(value)) return null;
   return value;
 }
 const PROTOCOL_VALUE = /^[0-9]+$/;
@@ -143,7 +149,7 @@ async function failed(env: ServerEnv, auth: MemberAuth, route: MemberRoute, err:
   return unavailableFor(route);
 }
 
-/** Order: route → public → source identity → credential shape → authenticate → successor activation (a successor's first authenticated use takes over its predecessor's held bytes and revokes it, once) → token limit → protocol window → route kind → machine identity (a token without one is refused every write, on every member route, in the route's shape) → body (json routes: bounded read and, on a charged route, the quota pre-check; stream routes: content-length required and capped, body left to the handler) → handler. The source bucket is charged only when a request ends without a member identity: that refusal answers 429 once the bucket is exhausted and 401 before. An authenticated member never charges the source bucket and is never refused by source, on matched and unmatched routes alike. After authentication, a failure of the caller's own request answers 200 with a reason and is never retried; a failure on the server's side — a limiter, a handler, or the storage behind it — answers 503 with retry-after and is retried, in the route's own refusal shape once the route is known. Every response after authentication carries the server's protocol number; responses before it do not. */
+/** Order: route → public → source identity → credential shape → authenticate → successor activation (a successor's first authenticated use takes over its predecessor's held bytes and revokes it, once) → token limit → protocol window → route kind → machine identity (a token without one is refused every write, on every member route, in the route's shape) → project header (a request naming no Project in grammar is refused before its body is read) → body (json routes: bounded read and, on a charged route, the quota pre-check; stream routes: content-length required and capped, body left to the handler) → project resolution (the first write on the path, so it runs after every refusal the caller cannot retry into success; a Deployment at its Project ceiling answers 503 with retry-after rather than a refusal: nothing the caller sends differs next time) → handler. The source bucket is charged only when a request ends without a member identity: that refusal answers 429 once the bucket is exhausted and 401 before. An authenticated member never charges the source bucket and is never refused by source, on matched and unmatched routes alike. After authentication, a failure of the caller's own request answers 200 with a reason and is never retried; a failure on the server's side — a limiter, a handler, or the storage behind it — answers 503 with retry-after and is retried, in the route's own refusal shape once the route is known. Every response after authentication carries the server's protocol number; responses before it do not. */
 export function createServer(deps: ServerDeps) {
   async function run(request: Request, env: ServerEnv): Promise<Response> {
     const url = new URL(request.url);
@@ -279,7 +285,13 @@ export function createServer(deps: ServerDeps) {
     const resolved = async (): Promise<Response | null> => {
       if ((await resolveProject(env.db, projectId, now)).resolved) return null;
       emit({ kind: 'project_limit_reached', memberId: auth.memberId, tokenId: auth.tokenId });
-      return refuse(auth, shapeOf(route), PROJECT_LIMIT, 'project_limit');
+      // 503 with retry-after, NOT a terminal refusal. The ceiling is the Deployment's
+      // and only an operator can clear it — nothing the member sends differs next time,
+      // which is the definition of the retryable side of this route's contract. A
+      // terminal answer here is read by the member as its own request being wrong: the
+      // spool drops the event for good, and a refusal carrying no `refreshAfter` marks
+      // the credential's rotation terminal, so the machine never rotates again either.
+      return unavailableFor(route);
     };
 
     if (route.bodyMode === 'stream') {

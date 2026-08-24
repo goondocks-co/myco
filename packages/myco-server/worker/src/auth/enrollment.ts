@@ -181,3 +181,29 @@ export async function reclaimEnrollmentAuthorities(db: RelationalStore, nowMs: n
     .run();
   return { reclaimed: result.meta.changes };
 }
+
+/**
+ * Claims `machineId` for `memberId`, or reports who already holds it.
+ *
+ * The insert is `OR IGNORE` against a PRIMARY KEY, so the claim is decided by the
+ * database rather than by whoever reads first: two joins racing for one identity
+ * produce one holder and one refusal. The read afterwards names the holder — it
+ * never decides the outcome, only reports it.
+ *
+ * A member re-claiming an identity it already holds succeeds, which is what lets
+ * a machine re-join after its credential is revoked or expires.
+ */
+export async function claimMachineIdentity(
+  db: RelationalStore, machineId: string, memberId: string, nowMs: number,
+): Promise<{ claimed: boolean; heldBy: string }> {
+  await db
+    .prepare(`INSERT OR IGNORE INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)`)
+    .bind(machineId, memberId, nowMs)
+    .run();
+  const row = await db
+    .prepare(`SELECT member_id FROM machine_claims WHERE machine_id = ?`)
+    .bind(machineId)
+    .first<{ member_id: string }>();
+  const heldBy = row!.member_id;
+  return { claimed: heldBy === memberId, heldBy };
+}

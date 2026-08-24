@@ -1,7 +1,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import { MEMBER_ID_PREFIX } from '../constants.js';
 import { emit, type Classifier } from '../telemetry.js';
-import { ensureMember, reclaimEnrollmentAuthorities, spendEnrollmentAuthority, type EnrollmentRefusal } from './enrollment.js';
+import { claimMachineIdentity, ensureMember, reclaimEnrollmentAuthorities, spendEnrollmentAuthority, type EnrollmentRefusal } from './enrollment.js';
 import { issueMemberToken } from './tokens.js';
 
 /** The identity grammar a join may record: machine id, runtime label and runtime kind all answer to it. */
@@ -82,6 +82,18 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
 
   const memberId = spend.memberId ?? `${MEMBER_ID_PREFIX}${base64url(crypto.getRandomValues(new Uint8Array(MEMBER_ID_BYTES)))}`;
   await ensureMember(env.db, memberId, now);
+
+  // A machine identity belongs to one member. Every ownership predicate the ingest
+  // path applies keys on it, so a joiner free to present any identity it liked could
+  // write into another member's sessions across the whole Deployment — and a machine
+  // id is a label, not a secret. The key says WHO joins; this says the identity they
+  // present is not already somebody else's.
+  const claim = await claimMachineIdentity(env.db, machineId, memberId, now);
+  if (!claim.claimed) {
+    emit({ kind: 'join_refused', machineId, reason: 'identity_claimed' });
+    return refuse('identity_claimed', 'machine identity belongs to another member');
+  }
+
   const issued = await issueMemberToken(env.db, { memberId, machineId }, now, null, {
     runtimeLabel: typeof runtimeLabel === 'string' ? runtimeLabel : null,
     runtimeKind: typeof runtimeKind === 'string' ? runtimeKind : null,

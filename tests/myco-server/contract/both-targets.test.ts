@@ -31,7 +31,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { migrateAndSeed } from '../helpers/d1.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { MAX_BLOB_BYTES, MIN_COMPAT_MEMBER_PROTOCOL, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
+import { MAX_BLOB_BYTES, MAX_PROJECTS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 
 import { blobPost, envelope, memberPost, sqliteEnv, TEXT_MEDIA_TYPE, uuid } from '../helpers/fixtures.js';
@@ -207,6 +207,27 @@ describe('one server product, two deployment targets', () => {
     const out = await onBoth(async (t) =>
       t.fetch(memberPost(await t.token(), JSON.stringify({ ...envelope(), pad: 'x'.repeat(MAX_BODY_BYTES) }))));
     agreeing(out, { status: 200, body: { persisted: false, code: 'body_cap', reason: `body exceeds ${MAX_BODY_BYTES} bytes` } });
+  });
+
+  it('resolves a Project neither target has seen, identically on both, and admits the event into it', async () => {
+    // `resolveProject` decides on `meta.changes` from an `INSERT ... SELECT ... WHERE`,
+    // and each target computes that in its own adapter — Cloudflare from D1's own
+    // metadata, self-hosted from whether bun:sqlite reports the statement as producing
+    // rows. A statement that inserts nothing and one that inserts a row must be
+    // distinguishable the same way on both, or one target creates Projects the other
+    // refuses.
+    const out = await onBoth(async (t) => t.fetch(memberPost(await t.token(), envelope(), '/events', { [PROJECT_HEADER]: 'proj_unseen' })));
+    agreeing(out, { status: 200, body: { persisted: true, projected: true } });
+  });
+
+  it('refuses past the Project ceiling identically on both, once each target is full', async () => {
+    const out = await onBoth(async (t) => {
+      const held = (await t.env.db.prepare(`SELECT COUNT(*) AS c FROM projects`).first<{ c: number }>())!.c;
+      const rows = Array.from({ length: MAX_PROJECTS - held }, (_, i) => `('fill_${i}','fill_${i}',0)`).join(',');
+      await t.env.db.prepare(`INSERT INTO projects (project_id, name, created_at) VALUES ${rows}`).run();
+      return t.fetch(memberPost(await t.token(), envelope(), '/events', { [PROJECT_HEADER]: 'proj_over' }));
+    });
+    agreeing(out, { status: 503, body: { persisted: false, code: 'unavailable', reason: 'unavailable' } });
   });
 
   it('answers an authenticated member on an unmatched path identically on both', async () => {

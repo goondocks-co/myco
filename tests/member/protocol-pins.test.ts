@@ -6,10 +6,12 @@
 import { describe, expect, it } from 'bun:test';
 import { LINEAGE_REPLAY_GRACE_MS, MAX_BLOB_BYTES, MIN_COMPAT_MEMBER_PROTOCOL, PROTOCOL_HEADER as SERVER_PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { CLASSIFIERS, UNAVAILABLE } from '@myco-server-worker/telemetry.js';
+import { isProjectId as serverIsProjectId, PROJECT_ID as SERVER_PROJECT_ID } from '@myco-server-worker/pipeline.js';
 import { ID_GRAMMAR, MAX_PAYLOAD_BYTES, PRODUCER_GRAMMAR } from '@myco-server-worker/ingest/envelope.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
 import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
+import { isProjectId as memberIsProjectId, PROJECT_ID_PATTERN as MEMBER_PROJECT_ID_PATTERN } from '@myco/member/constants.js';
 import {
   MEMBER_CODES, MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES, MEMBER_PROTOCOL, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, TRANSCRIPT_SLICE_BYTES,
 } from '@myco/member/constants.js';
@@ -99,6 +101,20 @@ describe('member ↔ worker pins', () => {
 
   it('the window the member assumes before the server announces one is the window the server keeps', () => {
     expect(MEMBER_TOKEN_REFRESH_WINDOW_MS).toBe(SERVER_REFRESH_WINDOW_MS);
+  });
+
+  it('admits exactly the project ids the server does — no more, since the member decides one before the server ever sees it', () => {
+    // `myco member join` records a Project id and its only server contact is a body-less
+    // health check, so the server never sees the id until the first capture. A member
+    // that admits a superset therefore reports a successful join and is then refused
+    // every request, which the spool reads as terminal: events dropped, rotation dead.
+    expect(MEMBER_PROJECT_ID_PATTERN.source).toBe(SERVER_PROJECT_ID.source);
+    for (const id of ['proj_1', 'a', 'a.b-c_d', 'x'.repeat(64)]) {
+      expect({ id, member: memberIsProjectId(id), server: serverIsProjectId(id) }).toEqual({ id, member: true, server: true });
+    }
+    for (const id of ['', '.', '..', 'x'.repeat(65), 'has space', 'my:proj', 'a/b', 'a\\b']) {
+      expect({ id, member: memberIsProjectId(id), server: serverIsProjectId(id) }).toEqual({ id, member: false, server: false });
+    }
   });
 
   it("the server's replay grace outlasts the longest hook any symbiont declares, so a rotation race is never recorded as unexplained", () => {

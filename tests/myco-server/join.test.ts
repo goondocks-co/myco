@@ -91,6 +91,45 @@ describe('member join', () => {
     expect(r.members() - r.seededMembers).toBe(1);
   });
 
+  it('refuses a join presenting a machine identity another member already holds, and issues nothing for it', async () => {
+    // The attack this closes: `machine_id` — not `member_id` — is what every ownership
+    // predicate in the ingest path keys on, and it is a label rather than a secret. A
+    // joiner free to present any identity could append into the holder's sessions in
+    // every Project of the Deployment. The key decides WHO joins; it must not also let
+    // the joiner decide WHOSE machine they are.
+    const r = await rig();
+    const victim = await json(await r.join({ key: (await r.key()).key, machineId: 'machine_victim' }));
+    expect(victim.joined).toBe(true);
+
+    const attacker = await json(await r.join({ key: (await r.key()).key, machineId: 'machine_victim' }));
+    expect(attacker).toEqual({ joined: false, code: 'identity_claimed', reason: 'machine identity belongs to another member' });
+
+    // One credential on that identity, and it is still the victim's.
+    expect(r.e.sqlite.query(`SELECT member_id FROM member_credentials WHERE machine_id = 'machine_victim'`).all())
+      .toEqual([{ member_id: victim.memberId }]);
+    expect(r.e.sqlite.query(`SELECT member_id FROM machine_claims WHERE machine_id = 'machine_victim'`).get())
+      .toEqual({ member_id: victim.memberId });
+  });
+
+  it('lets the member that holds an identity re-join on it, so a revoked or expired runtime can come back', async () => {
+    const r = await rig();
+    const first = await json(await r.join({ key: (await r.key()).key, machineId: 'machine_same' }));
+    r.e.sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE id = ?`).run(r.now, first.tokenId);
+
+    const again = await json(await r.join({ key: (await r.key({ memberId: first.memberId as string })).key, machineId: 'machine_same' }));
+    expect({ joined: again.joined, memberId: again.memberId }).toEqual({ joined: true, memberId: first.memberId });
+    expect(again.tokenId).not.toBe(first.tokenId);
+  });
+
+  it('admits one claimant when two members race for one machine identity', async () => {
+    const r = await rig();
+    const keys = await Promise.all([r.key(), r.key()]);
+    const [a, b] = await Promise.all(keys.map((k) => r.join({ key: k.key, machineId: 'machine_race' }).then(json)));
+    expect([a, b].map((o) => o.joined).sort()).toEqual([false, true]);
+    expect([a, b].find((o) => o.joined === false)).toMatchObject({ code: 'identity_claimed' });
+    expect((r.e.sqlite.query(`SELECT COUNT(*) c FROM member_credentials WHERE machine_id = 'machine_race'`).get() as any).c).toBe(1);
+  });
+
   it('refuses a key that is unknown, spent, expired or revoked, and issues nothing for any of them', async () => {
     const r = await rig();
     const spent = await r.key();

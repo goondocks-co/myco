@@ -342,7 +342,9 @@ describe('blob route', () => {
       { name: 'put throws', boom: () => false, bucket: true },
       { name: 'row throws', boom: (sql) => sql.startsWith('INSERT INTO blobs') },
       { name: 'release throws', boom: (sql) => /^DELETE FROM blob_reservations WHERE reservation_id/.test(sql) },
-      { name: 'expiry sweep throws', boom: (sql) => /^DELETE FROM blob_reservations WHERE project_id/.test(sql) },
+      // The sweep is keyed on the credential, matching what the quota counts; matching it
+      // here by its old project predicate would silently stop inducing the fault at all.
+      { name: 'expiry sweep throws', boom: (sql) => /^DELETE FROM blob_reservations WHERE token_id/.test(sql) },
     ];
     for (const fault of faults) {
       const e = sqliteEnv({ onSql: (sql) => { if (fault.boom(sql)) throw new Error('D1_ERROR: induced'); } });

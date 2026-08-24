@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken, MEMBER_TOKEN_MAX_LINEAGE_MS, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
-import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, MAX_PROJECTS, MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { CLASSIFIERS, UNAVAILABLE, type Classifier } from '@myco-server-worker/telemetry.js';
@@ -74,13 +74,13 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   },
   no_machine_identity: (r) => r.post(r.anonymous.token, {}),
   no_project: (r) => r.fetch(memberPost(r.t1.token, envelope({}), '/events', { [PROJECT_HEADER]: '' })),
-  project_limit: (r) => {
-    const held = (r.e.sqlite.query(`SELECT COUNT(*) c FROM projects`).get() as { c: number }).c;
-    const rows = Array.from({ length: MAX_PROJECTS - held }, (_, i) => `('fill_${i}','fill_${i}',0)`).join(',');
-    r.e.sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES ${rows}`).run();
-    return r.fetch(memberPost(r.t1.token, envelope({}), '/events', { [PROJECT_HEADER]: 'proj_over' }));
-  },
   enrollment_unknown: (r) => r.join('u'.repeat(43)),
+  identity_claimed: async (r) => {
+    const held = await issueEnrollmentAuthority(r.e.db, r.now);
+    expect((await json(await r.join(held.key, 'machine_held'))).joined).toBe(true);
+    const other = await issueEnrollmentAuthority(r.e.db, r.now);
+    return r.join(other.key, 'machine_held');
+  },
   enrollment_used: async (r) => {
     const key = await issueEnrollmentAuthority(r.e.db, r.now);
     expect((await json(await r.join(key.key, 'machine_used'))).joined).toBe(true);

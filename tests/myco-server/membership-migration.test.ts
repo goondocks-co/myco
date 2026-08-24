@@ -111,4 +111,31 @@ describe('flat-membership migration (schema step 5)', () => {
     expect(idx).toContain('idx_member_credentials_live_successor');
     expect(idx).toContain('idx_member_credentials_hash');
   });
+
+  it('aborts rather than silently dropping a credential whose lineage columns the target refuses', () => {
+    const tableNames = (db: Database) => (db.query(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{ name: string }>).map((t) => t.name);
+    // `lineage_root`/`lineage_started_at` are nullable at the source — V3 added them
+    // with ADD COLUMN, which cannot carry NOT NULL — and NOT NULL at the target. With
+    // `OR IGNORE` on the insert, such a row is skipped and the step still reports
+    // success, leaving `events.token_id` pointing at a credential that does not exist.
+    for (const column of ['lineage_root', 'lineage_started_at']) {
+      const db = seededV4();
+      db.query(`UPDATE member_tokens SET ${column} = NULL`).run();
+      expect(() => applyV5(db)).toThrow(/CHECK constraint failed/);
+      // Nothing landed: the guard runs ahead of every write in the step.
+      expect(tableNames(db)).not.toContain('member_credentials');
+      expect((db.query(`SELECT value FROM schema_meta WHERE key='version'`).get() as any).value).toBe('4');
+    }
+  });
+
+  it('aborts when the backfill places fewer credentials than the source holds, whatever declined them', () => {
+    // The closing guard does not need to know WHICH constraint an `OR IGNORE` absorbed.
+    // A credential already present under a different shape is enough to make the counts
+    // disagree, and disagreeing counts are what it refuses to stamp a version over.
+    const db = seededV4({ machineId: null });
+    // A NULL machine_id is caught by the OPENING guard, so the pair holds together: the
+    // step never reaches a state where some rows are carried and others quietly are not.
+    expect(() => applyV5(db)).toThrow(/CHECK constraint failed/);
+    expect((db.query(`SELECT value FROM schema_meta WHERE key='version'`).get() as any).value).toBe('4');
+  });
 });

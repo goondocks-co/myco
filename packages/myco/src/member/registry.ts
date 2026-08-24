@@ -68,6 +68,8 @@ export interface RegistryEntry {
   serverUrl: string;
   token: string;
   tokenId?: string;
+  /** The member this machine joined the Deployment as; absent on an entry recorded before the server named one. */
+  memberId?: string;
   expiresAt?: number;
   /** The server-announced instant the token's refresh window opens; absent until the first window answer. */
   refreshAfter?: number;
@@ -189,12 +191,17 @@ export function readDeploymentMembership(serverUrl: string, mycoHome: string = r
 function compose(binding: ProjectBinding, mycoHome: string): RegistryEntry | null {
   const membership = readDeploymentMembership(binding.serverUrl, mycoHome);
   if (membership === null) return null;
+  // The lookup is by a truncated hash of the URL, so agreement is asserted rather than
+  // assumed: a membership whose recorded URL differs from the binding's would otherwise
+  // silently send this project's capture to the server the membership names.
+  if (membership.serverUrl.replace(/\/+$/, '') !== binding.serverUrl.replace(/\/+$/, '')) return null;
   return {
     version: REGISTRY_VERSION,
     projectId: binding.projectId,
     serverUrl: membership.serverUrl,
     token: membership.token,
     tokenId: membership.tokenId,
+    memberId: membership.memberId,
     expiresAt: membership.expiresAt,
     refreshAfter: membership.refreshAfter,
     routeMissingNoticedAt: membership.routeMissingNoticedAt,
@@ -214,6 +221,7 @@ function decompose(entry: RegistryEntry): { membership: DeploymentMembership; bi
       serverUrl: entry.serverUrl,
       token: entry.token,
       tokenId: entry.tokenId,
+      memberId: entry.memberId,
       expiresAt: entry.expiresAt,
       refreshAfter: entry.refreshAfter,
       routeMissingNoticedAt: entry.routeMissingNoticedAt,
@@ -269,6 +277,13 @@ export function migrateRegistry(mycoHome: string = resolveMycoHome()): { upgrade
       if (held === undefined || entry.updatedAt > held.updatedAt) byDeployment.set(key, entry);
     }
     for (const entry of byDeployment.values()) {
+      // A membership already on disk is the current one and is left alone. The upgrade
+      // recomputes its winner from whichever v1 files still remain, so a run that dies
+      // inside the binding loop below — one atomic write per project, the common case —
+      // would otherwise promote an older credential over the one the first run chose.
+      // The same protects an already-split home from an older build dropping a fresh v1
+      // file into it: that one file must not redirect every project on the Deployment.
+      if (readDeploymentMembership(entry.serverUrl, mycoHome) !== null) continue;
       const { membership } = decompose(entry);
       writePrivateFileAtomic(deploymentPath(entry.serverUrl, mycoHome), `${JSON.stringify(membership, null, 2)}\n`);
     }
@@ -306,10 +321,16 @@ function readEntryAt(root: string, mycoHome: string, mayUpgrade = false): Regist
   // re-upgraded forever, and this runs inside a hook: the loop would not end until the
   // harness killed the hook, on every hook, with nothing captured and no error said.
   if (readableVersion(read.value) === 1) {
-    if (!mayUpgrade || migrateRegistry(mycoHome).upgraded === 0) {
+    if (!mayUpgrade) {
       reportSkippedPrivateFile('registry entry', file, { reason: 'malformed', detail: 'not upgradable from v1' });
       return null;
     }
+    // The retry is unconditional, and single. Whether THIS call upgraded anything says
+    // nothing about whether THIS file is now readable: two hooks can both read the same
+    // v1 file before either takes the lock, and the loser then finds nothing left to
+    // upgrade and would report the entry malformed a millisecond after it was upgraded.
+    // `mayUpgrade` is what bounds the retry, so the read below cannot come back here.
+    migrateRegistry(mycoHome);
     return readEntryAt(root, mycoHome);
   }
   if (!isBinding(read.value)) {
@@ -357,21 +378,62 @@ export function writeRegistryEntry(entry: RegistryEntry, opts: { mycoHome?: stri
   const write = () => {
     prepareRegistryDir(mycoHome);
     const { membership, binding } = decompose(entry);
-    writePrivateFileAtomic(deploymentPath(entry.serverUrl, mycoHome), `${JSON.stringify(membership, null, 2)}\n`);
+    // The membership is MERGED, never replaced. One membership serves every project
+    // bound to a Deployment, so a write on behalf of one project must not discard what
+    // the others depend on: binding a second project would otherwise replace the live
+    // credential with whatever that call happened to carry, drop the rotation state so
+    // the next hook refreshes immediately, and strand the displaced credential live on
+    // the server with no local record of the id to revoke it by.
+    //
+    // `joinedAt` is when this machine joined the DEPLOYMENT, which no one project's
+    // binding knows, so an existing membership keeps the instant it already has.
+    const held = readDeploymentMembership(entry.serverUrl, mycoHome);
+    const merged: DeploymentMembership = held === null ? membership : {
+      ...held,
+      ...Object.fromEntries(Object.entries(membership).filter(([, v]) => v !== undefined)),
+      joinedAt: held.joinedAt,
+    } as DeploymentMembership;
+    writePrivateFileAtomic(deploymentPath(entry.serverUrl, mycoHome), `${JSON.stringify(merged, null, 2)}\n`);
     writePrivateFileAtomic(registryEntryPath(entry.root, mycoHome), `${JSON.stringify(binding, null, 2)}\n`);
   };
   if (opts.locked) write();
   else withRegistryLock(write, mycoHome);
 }
 
-/** Delete the entry for `root`; returns whether an entry file existed. */
+/**
+ * Delete the binding for `root`, and the Deployment membership with it when no
+ * other binding still names that Deployment. Returns whether a binding existed.
+ *
+ * The membership holds the bearer token. Before the credential was Deployment-wide
+ * it lived in the very file this deletes, so leaving a project ended its local
+ * life; now it outlives every binding unless the last one takes it. A credential
+ * left behind is a live secret on disk that nothing references and no local record
+ * names well enough to revoke.
+ */
 export function removeRegistryEntry(root: string, mycoHome: string = resolveMycoHome()): boolean {
   return withRegistryLock(() => {
     const file = registryEntryPath(root, mycoHome);
     if (!fs.existsSync(file)) return false;
+    const read = readPrivateJson<ProjectBinding>(file);
+    const serverUrl = read.ok && isBinding(read.value) ? read.value.serverUrl : null;
     fs.unlinkSync(file);
+    if (serverUrl !== null && !anyBindingNames(serverUrl, mycoHome)) {
+      fs.rmSync(deploymentPath(serverUrl, mycoHome), { force: true });
+    }
     return true;
   }, mycoHome);
+}
+
+/** Whether any project binding still names `serverUrl`. Read under the registry lock by its one caller. */
+function anyBindingNames(serverUrl: string, mycoHome: string): boolean {
+  const dir = projectsDir(mycoHome);
+  if (!fs.existsSync(dir)) return false;
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith('.json')) continue;
+    const read = readPrivateJson<ProjectBinding>(path.join(dir, name));
+    if (read.ok && isBinding(read.value) && read.value.serverUrl === serverUrl) return true;
+  }
+  return false;
 }
 
 /** Every readable entry, fail-closed per file. Upgrades v1 entries first, so a machine that has not run since the split lists its memberships rather than nothing. */

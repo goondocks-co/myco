@@ -1,5 +1,6 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
+import { OWNER_ACTOR_PREFIX } from '../constants.js';
 import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialAsMember } from '../auth/tokens.js';
 import { listTokens, tokenActivity } from '../read/tokens.js';
@@ -37,7 +38,10 @@ export async function handleMintToken(env: ServerEnv, ctx: OwnerContext): Promis
 export async function handleRevokeToken(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
   if (scope === null) return notFound();
-  return ok(await revokeCredentialAsMember(env.db, ctx.session.sub, ctx.params.tokenId, ctx.now));
+  // The owner acts through the dashboard, not as a member, and `revoked_by` must say
+  // which: member ids carry `mem_`, so an unprefixed GitHub id in the same column is
+  // indistinguishable from one — exactly the ambiguity the column exists to remove.
+  return ok(await revokeCredentialAsMember(env.db, `${OWNER_ACTOR_PREFIX}${ctx.session.sub}`, ctx.params.tokenId, ctx.now));
 }
 
 /** What one token wrote. The scope comes from the path, never from a query parameter the caller supplies. */
