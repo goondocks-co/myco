@@ -332,6 +332,20 @@ Task YAML, the phased executor, turn budgets, model routing, and the `agent_runs
 
 PowerManager keeps its policy; **waking is platform-specific** (Durable Object alarm + cron on W, in-process scheduler on C).
 
+That division is the whole design, and it is worth stating why so it is not re-opened. `PowerManager` resolves four states (`active`/`idle`/`sleep`/`deep_sleep`) from registered assertions — the OS idiom of IOPMAssertion, systemd inhibit and wake locks — and computes an interval from them. Today that interval reaches a `setTimeout` (`packages/myco/src/daemon/power.ts`), which hands the resolved state to `JobRunner.dispatch`. **The timer is the only platform-specific part**: policy, states, assertions and job registry are shared, and a target supplies nothing but "wake me at this instant".
+
+On the Worker that instant is a **Durable Object alarm**, not a cron trigger:
+
+- An alarm takes an absolute time at **millisecond** precision and is re-armed on each fire — the same shape as the `setTimeout` it replaces. A cron expression bottoms out at one minute and cannot express an interval computed from assertions.
+- **No alarm set means nothing runs.** That is exactly what `deep_sleep` means, and it costs nothing. A cron trigger fires whether or not there is work, which is the opposite of what a power manager is for.
+- Cron triggers are capped **per account** (5 on the free plan, 250 on paid), so making them the primary waker would ceiling how many Deployments an account can host. Alarms carry no such cap.
+
+A **low-frequency cron trigger is still configured, as a recovery floor**. An alarm is state held inside the Durable Object: if it is never armed — a defect, or a Deployment that has never taken a request — nothing ever wakes and the failure is *silent*. Cron is externally guaranteed and is the only thing that recovers that. It is insurance, not the mechanism.
+
+Alarms may fire more than once, so **the tick must be idempotent**. The assertion model already satisfies this by construction — each evaluation re-probes its sources and recomputes the state rather than accumulating — and a gate must fail by name if a tick ever carries state between invocations.
+
+The port is `WakeScheduler` in `packages/myco-server/worker/src/core/deferred-adapters.ts`, still a proposal: **#913**/**#914** implement it per target and **#919** states what must run and when. Its signature is designed with that consumer, not ahead of it.
+
 | Job | Disposition | Surface | Blk | Replacement / reason | Owner |
 |---|---|---|---|---|---|
 | `embedding-reconcile` | REPLACE | Core, W, C | Blk | Server-side against Vectorize / SQLite vectors | #919 |
