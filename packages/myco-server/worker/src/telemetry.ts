@@ -59,6 +59,7 @@ export const CLASSIFIERS = [
   'blob_absent', 'no_project', 'offset_gap', 'offset_overlap', 'identity_mismatch', 'no_machine_identity', 'blob_length_mismatch',
   'unknown_kind', 'unknown_field', 'id_grammar', 'clock_skew', 'event_id_conflict', 'projection_conflict',
   'refresh_too_early', 'lineage_expired',
+  'enrollment_unknown', 'enrollment_used', 'enrollment_expired', 'enrollment_revoked',
 ] as const;
 export type Classifier = (typeof CLASSIFIERS)[number];
 

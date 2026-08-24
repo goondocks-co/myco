@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS enrollment_authorities (
      used_at           INTEGER,
      used_by_runtime   TEXT,
      revoked_at        INTEGER,
-     created_by_member TEXT);
+     created_by_member TEXT,
+     member_id         TEXT REFERENCES members(id));
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollment_authorities_hash ON enrollment_authorities (key_hash);
 

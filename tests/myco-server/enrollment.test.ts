@@ -37,7 +37,7 @@ describe('enrollment authorities', () => {
   it('spends once, and a second presentation is refused as already used', async () => {
     const { db } = store();
     const issued = await issueEnrollmentAuthority(db, NOW);
-    expect(await spendEnrollmentAuthority(db, issued.key, NOW, 'runtime_a')).toEqual({ ok: true, id: issued.id });
+    expect(await spendEnrollmentAuthority(db, issued.key, NOW, 'runtime_a')).toEqual({ ok: true, id: issued.id, memberId: null });
     expect(await spendEnrollmentAuthority(db, issued.key, NOW, 'runtime_b')).toEqual({ ok: false, reason: 'already_used' });
   });
 

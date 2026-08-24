@@ -8,6 +8,7 @@ import { handleBlobRead } from './api/blobs.js';
 import { handleMintToken, handleRevokeToken, handleTokenActivity, handleTokens } from './api/tokens.js';
 import { handleProjectSessions, handleSession, handleSessionChildren, handleTranscript } from './api/sessions.js';
 import { MAX_BLOB_BYTES } from './constants.js';
+import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
 import { handleBlob } from './ingest/blobs.js';
 import { handleEvents } from './ingest/events.js';
@@ -22,6 +23,8 @@ export type StreamHandler = (env: ServerEnv, request: Request, ctx: StreamContex
 export type AuthHandler = (request: Request, ctx: AuthContext) => Promise<Response>;
 /** Owner handlers run only after a valid owner session; they receive the bindings and the resolved session. */
 export type OwnerHandler = (env: ServerEnv, ctx: OwnerContext) => Promise<Response>;
+/** Enroll handlers present an enrollment authority rather than a credential, so they reach storage without an authenticated member. They receive the unread request and consume its body themselves, within the bound the pipeline enforces. */
+export type EnrollHandler = (env: ServerEnv, request: Request, now: number) => Promise<Response>;
 
 /** The key a member route answers under: `{<shape>: true|false, …}` on every outcome after authentication, refusals and 503s included. */
 export type Shape = 'persisted' | 'stored' | 'refreshed';
@@ -32,6 +35,7 @@ export type Route =
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted' | 'refreshed'; quotaPrecheck?: boolean; handler: MemberHandler }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; quotaPrecheck?: boolean; maxBodyBytes: number; handler: StreamHandler }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
+  | { method: string; path: string; auth: 'enroll'; handler: EnrollHandler }
   | { method: string; path: string; pattern?: RegExp; auth: 'owner'; handler: OwnerHandler };
 
 async function health(): Promise<Response> {
@@ -43,6 +47,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
   { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, handler: handleRefresh },
+  { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'GET', path: '/api/status', auth: 'owner', handler: handleStatus },
   { method: 'GET', path: '/api/projects', auth: 'owner', handler: handleProjects },
   { method: 'POST', path: '/api/projects', auth: 'owner', handler: handleCreateProject },

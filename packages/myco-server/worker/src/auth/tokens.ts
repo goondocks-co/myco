@@ -28,6 +28,8 @@ export interface MemberAuth {
   predecessorId: string | null;
   /** The instant of a successor's first authenticated use; null until then, and always null for an operator-minted token. */
   firstUsedAt: number | null;
+  /** How the runtime described itself at issue. Read-only here; nothing admits or refuses on it. */
+  runtime: RuntimeClaims;
 }
 
 export interface IssuedMemberToken {
@@ -44,7 +46,7 @@ export interface TokenLineage {
 }
 
 /** What a refresh needs of the presented token. */
-export type RefreshSubject = Pick<MemberAuth, 'memberId' | 'tokenId' | 'machineId' | 'expiresAt' | 'lineageRoot' | 'lineageStartedAt'>;
+export type RefreshSubject = Pick<MemberAuth, 'memberId' | 'tokenId' | 'machineId' | 'expiresAt' | 'lineageRoot' | 'lineageStartedAt' | 'runtime'>;
 
 export type RefreshResult =
   | { refreshed: true; token: string; tokenId: string; expiresAt: number; refreshAfter: number }
@@ -68,6 +70,8 @@ interface AuthRow {
   lineage_started_at: number | null;
   predecessor_id: string | null;
   first_used_at: number | null;
+  runtime_label: string | null;
+  runtime_kind: string | null;
 }
 
 function base64url(bytes: Uint8Array): string {
@@ -78,35 +82,43 @@ export function mintMemberToken(): string {
   return base64url(crypto.getRandomValues(new Uint8Array(MEMBER_TOKEN_BYTES)));
 }
 
-/** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now or at the lineage ceiling, whichever is sooner. A successor's row is written only while its predecessor is still live at the instant of the insert (the statement's change count says whether it was); a root has no predecessor and always lands. */
+/** The runtime holding a credential, as that runtime describes itself. Recorded for an operator to read; never an admission input. */
+export interface RuntimeClaims {
+  runtimeLabel: string | null;
+  runtimeKind: string | null;
+}
+
+export const NO_RUNTIME_CLAIMS: RuntimeClaims = { runtimeLabel: null, runtimeKind: null };
+
+/** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, the runtime claims as given, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now or at the lineage ceiling, whichever is sooner. A successor's row is written only while its predecessor is still live at the instant of the insert (the statement's change count says whether it was); a root has no predecessor and always lands. */
 function memberTokenInsert(
-  db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, tokenId: string, digest: string,
+  db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, tokenId: string, digest: string, runtime: RuntimeClaims,
 ): { statement: PreparedStatement; expiresAt: number } {
   const predecessorId = lineage === null ? null : lineage.predecessorId;
   const lineageRoot = lineage === null ? tokenId : lineage.lineageRoot;
   const lineageStartedAt = lineage === null ? nowMs : lineage.lineageStartedAt;
   const expiresAt = Math.min(nowMs + MEMBER_TOKEN_TTL_MS, lineageStartedAt + MEMBER_TOKEN_MAX_LINEAGE_MS);
   const statement = db
-    .prepare(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at)
-              SELECT ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL
+    .prepare(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind)
+              SELECT ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL, ?, ?
                WHERE ? IS NULL OR ${TOKEN_LIVE}`)
-    .bind(tokenId, member.memberId, member.machineId, digest, nowMs, expiresAt, predecessorId, lineageRoot, lineageStartedAt, predecessorId, predecessorId);
+    .bind(tokenId, member.memberId, member.machineId, digest, nowMs, expiresAt, predecessorId, lineageRoot, lineageStartedAt, runtime.runtimeLabel, runtime.runtimeKind, predecessorId, predecessorId);
   return { statement, expiresAt };
 }
 
 /** A fresh raw token and its id, with the insert that stores the digest. */
-async function mintInsert(db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null): Promise<{ statement: PreparedStatement; issued: IssuedMemberToken }> {
+async function mintInsert(db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, runtime: RuntimeClaims): Promise<{ statement: PreparedStatement; issued: IssuedMemberToken }> {
   const token = mintMemberToken();
   const tokenId = `${TOKEN_ID_PREFIX}${base64url(crypto.getRandomValues(new Uint8Array(TOKEN_ID_BYTES)))}`;
-  const { statement, expiresAt } = memberTokenInsert(db, member, nowMs, lineage, tokenId, await sha256Hex(token));
+  const { statement, expiresAt } = memberTokenInsert(db, member, nowMs, lineage, tokenId, await sha256Hex(token), runtime);
   return { statement, issued: { token, tokenId, expiresAt } };
 }
 
 /** Sole inserter of member_credentials rows. Stores the digest; returns the raw token once. Without `lineage` the token roots a lineage of its own; with it, the token succeeds `lineage.predecessorId` and expires no later than the lineage ceiling. */
 export async function issueMemberToken(
-  db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null = null,
+  db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null = null, runtime: RuntimeClaims = NO_RUNTIME_CLAIMS,
 ): Promise<IssuedMemberToken> {
-  const { statement, issued } = await mintInsert(db, member, nowMs, lineage);
+  const { statement, issued } = await mintInsert(db, member, nowMs, lineage, runtime);
   await statement.run();
   return issued;
 }
@@ -152,8 +164,13 @@ export async function refreshMemberToken(db: RelationalStore, subject: RefreshSu
   const opensAt = windowOpensAt(subject.expiresAt);
   if (nowMs < opensAt) return { refreshed: false, code: 'refresh_too_early', reason: REFRESH_TOO_EARLY, refreshAfter: opensAt };
   if (subject.lineageStartedAt + MEMBER_TOKEN_MAX_LINEAGE_MS <= subject.expiresAt) return { refreshed: false, code: 'lineage_expired', reason: LINEAGE_EXPIRED };
+  // The successor inherits its runtime binding from the STORED predecessor row, never
+  // from the refreshing request. A re-auth that re-establishes identity from what the
+  // caller sends is how a device silently loses its binding and reverts to whoever
+  // first authenticated it; carrying the row forward is what keeps a refresh a
+  // continuation of one runtime rather than a fresh claim about which runtime it is.
   const successor = await mintInsert(db, { memberId: subject.memberId, machineId: subject.machineId }, nowMs,
-    { predecessorId: subject.tokenId, lineageRoot: subject.lineageRoot, lineageStartedAt: subject.lineageStartedAt });
+    { predecessorId: subject.tokenId, lineageRoot: subject.lineageRoot, lineageStartedAt: subject.lineageStartedAt }, subject.runtime);
   const [, inserted] = await db.batch([
     db.prepare(`UPDATE member_credentials SET revoked_at = ? WHERE predecessor_id = ? AND revoked_at IS NULL AND first_used_at IS NULL AND ${TOKEN_LIVE}`).bind(nowMs, subject.tokenId, subject.tokenId),
     successor.statement,
@@ -178,7 +195,8 @@ export async function authenticateServerMemberToken(
   const row = await db
     .prepare(`SELECT s.value AS schema_version,
                      t.id, t.member_id, t.machine_id, t.expires_at, t.revoked_at, t.bytes_written,
-                     t.lineage_root, t.lineage_started_at, t.predecessor_id, t.first_used_at
+                     t.lineage_root, t.lineage_started_at, t.predecessor_id, t.first_used_at,
+                     t.runtime_label, t.runtime_kind
                 FROM schema_meta s
                 LEFT JOIN member_credentials t ON t.token_hash = ?
                WHERE s.key = 'version'`)
@@ -195,5 +213,51 @@ export async function authenticateServerMemberToken(
     memberId: row.member_id, tokenId: row.id, machineId: row.machine_id, bytesWritten: row.bytes_written,
     expiresAt: row.expires_at, lineageRoot: row.lineage_root, lineageStartedAt: row.lineage_started_at,
     predecessorId: row.predecessor_id, firstUsedAt: row.first_used_at,
+    runtime: { runtimeLabel: row.runtime_label, runtimeKind: row.runtime_kind },
+  };
+}
+
+/**
+ * A presented credential that has already been superseded: its successor has been
+ * activated, so the lineage has moved on and this one no longer authenticates.
+ */
+export interface LineageReplay {
+  tokenId: string;
+  memberId: string;
+  lineageRoot: string;
+  machineId: string | null;
+  successorId: string;
+  /** The instant the successor first authenticated — the instant this credential stopped working. */
+  activatedAt: number;
+}
+
+/**
+ * Whether a digest that failed to authenticate belongs to a credential its own
+ * lineage has moved past.
+ *
+ * A rotation revokes the predecessor at the successor's first use, so a request
+ * arriving on the predecessor afterwards is indistinguishable, by its outcome,
+ * from a request on a credential an operator revoked or one that simply expired
+ * — all three answer 401. That is the case worth naming: a lineage refreshed
+ * from a credential that has already been superseded is either a hook that lost
+ * a rotation race or a holder of a copy, and only the audit record tells an
+ * operator which lineages are seeing it.
+ *
+ * The read runs only after authentication has already failed, so the admission
+ * path stays one statement.
+ */
+export async function detectLineageReplay(db: RelationalStore, digest: string, nowMs: number): Promise<LineageReplay | null> {
+  const row = await db
+    .prepare(`SELECT p.id, p.member_id, p.lineage_root, p.machine_id, s.id AS successor_id, s.first_used_at
+                FROM member_credentials p
+                JOIN member_credentials s ON s.predecessor_id = p.id
+               WHERE p.token_hash = ? AND p.revoked_at IS NOT NULL AND s.first_used_at IS NOT NULL
+               ORDER BY s.first_used_at DESC`)
+    .bind(digest)
+    .first<{ id: string; member_id: string; lineage_root: string; machine_id: string | null; successor_id: string; first_used_at: number }>();
+  if (row === null) return null;
+  return {
+    tokenId: row.id, memberId: row.member_id, lineageRoot: row.lineage_root, machineId: row.machine_id,
+    successorId: row.successor_id, activatedAt: row.first_used_at,
   };
 }

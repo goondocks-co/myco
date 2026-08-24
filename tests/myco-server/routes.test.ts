@@ -7,8 +7,8 @@ const KEY = 'a'.repeat(64);
 describe('route table', () => {
   it('declares an auth kind and a body mode for every route, a shape for every member route, and exempts only the refresh route from the quota', () => {
     for (const r of ROUTES) {
-      expect(['public', 'member', 'auth', 'owner']).toContain(r.auth);
-      if (r.auth === 'auth' || r.auth === 'owner') continue;
+      expect(['public', 'member', 'auth', 'owner', 'enroll']).toContain(r.auth);
+      if (r.auth === 'auth' || r.auth === 'owner' || r.auth === 'enroll') continue;
       expect(['none', 'json', 'stream']).toContain(r.bodyMode);
       if (r.auth === 'public') expect(r.bodyMode).toBe('none');
       if (r.bodyMode === 'stream') expect(r.maxBodyBytes).toBe(MAX_BLOB_BYTES);

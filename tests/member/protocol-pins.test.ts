@@ -4,11 +4,12 @@
  * on is asserted here against the worker's own exports.
  */
 import { describe, expect, it } from 'bun:test';
-import { MAX_BLOB_BYTES, MIN_COMPAT_MEMBER_PROTOCOL, PROTOCOL_HEADER as SERVER_PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
+import { LINEAGE_REPLAY_GRACE_MS, MAX_BLOB_BYTES, MIN_COMPAT_MEMBER_PROTOCOL, PROTOCOL_HEADER as SERVER_PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { CLASSIFIERS, UNAVAILABLE } from '@myco-server-worker/telemetry.js';
 import { ID_GRAMMAR, MAX_PAYLOAD_BYTES, PRODUCER_GRAMMAR } from '@myco-server-worker/ingest/envelope.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
+import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
 import {
   MEMBER_CODES, MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES, MEMBER_PROTOCOL, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, TRANSCRIPT_SLICE_BYTES,
 } from '@myco/member/constants.js';
@@ -98,6 +99,18 @@ describe('member ↔ worker pins', () => {
 
   it('the window the member assumes before the server announces one is the window the server keeps', () => {
     expect(MEMBER_TOKEN_REFRESH_WINDOW_MS).toBe(SERVER_REFRESH_WINDOW_MS);
+  });
+
+  it("the server's replay grace outlasts the longest hook any symbiont declares, so a rotation race is never recorded as unexplained", () => {
+    // Two hooks on one machine can both be in flight when one rotates; the loser reaches
+    // the server on a credential the winner's first use has just revoked. The harness
+    // kills a hook at its declared timeout, so that is the longest such a request can
+    // lag. A grace at or below it starts marking ordinary races `withinHookRace: false`,
+    // which is the signal an operator would act on.
+    const longest = longestDeclaredHookTimeoutMs();
+    expect(longest).toBeGreaterThan(0);
+    expect({ grace: LINEAGE_REPLAY_GRACE_MS, longest, outlasts: LINEAGE_REPLAY_GRACE_MS > longest })
+      .toEqual({ grace: LINEAGE_REPLAY_GRACE_MS, longest, outlasts: true });
   });
 
   it('every member string bound equals the worker bound on the field it truncates for', () => {

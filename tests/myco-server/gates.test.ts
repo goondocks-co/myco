@@ -37,7 +37,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 21;
+const EMIT_CALLS = 25;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -168,11 +168,24 @@ describe('gates', () => {
     }
   });
 
-  it('refuses every declared non-public route without a credential, via the deployed entry', async () => {
-    for (const r of ROUTES.filter((x) => x.auth !== 'public')) {
+  it('refuses every declared non-public route without a credential, via the deployed entry — and the one route that takes an enrollment authority instead still refuses a key it does not hold', async () => {
+    for (const r of ROUTES.filter((x) => x.auth !== 'public' && x.auth !== 'enroll')) {
       const res = await worker.fetch(withSource(r.path, { method: r.method, body: r.method === 'GET' ? undefined : '{}' }), env());
       expect(res.status).toBe(401);
     }
+    // The join route answers 200 with a refusal rather than 401: it has no credential to
+    // reject. Its admission is the key, so the property to hold is that a key the
+    // Deployment never minted buys nothing — checked here so the exemption above cannot
+    // quietly become an unauthenticated route that admits.
+    const enroll = ROUTES.filter((x) => x.auth === 'enroll');
+    expect(enroll.map((r) => `${r.method} ${r.path}`)).toEqual(['POST /members/join']);
+    const e = sqliteEnv();
+    for (const key of ['x'.repeat(43), 'not-a-key', '']) {
+      const res = await worker.fetch(withSource('/members/join', { method: 'POST', body: JSON.stringify({ key, machineId: 'machine_9' }) }), e.env);
+      expect({ key: key.slice(0, 8), status: res.status, body: await res.json() })
+        .toEqual({ key: key.slice(0, 8), status: 200, body: { joined: false, code: 'enrollment_unknown', reason: 'enrollment key unknown' } });
+    }
+    expect((e.sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get() as any).c).toBe(0);
   });
 
   it('keeps every entry point to wiring: the pipeline and its own platform, and nothing that decides', () => {
@@ -467,8 +480,8 @@ describe('gates', () => {
     expect(ROUTES.filter((r) => r.auth === 'member').map((r) => `${r.method} ${r.path}`).sort()).toEqual(Object.keys(FIXTURES).sort());
     const machineless: Record<string, unknown>[] = [];
     for (const r of ROUTES) {
-      expect(['public', 'member', 'auth', 'owner']).toContain(r.auth);
-      if (r.auth === 'auth' || r.auth === 'owner') continue;
+      expect(['public', 'member', 'auth', 'owner', 'enroll']).toContain(r.auth);
+      if (r.auth === 'auth' || r.auth === 'owner' || r.auth === 'enroll') continue;
       expect(['none', 'json', 'stream']).toContain(r.bodyMode);
       if (r.auth === 'public') continue;
       const fixture = FIXTURES[`${r.method} ${r.path}`];
@@ -524,7 +537,7 @@ describe('gates', () => {
     expect(backfill).not.toMatch(/\bNULL\b\s*(,|$)[^`]*--\s*revoked/);
     const tokens = readFileSync(join(SRC, 'auth', 'tokens.ts'), 'utf8');
     expect(tokens.match(/INTO member_credentials\b/g)).toHaveLength(1);
-    expect(tokens).toMatch(/INSERT INTO member_credentials \([^)]*\)\s+SELECT \?, \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL\s+WHERE \? IS NULL OR \$\{TOKEN_LIVE\}`/);
+    expect(tokens).toMatch(/INSERT INTO member_credentials \([^)]*\)\s+SELECT \?, \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL, \?, \?\s+WHERE \? IS NULL OR \$\{TOKEN_LIVE\}`/);
     expect(tokens).toMatch(/UPDATE member_credentials SET revoked_at = \? WHERE predecessor_id = \? AND revoked_at IS NULL AND first_used_at IS NULL AND \$\{TOKEN_LIVE\}`/);
     expect(readFileSync(join(SRC, 'ingest', 'quota.ts'), 'utf8')).toMatch(/export const TOKEN_LIVE = 'EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND revoked_at IS NULL\)';/);
   });
@@ -660,6 +673,7 @@ describe('gates', () => {
     expect(ROUTES.map((r) => `${r.auth} ${r.method} ${r.path}`).sort()).toEqual([
       'auth GET /auth/callback',
       'auth GET /auth/login',
+      'enroll POST /members/join',
       'member POST /blobs/{sha256}',
       'member POST /events',
       'member POST /tokens/refresh',

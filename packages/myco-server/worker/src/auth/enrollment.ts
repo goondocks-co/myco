@@ -42,26 +42,35 @@ export interface IssuedEnrollmentAuthority {
   expiresAt: number;
 }
 
-/** The insert that stores a fresh key's digest, and the raw key returned once. */
+/**
+ * The insert that stores a fresh key's digest, and the raw key returned once.
+ *
+ * `memberId` is what the key admits the joiner AS. Null means the join enrolls a
+ * new person and the server names the member; a value means the key adds another
+ * runtime to a member who already exists — the same human on a second machine or
+ * in a sandbox, which the model requires be one identity rather than two.
+ * Whichever it is, it is fixed when the key is minted: the joiner never names its
+ * own member, so a stolen key cannot be redirected at somebody else's identity.
+ */
 export function enrollmentInsert(
-  db: RelationalStore, nowMs: number, ttlMs: number, createdByMember: string | null, keyHash: string, id: string,
+  db: RelationalStore, nowMs: number, ttlMs: number, createdByMember: string | null, keyHash: string, id: string, memberId: string | null = null,
 ): { statement: PreparedStatement; expiresAt: number } {
   const expiresAt = nowMs + ttlMs;
   const statement = db
-    .prepare(`INSERT INTO enrollment_authorities (id, key_hash, created_at, expires_at, used_at, used_by_runtime, revoked_at, created_by_member)
-              VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?)`)
-    .bind(id, keyHash, nowMs, expiresAt, createdByMember);
+    .prepare(`INSERT INTO enrollment_authorities (id, key_hash, created_at, expires_at, used_at, used_by_runtime, revoked_at, created_by_member, member_id)
+              VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`)
+    .bind(id, keyHash, nowMs, expiresAt, createdByMember, memberId);
   return { statement, expiresAt };
 }
 
 /** Sole minter of enrollment authorities. Stores the digest; returns the raw key once. */
 export async function issueEnrollmentAuthority(
-  db: RelationalStore, nowMs: number, options: { ttlMs?: number; createdByMember?: string | null } = {},
+  db: RelationalStore, nowMs: number, options: { ttlMs?: number; createdByMember?: string | null; memberId?: string | null } = {},
 ): Promise<IssuedEnrollmentAuthority> {
   const key = base64url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_KEY_BYTES)));
   const id = `${ENROLLMENT_ID_PREFIX}${base64url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_ID_BYTES)))}`;
   const { statement, expiresAt } = enrollmentInsert(
-    db, nowMs, options.ttlMs ?? ENROLLMENT_TTL_MS, options.createdByMember ?? null, await sha256Hex(key), id,
+    db, nowMs, options.ttlMs ?? ENROLLMENT_TTL_MS, options.createdByMember ?? null, await sha256Hex(key), id, options.memberId ?? null,
   );
   await statement.run();
   return { key, id, expiresAt };
@@ -71,7 +80,7 @@ export async function issueEnrollmentAuthority(
 export type EnrollmentRefusal = 'unknown' | 'already_used' | 'expired' | 'revoked';
 
 export type SpendResult =
-  | { ok: true; id: string }
+  | { ok: true; id: string; memberId: string | null }
   | { ok: false; reason: EnrollmentRefusal };
 
 /**
@@ -99,11 +108,11 @@ export async function spendEnrollmentAuthority(
     .run();
 
   const row = await db
-    .prepare(`SELECT id, used_at, revoked_at, expires_at FROM enrollment_authorities WHERE key_hash = ?`)
+    .prepare(`SELECT id, used_at, revoked_at, expires_at, member_id FROM enrollment_authorities WHERE key_hash = ?`)
     .bind(keyHash)
-    .first<{ id: string; used_at: number | null; revoked_at: number | null; expires_at: number }>();
+    .first<{ id: string; used_at: number | null; revoked_at: number | null; expires_at: number; member_id: string | null }>();
 
-  if (spend.meta.changes === 1) return { ok: true, id: row!.id };
+  if (spend.meta.changes === 1) return { ok: true, id: row!.id, memberId: row!.member_id };
   if (row === null) return { ok: false, reason: 'unknown' };
   if (row.revoked_at !== null) return { ok: false, reason: 'revoked' };
   if (row.used_at !== null) return { ok: false, reason: 'already_used' };

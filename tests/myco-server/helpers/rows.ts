@@ -7,11 +7,12 @@ export function authRow(over: Record<string, unknown> = {}): Record<string, unkn
     id: 'mt_1', member_id: 'mem_1', machine_id: 'machine_1',
     expires_at: 2_000, revoked_at: null, bytes_written: 0,
     lineage_root: 'mt_1', lineage_started_at: 1_000, predecessor_id: null, first_used_at: null,
+    runtime_label: null, runtime_kind: null,
     ...over,
   };
 }
 
 /** The authenticator's read when the digest matches no member row. */
 export function noMemberRow(over: Record<string, unknown> = {}): Record<string, unknown> {
-  return authRow({ id: null, member_id: null, machine_id: null, expires_at: null, revoked_at: null, bytes_written: null, lineage_root: null, lineage_started_at: null, predecessor_id: null, first_used_at: null, ...over });
+  return authRow({ id: null, member_id: null, machine_id: null, expires_at: null, revoked_at: null, bytes_written: null, lineage_root: null, lineage_started_at: null, predecessor_id: null, first_used_at: null, runtime_label: null, runtime_kind: null, ...over });
 }

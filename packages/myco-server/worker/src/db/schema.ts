@@ -299,7 +299,8 @@ const V5_STATEMENTS: readonly string[] = [
      used_at           INTEGER,
      used_by_runtime   TEXT,
      revoked_at        INTEGER,
-     created_by_member TEXT)`,
+     created_by_member TEXT,
+     member_id         TEXT REFERENCES members(id))`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollment_authorities_hash ON enrollment_authorities (key_hash)`,
   `CREATE TABLE IF NOT EXISTS member_credentials (
      id                 TEXT PRIMARY KEY,

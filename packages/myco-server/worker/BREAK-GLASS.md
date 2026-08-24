@@ -40,12 +40,12 @@ UPDATE enrollment_authorities SET revoked_at = <now_ms> WHERE id = '<ID>' AND re
 
 A leaked member token is revoked by setting `revoked_at` on its row. The pipeline refuses a revoked token on the next request; there is no cache to flush.
 
-`revokeMemberToken` is the code path; `npm run token:revoke -- <TOKEN_ID>` prints its `UPDATE`. Find the token by project and machine, print the statement, apply it with `wrangler d1 execute`, then confirm the command reported one changed row — zero rows means no live token had that id:
+`revokeMemberToken` is the code path; `npm run token:revoke -- <TOKEN_ID>` prints its `UPDATE`. Find the credential by member and machine, print the statement, apply it with `wrangler d1 execute`, then confirm the command reported one changed row — zero rows means no live credential had that id:
 
 ```bash
 cd packages/myco-server/worker
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
-  "SELECT id, project_id, machine_id, expires_at, revoked_at, bytes_written FROM member_tokens WHERE project_id = '<PROJECT_ID>'"
+  "SELECT id, member_id, machine_id, expires_at, revoked_at, bytes_written FROM member_credentials WHERE member_id = '<MEMBER_ID>'"
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(npm run -s token:revoke -- <TOKEN_ID>)"
 ```
 
@@ -72,7 +72,7 @@ A member token refreshes itself inside the last quarter of its TTL (`POST /token
 ```bash
 cd packages/myco-server/worker
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
-  "SELECT id, predecessor_id, lineage_root, expires_at, first_used_at, revoked_at, bytes_written FROM member_tokens WHERE lineage_root = (SELECT lineage_root FROM member_tokens WHERE id = '<TOKEN_ID>') ORDER BY expires_at"
+  "SELECT id, predecessor_id, lineage_root, expires_at, first_used_at, revoked_at, bytes_written FROM member_credentials WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = '<TOKEN_ID>') ORDER BY expires_at"
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(npm run -s token:revoke -- <TOKEN_ID> --lineage)"
 ```
 
@@ -151,3 +151,41 @@ npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
 ```
 
 Deleting the sessions is not one of the choices: their events are the record the projections re-derive from.
+
+**A credential with no machine identity.** v5 groups credentials into members by
+`machine_id` — `mem_<machine_id>` is the member each backfilled credential joins.
+A NULL has nothing to derive from, and grouping every such row under one member
+would permanently merge distinct people, which is not reconcilable afterwards.
+The guard trips before any of v5's writes, so the step lands nothing:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "SELECT id, project_id, expires_at, revoked_at, bytes_written FROM member_tokens WHERE machine_id IS NULL"
+```
+
+Every row the pipeline already refuses each write (`no_machine_identity`), so
+none of them is a working credential. Decide per row, then re-run
+`npm run migrations:apply`:
+
+- **The machine is known from outside the database** — set it, and the credential
+  joins that machine's member:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "UPDATE member_tokens SET machine_id = '<MACHINE_ID>' WHERE id = '<TOKEN_ID>'"
+```
+
+- **The machine is not recoverable** — revoke the row. v5 writes every backfilled
+  credential revoked in any case, so revoking first changes nothing about what
+  the migration produces; it only lets the guard pass. The name carries a `:`,
+  which the machine-id grammar excludes, so the member the backfill derives from
+  it can never collide with a real machine's. Attribution is untouched:
+  `events.token_id` still names this id, and the read path resolves it:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "UPDATE member_tokens SET machine_id = 'unattributed:' || id, revoked_at = COALESCE(revoked_at, expires_at) WHERE machine_id IS NULL"
+```
+
+Deleting the rows is not one of the choices: `events.token_id` references them,
+and the owner API's activity read resolves a token id through this table.

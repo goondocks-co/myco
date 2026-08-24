@@ -1,3 +1,4 @@
+import type { RuntimeClaims } from './auth/tokens.js';
 import type { OwnerConfig } from './auth/owner/config.js';
 import type { OwnerSession } from './auth/owner/cookie.js';
 
@@ -30,6 +31,8 @@ export interface RouteContext {
   expiresAt: number;
   lineageRoot: string;
   lineageStartedAt: number;
+  /** The runtime binding the presented credential carries. A refresh hands it to the successor unchanged; nothing admits or refuses on it. */
+  runtime: RuntimeClaims;
   body: string;
   bodyBytes: number;
   now: number;

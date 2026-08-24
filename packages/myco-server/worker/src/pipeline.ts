@@ -1,7 +1,7 @@
 import type { ErrorClassifier, ServerEnv } from './core/adapters.js';
 import { matchRoute, type Route, type Shape } from './routes.js';
-import { activateSuccessor, authenticateServerMemberToken, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
-import { HSTS_MAX_AGE_SECONDS, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from './constants.js';
+import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
+import { HSTS_MAX_AGE_SECONDS, LINEAGE_REPLAY_GRACE_MS, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from './constants.js';
 import { sha256Hex } from './hash.js';
 import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
 import { QUOTA_REASON } from './ingest/events.js';
@@ -63,7 +63,7 @@ const forbidden = () => Response.json({ error: 'forbidden' }, { status: 403 });
 const refuseOversized = () => Response.json({ error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` }, { status: 400 });
 
 /** The request with its body read under the same cap the member path enforces, or null when it exceeds it. A body-less method passes through untouched. */
-async function boundedOwnerRequest(request: Request): Promise<Request | null> {
+async function boundedRequest(request: Request): Promise<Request | null> {
   if (request.method === 'GET' || request.method === 'HEAD') return request;
   const body = await readBoundedBody(request, MAX_BODY_BYTES);
   if (!body.ok) return null;
@@ -161,6 +161,23 @@ export function createServer(deps: ServerDeps) {
     // credential-free traffic: an auth route makes an outbound call to GitHub, and an
     // owner route without a valid cookie is as cheap to send as an anonymous member
     // request. Above this point neither would charge the bucket at all.
+    // Enrollment sits with the other credential-free surfaces and is metered like them.
+    // It is the one route that reaches storage without an authenticated member, and it
+    // mints a credential — so the source bucket is charged BEFORE the key is looked at,
+    // and a guesser is answered 429 rather than being allowed to keep guessing at the
+    // cost of one conditional update each time.
+    if (matched?.route.auth === 'enroll') {
+      if (!(await env.sourceLimit.limit({ key: source })).success) return limited();
+      const bounded = await boundedRequest(request);
+      if (bounded === null) return refuseOversized();
+      try {
+        return await matched.route.handler(env, bounded, now);
+      } catch (err) {
+        emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
+        return unavailable();
+      }
+    }
+
     if (matched?.route.auth === 'auth' || matched?.route.auth === 'owner') {
       const config = ownerConfig(env);
       if (config === null) return anonymous();
@@ -172,7 +189,7 @@ export function createServer(deps: ServerDeps) {
       const session = presented === null ? null : await verifySession(config.sessionSecret, presented, now);
       if (session === null || session.sub !== config.ownerGithubId) return anonymous();
       if (!sameOrigin(request, url)) return forbidden();
-      const bounded = await boundedOwnerRequest(request);
+      const bounded = await boundedRequest(request);
       if (bounded === null) return refuseOversized();
       try {
         return await matched.route.handler(env, { request: bounded, session, config, params: matched.params, url, now });
@@ -195,7 +212,20 @@ export function createServer(deps: ServerDeps) {
       return unavailableFor(matched.route);
     }
     if (!auth) {
+      const digest = await sha256Hex(presented);
       emit({ kind: 'auth_failed', matched: matched !== null, source: (await sha256Hex(source)).slice(0, 16) });
+      // A superseded credential answers 401 like any other, and the answer is the same
+      // to the holder either way. The record is what differs: this names which lineage
+      // is still being presented after it moved on, and how long after.
+      const replay = await detectLineageReplay(env.db, digest, now);
+      if (replay !== null) {
+        emit({
+          kind: 'lineage_replayed', memberId: replay.memberId, tokenId: replay.tokenId,
+          lineageRoot: replay.lineageRoot, successorId: replay.successorId,
+          sinceActivationMs: now - replay.activatedAt,
+          withinHookRace: now - replay.activatedAt <= LINEAGE_REPLAY_GRACE_MS,
+        });
+      }
       return anonymous();
     }
     return withProtocol(await member(request, env, auth, matched, now));
@@ -252,7 +282,7 @@ export function createServer(deps: ServerDeps) {
       if (route.quotaPrecheck !== false && auth.bytesWritten + body.bytes > MEMBER_TOKEN_BYTE_QUOTA) return refuse(auth, shapeOf(route), QUOTA_REASON, 'quota');
       return await route.handler(env, {
         projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
-        expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt,
+        expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
         body: body.text, bodyBytes: body.bytes, now,
       });
     } catch (err) {
