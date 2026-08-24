@@ -38,7 +38,22 @@ export interface VectorStore {
   delete(ids: string[]): Promise<void>;
 }
 
-/** Deferred wake, implemented per target in #913 and #914. */
+/**
+ * Deferred wake, implemented per target in #913 and #914.
+ *
+ * The shape is still a proposal — #919 states what must run and when — but the
+ * division it serves is settled: the power manager owns every scheduling decision,
+ * resolving a state from registered assertions and computing an interval from it,
+ * and a target supplies only "wake me at this instant". Nothing about which states
+ * exist, when to run, or how often belongs behind this port.
+ *
+ * Whatever signature #919 settles on, a wake may arrive more than once on some
+ * targets, so acting on one must be idempotent. The power manager already is — it
+ * re-probes its sources and recomputes rather than accumulating — and that
+ * property has to stay gated rather than assumed.
+ *
+ * `docs/architecture/myco-2.0.md` §7.5 carries the per-target mechanisms.
+ */
 export interface WakeScheduler {
   scheduleAt(key: string, epochMs: number): Promise<void>;
   cancel(key: string): Promise<void>;
