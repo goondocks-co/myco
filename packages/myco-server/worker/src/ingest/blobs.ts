@@ -111,7 +111,7 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
     const batch = await db.batch([
       db.prepare(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (project_id, key) DO NOTHING`)
         .bind(ctx.projectId, key, storedSize, mediaType, ctx.tokenId, ctx.now),
-      db.prepare(`UPDATE member_tokens SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(storedSize, ctx.tokenId),
+      db.prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(storedSize, ctx.tokenId),
       db.prepare(`DELETE FROM blob_reservations WHERE reservation_id = ?`).bind(reservationId),
     ]);
     if (batch[0].meta.changes === 0) {

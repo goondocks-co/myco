@@ -3,6 +3,8 @@ import { clampLimit, decodeCursor, page, type Page, type ReadScope } from './sco
 
 export interface TokenRow {
   id: string;
+  /** The member this credential belongs to. */
+  memberId: string;
   machineId: string | null;
   expiresAt: number;
   revokedAt: number | null;
@@ -21,17 +23,17 @@ export interface ActivityRow {
   receivedAt: number;
 }
 
-/** Every token minted for the scope's project. The token hash is never selected — nothing outside authentication reads it. */
-export async function listTokens(db: RelationalStore, scope: ReadScope): Promise<TokenRow[]> {
+/** Every credential in the Deployment. A credential belongs to a member and spans every Project, so this is not scoped by one. The token hash is never selected — nothing outside authentication reads it. */
+export async function listTokens(db: RelationalStore, _scope: ReadScope): Promise<TokenRow[]> {
   const { results } = await db
     .prepare(
-      `SELECT id, machine_id, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at
-         FROM member_tokens WHERE project_id = ? ORDER BY lineage_started_at DESC, id DESC`
+      `SELECT id, member_id, machine_id, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at
+         FROM member_credentials ORDER BY lineage_started_at DESC, id DESC`
     )
-    .bind(scope.projectId)
     .all<Record<string, unknown>>();
   return results.map((r) => ({
     id: r.id as string,
+    memberId: r.member_id as string,
     machineId: (r.machine_id as string | null) ?? null,
     expiresAt: r.expires_at as number,
     revokedAt: (r.revoked_at as number | null) ?? null,

@@ -127,15 +127,22 @@ describe('tokens', () => {
     expect((await activity.json() as { rows: { eventId: string }[] }).rows.map((r) => r.eventId)).toEqual(['ev1']);
 
     const revoked = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${issued.id}/revoke`), { ...e.env, ...OWNER_ENV });
-    expect(await revoked.json()).toEqual({ revoked: true });
+    expect(await revoked.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.sub });
   });
 
-  it('never revokes a token belonging to another project', async () => {
+  it('revokes a credential whatever project segment the path carries, and names who revoked it', async () => {
+    // Membership is flat: a credential belongs to a member and the Deployment, so no
+    // project owns it and none can withhold it. The project segment is inert here — the
+    // dashboard re-scope in #918 removes it — and every revocation records its actor.
     const e = sqliteEnv();
     const minted = await worker.fetch(await asOwnerPost('/api/projects/proj_2/tokens', { machineId: 'machine_2' }), { ...e.env, ...OWNER_ENV });
     const issued = await minted.json() as { id: string };
     const res = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${issued.id}/revoke`), { ...e.env, ...OWNER_ENV });
-    expect(await res.json()).toEqual({ revoked: false });
+    expect(await res.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.sub });
+    expect((e.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(issued.id) as any).revoked_at).not.toBeNull();
+    // A second revoke changes nothing: the row is already revoked.
+    const again = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${issued.id}/revoke`), { ...e.env, ...OWNER_ENV });
+    expect(await again.json()).toEqual({ revoked: false, revokedBy: PRINCIPAL.sub });
   });
 
   it('refuses a mint with no machine identity', async () => {

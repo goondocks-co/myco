@@ -56,7 +56,7 @@ describe('the self-hosted entry point', () => {
     const v = volume();
     const handler = await createBunHandler({ ...v, header: 'x-forwarded-for' });
     const sqlite = new Database(v.databasePath);
-    const token = (await issueMemberToken(sqliteRelationalStore(sqlite), { projectId: 'proj_1', machineId: 'machine_1' }, Date.now())).token;
+    const token = (await issueMemberToken(sqliteRelationalStore(sqlite), { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now())).token;
     const request = memberPost(token, envelope());
     request.headers.set('x-forwarded-for', '203.0.113.7');
     expect(await (await handler.fetch(request)).json()).toEqual({ persisted: true, projected: true });

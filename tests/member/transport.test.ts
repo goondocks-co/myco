@@ -46,7 +46,7 @@ describe('ServerClient classification', () => {
 
   it('parked on quota, for events and blobs', async () => {
     const rig = await memberRig();
-    rig.env.sqlite.query(`UPDATE member_tokens SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, rig.tokenId);
+    rig.env.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, rig.tokenId);
     const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
     expect(await client.postEvent(promptEvent(ctx('s3'), { promptId: mintId(), text: 'hi' }).envelope, budget)).toMatchObject({ class: 'parked', code: 'quota' });
     const bytes = utf8('x');

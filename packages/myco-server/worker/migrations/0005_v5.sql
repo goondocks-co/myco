@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS member_credentials (
      id                 TEXT PRIMARY KEY,
      member_id          TEXT NOT NULL REFERENCES members(id),
      token_hash         TEXT NOT NULL,
-     machine_id         TEXT NOT NULL,
+     machine_id         TEXT,
      runtime_label      TEXT,
      runtime_kind       TEXT,
      issued_at          INTEGER NOT NULL,
@@ -48,6 +48,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_hash ON member_credenti
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_live_successor
      ON member_credentials (predecessor_id) WHERE revoked_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_member_credentials_lineage ON member_credentials (lineage_root);
+
+CREATE INDEX IF NOT EXISTS idx_blob_reservations_credential ON blob_reservations (token_id, expires_at);
 
 INSERT OR IGNORE INTO members (id, label, created_at, revoked_at)
      SELECT DISTINCT 'mem_' || machine_id, machine_id, 0, NULL FROM member_tokens WHERE machine_id IS NOT NULL;

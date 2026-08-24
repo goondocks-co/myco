@@ -1,7 +1,7 @@
 import type { ErrorClassifier, ServerEnv } from './core/adapters.js';
 import { matchRoute, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
-import { HSTS_MAX_AGE_SECONDS, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from './constants.js';
+import { HSTS_MAX_AGE_SECONDS, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from './constants.js';
 import { sha256Hex } from './hash.js';
 import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
 import { QUOTA_REASON } from './ingest/events.js';
@@ -85,11 +85,27 @@ function sameOrigin(request: Request, url: URL): boolean {
 const unsupportedProtocol = () =>
   Response.json({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL }, { status: 409 });
 export const NO_MACHINE_IDENTITY = 'token has no machine identity';
+export const NO_PROJECT = 'project header required';
+const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+/**
+ * The Project this request acts on, named by the member in a header.
+ *
+ * A credential is Deployment-wide, so the Project cannot come from the
+ * credential. It is a per-request assertion, admitted on the strength of
+ * Deployment-wide Member Access — never on the caller's say-so. The grammar is
+ * checked here so nothing downstream sees caller text it did not validate.
+ */
+function requestedProject(request: Request): string | null {
+  const value = request.headers.get(PROJECT_HEADER);
+  if (value === null || !PROJECT_ID.test(value) || value === '.' || value === '..') return null;
+  return value;
+}
 const PROTOCOL_VALUE = /^[0-9]+$/;
 
 /** A terminal refusal of the caller's own request: 200, never retried, in the route's refusal shape, carrying the classifier as its `code` beside the `reason`; telemetry carries the classifier only. */
 function refuse(auth: MemberAuth, shape: Shape, reason: string, classifier: Classifier): Response {
-  emit({ kind: shape === 'stored' ? 'blob_refused' : 'ingest_refused', projectId: auth.projectId, tokenId: auth.tokenId, reason: classifier });
+  emit({ kind: shape === 'stored' ? 'blob_refused' : 'ingest_refused', memberId: auth.memberId, tokenId: auth.tokenId, reason: classifier });
   return Response.json({ [shape]: false, code: classifier, reason });
 }
 
@@ -111,7 +127,7 @@ function protocolSupported(request: Request): boolean {
 
 /** True when the token's stored volume plus this request's bytes would exceed the quota; read fresh after a constraint failure. */
 async function overQuota(env: ServerEnv, tokenId: string, bytes: number): Promise<boolean> {
-  const row = await env.db.prepare(`SELECT bytes_written FROM member_tokens WHERE id = ?`).bind(tokenId).first<{ bytes_written: number }>();
+  const row = await env.db.prepare(`SELECT bytes_written FROM member_credentials WHERE id = ?`).bind(tokenId).first<{ bytes_written: number }>();
   return row !== null && row.bytes_written + bytes > MEMBER_TOKEN_BYTE_QUOTA;
 }
 
@@ -121,7 +137,7 @@ async function failed(env: ServerEnv, auth: MemberAuth, route: MemberRoute, err:
   const errorClass = classify(err, errorClassifierOf(env));
   const charged = route.quotaPrecheck !== false;
   if (charged && (errorClass === 'quota' || (errorClass === 'constraint' && (await overQuota(env, auth.tokenId, bytes))))) return refuse(auth, shape, QUOTA_REASON, 'quota');
-  emit({ kind: shape === 'stored' ? 'blob_error' : shape === 'refreshed' ? 'refresh_error' : 'ingest_error', projectId: auth.projectId, tokenId: auth.tokenId, error_class: errorClass });
+  emit({ kind: shape === 'stored' ? 'blob_error' : shape === 'refreshed' ? 'refresh_error' : 'ingest_error', memberId: auth.memberId, tokenId: auth.tokenId, error_class: errorClass });
   return unavailableFor(route);
 }
 
@@ -190,19 +206,19 @@ export function createServer(deps: ServerDeps) {
     try {
       return await admitted(request, env, auth, matched, now);
     } catch (err) {
-      emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)), projectId: auth.projectId, tokenId: auth.tokenId });
+      emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)), memberId: auth.memberId, tokenId: auth.tokenId });
       return matched && matched.route.auth === 'member' ? unavailableFor(matched.route) : unavailable();
     }
   }
 
   async function admitted(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, now: number): Promise<Response> {
     if (auth.predecessorId !== null && auth.firstUsedAt === null) {
-      await activateSuccessor(env.db, { projectId: auth.projectId, tokenId: auth.tokenId, predecessorId: auth.predecessorId }, now);
-      emit({ kind: 'successor_activated', projectId: auth.projectId, tokenId: auth.tokenId, predecessorId: auth.predecessorId });
+      await activateSuccessor(env.db, { tokenId: auth.tokenId, predecessorId: auth.predecessorId }, now);
+      emit({ kind: 'successor_activated', memberId: auth.memberId, tokenId: auth.tokenId, predecessorId: auth.predecessorId });
     }
     if (!(await env.tokenLimit.limit({ key: auth.tokenId })).success) return limited();
     if (!protocolSupported(request)) {
-      emit({ kind: 'protocol_unsupported', projectId: auth.projectId, tokenId: auth.tokenId });
+      emit({ kind: 'protocol_unsupported', memberId: auth.memberId, tokenId: auth.tokenId });
       return unsupportedProtocol();
     }
     if (!matched) return unauthorized();
@@ -211,13 +227,18 @@ export function createServer(deps: ServerDeps) {
     if (route.auth !== 'member') return unauthorized();
     if (auth.machineId === null) return refuse(auth, shapeOf(route), NO_MACHINE_IDENTITY, 'no_machine_identity');
 
+    // The Project is resolved once, ahead of both body modes, so a request that
+    // names none is refused before anything reads its body.
+    const projectId = requestedProject(request);
+    if (projectId === null) return refuse(auth, shapeOf(route), NO_PROJECT, 'no_project');
+
     if (route.bodyMode === 'stream') {
       const declared = request.headers.get('content-length');
       if (declared === null || !PROTOCOL_VALUE.test(declared)) return refuse(auth, shapeOf(route), 'content-length required', 'content_length');
       const contentLength = Number(declared);
       if (contentLength > route.maxBodyBytes) return refuse(auth, shapeOf(route), `blob exceeds ${route.maxBodyBytes} bytes`, 'blob_cap');
       try {
-        return await route.handler(env, request, { projectId: auth.projectId, machineId: auth.machineId, tokenId: auth.tokenId, now, clock: deps.now, contentLength, params });
+        return await route.handler(env, request, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, now, clock: deps.now, contentLength, params });
       } catch (err) {
         return failed(env, auth, route, err, contentLength);
       }
@@ -230,7 +251,7 @@ export function createServer(deps: ServerDeps) {
       bodyBytes = body.bytes;
       if (route.quotaPrecheck !== false && auth.bytesWritten + body.bytes > MEMBER_TOKEN_BYTE_QUOTA) return refuse(auth, shapeOf(route), QUOTA_REASON, 'quota');
       return await route.handler(env, {
-        projectId: auth.projectId, machineId: auth.machineId, tokenId: auth.tokenId,
+        projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt,
         body: body.text, bodyBytes: body.bytes, now,
       });

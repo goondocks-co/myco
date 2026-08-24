@@ -120,3 +120,19 @@ export async function revokeEnrollmentAuthority(
     .run();
   return { revoked: result.meta.changes === 1 };
 }
+
+/**
+ * Records a member if the Deployment does not already hold one under `id`. Idempotent:
+ * a second call for the same id changes nothing and never disturbs an existing label.
+ *
+ * Every credential carries a foreign key to `members`, so this is what has to have run
+ * before one can be issued. It lives here rather than at each caller so the member row
+ * and the credential row are written by the same module — a facade that opens its own
+ * INSERT is the shape the read-layer gate refuses.
+ */
+export async function ensureMember(db: RelationalStore, id: string, nowMs: number, label = id): Promise<void> {
+  await db
+    .prepare(`INSERT OR IGNORE INTO members (id, label, created_at, revoked_at) VALUES (?, ?, ?, NULL)`)
+    .bind(id, label, nowMs)
+    .run();
+}

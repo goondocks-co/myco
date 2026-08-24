@@ -98,7 +98,7 @@ describe('read/tokens', () => {
   it('lists a project\'s tokens with quota and lineage', async () => {
     const { db, sqlite, env } = sqliteEnv();
     const { issueMemberToken } = await import('@myco-server-worker/auth/tokens.js');
-    await issueMemberToken(db, { projectId: 'proj_1', machineId: 'machine_1' }, 1_000);
+    await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 1_000);
     const rows = await listTokens(db, { projectId: 'proj_1' });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ machineId: 'machine_1', bytesWritten: 0, revokedAt: null });

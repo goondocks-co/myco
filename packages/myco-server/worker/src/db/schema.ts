@@ -259,6 +259,15 @@ const V4_STATEMENTS: readonly string[] = [
  * afterwards. Those rows are also the ones the pipeline already refuses every
  * write, so the guard fails loudly rather than promoting dead credentials into
  * a live identity. BREAK-GLASS.md carries the repair.
+
+ * `machine_id` stays nullable past the guard. The guard is a precondition on
+ * the BACKFILL — it derives the member grouping from machine identity and has
+ * nothing to derive from when the column is NULL. Credentials issued after it
+ * take their member from enrollment instead, so the derivation no longer
+ * applies, and the pipeline keeps refusing a credential with no machine
+ * identity as `no_machine_identity`. A NOT NULL here would make that refusal
+ * unreachable while the member, telemetry and both-target contract still carry
+ * the code, leaving a refusal no gate could ever exercise.
  *
  * Backfilled credentials are written REVOKED. Preserving a live `token_hash`
  * would let an existing bearer keep authenticating while silently gaining
@@ -296,7 +305,7 @@ const V5_STATEMENTS: readonly string[] = [
      id                 TEXT PRIMARY KEY,
      member_id          TEXT NOT NULL REFERENCES members(id),
      token_hash         TEXT NOT NULL,
-     machine_id         TEXT NOT NULL,
+     machine_id         TEXT,
      runtime_label      TEXT,
      runtime_kind       TEXT,
      issued_at          INTEGER NOT NULL,
@@ -311,6 +320,8 @@ const V5_STATEMENTS: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_hash ON member_credentials (token_hash)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_live_successor
      ON member_credentials (predecessor_id) WHERE revoked_at IS NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_member_credentials_lineage ON member_credentials (lineage_root)`,
+  `CREATE INDEX IF NOT EXISTS idx_blob_reservations_credential ON blob_reservations (token_id, expires_at)`,
   `INSERT OR IGNORE INTO members (id, label, created_at, revoked_at)
      SELECT DISTINCT 'mem_' || machine_id, machine_id, 0, NULL FROM member_tokens WHERE machine_id IS NOT NULL`,
   `INSERT OR IGNORE INTO member_credentials

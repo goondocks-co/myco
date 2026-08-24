@@ -12,13 +12,20 @@ export const MEMBER_PROTOCOL = 1;
 export const PROTOCOL_HEADER = 'x-myco-protocol';
 
 /**
+ * The header naming the Project a request acts on. A credential is
+ * Deployment-wide, so the Project is per-request rather than a property of the
+ * token; a request without it is refused `no_project`.
+ */
+export const PROJECT_HEADER = 'x-myco-project';
+
+/**
  * Every stable `code` a server answer can carry: the worker's refusal
  * classifiers plus the 503 `unavailable` code. The member classifies on these
  * and never on `reason` text.
  */
 export const MEMBER_CODES = [
   'refused', 'parse', 'quota', 'body_cap', 'blob_cap', 'content_length', 'media_type', 'digest_mismatch', 'empty_body',
-  'blob_absent', 'offset_gap', 'offset_overlap', 'identity_mismatch', 'no_machine_identity', 'blob_length_mismatch',
+  'blob_absent', 'no_project', 'offset_gap', 'offset_overlap', 'identity_mismatch', 'no_machine_identity', 'blob_length_mismatch',
   'unknown_kind', 'unknown_field', 'id_grammar', 'clock_skew', 'event_id_conflict', 'projection_conflict',
   'refresh_too_early', 'lineage_expired',
   'unavailable',
