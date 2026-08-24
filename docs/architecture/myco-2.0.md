@@ -90,12 +90,34 @@ Cloudflare and self-hosted Compose implement **one common server contract and sh
 | Blob store | R2 | Local volume adapter |
 | Vector store | Vectorize | Local SQLite vector adapter |
 | Wake / schedule | Durable Object alarm + cron | In-process scheduler |
+| Secret wrapping key | Secrets Store binding | Env or file (`secrets.env` idiom) |
 | Harness | Cloudflare container infrastructure (**pending #908**) | Same harness image |
 | Durable storage | Platform-managed | Mounted volume under Compose |
 
 Shared behavior belongs in the common core; target-specific infrastructure, storage, wake, TLS/proxy, backup, and observability behavior belongs in adapters. **Neither target may silently lose a feature because the other implemented it first.** A ledger row naming a capability without its per-target mechanism is how one target never gets it.
 
 Cloudflare is the primary real dogfood Deployment; self-hosted Compose receives equal release proof (#927).
+
+### 3.3.1 Deployment-held secrets (#961, approved 2026-08-24)
+
+Secrets divide by **who reads the value back**, and only one of the four classes is a secrets-storage problem the Deployment shares with a laptop.
+
+| Class | Examples | Stored as |
+|---|---|---|
+| **1a** mint-and-verify | member credentials, enrollment authorities | **Digest only.** Never retrievable — this is what makes a backfilled credential unresurrectable (#912) |
+| **1b** mint-and-display | MCP access tokens, team keys | Retrievable: a member pastes the value into an external Cloud Agent |
+| **2** third-party, in-process | `GITHUB_TOKEN` | Retrievable: our own code signs API calls with it |
+| **3** third-party, subprocess | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, OpenAI/OpenRouter | Retrievable, and must reach a harness process env under the provider SDKs' own names |
+
+Classes 1b, 2 and 3 share **one** `SecretStore` port and one implementation; 1a keeps the digest path and must never route through it.
+
+**Ciphertext lives in the store; the wrapping key does not.** Values are AES-256-GCM through Web Crypto — native on both targets, so no dependency is added — with a fresh IV per write and the secret's own name as AAD, so a ciphertext moved between slots fails to decrypt rather than returning the wrong credential. `key_version` is carried from the first migration so re-wrapping is a migration and not an outage.
+
+The reason is our own design rather than a generic precaution: **direct store access is a deliberate, documented capability.** `BREAK-GLASS.md` prescribes `wrangler d1 execute --remote`, and #907 settled infrastructure control as proof of authority — it is the only recovery that survives losing every credential. Plaintext third-party credentials in that store would make every break-glass operation, operator query and leaked account token a disclosure of every provider key at once. The platform encrypts the store at rest, which defends the disk and not the access the runbook prescribes.
+
+A member's own `secrets.env` is unchanged and out of scope: a `0600` file on a single-user machine is reachable by the person it belongs to, which is a different threat from a shared Deployment store.
+
+**No managed secrets dependency is taken.** Vault-class products centre on dynamic short-lived credentials, and LLM providers issue only long-lived bearer keys — the main thing they buy does not apply to the dominant class — while every one of them would require a self-hosted operator to run infrastructure to use Myco at all.
 
 ### 3.4 Member Installation and the Member Service
 
