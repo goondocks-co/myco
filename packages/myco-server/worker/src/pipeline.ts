@@ -288,7 +288,9 @@ export function createServer(deps: ServerDeps) {
       const contentLength = Number(declared);
       if (contentLength > route.maxBodyBytes) return refuse(auth, shapeOf(route), `blob exceeds ${route.maxBodyBytes} bytes`, 'blob_cap');
       try {
-        return await resolved() ?? await route.handler(env, request, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, now, clock: deps.now, contentLength, params });
+        const limit = await resolved();
+        if (limit !== null) return limit;
+        return await route.handler(env, request, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, now, clock: deps.now, contentLength, params });
       } catch (err) {
         return failed(env, auth, route, err, contentLength);
       }

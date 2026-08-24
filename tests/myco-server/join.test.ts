@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { ENROLLMENT_TTL_MS, issueEnrollmentAuthority, revokeEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
+import { ENROLLMENT_RETENTION_MS, ENROLLMENT_TTL_MS, issueEnrollmentAuthority, revokeEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { MEMBER_TOKEN_PATTERN } from '@myco-server-worker/auth/tokens.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
@@ -143,5 +143,45 @@ describe('member join', () => {
     }
     expect(limited).toContain(429);
     expect((r.e.sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get() as any).c).toBe(0);
+  });
+});
+
+describe('enrollment retention', () => {
+  it('reclaims finished authorities past the window on the next join, and never touches a live one whatever its age', async () => {
+    const r = await rig();
+    const old = r.now - ENROLLMENT_RETENTION_MS - 1;
+
+    const spentLongAgo = await issueEnrollmentAuthority(r.e.db, old);
+    r.e.sqlite.query(`UPDATE enrollment_authorities SET used_at = ?, used_by_runtime = 'm' WHERE id = ?`).run(old, spentLongAgo.id);
+    const revokedLongAgo = await issueEnrollmentAuthority(r.e.db, old);
+    r.e.sqlite.query(`UPDATE enrollment_authorities SET revoked_at = ? WHERE id = ?`).run(old, revokedLongAgo.id);
+    // Expired long ago, never spent: still finished, still reclaimable. Issued a full
+    // TTL before that, so the moment it EXPIRED — not the moment of minting — is what
+    // falls outside the window; the window is measured on the former.
+    const expiredLongAgo = await issueEnrollmentAuthority(r.e.db, old - ENROLLMENT_TTL_MS);
+    // Spent recently: audit material an operator may still be asking about.
+    const spentRecently = await r.key();
+    r.e.sqlite.query(`UPDATE enrollment_authorities SET used_at = ? WHERE id = ?`).run(r.now, spentRecently.id);
+    // Unspent and unexpired: a live invitation. Reclaiming this would be retention
+    // deciding to revoke, which is the operator's call and not this code's.
+    const live = await r.key();
+    // Unspent, ISSUED long ago, but with a long TTL so it has not expired yet.
+    const longLived = await issueEnrollmentAuthority(r.e.db, old, { ttlMs: ENROLLMENT_RETENTION_MS * 10 });
+
+    const joining = await r.key();
+    expect((await json(await r.join({ key: joining.key, machineId: 'machine_r' }))).joined).toBe(true);
+
+    const remaining = (r.e.sqlite.query(`SELECT id FROM enrollment_authorities ORDER BY id`).all() as Array<{ id: string }>).map((x) => x.id);
+    expect(remaining.sort()).toEqual([spentRecently.id, live.id, longLived.id, joining.id].sort());
+    for (const gone of [spentLongAgo.id, revokedLongAgo.id, expiredLongAgo.id]) expect(remaining).not.toContain(gone);
+  });
+
+  it('reclaims nothing when nothing is finished, so an ordinary join costs no deletion', async () => {
+    const r = await rig();
+    const live = await r.key();
+    const joining = await r.key();
+    expect((await json(await r.join({ key: joining.key, machineId: 'machine_r' }))).joined).toBe(true);
+    expect((r.e.sqlite.query(`SELECT COUNT(*) c FROM enrollment_authorities`).get() as any).c).toBe(2);
+    expect(r.e.sqlite.query(`SELECT id FROM enrollment_authorities WHERE id = ?`).get(live.id)).toEqual({ id: live.id });
   });
 });

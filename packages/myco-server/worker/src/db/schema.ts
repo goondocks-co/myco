@@ -276,6 +276,12 @@ const V4_STATEMENTS: readonly string[] = [
  * Attribution history is preserved untouched: `events.token_id` and its
  * siblings continue to resolve, now through `member_credentials`.
  *
+ * A revoked member's row is never deleted. `events.token_id` resolves through
+ * `member_credentials` to `members`, so removing one would make the history it
+ * wrote unattributable — revocation ends what a member can do, not the record of
+ * what they did. Only `enrollment_authorities` has a retention sweep: nothing
+ * resolves through a spent invitation.
+ *
  * Every member may revoke any credential, so `revoked_by` records which one did.
  * A destroy path that does not record its actor leaves denial-of-service by a
  * member indistinguishable from an operator's own action, and flat membership is

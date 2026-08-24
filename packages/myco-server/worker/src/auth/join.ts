@@ -1,7 +1,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import { MEMBER_ID_PREFIX } from '../constants.js';
 import { emit, type Classifier } from '../telemetry.js';
-import { ensureMember, spendEnrollmentAuthority, type EnrollmentRefusal } from './enrollment.js';
+import { ensureMember, reclaimEnrollmentAuthorities, spendEnrollmentAuthority, type EnrollmentRefusal } from './enrollment.js';
 import { issueMemberToken } from './tokens.js';
 
 /** The identity grammar a join may record: machine id, runtime label and runtime kind all answer to it. */
@@ -66,6 +66,12 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
   for (const [name, value] of [['runtimeLabel', runtimeLabel], ['runtimeKind', runtimeKind]] as const) {
     if (value !== undefined && (typeof value !== 'string' || !IDENTITY.test(value))) return refuse('id_grammar', `${name} must match the machine-id grammar`);
   }
+
+  // The table grows only when someone joins, so this is where it is trimmed —
+  // the same opportunistic reclaim expired blob reservations get on the path that
+  // replaces them, rather than a schedule this server does not have.
+  const { reclaimed } = await reclaimEnrollmentAuthorities(env.db, now);
+  if (reclaimed > 0) emit({ kind: 'enrollment_authorities_reclaimed', reclaimed });
 
   const spend = await spendEnrollmentAuthority(env.db, key, now, machineId);
   if (!spend.ok) {

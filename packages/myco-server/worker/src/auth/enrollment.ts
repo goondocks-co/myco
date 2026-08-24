@@ -23,6 +23,17 @@ import { sha256Hex } from '../hash.js';
 /** Bytes of entropy in an enrollment key. 32 = 256 bits. */
 export const ENROLLMENT_KEY_BYTES = 32;
 
+/**
+ * How long a spent, expired or revoked authority is kept before it is reclaimed.
+ *
+ * A finished authority is audit material, not a credential: `used_at` and
+ * `used_by_runtime` say which runtime spent which invitation, and that is worth
+ * having while a join is still recent enough to be questioned. It is not worth
+ * keeping forever: the join it authorised is recorded on the credential itself, so
+ * nothing downstream resolves through it.
+ */
+export const ENROLLMENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 /** Default lifetime of a freshly minted key. An invitation is handed over in the moment; one that outlives the conversation is a standing credential nobody remembers issuing. */
 export const ENROLLMENT_TTL_MS = 60 * 60 * 1000;
 
@@ -144,4 +155,29 @@ export async function ensureMember(db: RelationalStore, id: string, nowMs: numbe
     .prepare(`INSERT OR IGNORE INTO members (id, label, created_at, revoked_at) VALUES (?, ?, ?, NULL)`)
     .bind(id, label, nowMs)
     .run();
+}
+
+/**
+ * Reclaims authorities that are finished — spent, revoked, or expired — and older
+ * than `ENROLLMENT_RETENTION_MS`.
+ *
+ * This runs on the join path rather than on a schedule, the way expired blob
+ * reservations are reclaimed as part of the reservation that replaces them: the
+ * table only grows when someone joins, so the moment of growth is the moment to
+ * trim it, and a Deployment that never joins again never accumulates anything to
+ * collect. `changes` says how many were reclaimed.
+ *
+ * A LIVE authority is never touched whatever its age — reclaiming an unspent
+ * invitation is retention deciding to revoke, which is the operator's call.
+ */
+export async function reclaimEnrollmentAuthorities(db: RelationalStore, nowMs: number): Promise<{ reclaimed: number }> {
+  const cutoff = nowMs - ENROLLMENT_RETENTION_MS;
+  const result = await db
+    .prepare(`DELETE FROM enrollment_authorities
+               WHERE (used_at IS NOT NULL AND used_at <= ?)
+                  OR (revoked_at IS NOT NULL AND revoked_at <= ?)
+                  OR (used_at IS NULL AND revoked_at IS NULL AND expires_at <= ?)`)
+    .bind(cutoff, cutoff, cutoff)
+    .run();
+  return { reclaimed: result.meta.changes };
 }
