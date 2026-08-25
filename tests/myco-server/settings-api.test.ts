@@ -57,6 +57,33 @@ describe('settings API', () => {
       .toEqual({ status: 400, body: { applied: false, reason: 'not_deployment_tier', leaf: 'capture.buffer_max_events' } });
   });
 
+  it('answers a malformed body as a terminal refusal, in the same shape as every other one', async () => {
+    // `null` is valid JSON, so `request.json()` resolves and a property read throws —
+    // which the owner catch turns into a 503 with retry-after. A malformed body is the
+    // caller's own fault and can never succeed on retry.
+    const e = env();
+    for (const [path, body] of [
+      ['/api/settings/cortex.digest.tier', null],
+      ['/api/projects/proj_1/capabilities/cortex', null],
+      ['/api/secrets/anthropic', null],
+      ['/api/settings/cortex.digest.tier', []],
+    ] as const) {
+      const res = await worker.fetch(await put(path, body), e.all);
+      expect({ path, status: res.status, applied: (await res.json() as Record<string, unknown>).applied })
+        .toEqual({ path, status: 400, applied: false });
+    }
+  });
+
+  it('refuses a credential longer than any provider issues, terminally', async () => {
+    const e = env();
+    const issued = await issueStepUpAuthority(e.db, 'provider_credential', Date.now());
+    const res = await worker.fetch(
+      await put('/api/secrets/anthropic', { value: 'x'.repeat(5000) }, { [STEP_UP_HEADER]: issued.key }),
+      e.all,
+    );
+    expect(res.status).toBe(400);
+  });
+
   it('refuses an endpoint change with no step-up authority, and admits one with', async () => {
     const e = env();
     const denied = await worker.fetch(await put('/api/settings/agent.provider.base_url', { value: 'https://attacker.example' }), e.all);
@@ -72,9 +99,30 @@ describe('settings API', () => {
 });
 
 describe('provider credentials through the surface', () => {
-  it('stores a credential and answers with its description, never the value', async () => {
+  /** A credential write is step-up gated: the risk is substitution, not disclosure. */
+  const withAuthority = async (e: ReturnType<typeof env>) =>
+    ({ [STEP_UP_HEADER]: (await issueStepUpAuthority(e.db, 'provider_credential', Date.now())).key });
+
+  it('refuses a credential write with no authority — a member writing THEIR key redirects every later run', async () => {
     const e = env();
     const res = await worker.fetch(await put('/api/secrets/anthropic', { value: ANTHROPIC }), e.all);
+    expect(res.status).toBe(403);
+    expect((e.sqlite.query(`SELECT COUNT(*) c FROM deployment_secrets`).get() as any).c).toBe(0);
+  });
+
+  it('refuses a delete with no authority: silencing intelligence is the quieter half of the same authority', async () => {
+    const e = env();
+    await worker.fetch(await put('/api/secrets/anthropic', { value: ANTHROPIC }, await withAuthority(e)), e.all);
+    const res = await worker.fetch(new Request('https://s/api/secrets/anthropic', {
+      method: 'DELETE', headers: Object.fromEntries((await asOwnerPost('/api/secrets/anthropic')).headers),
+    }), e.all);
+    expect(res.status).toBe(403);
+    expect((e.sqlite.query(`SELECT COUNT(*) c FROM deployment_secrets`).get() as any).c).toBe(1);
+  });
+
+  it('stores a credential and answers with its description, never the value', async () => {
+    const e = env();
+    const res = await worker.fetch(await put('/api/secrets/anthropic', { value: ANTHROPIC }, await withAuthority(e)), e.all);
     const body = await res.json() as Record<string, unknown>;
     expect(body).toMatchObject({ name: 'anthropic', configured: true, maskedValue: `${ANTHROPIC.slice(0, 8)}…${ANTHROPIC.slice(-4)}` });
     // A caller that just wrote a value learns only what any other reader may learn.
@@ -83,7 +131,7 @@ describe('provider credentials through the surface', () => {
 
   it('never returns a stored credential from the list, and reports absent slots', async () => {
     const e = env();
-    await worker.fetch(await put('/api/secrets/anthropic', { value: ANTHROPIC }), e.all);
+    await worker.fetch(await put('/api/secrets/anthropic', { value: ANTHROPIC }, await withAuthority(e)), e.all);
     const listed = await worker.fetch(await asOwner('/api/secrets'), e.all);
     const text = await listed.text();
     expect(text).not.toContain(ANTHROPIC);
@@ -94,18 +142,18 @@ describe('provider credentials through the surface', () => {
 
   it('deletes a credential, and reports a slot it does not define as absent', async () => {
     const e = env();
-    await worker.fetch(await put('/api/secrets/github', { value: 'ghp_aaaaaaaaaaaaaaaaaaaa' }), e.all);
+    await worker.fetch(await put('/api/secrets/github', { value: 'ghp_aaaaaaaaaaaaaaaaaaaa' }, await withAuthority(e)), e.all);
     expect(await json(await worker.fetch(new Request('https://s/api/secrets/github', {
-      method: 'DELETE', headers: Object.fromEntries((await asOwnerPost('/api/secrets/github')).headers),
+      method: 'DELETE', headers: { ...Object.fromEntries((await asOwnerPost('/api/secrets/github')).headers), ...(await withAuthority(e)) },
     }), e.all))).toEqual({ deleted: true });
 
-    const unknown = await worker.fetch(await put('/api/secrets/not_a_provider', { value: 'x' }), e.all);
+    const unknown = await worker.fetch(await put('/api/secrets/not_a_provider', { value: 'x' }, await withAuthority(e)), e.all);
     expect(unknown.status).toBe(404);
   });
 
   it('refuses an empty value rather than storing one nothing can authenticate with', async () => {
     const e = env();
-    expect((await worker.fetch(await put('/api/secrets/anthropic', { value: '' }), e.all)).status).toBe(400);
+    expect((await worker.fetch(await put('/api/secrets/anthropic', { value: '' }, await withAuthority(e)), e.all)).status).toBe(400);
   });
 });
 

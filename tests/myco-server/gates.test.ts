@@ -37,7 +37,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 29;
+const EMIT_CALLS = 30;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -575,13 +575,37 @@ describe('gates', () => {
     expect(store.match(/crypto\.subtle\.decrypt/g)).toHaveLength(1);
     expect(store).toMatch(/additionalData: encoder\.encode\(name\)/);
 
+    // Keyed on CONSTRUCTION, not on a variable name. Matching `secrets.get(` or
+    // `secretStore.get(` missed `store.get(` — which is what the one file that
+    // builds a store actually calls its local, and is the most natural form for the
+    // first real consumer to use. A gate that green-lights the change it exists to
+    // catch is worse than none.
     const callers = files(SRC)
       .filter((f) => f !== join(SRC, 'core', 'secrets.ts'))
-      .filter((f) => /\bsecrets\.get\(|secretStore\.get\(/.test(readFileSync(f, 'utf8')))
+      .filter((f) => /deploymentSecretStore\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1));
-    // No consumer exists yet — L2 adds the first. This asserts the count rather than
-    // the emptiness, so the gate keeps meaning something once one lands.
-    expect(callers).toEqual([]);
+    // One: the settings surface, which only ever calls `describe`/`list`/`put`/
+    // `delete`. When a consumer of the PLAINTEXT read lands, it adds a file here and
+    // the addition is the thing to look at.
+    expect(callers).toEqual([join('api', 'settings.ts')]);
+    const surface = stripComments(readFileSync(join(SRC, 'api', 'settings.ts'), 'utf8'));
+    expect(surface).not.toMatch(/\.get\(\s*ctx\.params\.name/);
+  });
+
+  it('never spreads a whole byte array into a call, which is a divergence no test on one engine can catch', () => {
+    // `String.fromCharCode(...bytes)` passes one argument per byte, and the two
+    // runtimes disagree about how many a call may take: JSC accepts a 320KB spread,
+    // V8 throws at roughly 125k. The suite runs on one engine, so a spread version
+    // passes here and fails on the other target — the failure is invisible to every
+    // test and visible only in the source. Hence a gate rather than a case.
+    for (const file of files(SRC)) {
+      const source = stripComments(readFileSync(file, 'utf8'));
+      for (const m of source.matchAll(/String\.fromCharCode\(\s*\.\.\.\s*([A-Za-z0-9_.]+)/g)) {
+        // A bounded slice is fine; an unbounded identifier is not.
+        expect({ file: file.slice(SRC.length + 1), spread: m[1], bounded: /subarray|slice/.test(m[0]) })
+          .toEqual({ file: file.slice(SRC.length + 1), spread: m[1], bounded: true });
+      }
+    }
   });
 
   it('seals every Deployment secret under a key the store does not hold', () => {

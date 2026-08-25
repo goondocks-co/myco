@@ -1,3 +1,4 @@
+import { toBase64Url } from '../base64.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
 
@@ -54,10 +55,6 @@ export const STEP_UP_PURPOSES = [
 ] as const;
 export type StepUpPurpose = (typeof STEP_UP_PURPOSES)[number];
 
-function base64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
 export interface IssuedStepUpAuthority {
   key: string;
   id: string;
@@ -68,10 +65,8 @@ export interface IssuedStepUpAuthority {
 export async function issueStepUpAuthority(
   db: RelationalStore, purpose: StepUpPurpose, nowMs: number, options: { ttlMs?: number } = {},
 ): Promise<IssuedStepUpAuthority> {
-  // The table grows only when an operator mints, so this is where it is trimmed.
-  await reclaimStepUpAuthorities(db, nowMs);
-  const key = base64url(crypto.getRandomValues(new Uint8Array(STEP_UP_KEY_BYTES)));
-  const id = `${STEP_UP_ID_PREFIX}${base64url(crypto.getRandomValues(new Uint8Array(STEP_UP_ID_BYTES)))}`;
+  const key = toBase64Url(crypto.getRandomValues(new Uint8Array(STEP_UP_KEY_BYTES)));
+  const id = `${STEP_UP_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(STEP_UP_ID_BYTES)))}`;
   const expiresAt = nowMs + (options.ttlMs ?? STEP_UP_TTL_MS);
   await db
     .prepare(`INSERT INTO step_up_authorities (id, key_hash, purpose, created_at, expires_at, used_at, used_by, revoked_at)
@@ -98,6 +93,12 @@ export async function spendStepUpAuthority(
   db: RelationalStore, presentedKey: string, purpose: StepUpPurpose, memberId: string, nowMs: number,
 ): Promise<StepUpResult> {
   if (!STEP_UP_KEY_PATTERN.test(presentedKey)) return { ok: false, reason: 'unknown' };
+  // Trimmed on the SPEND rather than the mint. Minting is break-glass — direct
+  // store access, with no code path through the server — so hanging the sweep
+  // there means it never runs on a deployed Deployment at all. A spend only ever
+  // finishes rows, so the same "grows only when someone acts" reasoning holds and
+  // this one is actually reached.
+  await reclaimStepUpAuthorities(db, nowMs);
   const keyHash = await sha256Hex(presentedKey);
 
   const spend = await db
@@ -139,12 +140,12 @@ export async function revokeStepUpAuthority(db: RelationalStore, id: string, now
  */
 export function stepUpAuthorizer(
   db: RelationalStore,
-  requiresStepUp: (leaf: string) => boolean,
+  requiresStepUp: (leaf: string, value?: unknown) => boolean,
   presentedKey: () => string | null,
   nowMs: () => number,
-): (change: { leaf: string; actor: string }) => Promise<boolean> {
-  return async ({ leaf, actor }) => {
-    if (!requiresStepUp(leaf)) return true;
+): (change: { leaf: string; value?: unknown; actor: string }) => Promise<boolean> {
+  return async ({ leaf, value, actor }) => {
+    if (!requiresStepUp(leaf, value)) return true;
     const key = presentedKey();
     if (key === null) return false;
     const spent = await spendStepUpAuthority(db, key, 'provider_credential', actor, nowMs());
@@ -167,9 +168,11 @@ export const STEP_UP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
  * Reclaims authorities that are finished — spent, revoked, or expired — and older
  * than `STEP_UP_RETENTION_MS`.
  *
- * Runs on the mint path, the same opportunistic idiom the enrollment reclaim uses:
- * the table grows only when an operator mints, so that is the moment to trim it,
- * and a Deployment that never mints again accumulates nothing to collect.
+ * Runs on the SPEND path, the same opportunistic idiom the enrollment reclaim
+ * uses. Not the mint path: minting is break-glass, performed by direct store
+ * access with no code path through the server, so a sweep hung there would never
+ * run on a deployed Deployment. A spend only finishes rows, so it is the reachable
+ * moment with the same "grows only when someone acts" property.
  *
  * A LIVE authority is never touched whatever its age. Reclaiming an unspent one is
  * retention deciding to revoke, which is the operator's call.

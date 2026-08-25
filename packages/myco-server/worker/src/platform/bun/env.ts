@@ -66,7 +66,7 @@ export function serverEnvFromBunConfig(config: BunServerConfig): ServerEnv {
     platform: bunPlatform(config),
     // Self-hosted holds the key the way this project already holds machine
     // secrets: an env value outside the store it protects.
-    wrappingKey: wrappingKeyFromText(async () => config.SECRET_WRAP_KEY, 'MYCO_SECRET_WRAP_KEY'),
+    wrappingKey: wrappingKeyFromText(async () => config.SECRET_WRAP_KEY, 'SECRET_WRAP_KEY'),
     db: sqliteRelationalStore(config.sqlite),
     blobs: diskBlobStore(config.blobDir),
     sourceLimit: inProcessRateLimiter({ ...SOURCE_LIMIT, now }),

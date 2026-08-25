@@ -73,13 +73,15 @@ describe('deployment settings', () => {
     expect(rearmed).toEqual(['agent.scheduled_tasks_enabled']);
   });
 
-  it('sends every authorization decision the leaf and the actor', async () => {
-    const seen: Array<{ leaf: string; actor: string }> = [];
+  it('sends every authorization decision the leaf, the value and the actor', async () => {
+    // The value travels with the decision: the requirement is derived from it, and a
+    // redirect can hide inside a document leaf that names no gated leaf.
+    const seen: Array<{ leaf: string; value?: unknown; actor: string }> = [];
     const r = rig({ authorize: async (c) => { seen.push(c); return true; } });
     await r.w.setLeaf('embedding.provider', 'ollama', 'mem_9', 1_000);
     await r.w.setCapability('proj_1', 'cortex', true, 'mem_9', 1_000);
     expect(seen).toEqual([
-      { leaf: 'embedding.provider', actor: 'mem_9' },
+      { leaf: 'embedding.provider', value: 'ollama', actor: 'mem_9' },
       { leaf: 'project.cortex', actor: 'mem_9' },
     ]);
   });

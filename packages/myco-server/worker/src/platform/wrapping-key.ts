@@ -1,4 +1,5 @@
 import type { SecretWrappingKey } from '../core/adapters.js';
+import { fromBase64 } from '../base64.js';
 
 /**
  * Building a `SecretWrappingKey` from whatever a target holds it in.
@@ -36,10 +37,9 @@ export function wrappingKeyFromText(read: () => Promise<string | undefined>, sou
       material ??= (async () => {
         const text = await read();
         if (text === undefined || text.length === 0) throw new WrappingKeyUnavailableError(`${source} is not set`);
-        const normalized = text.replace(/-/g, '+').replace(/_/g, '/');
         let bytes: Uint8Array;
         try {
-          bytes = Uint8Array.from(atob(normalized), (c) => c.charCodeAt(0));
+          bytes = fromBase64(text);
         } catch {
           throw new WrappingKeyUnavailableError(`${source} is not base64`);
         }

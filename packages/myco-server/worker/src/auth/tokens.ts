@@ -1,3 +1,4 @@
+import { toBase64Url } from '../base64.js';
 import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
 import { SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
 import { sha256Hex } from '../hash.js';
@@ -74,12 +75,8 @@ interface AuthRow {
   runtime_kind: string | null;
 }
 
-function base64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
 export function mintMemberToken(): string {
-  return base64url(crypto.getRandomValues(new Uint8Array(MEMBER_TOKEN_BYTES)));
+  return toBase64Url(crypto.getRandomValues(new Uint8Array(MEMBER_TOKEN_BYTES)));
 }
 
 /** The runtime holding a credential, as that runtime describes itself. Recorded for an operator to read; never an admission input. */
@@ -109,7 +106,7 @@ function memberTokenInsert(
 /** A fresh raw token and its id, with the insert that stores the digest. */
 async function mintInsert(db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, runtime: RuntimeClaims): Promise<{ statement: PreparedStatement; issued: IssuedMemberToken }> {
   const token = mintMemberToken();
-  const tokenId = `${TOKEN_ID_PREFIX}${base64url(crypto.getRandomValues(new Uint8Array(TOKEN_ID_BYTES)))}`;
+  const tokenId = `${TOKEN_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(TOKEN_ID_BYTES)))}`;
   const { statement, expiresAt } = memberTokenInsert(db, member, nowMs, lineage, tokenId, await sha256Hex(token), runtime);
   return { statement, issued: { token, tokenId, expiresAt } };
 }

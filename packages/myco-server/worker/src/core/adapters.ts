@@ -129,7 +129,15 @@ export interface OwnerBindings {
 export interface SecretWrappingKey {
   /** Raw key material for AES-256-GCM. Throws by name when the deployment has none configured. */
   material(): Promise<ArrayBuffer>;
-  /** Which key the material is, recorded on every sealed row so re-wrapping is a migration rather than an outage. */
+  /**
+   * Which key the material is, recorded on every sealed row.
+   *
+   * Recorded and not yet resolved: nothing maps a version back to key material, so
+   * a deployment holds one key and rotating it makes every existing row
+   * undecryptable until each credential is re-entered. The column is what a later
+   * re-wrap needs to identify rows by; it does not by itself make rotation
+   * non-disruptive, and #964 owns making that true.
+   */
   version(): Promise<number>;
 }
 

@@ -6,7 +6,7 @@ import {
   DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, requiresStepUp, settingsWriter,
   type ProjectCapability, type SettingsRefusal,
 } from '../core/settings.js';
-import { stepUpAuthorizer } from '../auth/step-up.js';
+import { spendStepUpAuthority, stepUpAuthorizer } from '../auth/step-up.js';
 import { STEP_UP_HEADER } from '../constants.js';
 
 /**
@@ -27,7 +27,18 @@ const SECRET_SLOTS = ['anthropic', 'openai', 'openrouter', 'github'] as const;
 
 const refusalStatus = (r: SettingsRefusal): number => (r.reason === 'unauthorized' ? 403 : 400);
 
+/**
+ * One refusal shape for this surface.
+ *
+ * A body fault and a leaf fault both answer 400, so both answer in the same shape:
+ * a client keying on `applied` sees every refusal, rather than one kind through
+ * `applied` and another through `error`.
+ */
 const refused = (r: SettingsRefusal): Response => Response.json({ applied: false, ...r }, { status: refusalStatus(r) });
+
+/** A malformed request, in the same shape as every other refusal here. */
+const malformed = (leaf: string, reason: string): Response =>
+  Response.json({ applied: false, reason: 'malformed', leaf, detail: reason }, { status: 400 });
 
 /** The writer for this request, carrying whatever step-up authority the caller presented. */
 function writerFor(env: ServerEnv, ctx: OwnerContext) {
@@ -35,6 +46,40 @@ function writerFor(env: ServerEnv, ctx: OwnerContext) {
   return settingsWriter(env.db, {
     authorize: stepUpAuthorizer(env.db, requiresStepUp, () => presented, () => ctx.now),
   });
+}
+
+/**
+ * A JSON object body, or null for anything else.
+ *
+ * `null` is valid JSON, so `request.json()` resolves for it and a later property
+ * read throws — which the owner catch turns into a 503 with retry-after. A
+ * malformed body is the caller's own fault and must be terminal, so the shape is
+ * checked here rather than discovered by dereferencing it.
+ */
+async function jsonObject(ctx: OwnerContext): Promise<Record<string, unknown> | null> {
+  let parsed: unknown;
+  try {
+    parsed = await ctx.request.json();
+  } catch {
+    return null;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+}
+
+/**
+ * The longest credential this surface accepts.
+ *
+ * A ceiling rather than the body cap alone: provider credentials are of the order
+ * of a hundred characters, and a bounded refusal is terminal where an unbounded
+ * value is a large sealed row nothing can use.
+ */
+const MAX_SECRET_CHARS = 4096;
+
+/** Spends the step-up authority a credential change requires, from the header carrying it. */
+async function spentForCredential(env: ServerEnv, ctx: OwnerContext): Promise<boolean> {
+  const presented = ctx.request.headers.get(STEP_UP_HEADER);
+  if (presented === null) return false;
+  return (await spendStepUpAuthority(env.db, presented, 'provider_credential', ctx.session.sub, ctx.now)).ok;
 }
 
 /** Every Deployment leaf this server accepts, with whatever is stored for it. A leaf with no row is reported absent rather than defaulted — the reader layers its own defaults. */
@@ -52,13 +97,8 @@ export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise
 
 /** Set one Deployment leaf. */
 export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  let body: { value?: unknown };
-  try {
-    body = (await ctx.request.json()) as { value?: unknown };
-  } catch {
-    return badRequest('body must be JSON');
-  }
-  if (typeof body !== 'object' || body === null || !('value' in body)) return badRequest('body must carry a value');
+  const body = await jsonObject(ctx);
+  if (body === null || !('value' in body)) return malformed(ctx.params.leaf, 'body must be a JSON object carrying a value');
 
   const result = await writerFor(env, ctx).setLeaf(ctx.params.leaf, body.value, ctx.session.sub, ctx.now);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
@@ -75,13 +115,8 @@ export async function handleProjectCapabilities(env: ServerEnv, ctx: OwnerContex
 export async function handleSetProjectCapability(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
   if (scope === null) return notFound();
-  let body: { enabled?: unknown };
-  try {
-    body = (await ctx.request.json()) as { enabled?: unknown };
-  } catch {
-    return badRequest('body must be JSON');
-  }
-  if (typeof body.enabled !== 'boolean') return badRequest('enabled must be a boolean');
+  const body = await jsonObject(ctx);
+  if (body === null || typeof body.enabled !== 'boolean') return malformed(`project.${ctx.params.capability}`, 'body must carry a boolean `enabled`');
 
   const result = await writerFor(env, ctx)
     .setCapability(ctx.params.projectId, ctx.params.capability, body.enabled, ctx.session.sub, ctx.now);
@@ -101,16 +136,23 @@ export async function handleSecrets(env: ServerEnv, ctx: OwnerContext): Promise<
   return ok({ secrets: described });
 }
 
-/** Store a provider credential. The value is written and never returned. */
+/**
+ * Store a provider credential. The value is written and never returned.
+ *
+ * Step-up gated, and the risk it answers is SUBSTITUTION rather than disclosure.
+ * The stored value is already write-only and masked, so a member cannot read the
+ * Deployment's key — but a member who writes their OWN key into the `anthropic`
+ * slot has every later intelligence run dispatched against an account they
+ * control and can read. That is the same outcome as redirecting the endpoint,
+ * reached through the slot #907 named first.
+ */
 export async function handleSetSecret(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (!(SECRET_SLOTS as readonly string[]).includes(ctx.params.name)) return notFound();
-  let body: { value?: unknown };
-  try {
-    body = (await ctx.request.json()) as { value?: unknown };
-  } catch {
-    return badRequest('body must be JSON');
-  }
-  if (typeof body.value !== 'string' || body.value.length === 0) return badRequest('value must be a non-empty string');
+  const body = await jsonObject(ctx);
+  const slot = `secret.${ctx.params.name}`;
+  if (body === null || typeof body.value !== 'string' || body.value.length === 0) return malformed(slot, 'body must carry a non-empty string `value`');
+  if (body.value.length > MAX_SECRET_CHARS) return malformed(slot, `value must be at most ${MAX_SECRET_CHARS} characters`);
+  if (!(await spentForCredential(env, ctx))) return refused({ reason: 'unauthorized', leaf: `secret.${ctx.params.name}` });
 
   await deploymentSecretStore(env.db, env.wrappingKey).put(ctx.params.name, body.value, ctx.session.sub, ctx.now);
   // The answer is the description, so a caller that just wrote a value learns only
@@ -119,9 +161,16 @@ export async function handleSetSecret(env: ServerEnv, ctx: OwnerContext): Promis
   return ok({ name: ctx.params.name, ...description });
 }
 
-/** Remove a stored provider credential. */
+/**
+ * Remove a stored provider credential.
+ *
+ * Gated with the write. Removal is the quieter half of the same authority: it
+ * silences Deployment intelligence, and a member who can do it unauthenticated can
+ * do it repeatedly.
+ */
 export async function handleDeleteSecret(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (!(SECRET_SLOTS as readonly string[]).includes(ctx.params.name)) return notFound();
+  if (!(await spentForCredential(env, ctx))) return refused({ reason: 'unauthorized', leaf: `secret.${ctx.params.name}` });
   return ok(await deploymentSecretStore(env.db, env.wrappingKey).delete(ctx.params.name, ctx.session.sub, ctx.now));
 }
 

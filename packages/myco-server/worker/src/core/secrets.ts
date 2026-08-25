@@ -1,4 +1,6 @@
 import type { RelationalStore, SecretWrappingKey } from './adapters.js';
+import { emit } from '../telemetry.js';
+import { fromBase64, toBase64 } from '../base64.js';
 
 /**
  * Deployment-held secrets: sealed at rest, opened only where a value is actually
@@ -22,32 +24,23 @@ const IV_BYTES = 12;
 const MASK_PREFIX = 8;
 const MASK_SUFFIX = 4;
 
-/** The shortest secret that is masked rather than fully hidden; below this a mask would reveal most of it. */
-const MASKABLE_MIN = MASK_PREFIX + MASK_SUFFIX + 4;
+/**
+ * The shortest secret a mask may be shown for.
+ *
+ * Three times what a mask reveals, so a preview never exposes more than a third of
+ * a value. Set at `revealed + 4` instead, a 16-character secret would show 12 of
+ * its characters — the mask would be the secret.
+ */
+const MASKABLE_MIN = (MASK_PREFIX + MASK_SUFFIX) * 3;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-const toBase64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
-/**
- * Decoded bytes, in a view the Web Crypto types accept on both targets.
- *
- * `Uint8Array.from` is typed over `ArrayBufferLike`, which admits
- * `SharedArrayBuffer` and so is not a `BufferSource` under the stricter of the
- * two runtimes' lib definitions. Copying into a plainly-owned buffer keeps one
- * implementation compiling against both without a cast that would hide a real
- * mismatch later.
- */
-const fromBase64 = (value: string): Uint8Array<ArrayBuffer> => {
-  const decoded = atob(value);
-  const bytes = new Uint8Array(new ArrayBuffer(decoded.length));
-  for (let i = 0; i < decoded.length; i += 1) bytes[i] = decoded.charCodeAt(i);
-  return bytes;
-};
-
 /** What a caller may know about a secret without holding it. */
 export interface SecretDescription {
   configured: boolean;
+  /** False when a stored row will not open under the current wrapping key. A configured-but-unreadable slot is what an operator must re-enter. */
+  readable: boolean;
   /** First and last characters only, or null when nothing is stored. Never the value. */
   maskedValue: string | null;
   updatedAt: number | null;
@@ -139,16 +132,27 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
     .bind(name)
     .first<SecretRow>();
 
-  const described = async (r: SecretRow): Promise<SecretDescription & { name: string }> => ({
-    name: r.name,
-    configured: true,
-    // The mask is derived here rather than stored. A stored preview would put the
-    // first and last characters of every credential back into the table this
-    // design exists to keep them out of.
-    maskedValue: maskSecret(await open(await key(), r)),
-    updatedAt: r.updated_at,
-    updatedBy: r.updated_by,
-  });
+  /**
+   * A row as a surface may see it.
+   *
+   * A row that will not open is reported UNREADABLE rather than thrown, and the
+   * distinction matters operationally. Under a rotated wrapping key, a corrupted
+   * `iv` or a partly restored backup, one bad slot failing the whole response takes
+   * down the very page that tells an operator which credentials to re-enter.
+   */
+  const described = async (r: SecretRow): Promise<SecretDescription & { name: string }> => {
+    let maskedValue: string | null = null;
+    let readable = true;
+    try {
+      // The mask is derived here rather than stored. A stored preview would put the
+      // first and last characters of every credential back into the table this
+      // design exists to keep them out of.
+      maskedValue = maskSecret(await open(await key(), r));
+    } catch {
+      readable = false;
+    }
+    return { name: r.name, configured: true, readable, maskedValue, updatedAt: r.updated_at, updatedBy: r.updated_by };
+  };
 
   return {
     async put(name, value, actor, nowMs) {
@@ -171,7 +175,7 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
 
     async describe(name) {
       const r = await row(name);
-      if (r === null) return { configured: false, maskedValue: null, updatedAt: null, updatedBy: null };
+      if (r === null) return { configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null };
       const { name: _name, ...rest } = await described(r);
       return rest;
     },
@@ -185,7 +189,12 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
 
     async delete(name, actor, nowMs) {
       const result = await db.prepare(`DELETE FROM deployment_secrets WHERE name = ?`).bind(name).run();
-      return { deleted: result.meta.changes === 1 };
+      const deleted = result.meta.changes === 1;
+      // Every other mutation on this table records its actor on the row. Deletion
+      // removes the row, making it the one destructive operation here whose trail
+      // lives nowhere but this event.
+      emit({ kind: 'deployment_secret_deleted', name, actor, deleted, at: nowMs });
+      return { deleted };
     },
   };
 }

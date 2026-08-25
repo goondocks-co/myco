@@ -88,18 +88,14 @@ export const DEPLOYMENT_LEAVES: readonly string[] = [
 const DEPLOYMENT_LEAF_SET = new Set(DEPLOYMENT_LEAVES);
 
 /**
- * The leaves a member may not change on membership alone.
+ * The scalar leaves that name an endpoint directly.
  *
  * #907 justifies step-up on provider credentials as *"a member could exfiltrate a
- * provider key"* — but a stored secret is already write-only and masked, so
- * reading it is not the reachable path. Changing **where it is sent** is.
+ * provider key"* — but a stored secret is write-only and masked, so reading it is
+ * not the reachable path. Changing **where it is sent** is.
  * `agent/harness/openai.ts` locks `openai` and `openrouter` to hardcoded base URLs
- * for precisely that, with the comment saying so; these are the same values left
- * open for `openai-compatible`, and on a Deployment every member writes settings.
- *
- * So the gated set is the endpoint, not the credential slot: a member who can
- * point the Deployment at a host they control does not need to read the key, the
- * key is delivered to them.
+ * for exactly that, with a comment saying so; these are the same values left open
+ * for `openai-compatible`, and on a Deployment every member writes settings.
  */
 export const STEP_UP_LEAVES: readonly string[] = [
   'agent.provider.base_url',
@@ -109,12 +105,45 @@ export const STEP_UP_LEAVES: readonly string[] = [
 
 const STEP_UP_LEAF_SET = new Set(STEP_UP_LEAVES);
 
-/** Whether changing `leaf` needs proof beyond membership. */
-export const requiresStepUp = (leaf: string): boolean => STEP_UP_LEAF_SET.has(leaf);
+/**
+ * How deep a submitted value is inspected for a redirect. Bounds the walk on a
+ * caller-supplied document; deeper than any provider override the schema declares.
+ */
+const MAX_VALUE_DEPTH = 12;
+
+/**
+ * Whether a submitted VALUE carries a provider redirect anywhere inside it.
+ *
+ * A leaf-name list is not sufficient. Several Deployment leaves are whole
+ * documents rather than scalars, and `agent.tasks` is
+ * a record of per-task overrides — each of which may carry
+ * `provider: { type, base_url }` (`TaskProviderOverrideSchema` in the member
+ * schema). Writing that one leaf therefore redirects the Deployment's own
+ * credential while naming none of the gated leaves.
+ *
+ * So the requirement is derived from what the value CONTAINS, not from what it is
+ * called: any `base_url` at any depth, or any `provider` object. That is
+ * deliberately conservative, and will occasionally demand step-up for a document
+ * that carries a provider block without changing it. Asking too often costs a
+ * prompt; asking too rarely delivers a credential to a host a member chose.
+ */
+export function containsProviderRedirect(value: unknown, depth = 0): boolean {
+  if (depth > MAX_VALUE_DEPTH || value === null || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some((v) => containsProviderRedirect(v, depth + 1));
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'base_url' || key === 'baseUrl') return true;
+    if (key === 'provider' && nested !== null && typeof nested === 'object') return true;
+    if (containsProviderRedirect(nested, depth + 1)) return true;
+  }
+  return false;
+}
+
+/** Whether this change needs proof beyond membership: the leaf names an endpoint, or the value carries one. */
+export const requiresStepUp = (leaf: string, value?: unknown): boolean =>
+  STEP_UP_LEAF_SET.has(leaf) || containsProviderRedirect(value);
 
 /** Why a settings write did not apply. Each names a fault in the caller's own request; none is retryable. */
 export type SettingsRefusal =
-  | { reason: 'unknown_leaf'; leaf: string }
   | { reason: 'not_deployment_tier'; leaf: string }
   | { reason: 'unauthorized'; leaf: string }
   | { reason: 'unknown_capability'; capability: string };
@@ -129,7 +158,7 @@ export type SettingsResult = { applied: true } | { applied: false; refusal: Sett
  * a provider credential or the endpoint it is sent to — so that when #915 L3
  * lands, the check has one place to be rather than a new branch at each caller.
  */
-export type SettingsAuthorizer = (change: { leaf: string; actor: string }) => Promise<boolean>;
+export type SettingsAuthorizer = (change: { leaf: string; value?: unknown; actor: string }) => Promise<boolean>;
 
 /** Re-arms whatever the change may have moved. Supplied by the caller so this module never decides what runs. */
 export type ScheduleRearm = (change: { leaf: string }) => Promise<void>;
@@ -165,7 +194,7 @@ export function settingsWriter(
       if (!DEPLOYMENT_LEAF_SET.has(leaf)) {
         return { applied: false, refusal: { reason: 'not_deployment_tier', leaf } };
       }
-      if (!(await authorize({ leaf, actor }))) {
+      if (!(await authorize({ leaf, value, actor }))) {
         return { applied: false, refusal: { reason: 'unauthorized', leaf } };
       }
       await db

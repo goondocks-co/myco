@@ -66,6 +66,7 @@ describe('deployment secrets', () => {
     const described = await r.store.describe('anthropic');
     expect(described).toEqual({
       configured: true,
+      readable: true,
       maskedValue: `${ANTHROPIC.slice(0, 8)}…${ANTHROPIC.slice(-4)}`,
       updatedAt: 2_000,
       updatedBy: 'mem_7',
@@ -78,13 +79,16 @@ describe('deployment secrets', () => {
 
   it('reports an absent secret as unconfigured rather than failing', async () => {
     const r = rig();
-    expect(await r.store.describe('never-set')).toEqual({ configured: false, maskedValue: null, updatedAt: null, updatedBy: null });
+    expect(await r.store.describe('never-set')).toEqual({ configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null });
     expect(await r.store.get('never-set')).toBeNull();
   });
 
   it('masks nothing for a value too short to mask, rather than showing most of it', () => {
     expect(maskSecret('short')).toBeNull();
-    expect(maskSecret('0123456789abcdef')).toBe('01234567…cdef');
+    // 16 characters would show 12 of them — the mask would be the secret. The floor
+    // is three times what a preview reveals, so a mask never exposes over a third.
+    expect(maskSecret('0123456789abcdef')).toBeNull();
+    expect(maskSecret('0123456789abcdefghijklmnopqrstuvwxyz')).toBe('01234567…wxyz');
   });
 
   it('replaces a value in place, with a fresh IV, and records who did it', async () => {
@@ -110,10 +114,25 @@ describe('deployment secrets', () => {
     expect(a.ciphertext).not.toBe(b.ciphertext);
   });
 
-  it('records the key version on every row, so re-wrapping is a migration and not an outage', async () => {
+  it('records which key sealed each row, so a later re-wrap can find them', async () => {
     const r = rig();
     await r.store.put('anthropic', ANTHROPIC, 'mem_1', 1_000);
     expect((r.sqlite.query(`SELECT key_version FROM deployment_secrets WHERE name='anthropic'`).get() as { key_version: number }).key_version).toBe(1);
+  });
+
+  it('reports a row it cannot open as configured-but-unreadable, and keeps describing the rest', async () => {
+    // Under a rotated key, a corrupted iv, or a partly restored backup, one bad slot
+    // must not fail the response — the page that tells an operator what to re-enter
+    // is the page they need most at that moment.
+    const r = rig();
+    await r.store.put('anthropic', ANTHROPIC, 'mem_1', 1_000);
+    await r.store.put('github', 'ghp_aaaaaaaaaaaaaaaaaaaaaaaa', 'mem_1', 1_000);
+    r.sqlite.query(`UPDATE deployment_secrets SET iv = ? WHERE name = 'anthropic'`).run(btoa('123456789012'));
+
+    expect(await r.store.describe('anthropic')).toMatchObject({ configured: true, readable: false, maskedValue: null });
+    expect(await r.store.describe('github')).toMatchObject({ configured: true, readable: true });
+    const listed = await r.store.list();
+    expect(listed.map((s) => [s.name, s.readable])).toEqual([['anthropic', false], ['github', true]]);
   });
 
   it('deletes, and reports whether anything was there', async () => {

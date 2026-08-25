@@ -408,8 +408,12 @@ const V5_STATEMENTS: readonly string[] = [
  * into the table this design exists to keep them out of. `describe()` decrypts
  * and returns only the mask, so a preview is derived on demand and never rests.
  *
- * `key_version` is carried from the first row so re-wrapping under a new key is a
- * migration rather than an outage.
+ * `key_version` is carried from the first row so a later re-wrap can identify which
+ * rows are sealed under which key. It does not by itself make rotation
+ * non-disruptive: nothing resolves a version back to key material today, so a
+ * rotated wrapping key leaves every row unreadable until its credential is
+ * re-entered. A slot in that state reports `readable: false` rather than failing
+ * the whole surface, so an operator can see what to re-enter. #964 owns rotation.
  */
 /**
  * Retention across step 6, stated once rather than per table: three of the four
