@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RETIRED_ROUTES, ROUTES } from '@myco-server-worker/routes.js';
 import worker from '@myco-server-worker/index.js';
@@ -499,6 +499,40 @@ describe('gates', () => {
     for (const [, fixture] of Object.entries(FIXTURES)) {
       const stored = await (await worker.fetch(fixture.wellFormed(t1.token), e)).json() as Record<string, unknown>;
       expect(stored[fixture.shape]).toBe(true);
+    }
+  });
+
+  it('writes settings and capability admission from exactly one module, keyed on the tables themselves', () => {
+    // Keying this on MODULE PATHS alone would not hold: the read-layer allowlist
+    // already permits every file under `ingest/` and `db/` to issue SQL, so a
+    // settings write from the ingest path would pass that gate untouched. The
+    // property is about the TABLES, so the gate is too — their names may appear
+    // only where they are owned.
+    //
+    // What it protects is the write ORDER. Validate, authorize, persist, record the
+    // actor, re-arm. A second writer is how one of those five goes missing on one
+    // path, and the one that goes missing silently is the actor.
+    const OWNED: Record<string, string> = {
+      deployment_settings: join('core', 'settings.ts'),
+      project_capabilities: join('core', 'settings.ts'),
+      deployment_secrets: join('core', 'secrets.ts'),
+    };
+    const offenders: string[] = [];
+    for (const file of files(SRC)) {
+      const rel = file.slice(SRC.length + 1);
+      if (rel.startsWith(`db${sep}`)) continue; // migrations create them
+      const source = readFileSync(file, 'utf8');
+      for (const [table, owner] of Object.entries(OWNED)) {
+        if (rel === owner) continue;
+        if (new RegExp(`\\b${table}\\b`).test(source)) offenders.push(`${rel} names ${table}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+
+    // And the owner really does carry every step, so the gate is guarding something.
+    const settings = readFileSync(join(SRC, 'core', 'settings.ts'), 'utf8');
+    for (const step of ['authorize(', 'updated_by', 'rearm(']) {
+      expect({ step, present: settings.includes(step) }).toEqual({ step, present: true });
     }
   });
 

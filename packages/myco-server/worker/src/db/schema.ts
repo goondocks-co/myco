@@ -412,6 +412,40 @@ const V5_STATEMENTS: readonly string[] = [
  * migration rather than an outage.
  */
 const V6_STATEMENTS: readonly string[] = [
+  /**
+   * Deployment Settings, one row per leaf.
+   *
+   * Keyed by the leaf path the two-tier ledger names (§7.8), so a partial write
+   * touches one row and carries its own actor — a whole-document write would make
+   * every save look like a change to everything, and an audit trail that cannot
+   * say which setting moved is not one.
+   */
+  `CREATE TABLE IF NOT EXISTS deployment_settings (
+     leaf       TEXT PRIMARY KEY,
+     value      TEXT NOT NULL,
+     updated_at INTEGER NOT NULL,
+     updated_by TEXT NOT NULL)`,
+  /**
+   * Per-Project capability admission.
+   *
+   * State rather than config: a Project is created by a member's first write
+   * (`resolveProject`) and cannot have a settings file that predates it.
+   *
+   * ABSENCE MEANS DISABLED. This is the inverse of the member-side predicate,
+   * where every master gate defaults true and a new project is made capture-only
+   * by `reseedCaptureOnly()` writing `false` at provision. There is no equivalent
+   * provisioning moment on a Deployment, so the default itself has to carry the
+   * property. Any other default silently admits every Project that appears from
+   * an ingest to every cost-bearing capability — the auto-adoption #428 exists
+   * to prevent.
+   */
+  `CREATE TABLE IF NOT EXISTS project_capabilities (
+     project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     capability TEXT NOT NULL,
+     enabled    INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL,
+     updated_by TEXT NOT NULL,
+     PRIMARY KEY (project_id, capability))`,
   `CREATE TABLE IF NOT EXISTS deployment_secrets (
      name        TEXT PRIMARY KEY,
      ciphertext  TEXT NOT NULL,

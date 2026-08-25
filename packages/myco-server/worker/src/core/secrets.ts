@@ -29,7 +29,21 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 const toBase64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
-const fromBase64 = (value: string): Uint8Array => Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
+/**
+ * Decoded bytes, in a view the Web Crypto types accept on both targets.
+ *
+ * `Uint8Array.from` is typed over `ArrayBufferLike`, which admits
+ * `SharedArrayBuffer` and so is not a `BufferSource` under the stricter of the
+ * two runtimes' lib definitions. Copying into a plainly-owned buffer keeps one
+ * implementation compiling against both without a cast that would hide a real
+ * mismatch later.
+ */
+const fromBase64 = (value: string): Uint8Array<ArrayBuffer> => {
+  const decoded = atob(value);
+  const bytes = new Uint8Array(new ArrayBuffer(decoded.length));
+  for (let i = 0; i < decoded.length; i += 1) bytes[i] = decoded.charCodeAt(i);
+  return bytes;
+};
 
 /** What a caller may know about a secret without holding it. */
 export interface SecretDescription {
