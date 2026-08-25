@@ -68,6 +68,8 @@ export interface IssuedStepUpAuthority {
 export async function issueStepUpAuthority(
   db: RelationalStore, purpose: StepUpPurpose, nowMs: number, options: { ttlMs?: number } = {},
 ): Promise<IssuedStepUpAuthority> {
+  // The table grows only when an operator mints, so this is where it is trimmed.
+  await reclaimStepUpAuthorities(db, nowMs);
   const key = base64url(crypto.getRandomValues(new Uint8Array(STEP_UP_KEY_BYTES)));
   const id = `${STEP_UP_ID_PREFIX}${base64url(crypto.getRandomValues(new Uint8Array(STEP_UP_ID_BYTES)))}`;
   const expiresAt = nowMs + (options.ttlMs ?? STEP_UP_TTL_MS);
@@ -148,4 +150,38 @@ export function stepUpAuthorizer(
     const spent = await spendStepUpAuthority(db, key, 'provider_credential', actor, nowMs());
     return spent.ok;
   };
+}
+
+/**
+ * How long a finished authority is kept before it is reclaimed.
+ *
+ * Shorter than an enrollment authority's month. A spent authority records which
+ * sensitive operation an actor authorised, and that record belongs with the
+ * operation's own audit trail rather than here: the row a change landed on already
+ * carries its actor. What remains here afterwards is a spent digest with nothing
+ * resolving through it.
+ */
+export const STEP_UP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Reclaims authorities that are finished — spent, revoked, or expired — and older
+ * than `STEP_UP_RETENTION_MS`.
+ *
+ * Runs on the mint path, the same opportunistic idiom the enrollment reclaim uses:
+ * the table grows only when an operator mints, so that is the moment to trim it,
+ * and a Deployment that never mints again accumulates nothing to collect.
+ *
+ * A LIVE authority is never touched whatever its age. Reclaiming an unspent one is
+ * retention deciding to revoke, which is the operator's call.
+ */
+export async function reclaimStepUpAuthorities(db: RelationalStore, nowMs: number): Promise<{ reclaimed: number }> {
+  const cutoff = nowMs - STEP_UP_RETENTION_MS;
+  const result = await db
+    .prepare(`DELETE FROM step_up_authorities
+               WHERE (used_at IS NOT NULL AND used_at <= ?)
+                  OR (revoked_at IS NOT NULL AND revoked_at <= ?)
+                  OR (used_at IS NULL AND revoked_at IS NULL AND expires_at <= ?)`)
+    .bind(cutoff, cutoff, cutoff)
+    .run();
+  return { reclaimed: result.meta.changes };
 }

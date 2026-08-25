@@ -9,7 +9,7 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
   issueStepUpAuthority, revokeStepUpAuthority, spendStepUpAuthority, stepUpAuthorizer,
-  STEP_UP_KEY_PATTERN, STEP_UP_PURPOSES, STEP_UP_TTL_MS,
+  STEP_UP_KEY_PATTERN, STEP_UP_PURPOSES, STEP_UP_RETENTION_MS, STEP_UP_TTL_MS,
 } from '@myco-server-worker/auth/step-up.js';
 import { requiresStepUp, settingsWriter, STEP_UP_LEAVES } from '@myco-server-worker/core/settings.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
@@ -111,5 +111,38 @@ describe('the settings authorizer', () => {
   it('names as step-up exactly the leaves that decide where a credential goes', () => {
     expect([...STEP_UP_LEAVES].sort()).toEqual(['agent.provider.base_url', 'agent.provider.type', 'embedding.base_url']);
     expect(requiresStepUp('cortex.digest.tier')).toBe(false);
+  });
+});
+
+describe('step-up retention', () => {
+  it('reclaims finished authorities past the window on the next mint, and never a live one', async () => {
+    const r = rig();
+    const old = NOW - STEP_UP_RETENTION_MS - 1;
+
+    const spentLongAgo = await issueStepUpAuthority(r.db, 'provider_credential', old);
+    r.sqlite.query(`UPDATE step_up_authorities SET used_at = ? WHERE id = ?`).run(old, spentLongAgo.id);
+    const revokedLongAgo = await issueStepUpAuthority(r.db, 'provider_credential', old);
+    r.sqlite.query(`UPDATE step_up_authorities SET revoked_at = ? WHERE id = ?`).run(old, revokedLongAgo.id);
+    // Expired long ago: issued far enough back that its EXPIRY, not its minting,
+    // falls outside the window — the window is measured on the former.
+    const expiredLongAgo = await issueStepUpAuthority(r.db, 'provider_credential', old - STEP_UP_TTL_MS);
+    const spentRecently = await issueStepUpAuthority(r.db, 'provider_credential', NOW);
+    r.sqlite.query(`UPDATE step_up_authorities SET used_at = ? WHERE id = ?`).run(NOW, spentRecently.id);
+    const live = await issueStepUpAuthority(r.db, 'provider_credential', NOW);
+
+    // Minting is what trims.
+    const minted = await issueStepUpAuthority(r.db, 'provider_credential', NOW);
+
+    const remaining = (r.sqlite.query(`SELECT id FROM step_up_authorities`).all() as Array<{ id: string }>).map((x) => x.id);
+    expect(remaining.sort()).toEqual([spentRecently.id, live.id, minted.id].sort());
+    for (const gone of [spentLongAgo.id, revokedLongAgo.id, expiredLongAgo.id]) expect(remaining).not.toContain(gone);
+  });
+
+  it('reclaims nothing when nothing is finished', async () => {
+    const r = rig();
+    const live = await issueStepUpAuthority(r.db, 'provider_credential', NOW);
+    await issueStepUpAuthority(r.db, 'provider_credential', NOW);
+    expect((r.sqlite.query(`SELECT COUNT(*) c FROM step_up_authorities`).get() as any).c).toBe(2);
+    expect(r.sqlite.query(`SELECT id FROM step_up_authorities WHERE id = ?`).get(live.id)).toEqual({ id: live.id });
   });
 });

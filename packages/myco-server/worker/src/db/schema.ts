@@ -411,6 +411,21 @@ const V5_STATEMENTS: readonly string[] = [
  * `key_version` is carried from the first row so re-wrapping under a new key is a
  * migration rather than an outage.
  */
+/**
+ * Retention across step 6, stated once rather than per table: three of the four
+ * deliberately have none.
+ *
+ * `deployment_settings`, `project_capabilities` and `deployment_secrets` each hold
+ * CURRENT STATE — one row per leaf, per admission, per credential slot. A row is
+ * the setting, so pruning one deletes the setting. Their audit lives on the row
+ * itself as `updated_by`/`updated_at` rather than in a growing log, which is what
+ * makes them bounded by the number of settings rather than by time. No project
+ * deletion exists, so no orphan accumulates behind a removed Project either.
+ *
+ * `step_up_authorities` is the exception and is the only one swept: it grows once
+ * per mint and a spent authority resolves nothing afterwards. The operation it
+ * authorised keeps its own record on the row it changed.
+ */
 const V6_STATEMENTS: readonly string[] = [
   /**
    * Deployment Settings, one row per leaf.

@@ -547,7 +547,10 @@ describe('gates', () => {
     for (const file of files(SRC)) {
       const rel = file.slice(SRC.length + 1);
       if (rel.startsWith(`db${sep}`)) continue; // migrations create them
-      const source = readFileSync(file, 'utf8');
+      // Comments are stripped first: the property is about a second WRITER, and a
+      // docstring that names a table in prose is not one. Scanning raw source made
+      // the gate fire on its own explanation of what it protects.
+      const source = stripComments(readFileSync(file, 'utf8'));
       for (const [table, owner] of Object.entries(OWNED)) {
         if (rel === owner) continue;
         if (new RegExp(`\\b${table}\\b`).test(source)) offenders.push(`${rel} names ${table}`);
