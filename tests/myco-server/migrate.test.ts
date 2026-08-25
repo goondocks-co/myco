@@ -211,6 +211,6 @@ describe('versioned schema steps', () => {
       expect(() => insert('ok.id-1_A')).not.toThrow();
       checked.push(t);
     }
-    expect(checked.sort()).toEqual(['attachments', 'blob_reservations', 'blobs', 'plans', 'projects', 'prompt_batches', 'responses', 'tags', 'tool_calls', 'transcript_segments', 'transcripts']);
+    expect(checked.sort()).toEqual(['attachments', 'blob_reservations', 'blobs', 'plans', 'project_capabilities', 'projects', 'prompt_batches', 'responses', 'tags', 'tool_calls', 'transcript_segments', 'transcripts']);
   });
 });

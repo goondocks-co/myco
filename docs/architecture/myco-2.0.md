@@ -475,6 +475,127 @@ Capabilities that are not a single registry token but must still carry a disposi
 | Server logs / observability | REPLACE | Core, UI | Blk | From the telemetry the server already emits; `wrangler tail` remains the W operator view | #922 |
 | Native Cloudflare intelligence provider | REPLACE | W | — | **Non-blocking follow-up** — the Intelligence Provider contract is provider-agnostic | #928 |
 
+### 7.8 Config leaves — `packages/myco/src/config/schema.ts`
+
+1.4 resolves settings across four tiers — `machine`, `grove`, `project`, `local` — through `SCOPE_REGISTRY` (`packages/myco/src/config/scope.ts`). **2.0 keeps two**: Member Settings on the machine, Deployment Settings on the server (§6.1, and the `config` and `/settings` rows above). Every leaf therefore needs somewhere to land, and a leaf nobody placed is a setting that silently changes meaning.
+
+Classification is **per leaf, not per registry row**. Seven of the registry's 31 rows are block prefixes covering many leaves, and a block is exactly where a mixed disposition hides: `release_provenance` is repo-specific except for one interval, and `notifications` is per-viewer except for its retention window. Bulk-mapping either would have moved a setting to the wrong side of the seam without anyone seeing it.
+
+**Tier** is what the leaf becomes:
+
+- **Member** — stays on the machine. Capture, symbiont, spool, log and machine preferences never become server state (#915 scope).
+- **Deployment** — one value for the whole server, managed by any member (§5 Admin row).
+- **Project** — per-Project state on the Deployment rather than config. Capability admission and repo-specific settings live here: a Project is created on first use (`resolveProject`), so its settings cannot live in a file that must exist before the Project does.
+- **—** — dropped; mechanism rather than setting.
+
+**Coverage is measured against DECLARED leaves, not defaulted ones.** A leaf declared `.optional()` with no default never appears in a parsed config, so anything enumerating that way cannot see it — and the leaves that go missing are not a random sample. `agent.provider.base_url`, `agent.provider.type` and `embedding.base_url` are all optional, and they name the endpoint a Deployment's own credential is sent to. A coverage gate blind to those is blind exactly where it matters most, which is why `declaredLeafPaths()` walks the schema rather than an instance of it.
+
+**Three leaves are step-up gated, and so is any value that carries an endpoint**, marked in the table. #907 justifies step-up on provider credentials as *"a member could exfiltrate a provider key"* — but a stored secret is already write-only and masked, so the reachable path is not reading the key, it is **changing where the key is sent**. `agent/harness/openai.ts` locks `openai` and `openrouter` to hardcoded base URLs for exactly this reason; `agent.provider.base_url` is the same value left open for `openai-compatible`, and on a Deployment every member can write settings.
+
+A leaf-name list alone is not enough, and assuming it was left a real bypass. Several Deployment leaves are whole documents: `agent.tasks` is a record of per-task overrides, each of which may carry its own `provider: { type, base_url }`. Writing that one leaf redirects the credential while naming none of the gated leaves. So the requirement is derived from what a submitted value CONTAINS — any `base_url` at any depth, or any `provider` object — and the gate that proves it walks the declared schema rather than echoing the list.
+
+**Capability master gates are fail-closed and that is a mechanism, not a default.** Today `skills.enabled`, `vault_evolution.enabled`, `cortex.enabled` and `cortex.canopy.enabled` all default **`true`** in the schema, and `capabilityEnabled` returns `defaultEnabled ?? true` for an absent path (`config/capabilities.ts`). What actually makes a new project capture-only is a *write at provision time* — `reseedCaptureOnly()` seeding `false` for every gate (`vault/provision.ts`). On a Deployment, where Projects appear from a member's first write with no ceremony, the server-side predicate must therefore be the **inverse**: an absent row reads **disabled**. Otherwise every new Project silently acquires every cost-bearing capability, which is the auto-adoption #428 exists to prevent.
+
+Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`, `notifications.domains`, `symbionts` and `release_provenance.package_map`. They are classified whole, as their own rows below, and the completeness gate collapses any leaf beneath them onto the block prefix.
+
+| Leaf | Disposition | Tier | Surface | Reason | Owner |
+|---|---|---|---|---|---|
+| `version` | DROP | — | — | Schema version marker, not a setting | #925 |
+| `config_version` | DROP | — | — | Migration mechanism, not a setting | #925 |
+| `embedding.provider` | REPLACE | Deployment | Core | Which provider the Deployment embeds with | #915 |
+| `embedding.model` | REPLACE | Deployment | Core | Model the Deployment embeds with | #915 |
+| `embedding.prevent_deep_sleep` | REPLACE | Deployment | Core | Wake policy for the embedding job; a Deployment-side scheduling concern | #915 |
+| `daemon.log_level` | KEEP | Member | MS | The Member Service's own log verbosity on this machine | #915 |
+| `daemon.log_retention_days` | KEEP | Member | MS | Local log retention on this machine | #915 |
+| `daemon.stale_session_threshold_ms` | KEEP | Member | MS | Local session-liveness heuristic for capture on this machine | #915 |
+| `capture.transcript_paths` | KEEP | Member | M | Where this machine's agents write transcripts | #915 |
+| `capture.plan_dirs` | KEEP | Member | M | Where this machine's agents write plans | #915 |
+| `capture.ignore_plan_dirs_in_git` | KEEP | Member | M | Local plan-capture filter | #915 |
+| `capture.artifact_extensions` | KEEP | Member | M | Local artifact filter | #915 |
+| `capture.buffer_max_events` | KEEP | Member | M | Local write-ahead buffer bound | #915 |
+| `capture.ignore.paths` | KEEP | Member | M | Local capture exclusion | #915 |
+| `capture.ignore.patterns` | KEEP | Member | M | Local capture exclusion | #915 |
+| `release_provenance.enabled` | REPLACE | Project | Core | Per-repository: whether this Project tracks provenance | #915 |
+| `release_provenance.production_refs` | REPLACE | Project | Core | Git refs of one repository | #915 |
+| `release_provenance.integration_refs` | REPLACE | Project | Core | Git refs of one repository | #915 |
+| `release_provenance.production_debug_include_unknown` | REPLACE | Project | Core | Per-repository reporting detail | #915 |
+| `release_provenance.github.repo` | REPLACE | Project | Core | Names one owner/repo | #915 |
+| `release_provenance.github.token_env` | REPLACE | Project | Core | Names one repository's credential slot | #915 |
+| `release_provenance.github.max_lookups_per_run` | REPLACE | Project | Core | Per-repository API budget | #915 |
+| `release_provenance.package_map` | REPLACE | Project | Core | Monorepo package to tag mapping for one repository | #915 |
+| `agent.harness` | REPLACE | Deployment | Core | Which harness the Deployment runs tasks under | #919 |
+| `agent.model` | REPLACE | Deployment | Core | Model pin the Deployment applies when a task sets none | #919 |
+| `agent.reasoningLevel` | REPLACE | Deployment | Core | Default reasoning tier the Deployment resolves through the provider's map | #919 |
+| `agent.provider.type` | REPLACE | Deployment | Core | **Step-up.** Selects the provider, and with it which endpoint family the Deployment's credential is sent to | #915 |
+| `agent.provider.base_url` | REPLACE | Deployment | Core | **Step-up.** The endpoint the Deployment's own credential is sent to; a member-writable value here redirects it | #915 |
+| `agent.provider.local_backend` | REPLACE | Deployment | Core | Which local runtime a local provider targets | #915 |
+| `agent.provider.model` | REPLACE | Deployment | Core | Model the provider is asked for | #915 |
+| `agent.provider.context_length` | REPLACE | Deployment | Core | Context window the Deployment requests of a local provider | #915 |
+| `agent.provider.reasoning_map.default` | REPLACE | Deployment | Core | Model this provider resolves the `default` reasoning tier to | #919 |
+| `agent.provider.effort_map.default.effort` | REPLACE | Deployment | Core | Effort this provider applies at the `default` tier | #919 |
+| `agent.provider.effort_map.default.verbosity` | REPLACE | Deployment | Core | Verbosity this provider applies at the `default` tier | #919 |
+| `agent.provider.thinking_budget_map.default` | REPLACE | Deployment | Core | Thinking budget this provider applies at the `default` tier | #919 |
+| `agent.provider.reasoning_map.high` | REPLACE | Deployment | Core | Model this provider resolves the `high` reasoning tier to | #919 |
+| `agent.provider.effort_map.high.effort` | REPLACE | Deployment | Core | Effort this provider applies at the `high` tier | #919 |
+| `agent.provider.effort_map.high.verbosity` | REPLACE | Deployment | Core | Verbosity this provider applies at the `high` tier | #919 |
+| `agent.provider.thinking_budget_map.high` | REPLACE | Deployment | Core | Thinking budget this provider applies at the `high` tier | #919 |
+| `agent.provider.reasoning_map.low` | REPLACE | Deployment | Core | Model this provider resolves the `low` reasoning tier to | #919 |
+| `agent.provider.effort_map.low.effort` | REPLACE | Deployment | Core | Effort this provider applies at the `low` tier | #919 |
+| `agent.provider.effort_map.low.verbosity` | REPLACE | Deployment | Core | Verbosity this provider applies at the `low` tier | #919 |
+| `agent.provider.thinking_budget_map.low` | REPLACE | Deployment | Core | Thinking budget this provider applies at the `low` tier | #919 |
+| `embedding.base_url` | REPLACE | Deployment | Core | **Step-up.** The endpoint the Deployment's embedding credential is sent to | #915 |
+| `backup.dir` | DROP | — | — | A member-writable server-side filesystem path is the #907 H5 family, and has no meaning on a Worker. Where a self-hosted Deployment writes backups is operator configuration, not a member setting | #923 |
+| `agent.tasks` | REPLACE | Deployment | Core | Per-task overrides the Deployment applies to its own harness runs | #919 |
+| `notifications.domains` | KEEP | Member | M | Per-viewer delivery preference for each notification domain | #915 |
+| `symbionts` | KEEP | Member | M | Which coding agents are installed on this machine; never server state | #917 |
+| `release_provenance.reconcile_interval_minutes` | REPLACE | Deployment | Core | The only Deployment-shaped leaf here; already split out as its own grove-homed entry | #915 |
+| `agent.summary_batch_interval` | REPLACE | Deployment | Core | Deployment-side task batching | #915 |
+| `agent.scheduled_tasks_enabled` | REPLACE | Deployment | Core | Whether the Deployment runs scheduled intelligence | #915 |
+| `agent.event_tasks_enabled` | REPLACE | Deployment | Core | Whether the Deployment runs event-driven intelligence | #915 |
+| `agent.semantic_write_check_enabled` | REPLACE | Deployment | Core | Deployment-side write-quality gate | #915 |
+| `agent.cold_project_threshold_days` | REPLACE | Deployment | Core | Deployment-side scheduling policy | #915 |
+| `agent.scheduled_tasks_active_window_days` | REPLACE | Deployment | Core | Deployment-side scheduling policy | #915 |
+| `agent.run_retention_days` | REPLACE | Deployment | Core | Retention of Deployment-held agent run records | #915 |
+| `backup.retention.keep_daily` | REPLACE | Deployment | Core | Deployment backup policy; the per-target mechanism belongs with the backup work, not here | #923 |
+| `backup.retention.keep_weekly` | REPLACE | Deployment | Core | Deployment backup policy; the per-target mechanism belongs with the backup work, not here | #923 |
+| `backup.auto_interval_hours` | REPLACE | Deployment | Core | Deployment backup policy; the per-target mechanism belongs with the backup work, not here | #923 |
+| `maintenance.auto_optimize` | REPLACE | Deployment | C | PRAGMA optimize has no D1 equivalent; needs a per-target mechanism or an explicit drop | #913 |
+| `maintenance.auto_optimize_interval_hours` | REPLACE | Deployment | C | Schedule for the above | #913 |
+| `maintenance.auto_integrity_check` | REPLACE | Deployment | C | SQLite integrity/FK check has no D1 equivalent | #913 |
+| `maintenance.auto_integrity_check_interval_hours` | REPLACE | Deployment | C | Schedule for the above | #913 |
+| `update.channel` | KEEP | Member | M | Which build this machine installs | #915 |
+| `skills.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent | #915 |
+| `skills.confidence_threshold` | REPLACE | Deployment | Core | Advanced setting governed by the skills capability | #915 |
+| `skills.usage_stale_days` | REPLACE | Deployment | Core | Advanced setting governed by the skills capability | #915 |
+| `vault_evolution.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent | #915 |
+| `notifications.enabled` | KEEP | Member | M | Per-viewer delivery preference | #915 |
+| `notifications.system_notifications` | KEEP | Member | M | Per-viewer OS notification preference | #915 |
+| `notifications.default_mode` | KEEP | Member | M | Per-viewer delivery preference | #915 |
+| `notifications.retention_days` | REPLACE | Deployment | Core | Prune window for Deployment-held notification records; no member owns it | #915 |
+| `cortex.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent | #915 |
+| `cortex.instructions.inject_on_session_start` | REPLACE | Deployment | Core | Injection policy the Deployment applies | #919 |
+| `cortex.instructions.inject_on_subagent_start` | REPLACE | Deployment | Core | Injection policy the Deployment applies | #919 |
+| `cortex.digest.tier` | REPLACE | Deployment | Core | Digest size the Deployment generates | #919 |
+| `cortex.digest.inject_on_session_start` | REPLACE | Deployment | Core | Injection policy the Deployment applies | #919 |
+| `cortex.spores.inject_on_prompt_submit` | REPLACE | Deployment | Core | Injection policy the Deployment applies | #919 |
+| `cortex.spores.max_per_prompt` | REPLACE | Deployment | Core | Injection budget the Deployment applies | #919 |
+| `cortex.plans.inject_intent_nudge_on_prompt_submit` | REPLACE | Deployment | Core | Injection policy the Deployment applies | #919 |
+| `cortex.canopy.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent | #915 |
+| `cortex.canopy.refresh.background_enabled` | REPLACE | Deployment | Core | Deployment-side map refresh policy | #920 |
+| `cortex.canopy.refresh.background_period_minutes` | REPLACE | Deployment | Core | Deployment-side map refresh schedule | #920 |
+| `cortex.canopy.exclude.default_patterns` | REPLACE | Deployment | Core | Map scan exclusion applied Deployment-side | #920 |
+| `cortex.canopy.exclude.patterns` | REPLACE | Deployment | Core | Map scan exclusion applied Deployment-side | #920 |
+| `cortex.canopy.min_file_bytes` | REPLACE | Deployment | Core | Map scan threshold applied Deployment-side | #920 |
+| `cortex.canopy.inject_on_pre_tool_use` | KEEP | Member | M | Decides whether THIS machine's hook injects; a member-side behaviour | #920 |
+| `appearance.theme` | KEEP | Member | M | Per-viewer dashboard theme | #918 |
+| `appearance.mode` | KEEP | Member | M | Per-viewer light/dark; Deployment-wide would flip every member's dashboard | #918 |
+| `appearance.font` | KEEP | Member | M | Per-viewer dashboard typography | #918 |
+| `appearance.density` | KEEP | Member | M | Per-viewer dashboard density | #918 |
+
+**Project-tier `release_provenance.*` has no store yet, and that is a deferral rather than an oversight.** Step 6 builds `project_capabilities`, keyed on the four capability ids, and nothing else per Project — so the eight repo-specific `release_provenance` leaves are classified but not writable, and `setLeaf` refuses them. They are per-repository settings for a feature (#922 owns release provenance) whose per-Project store lands with the surface that configures it. The same rule as the two blocks below: a tier without a mechanism is recorded as such rather than assigned quietly.
+
+Two further blocks are **not settled here**, and are marked so rather than assigned silently. `backup.*` describes Deployment backup policy but leads with a filesystem path that has no meaning on a Worker; #923 owns backup/restore and owns the per-target mechanism with it. `maintenance.*` is `PRAGMA optimize` and SQLite integrity checking, neither of which exists on D1 — a capability row without a per-target mechanism is how one target quietly loses a feature (§3.3), so it belongs with the self-hosted work in #913.
+
 ## 8. Release blockers and non-blocking follow-ups
 
 Every row in §7 is `Blk` except one: **#928** (native Cloudflare intelligence-provider integration), which #905 records as explicitly non-blocking.

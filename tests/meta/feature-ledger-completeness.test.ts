@@ -19,6 +19,7 @@
  *   - Agent tasks    — YAML filenames under `src/agent/definitions/tasks/`
  *   - Scheduled jobs — `POWER_JOB_NAMES` values in `src/constants/power-jobs.ts`
  *   - Data classes   — `CREATE TABLE` names under `packages/myco/src/db/`
+ *   - Config leaves  — every leaf the `MycoConfigSchema` DECLARES (§7.8)
  *
  * The SURFACE half matters most. A row with a disposition but no surface is how a
  * capability ends up owned by nobody — the planning defect of the same class as a
@@ -31,6 +32,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { declaredLeafPaths } from '@myco/config/declared-leaves.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
@@ -38,6 +40,13 @@ const LEDGER_PATH = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
 
 /** Dispositions the ledger may assign. */
 const DISPOSITIONS = new Set(['KEEP', 'REPLACE', 'DROP']);
+
+/**
+ * Config leaves whose children are dynamic — a record or array whose keys are not
+ * enumerable from a defaulted schema. §7.8 classifies each block whole, so a leaf
+ * beneath one is covered by its prefix.
+ */
+const DYNAMIC_CONFIG_BLOCKS = ['agent.tasks', 'notifications.domains', 'symbionts', 'release_provenance.package_map'];
 
 /** The closed set of owning surfaces (§4). `—` is legal only alongside DROP. */
 const SURFACES = new Set(['M', 'MS', 'Core', 'W', 'C', 'UI', 'MCP']);
@@ -157,6 +166,30 @@ function dataClasses(): string[] {
 // Gates
 // ---------------------------------------------------------------------------
 
+/**
+ * Every leaf of the defaulted config schema, with dynamic blocks collapsed to the
+ * prefix §7.8 classifies them under.
+ *
+ * Imported rather than source-scanned: a regex over `schema.ts` would miss a leaf
+ * added through a shared sub-schema, which is the failure the ledger exists to
+ * prevent.
+ *
+ * DECLARED, not defaulted. A leaf declared `.optional()` never appears in a parsed
+ * config, and the optional ones are `agent.provider.base_url`, `agent.provider.type`
+ * and `embedding.base_url` — the endpoints a Deployment's own credential is sent to.
+ * A coverage gate reading a defaulted parse is blind precisely where coverage
+ * matters most.
+ */
+function configLeaves(): string[] {
+  const out = new Set<string>();
+  for (const leaf of declaredLeafPaths()) {
+    const block = DYNAMIC_CONFIG_BLOCKS.find((b) => leaf === b || leaf.startsWith(`${b}.`));
+    out.add(block ?? leaf);
+  }
+  for (const b of DYNAMIC_CONFIG_BLOCKS) out.add(b);
+  return [...out].sort();
+}
+
 const REGISTRIES: Array<[string, () => string[]]> = [
   ['CLI commands', cliCommands],
   ['dashboard routes', dashboardRoutes],
@@ -164,6 +197,7 @@ const REGISTRIES: Array<[string, () => string[]]> = [
   ['agent tasks', agentTasks],
   ['scheduled jobs', scheduledJobs],
   ['data classes', dataClasses],
+  ['config leaves', configLeaves],
 ];
 
 describe('feature-preservation ledger completeness', () => {

@@ -2,22 +2,10 @@ import { describe, it, expect } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { resolveProjectScope } from '@myco-server-worker/api/scope.js';
 import worker from '@myco-server-worker/index.js';
-import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { OWNER_ENV, ownerCookie, PRINCIPAL, asOwner, asOwnerPost } from './helpers/owner.js';
 import { MEMBER_TOKEN_PATTERN } from '@myco-server-worker/auth/tokens.js';
 
 /** The principal the chokepoint takes. Unread today; present so a grant check is one edit. */
-const PRINCIPAL = { sub: '583231', iat: 0, exp: 9_999_999_999_999 };
-
-const asOwner = async (path: string) =>
-  new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } });
-
-const asOwnerPost = async (path: string, body?: unknown) =>
-  new Request(`https://s${path}`, {
-    method: 'POST',
-    headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-
 describe('api scope resolution', () => {
   it('resolves a known project', async () => {
     const { db } = sqliteEnv();

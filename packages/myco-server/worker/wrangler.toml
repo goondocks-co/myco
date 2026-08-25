@@ -28,3 +28,21 @@ simple = { limit = 600, period = 60 }
 name = "TOKEN_LIMIT"
 namespace_id = "1002"
 simple = { limit = 300, period = 60 }
+
+# The key Deployment-held secrets are sealed under. Declared here so a deploy that
+# omits it is visible in configuration rather than at the first attempt to store a
+# credential. NOT in REQUIRED_BINDINGS: a Deployment that never stores one serves
+# every other route without it, and the failure belongs at the first seal.
+#
+# Create the store and the secret once, then bind:
+#   npx wrangler secrets-store store create myco --remote
+#   head -c 32 /dev/urandom | base64 | npx wrangler secrets-store secret create <STORE-ID> \
+#     --name myco-secret-wrap-key --scopes workers --remote
+#
+# Rotating this value makes every stored credential unreadable until it is
+# re-entered; a slot in that state reports `readable: false` rather than failing
+# the whole surface. See #964.
+# [[secrets_store_secrets]]
+# binding = "SECRET_WRAP_KEY"
+# store_id = "<STORE-ID>"
+# secret_name = "myco-secret-wrap-key"

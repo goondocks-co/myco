@@ -1,3 +1,4 @@
+import { toBase64Url } from '../../base64.js';
 import { asBufferSource } from '../../hash.js';
 
 /** The owner's session cookie. The `__Host-` prefix makes `Secure`, `Path=/` and the absence of `Domain` browser-enforced rather than merely intended. */
@@ -16,8 +17,7 @@ export interface OwnerSession {
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
 
-const b64url = (bytes: Uint8Array): string =>
-  btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const b64url = toBase64Url;
 
 const unb64url = (text: string): Uint8Array<ArrayBuffer> => {
   const padded = text.replace(/-/g, '+').replace(/_/g, '/');
@@ -29,7 +29,7 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
   return crypto.subtle.importKey('raw', ENCODER.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
 }
 
-/** `<base64url(payload)>.<base64url(hmac)>` over any JSON payload carrying an `exp`. */
+/** `<toBase64Url(payload)>.<toBase64Url(hmac)>` over any JSON payload carrying an `exp`. */
 export async function signPayload<T extends { exp: number }>(secret: string, typ: string, payload: T): Promise<string> {
   const body = b64url(ENCODER.encode(JSON.stringify({ ...payload, typ })));
   const signature = new Uint8Array(await crypto.subtle.sign('HMAC', await hmacKey(secret), ENCODER.encode(body)));
@@ -62,7 +62,7 @@ export async function verifyPayload<T extends { exp: number }>(secret: string, t
   return typeof parsed?.exp === 'number' && parsed.exp > now ? parsed : null;
 }
 
-/** `<base64url(payload)>.<base64url(hmac)>`. */
+/** `<toBase64Url(payload)>.<toBase64Url(hmac)>`. */
 export const SESSION_TYP = 'session';
 
 export async function signSession(secret: string, session: OwnerSession): Promise<string> {

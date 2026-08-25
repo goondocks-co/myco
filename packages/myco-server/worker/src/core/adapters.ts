@@ -114,6 +114,34 @@ export interface OwnerBindings {
 }
 
 /**
+ * The key Deployment-held secrets are sealed under.
+ *
+ * A HANDLE, not a value, and asynchronous on purpose: on a hosted target the key
+ * arrives through a platform binding whose only retrieval is `await …get()`, so a
+ * plain string field could not carry it. Per this file's own rule, anything
+ * holding a resource handle rides `ServerEnv`.
+ *
+ * The key never rests in the store it protects. A deployment given no key must
+ * fail loudly on first use — `material()` throwing by name — rather than fall back
+ * to storing anything in the clear, which silently undoes the separation this
+ * interface exists to create.
+ */
+export interface SecretWrappingKey {
+  /** Raw key material for AES-256-GCM. Throws by name when the deployment has none configured. */
+  material(): Promise<ArrayBuffer>;
+  /**
+   * Which key the material is, recorded on every sealed row.
+   *
+   * Recorded and not yet resolved: nothing maps a version back to key material, so
+   * a deployment holds one key and rotating it makes every existing row
+   * undecryptable until each credential is re-entered. The column is what a later
+   * re-wrap needs to identify rows by; it does not by itself make rotation
+   * non-disruptive, and #964 owns making that true.
+   */
+  version(): Promise<number>;
+}
+
+/**
  * How a deployment describes its own required infrastructure, in its own
  * vocabulary, for the owner status surface. The core reports what the platform
  * says rather than knowing any platform's binding names itself — that is why
@@ -158,4 +186,6 @@ export interface ServerEnv {
   sourceLimit: RateLimiter;
   tokenLimit: RateLimiter;
   secrets: OwnerBindings;
+  /** The key Deployment-held secrets are sealed under; supplied per target, never stored. */
+  wrappingKey: SecretWrappingKey;
 }

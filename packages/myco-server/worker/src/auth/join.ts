@@ -1,3 +1,4 @@
+import { toBase64Url } from '../base64.js';
 import type { ServerEnv } from '../core/adapters.js';
 import { MEMBER_ID_PREFIX } from '../constants.js';
 import { emit, type Classifier } from '../telemetry.js';
@@ -17,10 +18,6 @@ const REFUSALS: Record<EnrollmentRefusal, Classifier> = {
   expired: 'enrollment_expired',
   revoked: 'enrollment_revoked',
 };
-
-function base64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
 
 interface JoinBody {
   key?: unknown;
@@ -85,7 +82,7 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
     return refuse(classifier, `enrollment key ${spend.reason.replace('_', ' ')}`);
   }
 
-  const memberId = spend.memberId ?? `${MEMBER_ID_PREFIX}${base64url(crypto.getRandomValues(new Uint8Array(MEMBER_ID_BYTES)))}`;
+  const memberId = spend.memberId ?? `${MEMBER_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(MEMBER_ID_BYTES)))}`;
   await ensureMember(env.db, memberId, now);
 
   // A machine identity belongs to one member. Every ownership predicate the ingest
