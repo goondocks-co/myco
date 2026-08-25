@@ -27,7 +27,8 @@ function unwrap(schema: unknown): unknown {
   let s = schema as { _def?: Record<string, unknown> } | undefined;
   for (let i = 0; i < MAX_UNWRAP; i += 1) {
     const def = s?._def as Record<string, unknown> | undefined;
-    const type = def?.type as string | undefined;
+    if (def === undefined) break;
+    const type = def.type as string | undefined;
     if (type === undefined) break;
     if (WRAPPERS.has(type)) { s = def.innerType as typeof s; continue; }
     // A pipe's OUTPUT is the shape a consumer sees.
