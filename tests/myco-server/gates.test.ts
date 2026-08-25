@@ -514,7 +514,9 @@ describe('gates', () => {
       .filter((f) => f !== join(SRC, 'auth', 'step-up.ts'))
       .filter((f) => /spendStepUpAuthority|stepUpAuthorizer/.test(readFileSync(f, 'utf8')))
       .map((f) => f.slice(SRC.length + 1));
-    expect(callers).toEqual([]);
+    // One: the settings surface, which is the single in-scope consumer. #923's
+    // destroy/restore and the enrollment-root rotation each add one when they land.
+    expect(callers).toEqual([join('api', 'settings.ts')]);
 
     // The spend is one conditional update carrying every condition. A read-then-mark
     // spend admits two winners; this is the same shape #912 H4 required of enrollment.
@@ -766,19 +768,26 @@ describe('gates', () => {
       'member POST /blobs/{sha256}',
       'member POST /events',
       'member POST /tokens/refresh',
+      'owner DELETE /api/secrets/{name}',
       'owner GET /api/projects',
       'owner GET /api/projects/{projectId}/blobs/{key}',
+      'owner GET /api/projects/{projectId}/capabilities',
       'owner GET /api/projects/{projectId}/sessions',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}/transcript',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}/{child}',
       'owner GET /api/projects/{projectId}/tokens',
       'owner GET /api/projects/{projectId}/tokens/{tokenId}/activity',
+      'owner GET /api/secrets',
+      'owner GET /api/settings',
       'owner GET /api/status',
       'owner POST /api/projects',
       'owner POST /api/projects/{projectId}/tokens',
       'owner POST /api/projects/{projectId}/tokens/{tokenId}/revoke',
       'owner POST /auth/logout',
+      'owner PUT /api/projects/{projectId}/capabilities/{capability}',
+      'owner PUT /api/secrets/{name}',
+      'owner PUT /api/settings/{leaf}',
       'public GET /health',
     ]);
   });

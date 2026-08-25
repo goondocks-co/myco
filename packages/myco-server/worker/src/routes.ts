@@ -4,6 +4,10 @@ import { clearCookie } from './auth/owner/cookie.js';
 import { handleCallback, handleLogin } from './auth/owner/routes.js';
 import { handleCreateProject, handleProjects } from './api/projects.js';
 import { handleStatus } from './api/status.js';
+import {
+  handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
+  handleSetSecret, handleSetSetting, handleSettings,
+} from './api/settings.js';
 import { handleBlobRead } from './api/blobs.js';
 import { handleMintToken, handleRevokeToken, handleTokenActivity, handleTokens } from './api/tokens.js';
 import { handleProjectSessions, handleSession, handleSessionChildren, handleTranscript } from './api/sessions.js';
@@ -60,6 +64,13 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/api/projects/{projectId}/tokens', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/tokens$/, auth: 'owner', handler: handleMintToken },
   { method: 'POST', path: '/api/projects/{projectId}/tokens/{tokenId}/revoke', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/tokens\/(?<tokenId>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeToken },
   { method: 'GET', path: '/api/projects/{projectId}/tokens/{tokenId}/activity', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/tokens\/(?<tokenId>[A-Za-z0-9._-]{1,64})\/activity$/, auth: 'owner', handler: handleTokenActivity },
+  { method: 'GET', path: '/api/settings', auth: 'owner', handler: handleSettings },
+  { method: 'PUT', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'owner', handler: handleSetSetting },
+  { method: 'GET', path: '/api/secrets', auth: 'owner', handler: handleSecrets },
+  { method: 'PUT', path: '/api/secrets/{name}', pattern: /^\/api\/secrets\/(?<name>[a-z0-9_-]{1,32})$/, auth: 'owner', handler: handleSetSecret },
+  { method: 'DELETE', path: '/api/secrets/{name}', pattern: /^\/api\/secrets\/(?<name>[a-z0-9_-]{1,32})$/, auth: 'owner', handler: handleDeleteSecret },
+  { method: 'GET', path: '/api/projects/{projectId}/capabilities', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities$/, auth: 'owner', handler: handleProjectCapabilities },
+  { method: 'PUT', path: '/api/projects/{projectId}/capabilities/{capability}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities\/(?<capability>[a-z_]{1,32})$/, auth: 'owner', handler: handleSetProjectCapability },
   { method: 'GET', path: '/auth/login', auth: 'auth', handler: handleLogin },
   { method: 'GET', path: '/auth/callback', auth: 'auth', handler: handleCallback },
   { method: 'POST', path: '/auth/logout', auth: 'owner', handler: async () => new Response(null, { status: 204, headers: { 'set-cookie': clearCookie() } }) },
