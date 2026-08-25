@@ -502,6 +502,37 @@ describe('gates', () => {
     }
   });
 
+  it('opens a Deployment secret from exactly one function under src, and no display surface calls it', () => {
+    // `get()` is the only thing that returns a credential. The whole point of
+    // sealing values is defeated if a settings page, a status route or a log line
+    // can reach one, so the callers are held to those that must authenticate
+    // something. `describe()` and `list()` exist precisely so a surface never needs
+    // to.
+    const store = readFileSync(join(SRC, 'core', 'secrets.ts'), 'utf8');
+    expect(store.match(/crypto\.subtle\.decrypt/g)).toHaveLength(1);
+    expect(store).toMatch(/additionalData: encoder\.encode\(name\)/);
+
+    const callers = files(SRC)
+      .filter((f) => f !== join(SRC, 'core', 'secrets.ts'))
+      .filter((f) => /\bsecrets\.get\(|secretStore\.get\(/.test(readFileSync(f, 'utf8')))
+      .map((f) => f.slice(SRC.length + 1));
+    // No consumer exists yet — L2 adds the first. This asserts the count rather than
+    // the emptiness, so the gate keeps meaning something once one lands.
+    expect(callers).toEqual([]);
+  });
+
+  it('seals every Deployment secret under a key the store does not hold', () => {
+    // A wrapping key that ever landed in the database it protects silently undoes
+    // the separation the ciphertext column exists to create.
+    const schema = readFileSync(join(SRC, 'db', 'schema.ts'), 'utf8');
+    const table = schema.match(/CREATE TABLE IF NOT EXISTS deployment_secrets[\s\S]*?`/)![0];
+    for (const forbidden of ['wrap', 'key_material', 'plaintext', 'preview', 'masked']) {
+      expect({ forbidden, present: table.toLowerCase().includes(forbidden) }).toEqual({ forbidden, present: false });
+    }
+    expect(table).toContain('ciphertext');
+    expect(table).toContain('key_version');
+  });
+
   it('reaches no live statement at member_tokens: the credential store is the only table the running server reads or writes', () => {
     // The V5 move is atomic or it is broken for everyone but the person testing it. A
     // surviving read would authenticate against rows the backfill deliberately revoked;

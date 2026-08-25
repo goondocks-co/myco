@@ -9,6 +9,7 @@ import type { BlobFailureClassifier, OwnerBindings, PlatformDescriptor, ServerEn
 import { classifySqliteError, sqliteRelationalStore } from './sqlite.js';
 import { diskBlobStore, DIGEST_MISMATCH_MESSAGE } from './blobs.js';
 import { inProcessRateLimiter } from './limiter.js';
+import { wrappingKeyFromText } from '../wrapping-key.js';
 
 export const SOURCE_LIMIT = { limit: 600, periodMs: 60_000 };
 export const TOKEN_LIMIT = { limit: 300, periodMs: 60_000 };
@@ -21,6 +22,8 @@ export interface BunServerConfig extends OwnerBindings {
   sqlite: Database;
   /** Directory on the mounted volume holding content-addressed blobs. */
   blobDir: string;
+  /** Base64 key that Deployment secrets are sealed under; supplied from the environment, never from the store it protects. */
+  SECRET_WRAP_KEY?: string;
   now?: () => number;
 }
 
@@ -61,6 +64,9 @@ export function serverEnvFromBunConfig(config: BunServerConfig): ServerEnv {
       SESSION_SECRET: config.SESSION_SECRET,
     },
     platform: bunPlatform(config),
+    // Self-hosted holds the key the way this project already holds machine
+    // secrets: an env value outside the store it protects.
+    wrappingKey: wrappingKeyFromText(async () => config.SECRET_WRAP_KEY, 'MYCO_SECRET_WRAP_KEY'),
     db: sqliteRelationalStore(config.sqlite),
     blobs: diskBlobStore(config.blobDir),
     sourceLimit: inProcessRateLimiter({ ...SOURCE_LIMIT, now }),

@@ -12,6 +12,7 @@ import type {
   PlatformDescriptor, RateLimiter, RelationalStore, ServerEnv,
 } from '../../core/adapters.js';
 import { cloudflareSourceOf } from './source.js';
+import { wrappingKeyFromText } from '../wrapping-key.js';
 
 /** The bindings `wrangler.toml` declares, exactly as the Worker receives them. */
 export interface CloudflareBindings extends OwnerBindings {
@@ -19,6 +20,14 @@ export interface CloudflareBindings extends OwnerBindings {
   BUCKET: BlobStore;
   SOURCE_LIMIT: RateLimiter;
   TOKEN_LIMIT: RateLimiter;
+  /**
+   * The Secrets Store binding holding the secret wrapping key.
+   *
+   * Not in `REQUIRED_BINDINGS`: a deployment that never stores a Deployment secret
+   * serves every other route without one, and the failure should land on the first
+   * attempt to seal or open rather than refusing unrelated traffic at boot.
+   */
+  SECRET_WRAP_KEY?: { get(): Promise<string> };
 }
 
 // Compile-time proof that the platform's own types satisfy the adapter interfaces.
@@ -65,6 +74,12 @@ export function serverEnvFromBindings(bindings: CloudflareBindings): ServerEnv {
     blobs: bindings.BUCKET,
     sourceLimit: bindings.SOURCE_LIMIT,
     tokenLimit: bindings.TOKEN_LIMIT,
+    // A Secrets Store binding rather than a plain secret: its only retrieval is
+    // `await …get()`, which is why the core takes a handle and not a string.
+    wrappingKey: wrappingKeyFromText(
+      async () => bindings.SECRET_WRAP_KEY === undefined ? undefined : bindings.SECRET_WRAP_KEY.get(),
+      'SECRET_WRAP_KEY',
+    ),
     secrets: {
       OWNER_GITHUB_ID: bindings.OWNER_GITHUB_ID,
       GITHUB_CLIENT_ID: bindings.GITHUB_CLIENT_ID,
