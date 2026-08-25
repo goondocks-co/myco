@@ -17,6 +17,7 @@
  *   - EXPIRING, so an invitation left in a chat log stops working on its own.
  *   - REVOCABLE before use, and recording which runtime spent it.
  */
+import { toBase64Url } from '../base64.js';
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
 
@@ -42,10 +43,6 @@ const ENROLLMENT_ID_BYTES = 12;
 
 /** Shape of every minted key: `ENROLLMENT_KEY_BYTES` random bytes as unpadded base64url. */
 export const ENROLLMENT_KEY_PATTERN = new RegExp(`^[A-Za-z0-9_-]{${Math.ceil((ENROLLMENT_KEY_BYTES * 4) / 3)}}$`);
-
-function base64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
 
 export interface IssuedEnrollmentAuthority {
   key: string;
@@ -78,8 +75,8 @@ export function enrollmentInsert(
 export async function issueEnrollmentAuthority(
   db: RelationalStore, nowMs: number, options: { ttlMs?: number; createdByMember?: string | null; memberId?: string | null } = {},
 ): Promise<IssuedEnrollmentAuthority> {
-  const key = base64url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_KEY_BYTES)));
-  const id = `${ENROLLMENT_ID_PREFIX}${base64url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_ID_BYTES)))}`;
+  const key = toBase64Url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_KEY_BYTES)));
+  const id = `${ENROLLMENT_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_ID_BYTES)))}`;
   const { statement, expiresAt } = enrollmentInsert(
     db, nowMs, options.ttlMs ?? ENROLLMENT_TTL_MS, options.createdByMember ?? null, await sha256Hex(key), id, options.memberId ?? null,
   );

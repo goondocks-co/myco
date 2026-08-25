@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RETIRED_ROUTES, ROUTES } from '@myco-server-worker/routes.js';
 import worker from '@myco-server-worker/index.js';
@@ -37,7 +37,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 29;
+const EMIT_CALLS = 30;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -426,7 +426,7 @@ describe('gates', () => {
     // Credential and membership tables are Deployment-scoped by design — a member
     // credential belongs to a member and a Deployment, not to one project — so
     // their indexes lead with what they are actually looked up by.
-    const deploymentScoped = /ON (member_tokens|members|member_credentials|enrollment_authorities)\b/;
+    const deploymentScoped = /ON (member_tokens|members|member_credentials|enrollment_authorities|step_up_authorities)\b/;
     // One reservation index is keyed on the credential rather than the project: a
     // credential spans every Project in its Deployment, so the quota admission looks
     // reservations up by credential and the index has to lead with what it is read by.
@@ -500,6 +500,124 @@ describe('gates', () => {
       const stored = await (await worker.fetch(fixture.wellFormed(t1.token), e)).json() as Record<string, unknown>;
       expect(stored[fixture.shape]).toBe(true);
     }
+  });
+
+  it('keeps step-up sized to the one consumer in scope, and spends an authority from one statement', () => {
+    // #907 names four operations; exactly one of them is in this issue. Building a
+    // general step-up framework for one consumer is the pattern this project has
+    // paid for before, and "build it no larger than the consumer" is a property
+    // with nothing that fails when it stops holding — so this is that.
+    //
+    // When the second consumer lands (#923's destroy/restore, or the enrollment
+    // root rotation) this list grows by one and the gate keeps its meaning.
+    const callers = files(SRC)
+      .filter((f) => f !== join(SRC, 'auth', 'step-up.ts'))
+      .filter((f) => /spendStepUpAuthority|stepUpAuthorizer/.test(readFileSync(f, 'utf8')))
+      .map((f) => f.slice(SRC.length + 1));
+    // One: the settings surface, which is the single in-scope consumer. #923's
+    // destroy/restore and the enrollment-root rotation each add one when they land.
+    expect(callers).toEqual([join('api', 'settings.ts')]);
+
+    // The spend is one conditional update carrying every condition. A read-then-mark
+    // spend admits two winners; this is the same shape #912 H4 required of enrollment.
+    const stepUp = readFileSync(join(SRC, 'auth', 'step-up.ts'), 'utf8');
+    expect(stepUp.match(/UPDATE step_up_authorities SET used_at/g)).toHaveLength(1);
+    expect(stepUp).toMatch(/WHERE key_hash = \? AND purpose = \? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > \?/);
+    // The digest is stored, never the key.
+    expect(stepUp).toMatch(/await sha256Hex\(key\)/);
+    expect(stepUp).not.toMatch(/INSERT INTO step_up_authorities[\s\S]*?VALUES[^`]*\bkey\b(?!_hash)/);
+  });
+
+  it('writes settings and capability admission from exactly one module, keyed on the tables themselves', () => {
+    // Keying this on MODULE PATHS alone would not hold: the read-layer allowlist
+    // already permits every file under `ingest/` and `db/` to issue SQL, so a
+    // settings write from the ingest path would pass that gate untouched. The
+    // property is about the TABLES, so the gate is too — their names may appear
+    // only where they are owned.
+    //
+    // What it protects is the write ORDER. Validate, authorize, persist, record the
+    // actor, re-arm. A second writer is how one of those five goes missing on one
+    // path, and the one that goes missing silently is the actor.
+    const OWNED: Record<string, string> = {
+      deployment_settings: join('core', 'settings.ts'),
+      project_capabilities: join('core', 'settings.ts'),
+      deployment_secrets: join('core', 'secrets.ts'),
+    };
+    const offenders: string[] = [];
+    for (const file of files(SRC)) {
+      const rel = file.slice(SRC.length + 1);
+      if (rel.startsWith(`db${sep}`)) continue; // migrations create them
+      // Comments are stripped first: the property is about a second WRITER, and a
+      // docstring that names a table in prose is not one. Scanning raw source made
+      // the gate fire on its own explanation of what it protects.
+      const source = stripComments(readFileSync(file, 'utf8'));
+      for (const [table, owner] of Object.entries(OWNED)) {
+        if (rel === owner) continue;
+        if (new RegExp(`\\b${table}\\b`).test(source)) offenders.push(`${rel} names ${table}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+
+    // And the owner really does carry every step, so the gate is guarding something.
+    const settings = readFileSync(join(SRC, 'core', 'settings.ts'), 'utf8');
+    for (const step of ['authorize(', 'updated_by', 'rearm(']) {
+      expect({ step, present: settings.includes(step) }).toEqual({ step, present: true });
+    }
+  });
+
+  it('opens a Deployment secret from exactly one function under src, and no display surface calls it', () => {
+    // `get()` is the only thing that returns a credential. The whole point of
+    // sealing values is defeated if a settings page, a status route or a log line
+    // can reach one, so the callers are held to those that must authenticate
+    // something. `describe()` and `list()` exist precisely so a surface never needs
+    // to.
+    const store = readFileSync(join(SRC, 'core', 'secrets.ts'), 'utf8');
+    expect(store.match(/crypto\.subtle\.decrypt/g)).toHaveLength(1);
+    expect(store).toMatch(/additionalData: encoder\.encode\(name\)/);
+
+    // Keyed on CONSTRUCTION, not on a variable name. Matching `secrets.get(` or
+    // `secretStore.get(` missed `store.get(` — which is what the one file that
+    // builds a store actually calls its local, and is the most natural form for the
+    // first real consumer to use. A gate that green-lights the change it exists to
+    // catch is worse than none.
+    const callers = files(SRC)
+      .filter((f) => f !== join(SRC, 'core', 'secrets.ts'))
+      .filter((f) => /deploymentSecretStore\(/.test(stripComments(readFileSync(f, 'utf8'))))
+      .map((f) => f.slice(SRC.length + 1));
+    // One: the settings surface, which only ever calls `describe`/`list`/`put`/
+    // `delete`. When a consumer of the PLAINTEXT read lands, it adds a file here and
+    // the addition is the thing to look at.
+    expect(callers).toEqual([join('api', 'settings.ts')]);
+    const surface = stripComments(readFileSync(join(SRC, 'api', 'settings.ts'), 'utf8'));
+    expect(surface).not.toMatch(/\.get\(\s*ctx\.params\.name/);
+  });
+
+  it('never spreads a whole byte array into a call, which is a divergence no test on one engine can catch', () => {
+    // `String.fromCharCode(...bytes)` passes one argument per byte, and the two
+    // runtimes disagree about how many a call may take: JSC accepts a 320KB spread,
+    // V8 throws at roughly 125k. The suite runs on one engine, so a spread version
+    // passes here and fails on the other target — the failure is invisible to every
+    // test and visible only in the source. Hence a gate rather than a case.
+    for (const file of files(SRC)) {
+      const source = stripComments(readFileSync(file, 'utf8'));
+      for (const m of source.matchAll(/String\.fromCharCode\(\s*\.\.\.\s*([A-Za-z0-9_.]+)/g)) {
+        // A bounded slice is fine; an unbounded identifier is not.
+        expect({ file: file.slice(SRC.length + 1), spread: m[1], bounded: /subarray|slice/.test(m[0]) })
+          .toEqual({ file: file.slice(SRC.length + 1), spread: m[1], bounded: true });
+      }
+    }
+  });
+
+  it('seals every Deployment secret under a key the store does not hold', () => {
+    // A wrapping key that ever landed in the database it protects silently undoes
+    // the separation the ciphertext column exists to create.
+    const schema = readFileSync(join(SRC, 'db', 'schema.ts'), 'utf8');
+    const table = schema.match(/CREATE TABLE IF NOT EXISTS deployment_secrets[\s\S]*?`/)![0];
+    for (const forbidden of ['wrap', 'key_material', 'plaintext', 'preview', 'masked']) {
+      expect({ forbidden, present: table.toLowerCase().includes(forbidden) }).toEqual({ forbidden, present: false });
+    }
+    expect(table).toContain('ciphertext');
+    expect(table).toContain('key_version');
   });
 
   it('reaches no live statement at member_tokens: the credential store is the only table the running server reads or writes', () => {
@@ -677,19 +795,26 @@ describe('gates', () => {
       'member POST /blobs/{sha256}',
       'member POST /events',
       'member POST /tokens/refresh',
+      'owner DELETE /api/secrets/{name}',
       'owner GET /api/projects',
       'owner GET /api/projects/{projectId}/blobs/{key}',
+      'owner GET /api/projects/{projectId}/capabilities',
       'owner GET /api/projects/{projectId}/sessions',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}/transcript',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}/{child}',
       'owner GET /api/projects/{projectId}/tokens',
       'owner GET /api/projects/{projectId}/tokens/{tokenId}/activity',
+      'owner GET /api/secrets',
+      'owner GET /api/settings',
       'owner GET /api/status',
       'owner POST /api/projects',
       'owner POST /api/projects/{projectId}/tokens',
       'owner POST /api/projects/{projectId}/tokens/{tokenId}/revoke',
       'owner POST /auth/logout',
+      'owner PUT /api/projects/{projectId}/capabilities/{capability}',
+      'owner PUT /api/secrets/{name}',
+      'owner PUT /api/settings/{leaf}',
       'public GET /health',
     ]);
   });

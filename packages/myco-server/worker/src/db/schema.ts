@@ -391,12 +391,118 @@ const V5_STATEMENTS: readonly string[] = [
   `DROP TABLE _v5_guard_backfill_complete`,
 ];
 
+
+/**
+ * Deployment-held secrets (#961, approved). One row per named secret, holding
+ * CIPHERTEXT only.
+ *
+ * The wrapping key never appears in this table — it is a platform binding. That
+ * separation is the whole point: `BREAK-GLASS.md` prescribes direct store access
+ * as the recovery path and #907 settled infrastructure control as proof of
+ * authority, so store access is a deliberate, routine capability. Plaintext here
+ * would make every break-glass operation and every leaked account token a
+ * disclosure of every provider key at once.
+ *
+ * No masked preview is stored. A preview is a truncation of the plaintext, and
+ * storing one would put the first and last characters of every credential back
+ * into the table this design exists to keep them out of. `describe()` decrypts
+ * and returns only the mask, so a preview is derived on demand and never rests.
+ *
+ * `key_version` is carried from the first row so a later re-wrap can identify which
+ * rows are sealed under which key. It does not by itself make rotation
+ * non-disruptive: nothing resolves a version back to key material today, so a
+ * rotated wrapping key leaves every row unreadable until its credential is
+ * re-entered. A slot in that state reports `readable: false` rather than failing
+ * the whole surface, so an operator can see what to re-enter. #964 owns rotation.
+ */
+/**
+ * Retention across step 6, stated once rather than per table: three of the four
+ * deliberately have none.
+ *
+ * `deployment_settings`, `project_capabilities` and `deployment_secrets` each hold
+ * CURRENT STATE — one row per leaf, per admission, per credential slot. A row is
+ * the setting, so pruning one deletes the setting. Their audit lives on the row
+ * itself as `updated_by`/`updated_at` rather than in a growing log, which is what
+ * makes them bounded by the number of settings rather than by time. No project
+ * deletion exists, so no orphan accumulates behind a removed Project either.
+ *
+ * `step_up_authorities` is the exception and is the only one swept: it grows once
+ * per mint and a spent authority resolves nothing afterwards. The operation it
+ * authorised keeps its own record on the row it changed.
+ */
+const V6_STATEMENTS: readonly string[] = [
+  /**
+   * Deployment Settings, one row per leaf.
+   *
+   * Keyed by the leaf path the two-tier ledger names (§7.8), so a partial write
+   * touches one row and carries its own actor — a whole-document write would make
+   * every save look like a change to everything, and an audit trail that cannot
+   * say which setting moved is not one.
+   */
+  `CREATE TABLE IF NOT EXISTS deployment_settings (
+     leaf       TEXT PRIMARY KEY,
+     value      TEXT NOT NULL,
+     updated_at INTEGER NOT NULL,
+     updated_by TEXT NOT NULL)`,
+  /**
+   * Per-Project capability admission.
+   *
+   * State rather than config: a Project is created by a member's first write
+   * (`resolveProject`) and cannot have a settings file that predates it.
+   *
+   * ABSENCE MEANS DISABLED. This is the inverse of the member-side predicate,
+   * where every master gate defaults true and a new project is made capture-only
+   * by `reseedCaptureOnly()` writing `false` at provision. There is no equivalent
+   * provisioning moment on a Deployment, so the default itself has to carry the
+   * property. Any other default silently admits every Project that appears from
+   * an ingest to every cost-bearing capability — the auto-adoption #428 exists
+   * to prevent.
+   */
+  `CREATE TABLE IF NOT EXISTS project_capabilities (
+     project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     capability TEXT NOT NULL,
+     enabled    INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL,
+     updated_by TEXT NOT NULL,
+     PRIMARY KEY (project_id, capability))`,
+  /**
+   * Step-up authorities (#907), for the operations flat membership does not cover.
+   *
+   * The same shape as an enrollment authority, and for the same reasons: 256 bits,
+   * hashed at rest so the store never holds a replayable value, single-use through
+   * one conditional update, expiring, and revocable.
+   *
+   * `purpose` binds an authority to the class of operation it is minted for. An
+   * authority handed out to rotate a provider credential is not one that destroys a
+   * Deployment: absent that binding, a member holding the first can perform the
+   * second — a confused deputy, and a single token covering all four reads as
+   * protection while granting every one of them.
+   */
+  `CREATE TABLE IF NOT EXISTS step_up_authorities (
+     id          TEXT PRIMARY KEY,
+     key_hash    TEXT NOT NULL,
+     purpose     TEXT NOT NULL,
+     created_at  INTEGER NOT NULL,
+     expires_at  INTEGER NOT NULL,
+     used_at     INTEGER,
+     used_by     TEXT,
+     revoked_at  INTEGER)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_step_up_authorities_hash ON step_up_authorities (key_hash)`,
+  `CREATE TABLE IF NOT EXISTS deployment_secrets (
+     name        TEXT PRIMARY KEY,
+     ciphertext  TEXT NOT NULL,
+     iv          TEXT NOT NULL,
+     key_version INTEGER NOT NULL,
+     updated_at  INTEGER NOT NULL,
+     updated_by  TEXT NOT NULL)`,
+];
+
 function withStamp(version: number, statements: readonly string[]): SchemaStep {
   return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
 }
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);
