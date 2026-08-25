@@ -488,6 +488,10 @@ Classification is **per leaf, not per registry row**. Seven of the registry's 31
 - **Project** — per-Project state on the Deployment rather than config. Capability admission and repo-specific settings live here: a Project is created on first use (`resolveProject`), so its settings cannot live in a file that must exist before the Project does.
 - **—** — dropped; mechanism rather than setting.
 
+**Coverage is measured against DECLARED leaves, not defaulted ones.** A leaf declared `.optional()` with no default never appears in a parsed config, so anything enumerating that way cannot see it — and the leaves that go missing are not a random sample. `agent.provider.base_url`, `agent.provider.type` and `embedding.base_url` are all optional, and they name the endpoint a Deployment's own credential is sent to. A coverage gate blind to those is blind exactly where it matters most, which is why `declaredLeafPaths()` walks the schema rather than an instance of it.
+
+**Two leaves are step-up gated rather than flat**, marked in the table. #907 justifies step-up on provider credentials as *"a member could exfiltrate a provider key"* — but a stored secret is already write-only and masked, so the reachable path is not reading the key, it is **changing where the key is sent**. `agent/harness/openai.ts` locks `openai` and `openrouter` to hardcoded base URLs for exactly this reason; `agent.provider.base_url` is the same value left open for `openai-compatible`, and on a Deployment every member can write settings.
+
 **Capability master gates are fail-closed and that is a mechanism, not a default.** Today `skills.enabled`, `vault_evolution.enabled`, `cortex.enabled` and `cortex.canopy.enabled` all default **`true`** in the schema, and `capabilityEnabled` returns `defaultEnabled ?? true` for an absent path (`config/capabilities.ts`). What actually makes a new project capture-only is a *write at provision time* — `reseedCaptureOnly()` seeding `false` for every gate (`vault/provision.ts`). On a Deployment, where Projects appear from a member's first write with no ceremony, the server-side predicate must therefore be the **inverse**: an absent row reads **disabled**. Otherwise every new Project silently acquires every cost-bearing capability, which is the auto-adoption #428 exists to prevent.
 
 Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`, `notifications.domains`, `symbionts` and `release_provenance.package_map`. They are classified whole, as their own rows below, and the completeness gate collapses any leaf beneath them onto the block prefix.
@@ -517,6 +521,28 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `release_provenance.github.token_env` | REPLACE | Project | Core | Names one repository's credential slot | #915 |
 | `release_provenance.github.max_lookups_per_run` | REPLACE | Project | Core | Per-repository API budget | #915 |
 | `release_provenance.package_map` | REPLACE | Project | Core | Monorepo package to tag mapping for one repository | #915 |
+| `agent.harness` | REPLACE | Deployment | Core | Which harness the Deployment runs tasks under | #919 |
+| `agent.model` | REPLACE | Deployment | Core | Model pin the Deployment applies when a task sets none | #919 |
+| `agent.reasoningLevel` | REPLACE | Deployment | Core | Default reasoning tier the Deployment resolves through the provider's map | #919 |
+| `agent.provider.type` | REPLACE | Deployment | Core | **Step-up.** Selects the provider, and with it which endpoint family the Deployment's credential is sent to | #915 |
+| `agent.provider.base_url` | REPLACE | Deployment | Core | **Step-up.** The endpoint the Deployment's own credential is sent to; a member-writable value here redirects it | #915 |
+| `agent.provider.local_backend` | REPLACE | Deployment | Core | Which local runtime a local provider targets | #915 |
+| `agent.provider.model` | REPLACE | Deployment | Core | Model the provider is asked for | #915 |
+| `agent.provider.context_length` | REPLACE | Deployment | Core | Context window the Deployment requests of a local provider | #915 |
+| `agent.provider.reasoning_map.default` | REPLACE | Deployment | Core | Model this provider resolves the `default` reasoning tier to | #919 |
+| `agent.provider.effort_map.default.effort` | REPLACE | Deployment | Core | Effort this provider applies at the `default` tier | #919 |
+| `agent.provider.effort_map.default.verbosity` | REPLACE | Deployment | Core | Verbosity this provider applies at the `default` tier | #919 |
+| `agent.provider.thinking_budget_map.default` | REPLACE | Deployment | Core | Thinking budget this provider applies at the `default` tier | #919 |
+| `agent.provider.reasoning_map.high` | REPLACE | Deployment | Core | Model this provider resolves the `high` reasoning tier to | #919 |
+| `agent.provider.effort_map.high.effort` | REPLACE | Deployment | Core | Effort this provider applies at the `high` tier | #919 |
+| `agent.provider.effort_map.high.verbosity` | REPLACE | Deployment | Core | Verbosity this provider applies at the `high` tier | #919 |
+| `agent.provider.thinking_budget_map.high` | REPLACE | Deployment | Core | Thinking budget this provider applies at the `high` tier | #919 |
+| `agent.provider.reasoning_map.low` | REPLACE | Deployment | Core | Model this provider resolves the `low` reasoning tier to | #919 |
+| `agent.provider.effort_map.low.effort` | REPLACE | Deployment | Core | Effort this provider applies at the `low` tier | #919 |
+| `agent.provider.effort_map.low.verbosity` | REPLACE | Deployment | Core | Verbosity this provider applies at the `low` tier | #919 |
+| `agent.provider.thinking_budget_map.low` | REPLACE | Deployment | Core | Thinking budget this provider applies at the `low` tier | #919 |
+| `embedding.base_url` | REPLACE | Deployment | Core | **Step-up.** The endpoint the Deployment's embedding credential is sent to | #915 |
+| `backup.dir` | DROP | — | — | A member-writable server-side filesystem path is the #907 H5 family, and has no meaning on a Worker. Where a self-hosted Deployment writes backups is operator configuration, not a member setting | #923 |
 | `agent.tasks` | REPLACE | Deployment | Core | Per-task overrides the Deployment applies to its own harness runs | #919 |
 | `notifications.domains` | KEEP | Member | M | Per-viewer delivery preference for each notification domain | #915 |
 | `symbionts` | KEEP | Member | M | Which coding agents are installed on this machine; never server state | #917 |

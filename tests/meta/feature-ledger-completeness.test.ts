@@ -19,7 +19,7 @@
  *   - Agent tasks    — YAML filenames under `src/agent/definitions/tasks/`
  *   - Scheduled jobs — `POWER_JOB_NAMES` values in `src/constants/power-jobs.ts`
  *   - Data classes   — `CREATE TABLE` names under `packages/myco/src/db/`
- *   - Config leaves  — every leaf of the defaulted `MycoConfigSchema` (§7.8)
+ *   - Config leaves  — every leaf the `MycoConfigSchema` DECLARES (§7.8)
  *
  * The SURFACE half matters most. A row with a disposition but no surface is how a
  * capability ends up owned by nobody — the planning defect of the same class as a
@@ -32,8 +32,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MycoConfigSchema } from '@myco/config/schema.js';
-import { enumerateLeafPaths } from '@myco/config/leaf-paths.js';
+import { declaredLeafPaths } from '@myco/config/declared-leaves.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
@@ -171,14 +170,19 @@ function dataClasses(): string[] {
  * Every leaf of the defaulted config schema, with dynamic blocks collapsed to the
  * prefix §7.8 classifies them under.
  *
- * This one is imported rather than source-scanned: the leaf set is what the schema
- * PRODUCES, and a regex over `schema.ts` would miss a leaf added through a shared
- * sub-schema — the failure the ledger exists to prevent.
+ * Imported rather than source-scanned: a regex over `schema.ts` would miss a leaf
+ * added through a shared sub-schema, which is the failure the ledger exists to
+ * prevent.
+ *
+ * DECLARED, not defaulted. A leaf declared `.optional()` never appears in a parsed
+ * config, and the optional ones are `agent.provider.base_url`, `agent.provider.type`
+ * and `embedding.base_url` — the endpoints a Deployment's own credential is sent to.
+ * A coverage gate reading a defaulted parse is blind precisely where coverage
+ * matters most.
  */
 function configLeaves(): string[] {
-  const merged = MycoConfigSchema.parse({ version: 3 }) as Record<string, unknown>;
   const out = new Set<string>();
-  for (const leaf of enumerateLeafPaths(merged)) {
+  for (const leaf of declaredLeafPaths()) {
     const block = DYNAMIC_CONFIG_BLOCKS.find((b) => leaf === b || leaf.startsWith(`${b}.`));
     out.add(block ?? leaf);
   }

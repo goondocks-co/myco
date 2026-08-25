@@ -30,6 +30,26 @@ export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
 export const DEPLOYMENT_LEAVES: readonly string[] = [
   'agent.cold_project_threshold_days',
   'agent.event_tasks_enabled',
+  'agent.harness',
+  'agent.model',
+  'agent.provider.base_url',
+  'agent.provider.context_length',
+  'agent.provider.effort_map.default.effort',
+  'agent.provider.effort_map.default.verbosity',
+  'agent.provider.effort_map.high.effort',
+  'agent.provider.effort_map.high.verbosity',
+  'agent.provider.effort_map.low.effort',
+  'agent.provider.effort_map.low.verbosity',
+  'agent.provider.local_backend',
+  'agent.provider.model',
+  'agent.provider.reasoning_map.default',
+  'agent.provider.reasoning_map.high',
+  'agent.provider.reasoning_map.low',
+  'agent.provider.thinking_budget_map.default',
+  'agent.provider.thinking_budget_map.high',
+  'agent.provider.thinking_budget_map.low',
+  'agent.provider.type',
+  'agent.reasoningLevel',
   'agent.run_retention_days',
   'agent.scheduled_tasks_active_window_days',
   'agent.scheduled_tasks_enabled',
@@ -39,6 +59,11 @@ export const DEPLOYMENT_LEAVES: readonly string[] = [
   'backup.auto_interval_hours',
   'backup.retention.keep_daily',
   'backup.retention.keep_weekly',
+  'cortex.canopy.exclude.default_patterns',
+  'cortex.canopy.exclude.patterns',
+  'cortex.canopy.min_file_bytes',
+  'cortex.canopy.refresh.background_enabled',
+  'cortex.canopy.refresh.background_period_minutes',
   'cortex.digest.inject_on_session_start',
   'cortex.digest.tier',
   'cortex.instructions.inject_on_session_start',
@@ -46,11 +71,7 @@ export const DEPLOYMENT_LEAVES: readonly string[] = [
   'cortex.plans.inject_intent_nudge_on_prompt_submit',
   'cortex.spores.inject_on_prompt_submit',
   'cortex.spores.max_per_prompt',
-  'cortex.canopy.exclude.default_patterns',
-  'cortex.canopy.exclude.patterns',
-  'cortex.canopy.min_file_bytes',
-  'cortex.canopy.refresh.background_enabled',
-  'cortex.canopy.refresh.background_period_minutes',
+  'embedding.base_url',
   'embedding.model',
   'embedding.prevent_deep_sleep',
   'embedding.provider',
@@ -65,6 +86,31 @@ export const DEPLOYMENT_LEAVES: readonly string[] = [
 ];
 
 const DEPLOYMENT_LEAF_SET = new Set(DEPLOYMENT_LEAVES);
+
+/**
+ * The leaves a member may not change on membership alone.
+ *
+ * #907 justifies step-up on provider credentials as *"a member could exfiltrate a
+ * provider key"* — but a stored secret is already write-only and masked, so
+ * reading it is not the reachable path. Changing **where it is sent** is.
+ * `agent/harness/openai.ts` locks `openai` and `openrouter` to hardcoded base URLs
+ * for precisely that, with the comment saying so; these are the same values left
+ * open for `openai-compatible`, and on a Deployment every member writes settings.
+ *
+ * So the gated set is the endpoint, not the credential slot: a member who can
+ * point the Deployment at a host they control does not need to read the key, the
+ * key is delivered to them.
+ */
+export const STEP_UP_LEAVES: readonly string[] = [
+  'agent.provider.base_url',
+  'agent.provider.type',
+  'embedding.base_url',
+];
+
+const STEP_UP_LEAF_SET = new Set(STEP_UP_LEAVES);
+
+/** Whether changing `leaf` needs proof beyond membership. */
+export const requiresStepUp = (leaf: string): boolean => STEP_UP_LEAF_SET.has(leaf);
 
 /** Why a settings write did not apply. Each names a fault in the caller's own request; none is retryable. */
 export type SettingsRefusal =

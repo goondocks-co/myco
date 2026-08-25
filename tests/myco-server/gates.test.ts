@@ -426,7 +426,7 @@ describe('gates', () => {
     // Credential and membership tables are Deployment-scoped by design — a member
     // credential belongs to a member and a Deployment, not to one project — so
     // their indexes lead with what they are actually looked up by.
-    const deploymentScoped = /ON (member_tokens|members|member_credentials|enrollment_authorities)\b/;
+    const deploymentScoped = /ON (member_tokens|members|member_credentials|enrollment_authorities|step_up_authorities)\b/;
     // One reservation index is keyed on the credential rather than the project: a
     // credential spans every Project in its Deployment, so the quota admission looks
     // reservations up by credential and the index has to lead with what it is read by.
@@ -500,6 +500,30 @@ describe('gates', () => {
       const stored = await (await worker.fetch(fixture.wellFormed(t1.token), e)).json() as Record<string, unknown>;
       expect(stored[fixture.shape]).toBe(true);
     }
+  });
+
+  it('keeps step-up sized to the one consumer in scope, and spends an authority from one statement', () => {
+    // #907 names four operations; exactly one of them is in this issue. Building a
+    // general step-up framework for one consumer is the pattern this project has
+    // paid for before, and "build it no larger than the consumer" is a property
+    // with nothing that fails when it stops holding — so this is that.
+    //
+    // When the second consumer lands (#923's destroy/restore, or the enrollment
+    // root rotation) this list grows by one and the gate keeps its meaning.
+    const callers = files(SRC)
+      .filter((f) => f !== join(SRC, 'auth', 'step-up.ts'))
+      .filter((f) => /spendStepUpAuthority|stepUpAuthorizer/.test(readFileSync(f, 'utf8')))
+      .map((f) => f.slice(SRC.length + 1));
+    expect(callers).toEqual([]);
+
+    // The spend is one conditional update carrying every condition. A read-then-mark
+    // spend admits two winners; this is the same shape #912 H4 required of enrollment.
+    const stepUp = readFileSync(join(SRC, 'auth', 'step-up.ts'), 'utf8');
+    expect(stepUp.match(/UPDATE step_up_authorities SET used_at/g)).toHaveLength(1);
+    expect(stepUp).toMatch(/WHERE key_hash = \? AND purpose = \? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > \?/);
+    // The digest is stored, never the key.
+    expect(stepUp).toMatch(/await sha256Hex\(key\)/);
+    expect(stepUp).not.toMatch(/INSERT INTO step_up_authorities[\s\S]*?VALUES[^`]*\bkey\b(?!_hash)/);
   });
 
   it('writes settings and capability admission from exactly one module, keyed on the tables themselves', () => {

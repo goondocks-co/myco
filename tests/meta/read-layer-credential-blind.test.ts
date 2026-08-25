@@ -77,13 +77,14 @@ describe('read layer', () => {
     //   read/**       the query core
     //   ingest/**     the write path
     //   db/**         schema and migration
-    //   auth/tokens.ts, auth/refresh.ts, auth/enrollment.ts   the credential store
+    //   auth/tokens.ts, auth/refresh.ts, auth/enrollment.ts, auth/step-up.ts
+    //                     the credential store
     //   core/secrets.ts   the Deployment secret store — it OWNS deployment_secrets,
     //                     and holds the only decrypt in the codebase
     //   core/settings.ts  the one validated settings write path — it OWNS
     //                     deployment_settings and project_capabilities
     //   pipeline.ts   one quota re-read on the ingest admission path
-    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^pipeline\.ts$/];
+    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/step-up\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^pipeline\.ts$/];
     const offenders: string[] = [];
     for (const file of tsFiles(SRC)) {
       const rel = file.slice(SRC.length);

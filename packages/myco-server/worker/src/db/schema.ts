@@ -446,6 +446,29 @@ const V6_STATEMENTS: readonly string[] = [
      updated_at INTEGER NOT NULL,
      updated_by TEXT NOT NULL,
      PRIMARY KEY (project_id, capability))`,
+  /**
+   * Step-up authorities (#907), for the operations flat membership does not cover.
+   *
+   * The same shape as an enrollment authority, and for the same reasons: 256 bits,
+   * hashed at rest so the store never holds a replayable value, single-use through
+   * one conditional update, expiring, and revocable.
+   *
+   * `purpose` binds an authority to the class of operation it is minted for. An
+   * authority handed out to rotate a provider credential is not one that destroys a
+   * Deployment: absent that binding, a member holding the first can perform the
+   * second — a confused deputy, and a single token covering all four reads as
+   * protection while granting every one of them.
+   */
+  `CREATE TABLE IF NOT EXISTS step_up_authorities (
+     id          TEXT PRIMARY KEY,
+     key_hash    TEXT NOT NULL,
+     purpose     TEXT NOT NULL,
+     created_at  INTEGER NOT NULL,
+     expires_at  INTEGER NOT NULL,
+     used_at     INTEGER,
+     used_by     TEXT,
+     revoked_at  INTEGER)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_step_up_authorities_hash ON step_up_authorities (key_hash)`,
   `CREATE TABLE IF NOT EXISTS deployment_secrets (
      name        TEXT PRIMARY KEY,
      ciphertext  TEXT NOT NULL,

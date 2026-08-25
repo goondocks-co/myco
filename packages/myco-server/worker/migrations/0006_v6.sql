@@ -14,6 +14,18 @@ CREATE TABLE IF NOT EXISTS project_capabilities (
      updated_by TEXT NOT NULL,
      PRIMARY KEY (project_id, capability));
 
+CREATE TABLE IF NOT EXISTS step_up_authorities (
+     id          TEXT PRIMARY KEY,
+     key_hash    TEXT NOT NULL,
+     purpose     TEXT NOT NULL,
+     created_at  INTEGER NOT NULL,
+     expires_at  INTEGER NOT NULL,
+     used_at     INTEGER,
+     used_by     TEXT,
+     revoked_at  INTEGER);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_step_up_authorities_hash ON step_up_authorities (key_hash);
+
 CREATE TABLE IF NOT EXISTS deployment_secrets (
      name        TEXT PRIMARY KEY,
      ciphertext  TEXT NOT NULL,
