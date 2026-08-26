@@ -157,3 +157,51 @@ describe('port 0 lands both families on ONE port', () => {
     }
   });
 });
+
+describe('bind mode reconciles the contract with a network namespace', () => {
+  it("defaults to binding the loopback literals", async () => {
+    const { serve } = await import('@myco-server-worker/entry/bun.js');
+    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', port: 0 });
+    try {
+      for (const authority of [`127.0.0.1:${started.port}`, `[::1]:${started.port}`]) {
+        const res = await fetch(`http://${authority}/health`, { headers: { host: authority } });
+        expect(res.status).toBe(200);
+      }
+    } finally {
+      started.stop();
+    }
+  });
+
+  it("bind 'all' still refuses a foreign Host — the namespace is not the only guard", async () => {
+    const { serve } = await import('@myco-server-worker/entry/bun.js');
+    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', port: 0, bind: 'all' });
+    try {
+      const ok = await fetch(`http://127.0.0.1:${started.port}/health`, {
+        headers: { host: `127.0.0.1:${started.port}` },
+      });
+      expect(ok.status).toBe(200);
+
+      // Published ports reach eth0, so the socket admits addresses the Host
+      // allowlist must still reject.
+      const rebound = await fetch(`http://127.0.0.1:${started.port}/health`, {
+        headers: { host: 'evil.example.com' },
+      });
+      expect(rebound.status).toBe(421);
+    } finally {
+      started.stop();
+    }
+  });
+
+  it("bind 'all' does not weaken the refusal of the NAME", async () => {
+    const { serve } = await import('@myco-server-worker/entry/bun.js');
+    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', port: 0, bind: 'all' });
+    try {
+      const res = await fetch(`http://127.0.0.1:${started.port}/health`, {
+        headers: { host: `localhost:${started.port}` },
+      });
+      expect(res.status).toBe(421);
+    } finally {
+      started.stop();
+    }
+  });
+});
