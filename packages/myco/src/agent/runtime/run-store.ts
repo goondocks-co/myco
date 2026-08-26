@@ -41,6 +41,12 @@
  */
 
 import type { AgentStateRow } from '@myco/db/queries/agent-state.js';
+import type { RunInsert, RunRow, RunUpdate, RunningRunRef } from '@myco/db/queries/runs.js';
+import type { ReportRow } from '@myco/db/queries/reports.js';
+import type { RunEventInsert } from '@myco/db/queries/agent-run-events.js';
+import type { CortexInstructionsUpsert } from '@myco/db/queries/cortex-instructions.js';
+
+export type { RunInsert, RunRow, RunUpdate, RunningRunRef, ReportRow, RunEventInsert, CortexInstructionsUpsert };
 
 /** Scope every operation is evaluated within. */
 export interface RunScope {
@@ -52,13 +58,26 @@ export interface RunStore {
   // -- run lifecycle -------------------------------------------------------
   insertRun(row: RunInsert): Promise<void>;
   getRun(runId: string, scope: RunScope): Promise<RunRow | null>;
-  getRunningRunForTask(task: string, scope: RunScope): Promise<RunRow | null>;
-  updateRunStatus(runId: string, status: string, patch: RunPatch): Promise<void>;
-  applyRunUpdate(runId: string, patch: RunPatch): Promise<void>;
-  supersedeEquivalentResumableRuns(runId: string, scope: RunScope): Promise<void>;
+  getRunningRunForTask(
+    task: string,
+    scope: RunScope,
+    maxAgeSeconds?: number,
+  ): Promise<RunningRunRef | null>;
+  updateRunStatus(
+    runId: string,
+    status: string,
+    completion: RunUpdate | undefined,
+    scope: RunScope,
+  ): Promise<void>;
+  applyRunUpdate(runId: string, update: RunUpdate, scope: RunScope): Promise<void>;
+  supersedeEquivalentResumableRuns(
+    excludeRunId: string,
+    match: { taskName: string; dryRun: boolean },
+    scope: RunScope,
+  ): Promise<void>;
 
   // -- run observability ---------------------------------------------------
-  recordRunEvent(event: RunEvent): Promise<void>;
+  recordRunEvent(event: RunEventInsert): Promise<void>;
   listReports(runId: string, scope: RunScope): Promise<ReportRow[]>;
 
   // -- agent state ---------------------------------------------------------
@@ -80,13 +99,6 @@ export interface RunStore {
   // -- derived outputs -----------------------------------------------------
   upsertCortexInstructions(row: CortexInstructionsUpsert): Promise<void>;
 }
-
-export interface RunRow { id: string; task: string; status: string; [key: string]: unknown }
-export interface RunInsert { id: string; task: string; [key: string]: unknown }
-export type RunPatch = Record<string, unknown>;
-export interface RunEvent { runId: string; eventType: string; toolName?: string | null; [key: string]: unknown }
-export interface ReportRow { id: string; [key: string]: unknown }
-export interface CortexInstructionsUpsert { projectId: string; [key: string]: unknown }
 
 /**
  * Wrap a store so no two of its operations overlap.
