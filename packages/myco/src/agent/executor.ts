@@ -345,7 +345,7 @@ export async function runAgent(
     ?? taskProviderOverride
     ?? config.execution?.provider;
   const runId = options?.resumeRunId ?? options?.runId ?? crypto.randomUUID();
-  const runHooks = mergeHooks(buildAuditEventHooks(runId, projectId ?? null), options?.hooks);
+  const runHooks = mergeHooks(buildAuditEventHooks(store, runId, projectId ?? null), options?.hooks);
   let harnessId = runHarness;
   let effectiveModel = resolveReasoningModel(
     config.execution?.reasoningLevel ?? config.reasoningLevel,

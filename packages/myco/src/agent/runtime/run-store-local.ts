@@ -31,7 +31,7 @@
  *   non-Grove-bound context to GLOBAL_SCOPE because binding it to a project
  *   would "leak the anchor's rows to an unauthorized request"
  *   (`grove/request-context.ts:925-933`). Re-deriving scope from a bare
- *   `projectId` here would reintroduce exactly that.
+ *   `projectId` here reintroduces that leak.
  * - **Atomicity.** `mutateState` reads and writes with no `await` between, so
  *   `bun:sqlite` being synchronous makes it atomic for free. A networked
  *   implementation must supply that explicitly — a conditional UPDATE, or a
@@ -61,10 +61,9 @@ import type { RunStore } from './run-store.js';
 /**
  * Open the local vault and bring its schema current.
  *
- * Schema lifecycle is a HOST responsibility, not the agent's. The executor used
- * to open a database by path and run the migration chain itself; a server-side
- * agent must not, because it does not own the store it reads. Keeping bootstrap
- * here means the gate "the executor cannot open a database by path" is a
+ * Schema lifecycle is a HOST responsibility, not the agent's: a server-side
+ * agent does not own the store it reads and must not migrate it. Bootstrap
+ * lives here so that "the executor cannot open a database by path" is a
  * structural fact rather than a convention.
  *
  * Returns a typed result rather than throwing on a too-new schema: the vault
@@ -105,8 +104,8 @@ export function createLocalRunStore(binding: LocalRunStoreBinding): RunStore {
 
     /**
      * Atomic because the check and the insert are adjacent synchronous
-     * statements — the exact invariant the executor relied on before the
-     * control plane became a port.
+     * statements: nothing yields between them, so no second dispatch can
+     * observe the gap.
      */
     async claimRun(row, guard) {
       const running = getRunningRunForTask(agentId, guard.taskName, scope, guard.maxAgeSeconds);
@@ -172,8 +171,8 @@ export function createLocalRunStore(binding: LocalRunStoreBinding): RunStore {
     },
 
     /**
-     * Fails closed, unchanged: a failed lease read is never an unheld lease,
-     * and admitting a writer to a project mid-move would race the operation.
+     * Fails closed: a failed lease read is never an unheld lease, and
+     * admitting a writer to a project mid-move races the operation.
      */
     async admitProject(projectId) {
       try {

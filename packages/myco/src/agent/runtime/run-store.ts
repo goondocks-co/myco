@@ -26,12 +26,11 @@
  * silently: no test fails, and two phases can read the same state value, both
  * decide, and both write.
  *
- * **A generic mutex does not fix this, and the gate proves it.** Serializing
- * individual operations still lets two phases interleave as
- * get(A) get(B) set(A) set(B) — every operation ran alone, and B's write still
- * clobbered A's. What sync SQLite actually guarantees is that the whole
- * synchronous span between yields is atomic, which no per-call wrapper
- * reproduces.
+ * **A generic mutex does not supply this, and the gate proves it.** Serializing
+ * individual operations still admits the interleaving
+ * get(A) get(B) set(A) set(B) — every operation runs alone, and B's write
+ * clobbers A's. Synchronous SQLite makes the whole span between yields atomic,
+ * which no per-call wrapper reproduces.
  *
  * So atomicity is expressed in the port itself: `mutateState` is one operation
  * that reads, applies, and writes. That is also the shape a server
@@ -79,17 +78,15 @@ export interface RunStore {
    * Single-flight claim: check for a live run of `guard.taskName` and insert
    * `row` only if there is none, ATOMICALLY.
    *
-   * This exists because the check and the insert used to be adjacent
-   * synchronous statements — the executor's own comment read "This check and
-   * the insert below run with no await between them, so the second dispatch
-   * always sees the first one's row." Awaiting a port breaks that, and two
-   * same-tick dispatches both insert.
+   * Two same-tick dispatches of the same task must produce exactly one run
+   * row. A separate check followed by a separate insert cannot guarantee that
+   * across an await: both dispatches see no live run, and both insert.
    *
-   * `serializeRunStore` cannot close this one: its mutex is per store and the
+   * `serializeRunStore` does not close this: its mutex is per store and the
    * executor builds one store per run, so two concurrent dispatches hold two
-   * different mutexes. Cross-run coordination has to be one operation the
-   * store performs atomically — a transaction locally, a conditional INSERT
-   * on a server.
+   * different mutexes. Cross-run coordination requires one operation the store
+   * performs atomically — a transaction locally, a conditional INSERT on a
+   * server.
    */
   claimRun(
     row: RunInsert,

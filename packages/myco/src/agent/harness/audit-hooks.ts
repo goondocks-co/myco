@@ -9,8 +9,8 @@
  * insertWriteIntent (write-intents.ts).
  */
 
-import { insertRunEvent } from '@myco/db/queries/agent-run-events.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
+import type { RunStore } from '../runtime/run-store.js';
 import type {
   HarnessHooks,
   PreToolUseEvent,
@@ -19,11 +19,15 @@ import type {
   PhaseEndEvent,
 } from './hooks.js';
 
-export function buildAuditEventHooks(runId: string, projectId: GroveProjectId | null): HarnessHooks {
+export function buildAuditEventHooks(
+  store: RunStore,
+  runId: string,
+  projectId: GroveProjectId | null,
+): HarnessHooks {
   return {
     async preToolUse(event: PreToolUseEvent) {
       try {
-        insertRunEvent({
+        await store.recordRunEvent({
           runId,
           projectId,
           phaseName: event.phaseName ?? null,
@@ -37,7 +41,7 @@ export function buildAuditEventHooks(runId: string, projectId: GroveProjectId | 
     },
     async postToolUse(event: PostToolUseEvent) {
       try {
-        insertRunEvent({
+        await store.recordRunEvent({
           runId,
           projectId,
           phaseName: event.phaseName ?? null,
@@ -56,7 +60,7 @@ export function buildAuditEventHooks(runId: string, projectId: GroveProjectId | 
     },
     async phaseStart(event: PhaseStartEvent) {
       try {
-        insertRunEvent({
+        await store.recordRunEvent({
           runId,
           projectId,
           phaseName: event.phaseName,
@@ -69,7 +73,7 @@ export function buildAuditEventHooks(runId: string, projectId: GroveProjectId | 
     },
     async phaseEnd(event: PhaseEndEvent) {
       try {
-        insertRunEvent({
+        await store.recordRunEvent({
           runId,
           projectId,
           phaseName: event.phaseName,

@@ -7,14 +7,21 @@
  * actually thread the store through.
  */
 import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { createLocalRunStore } from '@myco/agent/runtime/run-store-local.js';
 import { serializeRunStore, type RunStore } from '@myco/agent/runtime/run-store.js';
 
+/**
+ * `requestContext` omitted binds the store to ALL_PROJECTS_SCOPE, which is what
+ * `projectScopeFromRequestContext` demands a caller assert explicitly rather
+ * than infer from a missing context.
+ */
 export function testRunStore(
   requestContext: Parameters<typeof projectScopeFromRequestContext>[0],
   agentId: string,
 ): RunStore {
-  return serializeRunStore(
-    createLocalRunStore({ scope: projectScopeFromRequestContext(requestContext), agentId }),
-  );
+  const scope = requestContext
+    ? projectScopeFromRequestContext(requestContext)
+    : ALL_PROJECTS_SCOPE;
+  return serializeRunStore(createLocalRunStore({ scope, agentId }));
 }
