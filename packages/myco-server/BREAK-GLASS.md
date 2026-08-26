@@ -5,7 +5,7 @@ The recovery path of last resort. Whoever controls the Deployment's infrastructu
 `scripts/mint-enrollment.ts` connects to nothing and holds no credential: it renders the SQL for you to apply. The raw key goes to stderr and only with `--print-key`, so the rendered statement can be piped to a client without the secret travelling with it.
 
 ```bash
-cd packages/myco-server/worker
+cd packages/myco-server
 # Render the insert. Prints the digest, never the key.
 bun scripts/mint-enrollment.ts 30
 
@@ -43,7 +43,7 @@ A leaked member token is revoked by setting `revoked_at` on its row. The pipelin
 `revokeMemberToken` is the code path; `npm run token:revoke -- <TOKEN_ID>` prints its `UPDATE`. Find the credential by member and machine, print the statement, apply it with `wrangler d1 execute`, then confirm the command reported one changed row — zero rows means no live credential had that id:
 
 ```bash
-cd packages/myco-server/worker
+cd packages/myco-server
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
   "SELECT id, member_id, machine_id, expires_at, revoked_at, bytes_written FROM member_credentials WHERE member_id = '<MEMBER_ID>'"
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(npm run -s token:revoke -- <TOKEN_ID>)"
@@ -70,7 +70,7 @@ Rows and objects written by a revoked token are never deleted by this procedure.
 A member token refreshes itself inside the last quarter of its TTL (`POST /tokens/refresh`), so a leaked token may already have a successor — and its successor another — each a live credential with its own digest. Every token of a chain carries `lineage_root`, the id of the operator-minted token the chain began with; `revokeMemberLineage` sets `revoked_at` on every live row of that lineage in one statement, and `npm run token:revoke -- <TOKEN_ID> --lineage` prints it for any id in the chain. Read the chain first, then revoke it whole, then confirm the count of changed rows matches the live rows you read:
 
 ```bash
-cd packages/myco-server/worker
+cd packages/myco-server
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
   "SELECT id, predecessor_id, lineage_root, expires_at, first_used_at, revoked_at, bytes_written FROM member_credentials WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = '<TOKEN_ID>') ORDER BY expires_at"
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(npm run -s token:revoke -- <TOKEN_ID> --lineage)"
@@ -87,7 +87,7 @@ Observed on wrangler 4.123 with `--local`: a file whose *last* statement fails i
 Read both records before touching anything:
 
 ```bash
-cd packages/myco-server/worker
+cd packages/myco-server
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
   "SELECT id, name, applied_at FROM d1_migrations ORDER BY id"
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
@@ -122,7 +122,7 @@ Step 2 opens with two guard tables, ahead of every `ADD COLUMN`, so an aborted r
 **A project id out of grammar.** v2 restricts a project id to `A-Za-z0-9._-`, 1–64 characters, and neither `.` nor `..`:
 
 ```bash
-cd packages/myco-server/worker
+cd packages/myco-server
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
   "SELECT project_id FROM projects WHERE NOT (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..'))"
 ```

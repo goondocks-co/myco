@@ -30,7 +30,7 @@ Delete the objects by the keys the run recorded, never by prefix: the bucket is 
 1. Seed two projects and mint **two machines in `proj_1`** plus one in `proj_2`, keeping the raw tokens in mode-600 files outside the repository. The foreign-machine rows (`A6`, `C4`) need a second machine in the *same* project: a token from another project addresses another project's sessions, so it would open its own session rather than collide with `machine_1`'s.
 
 ```bash
-cd packages/myco-server/worker
+cd packages/myco-server
 export CLOUDFLARE_ACCOUNT_ID=<account>
 sql() { npx wrangler d1 execute myco-server-smoke<N> --remote -c wrangler.smoke.toml --command "$1"; }
 sql "INSERT INTO projects (project_id,name,created_at) VALUES ('proj_1','one',0),('proj_2','two',0)"
