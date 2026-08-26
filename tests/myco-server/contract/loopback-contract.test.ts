@@ -135,7 +135,7 @@ describe('serve() enforces the contract at startup', () => {
       });
       expect(rebound.status).toBe(421);
     } finally {
-      started.stop();
+      await started.stop();
     }
   });
 });
@@ -153,7 +153,7 @@ describe('port 0 lands both families on ONE port', () => {
         expect(res.status).toBe(200);
       }
     } finally {
-      started.stop();
+      await started.stop();
     }
   });
 });
@@ -168,7 +168,7 @@ describe('bind mode reconciles the contract with a network namespace', () => {
         expect(res.status).toBe(200);
       }
     } finally {
-      started.stop();
+      await started.stop();
     }
   });
 
@@ -188,7 +188,7 @@ describe('bind mode reconciles the contract with a network namespace', () => {
       });
       expect(rebound.status).toBe(421);
     } finally {
-      started.stop();
+      await started.stop();
     }
   });
 
@@ -201,7 +201,7 @@ describe('bind mode reconciles the contract with a network namespace', () => {
       });
       expect(res.status).toBe(421);
     } finally {
-      started.stop();
+      await started.stop();
     }
   });
 });
