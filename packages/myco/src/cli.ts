@@ -117,6 +117,7 @@ const DELEGATED_HELP: Record<string, () => Promise<string>> = {
   host: async () => (await import('./cli/host.js')).HOST_HELP,
   member: async () => (await import('./cli/member.js')).MEMBER_HELP,
   settings: async () => (await import('./cli/settings.js')).SETTINGS_HELP,
+  server: async () => (await import('./cli/server.js')).SERVER_HELP,
 };
 
 async function helpForCommand(command: string, args: readonly string[] = []): Promise<string> {
@@ -247,6 +248,10 @@ async function main(): Promise<void> {
   // 2.0 member operations — registry and spool under MYCO_HOME, never a project
   // vault, so they sit above the myco.yaml gate and work from any cwd.
   if (cmd === 'member') return (await import('./cli/member.js')).run(args);
+
+  // Self-hosted Deployment lifecycle — a Compose bundle under MYCO_HOME, no
+  // project vault, so it sits above the myco.yaml gate and works from any cwd.
+  if (cmd === 'server') return (await import('./cli/server.js')).run(args);
 
   // The sandbox settings emitter reads no vault and writes nothing.
   if (cmd === 'settings') return (await import('./cli/settings.js')).run(args);
