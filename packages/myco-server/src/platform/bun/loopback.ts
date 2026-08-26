@@ -18,6 +18,21 @@
  * 4. Loopback-qualified publishing. `PORT:PORT` in Compose publishes on every
  *    interface with no signal inside the container, so condition 4 is verified
  *    against the shipped Compose file, not here.
+ *
+ * **Where conditions 1 and 2 apply.** They constrain the HOST-VISIBLE bind. A
+ * process on the host binds the loopback literals itself. A container does not:
+ * its network namespace has its own loopback, and Docker publishes a host
+ * address to the container's `eth0` (172.17.0.2 in the default bridge), so a
+ * process bound to 127.0.0.1 inside the namespace is unreachable through
+ * published ports. Measured, not assumed: such a container answers `/health`
+ * 200 from `docker exec` and refuses the connection from the host.
+ *
+ * For a container the namespace is the boundary and condition 4 is the
+ * host-visible bind, so conditions 1 and 2 are satisfied by the publish spec
+ * rather than by the process. `MYCO_BIND=all` selects that shape and is safe
+ * ONLY alongside loopback-qualified publishing; the two ship in the same
+ * Compose file and `compose-publish.test.ts` gates the pairing. Condition 3
+ * holds in both shapes — a socket cannot see a forged Host either way.
  */
 
 /** Loopback literals, the only admissible bind targets. */
