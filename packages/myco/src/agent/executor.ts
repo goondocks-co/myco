@@ -19,7 +19,6 @@ import { listReports } from '@myco/db/queries/reports.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { projectScopeFromRequestContext, requireProjectId, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
-import { isProjectPaused, type ProjectPauseStatus } from '@myco/grove/registry.js';
 import { getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
   insertRun,
@@ -208,27 +207,22 @@ export async function runAgent(
   // resume here — resume re-enters through this same entry, and a resumed
   // run must not write through a transition any more than a fresh one. An
   // unreadable lease refuses: a failed read is never an unheld lease.
-  if (projectId) {
-    let admission: ProjectPauseStatus;
-    try {
-      admission = isProjectPaused(projectId);
-    } catch {
-      admission = { paused: true, reason: 'unreadable lease record', since: 0, owner_op: 'unknown', grove_id: null };
-    }
-    if (admission.paused) {
-      return {
-        runId: options?.resumeRunId ?? '',
-        status: STATUS_FAILED,
-        error: `project_lease_held: project ${projectId} is mid-operation `
-          + `(held by ${admission.owner_op}: ${admission.reason}); the run was not started`,
-      };
-    }
-  }
-
   const scope = projectScopeFromRequestContext(options?.requestContext);
   // One store per run: `serializeRunStore` scopes its mutex to this run, so
   // concurrent runs never contend while the concurrent phases of a wave do.
   const store = serializeRunStore(createLocalRunStore({ scope, agentId }));
+
+  if (projectId) {
+    const admission = await store.admitProject(projectId);
+    if (!admission.admitted) {
+      return {
+        runId: options?.resumeRunId ?? '',
+        status: STATUS_FAILED,
+        error: `project_lease_held: project ${projectId} is mid-operation `
+          + `(held by ${admission.ownerOp}: ${admission.reason}); the run was not started`,
+      };
+    }
+  }
   const resumedRun = options?.resumeRunId ? await store.getRun(options.resumeRunId) : null;
   if (options?.resumeRunId && !resumedRun) {
     return {

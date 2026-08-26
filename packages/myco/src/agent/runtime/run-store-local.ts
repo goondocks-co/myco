@@ -39,6 +39,7 @@
  */
 
 import { epochSeconds } from '@myco/constants.js';
+import { isProjectPaused } from '@myco/grove/registry.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
 import { getState, setState } from '@myco/db/queries/agent-state.js';
 import { listReports } from '@myco/db/queries/reports.js';
@@ -134,6 +135,21 @@ export function createLocalRunStore(binding: LocalRunStoreBinding): RunStore {
 
     async upsertCortexInstructions(row) {
       upsertCortexInstructions(row);
+    },
+
+    /**
+     * Fails closed, unchanged: a failed lease read is never an unheld lease,
+     * and admitting a writer to a project mid-move would race the operation.
+     */
+    async admitProject(projectId) {
+      try {
+        const admission = isProjectPaused(projectId);
+        return admission.paused
+          ? { admitted: false, reason: admission.reason, ownerOp: admission.owner_op }
+          : { admitted: true };
+      } catch {
+        return { admitted: false, reason: 'unreadable lease record', ownerOp: 'unknown' };
+      }
     },
   };
 }

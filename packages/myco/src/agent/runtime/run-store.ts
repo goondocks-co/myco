@@ -65,6 +65,13 @@ export type { RunInsert, RunRow, RunUpdate, RunningRunRef, ReportRow, RunEventIn
  * phases within a run do.
  */
 
+/** Whether a run may start, and why not. */
+export interface RunAdmission {
+  admitted: boolean;
+  reason?: string;
+  ownerOp?: string;
+}
+
 export interface RunStore {
   // -- run lifecycle -------------------------------------------------------
   insertRun(row: RunInsert): Promise<void>;
@@ -119,6 +126,18 @@ export interface RunStore {
 
   // -- derived outputs -----------------------------------------------------
   upsertCortexInstructions(row: CortexInstructionsUpsert): Promise<void>;
+
+  /**
+   * Admission gate, asked before a run starts.
+   *
+   * Locally this reads a machine-local project lease under `resolveMycoHome()`
+   * — NOT the vault. That is why it belongs to the port: a server-side agent
+   * has no `~/.myco`, and the executor's inline gate fails CLOSED on an
+   * unreadable lease, so every run would be refused with no crash and no
+   * signal. Making admission an explicit port operation forces each
+   * implementation to answer for itself instead of inheriting a local answer.
+   */
+  admitProject(projectId: string): Promise<RunAdmission>;
 }
 
 /**
@@ -160,5 +179,6 @@ export function serializeRunStore(inner: RunStore): RunStore {
     setState: serialized(inner.setState),
     mutateState: serialized(inner.mutateState),
     upsertCortexInstructions: serialized(inner.upsertCortexInstructions),
+    admitProject: serialized(inner.admitProject),
   };
 }
