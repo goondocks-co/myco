@@ -21,9 +21,10 @@
  * that the test never interleaved, not that the wrapper prevented it.
  */
 import { describe, expect, it } from 'bun:test';
-import { serializeRunStore, type RunScope, type RunStore } from '@myco/agent/runtime/run-store.js';
+import { serializeRunStore, type RunStore } from '@myco/agent/runtime/run-store.js';
 
-const SCOPE: RunScope = { projectId: 'proj_test', agentId: 'myco-agent' };
+const PROJECT_ID = 'proj_test';
+const AGENT_ID = 'myco-agent';
 
 /** Store that yields between read and write — what any networked store does. */
 function yieldingStore(trace: string[] = []): { store: RunStore; state: Map<string, string>; trace: string[]; overlaps: number } {
@@ -47,7 +48,7 @@ function yieldingStore(trace: string[] = []): { store: RunStore; state: Map<stri
       await enter('get');
       const value = state.get(key) ?? null;
       leave('get');
-      return value === null ? null : { agent_id: SCOPE.agentId, project_id: SCOPE.projectId, key, value, updated_at: 0 };
+      return value === null ? null : { agent_id: AGENT_ID, project_id: PROJECT_ID, key, value, updated_at: 0 };
     },
     async setState(key: string, value: string) {
       await enter('set');
@@ -68,9 +69,9 @@ function yieldingStore(trace: string[] = []): { store: RunStore; state: Map<stri
 /** Two concurrent phases appending to a shared key via a get/set PAIR. */
 async function twoPhasesAppendUnsafe(store: RunStore, key: string): Promise<void> {
   const phase = async (id: string) => {
-    const row = await store.getState(key, SCOPE);
+    const row = await store.getState(key, PROJECT_ID);
     const current: string[] = row ? JSON.parse(row.value) : [];
-    await store.setState(key, JSON.stringify([...current, id]), SCOPE);
+    await store.setState(key, JSON.stringify([...current, id]), PROJECT_ID);
   };
   await Promise.all([phase('phase-a'), phase('phase-b')]);
 }
@@ -80,7 +81,7 @@ async function twoPhasesAppend(store: RunStore, key: string): Promise<void> {
   const phase = (id: string) => store.mutateState(key, (current) => {
     const parsed: string[] = current ? JSON.parse(current) : [];
     return JSON.stringify([...parsed, id]);
-  }, SCOPE);
+  }, PROJECT_ID);
   await Promise.all([phase('phase-a'), phase('phase-b')]);
 }
 
@@ -134,9 +135,9 @@ describe('RunStore serialization (R2 gate)', () => {
       getState: async () => { throw new Error('store unavailable'); },
     } as RunStore);
 
-    await expect(store.getState('decisions', SCOPE)).rejects.toThrow('store unavailable');
+    await expect(store.getState('decisions', PROJECT_ID)).rejects.toThrow('store unavailable');
     // A later operation on the same chain still runs.
-    await store.setState('decisions', '["after"]', SCOPE);
+    await store.setState('decisions', '["after"]', PROJECT_ID);
     expect(harness.state.get('decisions')).toBe('["after"]');
   });
 });

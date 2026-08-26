@@ -25,10 +25,13 @@
  *
  * Two things this adapter deliberately absorbs so the port does not:
  *
- * - **Grove.** `ProjectScope` comes from `@myco/grove/ids.js`, and #905 retires
- *   Grove entirely. The port speaks a plain `projectId`; the translation to a
- *   `ProjectScope` happens here, so the Grove axis stays out of the contract a
- *   server implementation has to satisfy.
+ * - **Grove.** `ProjectScope` comes from `@myco/grove/ids.js`, which #905
+ *   retires. The store is constructed with an ALREADY-RESOLVED scope and never
+ *   re-derives one: `projectScopeFromRequestContext` resolves a synthesized or
+ *   non-Grove-bound context to GLOBAL_SCOPE because binding it to a project
+ *   would "leak the anchor's rows to an unauthorized request"
+ *   (`grove/request-context.ts:925-933`). Re-deriving scope from a bare
+ *   `projectId` here would reintroduce exactly that.
  * - **Atomicity.** `mutateState` reads and writes with no `await` between, so
  *   `bun:sqlite` being synchronous makes it atomic for free. A networked
  *   implementation must supply that explicitly — a conditional UPDATE, or a
@@ -36,7 +39,7 @@
  */
 
 import { epochSeconds } from '@myco/constants.js';
-import { projectScope, type ProjectScope } from '@myco/grove/ids.js';
+import type { ProjectScope } from '@myco/grove/ids.js';
 import { getState, setState } from '@myco/db/queries/agent-state.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { insertRunEvent } from '@myco/db/queries/agent-run-events.js';
@@ -49,39 +52,43 @@ import {
   applyRunUpdate,
   supersedeEquivalentResumableRuns,
 } from '@myco/db/queries/runs.js';
-import type { RunScope, RunStore } from './run-store.js';
+import type { RunStore } from './run-store.js';
 
-/** The port speaks `projectId`; the vault queries speak Grove's `ProjectScope`. */
-const toProjectScope = (scope: RunScope): ProjectScope =>
-  projectScope(scope.projectId as Parameters<typeof projectScope>[0]);
+/** Tenancy the store is bound to, resolved once by the caller. */
+export interface LocalRunStoreBinding {
+  /** Already resolved via `projectScopeFromRequestContext` — never re-derived. */
+  scope: ProjectScope;
+  agentId: string;
+}
 
-export function createLocalRunStore(): RunStore {
+export function createLocalRunStore(binding: LocalRunStoreBinding): RunStore {
+  const { scope, agentId } = binding;
   return {
     async insertRun(row) {
       insertRun(row);
     },
 
-    async getRun(runId, scope) {
-      return getRun(runId, toProjectScope(scope));
+    async getRun(runId) {
+      return getRun(runId, scope);
     },
 
-    async getRunningRunForTask(task, scope, maxAgeSeconds) {
-      return getRunningRunForTask(scope.agentId, task, toProjectScope(scope), maxAgeSeconds);
+    async getRunningRunForTask(task, maxAgeSeconds) {
+      return getRunningRunForTask(agentId, task, scope, maxAgeSeconds);
     },
 
-    async updateRunStatus(runId, status, completion, scope) {
-      updateRunStatus(runId, status, completion, toProjectScope(scope));
+    async updateRunStatus(runId, status, completion) {
+      updateRunStatus(runId, status, completion, scope);
     },
 
-    async applyRunUpdate(runId, update, scope) {
-      applyRunUpdate(runId, update, toProjectScope(scope));
+    async applyRunUpdate(runId, update) {
+      applyRunUpdate(runId, update, scope);
     },
 
-    async supersedeEquivalentResumableRuns(excludeRunId, match, scope) {
+    async supersedeEquivalentResumableRuns(excludeRunId, match) {
       supersedeEquivalentResumableRuns(excludeRunId, {
-        agentId: scope.agentId,
+        agentId,
         taskName: match.taskName,
-        scope: toProjectScope(scope),
+        scope,
         dryRun: match.dryRun,
       });
     },
@@ -90,27 +97,27 @@ export function createLocalRunStore(): RunStore {
       insertRunEvent(event);
     },
 
-    async listReports(runId, scope) {
-      return listReports(runId, { scope: toProjectScope(scope) }) as never;
+    async listReports(runId) {
+      return listReports(runId, { scope });
     },
 
-    async getState(key, scope) {
-      return getState(scope.agentId, scope.projectId, key);
+    async getState(key, projectId) {
+      return getState(agentId, projectId, key);
     },
 
-    async setState(key, value, scope) {
-      setState(scope.agentId, scope.projectId, key, value, epochSeconds());
+    async setState(key, value, projectId, updatedAt) {
+      setState(agentId, projectId, key, value, updatedAt ?? epochSeconds());
     },
 
     /**
      * Atomic because nothing yields between the read and the write — the same
      * property the whole conversion is trying to preserve, here for free.
      */
-    async mutateState(key, mutate, scope) {
-      const current = getState(scope.agentId, scope.projectId, key);
+    async mutateState(key, mutate, projectId) {
+      const current = getState(agentId, projectId, key);
       const next = mutate(current ? current.value : null);
       if (next === null) return;
-      setState(scope.agentId, scope.projectId, key, next, epochSeconds());
+      setState(agentId, projectId, key, next, epochSeconds());
     },
 
     async upsertCortexInstructions(row) {

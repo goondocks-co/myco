@@ -48,41 +48,42 @@ import type { CortexInstructionsUpsert } from '@myco/db/queries/cortex-instructi
 
 export type { RunInsert, RunRow, RunUpdate, RunningRunRef, ReportRow, RunEventInsert, CortexInstructionsUpsert };
 
-/** Scope every operation is evaluated within. */
-export interface RunScope {
-  projectId: string;
-  agentId: string;
-}
+/**
+ * A store is BOUND to one run's tenancy at construction, so no operation
+ * re-derives scope.
+ *
+ * This is a correctness boundary, not ergonomics. `projectScopeFromRequestContext`
+ * (`grove/request-context.ts:925-933`) resolves a synthesized or non-Grove-bound
+ * context to GLOBAL_SCOPE precisely because binding it to a project scope "would
+ * leak the anchor's rows to an unauthorized request". A port that accepted a
+ * bare `projectId` per call would invite every implementation to re-derive that
+ * decision, and to get it wrong the same way. The caller resolves tenancy once;
+ * the store carries it.
+ *
+ * Binding also matches the serialization lifetime: one store per run means the
+ * mutex scopes to a run, so concurrent runs never contend while concurrent
+ * phases within a run do.
+ */
 
 export interface RunStore {
   // -- run lifecycle -------------------------------------------------------
   insertRun(row: RunInsert): Promise<void>;
-  getRun(runId: string, scope: RunScope): Promise<RunRow | null>;
-  getRunningRunForTask(
-    task: string,
-    scope: RunScope,
-    maxAgeSeconds?: number,
-  ): Promise<RunningRunRef | null>;
-  updateRunStatus(
-    runId: string,
-    status: string,
-    completion: RunUpdate | undefined,
-    scope: RunScope,
-  ): Promise<void>;
-  applyRunUpdate(runId: string, update: RunUpdate, scope: RunScope): Promise<void>;
+  getRun(runId: string): Promise<RunRow | null>;
+  getRunningRunForTask(task: string, maxAgeSeconds?: number): Promise<RunningRunRef | null>;
+  updateRunStatus(runId: string, status: string, completion?: RunUpdate): Promise<void>;
+  applyRunUpdate(runId: string, update: RunUpdate): Promise<void>;
   supersedeEquivalentResumableRuns(
     excludeRunId: string,
     match: { taskName: string; dryRun: boolean },
-    scope: RunScope,
   ): Promise<void>;
 
   // -- run observability ---------------------------------------------------
   recordRunEvent(event: RunEventInsert): Promise<void>;
-  listReports(runId: string, scope: RunScope): Promise<ReportRow[]>;
+  listReports(runId: string): Promise<ReportRow[]>;
 
   // -- agent state ---------------------------------------------------------
-  getState(key: string, scope: RunScope): Promise<AgentStateRow | null>;
-  setState(key: string, value: string, scope: RunScope): Promise<void>;
+  getState(key: string, projectId: string): Promise<AgentStateRow | null>;
+  setState(key: string, value: string, projectId: string, updatedAt?: number): Promise<void>;
   /**
    * Atomic read-modify-write. `mutate` receives the current value (null when
    * unset) and returns the next; returning `null` leaves the value untouched.
@@ -93,7 +94,7 @@ export interface RunStore {
   mutateState(
     key: string,
     mutate: (current: string | null) => string | null,
-    scope: RunScope,
+    projectId: string,
   ): Promise<void>;
 
   // -- derived outputs -----------------------------------------------------
