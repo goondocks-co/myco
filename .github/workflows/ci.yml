@@ -25,12 +25,12 @@ jobs:
         with:
           bun-version-file: .bun-version
       - run: npm ci
-      # packages/myco-team/worker is not
-      # npm workspaces (root workspaces glob only matches packages/*, one
-      # level up), so `npm run lint` below cannot type-check them via
-      # check:workers without their own node_modules installed first.
+      # packages/myco-team/worker is not npm workspaces (the root workspaces
+      # glob only matches packages/*, one level up), so `npm run lint` below
+      # cannot type-check it via check:workers without its own node_modules
+      # installed first. packages/myco-server sits at packages/* and the root
+      # `npm ci` above covers it.
       - run: npm ci --prefix packages/myco-team/worker
-      - run: npm ci --prefix packages/myco-server/worker
       - run: npm run lint
       # Build the host-target libsqlite3 so the compiled binary can embed it.
       - run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64

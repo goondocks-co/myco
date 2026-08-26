@@ -17,7 +17,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SRC = fileURLToPath(new URL('../../packages/myco-server/worker/src/', import.meta.url));
+const SRC = fileURLToPath(new URL('../../packages/myco-server/src/', import.meta.url));
 const READ_DIR = join(SRC, 'read');
 
 const allFiles = (dir: string): string[] =>

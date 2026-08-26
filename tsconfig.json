@@ -17,7 +17,7 @@
       "@myco/*": ["./packages/myco/src/*"],
       "@myco-team/*": ["./packages/myco-team/src/*"],
       "@myco-team-worker/*": ["./packages/myco-team/worker/src/*"],
-      "@myco-server-worker/*": ["./packages/myco-server/worker/src/*"],
+      "@myco-server-worker/*": ["./packages/myco-server/src/*"],
       "@myco-deploy/*": ["./packages/myco-deploy/src/*"],
       "@goondocks/myco-shared": ["./packages/myco-shared/src/index.ts"],
       "react": ["./node_modules/react"],

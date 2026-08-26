@@ -4,7 +4,7 @@ description: >-
   Operate Myco's Cloudflare Workers: wrangler upgrade hardening, D1 export and
   inspection when a toolchain upgrade breaks it, and the cross-cutting gotchas
   that bite when deploying a Worker from this monorepo. Use when touching
-  packages/myco-team/worker or packages/myco-server/worker, or running wrangler
+  packages/myco-team/worker or packages/myco-server, or running wrangler
   against either.
 managed_by: myco
 user-invocable: true
@@ -19,13 +19,13 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 > (`packages/myco-team`) is preserved in-repo, dormant, typecheck-only, and no longer
 > published; do not deploy it or extend it for new work. This skill instead covers the one
 > Cloudflare Worker packages in this monorepo: the team-sync worker
-> (`packages/myco-team/worker`) and the 2.0 server (`packages/myco-server/worker`).
+> (`packages/myco-team/worker`) and the 2.0 server (`packages/myco-server`).
 
 ## Prerequisites
 
 - Cloudflare account with Workers (D1 + KV bindings)
 - Wrangler CLI installed and authenticated (`wrangler auth login`)
-- `packages/myco-server/worker/wrangler.toml` and `packages/myco-team/worker/wrangler.toml`
+- `packages/myco-server/wrangler.toml` and `packages/myco-team/worker/wrangler.toml`
   for the worker configs
 
 ## Procedure A: Wrangler Upgrade Hardening

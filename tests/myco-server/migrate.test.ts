@@ -11,7 +11,7 @@ import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
 import { sqliteD1 } from './helpers/d1.js';
 
-const MIGRATIONS = fileURLToPath(new URL('../../packages/myco-server/worker/migrations/', import.meta.url));
+const MIGRATIONS = fileURLToPath(new URL('../../packages/myco-server/migrations/', import.meta.url));
 
 /** sha256 of every migration file a deployed database's `d1_migrations` ledger already records. An applied file is frozen: the applier never re-runs it, so a schema change is a new step, never an edit of one of these. Shipping step n+1 adds one line here at delivery. */
 const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {

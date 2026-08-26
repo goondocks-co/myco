@@ -17,7 +17,7 @@ import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
 import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL, count } from './helpers/fixtures.js';
 import { OWNER_ENV as OWNER_ENV2, ownerCookie as ownerCookie2 } from './helpers/owner.js';
 
-const WORKER = fileURLToPath(new URL('../../packages/myco-server/worker/', import.meta.url));
+const WORKER = fileURLToPath(new URL('../../packages/myco-server/', import.meta.url));
 const SRC = join(WORKER, 'src');
 const TESTS = fileURLToPath(new URL('./', import.meta.url));
 const allFiles = (dir: string): string[] =>

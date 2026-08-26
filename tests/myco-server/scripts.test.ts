@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
 
-const WORKER = fileURLToPath(new URL('../../packages/myco-server/worker/', import.meta.url));
+const WORKER = fileURLToPath(new URL('../../packages/myco-server/', import.meta.url));
 const MIGRATIONS = join(WORKER, 'migrations');
 
 function run(script: string, args: string[]) {
