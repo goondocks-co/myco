@@ -154,13 +154,17 @@ export async function main(): Promise<void> {
     OWNER_GITHUB_ID: process.env.OWNER_GITHUB_ID,
   });
 
-  // SIGTERM is the orchestrator asking for a drain. Stopping the listener lets
-  // in-flight requests finish; the container is killed if it outlasts
-  // stop_grace_period.
+  // SIGTERM is the orchestrator asking for a drain, and the drain is what is
+  // awaited here: exiting on the same tick as the stop call ends the process
+  // with in-flight requests still open, which is the thing
+  // `stop_grace_period` exists to avoid. A second signal exits immediately, so
+  // an operator is never stuck behind a request that will not finish.
+  let draining = false;
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.on(signal, () => {
-      started.stop();
-      process.exit(0);
+      if (draining) process.exit(0);
+      draining = true;
+      void started.stop().then(() => process.exit(0), () => process.exit(1));
     });
   }
 }

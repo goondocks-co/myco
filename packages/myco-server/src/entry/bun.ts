@@ -88,7 +88,7 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
   };
 }
 
-export async function serve(options: BunServerOptions): Promise<{ port: number; stop(): void }> {
+export async function serve(options: BunServerOptions): Promise<{ port: number; stop(): Promise<void> }> {
   const handler = await createBunHandler(options);
   const loopbackOnly = (options.transport ?? 'loopback') === 'loopback';
 
@@ -148,6 +148,17 @@ export async function serve(options: BunServerOptions): Promise<{ port: number; 
   handler.bind(servers[0]!);
   return {
     port: servingPort,
-    stop: () => { for (const server of servers) server.stop(); handler.close(); },
+    /**
+     * Drain, then close.
+     *
+     * `Bun.serve().stop()` stops accepting and resolves once in-flight requests
+     * finish. The database handle closes after that resolves. Closing it first
+     * leaves a request mid-query against a closed connection, answering 500 to
+     * a caller the orchestrator asked to let finish.
+     */
+    stop: async () => {
+      await Promise.all(servers.map((server) => server.stop()));
+      handler.close();
+    },
   };
 }
