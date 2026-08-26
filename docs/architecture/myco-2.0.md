@@ -234,6 +234,7 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 | Command | Disposition | Surface | Blk | Replacement / reason | Owner |
 |---|---|---|---|---|---|
 | `member` | KEEP | M | Blk | Already the 2.0 surface; gains Deployment-aware join | #916 |
+| `server` | KEEP | C | Blk | The 2.0 self-hosted operator surface; provisions and runs the Compose stack `host` no longer serves | #913 |
 | `settings` | KEEP | M | Blk | Sandbox entry point; #927's proof runs through it | #917 |
 | `hook` | KEEP | M | Blk | The capture entry point | #917 |
 | `mcp` | KEEP | M, MCP | Blk | Retargeted at the Deployment | #921 |
