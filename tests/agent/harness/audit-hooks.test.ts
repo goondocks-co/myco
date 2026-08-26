@@ -12,6 +12,7 @@ import { insertRun } from '@myco/db/queries/runs.js';
 import { listRunEvents } from '@myco/db/queries/agent-run-events.js';
 import { buildAuditEventHooks } from '@myco/agent/harness/audit-hooks.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { testRunStore } from '../../helpers/run-store';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 
@@ -32,7 +33,7 @@ describe('buildAuditEventHooks', () => {
   });
 
   it('records a phaseStart event', async () => {
-    const hooks = buildAuditEventHooks('run-1', null);
+    const hooks = buildAuditEventHooks(testRunStore(undefined, 'myco-agent'), 'run-1', null);
     await hooks.phaseStart?.({
       runId: 'run-1', agentId: 'agent-1', harnessId: 'claude-sdk', phaseName: 'gather',
       model: 'claude-sonnet-4-6', maxTurns: 8, required: true,
@@ -44,7 +45,7 @@ describe('buildAuditEventHooks', () => {
   });
 
   it('records a preToolUse event with tool_name set', async () => {
-    const hooks = buildAuditEventHooks('run-1', null);
+    const hooks = buildAuditEventHooks(testRunStore(undefined, 'myco-agent'), 'run-1', null);
     await hooks.preToolUse?.({
       runId: 'run-1', agentId: 'agent-1', harnessId: 'claude-sdk', phaseName: 'gather',
       toolName: 'vault_spores', toolInput: { limit: 5 },
@@ -55,7 +56,7 @@ describe('buildAuditEventHooks', () => {
   });
 
   it('records a postToolUse error event with outcome and errorMessage in payload', async () => {
-    const hooks = buildAuditEventHooks('run-1', null);
+    const hooks = buildAuditEventHooks(testRunStore(undefined, 'myco-agent'), 'run-1', null);
     await hooks.postToolUse?.({
       runId: 'run-1', agentId: 'agent-1', harnessId: 'openai-agents', phaseName: 'gather',
       toolName: 'vault_create_spore', toolInput: {}, outcome: 'error',
@@ -68,7 +69,7 @@ describe('buildAuditEventHooks', () => {
   });
 
   it('records a phaseEnd event with status and cost fields', async () => {
-    const hooks = buildAuditEventHooks('run-1', null);
+    const hooks = buildAuditEventHooks(testRunStore(undefined, 'myco-agent'), 'run-1', null);
     await hooks.phaseEnd?.({
       runId: 'run-1', agentId: 'agent-1', harnessId: 'claude-sdk', phaseName: 'gather',
       status: 'completed', turnsUsed: 3, tokensUsed: 500, costUsd: 0.02, durationMs: 900,
@@ -83,7 +84,7 @@ describe('buildAuditEventHooks', () => {
     // (agent_run_events.run_id REFERENCES agent_runs(id)), for all four
     // hooks — each calls insertRunEvent independently, so each needs its
     // own best-effort guard verified, not just phaseStart's.
-    const hooks = buildAuditEventHooks('nonexistent-run', null);
+    const hooks = buildAuditEventHooks(testRunStore(undefined, 'myco-agent'), 'nonexistent-run', null);
     const baseEvent = {
       runId: 'nonexistent-run', agentId: 'agent-1', harnessId: 'claude-sdk' as const, phaseName: 'gather',
     };

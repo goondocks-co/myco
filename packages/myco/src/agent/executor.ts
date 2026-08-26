@@ -11,23 +11,11 @@ import {
 } from '@myco/constants.js';
 import { tryParseJson } from '@myco/utils/json.js';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
-import { initDatabase, vaultDbPath } from '@myco/db/client.js';
-import { createSchema, SchemaVersionTooNewError } from '@myco/db/schema.js';
-import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
-import { setState } from '@myco/db/queries/agent-state.js';
-import { listReports } from '@myco/db/queries/reports.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { projectScopeFromRequestContext, requireProjectId, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
-import { isProjectPaused, type ProjectPauseStatus } from '@myco/grove/registry.js';
 import { getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
-  insertRun,
-  updateRunStatus,
-  applyRunUpdate,
-  getRun,
-  getRunningRunForTask,
-  supersedeEquivalentResumableRuns,
   RESUME_STATUS_READY,
   RESUME_STATUS_SESSION_EXPIRED,
   RESUME_STATUS_POSTCONDITION_UNSATISFIABLE,
@@ -53,6 +41,8 @@ import {
   CANOPY_MAP_CONTENT_KEY,
 } from './instruction-builders.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
+import { createLocalRunStore, openLocalVault } from './runtime/run-store-local.js';
+import { serializeRunStore, type RunStore, type ReportRow } from './runtime/run-store.js';
 import { resolveCost } from './cost/index.js';
 import {
   aggregateUsage,
@@ -177,23 +167,13 @@ export async function runAgent(
   vaultDir: string,
   options?: RunOptions,
 ): Promise<AgentRunResult> {
-  const db = initDatabase(options?.requestContext?.databasePath ?? vaultDbPath(vaultDir));
-  try {
-    // Real machine id (not the 'local' default) so the v52 conversion runs.
-    createSchema(db, getMachineId());
-  } catch (err) {
-    if (err instanceof SchemaVersionTooNewError) {
-      // The vault was written by a newer binary (rollback residue). The run
-      // fails typed instead of crashing the dispatcher — the vault has not
-      // been modified, and every future dispatch fails the same way until
-      // the binary is upgraded.
-      return {
-        runId: options?.resumeRunId ?? '',
-        status: STATUS_FAILED,
-        error: `${err.code}: ${err.message}`,
-      };
-    }
-    throw err;
+  const opened = openLocalVault(vaultDir, options?.requestContext?.databasePath);
+  if (!opened.ok) {
+    return {
+      runId: options?.resumeRunId ?? '',
+      status: STATUS_FAILED,
+      error: opened.error,
+    };
   }
 
   const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
@@ -206,25 +186,23 @@ export async function runAgent(
   // resume here — resume re-enters through this same entry, and a resumed
   // run must not write through a transition any more than a fresh one. An
   // unreadable lease refuses: a failed read is never an unheld lease.
+  const scope = projectScopeFromRequestContext(options?.requestContext);
+  // One store per run: `serializeRunStore` scopes its mutex to this run, so
+  // concurrent runs never contend while the concurrent phases of a wave do.
+  const store = serializeRunStore(createLocalRunStore({ scope, agentId }));
+
   if (projectId) {
-    let admission: ProjectPauseStatus;
-    try {
-      admission = isProjectPaused(projectId);
-    } catch {
-      admission = { paused: true, reason: 'unreadable lease record', since: 0, owner_op: 'unknown', grove_id: null };
-    }
-    if (admission.paused) {
+    const admission = await store.admitProject(projectId);
+    if (!admission.admitted) {
       return {
         runId: options?.resumeRunId ?? '',
         status: STATUS_FAILED,
         error: `project_lease_held: project ${projectId} is mid-operation `
-          + `(held by ${admission.owner_op}: ${admission.reason}); the run was not started`,
+          + `(held by ${admission.ownerOp}: ${admission.reason}); the run was not started`,
       };
     }
   }
-
-  const scope = projectScopeFromRequestContext(options?.requestContext);
-  const resumedRun = options?.resumeRunId ? getRun(options.resumeRunId, scope) : null;
+  const resumedRun = options?.resumeRunId ? await store.getRun(options.resumeRunId) : null;
   if (options?.resumeRunId && !resumedRun) {
     return {
       runId: options.resumeRunId,
@@ -283,10 +261,8 @@ export async function runAgent(
     const effectiveTask = requestedTask
       ?? getDefaultTask(agentId)?.id;
     if (effectiveTask) {
-      const running = getRunningRunForTask(
-        agentId,
+      const running = await store.getRunningRunForTask(
         effectiveTask,
-        scope,
         resolvedConfig.timeoutSeconds + STALE_RUNNING_RUN_MARGIN_SECONDS,
       );
       if (running?.stale) {
@@ -369,7 +345,7 @@ export async function runAgent(
     ?? taskProviderOverride
     ?? config.execution?.provider;
   const runId = options?.resumeRunId ?? options?.runId ?? crypto.randomUUID();
-  const runHooks = mergeHooks(buildAuditEventHooks(runId, projectId ?? null), options?.hooks);
+  const runHooks = mergeHooks(buildAuditEventHooks(store, runId, projectId ?? null), options?.hooks);
   let harnessId = runHarness;
   let effectiveModel = resolveReasoningModel(
     config.execution?.reasoningLevel ?? config.reasoningLevel,
@@ -480,16 +456,17 @@ export async function runAgent(
   }, timeoutMs);
   timeoutId.unref?.();
 
-  // Re-check the duplicate-run guard synchronously, immediately before row
-  // creation. The early guard alone is not single-flight anymore: the
-  // resolver awaits above let two same-tick dispatches both pass it before
-  // either inserts. This check and the insert below run with no await
-  // between them, so the second dispatch always sees the first one's row.
-  {
-    const running = getRunningRunForTask(
-      agentId,
+  // Re-check the duplicate-run guard immediately before row creation. The
+  // early guard alone is not single-flight: the resolver awaits above let two
+  // same-tick dispatches both pass it before either inserts.
+  //
+  // A fresh dispatch does this atomically via `store.claimRun` below — the
+  // check and the insert are ONE operation, because they can no longer be
+  // adjacent synchronous statements. A resume inserts nothing, so it keeps a
+  // plain check here.
+  if (resumedRun) {
+    const running = await store.getRunningRunForTask(
       config.taskName,
-      scope,
       config.timeoutSeconds + STALE_RUNNING_RUN_MARGIN_SECONDS,
     );
     if (running && !running.stale) {
@@ -533,7 +510,7 @@ export async function runAgent(
       ?? config.execution?.reasoningLevel
       ?? config.reasoningLevel
       ?? null;
-    insertRun({
+    const claim = await store.claimRun({
       id: runId,
       project_id: projectId,
       agent_id: agentId,
@@ -552,7 +529,18 @@ export async function runAgent(
         semanticWriteCheckEnabled,
         classifierReasoningLevel,
       },
+    }, {
+      taskName: config.taskName,
+      maxAgeSeconds: config.timeoutSeconds + STALE_RUNNING_RUN_MARGIN_SECONDS,
     });
+    if (!claim.claimed) {
+      clearTimeout(timeoutId);
+      return {
+        runId: claim.running.id,
+        status: STATUS_SKIPPED,
+        reason: SKIP_REASON_ALREADY_RUNNING,
+      };
+    }
   } else {
     // `started_at` is preserved as the run's ORIGINAL dispatch time across
     // every resume attempt — it is never re-stamped here. `resumed_at` is
@@ -565,7 +553,7 @@ export async function runAgent(
     // + agent_run_events, not in this row. The supersede sweep and belt
     // compare completions against `started_at` directly (see runs.ts) now
     // that it is stable dispatch-order evidence.
-    applyRunUpdate(runId, {
+    await store.applyRunUpdate(runId, {
       ...runStart,
       provider: effectiveProvider?.type ?? resumedRun.provider ?? null,
       completed_at: null,
@@ -580,7 +568,7 @@ export async function runAgent(
       cost_source: resumedRun.cost_source,
       cost_data: resumedRun.cost_data,
       error: null,
-    }, scope);
+    });
   }
 
   let phaseResults: PhaseResult[] | undefined;
@@ -604,7 +592,7 @@ export async function runAgent(
       currentUsage: RuntimeUsage = aggregateUsage(currentPhaseResults.map((phase) => phase.usage)),
       currentCost: CostResolution = summarizePhaseCosts(currentPhaseResults),
     ) => {
-      applyRunUpdate(runId, buildRunAccountingUpdate({
+      await store.applyRunUpdate(runId, buildRunAccountingUpdate({
         harness: harnessId,
         provider: effectiveProvider,
         model: effectiveModel,
@@ -612,7 +600,7 @@ export async function runAgent(
         usage: currentUsage,
         costData: currentCost,
         phaseResults: currentPhaseResults,
-      }), scope);
+      }));
     };
 
     const projectRoot = options?.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
@@ -721,6 +709,7 @@ export async function runAgent(
     clearTimeout(timeoutId);
     logTokenBudgetPressure(config.taskName, usage, effectiveProvider, options?.logger);
     await finalizeOnTaskSuccess({
+      store,
       taskName: config.taskName,
       agentId,
       runId,
@@ -731,7 +720,7 @@ export async function runAgent(
       vaultDir,
     });
     const completedAt = epochSeconds();
-    updateRunStatus(runId, STATUS_COMPLETED, {
+    await store.updateRunStatus(runId, STATUS_COMPLETED, {
       resumable: 0,
       resume_status: null,
       completed_at: completedAt,
@@ -746,7 +735,7 @@ export async function runAgent(
         phaseResults,
         sessionRef: runSessionRef,
       }),
-    }, scope);
+    });
 
     // Part 1 (supersede) primary enforcement: this run just completed, so
     // any OTHER resumable failed run for the same (agent, task, project
@@ -757,10 +746,8 @@ export async function runAgent(
     // equivalence key (see appendSupersedeEquivalenceCondition): tasks like
     // skill-evolve build their instruction dynamically per run, so keying
     // on it would prevent this sweep from ever retiring that job's zombies.
-    supersedeEquivalentResumableRuns(runId, {
-      agentId,
+    await store.supersedeEquivalentResumableRuns(runId, {
       taskName: config.taskName,
-      scope,
       dryRun: options?.dryRun ?? false,
     });
 
@@ -885,14 +872,14 @@ export async function runAgent(
           ? RESUME_STATUS_POSTCONDITION_UNSATISFIABLE
           : RESUME_STATUS_READY;
 
-      updateRunStatus(runId, STATUS_FAILED, {
+      await store.updateRunStatus(runId, STATUS_FAILED, {
         resumable,
         resume_status: resumeStatus,
         completed_at: failedAt,
         tokens_used: usage.totalTokens ?? phaseResults?.reduce((sum, phase) => sum + phase.tokensUsed, 0) ?? undefined,
         error: errorMessage,
         ...accountingUpdate,
-      }, scope);
+      });
     } catch (dbErr) {
       // DB failure in error path — log it but don't mask the original error
       options?.logger?.error('agent.run.db-save-failed', `Failed to save error to DB for run ${runId}`, {
@@ -975,47 +962,47 @@ export async function finalizeOnTaskSuccess(args: {
   instruction?: string;
   dryRun?: boolean;
   vaultDir?: string;
+  store: RunStore;
 }): Promise<void> {
   if (args.dryRun) return;
 
   if (args.taskName === CORTEX_INSTRUCTIONS_TASK) {
-    finalizeCortexInstructions(args);
+    await finalizeCortexInstructions(args);
     return;
   }
   if (args.taskName === SKILL_SURVEY_TASK) {
-    finalizeSkillSurvey(args);
+    await finalizeSkillSurvey(args);
     return;
   }
   if (args.taskName === CANOPY_MAP_TASK) {
-    finalizeCanopyMap(args);
+    await finalizeCanopyMap(args);
     return;
   }
 }
 
-function finalizeSkillSurvey(args: {
-  agentId: string;
+async function finalizeSkillSurvey(args: {
+  store: RunStore;
   runContext: RunOptions['runContext'];
   requestContext?: RunOptions['requestContext'];
-}): void {
+}): Promise<void> {
   const watermark = args.runContext?.skill_survey_watermark;
   if (!watermark) return;
   const projectId = args.requestContext?.projectId;
   if (!projectId) return;
-  setState(
-    args.agentId,
-    projectId,
+  await args.store.setState(
     SKILL_SURVEY_WATERMARK_KEY,
     String(watermark),
+    projectId,
     watermark,
   );
 }
 
-function findLastReportByAction(
+async function findLastReportByAction(
+  store: RunStore,
   runId: string,
   action: string,
-  scope: import('@myco/grove/ids.js').ProjectScope,
-): ReturnType<typeof listReports>[number] | undefined {
-  const reports = listReports(runId, { scope });
+): Promise<ReportRow | undefined> {
+  const reports = await store.listReports(runId);
   for (let i = reports.length - 1; i >= 0; i -= 1) {
     if (reports[i]?.action === action) return reports[i];
   }
@@ -1023,7 +1010,7 @@ function findLastReportByAction(
 }
 
 function extractReportContent(
-  report: ReturnType<typeof listReports>[number],
+  report: ReportRow,
   contentKey: string,
 ): string | null {
   const parsedDetails = tryParseJson(report.details);
@@ -1034,14 +1021,15 @@ function extractReportContent(
   return typeof rawContent === 'string' ? rawContent : null;
 }
 
-function finalizeCortexInstructions(args: {
+async function finalizeCortexInstructions(args: {
+  store: RunStore;
   agentId: string;
   runId: string;
   runContext: RunOptions['runContext'];
   requestContext?: RunOptions['requestContext'];
   instruction?: string;
-}): void {
-  const report = findLastReportByAction(args.runId, CORTEX_INSTRUCTIONS_REPORT_ACTION, projectScopeFromRequestContext(args.requestContext));
+}): Promise<void> {
+  const report = await findLastReportByAction(args.store, args.runId, CORTEX_INSTRUCTIONS_REPORT_ACTION);
   if (!report) {
     throw new Error('cortex-instructions completed without a cortex_instructions report');
   }
@@ -1050,7 +1038,7 @@ function finalizeCortexInstructions(args: {
     throw new Error('cortex-instructions completed without report details.content');
   }
 
-  upsertCortexInstructions({
+  await args.store.upsertCortexInstructions({
     project_id: rowProjectIdFromRequestContext(args.requestContext),
     agent_id: args.agentId,
     content,
@@ -1060,17 +1048,18 @@ function finalizeCortexInstructions(args: {
   });
 }
 
-function finalizeCanopyMap(args: {
+async function finalizeCanopyMap(args: {
+  store: RunStore;
   runId: string;
   runContext: RunOptions['runContext'];
   requestContext?: RunOptions['requestContext'];
   vaultDir?: string;
-}): void {
+}): Promise<void> {
   if (!args.vaultDir) {
     throw new Error('canopy-map completed but vaultDir is unavailable — cannot resolve project_id');
   }
 
-  const report = findLastReportByAction(args.runId, CANOPY_MAP_REPORT_ACTION, projectScopeFromRequestContext(args.requestContext));
+  const report = await findLastReportByAction(args.store, args.runId, CANOPY_MAP_REPORT_ACTION);
   if (!report) {
     throw new Error('canopy-map completed without a canopy_map report');
   }
