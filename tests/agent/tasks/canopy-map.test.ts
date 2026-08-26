@@ -45,6 +45,7 @@ import { BUNDLED_AGENT_TASKS } from '@myco/agent/definitions.generated.js';
 import { epochSeconds } from '@myco/constants.js';
 
 import { TEST_REQUEST_CONTEXT, makeTestRequestContext } from '../../helpers/request-context';
+import { testRunStore } from '../../helpers/run-store';
 function makeConfig(overrides: { canopyEnabled?: boolean } = {}): MycoConfig {
   const enabled = overrides.canopyEnabled ?? true;
   // The map builder gates on the Canopy capability master switch
@@ -374,22 +375,24 @@ describe('canopy-map task', () => {
         created_at: epochSeconds(),
       });
 
+      const requestContext = {
+        projectId: projectId as never,
+        projectRoot,
+        groveId: null,
+        machineId,
+        sessionId: null,
+        projectVaultDir: vaultDir,
+        databasePath: '',
+        source: 'explicit' as const,
+      };
       await finalizeOnTaskSuccess({
+        store: testRunStore(requestContext, TEST_AGENT_ID),
         taskName: CANOPY_MAP_TASK,
         agentId: TEST_AGENT_ID,
         runId,
         runContext: { canopy_map_inputs_hash: inputsHash },
         vaultDir,
-        requestContext: {
-          projectId: projectId as never,
-          projectRoot,
-          groveId: null,
-          machineId,
-          sessionId: null,
-          projectVaultDir: vaultDir,
-          databasePath: '',
-          source: 'explicit',
-        },
+        requestContext,
       });
 
       const stored = readCanopyMap(projectId, machineId);
@@ -427,19 +430,21 @@ describe('canopy-map task', () => {
         created_at: epochSeconds(),
       });
 
+      const requestContext = makeTestRequestContext({
+        vaultDir,
+        projectId,
+        groveId: 'grove_internal_test',
+        machineId,
+        tenancySource: 'daemon',
+      });
       await finalizeOnTaskSuccess({
+        store: testRunStore(requestContext, TEST_AGENT_ID),
         taskName: CANOPY_MAP_TASK,
         agentId: TEST_AGENT_ID,
         runId,
         runContext: { canopy_map_inputs_hash: inputsHash },
         vaultDir,
-        requestContext: makeTestRequestContext({
-          vaultDir,
-          projectId,
-          groveId: 'grove_internal_test',
-          machineId,
-          tenancySource: 'daemon',
-        }),
+        requestContext,
       });
 
       const stored = readCanopyMap(projectId, machineId);
@@ -471,6 +476,7 @@ describe('canopy-map task', () => {
 
       await expect(
         finalizeOnTaskSuccess({
+      store: testRunStore(TEST_REQUEST_CONTEXT, TEST_AGENT_ID),
       requestContext: TEST_REQUEST_CONTEXT,
           taskName: CANOPY_MAP_TASK,
           agentId: TEST_AGENT_ID,
@@ -495,6 +501,7 @@ describe('canopy-map task', () => {
 
       await expect(
         finalizeOnTaskSuccess({
+      store: testRunStore(TEST_REQUEST_CONTEXT, TEST_AGENT_ID),
       requestContext: TEST_REQUEST_CONTEXT,
           taskName: CANOPY_MAP_TASK,
           agentId: TEST_AGENT_ID,

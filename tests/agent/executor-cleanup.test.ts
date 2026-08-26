@@ -26,6 +26,7 @@ import {
 import { CONTENT_HASH_ALGORITHM, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { getState } from '@myco/db/queries/agent-state.js';
+import { testRunStore } from '../helpers/run-store';
 import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { insertRun } from '@myco/db/queries/runs.js';
@@ -182,6 +183,7 @@ describe('finalizeOnTaskSuccess', () => {
     });
 
     await finalizeOnTaskSuccess({
+      store: testRunStore(TEST_REQUEST_CONTEXT, DEFAULT_AGENT_ID),
       requestContext: TEST_REQUEST_CONTEXT,
       taskName: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
@@ -219,6 +221,7 @@ describe('finalizeOnTaskSuccess', () => {
     });
 
     await finalizeOnTaskSuccess({
+      store: testRunStore(TEST_REQUEST_CONTEXT, DEFAULT_AGENT_ID),
       requestContext: TEST_REQUEST_CONTEXT,
       taskName: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
@@ -254,6 +257,7 @@ describe('finalizeOnTaskSuccess', () => {
     });
 
     await finalizeOnTaskSuccess({
+      store: testRunStore(TEST_REQUEST_CONTEXT, DEFAULT_AGENT_ID),
       requestContext: TEST_REQUEST_CONTEXT,
       taskName: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
@@ -269,6 +273,7 @@ describe('finalizeOnTaskSuccess', () => {
     const watermark = NOW + 123;
 
     await finalizeOnTaskSuccess({
+      store: testRunStore(TEST_REQUEST_CONTEXT, DEFAULT_AGENT_ID),
       requestContext: TEST_REQUEST_CONTEXT,
       taskName: SKILL_SURVEY_TASK,
       agentId: DEFAULT_AGENT_ID,
@@ -284,6 +289,7 @@ describe('finalizeOnTaskSuccess', () => {
   it('is a no-op for unrelated tasks', async () => {
     await expect(
       finalizeOnTaskSuccess({
+      store: testRunStore(TEST_REQUEST_CONTEXT, DEFAULT_AGENT_ID),
       requestContext: TEST_REQUEST_CONTEXT,
         taskName: 'vault-evolve',
         agentId: DEFAULT_AGENT_ID,

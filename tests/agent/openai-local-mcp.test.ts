@@ -7,6 +7,7 @@ import { insertRun } from '@myco/db/queries/runs.js';
 import { listRunEvents } from '@myco/db/queries/agent-run-events.js';
 import { buildAuditEventHooks } from '@myco/agent/harness/audit-hooks.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { testRunStore } from '../helpers/run-store';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 
@@ -101,7 +102,7 @@ describe('createLocalVaultMcpServer', () => {
         runId: 'run-1',
         toolNames: ['vault_report'],
         requestContext: TEST_REQUEST_CONTEXT,
-        hooks: buildAuditEventHooks('run-1', null),
+        hooks: buildAuditEventHooks(testRunStore(undefined, 'myco-agent'), 'run-1', null),
         hookContext: { runId: 'run-1', agentId: 'agent-1', harnessId: 'openai-agents', phaseName: 'gather' },
       });
 

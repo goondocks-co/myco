@@ -78,7 +78,11 @@ const ADMISSION_CONSULT = new RegExp(
   // The tool surface's consult. It wraps readProjectLease rather than
   // calling the pause API directly, so the raw-name list above cannot see
   // it — and a `gated` tools file would read as a liar without this.
-  + '|assertProjectAdmitsToolWrite)\\s*\\(',
+  + '|assertProjectAdmitsToolWrite'
+  // The agent's consult. `runAgent` asks its `RunStore`; the local adapter is
+  // what reaches `isProjectPaused`, so without this name the executor reads
+  // as ungated.
+  + '|admitProject)\\s*\\(',
 );
 
 // ---------------------------------------------------------------------------
@@ -299,8 +303,13 @@ const MECHANISM_PINS: readonly { file: string; pattern: RegExp; what: string }[]
 
   {
     file: 'packages/myco/src/agent/executor.ts',
-    pattern: /\bisProjectPaused\s*\(/,
+    pattern: /\badmitProject\s*\(/,
     what: 'run dispatch and resume refusing a project whose write lease is held',
+  },
+  {
+    file: 'packages/myco/src/agent/runtime/run-store-local.ts',
+    pattern: /\bisProjectPaused\s*\(/,
+    what: "the local RunStore's admission consult, which the executor reaches through admitProject",
   },
   {
     file: 'packages/myco/src/daemon/api/scoped-dispatch.ts',
