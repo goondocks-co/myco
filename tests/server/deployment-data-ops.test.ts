@@ -21,6 +21,8 @@ import {
   adoptDeployment,
   materializeBundle,
   resolveDeploymentPaths,
+  pinnedVersion,
+  UpdateRolledBack,
   COMPOSE_PROJECT,
 } from '@myco/server/deployment.js';
 import type { CommandRunner } from '@myco/server/runner.js';
@@ -210,5 +212,64 @@ describe('adopt', () => {
     // Reissuing keys is not what adopting a stack means.
     expect(readFileSync(join(p.secretsDir, 'secret_wrap_key'), 'utf8')).toBe(before);
     expect(existsSync(p.composeFile)).toBe(true);
+  });
+});
+
+describe('rollback', () => {
+  /** Fails whichever compose verb is named, succeeds at everything else. */
+  const failingAt = (verb: string): CommandRunner => ({
+    async run(command, args) {
+      calls.push({ command, args: [...args] });
+      return args.includes(verb)
+        ? { code: 1, stdout: '', stderr: `${verb} failed` }
+        : { code: 0, stdout: '', stderr: '' };
+    },
+  });
+
+  it('returns to the previous version when the new one fails to come up', async () => {
+    const p = paths();
+    materializeBundle(p, { MYCO_VERSION: '2.0.0' });
+
+    await expect(updateDeployment({ paths: p, runner: failingAt('--wait'), version: '2.0.1' }))
+      .rejects.toThrow(UpdateRolledBack);
+
+    // `up` recreates before it waits for health, so a version that starts and
+    // fails its healthcheck has already replaced the one that worked.
+    expect(pinnedVersion(p)).toBe('2.0.0');
+    const ups = calls.filter((c) => c.args.includes('up'));
+    expect(ups.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('names the version it returned to, so an operator need not reconstruct it', async () => {
+    const p = paths();
+    materializeBundle(p, { MYCO_VERSION: '2.0.0' });
+    try {
+      await updateDeployment({ paths: p, runner: failingAt('--wait'), version: '2.0.1' });
+      throw new Error('expected a rollback');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UpdateRolledBack);
+      expect((err as UpdateRolledBack).previous).toBe('2.0.0');
+      expect((err as Error).message).toContain('2.0.0');
+    }
+  });
+
+  it('does not roll back when the operator asked it not to', async () => {
+    const p = paths();
+    materializeBundle(p, { MYCO_VERSION: '2.0.0' });
+
+    await expect(updateDeployment({ paths: p, runner: failingAt('--wait'), version: '2.0.1', noRollback: true }))
+      .rejects.not.toBeInstanceOf(UpdateRolledBack);
+    expect(calls.filter((c) => c.args.includes('up'))).toHaveLength(1);
+  });
+
+  it('leaves an unpinned bundle unpinned rather than inventing a version', async () => {
+    const p = paths();
+    materializeBundle(p, { MYCO_PORT: '8787' });
+
+    await expect(updateDeployment({ paths: p, runner: failingAt('--wait'), version: '2.0.1' }))
+      .rejects.toThrow(UpdateRolledBack);
+
+    expect(pinnedVersion(p)).toBeNull();
+    expect(readFileSync(p.envFile, 'utf8')).toContain('MYCO_PORT=8787');
   });
 });
