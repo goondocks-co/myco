@@ -18,6 +18,15 @@ import { COMPOSE_TEMPLATE } from './compose-template.js';
 /** Compose project name; every command is scoped to it so a stack is addressable without a path. */
 export const COMPOSE_PROJECT = 'myco';
 
+/**
+ * The unprivileged account the image runs as, matching the Dockerfile.
+ *
+ * Anything written into the volume by a root-privileged path — `docker compose
+ * cp` is one — has to be handed back to it, or the server cannot write its own
+ * database.
+ */
+export const RUNTIME_USER = 'myco';
+
 /** Secrets the stack mounts as files, and the byte length each is generated with. */
 export const GENERATED_SECRETS = {
   secret_wrap_key: 32,
@@ -168,4 +177,160 @@ export function readSecret(paths: DeploymentPaths, name: string): string | null 
 /** Remove a bundle from disk. The stack must already be down. */
 export function removeBundle(paths: DeploymentPaths): void {
   rmSync(paths.root, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// Data operations
+// ---------------------------------------------------------------------------
+
+/** Where a snapshot is written inside the volume before it is copied out. */
+const SNAPSHOT_IN_VOLUME = '/data/.backup-snapshot.sqlite';
+
+/**
+ * `VACUUM INTO` rather than a file copy.
+ *
+ * The database runs in WAL mode (`platform/bun/database.ts:19`), so the `.sqlite`
+ * file alone is not the database — committed pages live in the `-wal` sidecar
+ * until a checkpoint. Copying the one file yields a backup missing every commit
+ * since the last checkpoint, and it restores without complaint. `VACUUM INTO`
+ * writes a consistent standalone snapshot from the live connection.
+ */
+const VACUUM_SCRIPT = `const{Database}=require('bun:sqlite');`
+  + `const d=new Database(process.env.MYCO_DATABASE);`
+  + `d.query("VACUUM INTO ?").run(${JSON.stringify(SNAPSHOT_IN_VOLUME)});d.close();`;
+
+export interface BackupOptions extends DeploymentOptions {
+  /** Directory the snapshot and blobs are written into. */
+  destination: string;
+}
+
+/**
+ * Snapshot a running Deployment.
+ *
+ * Blobs are copied live without ceremony: the store is content-addressed, so an
+ * object's bytes never change once written and a copy taken mid-write is either
+ * absent or complete.
+ */
+export async function backupDeployment(options: BackupOptions): Promise<{ destination: string }> {
+  const { paths, runner } = resolved(options);
+  mkdirSync(options.destination, { recursive: true, mode: 0o700 });
+
+  await runOrThrow(runner, 'docker',
+    composeArgs(paths, 'exec', '--no-TTY', 'server', 'bun', '-e', VACUUM_SCRIPT), { cwd: paths.root });
+  await runOrThrow(runner, 'docker',
+    composeArgs(paths, 'cp', `server:${SNAPSHOT_IN_VOLUME}`, path.join(options.destination, 'myco.sqlite')), { cwd: paths.root });
+  await runOrThrow(runner, 'docker',
+    composeArgs(paths, 'cp', 'server:/data/blobs', path.join(options.destination, 'blobs')), { cwd: paths.root });
+  // The snapshot is a full copy of the database; leaving it doubles the volume.
+  await runOrThrow(runner, 'docker',
+    composeArgs(paths, 'exec', '--no-TTY', 'server', 'rm', '-f', SNAPSHOT_IN_VOLUME), { cwd: paths.root });
+
+  return { destination: options.destination };
+}
+
+export interface RestoreOptions extends DeploymentOptions {
+  /** Directory produced by {@link backupDeployment}. */
+  source: string;
+}
+
+/**
+ * Replace a Deployment's data with a backup.
+ *
+ * The stack is stopped first. Copying a database under a running server would
+ * leave its open connection reading pages that no longer describe the file.
+ */
+export async function restoreDeployment(options: RestoreOptions): Promise<void> {
+  const { paths, runner } = resolved(options);
+  const snapshot = path.join(options.source, 'myco.sqlite');
+  if (!existsSync(snapshot)) {
+    throw new Error(`${options.source} holds no myco.sqlite; it is not a Deployment backup`);
+  }
+
+  await runOrThrow(runner, 'docker', composeArgs(paths, 'stop'), { cwd: paths.root });
+  await runOrThrow(runner, 'docker',
+    composeArgs(paths, 'cp', snapshot, 'server:/data/myco.sqlite'), { cwd: paths.root });
+  if (existsSync(path.join(options.source, 'blobs'))) {
+    await runOrThrow(runner, 'docker',
+      composeArgs(paths, 'cp', path.join(options.source, 'blobs'), 'server:/data/blobs'), { cwd: paths.root });
+  }
+  // Two things the copy leaves wrong, fixed as root before anything starts.
+  //
+  // `docker compose cp` writes as root, and the image runs unprivileged, so a
+  // copied database is read-only to the server — which surfaces as the
+  // container crash-looping on "attempt to write a readonly database" rather
+  // than as a failed restore.
+  //
+  // A WAL sidecar left in the volume belongs to the database the snapshot
+  // replaces, and SQLite replays it over the snapshot on open.
+  await runOrThrow(runner, 'docker',
+    composeArgs(paths, 'run', '--rm', '--user', 'root', '--entrypoint', 'sh', 'server', '-c',
+      `rm -f /data/myco.sqlite-wal /data/myco.sqlite-shm && chown -R ${RUNTIME_USER}:${RUNTIME_USER} /data`),
+    { cwd: paths.root });
+  await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
+}
+
+export interface UpdateOptions extends DeploymentOptions {
+  version?: string;
+}
+
+/**
+ * Move a Deployment to a new image.
+ *
+ * Migration is not performed here. The container entrypoint applies the steps
+ * its volume is behind before the listener binds, so recreating the container
+ * IS the migration — and the request handler refuses a volume that is behind,
+ * which is what makes a half-finished update fail loudly rather than serve.
+ */
+export async function updateDeployment(options: UpdateOptions = {}): Promise<void> {
+  const { paths, runner } = resolved(options);
+
+  // The requested version travels as an environment override for the pull and
+  // the recreate, and is written into the bundle only once both succeed.
+  // Writing it first leaves a bundle pinning a version that was never deployed
+  // when the pull fails — the file and the running container disagreeing, with
+  // nothing to say which is right.
+  const env = options.version === undefined
+    ? undefined
+    : { ...process.env, MYCO_VERSION: options.version };
+
+  await runOrThrow(runner, 'docker', composeArgs(paths, 'pull'), { cwd: paths.root, env });
+  await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root, env });
+
+  if (options.version !== undefined) {
+    const current = existsSync(paths.envFile) ? readFileSync(paths.envFile, 'utf8') : '';
+    const kept = current.split('\n').filter((l) => l !== '' && !l.startsWith('MYCO_VERSION='));
+    writeFileSync(paths.envFile, `${[...kept, `MYCO_VERSION=${options.version}`].join('\n')}\n`, { mode: 0o600 });
+  }
+}
+
+/**
+ * Replace the generated secrets and restart.
+ *
+ * `session_secret` signs owner sessions, so rotating it ends every signed-in
+ * session. That is the point of the operation and the reason the CLI requires
+ * it to be asked for explicitly.
+ */
+export async function rotateSecrets(options: DeploymentOptions = {}): Promise<string[]> {
+  const { paths, runner } = resolved(options);
+  const rotated: string[] = [];
+  for (const [name, bytes] of Object.entries(GENERATED_SECRETS)) {
+    writeFileSync(path.join(paths.secretsDir, name), crypto.randomBytes(bytes).toString('base64'), { mode: 0o600 });
+    rotated.push(name);
+  }
+  await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--force-recreate', '--wait'), { cwd: paths.root });
+  return rotated;
+}
+
+/**
+ * Write a bundle for a stack this machine did not provision.
+ *
+ * Secrets and the volume are left untouched: adopting is about regaining the
+ * ability to operate a stack, not about reissuing its keys.
+ */
+export async function adoptDeployment(options: DeploymentOptions = {}): Promise<{ adopted: boolean; services: string[] }> {
+  const { paths, runner } = resolved(options);
+  materializeBundle(paths);
+
+  const status = await deploymentStatus({ paths, runner });
+  return { adopted: status.running, services: status.services };
 }
