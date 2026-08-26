@@ -15,6 +15,13 @@ import { assertSchemaCurrent, openDatabase } from '../platform/bun/database.js';
 import { sweepPartialObjects } from '../platform/bun/blobs.js';
 import { serverEnvFromBunConfig, type BunServerConfig } from '../platform/bun/env.js';
 import { socketSourceOf, trustedProxySourceOf, type AddressableServer, type TrustedProxyConfig } from '../platform/bun/source.js';
+import {
+  LOOPBACK_V4,
+  LOOPBACK_V6,
+  assertBothLoopbackFamiliesBound,
+  assertLoopbackLiteral,
+  isAllowedLoopbackHost,
+} from '../platform/bun/loopback.js';
 
 export interface BunServerOptions extends Omit<BunServerConfig, 'sqlite'>, TrustedProxyConfig {
   /** Path to the SQLite database on the mounted volume. */
@@ -28,6 +35,18 @@ export interface BunServerOptions extends Omit<BunServerConfig, 'sqlite'>, Trust
    * but health, rather than metering traffic by a value a caller chose.
    */
   sourceFrom?: 'socket' | 'proxy';
+  /**
+   * Which #909 transport this deployment serves.
+   *
+   * `loopback` is C-local: both loopback literals bound, plus a Host allowlist.
+   * A loopback socket answers a request carrying any Host, which a page on this
+   * machine uses to steer a browser at the deployment.
+   *
+   * `proxy` is C-remote: still loopback-bound, keeping the proxy-to-backend leg
+   * off the network. The Host is the deployment's public authority, owned by
+   * the operator's proxy.
+   */
+  transport?: 'loopback' | 'proxy';
 }
 
 export interface BunHandler {
@@ -60,15 +79,54 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
 
 export async function serve(options: BunServerOptions): Promise<{ port: number; stop(): void }> {
   const handler = await createBunHandler(options);
+  const loopbackOnly = (options.transport ?? 'loopback') === 'loopback';
+
+  // Resolved after the first bind. Port 0 asks the kernel to choose, and the
+  // second family lands on the SAME port: two families on two ports is not one
+  // deployment. The Host allowlist compares against this, never the requested
+  // value.
+  let servingPort = options.port ?? 8787;
+
   // The runtime's own fallback page embeds the thrown message and surrounding
   // source. Nothing this server answers may disclose either, so the fallback is
   // turned off and replaced with the same bodiless refusal the core would give.
-  const server = Bun.serve({
-    port: options.port ?? 8787,
-    development: false,
-    error: () => new Response(null, { status: 503 }),
-    fetch: handler.fetch,
-  });
-  handler.bind(server);
-  return { port: Number(server.port), stop: () => { server.stop(); handler.close(); } };
+  const fetchImpl = loopbackOnly
+    ? (request: Request): Response | Promise<Response> => (
+      isAllowedLoopbackHost(request.headers.get('host'), servingPort)
+        ? handler.fetch(request)
+        // Bodiless. A distinguishing message tells a prober which Host values
+        // this deployment answers.
+        : new Response(null, { status: 421 })
+    )
+    : handler.fetch;
+
+  const listen = (hostname: string, port: number) => {
+    assertLoopbackLiteral(hostname);
+    return Bun.serve({ hostname, port, development: false, error: () => new Response(null, { status: 503 }), fetch: fetchImpl });
+  };
+
+  // Both families or none: a half-bound loopback surface leaves the other
+  // family free for another process to claim (#835). Anything already bound is
+  // torn down, leaving no listener behind a refusal.
+  const servers: ReturnType<typeof Bun.serve>[] = [];
+  const boundFamilies: string[] = [];
+  try {
+    for (const family of [LOOPBACK_V4, LOOPBACK_V6]) {
+      const server = listen(family, servingPort);
+      servingPort = Number(server.port);
+      servers.push(server);
+      boundFamilies.push(family);
+    }
+    assertBothLoopbackFamiliesBound(boundFamilies);
+  } catch (err) {
+    for (const server of servers) server.stop();
+    handler.close();
+    throw err;
+  }
+
+  handler.bind(servers[0]!);
+  return {
+    port: servingPort,
+    stop: () => { for (const server of servers) server.stop(); handler.close(); },
+  };
 }
