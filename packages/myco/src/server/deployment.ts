@@ -271,6 +271,31 @@ export async function restoreDeployment(options: RestoreOptions): Promise<void> 
 
 export interface UpdateOptions extends DeploymentOptions {
   version?: string;
+  /** Skip returning to the previous version when the new one fails to come up. */
+  noRollback?: boolean;
+}
+
+/** The version a bundle is pinned to, or null when it tracks the default tag. */
+export function pinnedVersion(paths: DeploymentPaths): string | null {
+  if (!existsSync(paths.envFile)) return null;
+  const line = readFileSync(paths.envFile, 'utf8')
+    .split('\n').find((l) => l.startsWith('MYCO_VERSION='));
+  return line === undefined ? null : line.slice('MYCO_VERSION='.length);
+}
+
+/** Rewrite the pin, or drop it when `version` is null. */
+function writePin(paths: DeploymentPaths, version: string | null): void {
+  const current = existsSync(paths.envFile) ? readFileSync(paths.envFile, 'utf8') : '';
+  const kept = current.split('\n').filter((l) => l !== '' && !l.startsWith('MYCO_VERSION='));
+  const lines = version === null ? kept : [...kept, `MYCO_VERSION=${version}`];
+  writeFileSync(paths.envFile, lines.length > 0 ? `${lines.join('\n')}\n` : '', { mode: 0o600 });
+}
+
+export class UpdateRolledBack extends Error {
+  constructor(readonly previous: string | null, readonly cause: Error) {
+    super(`update failed and the Deployment was returned to ${previous ?? 'its previous image'}: ${cause.message}`);
+    this.name = 'UpdateRolledBack';
+  }
 }
 
 /**
@@ -283,6 +308,7 @@ export interface UpdateOptions extends DeploymentOptions {
  */
 export async function updateDeployment(options: UpdateOptions = {}): Promise<void> {
   const { paths, runner } = resolved(options);
+  const previous = pinnedVersion(paths);
 
   // The requested version travels as an environment override for the pull and
   // the recreate, and is written into the bundle only once both succeed.
@@ -293,14 +319,22 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
     ? undefined
     : { ...process.env, MYCO_VERSION: options.version };
 
-  await runOrThrow(runner, 'docker', composeArgs(paths, 'pull'), { cwd: paths.root, env });
-  await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root, env });
+  try {
+    await runOrThrow(runner, 'docker', composeArgs(paths, 'pull'), { cwd: paths.root, env });
+    await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root, env });
+  } catch (err) {
+    // `up` recreates the container before it waits for health, so a version
+    // that starts and fails its healthcheck has already replaced the one that
+    // worked. Returning to the previous pin is what makes that recoverable
+    // without an operator reconstructing which tag was running.
+    if (options.noRollback === true || options.version === undefined) throw err;
 
-  if (options.version !== undefined) {
-    const current = existsSync(paths.envFile) ? readFileSync(paths.envFile, 'utf8') : '';
-    const kept = current.split('\n').filter((l) => l !== '' && !l.startsWith('MYCO_VERSION='));
-    writeFileSync(paths.envFile, `${[...kept, `MYCO_VERSION=${options.version}`].join('\n')}\n`, { mode: 0o600 });
+    writePin(paths, previous);
+    await runner.run('docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
+    throw new UpdateRolledBack(previous, err as Error);
   }
+
+  if (options.version !== undefined) writePin(paths, options.version);
 }
 
 /**
