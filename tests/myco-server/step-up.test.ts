@@ -195,7 +195,7 @@ describe('step-up retention', () => {
   it('is reached by the path a deployed server actually takes', () => {
     // Minting has no caller under src by design, so a sweep hung on it would be dead
     // code on every real Deployment while the tests looked green.
-    const src = readFileSync(new URL('../../packages/myco-server/worker/src/auth/step-up.ts', import.meta.url), 'utf8');
+    const src = readFileSync(new URL('../../packages/myco-server/src/auth/step-up.ts', import.meta.url), 'utf8');
     const spend = src.slice(src.indexOf('export async function spendStepUpAuthority'));
     expect(spend).toContain('reclaimStepUpAuthorities');
   });

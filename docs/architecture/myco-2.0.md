@@ -366,7 +366,7 @@ A **low-frequency cron trigger is still configured, as a recovery floor**. An al
 
 Alarms may fire more than once, so **the tick must be idempotent**. The assertion model already satisfies this by construction — each evaluation re-probes its sources and recomputes the state rather than accumulating — and a gate must fail by name if a tick ever carries state between invocations.
 
-The port is `WakeScheduler` in `packages/myco-server/worker/src/core/deferred-adapters.ts`, still a proposal: **#913**/**#914** implement it per target and **#919** states what must run and when. Its signature is designed with that consumer, not ahead of it.
+The port is `WakeScheduler` in `packages/myco-server/src/core/deferred-adapters.ts`, still a proposal: **#913**/**#914** implement it per target and **#919** states what must run and when. Its signature is designed with that consumer, not ahead of it.
 
 | Job | Disposition | Surface | Blk | Replacement / reason | Owner |
 |---|---|---|---|---|---|
