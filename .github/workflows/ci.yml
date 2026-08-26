@@ -42,6 +42,105 @@ jobs:
       # run-bun-tests.mjs driver, handling tsx UI tests in their own pass.
       - run: npm test
 
+  # The self-hosted Deployment, on the platform it actually ships to.
+  #
+  # Every other check here proves the server's request handler. This one proves
+  # the container: the entrypoint, the migration it applies before the listener
+  # binds, the bind shape a published port requires, and the Host allowlist as
+  # an operator meets it. None of those are exercised by driving the handler
+  # directly.
+  #
+  # It also holds the image multi-architecture. A Dockerfile that quietly stops
+  # building for one of the two would pass every other job.
+  self-hosted-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build for both architectures
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -f packages/myco-server/Dockerfile -t myco-server:ci .
+
+      - name: Assert the manifest carries amd64 AND arm64
+        run: |
+          set -eu
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -f packages/myco-server/Dockerfile --output type=oci,dest=image.tar .
+          mkdir -p oci && tar -xf image.tar -C oci
+          python3 - <<'EOF'
+          import json
+          idx = json.load(open('oci/index.json'))
+          digest = idx['manifests'][0]['digest'].split(':')[1]
+          inner = json.load(open(f'oci/blobs/sha256/{digest}'))
+          found = sorted({
+              f"{m['platform']['os']}/{m['platform']['architecture']}"
+              for m in inner.get('manifests', [])
+              if m.get('platform', {}).get('architecture') not in (None, 'unknown')
+          })
+          print('platforms:', found)
+          assert found == ['linux/amd64', 'linux/arm64'], f'expected both architectures, got {found}'
+          EOF
+
+      - name: Run the native image and smoke it
+        run: |
+          set -eu
+          docker buildx build --platform linux/amd64 \
+            -f packages/myco-server/Dockerfile -t myco-server:native --load .
+          docker run -d --name myco-ci \
+            -p 127.0.0.1:18787:18787 -e MYCO_PORT=18787 -e MYCO_BIND=all myco-server:native
+
+          for _ in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+              -H 'Host: 127.0.0.1:18787' http://127.0.0.1:18787/health || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          docker logs myco-ci
+
+          # Serves on the published loopback port.
+          [ "$code" = "200" ] || { echo "health was $code, expected 200"; exit 1; }
+
+          # The Host allowlist is what protects a container: its socket sees
+          # every address the publish spec forwards, so a forged Host is
+          # refused by the header check or by nothing at all.
+          rebind=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+            -H 'Host: evil.example.com' http://127.0.0.1:18787/health || true)
+          [ "$rebind" = "421" ] || { echo "foreign Host was $rebind, expected 421"; exit 1; }
+
+          # `localhost` the NAME stays refused while the literal is admitted.
+          named=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+            -H 'Host: localhost:18787' http://127.0.0.1:18787/health || true)
+          [ "$named" = "421" ] || { echo "localhost was $named, expected 421"; exit 1; }
+
+          # A replacement container on the same volume migrates nothing and
+          # serves: data survives container replacement.
+          docker rm -f myco-ci
+          docker volume create myco-ci-data
+          docker run -d --name myco-v1 -v myco-ci-data:/data \
+            -p 127.0.0.1:18788:18788 -e MYCO_PORT=18788 -e MYCO_BIND=all myco-server:native
+          sleep 8
+          docker rm -f myco-v1
+          docker run -d --name myco-v2 -v myco-ci-data:/data \
+            -p 127.0.0.1:18788:18788 -e MYCO_PORT=18788 -e MYCO_BIND=all myco-server:native
+          for _ in $(seq 1 30); do
+            again=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+              -H 'Host: 127.0.0.1:18788' http://127.0.0.1:18788/health || true)
+            [ "$again" = "200" ] && break
+            sleep 2
+          done
+          [ "$again" = "200" ] || { echo "replacement served $again, expected 200"; docker logs myco-v2; exit 1; }
+          docker rm -f myco-v2
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker rm -f myco-ci myco-v1 myco-v2 2>/dev/null || true
+          docker volume rm myco-ci-data 2>/dev/null || true
+
   windows-native:
     runs-on: windows-latest
     timeout-minutes: 15
