@@ -12,6 +12,11 @@ import {
   removeBundle,
   resolveDeploymentPaths,
   bundleContents,
+  backupDeployment,
+  restoreDeployment,
+  updateDeployment,
+  rotateSecrets,
+  adoptDeployment,
 } from '../server/deployment.js';
 import { CommandFailed } from '../server/runner.js';
 import { parseFlags } from './shared.js';
@@ -21,6 +26,11 @@ export const SERVER_HELP = `Usage: myco server <command>
 Commands:
   create [--port <n>] [--version <tag>]   Provision and start the Deployment.
   status                                  Report what is provisioned and running.
+  update [--version <tag>]                Move to a new image; the container migrates on start.
+  backup --to <dir>                       Snapshot the database and blobs.
+  restore --from <dir>                    Replace the Deployment's data with a backup.
+  rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
+  adopt                                   Write a bundle for a stack this machine did not provision.
   destroy [--data] [--yes]                Stop and remove the stack. --data also removes the volume.
 
 The bundle is ordinary Compose. Everything here is also runnable with
@@ -66,6 +76,51 @@ export async function run(args: string[]): Promise<void> {
       console.log(`  Directory:  ${paths.root}`);
       console.log(`  Bundle:     ${bundleContents(paths).join(', ')}`);
       console.log(`  Running:    ${status.running ? status.services.join(', ') : 'no'}`);
+      return;
+    }
+
+    if (command === 'update') {
+      await updateDeployment({ version: flags.get('version') });
+      console.log('Deployment updated. The container applied any migrations its volume was behind.');
+      return;
+    }
+
+    if (command === 'backup') {
+      const to = flags.get('to');
+      if (to === undefined || to === '') fail('backup needs --to <dir>.');
+      const done = await backupDeployment({ destination: to! });
+      console.log(`Backup written to ${done.destination}`);
+      console.log('  myco.sqlite   consistent snapshot, taken with VACUUM INTO');
+      console.log('  blobs/        content-addressed objects');
+      return;
+    }
+
+    if (command === 'restore') {
+      const from = flags.get('from');
+      if (from === undefined || from === '') fail('restore needs --from <dir>.');
+      if (!flags.has('yes')) {
+        fail(`restore replaces this Deployment's database and blobs with ${from}. Re-run with --yes to confirm.`);
+      }
+      await restoreDeployment({ source: from! });
+      console.log('Deployment restored and restarted.');
+      return;
+    }
+
+    if (command === 'rotate') {
+      if (!flags.has('yes')) {
+        fail('rotate replaces the session secret, which ends every signed-in session. Re-run with --yes to confirm.');
+      }
+      const rotated = await rotateSecrets();
+      console.log(`Rotated: ${rotated.join(', ')}`);
+      console.log('Every signed-in session has ended.');
+      return;
+    }
+
+    if (command === 'adopt') {
+      const result = await adoptDeployment();
+      console.log(result.adopted
+        ? `Adopted the running stack (${result.services.join(', ')}). The bundle is now in ${resolveDeploymentPaths().root}.`
+        : `Bundle written to ${resolveDeploymentPaths().root}. No running stack was found; \`myco server create\` starts one.`);
       return;
     }
 
