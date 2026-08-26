@@ -47,6 +47,17 @@ export interface BunServerOptions extends Omit<BunServerConfig, 'sqlite'>, Trust
    * the operator's proxy.
    */
   transport?: 'loopback' | 'proxy';
+  /**
+   * Which addresses to bind.
+   *
+   * `loopback` (the default) binds both loopback literals or refuses, which is
+   * the host-process shape. `all` binds every address in the current network
+   * namespace, which is the container shape: published ports reach the
+   * namespace's `eth0`, never its loopback, so a container binding loopback
+   * answers nothing. `all` relies on the namespace plus loopback-qualified
+   * publishing for the same restriction.
+   */
+  bind?: 'loopback' | 'all';
 }
 
 export interface BunHandler {
@@ -111,13 +122,23 @@ export async function serve(options: BunServerOptions): Promise<{ port: number; 
   const servers: ReturnType<typeof Bun.serve>[] = [];
   const boundFamilies: string[] = [];
   try {
-    for (const family of [LOOPBACK_V4, LOOPBACK_V6]) {
-      const server = listen(family, servingPort);
+    if ((options.bind ?? 'loopback') === 'all') {
+      const server = Bun.serve({
+        hostname: '::', port: servingPort, development: false,
+        error: () => new Response(null, { status: 503 }),
+        fetch: fetchImpl,
+      });
       servingPort = Number(server.port);
       servers.push(server);
-      boundFamilies.push(family);
+    } else {
+      for (const family of [LOOPBACK_V4, LOOPBACK_V6]) {
+        const server = listen(family, servingPort);
+        servingPort = Number(server.port);
+        servers.push(server);
+        boundFamilies.push(family);
+      }
+      assertBothLoopbackFamiliesBound(boundFamilies);
     }
-    assertBothLoopbackFamiliesBound(boundFamilies);
   } catch (err) {
     for (const server of servers) server.stop();
     handler.close();
