@@ -39,6 +39,9 @@
  */
 
 import { epochSeconds } from '@myco/constants.js';
+import { initDatabase, vaultDbPath } from '@myco/db/client.js';
+import { createSchema, SchemaVersionTooNewError } from '@myco/db/schema.js';
+import { getMachineId } from '@myco/machine-id.js';
 import { isProjectPaused } from '@myco/grove/registry.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
 import { getState, setState } from '@myco/db/queries/agent-state.js';
@@ -54,6 +57,37 @@ import {
   supersedeEquivalentResumableRuns,
 } from '@myco/db/queries/runs.js';
 import type { RunStore } from './run-store.js';
+
+/**
+ * Open the local vault and bring its schema current.
+ *
+ * Schema lifecycle is a HOST responsibility, not the agent's. The executor used
+ * to open a database by path and run the migration chain itself; a server-side
+ * agent must not, because it does not own the store it reads. Keeping bootstrap
+ * here means the gate "the executor cannot open a database by path" is a
+ * structural fact rather than a convention.
+ *
+ * Returns a typed result rather than throwing on a too-new schema: the vault
+ * was written by a newer binary (rollback residue), the vault has not been
+ * modified, and every future dispatch fails the same way until the binary is
+ * upgraded — so the run fails typed instead of crashing the dispatcher.
+ */
+export function openLocalVault(
+  vaultDir: string,
+  databasePath?: string,
+): { ok: true } | { ok: false; error: string } {
+  const db = initDatabase(databasePath ?? vaultDbPath(vaultDir));
+  try {
+    // Real machine id (not the 'local' default) so the v52 conversion runs.
+    createSchema(db, getMachineId());
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof SchemaVersionTooNewError) {
+      return { ok: false, error: `${err.code}: ${err.message}` };
+    }
+    throw err;
+  }
+}
 
 /** Tenancy the store is bound to, resolved once by the caller. */
 export interface LocalRunStoreBinding {

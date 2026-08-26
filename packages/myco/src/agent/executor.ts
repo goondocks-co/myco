@@ -11,22 +11,11 @@ import {
 } from '@myco/constants.js';
 import { tryParseJson } from '@myco/utils/json.js';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
-import { initDatabase, vaultDbPath } from '@myco/db/client.js';
-import { createSchema, SchemaVersionTooNewError } from '@myco/db/schema.js';
-import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
-import { setState } from '@myco/db/queries/agent-state.js';
-import { listReports } from '@myco/db/queries/reports.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { projectScopeFromRequestContext, requireProjectId, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 import { getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
-  insertRun,
-  updateRunStatus,
-  applyRunUpdate,
-  getRun,
-  getRunningRunForTask,
-  supersedeEquivalentResumableRuns,
   RESUME_STATUS_READY,
   RESUME_STATUS_SESSION_EXPIRED,
   RESUME_STATUS_POSTCONDITION_UNSATISFIABLE,
@@ -52,7 +41,7 @@ import {
   CANOPY_MAP_CONTENT_KEY,
 } from './instruction-builders.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
-import { createLocalRunStore } from './runtime/run-store-local.js';
+import { createLocalRunStore, openLocalVault } from './runtime/run-store-local.js';
 import { serializeRunStore, type RunStore, type ReportRow } from './runtime/run-store.js';
 import { resolveCost } from './cost/index.js';
 import {
@@ -178,23 +167,13 @@ export async function runAgent(
   vaultDir: string,
   options?: RunOptions,
 ): Promise<AgentRunResult> {
-  const db = initDatabase(options?.requestContext?.databasePath ?? vaultDbPath(vaultDir));
-  try {
-    // Real machine id (not the 'local' default) so the v52 conversion runs.
-    createSchema(db, getMachineId());
-  } catch (err) {
-    if (err instanceof SchemaVersionTooNewError) {
-      // The vault was written by a newer binary (rollback residue). The run
-      // fails typed instead of crashing the dispatcher — the vault has not
-      // been modified, and every future dispatch fails the same way until
-      // the binary is upgraded.
-      return {
-        runId: options?.resumeRunId ?? '',
-        status: STATUS_FAILED,
-        error: `${err.code}: ${err.message}`,
-      };
-    }
-    throw err;
+  const opened = openLocalVault(vaultDir, options?.requestContext?.databasePath);
+  if (!opened.ok) {
+    return {
+      runId: options?.resumeRunId ?? '',
+      status: STATUS_FAILED,
+      error: opened.error,
+    };
   }
 
   const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
@@ -1031,7 +1010,7 @@ async function findLastReportByAction(
 }
 
 function extractReportContent(
-  report: ReturnType<typeof listReports>[number],
+  report: ReportRow,
   contentKey: string,
 ): string | null {
   const parsedDetails = tryParseJson(report.details);
