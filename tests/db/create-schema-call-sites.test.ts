@@ -10,7 +10,8 @@ import path from 'node:path';
  * `createSchema` itself — and (b) have a deliberate response to
  * `SchemaVersionTooNewError` (per-site: the boot site steps aside with a
  * marker, the lazy Grove cache refuses that Grove without killing the
- * daemon, the executor fails the run, provisioning/activation propagate).
+ * daemon, the agent's local vault open returns a typed failure that fails the
+ * run, provisioning/activation propagate).
  *
  * If this test failed on your change: you added or removed a
  * `createSchema` caller. Update EXPECTED_CALL_SITES *and* give the new
@@ -21,7 +22,7 @@ const EXPECTED_CALL_SITES: Record<string, number> = {
   'daemon/grove-runtime-cache.ts': 1,
   'grove/database.ts': 1,
   'grove/activation.ts': 2,
-  'agent/executor.ts': 1,
+  'agent/runtime/run-store-local.ts': 1,
   'tools/index.ts': 1,
 };
 
