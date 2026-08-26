@@ -1,5 +1,4 @@
 import { toBase64Url } from '../../base64.js';
-import { asBufferSource } from '../../hash.js';
 
 /** The owner's session cookie. The `__Host-` prefix makes `Secure`, `Path=/` and the absence of `Domain` browser-enforced rather than merely intended. */
 export const SESSION_COOKIE = '__Host-myco_session';
@@ -19,6 +18,8 @@ const DECODER = new TextDecoder();
 
 const b64url = toBase64Url;
 
+import { utf8 } from '../../hash.js';
+
 const unb64url = (text: string): Uint8Array<ArrayBuffer> => {
   const padded = text.replace(/-/g, '+').replace(/_/g, '/');
   const binary = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4));
@@ -32,7 +33,7 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
 /** `<toBase64Url(payload)>.<toBase64Url(hmac)>` over any JSON payload carrying an `exp`. */
 export async function signPayload<T extends { exp: number }>(secret: string, typ: string, payload: T): Promise<string> {
   const body = b64url(ENCODER.encode(JSON.stringify({ ...payload, typ })));
-  const signature = new Uint8Array(await crypto.subtle.sign('HMAC', await hmacKey(secret), ENCODER.encode(body)));
+  const signature = new Uint8Array(await crypto.subtle.sign('HMAC', await hmacKey(secret), utf8(body)));
   return `${body}.${b64url(signature)}`;
 }
 
@@ -41,14 +42,14 @@ export async function verifyPayload<T extends { exp: number }>(secret: string, t
   const split = value.indexOf('.');
   if (split <= 0 || split === value.length - 1) return null;
   const body = value.slice(0, split);
-  let signature: Uint8Array;
+  let signature: Uint8Array<ArrayBuffer>;
   let payload: unknown;
   try {
     signature = unb64url(value.slice(split + 1));
   } catch {
     return null;
   }
-  if (!(await crypto.subtle.verify('HMAC', await hmacKey(secret), asBufferSource(signature), asBufferSource(ENCODER.encode(body))))) return null;
+  if (!(await crypto.subtle.verify('HMAC', await hmacKey(secret), signature, utf8(body)))) return null;
   try {
     payload = JSON.parse(DECODER.decode(unb64url(body)));
   } catch {
