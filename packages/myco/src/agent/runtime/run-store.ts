@@ -68,6 +68,26 @@ export type { RunInsert, RunRow, RunUpdate, RunningRunRef, ReportRow, RunEventIn
 export interface RunStore {
   // -- run lifecycle -------------------------------------------------------
   insertRun(row: RunInsert): Promise<void>;
+  /**
+   * Single-flight claim: check for a live run of `guard.taskName` and insert
+   * `row` only if there is none, ATOMICALLY.
+   *
+   * This exists because the check and the insert used to be adjacent
+   * synchronous statements — the executor's own comment read "This check and
+   * the insert below run with no await between them, so the second dispatch
+   * always sees the first one's row." Awaiting a port breaks that, and two
+   * same-tick dispatches both insert.
+   *
+   * `serializeRunStore` cannot close this one: its mutex is per store and the
+   * executor builds one store per run, so two concurrent dispatches hold two
+   * different mutexes. Cross-run coordination has to be one operation the
+   * store performs atomically — a transaction locally, a conditional INSERT
+   * on a server.
+   */
+  claimRun(
+    row: RunInsert,
+    guard: { taskName: string; maxAgeSeconds: number },
+  ): Promise<{ claimed: true } | { claimed: false; running: RunningRunRef }>;
   getRun(runId: string): Promise<RunRow | null>;
   getRunningRunForTask(task: string, maxAgeSeconds?: number): Promise<RunningRunRef | null>;
   updateRunStatus(runId: string, status: string, completion?: RunUpdate): Promise<void>;
@@ -128,6 +148,7 @@ export function serializeRunStore(inner: RunStore): RunStore {
 
   return {
     insertRun: serialized(inner.insertRun),
+    claimRun: serialized(inner.claimRun),
     getRun: serialized(inner.getRun),
     getRunningRunForTask: serialized(inner.getRunningRunForTask),
     updateRunStatus: serialized(inner.updateRunStatus),

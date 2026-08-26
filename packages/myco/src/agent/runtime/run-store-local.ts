@@ -68,6 +68,18 @@ export function createLocalRunStore(binding: LocalRunStoreBinding): RunStore {
       insertRun(row);
     },
 
+    /**
+     * Atomic because the check and the insert are adjacent synchronous
+     * statements — the exact invariant the executor relied on before the
+     * control plane became a port.
+     */
+    async claimRun(row, guard) {
+      const running = getRunningRunForTask(agentId, guard.taskName, scope, guard.maxAgeSeconds);
+      if (running && !running.stale) return { claimed: false, running };
+      insertRun(row);
+      return { claimed: true };
+    },
+
     async getRun(runId) {
       return getRun(runId, scope);
     },
