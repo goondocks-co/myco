@@ -27,3 +27,24 @@ describe('compose template', () => {
     expect(COMPOSE_TEMPLATE).toContain('MYCO_BIND: all');
   });
 });
+
+describe('resource limits are declared where Compose reads them', () => {
+  it('declares a memory limit under deploy.resources.limits', () => {
+    // Verified against a running container: this stanza produces
+    // HostConfig.Memory = 2147483648 under plain `docker compose`, with no
+    // swarm involved. A limit written anywhere else is silently ignored.
+    expect(COMPOSE_TEMPLATE).toContain('deploy:');
+    expect(COMPOSE_TEMPLATE).toContain('resources:');
+    expect(COMPOSE_TEMPLATE).toContain('limits:');
+    expect(COMPOSE_TEMPLATE).toMatch(/limits:\s*\n\s*memory:/);
+  });
+
+  it('declares a drain window, which the signal handler now uses', () => {
+    expect(COMPOSE_TEMPLATE).toContain('stop_grace_period:');
+  });
+
+  it('bounds the log files so a long-running Deployment cannot fill the disk', () => {
+    expect(COMPOSE_TEMPLATE).toContain('max-size:');
+    expect(COMPOSE_TEMPLATE).toContain('max-file:');
+  });
+});

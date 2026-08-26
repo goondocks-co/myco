@@ -19,6 +19,7 @@ import {
   adoptDeployment,
 } from '../server/deployment.js';
 import { CommandFailed } from '../server/runner.js';
+import { UpdateRolledBack } from '../server/deployment.js';
 import { parseFlags } from './shared.js';
 
 export const SERVER_HELP = `Usage: myco server <command>
@@ -26,7 +27,9 @@ export const SERVER_HELP = `Usage: myco server <command>
 Commands:
   create [--port <n>] [--version <tag>]   Provision and start the Deployment.
   status                                  Report what is provisioned and running.
-  update [--version <tag>]                Move to a new image; the container migrates on start.
+  update [--version <tag>] [--no-rollback]
+                                          Move to a new image; the container migrates on start.
+                                          A failed update returns to the previous version.
   backup --to <dir>                       Snapshot the database and blobs.
   restore --from <dir>                    Replace the Deployment's data with a backup.
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
@@ -80,7 +83,7 @@ export async function run(args: string[]): Promise<void> {
     }
 
     if (command === 'update') {
-      await updateDeployment({ version: flags.get('version') });
+      await updateDeployment({ version: flags.get('version'), noRollback: flags.has('no-rollback') });
       console.log('Deployment updated. The container applied any migrations its volume was behind.');
       return;
     }
@@ -139,6 +142,9 @@ export async function run(args: string[]): Promise<void> {
     console.log(SERVER_HELP);
     process.exit(2);
   } catch (err) {
+    // A rolled-back update is a failure, and the operator needs to know the
+    // Deployment is serving again on the version it started from.
+    if (err instanceof UpdateRolledBack) fail(err.message);
     // A Compose failure is the operator's to read, verbatim.
     if (err instanceof CommandFailed) fail(err.message);
     fail(err instanceof Error ? err.message : String(err));
