@@ -9,7 +9,10 @@ import {
   handleSetSecret, handleSetSetting, handleSettings,
 } from './api/settings.js';
 import { handleBlobRead } from './api/blobs.js';
-import { handleAgents, handleClaimRun, handleReadState, handleRegisterAgent, handleWriteState } from './api/runs.js';
+import {
+  handleAgents, handleClaimRun, handleGetRun, handleReadState, handleRegisterAgent,
+  handleRunReports, handleSupersedeRuns, handleUpdateRun, handleUpsertCortexInstructions, handleWriteState,
+} from './api/runs.js';
 import { handleMintToken, handleRevokeToken, handleTokenActivity, handleTokens } from './api/tokens.js';
 import { handleProjectSessions, handleSession, handleSessionChildren, handleTranscript } from './api/sessions.js';
 import { MAX_BLOB_BYTES } from './constants.js';
@@ -57,6 +60,11 @@ export const ROUTES: readonly Route[] = [
   // intelligence against a human's capture allowance would let ordinary agent
   // work exhaust that member's ability to record their sessions.
   { method: 'POST', path: '/runs/claim', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleClaimRun },
+  { method: 'POST', path: '/runs/get', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleGetRun },
+  { method: 'POST', path: '/runs/update', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleUpdateRun },
+  { method: 'POST', path: '/runs/supersede', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSupersedeRuns },
+  { method: 'POST', path: '/runs/reports', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunReports },
+  { method: 'POST', path: '/runs/cortex-instructions', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleUpsertCortexInstructions },
   { method: 'POST', path: '/runs/state/read', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleReadState },
   { method: 'POST', path: '/runs/state/write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteState },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
