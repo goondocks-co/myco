@@ -186,20 +186,33 @@ describe('blob bytes', () => {
 });
 
 describe('GET /api/status', () => {
-  it('reports schema agreement and binding presence', async () => {
+  it('reports schema agreement and every capability present', async () => {
     const e = sqliteEnv();
     const res = await worker.fetch(await asOwner('/api/status'), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
-    const body = await res.json() as { schema: { matches: boolean; found: number }; bindings: { missing: string[] } };
+    const body = await res.json() as {
+      schema: { matches: boolean; found: number };
+      capabilities: { capability: string; label: string; present: boolean; operatorNames: string[] }[];
+    };
     expect(body.schema.matches).toBe(true);
-    expect(body.bindings.missing).toEqual([]);
+    expect(body.capabilities.filter((c) => !c.present)).toEqual([]);
+    expect(body.capabilities.map((c) => c.capability).sort())
+      .toEqual(['blob-store', 'rate-limiting', 'relational-store']);
   });
 
-  it('names a binding the deploy dropped', async () => {
+  it('reports the capability a dropped binding took with it, and which name to fix', async () => {
     const e = sqliteEnv();
     const { BUCKET: _dropped, ...withoutBucket } = e.env as Record<string, unknown>;
     const res = await worker.fetch(await asOwner('/api/status'), { ...withoutBucket, ...OWNER_ENV } as never);
-    expect((await res.json() as { bindings: { missing: string[] } }).bindings.missing).toEqual(['BUCKET']);
+    const body = await res.json() as {
+      capabilities: { capability: string; label: string; present: boolean; operatorNames: string[] }[];
+    };
+
+    const absent = body.capabilities.filter((c) => !c.present);
+    expect(absent.map((c) => c.capability)).toEqual(['blob-store']);
+    // Product wording for the statement, operator wording for the fix.
+    expect(absent[0]!.label).toBe('Blob storage');
+    expect(absent[0]!.operatorNames).toEqual(['BUCKET']);
   });
 });
 

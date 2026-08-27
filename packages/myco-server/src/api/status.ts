@@ -1,4 +1,4 @@
-import type { ServerEnv } from '../core/adapters.js';
+import type { CapabilityStatus, ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { schemaVersion } from '../read/meta.js';
@@ -6,12 +6,21 @@ import { listVisibleProjects } from './scope.js';
 import { ok } from './scope.js';
 
 /**
- * The declared infrastructure absent from this environment, in the deployment's
- * own vocabulary. The names belong to the platform, not the core, so the entry
- * point supplies them through `env.platform` — see `core/adapters.ts`.
+ * What this Deployment can do, in the product's vocabulary.
+ *
+ * The operator name for a capability differs by target, so the capability is
+ * what a surface states and the operator name is detail it can show alongside.
+ * A
+ * Deployment with no platform descriptor reports nothing rather than claiming
+ * capability it cannot demonstrate.
  */
-export function missingBindings(env: ServerEnv): string[] {
-  return env.platform?.missingBindings() ?? [];
+export function deploymentCapabilities(env: ServerEnv): CapabilityStatus[] {
+  return env.platform?.capabilities() ?? [];
+}
+
+/** Those capabilities this environment cannot currently perform. */
+export function absentCapabilities(env: ServerEnv): CapabilityStatus[] {
+  return deploymentCapabilities(env).filter((c) => !c.present);
 }
 
 /**
@@ -29,19 +38,18 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   // query is attempted and its failure absorbed, which reports the same way on every
   // target: a store that is missing, misconfigured, or unreachable all read as unusable
   // here rather than only the one shape a single platform happens to produce.
-  const required = [...(env.platform?.requiredBindings ?? [])];
-  const missing = missingBindings(env);
+  const capabilities = deploymentCapabilities(env);
   let found: number | null = null;
   let projects: Awaited<ReturnType<typeof listVisibleProjects>> = [];
   try {
     found = await schemaVersion(env.db);
     projects = await listVisibleProjects(env.db, ctx.session);
   } catch {
-    return ok({ schema: { expected: SERVER_SCHEMA_VERSION, found: null, matches: false }, bindings: { required, missing }, projects: [] });
+    return ok({ schema: { expected: SERVER_SCHEMA_VERSION, found: null, matches: false }, capabilities, projects: [] });
   }
   return ok({
     schema: { expected: SERVER_SCHEMA_VERSION, found, matches: found === SERVER_SCHEMA_VERSION },
-    bindings: { required, missing },
+    capabilities,
     projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount })),
   });
 }
