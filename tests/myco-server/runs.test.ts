@@ -17,6 +17,7 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { claimRun, getState, mutateState, MUTATE_ATTEMPTS, type RunInsert } from '@myco-server-worker/core/runs.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 
@@ -25,6 +26,10 @@ const OTHER: ReadScope = { projectId: 'proj_two' };
 const AGENT = 'agent_1';
 const NOW = 1_000_000;
 
+const CAPABILITY = 'cortex' as const;
+/** The guard every claim carries: a task, an age floor, and the capability the task needs. */
+const guardFor = (taskName: string, maxAgeSeconds = 3600) => ({ taskName, maxAgeSeconds, capability: CAPABILITY });
+
 function store(): { db: RelationalStore; sqlite: Database } {
   const sqlite = new Database(':memory:');
   for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
@@ -32,7 +37,12 @@ function store(): { db: RelationalStore; sqlite: Database } {
     sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(p, p, NOW);
   }
   sqlite.query(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, ?, 'built-in', 1, ?)`).run(AGENT, 'agent', NOW);
-  return { db: sqliteRelationalStore(sqlite), sqlite };
+  const db = sqliteRelationalStore(sqlite);
+  // Absence means NOT admitted, so a fixture that wants a claim to land says so.
+  for (const p of [SCOPE.projectId, OTHER.projectId]) {
+    sqlite.query(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, ?, 1, ?, 'test')`).run(p, CAPABILITY, NOW);
+  }
+  return { db, sqlite };
 }
 
 /** A store whose every operation yields, so two callers genuinely interleave. */
@@ -63,7 +73,7 @@ const runCount = (sqlite: Database, projectId = SCOPE.projectId) =>
 describe('claimRun', () => {
   it('reports the claim through meta.changes, so the adapter does not read the INSERT ... SELECT as row-producing', async () => {
     const { db, sqlite } = store();
-    expect(await claimRun(db, SCOPE, run('r1', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 }, NOW))
+    expect(await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest', 3600), NOW))
       .toEqual({ claimed: true });
     expect(runCount(sqlite)).toBe(1);
   });
@@ -71,7 +81,7 @@ describe('claimRun', () => {
   it('single-flights two concurrent claims of one task', async () => {
     const { db, sqlite } = store();
     const y = yielding(db);
-    const guard = { taskName: 'digest', maxAgeSeconds: 3600 };
+    const guard = guardFor('digest', 3600);
     const [a, b] = await Promise.all([
       claimRun(y, SCOPE, run('r1', 'digest'), guard, NOW),
       claimRun(y, SCOPE, run('r2', 'digest'), guard, NOW),
@@ -99,7 +109,7 @@ describe('claimRun', () => {
 
   it('lets a fresh claim past a run older than the age floor, and reports the live one otherwise', async () => {
     const { db } = store();
-    const guard = { taskName: 'digest', maxAgeSeconds: 60 };
+    const guard = guardFor('digest', 60);
     await claimRun(db, SCOPE, run('r1', 'digest'), guard, NOW);
 
     const blocked = await claimRun(db, SCOPE, run('r2', 'digest'), guard, NOW);
@@ -117,7 +127,7 @@ describe('claimRun', () => {
    */
   it('blocks on a run resumed inside the window, however old its original dispatch', async () => {
     const { db, sqlite } = store();
-    const guard = { taskName: 'digest', maxAgeSeconds: 60 };
+    const guard = guardFor('digest', 60);
     await claimRun(db, SCOPE, run('r1', 'digest'), guard, NOW);
     // Dispatched an hour ago, resumed a moment ago: the current attempt is fresh.
     sqlite.query(`UPDATE agent_runs SET started_at = ?, resumed_at = ? WHERE id = 'r1'`).run(NOW - 3600, NOW - 5);
@@ -130,7 +140,7 @@ describe('claimRun', () => {
 
   it('lets a claim past a run whose resumed attempt is itself older than the floor', async () => {
     const { db, sqlite } = store();
-    const guard = { taskName: 'digest', maxAgeSeconds: 60 };
+    const guard = guardFor('digest', 60);
     await claimRun(db, SCOPE, run('r1', 'digest'), guard, NOW);
     sqlite.query(`UPDATE agent_runs SET started_at = ?, resumed_at = ? WHERE id = 'r1'`).run(NOW - 7200, NOW - 3600);
     expect(await claimRun(db, SCOPE, run('r2', 'digest'), guard, NOW)).toEqual({ claimed: true });
@@ -138,12 +148,46 @@ describe('claimRun', () => {
 
   it('claims per task and per project, so neither another task nor another project blocks', async () => {
     const { db, sqlite } = store();
-    const guard = (taskName: string) => ({ taskName, maxAgeSeconds: 3600 });
+    const guard = (taskName: string) => guardFor(taskName);
     await claimRun(db, SCOPE, run('r1', 'digest'), guard('digest'), NOW);
     expect(await claimRun(db, SCOPE, run('r2', 'extract'), guard('extract'), NOW)).toEqual({ claimed: true });
     expect(await claimRun(db, OTHER, run('r3', 'digest'), guard('digest'), NOW)).toEqual({ claimed: true });
     expect(runCount(sqlite)).toBe(2);
     expect(runCount(sqlite, OTHER.projectId)).toBe(1);
+  });
+});
+
+describe('capability admission', () => {
+  it('refuses a claim for a Project not admitted to the capability, and names it', async () => {
+    const { db, sqlite } = store();
+    sqlite.query(`DELETE FROM project_capabilities WHERE project_id = ?`).run(SCOPE.projectId);
+    const outcome = await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);
+    expect(outcome).toEqual({ claimed: false, notAdmitted: CAPABILITY });
+    expect(runCount(sqlite)).toBe(0);
+  });
+
+  it('treats an absent capability row as not admitted, so a Project that appeared from a first write is admitted to nothing', async () => {
+    const { db, sqlite } = store();
+    sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_new', 'proj_new', ?)`).run(NOW);
+    const outcome = await claimRun(db, { projectId: 'proj_new' }, run('r1', 'digest'), guardFor('digest'), NOW);
+    expect(outcome).toEqual({ claimed: false, notAdmitted: CAPABILITY });
+    expect(runCount(sqlite, 'proj_new')).toBe(0);
+  });
+
+  it('refuses a claim whose capability is withdrawn even while another remains admitted', async () => {
+    const { db, sqlite } = store();
+    sqlite.query(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, 'skills', 1, ?, 'test')`).run(SCOPE.projectId, NOW);
+    sqlite.query(`UPDATE project_capabilities SET enabled = 0 WHERE project_id = ? AND capability = ?`).run(SCOPE.projectId, CAPABILITY);
+    expect(await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW)).toEqual({ claimed: false, notAdmitted: CAPABILITY });
+    expect(await claimRun(db, SCOPE, run('r2', 'survey'), { taskName: 'survey', maxAgeSeconds: 3600, capability: 'skills' }, NOW)).toEqual({ claimed: true });
+  });
+
+  it('distinguishes a refused admission from a task already running: they are different answers', async () => {
+    const { db } = store();
+    await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);
+    const contended = await claimRun(db, SCOPE, run('r2', 'digest'), guardFor('digest'), NOW);
+    expect(contended.claimed === false && contended.notAdmitted).toBeUndefined();
+    expect(contended.claimed === false && contended.running?.id).toBe('r1');
   });
 });
 
@@ -155,7 +199,7 @@ describe('run attribution', () => {
       (id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, lineage_root, lineage_started_at)
       VALUES ('cred_1', 'mem_1', 'h', 'machine_1', 'harness', 'container', ?, ?, 'cred_1', ?)`).run(NOW, NOW + 1000, NOW);
 
-    await claimRun(db, SCOPE, { ...run('r1', 'digest'), dispatchedBy: 'cred_1' }, { taskName: 'digest', maxAgeSeconds: 3600 }, NOW);
+    await claimRun(db, SCOPE, { ...run('r1', 'digest'), dispatchedBy: 'cred_1' }, guardFor('digest', 3600), NOW);
 
     const attributed = sqlite.query(`SELECT r.agent_id AS agentId, c.member_id AS memberId, c.runtime_kind AS runtimeKind
       FROM agent_runs r JOIN member_credentials c ON c.id = r.dispatched_by
@@ -165,7 +209,7 @@ describe('run attribution', () => {
 
   it('admits a run with no dispatching credential, which is what a scheduled run is', async () => {
     const { db, sqlite } = store();
-    await claimRun(db, SCOPE, run('r1', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 }, NOW);
+    await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest', 3600), NOW);
     expect((sqlite.query(`SELECT dispatched_by FROM agent_runs WHERE id = 'r1'`).get() as { dispatched_by: string | null }).dispatched_by).toBeNull();
   });
 });

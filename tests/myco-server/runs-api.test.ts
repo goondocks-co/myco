@@ -20,6 +20,8 @@ async function harness() {
   const t = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
   fixture.sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`).run(Date.now());
   fixture.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`).run(AGENT, Date.now());
+  // Absence means NOT admitted; a fixture expecting a claim to land says so.
+  fixture.sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`).run(Date.now());
   const post = async (path: string, body: unknown): Promise<Record<string, unknown>> =>
     await (await worker.fetch(memberPost(t.token, body, path), env)).json() as Record<string, unknown>;
   return { ...fixture, env, token: t, post };
@@ -28,10 +30,10 @@ async function harness() {
 describe('POST /runs/claim', () => {
   it('claims once and reports the live run to the loser, both answered as persisted', async () => {
     const { post } = await harness();
-    const first = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600 });
+    const first = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
     expect(first).toEqual({ persisted: true, claimed: true, runId: 'r1' });
 
-    const second = await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600 });
+    const second = await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
     expect(second.persisted).toBe(true);
     expect(second.claimed).toBe(false);
     expect((second.running as { id: string }).id).toBe('r1');
@@ -39,8 +41,23 @@ describe('POST /runs/claim', () => {
 
   it('attributes the run to the presented credential and never to a body field', async () => {
     const { post, sqlite, token } = await harness();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, dispatchedBy: 'someone_else' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex', dispatchedBy: 'someone_else' });
     expect((sqlite.query(`SELECT dispatched_by d FROM agent_runs WHERE id = 'r1'`).get() as { d: string }).d).toBe(token.tokenId);
+  });
+
+  it('answers a Project not admitted to the capability distinctly from one whose task is running', async () => {
+    const { post, sqlite } = await harness();
+    sqlite.query(`DELETE FROM project_capabilities WHERE project_id = 'proj_1'`).run();
+    const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    expect(res).toEqual({ persisted: true, claimed: false, notAdmitted: 'cortex' });
+    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(0);
+  });
+
+  it('refuses a claim naming no capability, so admission cannot be skipped by omission', async () => {
+    const { post, sqlite } = await harness();
+    const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600 });
+    expect({ persisted: res.persisted, coded: typeof res.code === 'string' }).toEqual({ persisted: false, coded: true });
+    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(0);
   });
 
   it('refuses a malformed claim terminally, in the route shape and with a code', async () => {
@@ -53,9 +70,10 @@ describe('POST /runs/claim', () => {
   it('claims per project: the same task in another Project is not blocked', async () => {
     const { post, sqlite, env, token } = await harness();
     sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_2', 'proj_2', ?)`).run(Date.now());
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600 });
+    sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_2', 'cortex', 1, ?, 'test')`).run(Date.now());
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
     const other = await (await worker.fetch(
-      memberPost(token.token, { id: 'r2', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600 }, '/runs/claim', { 'x-myco-project': 'proj_2' }),
+      memberPost(token.token, { id: 'r2', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' }, '/runs/claim', { 'x-myco-project': 'proj_2' }),
       env)).json() as Record<string, unknown>;
     expect(other).toEqual({ persisted: true, claimed: true, runId: 'r2' });
   });

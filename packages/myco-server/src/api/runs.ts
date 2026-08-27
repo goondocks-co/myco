@@ -22,6 +22,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
 import { claimRun, getState, listAgents, mutateState, upsertAgent, type RunInsert } from '../core/runs.js';
+import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
@@ -64,26 +65,33 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
   const agentId = str(body.agentId);
   const task = str(body.task);
   const maxAgeSeconds = int(body.maxAgeSeconds);
+  const capability = (PROJECT_CAPABILITIES as readonly string[]).includes(body.capability as string)
+    ? (body.capability as ProjectCapability) : null;
   const startedAt = int(body.startedAt) ?? ctx.now;
   const instruction = strOrNull(body.instruction, MAX_STATE_BYTES);
   const harness = strOrNull(body.harness);
   const provider = strOrNull(body.provider);
   const model = strOrNull(body.model);
   const runContext = strOrNull(body.runContext, MAX_STATE_BYTES);
-  if (id === null || agentId === null || task === null || maxAgeSeconds === null || maxAgeSeconds < 0
+  if (id === null || agentId === null || task === null || capability === null
+    || maxAgeSeconds === null || maxAgeSeconds < 0
     || instruction === undefined || harness === undefined || provider === undefined
     || model === undefined || runContext === undefined) {
-    return Response.json(refused(ctx, refusal('claim requires id, agentId, task and a non-negative maxAgeSeconds', 'parse')));
+    return Response.json(refused(ctx, refusal('claim requires id, agentId, task, a known capability, and a non-negative maxAgeSeconds', 'parse')));
   }
 
   const row: RunInsert = {
     id, agentId, task, instruction, harness, provider, model,
     dryRun: body.dryRun === true, startedAt, runContext, dispatchedBy: ctx.tokenId,
   };
-  const outcome = await claimRun(env.db, { projectId: ctx.projectId }, row, { taskName: task, maxAgeSeconds }, ctx.now);
-  return Response.json(outcome.claimed
-    ? { persisted: true, claimed: true, runId: id }
-    : { persisted: true, claimed: false, running: outcome.running });
+  const outcome = await claimRun(env.db, { projectId: ctx.projectId }, row, { taskName: task, maxAgeSeconds, capability }, ctx.now);
+  if (outcome.claimed) return Response.json({ persisted: true, claimed: true, runId: id });
+  // A Project not admitted to the capability is a settled answer, not contention:
+  // it names the capability so a caller reports what to enable rather than retrying.
+  if (outcome.notAdmitted !== undefined) {
+    return Response.json({ persisted: true, claimed: false, notAdmitted: outcome.notAdmitted });
+  }
+  return Response.json({ persisted: true, claimed: false, running: outcome.running });
 }
 
 /** Read one agent state value. */
