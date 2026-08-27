@@ -497,12 +497,395 @@ const V6_STATEMENTS: readonly string[] = [
      updated_by  TEXT NOT NULL)`,
 ];
 
+
+/**
+ * Schema v7: the intelligence tables the agent runtime reads and writes.
+ *
+ * Translated from the 1.4 vault schema (`packages/myco/src/db/schema-ddl.ts`)
+ * rather than copied. Three properties of the local vault are wrong on a
+ * Deployment that holds many Projects for many members:
+ *
+ * 1. `project_id` is nullable in sixteen of these tables locally. Here it is NOT
+ *    NULL under the grammar CHECK, and every primary key and index leads with it.
+ *    A nullable tenancy column is a row belonging to no Project.
+ * 2. Ten of them carry `machine_id` / `synced_at` / `received_at`, which are Team
+ *    Host sync columns. Team Host is retired, and attribution on a Deployment is
+ *    per member, runtime and agent — a narrower thing carried by the run and the
+ *    credential, not by a machine name on every row.
+ * 3. Five use `INTEGER PRIMARY KEY AUTOINCREMENT`. SQLite requires such a column
+ *    to be the whole primary key, which cannot lead with `project_id`. They take
+ *    server-generated TEXT ids instead, as every other server-side identity does.
+ *
+ * `agents` and `agent_tasks` are the deliberate exception: they are Deployment
+ * definitions — an agent's provider, model, prompt and tool access, and the task
+ * catalogue — not Project data, so they carry no `project_id` and are named in
+ * the index gate's Deployment-scoped allowlist.
+ */
+const V7_STATEMENTS: readonly string[] = [
+  /** Agent identity, for attribution and model routing. Deployment-scoped: one agent configuration serves every Project the Deployment holds. */
+  `CREATE TABLE IF NOT EXISTS agents (
+     id                 TEXT PRIMARY KEY,
+     name               TEXT NOT NULL,
+     provider           TEXT,
+     model              TEXT,
+     system_prompt_hash TEXT,
+     system_prompt      TEXT,
+     config             TEXT,
+     source             TEXT NOT NULL DEFAULT 'built-in',
+     max_turns          INTEGER,
+     timeout_seconds    INTEGER,
+     tool_access        TEXT,
+     enabled            INTEGER NOT NULL DEFAULT 1,
+     created_at         INTEGER NOT NULL,
+     updated_at         INTEGER)`,
+  /** The task catalogue. Deployment-scoped for the same reason as `agents`: a task definition is not Project data. */
+  `CREATE TABLE IF NOT EXISTS agent_tasks (
+     id             TEXT PRIMARY KEY,
+     agent_id       TEXT NOT NULL REFERENCES agents(id),
+     source         TEXT NOT NULL DEFAULT 'built-in',
+     display_name   TEXT,
+     description    TEXT,
+     prompt         TEXT NOT NULL,
+     is_default     INTEGER NOT NULL DEFAULT 0,
+     tool_overrides TEXT,
+     model          TEXT,
+     config         TEXT,
+     created_at     INTEGER NOT NULL,
+     updated_at     INTEGER)`,
+  /**
+   * The run audit trail.
+   *
+   * `resumable`, `resume_status`, `resume_mode`, `resumed_at`, `resume_attempts`
+   * and `checkpoints` are the resumability machinery a dispatched run needs to
+   * survive container replacement. `error` carries the explicit failure record:
+   * a run that fails leaves a row saying so, so an empty result is always
+   * distinguishable from a failed one.
+   */
+  `CREATE TABLE IF NOT EXISTS agent_runs (
+     project_id         TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id                 TEXT NOT NULL,
+     agent_id           TEXT NOT NULL REFERENCES agents(id),
+     task               TEXT,
+     instruction        TEXT,
+     status             TEXT NOT NULL DEFAULT 'pending',
+     harness            TEXT,
+     provider           TEXT,
+     model              TEXT,
+     session_ref        TEXT,
+     resumable          INTEGER NOT NULL DEFAULT 0,
+     resume_status      TEXT,
+     resume_mode        TEXT,
+     resumed_at         INTEGER,
+     resume_attempts    INTEGER NOT NULL DEFAULT 0,
+     checkpoints        TEXT,
+     usage_data         TEXT,
+     started_at         INTEGER,
+     completed_at       INTEGER,
+     tokens_used        INTEGER,
+     cost_usd           REAL,
+     actual_cost_usd    REAL,
+     estimated_cost_usd REAL,
+     cost_source        TEXT,
+     cost_data          TEXT,
+     actions_taken      TEXT,
+     error              TEXT,
+     dry_run            INTEGER NOT NULL DEFAULT 0,
+     reasoning_level    TEXT,
+     execution_overrides TEXT,
+     run_context        TEXT,
+     PRIMARY KEY (project_id, id))`,
+  /** The single-flight claim reads this: a live run of one task, newest first. */
+  `CREATE INDEX IF NOT EXISTS idx_agent_runs_task ON agent_runs (project_id, task, status, started_at)`,
+  `CREATE TABLE IF NOT EXISTS agent_run_events (
+     project_id  TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id          TEXT NOT NULL,
+     run_id      TEXT NOT NULL,
+     phase_name  TEXT,
+     event_type  TEXT NOT NULL,
+     tool_name   TEXT,
+     outcome     TEXT,
+     duration_ms INTEGER,
+     payload     TEXT,
+     recorded_at INTEGER NOT NULL,
+     PRIMARY KEY (project_id, id),
+     FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id) ON DELETE CASCADE)`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_run_events_run ON agent_run_events (project_id, run_id, recorded_at)`,
+  /** What a dry run would have written, and how the classifier judged it. */
+  `CREATE TABLE IF NOT EXISTS agent_run_write_intents (
+     project_id         TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id                 TEXT NOT NULL,
+     run_id             TEXT NOT NULL,
+     phase_id           TEXT,
+     tool_name          TEXT NOT NULL,
+     tool_input         TEXT NOT NULL,
+     synthetic_output   TEXT NOT NULL,
+     stub_id            TEXT,
+     classifier_verdict TEXT,
+     classifier_reason  TEXT,
+     recorded_at        INTEGER NOT NULL,
+     PRIMARY KEY (project_id, id),
+     FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id) ON DELETE CASCADE)`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_run_write_intents_run ON agent_run_write_intents (project_id, run_id, recorded_at)`,
+  `CREATE TABLE IF NOT EXISTS agent_turns (
+     project_id          TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id                  TEXT NOT NULL,
+     run_id              TEXT NOT NULL,
+     agent_id            TEXT NOT NULL REFERENCES agents(id),
+     turn_number         INTEGER NOT NULL,
+     tool_name           TEXT NOT NULL,
+     tool_input          TEXT,
+     tool_output_summary TEXT,
+     started_at          INTEGER,
+     completed_at        INTEGER,
+     PRIMARY KEY (project_id, id),
+     FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id))`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_turns_run ON agent_turns (project_id, run_id, turn_number)`,
+  `CREATE TABLE IF NOT EXISTS agent_reports (
+     project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id         TEXT NOT NULL,
+     run_id     TEXT NOT NULL,
+     agent_id   TEXT NOT NULL REFERENCES agents(id),
+     action     TEXT NOT NULL,
+     summary    TEXT NOT NULL,
+     details    TEXT,
+     created_at INTEGER NOT NULL,
+     PRIMARY KEY (project_id, id),
+     FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id))`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_reports_run ON agent_reports (project_id, run_id, created_at)`,
+  /**
+   * Per-Project agent state.
+   *
+   * The primary key leads with `project_id` so the conditional UPDATE behind an
+   * atomic read-modify-write addresses exactly one row: a compare-and-swap that
+   * could match rows in another Project is not a tenancy boundary.
+   */
+  `CREATE TABLE IF NOT EXISTS agent_state (
+     project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     agent_id   TEXT NOT NULL REFERENCES agents(id),
+     key        TEXT NOT NULL,
+     value      TEXT NOT NULL,
+     updated_at INTEGER NOT NULL,
+     PRIMARY KEY (project_id, agent_id, key))`,
+  /**
+   * Spores — the durable observations recall reads.
+   *
+   * `prompt_batch_id` becomes `prompt_id`: a batch on a Deployment is identified
+   * by `(project_id, prompt_id)`, and the local integer row id has no meaning
+   * once batches arrive from many members.
+   */
+  `CREATE TABLE IF NOT EXISTS spores (
+     project_id       TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id               TEXT NOT NULL,
+     agent_id         TEXT NOT NULL REFERENCES agents(id),
+     session_id       TEXT,
+     prompt_id        TEXT,
+     observation_type TEXT NOT NULL,
+     status           TEXT NOT NULL DEFAULT 'active',
+     content          TEXT NOT NULL,
+     context          TEXT,
+     importance       INTEGER NOT NULL DEFAULT 5,
+     file_path        TEXT,
+     tags             TEXT,
+     content_hash     TEXT,
+     properties       TEXT,
+     created_at       INTEGER NOT NULL,
+     updated_at       INTEGER,
+     embedded         INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (project_id, id),
+     FOREIGN KEY (project_id, session_id) REFERENCES sessions(project_id, session_id))`,
+  `CREATE INDEX IF NOT EXISTS idx_spores_status ON spores (project_id, status, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_spores_type ON spores (project_id, observation_type, created_at)`,
+  /** Rows the embedding reconciler still owes work for; partial so the scan is the backlog itself. */
+  `CREATE INDEX IF NOT EXISTS idx_spores_unembedded ON spores (project_id, created_at) WHERE embedded = 0`,
+  /** Supersede and consolidate lineage. Data is never deleted, so the event is the record of what replaced what. */
+  `CREATE TABLE IF NOT EXISTS resolution_events (
+     project_id   TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id           TEXT NOT NULL,
+     agent_id     TEXT NOT NULL REFERENCES agents(id),
+     spore_id     TEXT NOT NULL,
+     action       TEXT NOT NULL,
+     new_spore_id TEXT,
+     reason       TEXT,
+     session_id   TEXT,
+     created_at   INTEGER NOT NULL,
+     PRIMARY KEY (project_id, id),
+     FOREIGN KEY (project_id, spore_id) REFERENCES spores(project_id, id))`,
+  `CREATE INDEX IF NOT EXISTS idx_resolution_events_spore ON resolution_events (project_id, spore_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS skill_candidates (
+     project_id            TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id                    TEXT NOT NULL,
+     agent_id              TEXT NOT NULL REFERENCES agents(id),
+     topic                 TEXT NOT NULL,
+     rationale             TEXT NOT NULL,
+     confidence            REAL NOT NULL DEFAULT 0.0,
+     status                TEXT NOT NULL DEFAULT 'identified',
+     source_ids            TEXT NOT NULL DEFAULT '[]',
+     skill_id              TEXT,
+     supersedes            TEXT,
+     evidence_bundle_id    TEXT,
+     quality_score         REAL,
+     quality_failures      TEXT NOT NULL DEFAULT '[]',
+     coverage_matches      TEXT NOT NULL DEFAULT '[]',
+     last_reconciled_at    INTEGER,
+     reconciliation_reason TEXT,
+     created_at            INTEGER NOT NULL,
+     updated_at            INTEGER NOT NULL,
+     approved_at           INTEGER,
+     PRIMARY KEY (project_id, id))`,
+  `CREATE INDEX IF NOT EXISTS idx_skill_candidates_status ON skill_candidates (project_id, status, created_at)`,
+  `CREATE TABLE IF NOT EXISTS skill_records (
+     project_id   TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id           TEXT NOT NULL,
+     agent_id     TEXT NOT NULL REFERENCES agents(id),
+     name         TEXT NOT NULL,
+     display_name TEXT NOT NULL,
+     description  TEXT NOT NULL,
+     status       TEXT NOT NULL DEFAULT 'active',
+     embedded     INTEGER NOT NULL DEFAULT 0,
+     generation   INTEGER NOT NULL DEFAULT 1,
+     candidate_id TEXT,
+     source_ids   TEXT NOT NULL DEFAULT '[]',
+     path         TEXT NOT NULL,
+     usage_count  INTEGER NOT NULL DEFAULT 0,
+     last_used_at INTEGER,
+     created_at   INTEGER NOT NULL,
+     updated_at   INTEGER NOT NULL,
+     properties   TEXT NOT NULL DEFAULT '{}',
+     PRIMARY KEY (project_id, id),
+     FOREIGN KEY (project_id, candidate_id) REFERENCES skill_candidates(project_id, id))`,
+  /** A skill name is one skill within a Project; two Projects may each hold their own. */
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_records_name ON skill_records (project_id, name)`,
+  `CREATE TABLE IF NOT EXISTS skill_lineage (
+     project_id       TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id               TEXT NOT NULL,
+     skill_id         TEXT NOT NULL,
+     generation       INTEGER NOT NULL,
+     action           TEXT NOT NULL,
+     rationale        TEXT NOT NULL,
+     source_ids_added TEXT NOT NULL DEFAULT '[]',
+     content_snapshot TEXT NOT NULL,
+     created_at       INTEGER NOT NULL,
+     PRIMARY KEY (project_id, id),
+     FOREIGN KEY (project_id, skill_id) REFERENCES skill_records(project_id, id))`,
+  `CREATE INDEX IF NOT EXISTS idx_skill_lineage_skill ON skill_lineage (project_id, skill_id, generation)`,
+  `CREATE TABLE IF NOT EXISTS skill_usage (
+     project_id  TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id          TEXT NOT NULL,
+     skill_id    TEXT NOT NULL,
+     session_id  TEXT NOT NULL,
+     detected_at INTEGER NOT NULL,
+     PRIMARY KEY (project_id, id),
+     FOREIGN KEY (project_id, skill_id) REFERENCES skill_records(project_id, id),
+     FOREIGN KEY (project_id, session_id) REFERENCES sessions(project_id, session_id))`,
+  `CREATE INDEX IF NOT EXISTS idx_skill_usage_skill ON skill_usage (project_id, skill_id, detected_at)`,
+  /** The current digest per tier. Derived: regenerated under the 2.0 schema rather than migrated. */
+  `CREATE TABLE IF NOT EXISTS digest_extracts (
+     project_id     TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id             TEXT NOT NULL,
+     agent_id       TEXT NOT NULL REFERENCES agents(id),
+     tier           INTEGER NOT NULL,
+     content        TEXT NOT NULL,
+     substrate_hash TEXT,
+     generated_at   INTEGER NOT NULL,
+     PRIMARY KEY (project_id, id))`,
+  `CREATE INDEX IF NOT EXISTS idx_digest_extracts_tier ON digest_extracts (project_id, tier, generated_at)`,
+  `CREATE TABLE IF NOT EXISTS digest_extract_revisions (
+     project_id         TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id                 TEXT NOT NULL,
+     agent_id           TEXT NOT NULL,
+     tier               INTEGER NOT NULL,
+     content            TEXT NOT NULL,
+     metadata           TEXT,
+     run_id             TEXT,
+     parent_revision_id TEXT,
+     created_at         INTEGER NOT NULL,
+     PRIMARY KEY (project_id, id),
+     FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id) ON DELETE SET NULL,
+     FOREIGN KEY (project_id, parent_revision_id) REFERENCES digest_extract_revisions(project_id, id))`,
+  `CREATE INDEX IF NOT EXISTS idx_digest_extract_revisions_tier ON digest_extract_revisions (project_id, tier, created_at)`,
+  /**
+   * Generated Cortex instructions.
+   *
+   * A nullable `project_id` needs two partial unique indexes to key this table,
+   * one for rows with a project and one for rows without. With the column NOT
+   * NULL the whole arrangement collapses into the primary key.
+   */
+  `CREATE TABLE IF NOT EXISTS cortex_instructions (
+     project_id    TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id            TEXT NOT NULL,
+     agent_id      TEXT NOT NULL,
+     content       TEXT NOT NULL,
+     input_hash    TEXT NOT NULL,
+     source_run_id TEXT,
+     generated_at  INTEGER NOT NULL,
+     PRIMARY KEY (project_id, id))`,
+  /**
+   * Git provenance for a capture point.
+   *
+   * `identity_key` is globally UNIQUE locally, where one vault serves one Project.
+   * On a Deployment it is unique WITHIN a Project: a global constraint would let
+   * one Project's key refuse another Project's row.
+   */
+  `CREATE TABLE IF NOT EXISTS knowledge_git_provenance (
+     project_id               TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id                       TEXT NOT NULL,
+     identity_key             TEXT NOT NULL,
+     session_id               TEXT,
+     prompt_id                TEXT,
+     capture_point            TEXT NOT NULL,
+     captured_at              INTEGER NOT NULL,
+     project_root             TEXT,
+     branch                   TEXT,
+     head_sha                 TEXT,
+     upstream_ref             TEXT,
+     upstream_sha             TEXT,
+     production_ref           TEXT,
+     production_sha           TEXT,
+     is_dirty                 INTEGER NOT NULL DEFAULT 0,
+     staged_count             INTEGER NOT NULL DEFAULT 0,
+     unstaged_count           INTEGER NOT NULL DEFAULT 0,
+     untracked_count          INTEGER NOT NULL DEFAULT 0,
+     changed_paths_json       TEXT,
+     tracked_blob_hashes_json TEXT,
+     patch_ids_json           TEXT,
+     status_hash              TEXT NOT NULL,
+     evidence_json            TEXT,
+     error                    TEXT,
+     created_at               INTEGER NOT NULL,
+     PRIMARY KEY (project_id, id),
+     FOREIGN KEY (project_id, session_id) REFERENCES sessions(project_id, session_id))`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_git_provenance_identity ON knowledge_git_provenance (project_id, identity_key)`,
+  /** Release state per namespaced record. `identity_key` is scoped to the Project for the same reason as git provenance. */
+  `CREATE TABLE IF NOT EXISTS knowledge_release_state (
+     project_id        TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     id                TEXT NOT NULL,
+     identity_key      TEXT NOT NULL,
+     namespace         TEXT NOT NULL,
+     record_id         TEXT NOT NULL,
+     source_session_id TEXT,
+     source_prompt_id  TEXT,
+     state             TEXT NOT NULL,
+     confidence        TEXT NOT NULL,
+     basis_kind        TEXT,
+     basis_ref         TEXT,
+     basis_sha         TEXT,
+     release_pr_number INTEGER,
+     reason            TEXT,
+     evidence_json     TEXT,
+     checked_at        INTEGER NOT NULL,
+     created_at        INTEGER NOT NULL,
+     updated_at        INTEGER,
+     PRIMARY KEY (project_id, id),
+     FOREIGN KEY (project_id, source_session_id) REFERENCES sessions(project_id, session_id))`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_release_state_identity ON knowledge_release_state (project_id, identity_key)`,
+];
+
 function withStamp(version: number, statements: readonly string[]): SchemaStep {
   return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
 }
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

@@ -192,6 +192,10 @@ describe('versioned schema steps', () => {
   it('applies the project-id grammar as a CHECK on every table created or rebuilt by step 2 that has a project_id column', () => {
     const sqlite = fresh();
     for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+    // The probe inserts one synthetic row per table to observe the CHECK. Parent
+    // rows for its foreign keys do not exist, and an FK refusal would mask the
+    // admission this asserts, so the probe measures the CHECK alone.
+    sqlite.exec('PRAGMA foreign_keys = OFF');
     const tables = (sqlite.query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).all() as { name: string }[]).map((t) => t.name);
     const checked: string[] = [];
     for (const t of tables) {
@@ -211,6 +215,12 @@ describe('versioned schema steps', () => {
       expect(() => insert('ok.id-1_A')).not.toThrow();
       checked.push(t);
     }
-    expect(checked.sort()).toEqual(['attachments', 'blob_reservations', 'blobs', 'plans', 'project_capabilities', 'projects', 'prompt_batches', 'responses', 'tags', 'tool_calls', 'transcript_segments', 'transcripts']);
+    expect(checked.sort()).toEqual([
+      'agent_reports', 'agent_run_events', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
+      'attachments', 'blob_reservations', 'blobs', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts',
+      'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'project_capabilities', 'projects',
+      'prompt_batches', 'resolution_events', 'responses', 'skill_candidates', 'skill_lineage', 'skill_records',
+      'skill_usage', 'spores', 'tags', 'tool_calls', 'transcript_segments', 'transcripts',
+    ]);
   });
 });
