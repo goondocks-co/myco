@@ -46,6 +46,8 @@ export interface RunningRunRef {
   id: string;
   task: string | null;
   startedAt: number | null;
+  /** When the current attempt began, distinct from `startedAt` on a resumed run. */
+  resumedAt: number | null;
 }
 
 export type ClaimOutcome = { claimed: true } | { claimed: false; running: RunningRunRef | null };
@@ -62,11 +64,13 @@ const CLAIM_SQL = `INSERT INTO agent_runs
   SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?
    WHERE NOT EXISTS (
      SELECT 1 FROM agent_runs
-      WHERE project_id = ? AND task = ? AND status = 'running' AND started_at > ?)`;
+      WHERE project_id = ? AND task = ? AND status = 'running'
+        AND COALESCE(resumed_at, started_at) > ?)`;
 
-const RUNNING_SQL = `SELECT id, task, started_at AS startedAt FROM agent_runs
-   WHERE project_id = ? AND task = ? AND status = 'running' AND started_at > ?
-   ORDER BY started_at DESC LIMIT 1`;
+const RUNNING_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
+   WHERE project_id = ? AND task = ? AND status = 'running'
+     AND COALESCE(resumed_at, started_at) > ?
+   ORDER BY COALESCE(resumed_at, started_at) DESC LIMIT 1`;
 
 /**
  * Single-flight claim.
@@ -74,6 +78,12 @@ const RUNNING_SQL = `SELECT id, task, started_at AS startedAt FROM agent_runs
  * `maxAgeSeconds` is what makes a stale run stop blocking: a run whose process
  * died leaves its row `running` forever, and the floor is how a later dispatch
  * gets past it.
+ *
+ * The clock is `COALESCE(resumed_at, started_at)` — the CURRENT attempt — never
+ * `started_at` alone. A resumed run keeps its original dispatch time, so an
+ * age floor read off `started_at` treats a run resumed seconds ago as stale and
+ * admits a second run of the same task: the exact defect single-flighting
+ * exists to prevent.
  *
  * On a refused claim the live run is read back. That read is on the refusal path
  * only, after the outcome is already settled, so it cannot change the decision —
