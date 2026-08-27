@@ -1,20 +1,24 @@
 const encoder = new TextEncoder();
 
 /**
- * The two deployment targets' lib definitions model `crypto.subtle` differently:
- * one types an encoder's output as backed by `ArrayBufferLike`, the other accepts
- * only `ArrayBuffer`. Nothing in this server ever produces a `SharedArrayBuffer`,
- * so the narrowing is sound. It exists solely so the shared core compiles against
- * both targets.
+ * UTF-8 bytes in a buffer this module owns.
+ *
+ * `TextEncoder.encode` is typed over `ArrayBufferLike`, which admits a
+ * `SharedArrayBuffer` and is therefore not a `BufferSource` the Web Crypto
+ * signatures accept. Copying into an `ArrayBuffer` this function allocates
+ * makes the narrower type true by construction rather than asserted — the
+ * inputs here are cookie bodies and short strings, so the copy is not a cost
+ * worth a cast.
  */
-export const asBufferSource = (bytes: Uint8Array): Uint8Array<ArrayBuffer> => bytes as Uint8Array<ArrayBuffer>;
-
-export function utf8(input: string): Uint8Array {
-  return encoder.encode(input);
+export function utf8(input: string): Uint8Array<ArrayBuffer> {
+  const encoded = encoder.encode(input);
+  const bytes = new Uint8Array(new ArrayBuffer(encoded.length));
+  bytes.set(encoded);
+  return bytes;
 }
 
-export async function sha256HexOf(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', asBufferSource(bytes));
+export async function sha256HexOf(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
