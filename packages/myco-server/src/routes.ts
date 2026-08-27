@@ -10,7 +10,7 @@ import {
 } from './api/settings.js';
 import { handleBlobRead } from './api/blobs.js';
 import {
-  handleAgents, handleClaimRun, handleGetRun, handleReadState, handleRegisterAgent,
+  handleAgents, handleClaimRun, handleGetRun, handleReadState, handleRegisterAgent, handleRunAdmission,
   handleRunReports, handleSupersedeRuns, handleUpdateRun, handleUpsertCortexInstructions, handleWriteState,
 } from './api/runs.js';
 import { handleMintToken, handleRevokeToken, handleTokenActivity, handleTokens } from './api/tokens.js';
@@ -60,6 +60,7 @@ export const ROUTES: readonly Route[] = [
   // intelligence against a human's capture allowance would let ordinary agent
   // work exhaust that member's ability to record their sessions.
   { method: 'POST', path: '/runs/claim', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleClaimRun },
+  { method: 'POST', path: '/runs/admission', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunAdmission },
   { method: 'POST', path: '/runs/get', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleGetRun },
   { method: 'POST', path: '/runs/update', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleUpdateRun },
   { method: 'POST', path: '/runs/supersede', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSupersedeRuns },

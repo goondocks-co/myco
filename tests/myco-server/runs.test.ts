@@ -28,7 +28,8 @@ import type { ReadScope } from '@myco-server-worker/read/scope.js';
 const SCOPE: ReadScope = { projectId: 'proj_one' };
 const OTHER: ReadScope = { projectId: 'proj_two' };
 const AGENT = 'agent_1';
-const NOW = 1_000_000;
+/** A millisecond clock, as every server timestamp is. */
+const NOW = 1_700_000_000_000;
 
 const CAPABILITY = 'cortex' as const;
 /** The guard every claim carries: a task, an age floor, and the capability the task needs. */
@@ -121,7 +122,7 @@ describe('claimRun', () => {
     expect(blocked.claimed === false && blocked.running?.id).toBe('r1');
 
     // Far enough past r1's start that the floor has moved beyond it.
-    expect(await claimRun(db, SCOPE, run('r3', 'digest'), guard, NOW + 3600)).toEqual({ claimed: true });
+    expect(await claimRun(db, SCOPE, run('r3', 'digest'), guard, NOW + 3_600_000)).toEqual({ claimed: true });
   });
 
   /**
@@ -134,7 +135,7 @@ describe('claimRun', () => {
     const guard = guardFor('digest', 60);
     await claimRun(db, SCOPE, run('r1', 'digest'), guard, NOW);
     // Dispatched an hour ago, resumed a moment ago: the current attempt is fresh.
-    sqlite.query(`UPDATE agent_runs SET started_at = ?, resumed_at = ? WHERE id = 'r1'`).run(NOW - 3600, NOW - 5);
+    sqlite.query(`UPDATE agent_runs SET started_at = ?, resumed_at = ? WHERE id = 'r1'`).run(NOW - 3_600_000, NOW - 5_000);
 
     const blocked = await claimRun(db, SCOPE, run('r2', 'digest'), guard, NOW);
     expect(blocked.claimed).toBe(false);
@@ -146,7 +147,7 @@ describe('claimRun', () => {
     const { db, sqlite } = store();
     const guard = guardFor('digest', 60);
     await claimRun(db, SCOPE, run('r1', 'digest'), guard, NOW);
-    sqlite.query(`UPDATE agent_runs SET started_at = ?, resumed_at = ? WHERE id = 'r1'`).run(NOW - 7200, NOW - 3600);
+    sqlite.query(`UPDATE agent_runs SET started_at = ?, resumed_at = ? WHERE id = 'r1'`).run(NOW - 7_200_000, NOW - 3_600_000);
     expect(await claimRun(db, SCOPE, run('r2', 'digest'), guard, NOW)).toEqual({ claimed: true });
   });
 
