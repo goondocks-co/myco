@@ -208,3 +208,157 @@ export async function listAgents(db: RelationalStore): Promise<AgentIdentity[]> 
     .all<{ id: string; name: string; provider: string | null; model: string | null; enabled: number }>();
   return results.map((r) => ({ ...r, enabled: r.enabled === 1 }));
 }
+
+// ---------------------------------------------------------------------------
+// Run lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * The columns a run update may set.
+ *
+ * A FIXED list, never the caller's keys. Locally this reads as tidiness; on a
+ * Deployment holding many Projects for many members it is the boundary itself.
+ * `project_id`, `id`, `agent_id` and `dispatched_by` are absent on purpose: an
+ * update that could set them would let a caller move a run to another Project,
+ * change which agent ran it, or reattribute it to another member — the last
+ * undoing the claim route's rule that the dispatcher comes from the credential
+ * and never from the body.
+ */
+export const RUN_UPDATE_COLUMNS = [
+  'status', 'task', 'instruction', 'harness', 'provider', 'model', 'session_ref',
+  'resumable', 'resume_status', 'resume_mode', 'resumed_at', 'resume_attempts',
+  'checkpoints', 'usage_data', 'completed_at', 'tokens_used', 'cost_usd',
+  'actual_cost_usd', 'estimated_cost_usd', 'cost_source', 'cost_data',
+  'actions_taken', 'error', 'run_context', 'dry_run', 'reasoning_level',
+  'execution_overrides',
+] as const;
+export type RunUpdateColumn = (typeof RUN_UPDATE_COLUMNS)[number];
+
+/** Columns a run update may never set, named so the gate reads the same list the code does. */
+export const RUN_IMMUTABLE_COLUMNS = ['project_id', 'id', 'agent_id', 'dispatched_by'] as const;
+
+export type RunUpdate = Partial<Record<RunUpdateColumn, string | number | null>>;
+
+export interface RunRow {
+  id: string;
+  agentId: string;
+  task: string | null;
+  status: string;
+  startedAt: number | null;
+  resumedAt: number | null;
+  completedAt: number | null;
+  error: string | null;
+  checkpoints: string | null;
+  resumable: number;
+  resumeStatus: string | null;
+  resumeAttempts: number;
+  dryRun: number;
+  dispatchedBy: string | null;
+}
+
+const RUN_SELECT = `SELECT id, agent_id AS agentId, task, status, started_at AS startedAt,
+    resumed_at AS resumedAt, completed_at AS completedAt, error, checkpoints,
+    resumable, resume_status AS resumeStatus, resume_attempts AS resumeAttempts,
+    dry_run AS dryRun, dispatched_by AS dispatchedBy
+  FROM agent_runs WHERE project_id = ? AND id = ?`;
+
+export async function getRun(db: RelationalStore, scope: ReadScope, runId: string): Promise<RunRow | null> {
+  return db.prepare(RUN_SELECT).bind(scope.projectId, runId).first<RunRow>();
+}
+
+/**
+ * Apply a partial update to one run, scoped.
+ *
+ * Returns how many rows moved: 0 means the run is not in this scope, which a
+ * caller must not read as success. An update naming no settable column is
+ * refused rather than issued as an empty UPDATE.
+ */
+export async function applyRunUpdate(
+  db: RelationalStore,
+  scope: ReadScope,
+  runId: string,
+  update: RunUpdate,
+): Promise<number> {
+  const columns = RUN_UPDATE_COLUMNS.filter((c) => c in update);
+  if (columns.length === 0) return 0;
+  const result = await db
+    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')} WHERE project_id = ? AND id = ?`)
+    .bind(...columns.map((c) => update[c] ?? null), scope.projectId, runId)
+    .run();
+  return result.meta.changes;
+}
+
+/**
+ * Retire the resumability of failed runs equivalent to this one.
+ *
+ * Equivalence is agent, task, Project and `dry_run` together. **`dry_run` is
+ * part of it**: a dry run and a real run of the same task are not the same work,
+ * and treating them as equivalent would let a dry run retire a real run's
+ * resumability.
+ */
+export async function supersedeEquivalentResumableRuns(
+  db: RelationalStore,
+  scope: ReadScope,
+  excludeRunId: string,
+  match: { agentId: string; taskName: string; dryRun: boolean },
+): Promise<number> {
+  const result = await db
+    .prepare(`UPDATE agent_runs SET resumable = 0, resume_status = 'superseded'
+       WHERE project_id = ? AND id != ? AND resumable = 1 AND status = 'failed'
+         AND agent_id = ? AND task = ? AND dry_run = ?`)
+    .bind(scope.projectId, excludeRunId, match.agentId, match.taskName, match.dryRun ? 1 : 0)
+    .run();
+  return result.meta.changes;
+}
+
+export interface ReportRow {
+  id: number;
+  runId: string;
+  agentId: string;
+  action: string;
+  summary: string;
+  details: string | null;
+  createdAt: number;
+}
+
+export async function listReports(db: RelationalStore, scope: ReadScope, runId: string): Promise<ReportRow[]> {
+  const { results } = await db
+    .prepare(`SELECT id, run_id AS runId, agent_id AS agentId, action, summary, details, created_at AS createdAt
+       FROM agent_reports WHERE project_id = ? AND run_id = ? ORDER BY id ASC`)
+    .bind(scope.projectId, runId)
+    .all<ReportRow>();
+  return results;
+}
+
+export interface CortexInstructionsUpsert {
+  agentId: string;
+  content: string;
+  inputHash: string;
+  generatedAt: number;
+  sourceRunId: string | null;
+  id?: string;
+}
+
+/**
+ * Write the current Cortex instructions for an agent within a Project.
+ *
+ * The conflict resolves on `(project_id, id)`, and those two are exactly the
+ * columns the update leaves alone — rewriting either would move the row rather
+ * than update it.
+ */
+export async function upsertCortexInstructions(
+  db: RelationalStore,
+  scope: ReadScope,
+  row: CortexInstructionsUpsert,
+): Promise<void> {
+  const id = row.id ?? `${row.agentId}:instructions`;
+  await db.prepare(`INSERT INTO cortex_instructions
+      (project_id, id, agent_id, content, input_hash, source_run_id, generated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (project_id, id) DO UPDATE SET
+        agent_id = excluded.agent_id, content = excluded.content,
+        input_hash = excluded.input_hash, source_run_id = excluded.source_run_id,
+        generated_at = excluded.generated_at`)
+    .bind(scope.projectId, id, row.agentId, row.content, row.inputHash, row.sourceRunId, row.generatedAt)
+    .run();
+}
