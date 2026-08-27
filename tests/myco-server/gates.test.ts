@@ -463,6 +463,7 @@ describe('gates', () => {
     let runSeq = 0;
     sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`).run(issuedAt);
     sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_gate', 'gate', 'built-in', 1, ?)`).run(issuedAt);
+    sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'gate')`).run(issuedAt);
     const bytes = new TextEncoder().encode('blob-bytes');
     const key = await sha256Hex('blob-bytes');
     /** Per non-public route: a malformed request the route refuses, and a well-formed one it would store. */
@@ -485,7 +486,7 @@ describe('gates', () => {
       'POST /runs/claim': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `run_${runSeq++}`, agentId: 'agent_gate', task: 'digest', maxAgeSeconds: 3600 }) }),
+        wellFormed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `run_${runSeq++}`, agentId: 'agent_gate', task: `digest_${runSeq}`, maxAgeSeconds: 3600, capability: 'cortex' }) }),
       },
       'POST /runs/state/read': {
         shape: 'persisted',

@@ -22,6 +22,7 @@
  */
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
+import { settingsWriter, type ProjectCapability } from './settings.js';
 
 /** How many times a refused compare-and-swap is recomputed before the write is reported as contended. */
 export const MUTATE_ATTEMPTS = 5;
@@ -50,7 +51,17 @@ export interface RunningRunRef {
   resumedAt: number | null;
 }
 
-export type ClaimOutcome = { claimed: true } | { claimed: false; running: RunningRunRef | null };
+/**
+ * Why a claim did not take.
+ *
+ * `running` names the live run that holds the task. `notAdmitted` names a Project
+ * that does not hold the capability the task needs — a different answer, and one
+ * a caller must not retry into.
+ */
+export type ClaimOutcome =
+  | { claimed: true }
+  | { claimed: false; running: RunningRunRef | null; notAdmitted?: undefined }
+  | { claimed: false; running?: undefined; notAdmitted: ProjectCapability };
 
 /** The state row a read returns, or null when the key is unset. */
 export interface StateRow {
@@ -85,6 +96,12 @@ const RUNNING_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS res
  * admits a second run of the same task: the exact defect single-flighting
  * exists to prevent.
  *
+ * The capability is checked HERE rather than by the caller. The 1.4 admission is
+ * a separate call the caller makes first, and a caller that forgets it claims
+ * anyway; folding it in makes a claim without admission unrepresentable. Absence
+ * of a capability row means NOT admitted, so a Project that appeared from a
+ * member's first write is admitted to nothing until an operator says so.
+ *
  * On a refused claim the live run is read back. That read is on the refusal path
  * only, after the outcome is already settled, so it cannot change the decision —
  * it can return a run that finished in between, which reports contention that
@@ -94,9 +111,12 @@ export async function claimRun(
   db: RelationalStore,
   scope: ReadScope,
   row: RunInsert,
-  guard: { taskName: string; maxAgeSeconds: number },
+  guard: { taskName: string; maxAgeSeconds: number; capability: ProjectCapability },
   now: number,
 ): Promise<ClaimOutcome> {
+  if (!(await settingsWriter(db).capabilityEnabled(scope.projectId, guard.capability))) {
+    return { claimed: false, notAdmitted: guard.capability };
+  }
   const floor = now - guard.maxAgeSeconds;
   const result = await db.prepare(CLAIM_SQL).bind(
     scope.projectId, row.id, row.agentId, row.task, row.instruction, row.harness, row.provider, row.model,
