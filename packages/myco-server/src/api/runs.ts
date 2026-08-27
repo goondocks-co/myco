@@ -23,7 +23,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
 import {
   applyRunUpdate, claimRun, getRun, getState, listAgents, listReports, mutateState,
-  RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns, upsertAgent, upsertCortexInstructions,
+  projectAdmission, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns, upsertAgent, upsertCortexInstructions,
   type RunInsert, type RunUpdate,
 } from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
@@ -252,4 +252,15 @@ export async function handleUpsertCortexInstructions(env: ServerEnv, ctx: RouteC
   }
   await upsertCortexInstructions(env.db, { projectId: ctx.projectId }, { agentId, content, inputHash, generatedAt, sourceRunId });
   return Response.json({ persisted: true });
+}
+
+/** Whether this Project is admitted to a capability, answered without attempting a run. */
+export async function handleRunAdmission(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (!body) return Response.json(refused(ctx, BAD_BODY));
+  const capability = (PROJECT_CAPABILITIES as readonly string[]).includes(body.capability as string)
+    ? (body.capability as ProjectCapability) : null;
+  if (capability === null) return Response.json(refused(ctx, refusal('admission requires a known capability', 'parse')));
+  const admission = await projectAdmission(env.db, { projectId: ctx.projectId }, capability);
+  return Response.json({ persisted: true, ...admission });
 }

@@ -488,6 +488,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `run_${runSeq++}`, agentId: 'agent_gate', task: `digest_${runSeq}`, maxAgeSeconds: 3600, capability: 'cortex' }) }),
       },
+      'POST /runs/admission': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/admission', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/admission', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ capability: 'cortex' }) }),
+      },
       'POST /runs/get': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/get', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -841,6 +846,7 @@ describe('gates', () => {
       'enroll POST /members/join',
       'member POST /blobs/{sha256}',
       'member POST /events',
+      'member POST /runs/admission',
       'member POST /runs/claim',
       'member POST /runs/cortex-instructions',
       'member POST /runs/get',

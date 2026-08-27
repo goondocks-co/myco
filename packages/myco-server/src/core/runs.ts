@@ -90,6 +90,13 @@ const RUNNING_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS res
  * died leaves its row `running` forever, and the floor is how a later dispatch
  * gets past it.
  *
+ * Every timestamp this server stores is epoch MILLISECONDS — `now` is
+ * `Date.now()` — while the guard is expressed in SECONDS, matching the caller's
+ * vocabulary. The conversion is explicit here rather than pushed onto callers:
+ * subtracting seconds from milliseconds turns an hour-long window into a
+ * 3.6-second one, and single-flighting then fails for every run older than a
+ * few seconds while every test that supplies both numbers itself still passes.
+ *
  * The clock is `COALESCE(resumed_at, started_at)` — the CURRENT attempt — never
  * `started_at` alone. A resumed run keeps its original dispatch time, so an
  * age floor read off `started_at` treats a run resumed seconds ago as stale and
@@ -117,7 +124,7 @@ export async function claimRun(
   if (!(await settingsWriter(db).capabilityEnabled(scope.projectId, guard.capability))) {
     return { claimed: false, notAdmitted: guard.capability };
   }
-  const floor = now - guard.maxAgeSeconds;
+  const floor = now - guard.maxAgeSeconds * 1000;
   const result = await db.prepare(CLAIM_SQL).bind(
     scope.projectId, row.id, row.agentId, row.task, row.instruction, row.harness, row.provider, row.model,
     row.dryRun ? 1 : 0, row.startedAt, row.runContext, row.dispatchedBy,
@@ -361,4 +368,20 @@ export async function upsertCortexInstructions(
         generated_at = excluded.generated_at`)
     .bind(scope.projectId, id, row.agentId, row.content, row.inputHash, row.sourceRunId, row.generatedAt)
     .run();
+}
+
+/**
+ * Whether a Project is admitted to a capability.
+ *
+ * The claim is the enforcing check and this is not a substitute for it — a
+ * caller that asks and then claims still meets the same gate inside `claimRun`.
+ * It exists so a caller can report WHY a run will not start without first
+ * attempting one and reading the refusal.
+ */
+export async function projectAdmission(
+  db: RelationalStore,
+  scope: ReadScope,
+  capability: ProjectCapability,
+): Promise<{ admitted: boolean; capability: ProjectCapability }> {
+  return { admitted: await settingsWriter(db).capabilityEnabled(scope.projectId, capability), capability };
 }
