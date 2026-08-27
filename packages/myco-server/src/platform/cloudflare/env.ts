@@ -50,11 +50,23 @@ export const classifyR2BlobFailure: BlobFailureClassifier = (message) =>
   message.includes(`(${R2_BAD_DIGEST_CODE})`) || /checksum you specified did not match/i.test(message) ? 'digest' : null;
 
 export function cloudflarePlatform(bindings: CloudflareBindings): PlatformDescriptor {
+  const absent = (name: string): boolean =>
+    (bindings as unknown as Record<string, unknown>)[name] === undefined;
+
   return {
     name: 'cloudflare',
-    requiredBindings: REQUIRED_BINDINGS,
-    missingBindings: () =>
-      REQUIRED_BINDINGS.filter((name) => (bindings as unknown as Record<string, unknown>)[name] === undefined),
+    capabilities: () => [
+      { capability: 'relational-store', label: 'Project storage', present: !absent('MYCO_DB'), operatorNames: ['MYCO_DB'] },
+      { capability: 'blob-store', label: 'Blob storage', present: !absent('BUCKET'), operatorNames: ['BUCKET'] },
+      {
+        capability: 'rate-limiting',
+        label: 'Request rate limiting',
+        // Both limiters, one capability: a deployment holding one of them
+        // cannot meter what the other covers, so it is not partly capable.
+        present: !absent('SOURCE_LIMIT') && !absent('TOKEN_LIMIT'),
+        operatorNames: ['SOURCE_LIMIT', 'TOKEN_LIMIT'],
+      },
+    ],
     classifyError: classifyD1Error,
     classifyBlobFailure: classifyR2BlobFailure,
   };

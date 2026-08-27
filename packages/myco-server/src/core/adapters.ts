@@ -142,18 +142,42 @@ export interface SecretWrappingKey {
 }
 
 /**
- * How a deployment describes its own required infrastructure, in its own
- * vocabulary, for the owner status surface. The core reports what the platform
- * says rather than knowing any platform's binding names itself — that is why
- * `REQUIRED_BINDINGS` no longer lives in `api/status.ts`.
+ * A thing the Deployment can do, named the way the product names it.
+ *
+ * The core reports what the platform declares rather than knowing any
+ * platform's binding names itself, which is why no `REQUIRED_BINDINGS` lives in
+ * `api/status.ts`.
+ *
+ * The two targets configure the same capability under different operator names,
+ * and a surface reporting those names speaks two vocabularies for one thing and
+ * cannot state anything stable across targets. It also runs against this
+ * repository's standing rule that surfaces name outcomes, not mechanisms.
+ *
+ * A capability may be present without an operator name at all: rate limiting is
+ * in-process on the self-hosted target and configured per-binding on the hosted
+ * one. Reporting it as a missing binding on the target that does not use
+ * bindings for it would be false.
  */
+export type CapabilityId = 'relational-store' | 'blob-store' | 'rate-limiting';
+
+export interface CapabilityStatus {
+  capability: CapabilityId;
+  /** Product wording, identical on every target. */
+  label: string;
+  present: boolean;
+  /** What an operator configures on THIS target; empty when nothing is configured for it. */
+  operatorNames: readonly string[];
+}
+
 export interface PlatformDescriptor {
   /** Short platform name, as the deployment target calls itself. */
   name: string;
-  /** The infrastructure this deployment requires, named as its operator would name it. */
-  requiredBindings: readonly string[];
-  /** Those of `requiredBindings` absent or unusable in this environment. A deploy that drops one is visible here rather than at the first request that happens to touch it. */
-  missingBindings(): string[];
+  /**
+   * What this deployment can do, and which of its own names an operator would
+   * fix. One entry per capability, present or not, so a surface can state the
+   * same sentence on both targets.
+   */
+  capabilities(): CapabilityStatus[];
   /** Recognises this platform's storage errors; consulted only after the platform-independent causes are ruled out. */
   classifyError: ErrorClassifier;
   /** Recognises this platform's blob digest rejection. */

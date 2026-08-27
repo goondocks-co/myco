@@ -47,8 +47,8 @@ export function sqliteRelationalStore(sqlite: Database): RelationalStore {
   });
 
   // Prepared lazily: building the store must not touch the handle, so a deployment
-  // whose database is absent reports the miss through `missingBindings()` rather
-  // than throwing while its environment is still being assembled.
+  // whose database is absent reports the miss through its capability report
+  // rather than throwing while its environment is still being assembled.
   let runBatch: ((stmts: Captured[]) => RunResult[]) | null = null;
 
   return {

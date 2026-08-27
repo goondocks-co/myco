@@ -828,6 +828,37 @@ describe('gates', () => {
     expect(required.length).toBeGreaterThan(0);
   });
 
+  it('maps every required binding onto a capability', () => {
+    // A binding added to a target without a capability naming it is invisible
+    // on the status surface: the deployment reports itself fully capable while
+    // an operator has something unconfigured.
+    const envSource = readFileSync(join(SRC, 'platform', 'cloudflare', 'env.ts'), 'utf8');
+    const required = [...(/REQUIRED_BINDINGS = \[([^\]]*)\]/.exec(envSource)?.[1] ?? '').matchAll(/'(\w+)'/g)].map((m) => m[1]);
+    const declared = [...envSource.matchAll(/operatorNames: \[([^\]]*)\]/g)]
+      .flatMap((m) => [...m[1]!.matchAll(/'(\w+)'/g)].map((n) => n[1]));
+
+    expect(required.length).toBeGreaterThan(0);
+    expect(required.filter((name) => !declared.includes(name))).toEqual([]);
+  });
+
+  it('states each capability once, in wording neither target owns', () => {
+    for (const target of ['cloudflare', 'bun']) {
+      const source = readFileSync(join(SRC, 'platform', target, 'env.ts'), 'utf8');
+      const ids = [...source.matchAll(/capability: '([a-z-]+)'/g)].map((m) => m[1]).sort();
+      // Both targets answer for the same set, so a surface can say the same
+      // sentence on either one.
+      expect({ target, ids }).toEqual({ target, ids: ['blob-store', 'rate-limiting', 'relational-store'] });
+
+      const labels = [...source.matchAll(/label: '([^']+)'/g)].map((m) => m[1]);
+      for (const label of labels) {
+        // Product wording, not the operator's: a label carrying a binding name
+        // is the vocabulary split this replaced.
+        expect({ target, label, mentionsBinding: /MYCO_|BUCKET|LIMIT/.test(label) })
+          .toEqual({ target, label, mentionsBinding: false });
+      }
+    }
+  });
+
   it('names no platform binding in shared code: the status surface reports what the platform declares', () => {
     const status = readFileSync(join(SRC, 'api', 'status.ts'), 'utf8');
     expect(status).not.toMatch(/REQUIRED_BINDINGS = \[/);
