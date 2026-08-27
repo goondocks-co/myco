@@ -3,6 +3,10 @@
 # Pinned to the same Bun the repository pins in `.bun-version`. The suite has
 # already been bitten by engine divergence (JSC accepts a spread the V8 build
 # throws on), so the container runs the engine CI ran.
+#
+# Built for linux/amd64 and linux/arm64. `npm run image:build` produces both;
+# CI holds the manifest to exactly those two, since a Dockerfile that quietly
+# stops building for one would pass every other job.
 
 ARG BUN_VERSION=1.3.13
 

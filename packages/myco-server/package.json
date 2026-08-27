@@ -11,7 +11,9 @@
     "migrations:apply": "wrangler d1 migrations apply myco-server --local",
     "migrations:apply:remote": "wrangler d1 migrations apply myco-server --remote -c wrangler.deploy.toml",
     "token:mint": "bun scripts/mint-local.ts",
-    "token:revoke": "bun scripts/revoke-local.ts"
+    "token:revoke": "bun scripts/revoke-local.ts",
+    "image:build": "docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t ghcr.io/goondocks-co/myco-server:${MYCO_VERSION:-dev} ../..",
+    "image:build:native": "docker buildx build -f Dockerfile -t ghcr.io/goondocks-co/myco-server:${MYCO_VERSION:-dev} --load ../.."
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260731.1",
