@@ -110,6 +110,32 @@ describe('claimRun', () => {
     expect(await claimRun(db, SCOPE, run('r3', 'digest'), guard, NOW + 3600)).toEqual({ claimed: true });
   });
 
+  /**
+   * A resumed run keeps its original dispatch time, so an age floor read off
+   * `started_at` alone would treat it as stale and admit a second run of the
+   * same task. The current attempt's clock is `resumed_at`.
+   */
+  it('blocks on a run resumed inside the window, however old its original dispatch', async () => {
+    const { db, sqlite } = store();
+    const guard = { taskName: 'digest', maxAgeSeconds: 60 };
+    await claimRun(db, SCOPE, run('r1', 'digest'), guard, NOW);
+    // Dispatched an hour ago, resumed a moment ago: the current attempt is fresh.
+    sqlite.query(`UPDATE agent_runs SET started_at = ?, resumed_at = ? WHERE id = 'r1'`).run(NOW - 3600, NOW - 5);
+
+    const blocked = await claimRun(db, SCOPE, run('r2', 'digest'), guard, NOW);
+    expect(blocked.claimed).toBe(false);
+    expect(blocked.claimed === false && blocked.running?.id).toBe('r1');
+    expect(runCount(sqlite)).toBe(1);
+  });
+
+  it('lets a claim past a run whose resumed attempt is itself older than the floor', async () => {
+    const { db, sqlite } = store();
+    const guard = { taskName: 'digest', maxAgeSeconds: 60 };
+    await claimRun(db, SCOPE, run('r1', 'digest'), guard, NOW);
+    sqlite.query(`UPDATE agent_runs SET started_at = ?, resumed_at = ? WHERE id = 'r1'`).run(NOW - 7200, NOW - 3600);
+    expect(await claimRun(db, SCOPE, run('r2', 'digest'), guard, NOW)).toEqual({ claimed: true });
+  });
+
   it('claims per task and per project, so neither another task nor another project blocks', async () => {
     const { db, sqlite } = store();
     const guard = (taskName: string) => ({ taskName, maxAgeSeconds: 3600 });
