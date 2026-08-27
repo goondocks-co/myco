@@ -5,7 +5,18 @@ import { MAX_BLOB_BYTES } from '@myco-server-worker/constants.js';
 const KEY = 'a'.repeat(64);
 
 describe('route table', () => {
-  it('declares an auth kind and a body mode for every route, a shape for every member route, and exempts only the refresh route from the quota', () => {
+  /**
+   * Routes whose writes are not charged to the member byte quota.
+   *
+   * The quota bounds what a member's CAPTURE may write. `/tokens/refresh` mints a
+   * successor credential, which is the server's own bookkeeping. The run-control
+   * routes are the Deployment's own scheduled intelligence: charging those against
+   * a human's capture allowance would let ordinary agent work exhaust that
+   * member's ability to record their own sessions.
+   */
+  const QUOTA_EXEMPT = new Set(['/tokens/refresh', '/runs/claim', '/runs/state/read', '/runs/state/write']);
+
+  it('declares an auth kind and a body mode for every route, a shape for every member route, and charges every member route to the quota but the named exemptions', () => {
     for (const r of ROUTES) {
       expect(['public', 'member', 'auth', 'owner', 'enroll']).toContain(r.auth);
       if (r.auth === 'auth' || r.auth === 'owner' || r.auth === 'enroll') continue;
@@ -14,10 +25,10 @@ describe('route table', () => {
       if (r.bodyMode === 'stream') expect(r.maxBodyBytes).toBe(MAX_BLOB_BYTES);
       if (r.auth === 'member') {
         expect({ path: r.path, shape: r.shape }).toEqual({ path: r.path, shape: r.bodyMode === 'stream' ? 'stored' : r.path === '/tokens/refresh' ? 'refreshed' : 'persisted' });
-        expect({ path: r.path, quotaPrecheck: r.quotaPrecheck }).toEqual({ path: r.path, quotaPrecheck: r.path === '/tokens/refresh' ? false : undefined });
+        expect({ path: r.path, quotaPrecheck: r.quotaPrecheck }).toEqual({ path: r.path, quotaPrecheck: QUOTA_EXEMPT.has(r.path) ? false : undefined });
       }
     }
-    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh']);
+    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /runs/claim', 'POST /runs/state/read', 'POST /runs/state/write']);
   });
 
   it('routes exactly the child segments the handler serves', async () => {
