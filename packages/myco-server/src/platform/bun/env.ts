@@ -32,23 +32,34 @@ export const classifyBlobFailureOf: BlobFailureClassifier = (message) =>
   message.includes(DIGEST_MISMATCH_MESSAGE) ? 'digest' : null;
 
 export function bunPlatform(config: BunServerConfig): PlatformDescriptor {
+  // Usability, not merely presence: an open handle that cannot answer a trivial
+  // query is as missing as no handle at all, and is the shape a detached volume
+  // or a half-applied migration actually takes.
+  const storeUsable = (): boolean => {
+    try {
+      if (config.sqlite === undefined || config.sqlite === null) return false;
+      config.sqlite.query('SELECT 1').get();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   return {
     name: 'bun',
-    requiredBindings: REQUIRED_BINDINGS,
-    missingBindings: () => {
-      const missing: string[] = [];
-      // Usability, not merely presence: an open handle that cannot answer a trivial
-      // query is as missing as no handle at all, and is the shape a detached volume
-      // or a half-applied migration actually takes.
-      try {
-        if (config.sqlite === undefined || config.sqlite === null) throw new Error('no database');
-        config.sqlite.query('SELECT 1').get();
-      } catch {
-        missing.push('MYCO_DATABASE');
-      }
-      if (!config.blobDir) missing.push('MYCO_BLOB_DIR');
-      return missing;
-    },
+    capabilities: () => [
+      { capability: 'relational-store', label: 'Project storage', present: storeUsable(), operatorNames: ['MYCO_DATABASE'] },
+      { capability: 'blob-store', label: 'Blob storage', present: Boolean(config.blobDir), operatorNames: ['MYCO_BLOB_DIR'] },
+      {
+        capability: 'rate-limiting',
+        label: 'Request rate limiting',
+        // In-process here, so there is nothing for an operator to configure and
+        // nothing that can be absent. Reporting a missing binding for it would
+        // be false on this target.
+        present: true,
+        operatorNames: [],
+      },
+    ],
     classifyError: classifySqliteError,
     classifyBlobFailure: classifyBlobFailureOf,
   };

@@ -115,6 +115,10 @@ function agreeing({ w, c }: { w: Outcome; c: Outcome }, expected: Outcome): void
   expect({ cloudflare: w, selfHosted: c }).toEqual({ cloudflare: expected, selfHosted: expected });
 }
 
+/** Capability ids a platform reports as not present, for cross-target comparison. */
+const absentIds = (caps: { capability: string; present: boolean }[]): string[] =>
+  caps.filter((c) => !c.present).map((c) => c.capability).sort();
+
 describe('one server product, two deployment targets', () => {
   it('serves health without a credential', async () => {
     const out = await onBoth((t) => t.fetch(new Request('https://s/health')));
@@ -240,21 +244,28 @@ describe('one server product, two deployment targets', () => {
     // required binding is NAMED here rather than answering a bare 503 at the first
     // request that happens to touch it.
     const hosted = serverEnvFromBindings({ BUCKET: undefined, SOURCE_LIMIT: {}, TOKEN_LIMIT: {}, MYCO_DB: {} } as never);
-    expect(hosted.platform.missingBindings()).toEqual(['BUCKET']);
+    expect(absentIds(hosted.platform.capabilities())).toEqual(['blob-store']);
 
     const { sqlite } = seededFile();
-    expect(serverEnvFromBunConfig({ sqlite, blobDir: '' }).platform.missingBindings()).toEqual(['MYCO_BLOB_DIR']);
-    expect(serverEnvFromBunConfig({ sqlite: undefined as never, blobDir: '/tmp/x' }).platform.missingBindings()).toEqual(['MYCO_DATABASE']);
+    expect(absentIds(serverEnvFromBunConfig({ sqlite, blobDir: '' }).platform.capabilities())).toEqual(['blob-store']);
+    expect(absentIds(serverEnvFromBunConfig({ sqlite: undefined as never, blobDir: '/tmp/x' }).platform.capabilities())).toEqual(['relational-store']);
 
     // A handle that cannot answer a query is as missing as no handle at all.
     sqlite.close();
-    expect(serverEnvFromBunConfig({ sqlite, blobDir: '/tmp/x' }).platform.missingBindings()).toEqual(['MYCO_DATABASE']);
+    expect(absentIds(serverEnvFromBunConfig({ sqlite, blobDir: '/tmp/x' }).platform.capabilities())).toEqual(['relational-store']);
   });
 
-  it('reports its own required infrastructure, with none missing when configured', () => {
+  it('states the same capabilities on both targets, with none absent when configured', () => {
     for (const t of TARGETS) {
-      expect({ target: t.name, missing: t.env.platform.missingBindings() }).toEqual({ target: t.name, missing: [] });
-      expect(t.env.platform.requiredBindings.length).toBeGreaterThan(0);
+      const caps = t.env.platform.capabilities();
+      expect({ target: t.name, absent: absentIds(caps) }).toEqual({ target: t.name, absent: [] });
+      // The set is identical across targets, which is what lets one sentence
+      // describe either one.
+      expect({ target: t.name, ids: caps.map((c) => c.capability).sort() })
+        .toEqual({ target: t.name, ids: ['blob-store', 'rate-limiting', 'relational-store'] });
+      // Same wording, whichever target is answering.
+      expect({ target: t.name, labels: caps.map((c) => c.label).sort() })
+        .toEqual({ target: t.name, labels: ['Blob storage', 'Project storage', 'Request rate limiting'] });
     }
     // Each target names its own infrastructure in its own vocabulary.
     expect(W.env.platform.name).not.toBe(C.env.platform.name);
