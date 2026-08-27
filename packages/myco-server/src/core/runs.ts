@@ -148,3 +148,33 @@ export async function mutateState(
   }
   return false;
 }
+
+export interface AgentIdentity {
+  id: string;
+  name: string;
+  provider: string | null;
+  model: string | null;
+  enabled: boolean;
+}
+
+/**
+ * Declare an agent identity, idempotently.
+ *
+ * Deployment-scoped: one agent configuration serves every Project the Deployment
+ * holds, so this takes no scope. `created_at` is preserved on a re-declaration —
+ * the row's identity outlives any one edit of its configuration.
+ */
+export async function upsertAgent(db: RelationalStore, agent: AgentIdentity, now: number): Promise<void> {
+  await db.prepare(`INSERT INTO agents (id, name, provider, model, source, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'built-in', ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET
+        name = excluded.name, provider = excluded.provider, model = excluded.model,
+        enabled = excluded.enabled, updated_at = excluded.updated_at`)
+    .bind(agent.id, agent.name, agent.provider, agent.model, agent.enabled ? 1 : 0, now, now).run();
+}
+
+export async function listAgents(db: RelationalStore): Promise<AgentIdentity[]> {
+  const { results } = await db.prepare(`SELECT id, name, provider, model, enabled FROM agents ORDER BY id`)
+    .all<{ id: string; name: string; provider: string | null; model: string | null; enabled: number }>();
+  return results.map((r) => ({ ...r, enabled: r.enabled === 1 }));
+}

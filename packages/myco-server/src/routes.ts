@@ -9,6 +9,7 @@ import {
   handleSetSecret, handleSetSetting, handleSettings,
 } from './api/settings.js';
 import { handleBlobRead } from './api/blobs.js';
+import { handleAgents, handleClaimRun, handleReadState, handleRegisterAgent, handleWriteState } from './api/runs.js';
 import { handleMintToken, handleRevokeToken, handleTokenActivity, handleTokens } from './api/tokens.js';
 import { handleProjectSessions, handleSession, handleSessionChildren, handleTranscript } from './api/sessions.js';
 import { MAX_BLOB_BYTES } from './constants.js';
@@ -51,6 +52,13 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
   { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, handler: handleRefresh },
+  // The run control plane. `quotaPrecheck: false`: the byte quota bounds what a
+  // member's CAPTURE may write, and charging a Deployment's own scheduled
+  // intelligence against a human's capture allowance would let ordinary agent
+  // work exhaust that member's ability to record their sessions.
+  { method: 'POST', path: '/runs/claim', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleClaimRun },
+  { method: 'POST', path: '/runs/state/read', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleReadState },
+  { method: 'POST', path: '/runs/state/write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteState },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'GET', path: '/api/status', auth: 'owner', handler: handleStatus },
   { method: 'GET', path: '/api/projects', auth: 'owner', handler: handleProjects },
@@ -64,6 +72,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/api/projects/{projectId}/tokens', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/tokens$/, auth: 'owner', handler: handleMintToken },
   { method: 'POST', path: '/api/projects/{projectId}/tokens/{tokenId}/revoke', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/tokens\/(?<tokenId>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeToken },
   { method: 'GET', path: '/api/projects/{projectId}/tokens/{tokenId}/activity', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/tokens\/(?<tokenId>[A-Za-z0-9._-]{1,64})\/activity$/, auth: 'owner', handler: handleTokenActivity },
+  { method: 'GET', path: '/api/agents', auth: 'owner', handler: handleAgents },
+  { method: 'PUT', path: '/api/agents/{agentId}', pattern: /^\/api\/agents\/(?<agentId>[A-Za-z0-9._-]{1,64})$/, auth: 'owner', handler: handleRegisterAgent },
   { method: 'GET', path: '/api/settings', auth: 'owner', handler: handleSettings },
   { method: 'PUT', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'owner', handler: handleSetSetting },
   { method: 'GET', path: '/api/secrets', auth: 'owner', handler: handleSecrets },

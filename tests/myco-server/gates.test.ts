@@ -458,6 +458,11 @@ describe('gates', () => {
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
     const anonymous = await issueMemberToken(db, { memberId: 'mem_anon', machineId: null }, issuedAt);
     const KEY = 'a'.repeat(64);
+    // The run routes reference an agent identity and a project, both of which a
+    // Deployment declares before any run is claimed.
+    let runSeq = 0;
+    sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`).run(issuedAt);
+    sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_gate', 'gate', 'built-in', 1, ?)`).run(issuedAt);
     const bytes = new TextEncoder().encode('blob-bytes');
     const key = await sha256Hex('blob-bytes');
     /** Per non-public route: a malformed request the route refuses, and a well-formed one it would store. */
@@ -476,6 +481,21 @@ describe('gates', () => {
         shape: 'refreshed',
         malformed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
         wellFormed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+      },
+      'POST /runs/claim': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `run_${runSeq++}`, agentId: 'agent_gate', task: 'digest', maxAgeSeconds: 3600 }) }),
+      },
+      'POST /runs/state/read': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/state/read', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/state/read', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ agentId: 'agent_gate', key: 'k' }) }),
+      },
+      'POST /runs/state/write': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/state/write', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/state/write', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ agentId: 'agent_gate', key: `k_${runSeq++}`, value: 'v' }) }),
       },
     };
     expect(ROUTES.filter((r) => r.auth === 'member').map((r) => `${r.method} ${r.path}`).sort()).toEqual(Object.keys(FIXTURES).sort());
@@ -795,8 +815,12 @@ describe('gates', () => {
       'enroll POST /members/join',
       'member POST /blobs/{sha256}',
       'member POST /events',
+      'member POST /runs/claim',
+      'member POST /runs/state/read',
+      'member POST /runs/state/write',
       'member POST /tokens/refresh',
       'owner DELETE /api/secrets/{name}',
+      'owner GET /api/agents',
       'owner GET /api/projects',
       'owner GET /api/projects/{projectId}/blobs/{key}',
       'owner GET /api/projects/{projectId}/capabilities',
@@ -813,6 +837,7 @@ describe('gates', () => {
       'owner POST /api/projects/{projectId}/tokens',
       'owner POST /api/projects/{projectId}/tokens/{tokenId}/revoke',
       'owner POST /auth/logout',
+      'owner PUT /api/agents/{agentId}',
       'owner PUT /api/projects/{projectId}/capabilities/{capability}',
       'owner PUT /api/secrets/{name}',
       'owner PUT /api/settings/{leaf}',
