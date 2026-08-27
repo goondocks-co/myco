@@ -427,10 +427,11 @@ describe('gates', () => {
     // credential belongs to a member and a Deployment, not to one project — so
     // their indexes lead with what they are actually looked up by.
     const deploymentScoped = /ON (member_tokens|members|member_credentials|enrollment_authorities|step_up_authorities)\b/;
-    // One reservation index is keyed on the credential rather than the project: a
-    // credential spans every Project in its Deployment, so the quota admission looks
-    // reservations up by credential and the index has to lead with what it is read by.
-    const byCredential = /idx_blob_reservations_credential/;
+    // Two indexes are keyed on the credential rather than the project: a credential
+    // spans every Project in its Deployment, so the quota admission looks reservations
+    // up by credential, and the foreign key on a run's dispatching credential is
+    // checked by credential alone. Both have to lead with what they are read by.
+    const byCredential = /idx_blob_reservations_credential|idx_agent_runs_credential/;
     for (const s of SCHEMA_DDL.filter((x) => /CREATE (UNIQUE )?INDEX .* ON \w+/.test(x) && !deploymentScoped.test(x) && !byCredential.test(x))) {
       expect(s).toMatch(/\(project_id/);
     }

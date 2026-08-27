@@ -62,13 +62,16 @@ CREATE TABLE IF NOT EXISTS agent_runs (
      reasoning_level    TEXT,
      execution_overrides TEXT,
      run_context        TEXT,
+     dispatched_by      TEXT REFERENCES member_credentials(id),
      PRIMARY KEY (project_id, id));
 
 CREATE INDEX IF NOT EXISTS idx_agent_runs_task ON agent_runs (project_id, task, status, started_at);
 
+CREATE INDEX IF NOT EXISTS idx_agent_runs_credential ON agent_runs (dispatched_by);
+
 CREATE TABLE IF NOT EXISTS agent_run_events (
+     id          INTEGER PRIMARY KEY AUTOINCREMENT,
      project_id  TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')) REFERENCES projects(project_id),
-     id          TEXT NOT NULL,
      run_id      TEXT NOT NULL,
      phase_name  TEXT,
      event_type  TEXT NOT NULL,
@@ -77,14 +80,13 @@ CREATE TABLE IF NOT EXISTS agent_run_events (
      duration_ms INTEGER,
      payload     TEXT,
      recorded_at INTEGER NOT NULL,
-     PRIMARY KEY (project_id, id),
      FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id) ON DELETE CASCADE);
 
 CREATE INDEX IF NOT EXISTS idx_agent_run_events_run ON agent_run_events (project_id, run_id, recorded_at);
 
 CREATE TABLE IF NOT EXISTS agent_run_write_intents (
+     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
      project_id         TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')) REFERENCES projects(project_id),
-     id                 TEXT NOT NULL,
      run_id             TEXT NOT NULL,
      phase_id           TEXT,
      tool_name          TEXT NOT NULL,
@@ -94,14 +96,13 @@ CREATE TABLE IF NOT EXISTS agent_run_write_intents (
      classifier_verdict TEXT,
      classifier_reason  TEXT,
      recorded_at        INTEGER NOT NULL,
-     PRIMARY KEY (project_id, id),
      FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id) ON DELETE CASCADE);
 
 CREATE INDEX IF NOT EXISTS idx_agent_run_write_intents_run ON agent_run_write_intents (project_id, run_id, recorded_at);
 
 CREATE TABLE IF NOT EXISTS agent_turns (
+     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
      project_id          TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')) REFERENCES projects(project_id),
-     id                  TEXT NOT NULL,
      run_id              TEXT NOT NULL,
      agent_id            TEXT NOT NULL REFERENCES agents(id),
      turn_number         INTEGER NOT NULL,
@@ -110,21 +111,19 @@ CREATE TABLE IF NOT EXISTS agent_turns (
      tool_output_summary TEXT,
      started_at          INTEGER,
      completed_at        INTEGER,
-     PRIMARY KEY (project_id, id),
      FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id));
 
 CREATE INDEX IF NOT EXISTS idx_agent_turns_run ON agent_turns (project_id, run_id, turn_number);
 
 CREATE TABLE IF NOT EXISTS agent_reports (
+     id         INTEGER PRIMARY KEY AUTOINCREMENT,
      project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')) REFERENCES projects(project_id),
-     id         TEXT NOT NULL,
      run_id     TEXT NOT NULL,
      agent_id   TEXT NOT NULL REFERENCES agents(id),
      action     TEXT NOT NULL,
      summary    TEXT NOT NULL,
      details    TEXT,
      created_at INTEGER NOT NULL,
-     PRIMARY KEY (project_id, id),
      FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id));
 
 CREATE INDEX IF NOT EXISTS idx_agent_reports_run ON agent_reports (project_id, run_id, created_at);
@@ -265,19 +264,19 @@ CREATE TABLE IF NOT EXISTS digest_extracts (
 
 CREATE INDEX IF NOT EXISTS idx_digest_extracts_tier ON digest_extracts (project_id, tier, generated_at);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_digest_extracts_project_agent_tier ON digest_extracts (project_id, agent_id, tier);
+
 CREATE TABLE IF NOT EXISTS digest_extract_revisions (
+     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
      project_id         TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')) REFERENCES projects(project_id),
-     id                 TEXT NOT NULL,
      agent_id           TEXT NOT NULL,
      tier               INTEGER NOT NULL,
      content            TEXT NOT NULL,
      metadata           TEXT,
      run_id             TEXT,
-     parent_revision_id TEXT,
+     parent_revision_id INTEGER REFERENCES digest_extract_revisions(id),
      created_at         INTEGER NOT NULL,
-     PRIMARY KEY (project_id, id),
-     FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id) ON DELETE SET NULL,
-     FOREIGN KEY (project_id, parent_revision_id) REFERENCES digest_extract_revisions(project_id, id));
+     FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id) ON DELETE SET NULL);
 
 CREATE INDEX IF NOT EXISTS idx_digest_extract_revisions_tier ON digest_extract_revisions (project_id, tier, created_at);
 
@@ -292,8 +291,8 @@ CREATE TABLE IF NOT EXISTS cortex_instructions (
      PRIMARY KEY (project_id, id));
 
 CREATE TABLE IF NOT EXISTS knowledge_git_provenance (
+     id                       INTEGER PRIMARY KEY AUTOINCREMENT,
      project_id               TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')) REFERENCES projects(project_id),
-     id                       TEXT NOT NULL,
      identity_key             TEXT NOT NULL,
      session_id               TEXT,
      prompt_id                TEXT,
@@ -317,7 +316,6 @@ CREATE TABLE IF NOT EXISTS knowledge_git_provenance (
      evidence_json            TEXT,
      error                    TEXT,
      created_at               INTEGER NOT NULL,
-     PRIMARY KEY (project_id, id),
      FOREIGN KEY (project_id, session_id) REFERENCES sessions(project_id, session_id));
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_git_provenance_identity ON knowledge_git_provenance (project_id, identity_key);

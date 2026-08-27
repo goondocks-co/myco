@@ -512,9 +512,15 @@ const V6_STATEMENTS: readonly string[] = [
  *    Host sync columns. Team Host is retired, and attribution on a Deployment is
  *    per member, runtime and agent — a narrower thing carried by the run and the
  *    credential, not by a machine name on every row.
- * 3. Five use `INTEGER PRIMARY KEY AUTOINCREMENT`. SQLite requires such a column
- *    to be the whole primary key, which cannot lead with `project_id`. They take
- *    server-generated TEXT ids instead, as every other server-side identity does.
+ * The six append-only log tables KEEP `INTEGER PRIMARY KEY AUTOINCREMENT`, which
+ * SQLite requires to be the whole primary key and so cannot lead with
+ * `project_id`. That is deliberate: the id IS the insertion order, and readers
+ * page through these with `ORDER BY id` and an `id > ?` cursor. A
+ * server-generated text id orders lexicographically, which is not insertion
+ * order, and `recorded_at` is second-granular so ties within a run are ordinary.
+ * Tenancy on those tables rides `project_id NOT NULL` under the grammar CHECK,
+ * the composite foreign key to `agent_runs`, and every index leading with
+ * `project_id` — the places it is actually read.
  *
  * `agents` and `agent_tasks` are the deliberate exception: they are Deployment
  * definitions — an agent's provider, model, prompt and tool access, and the task
@@ -593,12 +599,22 @@ const V7_STATEMENTS: readonly string[] = [
      reasoning_level    TEXT,
      execution_overrides TEXT,
      run_context        TEXT,
+     dispatched_by      TEXT REFERENCES member_credentials(id),
      PRIMARY KEY (project_id, id))`,
   /** The single-flight claim reads this: a live run of one task, newest first. */
   `CREATE INDEX IF NOT EXISTS idx_agent_runs_task ON agent_runs (project_id, task, status, started_at)`,
+  /**
+   * The dispatching credential, led by the credential rather than the Project.
+   *
+   * A credential spans every Project in its Deployment, and this index exists to
+   * serve the foreign key check that runs whenever a credential row is written —
+   * a lookup by credential alone. Leading it with `project_id` leaves that check
+   * scanning `agent_runs`, which the cost gate observes.
+   */
+  `CREATE INDEX IF NOT EXISTS idx_agent_runs_credential ON agent_runs (dispatched_by)`,
   `CREATE TABLE IF NOT EXISTS agent_run_events (
+     id          INTEGER PRIMARY KEY AUTOINCREMENT,
      project_id  TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
-     id          TEXT NOT NULL,
      run_id      TEXT NOT NULL,
      phase_name  TEXT,
      event_type  TEXT NOT NULL,
@@ -607,13 +623,12 @@ const V7_STATEMENTS: readonly string[] = [
      duration_ms INTEGER,
      payload     TEXT,
      recorded_at INTEGER NOT NULL,
-     PRIMARY KEY (project_id, id),
      FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id) ON DELETE CASCADE)`,
   `CREATE INDEX IF NOT EXISTS idx_agent_run_events_run ON agent_run_events (project_id, run_id, recorded_at)`,
   /** What a dry run would have written, and how the classifier judged it. */
   `CREATE TABLE IF NOT EXISTS agent_run_write_intents (
+     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
      project_id         TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
-     id                 TEXT NOT NULL,
      run_id             TEXT NOT NULL,
      phase_id           TEXT,
      tool_name          TEXT NOT NULL,
@@ -623,12 +638,11 @@ const V7_STATEMENTS: readonly string[] = [
      classifier_verdict TEXT,
      classifier_reason  TEXT,
      recorded_at        INTEGER NOT NULL,
-     PRIMARY KEY (project_id, id),
      FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id) ON DELETE CASCADE)`,
   `CREATE INDEX IF NOT EXISTS idx_agent_run_write_intents_run ON agent_run_write_intents (project_id, run_id, recorded_at)`,
   `CREATE TABLE IF NOT EXISTS agent_turns (
+     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
      project_id          TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
-     id                  TEXT NOT NULL,
      run_id              TEXT NOT NULL,
      agent_id            TEXT NOT NULL REFERENCES agents(id),
      turn_number         INTEGER NOT NULL,
@@ -637,19 +651,17 @@ const V7_STATEMENTS: readonly string[] = [
      tool_output_summary TEXT,
      started_at          INTEGER,
      completed_at        INTEGER,
-     PRIMARY KEY (project_id, id),
      FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id))`,
   `CREATE INDEX IF NOT EXISTS idx_agent_turns_run ON agent_turns (project_id, run_id, turn_number)`,
   `CREATE TABLE IF NOT EXISTS agent_reports (
+     id         INTEGER PRIMARY KEY AUTOINCREMENT,
      project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
-     id         TEXT NOT NULL,
      run_id     TEXT NOT NULL,
      agent_id   TEXT NOT NULL REFERENCES agents(id),
      action     TEXT NOT NULL,
      summary    TEXT NOT NULL,
      details    TEXT,
      created_at INTEGER NOT NULL,
-     PRIMARY KEY (project_id, id),
      FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id))`,
   `CREATE INDEX IF NOT EXISTS idx_agent_reports_run ON agent_reports (project_id, run_id, created_at)`,
   /**
@@ -789,19 +801,27 @@ const V7_STATEMENTS: readonly string[] = [
      generated_at   INTEGER NOT NULL,
      PRIMARY KEY (project_id, id))`,
   `CREATE INDEX IF NOT EXISTS idx_digest_extracts_tier ON digest_extracts (project_id, tier, generated_at)`,
+  /**
+   * One current digest per agent and tier within a Project.
+   *
+   * The writer is a read-then-update-or-insert keyed on that triple, so the
+   * uniqueness is what makes it address a single row. Without it two concurrent
+   * digest runs each insert and both survive as current, and a reader receives
+   * two answers to a question that has one. The 1.4 vault splits this across two
+   * partial indexes to key a nullable `project_id`; NOT NULL collapses them.
+   */
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_digest_extracts_project_agent_tier ON digest_extracts (project_id, agent_id, tier)`,
   `CREATE TABLE IF NOT EXISTS digest_extract_revisions (
+     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
      project_id         TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
-     id                 TEXT NOT NULL,
      agent_id           TEXT NOT NULL,
      tier               INTEGER NOT NULL,
      content            TEXT NOT NULL,
      metadata           TEXT,
      run_id             TEXT,
-     parent_revision_id TEXT,
+     parent_revision_id INTEGER REFERENCES digest_extract_revisions(id),
      created_at         INTEGER NOT NULL,
-     PRIMARY KEY (project_id, id),
-     FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id) ON DELETE SET NULL,
-     FOREIGN KEY (project_id, parent_revision_id) REFERENCES digest_extract_revisions(project_id, id))`,
+     FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, id) ON DELETE SET NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_digest_extract_revisions_tier ON digest_extract_revisions (project_id, tier, created_at)`,
   /**
    * Generated Cortex instructions.
@@ -827,8 +847,8 @@ const V7_STATEMENTS: readonly string[] = [
    * one Project's key refuse another Project's row.
    */
   `CREATE TABLE IF NOT EXISTS knowledge_git_provenance (
+     id                       INTEGER PRIMARY KEY AUTOINCREMENT,
      project_id               TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
-     id                       TEXT NOT NULL,
      identity_key             TEXT NOT NULL,
      session_id               TEXT,
      prompt_id                TEXT,
@@ -852,7 +872,6 @@ const V7_STATEMENTS: readonly string[] = [
      evidence_json            TEXT,
      error                    TEXT,
      created_at               INTEGER NOT NULL,
-     PRIMARY KEY (project_id, id),
      FOREIGN KEY (project_id, session_id) REFERENCES sessions(project_id, session_id))`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_git_provenance_identity ON knowledge_git_provenance (project_id, identity_key)`,
   /** Release state per namespaced record. `identity_key` is scoped to the Project for the same reason as git provenance. */
@@ -879,6 +898,7 @@ const V7_STATEMENTS: readonly string[] = [
      FOREIGN KEY (project_id, source_session_id) REFERENCES sessions(project_id, session_id))`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_release_state_identity ON knowledge_release_state (project_id, identity_key)`,
 ];
+
 
 function withStamp(version: number, statements: readonly string[]): SchemaStep {
   return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
