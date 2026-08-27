@@ -16,7 +16,11 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { claimRun, getState, mutateState, MUTATE_ATTEMPTS, type RunInsert } from '@myco-server-worker/core/runs.js';
+import {
+  applyRunUpdate, claimRun, getRun, getState, mutateState, MUTATE_ATTEMPTS,
+  RUN_IMMUTABLE_COLUMNS, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns,
+  upsertCortexInstructions, type RunInsert,
+} from '@myco-server-worker/core/runs.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
@@ -303,5 +307,97 @@ describe('mutateState', () => {
     await mutateState(db, OTHER, AGENT, 'shared', () => 'two', NOW);
     expect((await getState(db, SCOPE, AGENT, 'shared'))!.value).toBe('one');
     expect((await getState(db, OTHER, AGENT, 'shared'))!.value).toBe('two');
+  });
+});
+
+describe('run lifecycle', () => {
+  const seedFailedResumable = (sqlite: Database, id: string, over: Partial<{ task: string; agentId: string; dryRun: number; projectId: string }> = {}) => {
+    sqlite.query(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, resumable, dry_run, started_at)
+      VALUES (?, ?, ?, ?, 'failed', 1, ?, ?)`)
+      .run(over.projectId ?? SCOPE.projectId, id, over.agentId ?? AGENT, over.task ?? 'digest', over.dryRun ?? 0, NOW);
+  };
+
+  it('applies only the columns it names, and reports rows moved', async () => {
+    const { db, sqlite } = store();
+    await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);
+    expect(await applyRunUpdate(db, SCOPE, 'r1', { status: 'failed', error: 'boom' })).toBe(1);
+    const row = sqlite.query(`SELECT status, error, task FROM agent_runs WHERE id = 'r1'`).get() as { status: string; error: string; task: string };
+    expect(row).toEqual({ status: 'failed', error: 'boom', task: 'digest' });
+  });
+
+  it('reports zero for a run outside the scope, which a caller must not read as success', async () => {
+    const { db } = store();
+    await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);
+    expect(await applyRunUpdate(db, OTHER, 'r1', { status: 'failed' })).toBe(0);
+  });
+
+  it('issues no statement for an update naming nothing settable', async () => {
+    const { db } = store();
+    await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);
+    expect(await applyRunUpdate(db, SCOPE, 'r1', {})).toBe(0);
+  });
+
+  it('never lets a run change Project, agent, identity or dispatcher', () => {
+    for (const column of RUN_IMMUTABLE_COLUMNS) {
+      expect({ column, settable: (RUN_UPDATE_COLUMNS as readonly string[]).includes(column) })
+        .toEqual({ column, settable: false });
+    }
+  });
+
+  it('supersedes an equivalent failed resumable run and leaves the excluded one alone', async () => {
+    const { db, sqlite } = store();
+    seedFailedResumable(sqlite, 'old');
+    seedFailedResumable(sqlite, 'keep');
+    expect(await supersedeEquivalentResumableRuns(db, SCOPE, 'keep', { agentId: AGENT, taskName: 'digest', dryRun: false })).toBe(1);
+    const rows = sqlite.query(`SELECT id, resumable, resume_status AS s FROM agent_runs ORDER BY id`).all() as { id: string; resumable: number; s: string | null }[];
+    expect(rows).toEqual([{ id: 'keep', resumable: 1, s: null }, { id: 'old', resumable: 0, s: 'superseded' }]);
+  });
+
+  it('does not let a dry run supersede a real one, or the reverse', async () => {
+    const { db, sqlite } = store();
+    seedFailedResumable(sqlite, 'real', { dryRun: 0 });
+    seedFailedResumable(sqlite, 'dry', { dryRun: 1 });
+    expect(await supersedeEquivalentResumableRuns(db, SCOPE, 'x', { agentId: AGENT, taskName: 'digest', dryRun: true })).toBe(1);
+    const rows = sqlite.query(`SELECT id, resumable FROM agent_runs ORDER BY id`).all() as { id: string; resumable: number }[];
+    expect(rows).toEqual([{ id: 'dry', resumable: 0 }, { id: 'real', resumable: 1 }]);
+  });
+
+  it('supersedes neither another task, another agent, nor another Project', async () => {
+    const { db, sqlite } = store();
+    seedFailedResumable(sqlite, 'other_task', { task: 'extract' });
+    seedFailedResumable(sqlite, 'other_project', { projectId: OTHER.projectId });
+    expect(await supersedeEquivalentResumableRuns(db, SCOPE, 'x', { agentId: AGENT, taskName: 'digest', dryRun: false })).toBe(0);
+  });
+
+  it('touches only failed resumable runs', async () => {
+    const { db, sqlite } = store();
+    await claimRun(db, SCOPE, run('running', 'digest'), guardFor('digest'), NOW);
+    sqlite.query(`UPDATE agent_runs SET resumable = 1 WHERE id = 'running'`).run();
+    expect(await supersedeEquivalentResumableRuns(db, SCOPE, 'x', { agentId: AGENT, taskName: 'digest', dryRun: false })).toBe(0);
+  });
+
+  it('reads a run back within its scope and not outside it', async () => {
+    const { db } = store();
+    await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);
+    expect((await getRun(db, SCOPE, 'r1'))?.task).toBe('digest');
+    expect(await getRun(db, OTHER, 'r1')).toBeNull();
+  });
+});
+
+describe('cortex instructions', () => {
+  it('replaces content and provenance on conflict, and moves neither the row nor its Project', async () => {
+    const { db, sqlite } = store();
+    await upsertCortexInstructions(db, SCOPE, { agentId: AGENT, content: 'first', inputHash: 'h1', generatedAt: NOW, sourceRunId: null });
+    await upsertCortexInstructions(db, SCOPE, { agentId: AGENT, content: 'second', inputHash: 'h2', generatedAt: NOW + 1, sourceRunId: 'r1' });
+    const rows = sqlite.query(`SELECT project_id AS p, id, content, input_hash AS h, source_run_id AS r FROM cortex_instructions`).all();
+    expect(rows).toEqual([{ p: SCOPE.projectId, id: `${AGENT}:instructions`, content: 'second', h: 'h2', r: 'r1' }]);
+  });
+
+  it('keeps one row per Project, so the other Project instructions are untouched', async () => {
+    const { db, sqlite } = store();
+    await upsertCortexInstructions(db, SCOPE, { agentId: AGENT, content: 'one', inputHash: 'h', generatedAt: NOW, sourceRunId: null });
+    await upsertCortexInstructions(db, OTHER, { agentId: AGENT, content: 'two', inputHash: 'h', generatedAt: NOW, sourceRunId: null });
+    const rows = sqlite.query(`SELECT project_id AS p, content FROM cortex_instructions ORDER BY project_id`).all();
+    expect(rows).toEqual([{ p: SCOPE.projectId, content: 'one' }, { p: OTHER.projectId, content: 'two' }]);
   });
 });

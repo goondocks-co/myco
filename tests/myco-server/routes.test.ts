@@ -14,7 +14,7 @@ describe('route table', () => {
    * a human's capture allowance would let ordinary agent work exhaust that
    * member's ability to record their own sessions.
    */
-  const QUOTA_EXEMPT = new Set(['/tokens/refresh', '/runs/claim', '/runs/state/read', '/runs/state/write']);
+  const QUOTA_EXEMPT = new Set(['/tokens/refresh', '/runs/claim', '/runs/get', '/runs/update', '/runs/supersede', '/runs/reports', '/runs/cortex-instructions', '/runs/state/read', '/runs/state/write']);
 
   it('declares an auth kind and a body mode for every route, a shape for every member route, and charges every member route to the quota but the named exemptions', () => {
     for (const r of ROUTES) {
@@ -28,7 +28,7 @@ describe('route table', () => {
         expect({ path: r.path, quotaPrecheck: r.quotaPrecheck }).toEqual({ path: r.path, quotaPrecheck: QUOTA_EXEMPT.has(r.path) ? false : undefined });
       }
     }
-    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /runs/claim', 'POST /runs/state/read', 'POST /runs/state/write']);
+    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /runs/claim', 'POST /runs/get', 'POST /runs/update', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/cortex-instructions', 'POST /runs/state/read', 'POST /runs/state/write']);
   });
 
   it('routes exactly the child segments the handler serves', async () => {

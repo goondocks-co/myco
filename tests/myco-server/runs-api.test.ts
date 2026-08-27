@@ -122,3 +122,41 @@ describe('agent registration', () => {
     expect(row).toEqual({ name: 'second', model: 'm2', c: created });
   });
 });
+
+describe('run lifecycle over HTTP', () => {
+  it('refuses an update naming a column it may not set, rather than ignoring it', async () => {
+    const { post, sqlite } = await harness();
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    const res = await post('/runs/update', { runId: 'r1', update: { status: 'failed', project_id: 'proj_2', dispatched_by: 'someone' } });
+    expect({ persisted: res.persisted, coded: typeof res.code === 'string' }).toEqual({ persisted: false, coded: true });
+    expect(String(res.reason)).toContain('dispatched_by');
+    expect(String(res.reason)).toContain('project_id');
+    // Nothing moved: the refusal is whole, not partial.
+    const row = sqlite.query(`SELECT project_id AS p, status FROM agent_runs WHERE id = 'r1'`).get() as { p: string; status: string };
+    expect(row).toEqual({ p: 'proj_1', status: 'running' });
+  });
+
+  it('applies an update of settable columns and reports rows moved', async () => {
+    const { post } = await harness();
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } })).toEqual({ persisted: true, changed: 1 });
+    const got = await post('/runs/get', { runId: 'r1' });
+    expect((got.run as { status: string; completedAt: number }).status).toBe('completed');
+  });
+
+  it('reads a run in another Project as absent rather than refusing, so existence is not confirmed', async () => {
+    const { post, sqlite, env, token } = await harness();
+    sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_2', 'proj_2', ?)`).run(Date.now());
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    const other = await (await worker.fetch(memberPost(token.token, { runId: 'r1' }, '/runs/get', { 'x-myco-project': 'proj_2' }), env)).json() as Record<string, unknown>;
+    expect(other).toEqual({ persisted: true, run: null });
+  });
+
+  it('writes cortex instructions and replaces them on a second write', async () => {
+    const { post, sqlite } = await harness();
+    expect(await post('/runs/cortex-instructions', { agentId: AGENT, content: 'first', inputHash: 'h1' })).toEqual({ persisted: true });
+    await post('/runs/cortex-instructions', { agentId: AGENT, content: 'second', inputHash: 'h2' });
+    const rows = sqlite.query(`SELECT content FROM cortex_instructions`).all() as { content: string }[];
+    expect(rows).toEqual([{ content: 'second' }]);
+  });
+});

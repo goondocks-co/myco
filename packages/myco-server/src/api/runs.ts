@@ -21,7 +21,11 @@
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
-import { claimRun, getState, listAgents, mutateState, upsertAgent, type RunInsert } from '../core/runs.js';
+import {
+  applyRunUpdate, claimRun, getRun, getState, listAgents, listReports, mutateState,
+  RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns, upsertAgent, upsertCortexInstructions,
+  type RunInsert, type RunUpdate,
+} from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
@@ -175,4 +179,77 @@ export async function handleRegisterAgent(env: ServerEnv, ctx: OwnerContext): Pr
 /** Every agent identity this Deployment holds. */
 export async function handleAgents(env: ServerEnv, _ctx: OwnerContext): Promise<Response> {
   return ok({ agents: await listAgents(env.db) });
+}
+
+/** Read one run. */
+export async function handleGetRun(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (!body) return Response.json(refused(ctx, BAD_BODY));
+  const runId = str(body.runId);
+  if (runId === null) return Response.json(refused(ctx, refusal('get requires runId', 'parse')));
+  return Response.json({ persisted: true, run: await getRun(env.db, { projectId: ctx.projectId }, runId) });
+}
+
+/**
+ * Apply a partial update to one run.
+ *
+ * A column outside `RUN_UPDATE_COLUMNS` is a refusal rather than a silent
+ * ignore: a caller that believes it moved a run to another Project must be told
+ * it did not, and an ignored field reads exactly like an applied one.
+ */
+export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (!body) return Response.json(refused(ctx, BAD_BODY));
+  const runId = str(body.runId);
+  const update = body.update;
+  if (runId === null || typeof update !== 'object' || update === null || Array.isArray(update)) {
+    return Response.json(refused(ctx, refusal('update requires runId and an update object', 'parse')));
+  }
+  const settable = new Set<string>(RUN_UPDATE_COLUMNS);
+  const rejected = Object.keys(update).filter((k) => !settable.has(k));
+  if (rejected.length > 0) {
+    return Response.json(refused(ctx, refusal(`update names columns it may not set: ${rejected.sort().join(', ')}`, 'refused')));
+  }
+  const changed = await applyRunUpdate(env.db, { projectId: ctx.projectId }, runId, update as RunUpdate);
+  return Response.json({ persisted: true, changed });
+}
+
+/** Retire the resumability of failed runs equivalent to this one. */
+export async function handleSupersedeRuns(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (!body) return Response.json(refused(ctx, BAD_BODY));
+  const excludeRunId = str(body.excludeRunId);
+  const agentId = str(body.agentId);
+  const taskName = str(body.taskName);
+  if (excludeRunId === null || agentId === null || taskName === null || typeof body.dryRun !== 'boolean') {
+    return Response.json(refused(ctx, refusal('supersede requires excludeRunId, agentId, taskName and dryRun', 'parse')));
+  }
+  const superseded = await supersedeEquivalentResumableRuns(
+    env.db, { projectId: ctx.projectId }, excludeRunId, { agentId, taskName, dryRun: body.dryRun });
+  return Response.json({ persisted: true, superseded });
+}
+
+/** Every report a run recorded, in the order they were written. */
+export async function handleRunReports(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (!body) return Response.json(refused(ctx, BAD_BODY));
+  const runId = str(body.runId);
+  if (runId === null) return Response.json(refused(ctx, refusal('reports requires runId', 'parse')));
+  return Response.json({ persisted: true, reports: await listReports(env.db, { projectId: ctx.projectId }, runId) });
+}
+
+/** Write the current Cortex instructions for an agent within this Project. */
+export async function handleUpsertCortexInstructions(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (!body) return Response.json(refused(ctx, BAD_BODY));
+  const agentId = str(body.agentId);
+  const content = str(body.content, MAX_STATE_BYTES);
+  const inputHash = str(body.inputHash);
+  const generatedAt = int(body.generatedAt) ?? ctx.now;
+  const sourceRunId = strOrNull(body.sourceRunId);
+  if (agentId === null || content === null || inputHash === null || sourceRunId === undefined) {
+    return Response.json(refused(ctx, refusal('cortex instructions require agentId, content and inputHash', 'parse')));
+  }
+  await upsertCortexInstructions(env.db, { projectId: ctx.projectId }, { agentId, content, inputHash, generatedAt, sourceRunId });
+  return Response.json({ persisted: true });
 }
