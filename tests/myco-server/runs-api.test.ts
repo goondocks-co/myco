@@ -53,6 +53,22 @@ describe('POST /runs/claim', () => {
     expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(0);
   });
 
+  it('admits a capture-driven claim on a configured provider, without any Project capability', async () => {
+    const { post, sqlite } = await harness();
+    sqlite.query(`DELETE FROM project_capabilities`).run();
+    sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by)
+      VALUES ('agent.provider.type', '"anthropic"', ?, 'test')`).run(Date.now());
+    expect(await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'title-summary', maxAgeSeconds: 3600, captureDriven: true }))
+      .toEqual({ persisted: true, claimed: true, runId: 'r1' });
+  });
+
+  it('answers a capture-driven claim with no provider distinctly, so a caller reports what to configure', async () => {
+    const { post, sqlite } = await harness();
+    const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'title-summary', maxAgeSeconds: 3600, captureDriven: true });
+    expect(res).toEqual({ persisted: true, claimed: false, noProvider: true });
+    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(0);
+  });
+
   it('refuses a claim naming no capability, so admission cannot be skipped by omission', async () => {
     const { post, sqlite } = await harness();
     const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600 });

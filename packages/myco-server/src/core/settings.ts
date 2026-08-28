@@ -182,6 +182,49 @@ export interface SettingsWriter {
   capabilities(projectId: string): Promise<Record<ProjectCapability, boolean>>;
 }
 
+/**
+ * Whether this Deployment can run `taskName` at all.
+ *
+ * A provider is resolved task-first, then default — `agent.tasks.<task>.provider`
+ * before `agent.provider.type` — matching the member's own resolution order. A
+ * task with neither has no model to call, and a run dispatched without one fails
+ * after doing work rather than declining before it.
+ *
+ * Deployment-scoped on purpose: the provider credential belongs to the
+ * Deployment, not to a Project, so this asks what the server can do rather than
+ * what a Project is admitted to.
+ */
+export async function providerConfiguredFor(db: RelationalStore, taskName: string): Promise<boolean> {
+  const rows = await db
+    .prepare(`SELECT leaf, value FROM deployment_settings WHERE leaf IN ('agent.provider.type', 'agent.tasks')`)
+    .all<{ leaf: string; value: string }>();
+  const byLeaf = new Map(rows.results.map((r) => [r.leaf, r.value]));
+
+  const perTask = byLeaf.get('agent.tasks');
+  if (perTask !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(perTask);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const entry = (parsed as Record<string, unknown>)[taskName];
+        if (entry !== null && typeof entry === 'object' && !Array.isArray(entry)
+          && (entry as Record<string, unknown>).provider != null) return true;
+      }
+    } catch {
+      // A malformed overrides document answers no per-task provider rather than
+      // throwing: the default below still decides, and the settings surface is
+      // where a malformed value is reported.
+    }
+  }
+
+  const fallback = byLeaf.get('agent.provider.type');
+  if (fallback === undefined) return false;
+  try {
+    return JSON.parse(fallback) != null;
+  } catch {
+    return false;
+  }
+}
+
 export function settingsWriter(
   db: RelationalStore,
   opts: { authorize?: SettingsAuthorizer; rearm?: ScheduleRearm } = {},
