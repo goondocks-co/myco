@@ -86,8 +86,11 @@ describe('read layer', () => {
     //   core/runs.ts      the agent run control plane — it OWNS agent_runs and
     //                     agent_state, and holds the two operations whose
     //                     atomicity lives in a WHERE clause rather than a caller
+    //   core/spores.ts    the spore store — it OWNS spores and resolution_events,
+    //                     and holds the one write that moves a status and records
+    //                     why it moved as a single commit
     //   pipeline.ts   one quota re-read on the ingest admission path
-    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/step-up\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/runs\.ts$/, /^pipeline\.ts$/];
+    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/step-up\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/runs\.ts$/, /^core\/spores\.ts$/, /^pipeline\.ts$/];
     const offenders: string[] = [];
     for (const file of tsFiles(SRC)) {
       const rel = file.slice(SRC.length);
