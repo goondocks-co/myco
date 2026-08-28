@@ -22,7 +22,7 @@
  */
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { settingsWriter, type ProjectCapability } from './settings.js';
+import { providerConfiguredFor, settingsWriter, type ProjectCapability } from './settings.js';
 
 /** How many times a refused compare-and-swap is recomputed before the write is reported as contended. */
 export const MUTATE_ATTEMPTS = 5;
@@ -58,10 +58,24 @@ export interface RunningRunRef {
  * that does not hold the capability the task needs — a different answer, and one
  * a caller must not retry into.
  */
+/**
+ * What must hold before a task may run.
+ *
+ * Two kinds, so a claim names one or the other and neither can be omitted.
+ * Most intelligence is governed per Project by a capability. The
+ * capture-driven tasks are not — a title and summary rides capture itself and
+ * asks only whether this Deployment has a model to call, resolved task-first
+ * then default.
+ */
+export type RunAdmissionGate =
+  | { kind: 'capability'; capability: ProjectCapability }
+  | { kind: 'provider' };
+
 export type ClaimOutcome =
   | { claimed: true }
-  | { claimed: false; running: RunningRunRef | null; notAdmitted?: undefined }
-  | { claimed: false; running?: undefined; notAdmitted: ProjectCapability };
+  | { claimed: false; running: RunningRunRef | null; notAdmitted?: undefined; noProvider?: undefined }
+  | { claimed: false; running?: undefined; notAdmitted: ProjectCapability; noProvider?: undefined }
+  | { claimed: false; running?: undefined; notAdmitted?: undefined; noProvider: true };
 
 /** The state row a read returns, or null when the key is unset. */
 export interface StateRow {
@@ -103,11 +117,15 @@ const RUNNING_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS res
  * admits a second run of the same task: the exact defect single-flighting
  * exists to prevent.
  *
- * The capability is checked HERE rather than by the caller. The 1.4 admission is
- * a separate call the caller makes first, and a caller that forgets it claims
- * anyway; folding it in makes a claim without admission unrepresentable. Absence
- * of a capability row means NOT admitted, so a Project that appeared from a
- * member's first write is admitted to nothing until an operator says so.
+ * Admission is checked HERE rather than by the caller. A separate call is one a
+ * caller can forget and claim anyway; folding it in makes a claim without
+ * admission unrepresentable. Absence of a capability row means NOT admitted, so
+ * a Project that appeared from a member's first write is admitted to nothing
+ * until an operator says so.
+ *
+ * A refused admission and a task already running are different answers. Both
+ * report `claimed: false`, so a caller reading one as the other would retry a
+ * condition only an operator can clear.
  *
  * On a refused claim the live run is read back. That read is on the refusal path
  * only, after the outcome is already settled, so it cannot change the decision —
@@ -118,11 +136,15 @@ export async function claimRun(
   db: RelationalStore,
   scope: ReadScope,
   row: RunInsert,
-  guard: { taskName: string; maxAgeSeconds: number; capability: ProjectCapability },
+  guard: { taskName: string; maxAgeSeconds: number; admission: RunAdmissionGate },
   now: number,
 ): Promise<ClaimOutcome> {
-  if (!(await settingsWriter(db).capabilityEnabled(scope.projectId, guard.capability))) {
-    return { claimed: false, notAdmitted: guard.capability };
+  if (guard.admission.kind === 'capability') {
+    if (!(await settingsWriter(db).capabilityEnabled(scope.projectId, guard.admission.capability))) {
+      return { claimed: false, notAdmitted: guard.admission.capability };
+    }
+  } else if (!(await providerConfiguredFor(db, guard.taskName))) {
+    return { claimed: false, noProvider: true };
   }
   const floor = now - guard.maxAgeSeconds * 1000;
   const result = await db.prepare(CLAIM_SQL).bind(
