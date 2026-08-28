@@ -503,6 +503,16 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/update', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/update', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope', update: { status: 'failed' } }) }),
       },
+      'POST /runs/failed': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/failed', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/failed', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope', errorClass: 'other', error: 'boom' }) }),
+      },
+      'POST /runs/resume-admission': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/resume-admission', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/resume-admission', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope' }) }),
+      },
       'POST /runs/supersede': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/supersede', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -869,8 +879,10 @@ describe('gates', () => {
       'member POST /runs/admission',
       'member POST /runs/claim',
       'member POST /runs/cortex-instructions',
+      'member POST /runs/failed',
       'member POST /runs/get',
       'member POST /runs/reports',
+      'member POST /runs/resume-admission',
       'member POST /runs/state/read',
       'member POST /runs/state/write',
       'member POST /runs/supersede',
