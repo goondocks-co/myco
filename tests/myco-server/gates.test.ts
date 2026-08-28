@@ -518,6 +518,26 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/cortex-instructions', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/cortex-instructions', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ agentId: 'agent_gate', content: 'c', inputHash: 'h' }) }),
       },
+      'POST /spores/save': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `sp_${runSeq++}`, agentId: 'agent_gate', observationType: 'gotcha', content: 'c' }) }),
+      },
+      'POST /spores/list': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/spores/list', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/spores/list', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+      },
+      'POST /spores/get': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/spores/get', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/spores/get', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: 'nope' }) }),
+      },
+      'POST /spores/resolve': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ eventId: `re_${runSeq++}`, agentId: 'agent_gate', sporeId: 'nope', action: 'obsolete', status: 'obsolete' }) }),
+      },
       'POST /runs/state/read': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/state/read', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -855,6 +875,10 @@ describe('gates', () => {
       'member POST /runs/state/write',
       'member POST /runs/supersede',
       'member POST /runs/update',
+      'member POST /spores/get',
+      'member POST /spores/list',
+      'member POST /spores/resolve',
+      'member POST /spores/save',
       'member POST /tokens/refresh',
       'owner DELETE /api/secrets/{name}',
       'owner GET /api/agents',
