@@ -28,6 +28,10 @@ import {
 } from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
 import type { RunAdmissionGate } from '../core/runs.js';
+import { admitResume, classifyFailure, type FailureObservation } from '../core/resume.js';
+
+/** The failure classes a harness may report; anything else is refused rather than mapped to a default. */
+const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
 import { refusal, type Refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
@@ -276,4 +280,67 @@ export async function handleRunAdmission(env: ServerEnv, ctx: RouteContext): Pro
   if (capability === null) return Response.json(refused(ctx, refusal('admission requires a known capability', 'parse')));
   const admission = await projectAdmission(env.db, { projectId: ctx.projectId }, capability);
   return Response.json({ persisted: true, ...admission });
+}
+
+/**
+ * Record how a run failed, and what that means for resuming it.
+ *
+ * The caller reports what it OBSERVED — whether this attempt is a resume,
+ * whether a checkpoint carried a session reference, whether any turn ran, and
+ * how the harness classified the error — and the server decides the class. A caller that sent its own verdict
+ * could mark a poisoned session resumable and re-enter the loop the guard
+ * exists to close.
+ */
+export async function handleRecordFailure(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (!body) return Response.json(refused(ctx, BAD_BODY));
+  const runId = str(body.runId);
+  const errorMessage = strOrNull(body.error, MAX_STATE_BYTES);
+  const errorClass = ERROR_CLASSES.includes(body.errorClass as (typeof ERROR_CLASSES)[number])
+    ? (body.errorClass as FailureObservation['errorClass']) : null;
+  if (runId === null || errorClass === null || errorMessage === undefined) {
+    return Response.json(refused(ctx, refusal('a failure requires runId and a known errorClass', 'parse')));
+  }
+
+  const decision = classifyFailure({
+    wasResume: body.wasResume === true,
+    hadPriorSession: body.hadPriorSession === true,
+    recordedAnyTurns: body.recordedAnyTurns === true,
+    errorClass,
+  });
+  const update: Record<string, unknown> = {
+    status: 'failed',
+    completed_at: ctx.now,
+    error: errorMessage,
+    resumable: decision.resumable ? 1 : 0,
+    resume_status: decision.status,
+  };
+  // A poisoned session id is discarded with the same write that records the
+  // failure: leaving it for a follow-up call is a window where a wake could
+  // reuse it.
+  if (decision.clearCheckpoints) update.checkpoints = null;
+
+  const changed = await applyRunUpdate(env.db, { projectId: ctx.projectId }, runId, update as RunUpdate);
+  return Response.json({ persisted: true, changed, ...decision });
+}
+
+/** Whether a failed run may be resumed now, consuming a retry when it may. */
+export async function handleAdmitResume(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (!body) return Response.json(refused(ctx, BAD_BODY));
+  const runId = str(body.runId);
+  if (runId === null) return Response.json(refused(ctx, refusal('resume admission requires runId', 'parse')));
+
+  const scope = { projectId: ctx.projectId };
+  const run = await getRun(env.db, scope, runId);
+  if (run === null) return Response.json({ persisted: true, admit: false, status: 'absent' });
+  if (run.resumable !== 1) {
+    return Response.json({ persisted: true, admit: false, status: run.resumeStatus ?? 'not_resumable' });
+  }
+
+  const outcome = await admitResume(env.db, scope, {
+    id: run.id, agentId: run.agentId, task: run.task ?? '', dryRun: run.dryRun === 1,
+    startedAt: run.startedAt, resumeAttempts: run.resumeAttempts,
+  });
+  return Response.json({ persisted: true, ...outcome });
 }

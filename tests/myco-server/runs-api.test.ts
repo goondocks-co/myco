@@ -176,3 +176,74 @@ describe('run lifecycle over HTTP', () => {
     expect(rows).toEqual([{ content: 'second' }]);
   });
 });
+
+describe('failure and resume admission over HTTP', () => {
+  const claim = (id: string, task = 'digest') =>
+    ({ id, agentId: AGENT, task, maxAgeSeconds: 3600, capability: 'cortex' });
+
+  it('classifies an ordinary failure as resumable and keeps its checkpoint', async () => {
+    const { post, sqlite } = await harness();
+    await post('/runs/claim', claim('r1'));
+    sqlite.query(`UPDATE agent_runs SET checkpoints = '{"phase":1}' WHERE id='r1'`).run();
+
+    const res = await post('/runs/failed', { runId: 'r1', errorClass: 'other', error: 'boom' });
+    expect({ resumable: res.resumable, status: res.status, cleared: res.clearCheckpoints })
+      .toEqual({ resumable: true, status: 'ready', cleared: false });
+    const row = sqlite.query(`SELECT resumable, resume_status s, checkpoints c FROM agent_runs WHERE id='r1'`).get() as { resumable: number; s: string; c: string };
+    expect(row).toEqual({ resumable: 0 + 1, s: 'ready', c: '{"phase":1}' });
+  });
+
+  it('discards the poisoned checkpoint with the same write that records the failure', async () => {
+    const { post, sqlite } = await harness();
+    await post('/runs/claim', claim('r1'));
+    sqlite.query(`UPDATE agent_runs SET checkpoints = '{"ref":"dead"}' WHERE id='r1'`).run();
+
+    await post('/runs/failed', { runId: 'r1', errorClass: 'session-expired', error: 'session gone', wasResume: true, hadPriorSession: true });
+    const row = sqlite.query(`SELECT resumable, resume_status s, checkpoints c FROM agent_runs WHERE id='r1'`).get() as { resumable: number; s: string; c: string | null };
+    expect(row).toEqual({ resumable: 0, s: 'session_expired', c: null });
+  });
+
+  it('decides the class from what was observed, never from a class the caller asserts', async () => {
+    const { post, sqlite } = await harness();
+    await post('/runs/claim', claim('r1'));
+    // A caller claiming session-expired without having been a resume gets the
+    // ordinary answer: the guard needs all three observations.
+    const res = await post('/runs/failed', { runId: 'r1', errorClass: 'session-expired', error: 'x', resumable: 0, status: 'exhausted' });
+    expect(res.status).toBe('ready');
+    expect((sqlite.query(`SELECT resume_status s FROM agent_runs WHERE id='r1'`).get() as { s: string }).s).toBe('ready');
+  });
+
+  it('refuses an error class it does not know rather than mapping it to a default', async () => {
+    const { post } = await harness();
+    await post('/runs/claim', claim('r1'));
+    const res = await post('/runs/failed', { runId: 'r1', errorClass: 'invented', error: 'x' });
+    expect({ persisted: res.persisted, coded: typeof res.code === 'string' }).toEqual({ persisted: false, coded: true });
+  });
+
+  it('admits a resume and consumes an attempt, then exhausts at the cap', async () => {
+    const { post, sqlite } = await harness();
+    await post('/runs/claim', claim('r1'));
+    await post('/runs/failed', { runId: 'r1', errorClass: 'other', error: 'boom' });
+
+    for (let i = 1; i <= 3; i += 1) {
+      expect(await post('/runs/resume-admission', { runId: 'r1' })).toEqual({ persisted: true, admit: true, attempt: i });
+    }
+    expect(await post('/runs/resume-admission', { runId: 'r1' })).toEqual({ persisted: true, admit: false, status: 'exhausted' });
+    expect((sqlite.query(`SELECT resumable, resume_status s FROM agent_runs WHERE id='r1'`).get() as { resumable: number; s: string }))
+      .toEqual({ resumable: 0, s: 'exhausted' });
+  });
+
+  it('refuses to resume a run already retired, reporting why it was retired', async () => {
+    const { post } = await harness();
+    await post('/runs/claim', claim('r1'));
+    await post('/runs/failed', { runId: 'r1', errorClass: 'session-expired', error: 'x', wasResume: true, hadPriorSession: true });
+    expect(await post('/runs/resume-admission', { runId: 'r1' }))
+      .toEqual({ persisted: true, admit: false, status: 'session_expired' });
+  });
+
+  it('answers absent for a run this Project does not hold', async () => {
+    const { post } = await harness();
+    expect(await post('/runs/resume-admission', { runId: 'nope' }))
+      .toEqual({ persisted: true, admit: false, status: 'absent' });
+  });
+});
