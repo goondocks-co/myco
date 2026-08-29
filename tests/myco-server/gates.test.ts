@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RETIRED_ROUTES, ROUTES, isOwnedPath, ownedPathPatterns } from '@myco-server-worker/routes.js';
+import { RETIRED_ROUTES, ROUTES, isOwnedPath, ownedPathPatterns, type Shape } from '@myco-server-worker/routes.js';
 import worker from '@myco-server-worker/index.js';
 import { createIngestThrottle } from './helpers/throttle.js';
 import { issueMemberToken, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
@@ -47,7 +47,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 39;
+const EMIT_CALLS = 41;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -477,7 +477,7 @@ describe('gates', () => {
     const bytes = new TextEncoder().encode('blob-bytes');
     const key = await sha256Hex('blob-bytes');
     /** Per non-public route: a malformed request the route refuses, and a well-formed one it would store. */
-    const FIXTURES: Record<string, { shape: 'persisted' | 'stored' | 'refreshed'; malformed: (token: string) => Request; wellFormed: (token: string) => Request }> = {
+    const FIXTURES: Record<string, { shape: Shape; malformed: (token: string) => Request; wellFormed: (token: string) => Request }> = {
       'POST /events': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/events', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -568,11 +568,23 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/state/write', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/state/write', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ agentId: 'agent_gate', key: `k_${runSeq++}`, value: 'v' }) }),
       },
+      'POST /mcp': {
+        shape: 'answered',
+        malformed: (token) => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) }),
+      },
       'POST /members/link-github': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
         wellFormed: (token) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
       },
+    };
+    /** How each shape answers: the status of a terminal refusal, where its code and reason sit, and what a well-formed request that stored or answered looks like. */
+    const SHAPES: Record<Shape, { refusedStatus: number; refusal: (body: any) => { refused: boolean; code: unknown; reason: unknown }; accepted: (body: any) => boolean }> = {
+      persisted: { refusedStatus: 200, refusal: (b) => ({ refused: b.persisted === false, code: b.code, reason: b.reason }), accepted: (b) => b.persisted === true },
+      stored: { refusedStatus: 200, refusal: (b) => ({ refused: b.stored === false, code: b.code, reason: b.reason }), accepted: (b) => b.stored === true },
+      refreshed: { refusedStatus: 200, refusal: (b) => ({ refused: b.refreshed === false, code: b.code, reason: b.reason }), accepted: (b) => b.refreshed === true },
+      answered: { refusedStatus: 400, refusal: (b) => ({ refused: b.jsonrpc === '2.0' && b.id === null && typeof b.error === 'object', code: b.error?.data?.code, reason: b.error?.message }), accepted: (b) => Array.isArray(b.result?.tools) },
     };
     expect(ROUTES.filter((r) => r.auth === 'member').map((r) => `${r.method} ${r.path}`).sort()).toEqual(Object.keys(FIXTURES).sort());
     const machineless: Record<string, unknown>[] = [];
@@ -583,19 +595,20 @@ describe('gates', () => {
       if (r.auth === 'public') continue;
       const fixture = FIXTURES[`${r.method} ${r.path}`];
       expect({ route: r.path, shape: r.shape }).toEqual({ route: r.path, shape: fixture.shape });
+      const answers = SHAPES[fixture.shape];
       const res = await worker.fetch(fixture.malformed(t1.token), e);
-      expect({ route: r.path, status: res.status }).toEqual({ route: r.path, status: 200 });
-      const body = await res.json() as Record<string, unknown>;
-      expect({ route: r.path, refused: body[fixture.shape] === false, coded: typeof body.code === 'string' }).toEqual({ route: r.path, refused: true, coded: true });
+      expect({ route: r.path, status: res.status }).toEqual({ route: r.path, status: answers.refusedStatus });
+      const refusal = answers.refusal(await res.json());
+      expect({ route: r.path, refused: refusal.refused, coded: typeof refusal.code === 'string' }).toEqual({ route: r.path, refused: true, coded: true });
       const refused = await worker.fetch(fixture.wellFormed(anonymous.token), e);
-      machineless.push({ route: r.path, status: refused.status, body: await refused.json() });
+      machineless.push({ route: r.path, status: refused.status, ...answers.refusal(await refused.json()) });
     }
-    expect(machineless).toEqual(Object.entries(FIXTURES).map(([route, f]) => ({ route: route.slice('POST '.length), status: 200, body: { [f.shape]: false, code: 'no_machine_identity', reason: 'token has no machine identity' } })));
+    expect(machineless).toEqual(Object.entries(FIXTURES).map(([route, f]) => ({ route: route.slice('POST '.length), status: SHAPES[f.shape].refusedStatus, refused: true, code: 'no_machine_identity', reason: 'token has no machine identity' })));
     expect({ events: (sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c, blobs: (sqlite.query(`SELECT COUNT(*) c FROM blobs`).get() as any).c, puts: bucket.puts }).toEqual({ events: 0, blobs: 0, puts: [] });
     expect((sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(anonymous.tokenId) as any).b).toBe(0);
-    for (const [, fixture] of Object.entries(FIXTURES)) {
-      const stored = await (await worker.fetch(fixture.wellFormed(t1.token), e)).json() as Record<string, unknown>;
-      expect(stored[fixture.shape]).toBe(true);
+    for (const [route, fixture] of Object.entries(FIXTURES)) {
+      const stored = await (await worker.fetch(fixture.wellFormed(t1.token), e)).json();
+      expect({ route, accepted: SHAPES[fixture.shape].accepted(stored) }).toEqual({ route, accepted: true });
     }
   });
 
@@ -931,6 +944,7 @@ describe('gates', () => {
       'enroll POST /members/join',
       'member POST /blobs/{sha256}',
       'member POST /events',
+      'member POST /mcp',
       'member POST /members/link-github',
       'member POST /runs/admission',
       'member POST /runs/claim',
@@ -1055,6 +1069,24 @@ describe('gates', () => {
     expect(memberSection).not.toContain('readCookie');
     expect(memberSection).not.toContain('ownerConfig');
   });
+  it('pins the server\'s runtime dependencies: every package src imports is declared, every runtime dependency is imported by shared source, and the runtime set is exactly the one decided', () => {
+    const manifest = JSON.parse(readFileSync(join(WORKER, 'package.json'), 'utf8')) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+    const runtime = manifest.dependencies ?? {};
+    const declared = new Set([...Object.keys(runtime), ...Object.keys(manifest.devDependencies ?? {})]);
+    const packageOf = (spec: string): string => (spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]);
+    const specifiers = (source: string): string[] =>
+      [...source.matchAll(/^\s*(?:import|export)\b[^'"\n]*\bfrom\s*['"]([^'"]+)['"]/gm), ...source.matchAll(/^\s*import\s*['"]([^'"]+)['"]/gm), ...source.matchAll(/\bimport\(\s*['"]([^'"]+)['"]/g)]
+        .map((m) => m[1])
+        .filter((spec) => !spec.startsWith('.') && !spec.startsWith('/') && !/^(bun|node|cloudflare):/.test(spec))
+        .map(packageOf);
+    const imported = new Map<string, Set<string>>();
+    for (const f of files(SRC)) for (const pkg of specifiers(readFileSync(f, 'utf8'))) (imported.get(pkg) ?? imported.set(pkg, new Set()).get(pkg)!).add(f);
+    expect([...imported.keys()].filter((pkg) => !declared.has(pkg))).toEqual([]);
+    const shared = new Set(sharedFiles());
+    expect(Object.keys(runtime).filter((pkg) => ![...(imported.get(pkg) ?? [])].some((f) => shared.has(f)))).toEqual([]);
+    expect(runtime).toEqual({ '@modelcontextprotocol/server': '2.0.0' });
+  });
+
   it('leaves owner routes ingest-neutral', async () => {
     const e = sqliteEnv();
     const before = count(e.sqlite, 'events');

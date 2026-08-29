@@ -136,12 +136,32 @@ export async function unarchiveProject(db: RelationalStore, projectId: string): 
 }
 
 /** A project's sessions, most recently started first, over `idx_sessions_recent`. The key is `first_received_at` paired with `session_id`: a keyset page must order by a column no later write moves, or an actively capturing session slips above the cursor between two pages and appears on neither. */
-export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } = {}): Promise<Page<SessionRow>> {
+export interface SessionFilters {
+  branch?: string;
+  /** Sessions started at or after this instant (ms). */
+  since?: number;
+  /** `open` is a session with no end recorded; `ended` one with an end. */
+  state?: 'open' | 'ended';
+  /** The label of the member whose credential captured the session. */
+  memberLabel?: string;
+  sessionId?: string;
+}
+
+export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters = {}): Promise<Page<SessionRow>> {
   const k = keyset(opts, { order: 's.first_received_at', id: 's.session_id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
+  const conditions = ['s.project_id = ?'];
+  const params: unknown[] = [scope.projectId];
+  if (opts.branch !== undefined) { conditions.push('s.branch = ?'); params.push(opts.branch); }
+  if (opts.since !== undefined) { conditions.push('s.started_at >= ?'); params.push(opts.since); }
+  if (opts.state === 'open') conditions.push('s.ended_at IS NULL');
+  if (opts.state === 'ended') conditions.push('s.ended_at IS NOT NULL');
+  if (opts.memberLabel !== undefined) { conditions.push('m.label = ?'); params.push(opts.memberLabel); }
+  if (opts.sessionId !== undefined) { conditions.push('s.session_id = ?'); params.push(opts.sessionId); }
+  if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
   const { results } = await db
-    .prepare(`SELECT ${SESSION_COLUMNS} ${SESSION_FROM} WHERE s.project_id = ? ${k.where === '' ? '' : `AND ${k.where}`} ORDER BY s.first_received_at DESC, s.session_id DESC LIMIT ?`)
-    .bind(scope.projectId, ...k.params, k.limit + 1)
+    .prepare(`SELECT ${SESSION_COLUMNS} ${SESSION_FROM} WHERE ${conditions.join(' AND ')} ORDER BY s.first_received_at DESC, s.session_id DESC LIMIT ?`)
+    .bind(...params, k.limit + 1)
     .all<Record<string, unknown>>();
   return page(results.map(toSession), k.limit, (r) => ({ createdAt: r.firstReceivedAt, id: r.sessionId }));
 }

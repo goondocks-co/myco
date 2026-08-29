@@ -256,7 +256,10 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
   const applied = 'EXISTS (SELECT 1 FROM plans WHERE project_id = ? AND plan_key = ? AND event_id = ?)';
   const newer = '(excluded.updated_at > plans.updated_at OR (excluded.updated_at = plans.updated_at AND excluded.event_id < plans.event_id))';
   return {
-    identities: [{ table: 'plans', keyColumn: 'plan_key', key: planKey, owner: 'row' }],
+    // A plan is a Project-shared editorial row: any member may update one, the
+    // credential that did is recorded on it, and the creating session and machine
+    // stay. The session the event names is still owned by the writing machine.
+    identities: [],
     admission: [],
     projections: [
       db.prepare(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, origin_path, created_at, updated_at, token_id, received_at)

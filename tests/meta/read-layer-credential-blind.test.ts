@@ -37,7 +37,7 @@ function importSpecifiers(source: string): string[] {
 }
 
 /** The modules the core is made of. A named floor, not a count: a count sails through a silent collapse. */
-const CORE_MODULES = ['activity.ts', 'blobs.ts', 'children.ts', 'cortex.ts', 'meta.ts', 'runs.ts', 'scope.ts', 'credentials.ts', 'sessions.ts', 'transcript.ts'] as const;
+const CORE_MODULES = ['activity.ts', 'blobs.ts', 'children.ts', 'cortex.ts', 'meta.ts', 'plans.ts', 'runs.ts', 'scope.ts', 'credentials.ts', 'sessions.ts', 'transcript.ts'] as const;
 
 const FORBIDDEN_IMPORT = [/\/auth\//, /cookie/i, /\/pipeline\.js/, /\/routes\.js/, /\/context\.js/, /\/api\//];
 

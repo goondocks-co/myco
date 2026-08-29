@@ -55,4 +55,4 @@ simple = { limit = 300, period = 60 }
 [assets]
 directory = "ui/dist"
 not_found_handling = "single-page-application"
-run_worker_first = [ "/api/*", "/auth/*", "/blobs/*", "/context/*", "/events", "/events/*", "/health", "/members/*", "/routed-capture/*", "/runs/*", "/sessions/*", "/spores/*", "/tokens/*" ]
+run_worker_first = [ "/api/*", "/auth/*", "/blobs/*", "/context/*", "/events", "/events/*", "/health", "/mcp", "/members/*", "/routed-capture/*", "/runs/*", "/sessions/*", "/spores/*", "/tokens/*" ]

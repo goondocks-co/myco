@@ -59,7 +59,20 @@ type MemberRoute = Extract<Route, { auth: 'member' }>;
 /** The refusal shape of a member route, as the route table declares it. */
 const shapeOf = (route: MemberRoute): Shape => route.shape;
 /** A server-side failure in the route's refusal shape. Only an authenticated member sees it; before authentication every failure answers the same bare error, so the shape discloses nothing about the route table. */
-const unavailableFor = (route: MemberRoute): Response => Response.json({ [shapeOf(route)]: false, code: UNAVAILABLE, reason: UNAVAILABLE }, { status: 503, headers: RETRY_AFTER });
+const unavailableFor = (route: MemberRoute): Response => refusalResponse(shapeOf(route), UNAVAILABLE, UNAVAILABLE, 'retryable');
+/**
+ * A refusal in the route's shape. An `answered` route speaks JSON-RPC, so its
+ * refusals are error envelopes carrying the classifier as `data.code`: 400 for a
+ * terminal one, 503 with retry-after for a retryable one — the statuses an MCP
+ * client surfaces to its caller as a request it can or cannot repeat.
+ */
+function refusalResponse(shape: Shape, code: string, reason: string, outcome: 'terminal' | 'retryable'): Response {
+  const retryable = outcome === 'retryable';
+  if (shape === 'answered') {
+    return Response.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: reason, data: { code } } }, retryable ? { status: 503, headers: RETRY_AFTER } : { status: 400 });
+  }
+  return Response.json({ [shape]: false, code, reason }, retryable ? { status: 503, headers: RETRY_AFTER } : undefined);
+}
 const limited = () => Response.json({ error: 'rate limited' }, { status: 429, headers: RETRY_AFTER });
 const forbidden = () => Response.json({ error: 'forbidden' }, { status: 403 });
 const refuseOversized = () => Response.json({ error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` }, { status: 400 });
@@ -118,8 +131,8 @@ const PROTOCOL_VALUE = /^[0-9]+$/;
 
 /** A terminal refusal of the caller's own request: 200, never retried, in the route's refusal shape, carrying the classifier as its `code` beside the `reason`; telemetry carries the classifier only. */
 function refuse(auth: MemberAuth, shape: Shape, reason: string, classifier: Classifier): Response {
-  emit({ kind: shape === 'stored' ? 'blob_refused' : 'ingest_refused', memberId: auth.memberId, tokenId: auth.tokenId, reason: classifier });
-  return Response.json({ [shape]: false, code: classifier, reason });
+  emit({ kind: shape === 'stored' ? 'blob_refused' : shape === 'answered' ? 'mcp_refused' : 'ingest_refused', memberId: auth.memberId, tokenId: auth.tokenId, reason: classifier });
+  return refusalResponse(shape, classifier, reason, 'terminal');
 }
 
 /** The presented credential, or null unless it has the minted token shape. The scheme name is case-insensitive. */
@@ -149,7 +162,7 @@ async function failed(env: ServerEnv, auth: MemberAuth, route: MemberRoute, err:
   const shape = shapeOf(route);
   const errorClass = classify(err, errorClassifierOf(env));
   if (captureRoute(route) && (errorClass === 'quota' || (errorClass === 'constraint' && (await overQuota(env, auth.tokenId, bytes))))) return refuse(auth, shape, QUOTA_REASON, 'quota');
-  emit({ kind: shape === 'stored' ? 'blob_error' : shape === 'refreshed' ? 'refresh_error' : 'ingest_error', memberId: auth.memberId, tokenId: auth.tokenId, error_class: errorClass });
+  emit({ kind: shape === 'stored' ? 'blob_error' : shape === 'refreshed' ? 'refresh_error' : shape === 'answered' ? 'mcp_error' : 'ingest_error', memberId: auth.memberId, tokenId: auth.tokenId, error_class: errorClass });
   return unavailableFor(route);
 }
 
