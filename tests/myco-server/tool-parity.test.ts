@@ -88,7 +88,17 @@ describe('tool parity', () => {
       for (const op of ops) expect({ tool, op, keyed: op === NO_OP ? entry.defaultOp === null && NO_OP in entry.ops : op in entry.ops }).toEqual({ tool, op, keyed: true });
     }
     expect(externalDefinitions().map((d) => d.name).sort()).toEqual([...EXTERNAL_TOOLS].sort());
-    expect(externalDefinitions()).toEqual(TOOL_DEFINITIONS.filter((d) => EXTERNAL_TOOLS.includes(d.name)));
+    const narrowed = TOOL_DEFINITIONS.filter((d) => EXTERNAL_TOOLS.includes(d.name)).map((d) => {
+      const op = d.inputSchema.properties.op as { enum?: readonly unknown[] } | undefined;
+      if (op?.enum === undefined) return d;
+      return { ...d, inputSchema: { ...d.inputSchema, properties: { ...d.inputSchema.properties, op: { ...op, enum: op.enum.filter((v) => typeof v === 'string' && EXTERNAL_TOOL_ALLOWLIST[d.name].has(v)) } } } };
+    });
+    expect(externalDefinitions()).toEqual(narrowed);
+    for (const d of externalDefinitions()) {
+      const op = d.inputSchema.properties.op as { enum?: readonly unknown[] } | undefined;
+      if (op?.enum === undefined) continue;
+      expect({ tool: d.name, offered: [...op.enum].sort() }).toEqual({ tool: d.name, offered: [...EXTERNAL_TOOL_ALLOWLIST[d.name]].sort() });
+    }
   });
 
   it('judges a call by the op the registry resolves, agreeing with the member surface on every declared op and on an omitted one, and refusing an empty op the member surface reads as the default', () => {

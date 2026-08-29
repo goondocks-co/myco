@@ -33,7 +33,19 @@ export function isExternalCall(tool: ServedTool, op: string): boolean {
   return ops.has(ANY_OP) || ops.has(op);
 }
 
-/** The definitions the surface lists: the allowlisted names, each definition as the Deployment serves it to a member. */
+/**
+ * The definitions the surface lists: the allowlisted names, each definition as
+ * the Deployment serves it to a member with its `op` enum narrowed to the ops
+ * the surface answers. An agent reads the schema before it calls; a schema that
+ * offers `save` and refuses it sends the agent into a refusal it could have
+ * avoided. The narrowing is presentation: `callTool` judges every call by the
+ * allowlist whatever schema the caller read.
+ */
 export function externalDefinitions(): ToolDefinition[] {
-  return TOOL_DEFINITIONS.filter((d) => d.name in EXTERNAL_TOOL_ALLOWLIST);
+  return TOOL_DEFINITIONS.filter((d) => d.name in EXTERNAL_TOOL_ALLOWLIST).map((d) => {
+    const ops = EXTERNAL_TOOL_ALLOWLIST[d.name];
+    const op = d.inputSchema.properties.op;
+    if (ops.has(ANY_OP) || op === undefined || !Array.isArray(op.enum)) return d;
+    return { ...d, inputSchema: { ...d.inputSchema, properties: { ...d.inputSchema.properties, op: { ...op, enum: op.enum.filter((v) => typeof v === 'string' && ops.has(v)) } } } };
+  });
 }
