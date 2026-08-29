@@ -900,12 +900,36 @@ const V7_STATEMENTS: readonly string[] = [
 ];
 
 
+/**
+ * v8: a member's GitHub identity, and the one-time authority that links it.
+ *
+ * `members.github_id` is the numeric account id as text, unique across members;
+ * the OAuth session's `sub` is looked up here on every dashboard request.
+ * `identity_link_authorities` is the enrollment-authority shape a third time:
+ * minted by a member credential, hashed at rest, spent once by the signed-in
+ * account that proves itself.
+ */
+const V8_STATEMENTS: readonly string[] = [
+  `ALTER TABLE members ADD COLUMN github_id TEXT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_members_github_id ON members (github_id)`,
+  `CREATE TABLE IF NOT EXISTS identity_link_authorities (
+     id          TEXT PRIMARY KEY,
+     key_hash    TEXT NOT NULL,
+     member_id   TEXT NOT NULL REFERENCES members(id),
+     created_at  INTEGER NOT NULL,
+     expires_at  INTEGER NOT NULL,
+     used_at     INTEGER,
+     used_by     TEXT,
+     revoked_at  INTEGER)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_link_authorities_hash ON identity_link_authorities (key_hash)`,
+];
+
 function withStamp(version: number, statements: readonly string[]): SchemaStep {
   return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
 }
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

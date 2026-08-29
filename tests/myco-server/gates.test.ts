@@ -47,7 +47,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 30;
+const EMIT_CALLS = 31;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -436,7 +436,7 @@ describe('gates', () => {
     // Credential and membership tables are Deployment-scoped by design — a member
     // credential belongs to a member and a Deployment, not to one project — so
     // their indexes lead with what they are actually looked up by.
-    const deploymentScoped = /ON (member_tokens|members|member_credentials|enrollment_authorities|step_up_authorities)\b/;
+    const deploymentScoped = /ON (member_tokens|members|member_credentials|enrollment_authorities|step_up_authorities|identity_link_authorities)\b/;
     // Two indexes are keyed on the credential rather than the project: a credential
     // spans every Project in its Deployment, so the quota admission looks reservations
     // up by credential, and the foreign key on a run's dispatching credential is
