@@ -44,7 +44,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.20.2",
-    "@tanstack/react-query": "^5.101.4",
+    "@tanstack/react-query": "^5.102.4",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.3.2",
