@@ -13,9 +13,11 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { TOOL_DEFINITIONS as MEMBER_DEFINITIONS } from '@myco/tools/definitions.js';
-import { SERVED_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
+import { EXTERNAL_TOOL_ALLOWLIST as MEMBER_ALLOWLIST, isAllowedExternalCall } from '@myco/mcp/external-surface.js';
+import { SERVED_TOOLS, type ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
-import { NO_OP, TOOL_REGISTRY } from '@myco-server-worker/mcp/registry.js';
+import { EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
+import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
 
 /** The one property whose description the server words for a Deployment. */
 const EXCEPTED = 'project_id';
@@ -75,6 +77,34 @@ describe('tool parity', () => {
       expect({ tool: def.name, ops: Object.keys(entry.ops).sort() }).toEqual({ tool: def.name, ops: [...declared].sort() });
       expect({ tool: def.name, defaultDeclared: entry.defaultOp !== null && declared.includes(entry.defaultOp) }).toEqual({ tool: def.name, defaultDeclared: true });
     }
+  });
+
+  it('serves the external surface the member side declares: the same (tool, op) allowlist, every entry a registry key, and the listed definitions exactly the allowlisted names', () => {
+    const entries = (list: Readonly<Record<string, ReadonlySet<string>>>) => Object.entries(list).map(([tool, ops]) => [tool, [...ops].sort()]).sort();
+    expect(entries(EXTERNAL_TOOL_ALLOWLIST)).toEqual(entries(MEMBER_ALLOWLIST));
+    for (const [tool, ops] of Object.entries(EXTERNAL_TOOL_ALLOWLIST)) {
+      expect({ tool, served: (SERVED_TOOLS as readonly string[]).includes(tool) }).toEqual({ tool, served: true });
+      const entry = TOOL_REGISTRY[tool as ServedTool];
+      for (const op of ops) expect({ tool, op, keyed: op === NO_OP ? entry.defaultOp === null && NO_OP in entry.ops : op in entry.ops }).toEqual({ tool, op, keyed: true });
+    }
+    expect(externalDefinitions().map((d) => d.name).sort()).toEqual([...EXTERNAL_TOOLS].sort());
+    expect(externalDefinitions()).toEqual(TOOL_DEFINITIONS.filter((d) => EXTERNAL_TOOLS.includes(d.name)));
+  });
+
+  it('judges a call by the op the registry resolves, agreeing with the member surface on every declared op and on an omitted one, and refusing an empty op the member surface reads as the default', () => {
+    const judged = (tool: ServedTool, args: Record<string, unknown>) => isExternalCall(tool, opOf(tool, args));
+    const table: Array<[ServedTool, Record<string, unknown>]> = [
+      ['myco_search', { query: 'x' }], ['myco_cortex', { op: 'digest' }], ['myco_cortex', {}], ['myco_plans', { op: 'list' }], ['myco_plans', {}],
+      ['myco_plans', { op: 'get', id: 'p1' }], ['myco_sessions', { op: 'list' }], ['myco_sessions', { op: 'get', id: 's1' }],
+      ['myco_skills', { op: 'list' }], ['myco_skills', { op: 'get', id: 'k1' }], ['myco_spores', { op: 'list' }], ['myco_spores', { op: 'get', id: 'sp1' }],
+      ['myco_spores', { op: 'save', content: 'x', type: 'decision' }], ['myco_spores', { op: 'supersede' }], ['myco_spores', { op: 'consolidate' }], ['myco_spores', { op: 'obsolete' }],
+      ['myco_plans', { op: 'delete', id: 'p1' }], ['myco_plans', { op: 'save', content: 'x' }],
+      ['myco_cortex', { op: 'maintenance_summary' }], ['myco_cortex', { op: 'projects_activity' }], ['myco_cortex', { op: 'instructions' }],
+      ['myco_cortex', { op: 'canopy_map' }], ['myco_cortex', { op: 'canopy_entry' }], ['myco_cortex', { op: 'notifications' }],
+      ['myco_agent', { op: 'runs' }], ['myco_agent', {}], ['myco_sessions', { op: 'purge' }], ['myco_plans', { op: 5 }],
+    ];
+    for (const [tool, args] of table) expect({ tool, args, server: judged(tool, args) }).toEqual({ tool, args, server: isAllowedExternalCall(tool, args) });
+    expect({ server: judged('myco_plans', { op: '' }), member: isAllowedExternalCall('myco_plans', { op: '' }) }).toEqual({ server: false, member: true });
   });
 
   it('names an issue, or never, on every op it does not serve', () => {
