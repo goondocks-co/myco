@@ -4,7 +4,7 @@ import { Badge } from '../components/ui/badge';
 import { postJson } from '../lib/api';
 import { cn } from '../lib/cn';
 
-const SERVER_PAGES: Record<string, string> = { '/projects': 'Projects', '/status': 'Status' };
+const SERVER_PAGES: Record<string, string> = { '/projects': 'Projects', '/status': 'Status', '/access': 'Access' };
 
 /** Where this page's data lives: one Project, or the whole server. */
 export function scopeOf(pathname: string): 'project' | 'server' {
@@ -12,7 +12,7 @@ export function scopeOf(pathname: string): 'project' | 'server' {
 }
 
 export function titleOf(pathname: string): string {
-  if (pathname.startsWith('/p/')) return 'Overview';
+  if (pathname.startsWith('/p/')) return pathname.endsWith('/access') ? 'Access' : 'Overview';
   return SERVER_PAGES[pathname] ?? 'Not found';
 }
 

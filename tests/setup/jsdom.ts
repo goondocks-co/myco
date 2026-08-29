@@ -70,6 +70,12 @@ g.Event = dom.window.Event;
 g.CustomEvent = dom.window.CustomEvent;
 g.KeyboardEvent = dom.window.KeyboardEvent;
 g.MouseEvent = dom.window.MouseEvent;
+// A dialog's focus scope walks and watches the tree it traps focus in.
+g.MutationObserver = dom.window.MutationObserver;
+g.NodeFilter = dom.window.NodeFilter;
+if (g.ResizeObserver === undefined) {
+  g.ResizeObserver = class { observe(): void {} unobserve(): void {} disconnect(): void {} };
+}
 g.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
 g.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
 g.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
