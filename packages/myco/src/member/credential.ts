@@ -50,6 +50,19 @@ export function isHttpsUrl(value: string): boolean {
   }
 }
 
+/** A host on this machine's own loopback, where the self-hosted C-local transport listens: the IPv4 loopback block, the IPv6 loopback, or its name. */
+const isLoopbackHost = (hostname: string): boolean => hostname === 'localhost' || hostname === '[::1]' || /^127(\.\d{1,3}){3}$/.test(hostname);
+
+/** True for `http://` on a loopback host — the one plain-http shape an injected credential may name; a registry entry never does. */
+export function isLoopbackHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' && isLoopbackHost(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function isMemberTokenShape(value: string): boolean {
   return MEMBER_TOKEN_PATTERN.test(value);
 }
@@ -104,8 +117,8 @@ function envCredential(env: NodeJS.ProcessEnv): CredentialRecord | null {
     stderr(`${ENV_SERVER_URL} + ${ENV_MEMBER_TOKEN} + ${ENV_PROJECT} must all be set (all three or none) — no capture`);
     return null;
   }
-  if (!isHttpsUrl(serverUrl!)) {
-    stderr(`${ENV_SERVER_URL} must be https — no capture`);
+  if (!isHttpsUrl(serverUrl!) && !isLoopbackHttpUrl(serverUrl!)) {
+    stderr(`${ENV_SERVER_URL} must be https, or http on this machine's loopback — no capture`);
     return null;
   }
   return { serverUrl: serverUrl!, token: token!, projectId: projectId!, source: 'env' };

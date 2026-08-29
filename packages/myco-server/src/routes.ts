@@ -33,6 +33,7 @@ import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
 import { handleBlob } from './ingest/blobs.js';
 import { handleEvents } from './ingest/events.js';
+import { handleMcp } from './mcp/http.js';
 
 /** Public handlers receive the request only; they cannot reach storage or bindings. */
 export type PublicHandler = (request: Request) => Promise<Response>;
@@ -50,12 +51,12 @@ export type SessionHandler = (env: ServerEnv, ctx: SessionContext) => Promise<Re
 export type EnrollHandler = (env: ServerEnv, request: Request, now: number) => Promise<Response>;
 
 /** The key a member route answers under: `{<shape>: true|false, …}` on every outcome after authentication, refusals and 503s included. */
-export type Shape = 'persisted' | 'stored' | 'refreshed';
+export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
 
-/** `quotaPrecheck: false` marks a member route whose writes are not charged to the byte quota: the pipeline skips the byte pre-check and never reads a constraint failure as a quota refusal. Absent, the route is charged. */
+/** `quotaPrecheck: false` marks a member route the pipeline does not pre-check against the byte quota and never reads a constraint failure as a quota refusal; what such a route stores through the ingest path is still charged there. Absent, the route is pre-checked. */
 export type Route =
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
-  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted' | 'refreshed'; quotaPrecheck?: boolean; handler: MemberHandler }
+  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; quotaPrecheck?: boolean; handler: MemberHandler }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; quotaPrecheck?: boolean; maxBodyBytes: number; handler: StreamHandler }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
   | { method: string; path: string; auth: 'enroll'; handler: EnrollHandler }
@@ -90,6 +91,9 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/spores/resolve', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleResolveSpore },
   { method: 'POST', path: '/runs/state/read', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleReadState },
   { method: 'POST', path: '/runs/state/write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteState },
+  // The member tool surface: the seven MCP tools over the Deployment, answered as
+  // JSON-RPC. `answered` is its refusal shape — an error envelope, at 400 or 503.
+  { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', quotaPrecheck: false, handler: handleMcp },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleLinkGithub },
   { method: 'GET', path: '/auth/me', auth: 'owner', membership: 'optional', handler: handleMe },

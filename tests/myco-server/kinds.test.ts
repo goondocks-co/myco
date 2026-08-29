@@ -76,7 +76,7 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 46;
+const PLANNED_STATEMENTS = 44;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
 const ID_ROLES = { key: 7, prompt: 8, group: 1 };
@@ -323,7 +323,7 @@ describe('kind catalogue', () => {
     expect(count(e.sqlite, 'tags')).toBe(0);
   });
 
-  it('binds continued rows to the first inserter\'s machine: another machine\'s token is refused on the session, the plan, and the transcript, storing nothing', async () => {
+  it('binds continued rows to the first inserter\'s machine: another machine\'s token is refused on the session and the transcript, storing nothing — and updates a plan, a Project-shared row, keeping the first machine and recording its own credential', async () => {
     const e = sqliteEnv();
     const t1 = await member(e);
     const t3 = await member(e, 'proj_1', 'machine_3');
@@ -332,17 +332,18 @@ describe('kind catalogue', () => {
     expect(await json(await worker.fetch(memberPost(t3.token, foreign), e.env))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(82), payload: { promptId: uuid(83), text: 'x', origin: 'user' } })), e.env))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(84), kind: 'plan', payload: { planKey: uuid(85), content: 'mine' } })), e.env);
-    expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(86), sessionId: 'sess_3', kind: 'plan', payload: { planKey: uuid(85), content: 'theirs' } })), e.env))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
+    const theirs = envelope({ eventId: uuid(86), sessionId: 'sess_3', kind: 'plan', createdAt: 2_000, payload: { planKey: uuid(85), content: 'theirs' } });
+    expect(await json(await worker.fetch(memberPost(t3.token, theirs), e.env))).toEqual({ persisted: true, projected: true });
     const seg = utf8('seg');
     const key = await upload(e, t1.token, seg);
     const tx = `tx_${'a'.repeat(32)}`;
     await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(87), kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: 0, length: seg.byteLength, blob: key } })), e.env);
     const append = await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(88), sessionId: 'sess_3', kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: seg.byteLength, length: seg.byteLength, blob: key } })), e.env));
     expect(append).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
-    expect(count(e.sqlite, 'events')).toBe(3);
-    expect(bytesWritten(e.sqlite, t3.tokenId)).toBe(0);
+    expect(count(e.sqlite, 'events')).toBe(4);
+    expect(bytesWritten(e.sqlite, t3.tokenId)).toBe(new TextEncoder().encode(JSON.stringify(theirs)).byteLength);
     expect(e.sqlite.query(`SELECT agent FROM sessions WHERE session_id = 'sess_1'`).get()).toEqual({ agent: 'claude-code' });
-    expect(e.sqlite.query(`SELECT content FROM plans`).get()).toEqual({ content: 'mine' });
+    expect(e.sqlite.query(`SELECT content, machine_id, session_id, token_id FROM plans`).get()).toEqual({ content: 'theirs', machine_id: 'machine_1', session_id: 'sess_1', token_id: t3.tokenId });
   });
 
   it('is the offset authority for transcripts: append, duplicate, overlap, and gap each carry the held size', async () => {
@@ -402,7 +403,10 @@ describe('kind catalogue', () => {
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
   });
 
-  it('derives an owned identity for every keyed column a kind projects, so a keyed table cannot enter the catalogue without its ownership check', async () => {
+  /** Keyed projections that carry no row owner: a Project-shared row any member may update. Exactly these, by name. */
+  const SHARED_ROW_PROJECTIONS = new Set(['plans']);
+
+  it('derives an owned identity for every keyed column a kind projects, so a keyed table cannot enter the catalogue without its ownership check — but the named Project-shared projections, which carry none', async () => {
     const recorder = { prepare: (sql: string) => ({ sql, params: [] as unknown[], bind: (...params: unknown[]) => ({ sql, params }) }) } as any;
     const ctx: WriteContext = { projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', now: 1, nonce: 'nonce-1' };
     for (const spec of KINDS) {
@@ -413,7 +417,7 @@ describe('kind catalogue', () => {
       const keyed = Object.entries(spec.fields)
         .filter(([, f]) => ((f.bound.type === 'id' && f.role === 'key') || f.bound.type === 'transcriptId') && f.column !== undefined)
         .map(([field, f]) => ({ keyColumn: f.column as string, key: payload[field], owner }));
-      const expected = spec.projection === 'raw' ? [] : keyed;
+      const expected = spec.projection === 'raw' || SHARED_ROW_PROJECTIONS.has(spec.projection) ? [] : keyed;
       expect({ kind: spec.name, identities: plan.identities.map(({ keyColumn, key, owner }) => ({ keyColumn, key, owner })) })
         .toEqual({ kind: spec.name, identities: expected });
     }
@@ -584,7 +588,8 @@ describe('kind catalogue', () => {
     ];
     const observed: Record<string, unknown>[] = [];
     for (const [kind, payload] of foreign) observed.push({ kind, res: await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(n++), sessionId: 'sess_3', kind, payload })), e.env)) });
-    expect(observed).toEqual(foreign.map(([kind]) => ({ kind, res: { persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' } })));
+    // A plan carries no row owner, so the probe from another machine reaches the blob check and learns the blob is absent; every owned row answers the identity first.
+    expect(observed).toEqual(foreign.map(([kind]) => ({ kind, res: kind === 'plan' ? { persisted: false, code: 'blob_absent', reason: `blob not present: ${absent}` } : { persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' } })));
     const ownAbsent = await json(await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(n++), kind: 'plan', payload: { planKey: uuid(905), blob: absent } })), e.env));
     expect(ownAbsent).toEqual({ persisted: false, code: 'blob_absent', reason: `blob not present: ${absent}` });
   });

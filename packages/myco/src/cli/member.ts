@@ -162,8 +162,9 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
     const manifest = loadManifests().find((m) => m.name === parsed.provision);
     if (!manifest) return fail(`unknown agent "${parsed.provision}" — the membership is recorded; provision it with \`myco member join --provision <agent>\``);
     const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
-    out(installer.install().hooks
-      ? `provisioned ${manifest.displayName} for ${root}`
+    const installed = installer.install();
+    out(installed.hooks
+      ? `provisioned ${manifest.displayName} for ${root}${installed.mcp ? ' (hooks and MCP)' : ''}`
       : `${manifest.displayName} cannot report to a server; nothing provisioned`);
   }
   return entry;
@@ -193,6 +194,7 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   for (const manifest of loadManifests()) {
     const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
     if (installer.uninstallMemberHooks()) out(`removed ${manifest.displayName} hooks from ${root}`);
+    if (installer.uninstallMemberMcp()) out(`removed ${manifest.displayName} MCP server from ${root}`);
   }
   return true;
 }

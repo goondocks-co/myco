@@ -29,6 +29,9 @@ export type SporeStatus = (typeof SPORE_STATUSES)[number];
 export const RESOLUTION_ACTIONS = ['supersede', 'consolidate', 'obsolete'] as const;
 export type ResolutionAction = (typeof RESOLUTION_ACTIONS)[number];
 
+/** The largest spore body any writer accepts, bounding one row against a caller that would grow it without limit. */
+export const MAX_SPORE_CONTENT_BYTES = 256 * 1024;
+
 export const DEFAULT_SPORE_LIMIT = 50;
 export const MAX_SPORE_LIMIT = 200;
 
@@ -205,4 +208,41 @@ export async function listSupersedingSporeIds(
        ORDER BY created_at DESC LIMIT ?`)
     .bind(scope.projectId, sporeId, limit).all<{ id: string }>();
   return results.map((r) => r.id);
+}
+
+/**
+ * Consolidate sources into one wisdom spore: the wisdom row and, for every
+ * source, its status move and its resolution event, in one batch — a caller
+ * cannot leave a wisdom spore with half its sources still active, and a
+ * source already moved by another writer is left as it is.
+ */
+export async function consolidateSpores(
+  db: RelationalStore,
+  scope: ReadScope,
+  wisdom: SporeInsert,
+  sources: readonly string[],
+  event: Omit<ResolutionEventInsert, 'id' | 'sporeId' | 'action' | 'newSporeId'>,
+  now: number,
+): Promise<{ wisdom: SporeRow | null; consolidated: number }> {
+  const insert = db.prepare(`INSERT INTO spores
+      (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, context,
+       importance, file_path, tags, content_hash, properties, created_at, embedded)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      RETURNING ${COLUMNS}`)
+    .bind(scope.projectId, wisdom.id, wisdom.agentId, wisdom.sessionId, wisdom.promptId, wisdom.observationType,
+      wisdom.status ?? 'active', wisdom.content, wisdom.context, wisdom.importance ?? 5, wisdom.filePath,
+      wisdom.tags, wisdom.contentHash, wisdom.properties, wisdom.createdAt);
+  const moves = sources.flatMap((sporeId) => [
+    db.prepare(`UPDATE spores SET status = 'consolidated', updated_at = ? WHERE project_id = ? AND id = ? AND status = 'active'`)
+      .bind(now, scope.projectId, sporeId),
+    db.prepare(`INSERT INTO resolution_events
+        (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, created_at)
+        SELECT ?, ?, ?, ?, 'consolidate', ?, ?, ?, ?
+         WHERE EXISTS (SELECT 1 FROM spores WHERE project_id = ? AND id = ? AND status = 'consolidated' AND updated_at = ?)`)
+      .bind(scope.projectId, crypto.randomUUID(), event.agentId, sporeId, wisdom.id, event.reason, event.sessionId, event.createdAt,
+        scope.projectId, sporeId, now),
+  ]);
+  const results = await db.batch([insert, ...moves]);
+  const consolidated = moves.filter((_, i) => i % 2 === 0 && results[1 + i].meta.changes === 1).length;
+  return { wisdom: (results[0].results[0] as SporeRow | undefined) ?? null, consolidated };
 }

@@ -79,6 +79,21 @@ describe('credential source', () => {
     expect(stderrLines.pop()).toContain('must be https');
   });
 
+  it('env: plain http is admitted on this machine\'s loopback only — the self-hosted C-local transport — and a registry entry never is', () => {
+    captureStderr();
+    const triplet = (url: string) => ({ [ENV_SERVER_URL]: url, [ENV_MEMBER_TOKEN]: 't', [ENV_PROJECT]: 'proj_env' });
+    for (const url of ['http://127.0.0.1:18787', 'http://localhost:8787', 'http://[::1]:8787']) {
+      expect({ url, record: resolveCredential('env', { env: triplet(url) }) }).toEqual({ url, record: { serverUrl: url, token: 't', projectId: 'proj_env', source: 'env' } });
+    }
+    for (const url of ['http://127.0.0.1.example', 'http://10.0.0.5:8787', 'http://host.docker.internal:8787']) {
+      expect({ url, record: resolveCredential('env', { env: triplet(url) }) }).toEqual({ url, record: null });
+      expect(stderrLines.pop()).toContain('must be https');
+    }
+    registerTestMember({ mycoHome, token: mintMemberToken(), projectId: 'proj_1', serverUrl: 'http://127.0.0.1:18787' });
+    expect(resolveCredential('registry', { mycoHome })).toBeNull();
+    expect(stderrLines.pop()).toContain('non-https');
+  });
+
   it('a --credential registry hook under a repo-settings MYCO_HOME relocation plus the env triplet sends nothing to the env URL', async () => {
     // The repository's settings block relocates MYCO_HOME to an empty dir and
     // sets the triplet; the installer-emitted command still declares registry.
