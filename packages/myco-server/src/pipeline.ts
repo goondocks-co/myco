@@ -88,6 +88,10 @@ const unsupportedProtocol = () =>
   Response.json({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL }, { status: 409 });
 export const NO_MACHINE_IDENTITY = 'token has no machine identity';
 export const NO_PROJECT = 'project header required';
+/** Capture into an archived Project is refused on every capture route, in the route's shape; nothing else about the credential changes. */
+const PROJECT_ARCHIVED = 'this project is archived on the server; unarchive it from the dashboard to resume capture';
+/** The routes a member's capture writes through — the ones charged to its quota. */
+const captureRoute = (route: MemberRoute): boolean => route.quotaPrecheck !== false;
 /** What may be presented as a Project id on the wire. Exported so the member can be pinned against it: the member decides a Project id at `myco member join` and the server never sees it until the first capture, so a member that admits more than this prints "joined" and is then refused every request. */
 export const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -144,8 +148,7 @@ async function overQuota(env: ServerEnv, tokenId: string, bytes: number): Promis
 async function failed(env: ServerEnv, auth: MemberAuth, route: MemberRoute, err: unknown, bytes: number): Promise<Response> {
   const shape = shapeOf(route);
   const errorClass = classify(err, errorClassifierOf(env));
-  const charged = route.quotaPrecheck !== false;
-  if (charged && (errorClass === 'quota' || (errorClass === 'constraint' && (await overQuota(env, auth.tokenId, bytes))))) return refuse(auth, shape, QUOTA_REASON, 'quota');
+  if (captureRoute(route) && (errorClass === 'quota' || (errorClass === 'constraint' && (await overQuota(env, auth.tokenId, bytes))))) return refuse(auth, shape, QUOTA_REASON, 'quota');
   emit({ kind: shape === 'stored' ? 'blob_error' : shape === 'refreshed' ? 'refresh_error' : 'ingest_error', memberId: auth.memberId, tokenId: auth.tokenId, error_class: errorClass });
   return unavailableFor(route);
 }
@@ -295,7 +298,11 @@ export function createServer(deps: ServerDeps) {
      * seat on a request that is never going to be admitted.
      */
     const resolved = async (): Promise<Response | null> => {
-      if ((await resolveProject(env.db, projectId, now)).resolved) return null;
+      const resolution = await resolveProject(env.db, projectId, now);
+      if (resolution.resolved) {
+        if (captureRoute(route) && resolution.archived) return refuse(auth, shapeOf(route), PROJECT_ARCHIVED, 'project_archived');
+        return null;
+      }
       emit({ kind: 'project_limit_reached', memberId: auth.memberId, tokenId: auth.tokenId });
       // 503 with retry-after, NOT a terminal refusal. The ceiling is the Deployment's
       // and only an operator can clear it — nothing the member sends differs next time,

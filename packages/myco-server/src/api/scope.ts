@@ -20,8 +20,8 @@ export async function resolveProjectScope(db: RelationalStore, _principal: Princ
 export const sessionInScope = coreSessionInScope;
 
 /** Every project this principal may see. The one read that answers "what is visible at all" rather than "what is in this scope", so it takes the principal for the same reason `resolveProjectScope` does: phase 2's grant query lands here and nowhere else. */
-export async function listVisibleProjects(db: RelationalStore, _principal: Principal): Promise<ProjectRow[]> {
-  return listProjects(db);
+export async function listVisibleProjects(db: RelationalStore, _principal: Principal, opts: { includeArchived?: boolean } = {}): Promise<ProjectRow[]> {
+  return listProjects(db, opts);
 }
 
 /** An absent or out-of-scope entity. Never 403: a 403 confirms the thing exists. */

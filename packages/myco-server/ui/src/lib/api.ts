@@ -72,7 +72,12 @@ export interface ProjectSummary {
   createdAt: number;
   sessionCount: number;
   lastActivityAt: number | null;
+  archivedAt: number | null;
+  archivedBy: string | null;
 }
+
+/** An archived project refuses capture and stays readable. A row from an older fixture without the field reads as live. */
+export const isArchived = (p: Pick<ProjectSummary, 'archivedAt'>): boolean => p.archivedAt != null;
 
 export interface ProjectsResponse {
   projects: ProjectSummary[];

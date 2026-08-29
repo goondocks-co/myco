@@ -333,3 +333,14 @@ describe('agent runs read the same on both stores', () => {
     expect(outcomes[1]).toEqual(outcomes[0]);
   });
 });
+
+describe('archival refuses capture the same on both stores', () => {
+  it('answers the named terminal refusal in the route shape on each target, and restores after unarchive', async () => {
+    for (const t of TARGETS) await t.env.db.prepare(`UPDATE projects SET archived_at = 1, archived_by = 'mem_machine_1' WHERE project_id = 'proj_1'`).run();
+    const refused = await onBoth(async (t) => t.fetch(memberPost(await t.token(), envelope({ eventId: uuid(71) }))));
+    agreeing(refused, { status: 200, body: { persisted: false, code: 'project_archived', reason: 'this project is archived on the server; unarchive it from the dashboard to resume capture' } });
+    for (const t of TARGETS) await t.env.db.prepare(`UPDATE projects SET archived_at = NULL, archived_by = NULL WHERE project_id = 'proj_1'`).run();
+    const restored = await onBoth(async (t) => t.fetch(memberPost(await t.token(), envelope({ eventId: uuid(72) }))));
+    agreeing(restored, { status: 200, body: { persisted: true, projected: true } });
+  });
+});
