@@ -23,6 +23,24 @@ export interface SessionRow {
   originPath: string | null;
   parentSessionId: string | null;
   parentReason: string | null;
+  /** The member and runtime behind the credential that captured the session; null when the credential row is gone. */
+  memberId: string | null;
+  memberLabel: string | null;
+  runtimeLabel: string | null;
+  runtimeKind: string | null;
+}
+
+/** What a project holds, counted for its home page. */
+export interface ProjectStats {
+  sessions: number;
+  /** Sessions with no end recorded. A runtime that died never ends its session, so this is what the data says, not a liveness claim. */
+  openSessions: number;
+  sessionsLast7d: number;
+  prompts: number;
+  toolCalls: number;
+  plans: number;
+  attachments: number;
+  lastActivityAt: number | null;
 }
 
 /** Counts of a session's child projections, for a detail view that shows what it holds before fetching any of it. */
@@ -34,8 +52,14 @@ export interface SessionCounts {
   attachments: number;
 }
 
-const SESSION_COLUMNS = `session_id, machine_id, created_by_token_id, first_received_at, last_received_at,
-     agent, branch, started_at, ended_at, origin_path, parent_session_id, parent_reason`;
+/** Both joins land on primary keys, so the row count and the order are those of `sessions` alone. */
+const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
+     s.agent, s.branch, s.started_at, s.ended_at, s.origin_path, s.parent_session_id, s.parent_reason,
+     c.member_id, c.runtime_label, c.runtime_kind, m.label AS member_label`;
+const SESSION_FROM = `FROM sessions s
+     LEFT JOIN member_credentials c ON c.id = s.created_by_token_id
+     LEFT JOIN members m ON m.id = c.member_id`;
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const text = (value: unknown): string | null => (value as string | null) ?? null;
 const num = (value: unknown): number | null => (value as number | null) ?? null;
@@ -54,6 +78,10 @@ function toSession(row: Record<string, unknown>): SessionRow {
     originPath: text(row.origin_path),
     parentSessionId: text(row.parent_session_id),
     parentReason: text(row.parent_reason),
+    memberId: text(row.member_id),
+    memberLabel: text(row.member_label),
+    runtimeLabel: text(row.runtime_label),
+    runtimeKind: text(row.runtime_kind),
   };
 }
 
@@ -80,10 +108,10 @@ export async function listProjects(db: RelationalStore): Promise<ProjectRow[]> {
 
 /** A project's sessions, most recently started first, over `idx_sessions_recent`. The key is `first_received_at` paired with `session_id`: a keyset page must order by a column no later write moves, or an actively capturing session slips above the cursor between two pages and appears on neither. */
 export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } = {}): Promise<Page<SessionRow>> {
-  const k = keyset(opts, { order: 'first_received_at', id: 'session_id', direction: 'DESC' });
+  const k = keyset(opts, { order: 's.first_received_at', id: 's.session_id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
   const { results } = await db
-    .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE project_id = ? ${k.where === '' ? '' : `AND ${k.where}`} ORDER BY first_received_at DESC, session_id DESC LIMIT ?`)
+    .prepare(`SELECT ${SESSION_COLUMNS} ${SESSION_FROM} WHERE s.project_id = ? ${k.where === '' ? '' : `AND ${k.where}`} ORDER BY s.first_received_at DESC, s.session_id DESC LIMIT ?`)
     .bind(scope.projectId, ...k.params, k.limit + 1)
     .all<Record<string, unknown>>();
   return page(results.map(toSession), k.limit, (r) => ({ createdAt: r.firstReceivedAt, id: r.sessionId }));
@@ -92,7 +120,7 @@ export async function listSessions(db: RelationalStore, scope: ReadScope, opts: 
 /** One session inside the scope, or null — including when the session exists under another project. */
 export async function getSession(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<SessionRow | null> {
   const row = await db
-    .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE project_id = ? AND session_id = ?`)
+    .prepare(`SELECT ${SESSION_COLUMNS} ${SESSION_FROM} WHERE s.project_id = ? AND s.session_id = ?`)
     .bind(scope.projectId, sessionId)
     .first<Record<string, unknown>>();
   return row === null ? null : toSession(row);
@@ -116,6 +144,30 @@ export async function sessionCounts(db: RelationalStore, scope: ReadScope, sessi
     counts[key] = row?.n ?? 0;
   }
   return counts as unknown as SessionCounts;
+}
+
+/** What the project holds, one count per projection: they share no key, and a join would multiply rows. */
+export async function projectStats(db: RelationalStore, scope: ReadScope, nowMs: number): Promise<ProjectStats> {
+  const sessions = await db
+    .prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END) AS open,
+                     SUM(CASE WHEN first_received_at >= ? THEN 1 ELSE 0 END) AS recent, MAX(last_received_at) AS last
+                FROM sessions WHERE project_id = ?`)
+    .bind(nowMs - WEEK_MS, scope.projectId)
+    .first<Record<string, unknown>>();
+  const countOf = async (table: string): Promise<number> => {
+    const row = await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ?`).bind(scope.projectId).first<{ n: number }>();
+    return row?.n ?? 0;
+  };
+  return {
+    sessions: (sessions?.total as number | null) ?? 0,
+    openSessions: (sessions?.open as number | null) ?? 0,
+    sessionsLast7d: (sessions?.recent as number | null) ?? 0,
+    prompts: await countOf('prompt_batches'),
+    toolCalls: await countOf('tool_calls'),
+    plans: await countOf('plans'),
+    attachments: await countOf('attachments'),
+    lastActivityAt: (sessions?.last as number | null) ?? null,
+  };
 }
 
 /** True when the project exists. The core answers what is there; a facade decides whether its caller may see it. */
