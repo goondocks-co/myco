@@ -7,6 +7,9 @@ export interface ProjectRow {
   createdAt: number;
   sessionCount: number;
   lastActivityAt: number | null;
+  /** The archive time and who archived it; null while the project accepts capture. */
+  archivedAt: number | null;
+  archivedBy: string | null;
 }
 
 /** A session and the facts that identify the run that produced it. `agent`, `branch`, `originPath` and `parentSessionId` are what separate a sandboxed headless run from a laptop run; a view without them cannot show which is which. */
@@ -86,14 +89,15 @@ function toSession(row: Record<string, unknown>): SessionRow {
 }
 
 /** Every project with its session count and most recent receipt, most recently active first. Unscoped: the caller decides which projects its credential may see. */
-export async function listProjects(db: RelationalStore): Promise<ProjectRow[]> {
+export async function listProjects(db: RelationalStore, opts: { includeArchived?: boolean } = {}): Promise<ProjectRow[]> {
   const { results } = await db
     .prepare(
-      `SELECT p.project_id, p.name, p.created_at,
+      `SELECT p.project_id, p.name, p.created_at, p.archived_at, p.archived_by,
               COUNT(s.session_id) AS session_count,
               MAX(s.last_received_at) AS last_activity_at
          FROM projects p LEFT JOIN sessions s ON s.project_id = p.project_id
-        GROUP BY p.project_id, p.name, p.created_at
+        ${opts.includeArchived === true ? '' : 'WHERE p.archived_at IS NULL'}
+        GROUP BY p.project_id, p.name, p.created_at, p.archived_at, p.archived_by
         ORDER BY last_activity_at DESC NULLS LAST, p.created_at DESC`
     )
     .all<Record<string, unknown>>();
@@ -103,7 +107,32 @@ export async function listProjects(db: RelationalStore): Promise<ProjectRow[]> {
     createdAt: row.created_at as number,
     sessionCount: row.session_count as number,
     lastActivityAt: (row.last_activity_at as number | null) ?? null,
+    archivedAt: (row.archived_at as number | null) ?? null,
+    archivedBy: (row.archived_by as string | null) ?? null,
   }));
+}
+
+export type ArchiveOutcome = 'archived' | 'absent' | 'already_archived';
+export type UnarchiveOutcome = 'restored' | 'absent' | 'not_archived';
+
+/** Archive a project: capture is refused from here on, listings hide it by default, and everything captured stays. One statement moves it; a read tells an absent project from one already archived. */
+export async function archiveProject(db: RelationalStore, projectId: string, by: string, nowMs: number): Promise<ArchiveOutcome> {
+  const result = await db
+    .prepare(`UPDATE projects SET archived_at = ?, archived_by = ? WHERE project_id = ? AND archived_at IS NULL`)
+    .bind(nowMs, by, projectId)
+    .run();
+  if (result.meta.changes === 1) return 'archived';
+  return (await projectExists(db, projectId)) ? 'already_archived' : 'absent';
+}
+
+/** Restore capture for an archived project. */
+export async function unarchiveProject(db: RelationalStore, projectId: string): Promise<UnarchiveOutcome> {
+  const result = await db
+    .prepare(`UPDATE projects SET archived_at = NULL, archived_by = NULL WHERE project_id = ? AND archived_at IS NOT NULL`)
+    .bind(projectId)
+    .run();
+  if (result.meta.changes === 1) return 'restored';
+  return (await projectExists(db, projectId)) ? 'not_archived' : 'absent';
 }
 
 /** A project's sessions, most recently started first, over `idx_sessions_recent`. The key is `first_received_at` paired with `session_id`: a keyset page must order by a column no later write moves, or an actively capturing session slips above the cursor between two pages and appears on neither. */

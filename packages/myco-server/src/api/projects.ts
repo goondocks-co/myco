@@ -1,14 +1,34 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { createProject } from '../read/sessions.js';
-import { readJsonObject, badRequest, listVisibleProjects, ok } from './scope.js';
+import { archiveProject, createProject, unarchiveProject } from '../read/sessions.js';
+import { emit } from '../telemetry.js';
+import { readJsonObject, badRequest, listVisibleProjects, notFound, ok } from './scope.js';
 
 /** The project-id grammar the schema enforces (`db/schema.ts:5`), applied before a write reaches a CHECK constraint. */
 const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
 const RESERVED = new Set(['.', '..']);
 
+/** `GET /api/projects`: the projects that accept capture; `?include=archived` lists the archived ones too. */
 export async function handleProjects(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  return ok({ projects: await listVisibleProjects(env.db, ctx.member) });
+  return ok({ projects: await listVisibleProjects(env.db, ctx.member, { includeArchived: ctx.url.searchParams.get('include') === 'archived' }) });
+}
+
+/** `POST /api/projects/{projectId}/archive`: attributed; a second archive is refused by name. */
+export async function handleArchiveProject(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const outcome = await archiveProject(env.db, ctx.params.projectId, ctx.member.id, ctx.now);
+  if (outcome === 'absent') return notFound();
+  if (outcome === 'already_archived') return Response.json({ error: outcome }, { status: 409 });
+  emit({ kind: 'project_archived', projectId: ctx.params.projectId, actor: ctx.member.id });
+  return ok({ archived: true, archivedBy: ctx.member.id });
+}
+
+/** `POST /api/projects/{projectId}/unarchive`: capture resumes on the next request. */
+export async function handleUnarchiveProject(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const outcome = await unarchiveProject(env.db, ctx.params.projectId);
+  if (outcome === 'absent') return notFound();
+  if (outcome === 'not_archived') return Response.json({ error: outcome }, { status: 409 });
+  emit({ kind: 'project_unarchived', projectId: ctx.params.projectId, actor: ctx.member.id });
+  return ok({ archived: false });
 }
 
 /** Create a project. The owner API onboards a project so a first token can be minted for it; `scripts/mint-local.ts` remains the break-glass mirror. */

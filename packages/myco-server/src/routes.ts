@@ -4,7 +4,7 @@ import { handleLink, handleMe } from './api/identity.js';
 import { handleLinkGithub } from './auth/members.js';
 import { clearCookie } from './auth/owner/cookie.js';
 import { handleCallback, handleLogin } from './auth/owner/routes.js';
-import { handleCreateProject, handleProjects } from './api/projects.js';
+import { handleArchiveProject, handleCreateProject, handleProjects, handleUnarchiveProject } from './api/projects.js';
 import { handleStatus } from './api/status.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
@@ -97,6 +97,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/status', auth: 'owner', handler: handleStatus },
   { method: 'GET', path: '/api/projects', auth: 'owner', handler: handleProjects },
   { method: 'POST', path: '/api/projects', auth: 'owner', handler: handleCreateProject },
+  { method: 'POST', path: '/api/projects/{projectId}/archive', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/archive$/, auth: 'owner', handler: handleArchiveProject },
+  { method: 'POST', path: '/api/projects/{projectId}/unarchive', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/unarchive$/, auth: 'owner', handler: handleUnarchiveProject },
   { method: 'GET', path: '/api/projects/{projectId}/activity', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/activity$/, auth: 'owner', handler: handleProjectActivity },
   { method: 'GET', path: '/api/projects/{projectId}/sessions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions$/, auth: 'owner', handler: handleProjectSessions },
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})$/, auth: 'owner', handler: handleSession },

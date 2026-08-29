@@ -21,19 +21,23 @@ import { MAX_PROJECTS } from '../constants.js';
  * Steady state is one statement — a primary-key lookup. Only a Project that does
  * not exist costs a second.
  */
-export async function resolveProject(db: RelationalStore, projectId: string, nowMs: number): Promise<{ resolved: boolean }> {
-  const existing = await db.prepare(`SELECT 1 AS present FROM projects WHERE project_id = ?`).bind(projectId).first<{ present: number }>();
-  if (existing !== null) return { resolved: true };
+export type ProjectResolution = { resolved: true; archived: boolean } | { resolved: false };
+
+const LOOKUP = `SELECT archived_at FROM projects WHERE project_id = ?`;
+const found = (row: { archived_at: number | null } | null): ProjectResolution => (row === null ? { resolved: false } : { resolved: true, archived: row.archived_at !== null });
+
+export async function resolveProject(db: RelationalStore, projectId: string, nowMs: number): Promise<ProjectResolution> {
+  const existing = await db.prepare(LOOKUP).bind(projectId).first<{ archived_at: number | null }>();
+  if (existing !== null) return found(existing);
 
   const created = await db
     .prepare(`INSERT OR IGNORE INTO projects (project_id, name, created_at)
               SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM projects) < ?`)
     .bind(projectId, projectId, nowMs, MAX_PROJECTS)
     .run();
-  if (created.meta.changes === 1) return { resolved: true };
+  if (created.meta.changes === 1) return { resolved: true, archived: false };
 
   // Zero changes is either the ceiling or a concurrent creation of this same
   // Project, which is a success. One lookup separates them.
-  const now = await db.prepare(`SELECT 1 AS present FROM projects WHERE project_id = ?`).bind(projectId).first<{ present: number }>();
-  return { resolved: now !== null };
+  return found(await db.prepare(LOOKUP).bind(projectId).first<{ archived_at: number | null }>());
 }
