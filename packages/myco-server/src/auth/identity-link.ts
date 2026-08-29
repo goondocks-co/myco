@@ -172,6 +172,15 @@ export async function reclaimIdentityLinkAuthorities(db: RelationalStore, nowMs:
   return { reclaimed: result.meta.changes };
 }
 
+/** Every unspent link key of a member, revoked and attributed — effective only once the member row carries this revocation. */
+export function revokeLinkKeysOfMember(db: RelationalStore, memberId: string, revokedBy: string, nowMs: number) {
+  return db
+    .prepare(`UPDATE identity_link_authorities SET revoked_at = ?, revoked_by = ?
+               WHERE member_id = ? AND used_at IS NULL AND revoked_at IS NULL
+                 AND EXISTS (SELECT 1 FROM members WHERE id = ? AND revoked_at = ? AND revoked_by = ?)`)
+    .bind(nowMs, revokedBy, memberId, memberId, nowMs, revokedBy);
+}
+
 /** The break-glass bind: the statement an operator applies with their own store access. Clears any earlier account. */
 export function linkStatement(db: RelationalStore, memberId: string, githubId: string) {
   return db.prepare(`UPDATE members SET github_id = ? WHERE id = ?`).bind(githubId, memberId);

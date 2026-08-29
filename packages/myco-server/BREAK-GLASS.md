@@ -54,6 +54,9 @@ Self-hosted, apply the same statement against the SQLite file on the mounted vol
 
 # Break-glass: revoking a member token
 
+Ordinary offboarding is the dashboard (`POST /api/members/{memberId}/revoke`): one transaction ending the member and everything live that is theirs, attributed. This path is for a token whose member must stay.
+
+
 A leaked member token is revoked by setting `revoked_at` on its row. The pipeline refuses a revoked token on the next request; there is no cache to flush.
 
 `revokeMemberToken` is the code path; `npm run token:revoke -- <TOKEN_ID>` prints its `UPDATE`. Find the credential by member and machine, print the statement, apply it with `wrangler d1 execute`, then confirm the command reported one changed row — zero rows means no live credential had that id:

@@ -98,3 +98,14 @@ Sign-in is GitHub OAuth (`/auth/login`), and who may enter is a membership quest
 Cut-over to schema v8 (the first release carrying member sign-in) on a Deployment that signed in as a configured owner: migrate the remote database, bind the owner's member to their GitHub account with `scripts/link-github.ts` (BREAK-GLASS.md), deploy, then delete the `OWNER_GITHUB_ID` secret — in that order, so nobody is locked out between steps. Every later member links with `myco member link-github`.
 
 Local development: `cd ui && npm run dev` proxies `/api`, `/auth` and `/health` to `http://127.0.0.1:8787` (override with `MYCO_SERVER_URL`), rewriting the Host to the loopback literal the self-hosted server admits.
+
+## Access
+
+Membership is flat: every member manages members, invitations, runtimes and external agents, and every act names who did it.
+
+- `GET /api/members` — members with whether an account is connected (never the account), and live runtimes. `POST /api/members/{memberId}/revoke` — ends the member and, in the same transaction, every live credential, unspent invitation and link key of theirs; refused `409 last_member` when it would leave no live linked member, `409 already_revoked`, `404` absent. A revoked member's credentials are refused at authentication on every route; machine claims stay, so their history stays theirs.
+- `GET /api/enrollment` (live invitations), `POST /api/enrollment {memberId?, ttlMinutes?}` (a new member, or another runtime of an existing one; the key is answered once; at most a day), `POST /api/enrollment/{id}/revoke`.
+- `GET /api/credentials?limit&cursor` (newest lineage first), `POST /api/credentials/{id}/revoke`, `GET /api/credentials/{id}/activity?limit&cursor` (what the credential wrote, across every Project).
+- `GET|POST /api/projects/{projectId}/grants`, `POST …/grants/{grantId}/rotate`, `POST …/grants/{grantId}/revoke` — External Agent grants: a `mycoext_…` bearer, project-scoped by row and read-only, with no expiry; `last_used_at` moves at authentication at most once a minute. The `/mcp` surface that honours a grant is #921's.
+
+There is no HTTP path that returns a member credential: a runtime is added by an invitation spent with `myco member join`; `scripts/mint-local.ts` remains break-glass.

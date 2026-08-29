@@ -73,6 +73,8 @@ interface AuthRow {
   first_used_at: number | null;
   runtime_label: string | null;
   runtime_kind: string | null;
+  /** The credential's member, present only while that member is live. */
+  member_live: string | null;
 }
 
 export function mintMemberToken(): string {
@@ -151,6 +153,15 @@ export async function revokeCredentialAsMember(
   return { revoked, revokedBy };
 }
 
+/** Every live credential of a member, revoked and attributed in one statement — effective only once the member row itself carries this revocation, so a batch whose first statement changed nothing changes nothing here either. */
+export function revokeCredentialsOfMember(db: RelationalStore, memberId: string, revokedBy: string, nowMs: number): PreparedStatement {
+  return db
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ?
+               WHERE member_id = ? AND revoked_at IS NULL
+                 AND EXISTS (SELECT 1 FROM members WHERE id = ? AND revoked_at = ? AND revoked_by = ?)`)
+    .bind(nowMs, revokedBy, memberId, memberId, nowMs, revokedBy);
+}
+
 /** Revokes every live token of the lineage `tokenId` belongs to — the named token, its predecessors, and its successors — in one statement; `revoked` counts the rows that changed. */
 export async function revokeMemberLineage(db: RelationalStore, tokenId: string, nowMs: number): Promise<{ revoked: number }> {
   const result = await db
@@ -189,7 +200,7 @@ export async function activateSuccessor(db: RelationalStore, auth: Pick<MemberAu
   ]);
 }
 
-/** One read: the database schema version, joined to the member row for the digest when one exists. The version must equal this build's before any token decision is made; a missing version row is a mismatch. A row without its lineage columns never authenticates. */
+/** One read: the database schema version, joined to the credential row for the digest and to its member, kept only while that member is live. The version must equal this build's before any token decision is made; a missing version row is a mismatch. A row without its lineage columns, or whose member is revoked, never authenticates. */
 export async function authenticateServerMemberToken(
   db: RelationalStore, digest: string, nowMs: number,
 ): Promise<MemberAuth | null> {
@@ -197,9 +208,10 @@ export async function authenticateServerMemberToken(
     .prepare(`SELECT s.value AS schema_version,
                      t.id, t.member_id, t.machine_id, t.expires_at, t.revoked_at, t.bytes_written,
                      t.lineage_root, t.lineage_started_at, t.predecessor_id, t.first_used_at,
-                     t.runtime_label, t.runtime_kind
+                     t.runtime_label, t.runtime_kind, m.id AS member_live
                 FROM schema_meta s
                 LEFT JOIN member_credentials t ON t.token_hash = ?
+                LEFT JOIN members m ON m.id = t.member_id AND m.revoked_at IS NULL
                WHERE s.key = 'version'`)
     .bind(digest)
     .first<AuthRow>();
@@ -209,6 +221,7 @@ export async function authenticateServerMemberToken(
   if (row.id === null || row.member_id === null || row.expires_at === null || row.bytes_written === null) return null;
   if (row.lineage_root === null || row.lineage_started_at === null) return null;
   if (row.revoked_at !== null) return null;
+  if (row.member_live === null) return null;
   if (row.expires_at <= nowMs) return null;
   return {
     memberId: row.member_id, tokenId: row.id, machineId: row.machine_id, bytesWritten: row.bytes_written,

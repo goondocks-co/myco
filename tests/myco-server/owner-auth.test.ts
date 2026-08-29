@@ -356,7 +356,7 @@ describe('an account no member is linked to reaches nothing', () => {
     const now = Date.now();
     // Correctly signed by this server, but for a different GitHub account.
     const stranger = await signSession(SESSION_SECRET, { sub: '999999', login: 'nobody', iat: now, exp: now + 60_000 });
-    for (const path of ['/api/projects', '/api/status', '/api/projects/proj_1/tokens']) {
+    for (const path of ['/api/projects', '/api/status', '/api/credentials']) {
       const res = await worker.fetch(
         new Request(`https://s${path}`, { headers: { cookie: `${SESSION_COOKIE}=${stranger}`, 'cf-connecting-ip': '1.2.3.4' } }),
         { ...e.env, ...OWNER_ENV }

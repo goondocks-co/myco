@@ -308,10 +308,8 @@ const V4_STATEMENTS: readonly string[] = [
  * what they did. Only `enrollment_authorities` has a retention sweep: nothing
  * resolves through a spent invitation.
  *
- * Every member may revoke any credential, so `revoked_by` records which one did —
- * a member id, or the owner acting through the dashboard under `owner:<id>`. The
- * two namespaces are told apart by prefix, or an operator reading the column
- * cannot answer which kind of actor ended the credential.
+ * Every member may revoke any credential, so `revoked_by` records which one did,
+ * by member id, on whichever channel the revocation arrived.
  * A destroy path that does not record its actor leaves denial-of-service by a
  * member indistinguishable from an operator's own action, and flat membership is
  * what puts that in reach of everyone rather than of one owner.
@@ -924,12 +922,37 @@ const V8_STATEMENTS: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_link_authorities_hash ON identity_link_authorities (key_hash)`,
 ];
 
+/**
+ * v9: access administration. Every revocation names who; External Agent grants;
+ * the indexes a Deployment-wide credential list and activity read run on.
+ */
+const V9_STATEMENTS: readonly string[] = [
+  `ALTER TABLE members ADD COLUMN revoked_by TEXT`,
+  `ALTER TABLE enrollment_authorities ADD COLUMN revoked_by TEXT`,
+  `ALTER TABLE identity_link_authorities ADD COLUMN revoked_by TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_member_credentials_started ON member_credentials (lineage_started_at, id)`,
+  `CREATE INDEX IF NOT EXISTS idx_events_token_only ON events (token_id, created_at, event_id)`,
+  `CREATE TABLE IF NOT EXISTS external_grants (
+     id           TEXT PRIMARY KEY,
+     project_id   TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     key_hash     TEXT NOT NULL,
+     label        TEXT,
+     created_by   TEXT NOT NULL,
+     created_at   INTEGER NOT NULL,
+     last_used_at INTEGER,
+     revoked_at   INTEGER,
+     revoked_by   TEXT,
+     rotated_to   TEXT)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_external_grants_hash ON external_grants (key_hash)`,
+  `CREATE INDEX IF NOT EXISTS idx_external_grants_project ON external_grants (project_id, created_at)`,
+];
+
 function withStamp(version: number, statements: readonly string[]): SchemaStep {
   return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
 }
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);
