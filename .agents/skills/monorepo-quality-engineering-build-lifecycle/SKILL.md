@@ -25,26 +25,16 @@ Establish and maintain the distinction between fast development builds (`make bu
 
 ### Build Orchestration Strategy
 
-**Default Development Build** uses fast profile excluding integration tests:
+**Default Development Build** (fast profile, then auto-deploys + restarts the running dev daemon since the Makefile targets dogfooding):
 ```bash
-# Fast development build (default)
 make build
-# Executes: MYCO_TEST_PROFILE=fast make check, then npm run build
+# Executes: check-fast (lint+test-fast) -> npm run build -> dev-refresh
 # Excludes: tests/integration/, tests/smoke/, tests/daemon/integration/
 ```
-
-**Full CI Build** includes all test buckets:
-```bash
-# Full CI validation pipeline
-make build-all
-# Executes: full test suite including integration tests, then npm run build
-```
-
-**Bundler-only Build** (skips all validation):
-```bash
-# Bundler only - skips type checking and tests
-npm run build
-```
+**Compile-only** (no daemon refresh): `make build-only` runs `npm run build` only.
+**Full CI Build**: `make build-all` runs check-all (lint+test-all, all buckets) -> npm run build -> dev-refresh.
+**Native Module Rebuild** (fix stale `.node` binaries after a branch switch): `make build-rebuild` runs `rebuild` (`npm rebuild`) then `build`.
+**Bundler-only** (skips validation, no daemon refresh): `npm run build`
 
 ### Fast Profile Test Exclusions
 
@@ -458,7 +448,7 @@ Manage build outputs and ensure proper cleanup across workspaces.
 ```bash
 # Clean all package dist directories
 make clean
-# Removes: packages/myco/dist packages/myco-team/dist packages/myco-hub/dist packages/myco-shared/dist
+# Removes: packages/myco/dist packages/myco-team/dist packages/myco-collective/dist packages/myco-hub/dist packages/myco-shared/dist
 ```
 
 2. **Validate workspace build order**:
@@ -738,6 +728,13 @@ done
 - **Binary recompilation can trigger launchd KeepAlive throttle**: `packages/myco/scripts/clean-core.mjs` (run by `npm run build` and `npm run build:binaries`) removes build artifacts before recompiling. If the launchd daemon service monitors the binary output path, the temporary absence triggers KeepAlive respawn attempts. Under rapid successive rebuilds launchd may enter throttle mode. Recovery: `launchctl kickstart -k gui/$(id -u)/com.myco.daemon` after the build completes.
 - **`npm allow-scripts` silently blocks postinstall binary convergence**: If an `allow-scripts` policy blocks postinstall hooks, `packages/myco/scripts/select-binary.mjs` won't run and npm exits 0 without error. The binary appears installed but may be wrong for the platform. Check for `allow-scripts` warnings in install output or run `cd packages/myco && node scripts/select-binary.mjs` manually.
 
+### Gate Integrity Pitfalls
+- **EXPLAIN QUERY PLAN step-count pinning is platform-fragile**: a gate pinning an exact query-plan step count passes on macOS dev and fails in Linux CI for the same code (Myco 2.0 Plan 2 cost gate, `tests/myco-server/kinds.test.ts`). Assert on index usage (no table scan), not an exact step count.
+- **Gates must exercise the deployed entry, and narrowing a gate can silently widen the hole it guards**: a route-auth gate passed while calling an internal request-handler factory instead of the deployed worker entry (which skips middleware the real entry applies); separately, replacing a raw-row gate with a new precondition to fix one failure changed what the gate verifies. Exercise the actual exported handler and re-derive gate coverage after any precondition change.
+- **Migration gates that read from the source file, not deployed state, can be spoofed**: editing an already-applied migration step in place and re-emitting it passed verification because gates compared source-to-source instead of source-to-deployed ledger. Verify against actual applied/deployed state. Relatedly, a trailing-slash off-by-one in path slicing (`slice(SRC.length + 1)` on a `SRC` already ending in a slash) can eat the first character of every relative path so no allowlist pattern matches — the gate reports success while checking zero real paths; assert a non-zero file count, not just absence of errors.
+- **Planted-negative mutate-restore must not use `git checkout -- <file>`**: it restores from the INDEX, and during a long change the index is usually stale — the "restore" silently reverts real uncommitted work instead of just the test mutation. Snapshot the file before mutating and restore from that snapshot.
+- **Worker rollout windows are fail-closed, and `wrangler dev` body-drain is a local-only artifact**: `packages/myco-server/worker/src/auth/tokens.ts:80` strict-equality-checks the stored schema version, throwing a schema-mismatch 503 on any mid-rollout version skew rather than degrading gracefully; separately, `wrangler dev` (4.123, miniflare) throws a network-connection-lost error and exits when a request body never completes — validate incomplete-body handling against a real Cloudflare deployment, not `wrangler dev`. Separately, `String.fromCharCode(...bytes)` spread-argument limits diverge between Bun/JSC and Node/V8-workerd (the production runtime): Bun/JSC tolerates a far larger spread before `RangeError` than Node/V8, which throws around 100,000 arguments — a byte-to-string decode via spread can pass locally on Bun and fail in deployed workerd, so chunk below ~100k arguments or use a non-spread decode path (e.g., `Buffer`/`TextDecoder`).
+
 ### Generated Artifact Traps
 - **Task definition YAML edits require manual codegen — CI does not catch the gap**: Editing a task definition YAML (e.g., `packages/myco/src/agent/definitions/tasks/skill-evolve.yaml`) does NOT take effect until `npm run codegen` regenerates `packages/myco/src/agent/definitions.generated.ts`. CI does not validate that the generated file matches the source YAML, so a forgotten codegen step ships a stale agent definition silently.
 - **`packages/myco/src/ui-assets.generated.ts` stale-binary trap**: `packages/myco/scripts/build-single-target.mjs` (invoked via `npm run build:binary`) bundles `packages/myco/src/ui-assets.generated.ts` AS CHECKED IN — it does not rebuild the UI. Deploying a rig/dogfood binary after reverting or resetting that file (e.g., `git checkout --`) ships the OLD dashboard silently. The file is tracked and must be deliberately regenerated-and-committed in any PR that changes the dashboard UI, since CI's check job and any bare `build:binary` consume the committed copy, not a fresh build.
@@ -754,6 +751,7 @@ done
 - **Audit fix mutations**: `npm audit fix` can introduce unexpected dependency changes - track with git status
 - **Build order dependencies**: Shared packages must build before consumers - verify workspace build sequence
 - **Dependabot PR accumulation**: Batch multiple Dependabot PRs to reduce testing overhead and merge conflicts
+- **`git mv` strands gitignored operational files**: Moving a package directory with `git mv` (e.g. the `packages/myco-server/worker/` → `packages/myco-server/` restructure) only relocates tracked files — gitignored operational files stay behind at the old path, and `git status` shows a clean tree while production is broken. Check `git status --ignored` at the old path before trusting a clean status.
 
 ### Test Isolation Hazards
 - **MYCO_HOME isolation required**: Any test that touches MYCO_HOME (config loading, grove paths, service directories) must use `sandboxMycoHome()` from `tests/helpers/myco-home-sandbox.ts`. Without isolation, tests write to the real developer home directory and can corrupt live daemon state or config.
@@ -773,8 +771,6 @@ done
 ### Worktree Quality Hazards
 - **Vendor cache contamination**: Shared npm cache between worktrees causes dependency conflicts and version mismatches
 - **Test database collision**: Shared test databases create race conditions and test failures across worktrees
-- **Port conflicts**: Multiple worktree development servers bind to same ports causing service startup failures
-- **Configuration leaks**: Shared configuration files pollute worktree-specific settings
 - **Cleanup failures**: Incomplete worktree cleanup leaves orphaned artifacts and cache directories
 - **Resource exhaustion**: Unbounded worktree creation overwhelms disk space and system handles
 - **Build artifact conflicts**: Cross-worktree build artifacts contaminate each other causing build failures
