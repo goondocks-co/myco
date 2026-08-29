@@ -1,4 +1,4 @@
-import { Activity, Bot, Brain, FolderTree, LayoutDashboard, MessageSquare, Sparkles } from 'lucide-react';
+import { Activity, Bot, Brain, FolderTree, KeyRound, LayoutDashboard, MessageSquare, Sparkles, Users } from 'lucide-react';
 import { NavLink, Outlet, useNavigate, useParams } from 'react-router-dom';
 import { PageLoading } from '../components/ui/page-loading';
 import { useMe } from '../hooks/use-me';
@@ -25,11 +25,13 @@ const PROJECT_NAV: ProjectNavItem[] = [
   { label: 'Cortex', icon: Brain, suffix: null },
   { label: 'Skills', icon: Sparkles, suffix: null },
   { label: 'Agent runs', icon: Bot, suffix: null },
+  { label: 'Access', icon: KeyRound, suffix: '/access' },
 ];
 
 const SERVER_NAV = [
   { label: 'Projects', icon: FolderTree, to: '/projects' },
   { label: 'Status', icon: Activity, to: '/status' },
+  { label: 'Access', icon: Users, to: '/access' },
 ];
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>

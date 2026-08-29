@@ -2,7 +2,9 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from './layout/Layout';
 import { readPendingLink } from './lib/pending-link';
 import { readLastProject } from './lib/project-memory';
+import { Access } from './pages/Access';
 import { LinkPage } from './pages/Link';
+import { ProjectAccess } from './pages/ProjectAccess';
 import { NotFound } from './pages/NotFound';
 import { ProjectHome } from './pages/ProjectHome';
 import { Projects } from './pages/Projects';
@@ -23,6 +25,8 @@ export default function App() {
       <Route element={<Layout />}>
         <Route path="/projects" element={<Projects />} />
         <Route path="/p/:projectId" element={<ProjectHome />} />
+        <Route path="/p/:projectId/access" element={<ProjectAccess />} />
+        <Route path="/access" element={<Access />} />
         <Route path="/status" element={<Status />} />
         <Route path="*" element={<NotFound />} />
       </Route>
