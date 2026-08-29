@@ -51,8 +51,8 @@
  * day-long zombie.
  */
 
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { DEPLOYMENT_HEARTBEAT_INTERVAL_MS, DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS, declaredCredentialSource, deploymentTransport, probeDeploymentHealth, resolveDeploymentUpstream } from './deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';

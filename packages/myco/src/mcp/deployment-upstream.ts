@@ -11,7 +11,7 @@
  * the one writer of the registry entry, and a bridge that meets a stale token
  * re-reads the entry the next time it rebuilds its upstream.
  */
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, type CredentialSource } from '../member/constants.js';
 import { parseCredentialFlag, resolveCredential, type CredentialRecord } from '../member/credential.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES } from '../member/constants.js';

@@ -1,5 +1,5 @@
 /**
- * `POST /mcp`: Streamable HTTP MCP for an authenticated member.
+ * `POST /mcp`: Streamable HTTP MCP for an authenticated principal.
  *
  * The pipeline has authenticated the credential, admitted the Project, and read
  * the body. This builds the request the transport expects — the body as
@@ -7,12 +7,15 @@
  * answers through a transport that keeps no session and streams nothing: one
  * POST, one JSON response, per request. A body that is not JSON-RPC is refused
  * in the route's shape, the same envelope the pipeline's own refusals carry.
+ *
+ * A member and an External Agent grant reach the same answer through their
+ * own context; the tool surface decides what each may call.
  */
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import type { ServerEnv } from '../core/adapters.js';
-import type { RouteContext } from '../context.js';
+import type { GrantContext, RouteContext } from '../context.js';
 import { SERVER_PROTOCOL } from '../constants.js';
-import { toolContext } from './context.js';
+import { grantToolContext, toolContext, type ToolContext } from './context.js';
 import { createProtocolServer } from './server.js';
 
 /** The refusal an `answered` route gives a body that is not JSON-RPC: the pipeline's shape, the `parse` classifier. */
@@ -27,9 +30,18 @@ function isJsonRpc(body: unknown): boolean {
 }
 
 export async function handleMcp(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  return answerMcp(toolContext(env, ctx), ctx.body);
+}
+
+export async function handleGrantMcp(env: ServerEnv, ctx: GrantContext): Promise<Response> {
+  return answerMcp(grantToolContext(env, ctx), ctx.body);
+}
+
+/** One JSON-RPC body answered for one principal. */
+export async function answerMcp(ctx: ToolContext, body: string): Promise<Response> {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(ctx.body);
+    parsed = JSON.parse(body);
   } catch {
     return jsonRpcRefusal('body is not JSON', 'parse', 400);
   }
@@ -39,13 +51,13 @@ export async function handleMcp(env: ServerEnv, ctx: RouteContext): Promise<Resp
   // A storage fault inside a call is the Deployment's failure, answered by the
   // pipeline as retryable; the transport's own answer to the throw is discarded.
   let fault: unknown;
-  const server = createProtocolServer(toolContext(env, ctx), String(SERVER_PROTOCOL), (err) => { fault = err; });
+  const server = createProtocolServer(ctx, String(SERVER_PROTOCOL), (err) => { fault = err; });
   await server.connect(transport);
   try {
     const request = new Request('https://deployment/mcp', {
       method: 'POST',
       headers: { accept: 'application/json, text/event-stream', 'content-type': 'application/json' },
-      body: ctx.body,
+      body,
     });
     const response = await transport.handleRequest(request, { parsedBody: parsed });
     if (fault !== undefined) throw fault;

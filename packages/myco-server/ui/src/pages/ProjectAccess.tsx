@@ -66,7 +66,7 @@ export function ProjectAccess() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{revealed ? revealed.title : 'Add an external agent'}</DialogTitle>
-            <DialogDescription>{revealed ? 'Put this key where the agent reads its configuration. It is not shown again.' : 'A name for the agent, so its access is recognisable later.'}</DialogDescription>
+            <DialogDescription>{revealed ? 'Give the agent this server\'s /mcp address and this key as its bearer token. It is not shown again.' : 'A name for the agent, so its access is recognisable later.'}</DialogDescription>
           </DialogHeader>
           {revealed ? (
             <KeyReveal label="Access key" value={revealed.key} hint="Read-only, for this project only. Rotate or revoke it here at any time." />
