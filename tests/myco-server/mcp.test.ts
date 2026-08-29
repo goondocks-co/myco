@@ -15,6 +15,7 @@ import { insertSkillRecord } from '@myco-server-worker/core/skills.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { NO_DIGEST_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
+import { FIRST_MODERN_REVISION, SERVED_PROTOCOL_VERSIONS } from '@myco-server-worker/mcp/server.js';
 import { envelope, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 
 const rpc = (method: string, params?: unknown, id: number = 1) => JSON.stringify({ jsonrpc: '2.0', id, method, ...(params === undefined ? {} : { params }) });
@@ -224,6 +225,16 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_plans', { project_id: 'proj_unknown' })).result).toEqual({ ok: false, error: 'Project not found' });
     expect((await call(t1.token, 'myco_sessions', { project_id: 'proj_unknown' })).result).toEqual({ ok: false, error: 'Project not found' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM projects`).get() as any).c).toBe(before);
+  });
+
+  it('serves the protocol revisions before the modern era only: a server/discover probe is answered method-not-found, so every client runs the initialize handshake', async () => {
+    const { env, t1 } = await setup();
+    expect({ served: SERVED_PROTOCOL_VERSIONS.length > 0, modern: SERVED_PROTOCOL_VERSIONS.filter((v) => v >= FIRST_MODERN_REVISION) }).toEqual({ served: true, modern: [] });
+    const probe = await worker.fetch(post(t1.token, rpc('server/discover', {})), env);
+    const body = await probe.json() as any;
+    expect({ status: probe.status, code: body.error?.code, id: body.id }).toEqual({ status: 200, code: -32601, id: 1 });
+    const init = await worker.fetch(post(t1.token, rpc('initialize', { protocolVersion: SERVED_PROTOCOL_VERSIONS[0], capabilities: {}, clientInfo: { name: 't', version: '0' } })), env);
+    expect(((await init.json()) as any).result.protocolVersion).toBe(SERVED_PROTOCOL_VERSIONS[0]);
   });
 
   it('answers a storage failure inside a call as a retryable JSON-RPC error at 503', async () => {

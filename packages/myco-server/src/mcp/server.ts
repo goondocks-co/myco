@@ -13,7 +13,7 @@
  * The low-level `Server` is used deliberately: the SDK's `McpServer` answers a
  * thrown error as an `isError` result, which drops the code the clients key on.
  */
-import { ProtocolError, Server, type Tool } from '@modelcontextprotocol/server';
+import { ProtocolError, Server, SUPPORTED_PROTOCOL_VERSIONS, type Tool } from '@modelcontextprotocol/server';
 import { isServedTool, type ServedTool } from '../core/tool-catalogue.js';
 import { emit } from '../telemetry.js';
 import type { ToolContext } from './context.js';
@@ -24,6 +24,16 @@ import { normalizeInput, ToolError, validateInput, type ToolInput } from './vali
 export const SERVER_NAME = 'myco';
 /** The JSON-RPC error code every tool failure answers with; `data.code` carries the name. */
 export const TOOL_ERROR_CODE = -32000;
+/**
+ * The first protocol revision of the SDK's modern era. The Deployment serves the
+ * revisions before it: a server that admits a modern revision answers the
+ * client's `server/discover` probe, and a client that hears the answer skips the
+ * `initialize` handshake and envelopes its requests — a dialect the per-request
+ * JSON transport does not speak.
+ */
+export const FIRST_MODERN_REVISION = '2026-07-28';
+/** Every revision the Deployment serves; a client probing for a later era is answered method-not-found and runs the legacy handshake. */
+export const SERVED_PROTOCOL_VERSIONS: readonly string[] = SUPPORTED_PROTOCOL_VERSIONS.filter((v) => v < FIRST_MODERN_REVISION);
 
 /** A digest result answers its text alone; every other result answers its JSON. */
 export function serializeResult(tool: ServedTool, result: unknown): string {
@@ -66,7 +76,7 @@ export async function callTool(ctx: ToolContext, name: string, args: unknown): P
  * retryable, with the JSON-RPC error that leaves the transport standing in.
  */
 export function createProtocolServer(ctx: ToolContext, version: string, onFailure: (err: unknown) => void): Server {
-  const server = new Server({ name: SERVER_NAME, version }, { capabilities: { tools: {} } });
+  const server = new Server({ name: SERVER_NAME, version }, { capabilities: { tools: {} }, supportedProtocolVersions: [...SERVED_PROTOCOL_VERSIONS] });
 
   server.setRequestHandler('tools/list', () => ({ tools: TOOL_DEFINITIONS.map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema as unknown as Tool['inputSchema'], annotations: d.annotations })) }));
 
