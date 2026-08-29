@@ -20,6 +20,7 @@ import { countSpores, getSpore, listSpores, listSupersedingSporeIds } from '../c
 import { getPublishedSkillContent, listLineageForSkill, listSkillRecords } from '../core/skills.js';
 import { listDigestRevisions, listDigests } from '../core/digests.js';
 import { listReleaseStates } from '../core/provenance.js';
+import { listInstructions } from '../read/cortex.js';
 
 /** The largest page this surface serves, whatever a caller asks for. */
 export const MAX_PAGE = 200;
@@ -104,6 +105,13 @@ export async function handleProjectDigestRevisions(env: ServerEnv, ctx: OwnerCon
   const tier = Number(ctx.params.tier);
   if (agentId === null || !Number.isSafeInteger(tier)) return notFound();
   return ok({ revisions: await listDigestRevisions(env.db, scope, agentId, tier, clampLimit(ctx.url.searchParams.get('limit'))) });
+}
+
+/** The instructions each agent currently generates for session start, newest first. */
+export async function handleProjectInstructions(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const scope = await scopeOf(env, ctx);
+  if (scope === null) return notFound();
+  return ok({ instructions: await listInstructions(env.db, scope) });
 }
 
 export async function handleProjectReleaseStates(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
