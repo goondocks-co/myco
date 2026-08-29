@@ -164,7 +164,7 @@ Actors follow [`actors-and-boundaries.md`](actors-and-boundaries.md): the **Myco
 |---|---|---|---|---|---|
 | **Install** | `myco` install script → CLI + hooks + Member Service (**M**, **MS**) | — | — | — | — |
 | **Setup** | `myco setup` — create/connect Deployment, join, Default Deployment, verify capture (**M** → **Core**) | — | — | `myco server create` (**W**/**C**) | — |
-| **Server operation** | — | — | — | `myco server update\|inspect\|rotate\|backup\|adopt\|restore\|remove` (**W**/**C**) | — |
+| **Server operation** | — | — | — | `myco server update\|inspect\|rotate\|backup\|adopt\|restore\|remove\|github-app` (**W**/**C**; `github-app` registers the dashboard's sign-in app on GitHub from a manifest and installs its credentials) | — |
 | **Enrollment** | Join with Enrollment Authority → Member Credential (**Core**) | — | — | Issues Enrollment Authority (**Core**) | Receives project-scoped read-only grant (**Core**) |
 | **Capture** | — | Hooks write-ahead to spool, drain to Deployment (**M** → **Core**) | — | — | none |
 | **Intelligence** | Views results (**UI**) | Reads via MCP (**MCP**) | Runs tasks in the harness container (**Core** + **W**/**C**) | — | none |
