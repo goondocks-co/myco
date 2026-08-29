@@ -166,7 +166,7 @@ export async function run(args: string[]): Promise<void> {
         openUrl: openInBrowser,
         log: (line) => console.log(line),
       });
-      console.log(`\nGitHub App:  ${result.app.name} (${result.app.htmlUrl})`);
+      console.log(`\nGitHub App:  ${result.app.name}, owned by ${result.app.ownerLogin ?? 'your account'} (${result.app.htmlUrl})`);
       console.log(`Callback:    ${result.callbackUrl}`);
       console.log(`Installed:   ${target.kind === 'cloudflare' ? `Worker ${target.record.workerName}` : target.paths.root}`);
       if (result.verified.ok) console.log(`Verified:    ${url} sends sign-in to GitHub and back.`);

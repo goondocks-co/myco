@@ -27,6 +27,8 @@ import type { CommandRunner } from './runner.js';
 const LOOPBACK = '127.0.0.1';
 const GITHUB_API = 'https://api.github.com';
 const GITHUB_AUTHORIZE = 'https://github.com/login/oauth/authorize';
+/** GitHub's limit on an app's name. */
+export const APP_NAME_MAX = 34;
 /** How long the operator has to click before the command gives up. */
 export const REGISTRATION_TIMEOUT_MS = 10 * 60_000;
 /** The verify probe: attempts and the pause between them, for a Worker whose secrets are still propagating. */
@@ -74,7 +76,7 @@ export interface RegisterOptions {
 }
 
 export interface RegistrationResult {
-  app: Pick<RegisteredApp, 'slug' | 'htmlUrl' | 'name' | 'clientId'>;
+  app: Pick<RegisteredApp, 'slug' | 'htmlUrl' | 'name' | 'clientId' | 'ownerLogin'>;
   callbackUrl: string;
   verified: VerifyResult;
 }
@@ -124,7 +126,7 @@ export function manifestPage(manifest: GitHubAppManifest, action: string): strin
   return [
     '<!doctype html><meta charset="utf-8"><title>Register the Myco sign-in app</title>',
     '<body style="font-family:system-ui;margin:3rem auto;max-width:36rem;line-height:1.5">',
-    `<h1>Register the sign-in app for ${escapeHtml(manifest.callback_urls[0]!.replace(/\/auth\/callback$/, ''))}</h1>`,
+    `<h1>Register the sign-in app for ${escapeHtml(manifest.url)}</h1>`,
     '<p>GitHub will show the app it is about to create. Confirm it there; this page then finishes on its own.</p>',
     `<form method="post" action="${escapeHtml(action)}">`,
     `<input type="hidden" name="manifest" value="${escapeHtml(JSON.stringify(manifest))}">`,
@@ -133,8 +135,9 @@ export function manifestPage(manifest: GitHubAppManifest, action: string): strin
   ].join('\n');
 }
 
-const DONE_PAGE = '<!doctype html><meta charset="utf-8"><title>Done</title><body style="font-family:system-ui;margin:3rem auto;max-width:36rem"><h1>Registered.</h1><p>Return to the terminal; the credentials are being installed.</p>';
+const DONE_PAGE = '<!doctype html><meta charset="utf-8"><title>Received</title><body style="font-family:system-ui;margin:3rem auto;max-width:36rem"><h1>Received.</h1><p>Return to the terminal; it reports what GitHub answered and installs the credentials.</p>';
 const NOT_FOUND_PAGE = '<!doctype html><meta charset="utf-8"><title>Not found</title>';
+const OPENED_ONCE_PAGE = '<!doctype html><meta charset="utf-8"><title>Already opened</title><body style="font-family:system-ui;margin:3rem auto;max-width:36rem"><h1>This page was already opened once.</h1><p>Run the command again for a fresh one.</p>';
 
 /** Convert the temporary code GitHub redirected with into the app's credentials. */
 export async function convertManifestCode(code: string, fetchImpl: typeof fetch = fetch): Promise<RegisteredApp> {
@@ -226,6 +229,8 @@ export function resolveSignInTarget(named: string | undefined, mycoHome?: string
 /** The whole flow, start to verified. */
 export async function registerGitHubApp(options: RegisterOptions): Promise<RegistrationResult> {
   if (!isDeploymentUrl(options.url)) throw new RegistrationRefused(`${options.url} is not an https Deployment URL`);
+  const proposedName = manifestFor({ url: options.url, name: options.name, redirectUrl: 'http://127.0.0.1/callback' }).name;
+  if (proposedName.length > APP_NAME_MAX) throw new RegistrationRefused(`GitHub limits an app's name to ${APP_NAME_MAX} characters and ${JSON.stringify(proposedName)} is ${proposedName.length}; pass --name <shorter>`);
   const log = options.log ?? (() => undefined);
   const fetchImpl = options.fetchImpl ?? fetch;
   const state = randomBytes(32).toString('base64url');
@@ -237,31 +242,35 @@ export async function registerGitHubApp(options: RegisterOptions): Promise<Regis
     let manifest: GitHubAppManifest | null = null;
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const url = new URL(req.url ?? '/', `http://${LOOPBACK}`);
-      if (url.pathname === formPath && !formServed && manifest !== null) {
+      if (url.pathname === formPath && req.method === 'GET' && formServed) {
+        res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(OPENED_ONCE_PAGE);
+        return;
+      }
+      if (url.pathname === formPath && req.method === 'GET' && !formServed && manifest !== null) {
         formServed = true;
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         res.end(manifestPage(manifest, manifestFormAction(options.org, state)));
         return;
       }
-      if (url.pathname === '/callback' && !callbackTaken) {
-        callbackTaken = true;
+      if (url.pathname === '/callback' && req.method === 'GET' && !callbackTaken) {
         const code = url.searchParams.get('code');
         if (url.searchParams.get('state') !== state || code === null || code === '') {
+          // Not the registration this command started; the listener keeps waiting for it.
           res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
           res.end('This registration was not started by the command that is listening here.');
-          finish(new RegistrationRefused('GitHub returned to the listener with a state this command did not issue'));
           return;
         }
+        callbackTaken = true;
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         res.end(DONE_PAGE);
         convertManifestCode(code, fetchImpl).then((converted) => {
-          const expectedName = manifest!.name;
-          if (converted.name !== expectedName) return finish(new RegistrationRefused(`GitHub answered with an app named ${JSON.stringify(converted.name)}, not the one this command registered`));
-          if (options.org !== undefined && converted.ownerLogin !== null && converted.ownerLogin.toLowerCase() !== options.org.toLowerCase()) {
-            return finish(new RegistrationRefused(`GitHub answered with an app owned by ${converted.ownerLogin}, not ${options.org}`));
+          if (options.org !== undefined && (converted.ownerLogin === null || converted.ownerLogin.toLowerCase() !== options.org.toLowerCase())) {
+            throw new RegistrationRefused(`GitHub answered with an app owned by ${converted.ownerLogin ?? 'an unknown account'}, not ${options.org}`);
           }
+          if (converted.name !== manifest!.name) log(`GitHub registered the app as ${JSON.stringify(converted.name)} (the name was edited on GitHub's page).`);
           finish(null, converted);
-        }, (err: unknown) => finish(err instanceof Error ? err : new Error(String(err))));
+        }).catch((err: unknown) => finish(err instanceof Error ? err : new Error(String(err))));
         return;
       }
       res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' });
@@ -289,11 +298,11 @@ export async function registerGitHubApp(options: RegisterOptions): Promise<Regis
     });
   });
 
-  log(`Registered ${app.name} (${app.htmlUrl}). Installing the credentials on the Deployment…`);
+  log(`Registered ${app.name}, owned by ${app.ownerLogin ?? 'the signed-in account'} (${app.htmlUrl}). Installing the credentials on the Deployment…`);
   await installSignInSecrets(options.target, app, options.runner);
-  if (options.target.kind === 'cloudflare' && options.target.record.url !== options.url) {
-    writeDeploymentRecord({ ...options.target.record, url: options.url }, options.target.mycoHome);
+  if (options.target.kind === 'cloudflare' && options.target.record.url !== new URL(options.url).origin) {
+    writeDeploymentRecord({ ...options.target.record, url: new URL(options.url).origin }, options.target.mycoHome);
   }
   const verified = await verifySignIn(options.url, app.clientId, { fetchImpl });
-  return { app: { slug: app.slug, htmlUrl: app.htmlUrl, name: app.name, clientId: app.clientId }, callbackUrl: `${new URL(options.url).origin}/auth/callback`, verified };
+  return { app: { slug: app.slug, htmlUrl: app.htmlUrl, name: app.name, clientId: app.clientId, ownerLogin: app.ownerLogin }, callbackUrl: `${new URL(options.url).origin}/auth/callback`, verified };
 }

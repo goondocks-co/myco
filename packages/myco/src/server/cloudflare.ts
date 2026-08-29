@@ -224,8 +224,10 @@ export async function putWorkerSecrets(target: WorkerSecretTarget, secrets: Work
   if (!target.accountId) throw new AccountNotSelected([]);
   const runner = target.runner ?? systemRunner();
   if (!(await wranglerPresent(runner))) throw new WranglerAbsent();
+  // A debug log level makes wrangler print the request it sends — the secrets
+  // with it — and a failed command's output is what the operator reads.
   await runOrThrow(runner, 'npx', wrangler('secret', 'bulk', '--name', target.workerName), {
-    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: target.accountId },
+    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: target.accountId, WRANGLER_LOG: 'log' },
     input: JSON.stringify(secrets),
   });
 }

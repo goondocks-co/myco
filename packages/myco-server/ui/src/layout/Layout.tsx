@@ -49,7 +49,6 @@ export function Layout() {
   const params = useParams();
   const navigate = useNavigate();
 
-  // Signed-out states never reach here: the auth gate above the router owns them.
   if (me.data && me.data.member === null) return <NotAMember login={me.data.login} />;
 
   const all = projects.data?.projects ?? [];

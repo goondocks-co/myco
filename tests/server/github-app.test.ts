@@ -58,6 +58,11 @@ describe('the manifest', () => {
     expect(page.match(/<form/g)).toHaveLength(1);
   });
 
+  it('refuses a name past GitHub\'s 34 characters before listening, naming --name', async () => {
+    await expect(registerGitHubApp({ url: 'https://myco-server.example-account.workers.dev', target: { kind: 'cloudflare', record: RECORD }, runner: runner() })).rejects.toThrow(/34 characters.*--name/);
+    expect(calls).toEqual([]);
+  });
+
   it('admits https, and plain http to a loopback literal only', () => {
     expect(isDeploymentUrl('https://myco.example.co')).toBe(true);
     expect(isDeploymentUrl('http://127.0.0.1:18787')).toBe(true);
@@ -198,44 +203,57 @@ describe('the whole flow on a loopback listener', () => {
       return gh.fetchImpl(input, init);
     }) as typeof fetch;
     const logs: string[] = [];
-    let opened: string | null = null;
-    const pending = registerGitHubApp({ url: URL_, org: 'goondocks-co', target, runner: r, fetchImpl, log: (l) => logs.push(l), openUrl: async (u) => { opened = u; } });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const page = opened!;
-    expect(page).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/[A-Za-z0-9_-]{16,}$/);
-    expect(new URL(page).pathname).not.toBe('/callback');
-    const { form, html, back } = await browse(page, async (markup) => {
-      expect((await fetch(page)).status).toBe(404);
-      expect((await fetch(`${new URL(page).origin}/elsewhere`)).status).toBe(404);
+    let opened!: (url: string) => void;
+    const page = new Promise<string>((resolve) => { opened = resolve; });
+    const pending = registerGitHubApp({ url: `${URL_}/`, org: 'goondocks-co', target, runner: r, fetchImpl, log: (l) => logs.push(l), openUrl: async (u) => opened(u) });
+    const pageUrl = await page;
+    expect(pageUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/[A-Za-z0-9_-]{16,}$/);
+    expect(new URL(pageUrl).pathname).not.toBe('/callback');
+    expect((await fetch(pageUrl, { method: 'HEAD' })).status).toBe(404);
+    const { form, html, back } = await browse(pageUrl, async (markup) => {
+      const again = await fetch(pageUrl);
+      expect({ status: again.status, opened: /already opened once/.test(await again.text()) }).toEqual({ status: 404, opened: true });
+      expect((await fetch(`${new URL(pageUrl).origin}/elsewhere`)).status).toBe(404);
+      const port = new URL(pageUrl).port;
+      expect((await fetch(`http://127.0.0.1:${port}/callback?code=good&state=forged`)).status).toBe(400);
       return stateIn(markup);
     });
     expect(form.status).toBe(200);
     expect(html).toContain('organizations/goondocks-co/settings/apps/new');
     expect(back.status).toBe(200);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await expect(fetch(page)).rejects.toThrow();
     const result = await pending;
-    expect(result).toEqual({ app: { slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', clientId: 'Iv1.deadbeef' }, callbackUrl: `${URL_}/auth/callback`, verified: { ok: true } });
+    await expect(fetch(pageUrl)).rejects.toThrow();
+    expect(result).toEqual({ app: { slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', clientId: 'Iv1.deadbeef', ownerLogin: 'goondocks-co' }, callbackUrl: `${URL_}/auth/callback`, verified: { ok: true } });
     expect(calls.map((c) => c.args.slice(0, 3))).toEqual([['--no-install', 'wrangler', '--version'], ['wrangler', 'secret', 'bulk']]);
+    expect(calls[1]!.options?.env?.WRANGLER_LOG).toBe('log');
     expect(JSON.parse(readFileSync(join(home, 'server', 'cloudflare.json'), 'utf8')).url).toBe(URL_);
     expect(logs.join('\n')).not.toContain('s3cr3t');
+    expect(logs.join('\n')).toContain('owned by goondocks-co');
   });
 
-  it('refuses a callback whose state it did not issue, and an app that is not the one it registered, installing nothing', async () => {
-    const r = runner();
-    const gh = fakeGitHub({ name: 'Somebody else' });
+  it('refuses an app owned by someone other than the organization named, installing nothing; a renamed app is accepted and said so', async () => {
     const home = mkdtempSync(join(tmpdir(), 'myco-flow-'));
     writeDeploymentRecord(RECORD, home);
-    for (const attempt of ['wrong-state', 'wrong-app'] as const) {
-      let opened: string | null = null;
-      const outcome = registerGitHubApp({ url: URL_, target: resolveSignInTarget(undefined, home), runner: r, fetchImpl: gh.fetchImpl, openUrl: async (u) => { opened = u; } })
-        .then(() => 'registered' as const, (err: unknown) => err);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      const { back } = await browse(opened!, (html) => (attempt === 'wrong-state' ? 'forged' : stateIn(html)));
-      expect(back.status).toBe(attempt === 'wrong-state' ? 400 : 200);
-      expect(await outcome).toBeInstanceOf(RegistrationRefused);
-    }
-    expect(calls).toEqual([]);
+    const okLocation = `https://github.com/login/oauth/authorize?client_id=Iv1.deadbeef&redirect_uri=${encodeURIComponent(`${URL_}/auth/callback`)}`;
+    const withLogin = (gh: ReturnType<typeof fakeGitHub>) => (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === `${URL_}/auth/login`) return new Response(null, { status: 302, headers: { location: okLocation } });
+      return gh.fetchImpl(input, init);
+    }) as typeof fetch;
+    const drive = async (opts: { org?: string; app: Parameters<typeof fakeGitHub>[0] }) => {
+      let opened!: (url: string) => void;
+      const page = new Promise<string>((resolve) => { opened = resolve; });
+      const logs: string[] = [];
+      const outcome = registerGitHubApp({ url: URL_, org: opts.org, target: resolveSignInTarget(undefined, home), runner: runner(), fetchImpl: withLogin(fakeGitHub(opts.app)), log: (l) => logs.push(l), openUrl: async (u) => opened(u) })
+        .then((r) => r, (err: unknown) => err);
+      const { back } = await browse(await page, stateIn);
+      return { back, outcome: await outcome, logs };
+    };
+    calls = [];
+    const foreign = await drive({ org: 'goondocks-co', app: { owner: { login: 'someone-else' } } });
+    expect({ status: foreign.back.status, refused: foreign.outcome instanceof RegistrationRefused, installs: calls.length }).toEqual({ status: 200, refused: true, installs: 0 });
+    const renamed = await drive({ app: { name: 'Myco sign-in (edited)' } });
+    expect({ registered: (renamed.outcome as { app?: { name: string } }).app?.name, said: renamed.logs.some((l) => /edited on GitHub/.test(l)) }).toEqual({ registered: 'Myco sign-in (edited)', said: true });
   });
 
   it('refuses a URL that is not a Deployment URL before listening', async () => {

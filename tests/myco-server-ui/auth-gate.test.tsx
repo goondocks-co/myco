@@ -9,16 +9,19 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
+import { createQueryClient } from '../../packages/myco-server/ui/src/lib/query-client';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'machine_1' } };
+const never = () => new Promise<Response>(() => undefined);
 const originalFetch = globalThis.fetch;
-afterEach(() => { globalThis.fetch = originalFetch; });
+// Unmount after every test: a mounted client keeps its queries live, and a live query keeps the process up.
+afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
 
 /** Answers each path from the table (a route may answer late or never); records every path asked. */
 function server(routes: Record<string, () => Response | Promise<Response>>): { asked: string[] } {
@@ -27,13 +30,16 @@ function server(routes: Record<string, () => Response | Promise<Response>>): { a
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const pathname = new URL(href, 'https://s').pathname;
     asked.push(pathname);
+    // A client asking the same path this often is looping; leave it waiting so the assertions can run and name it.
+    if (asked.filter((p) => p === pathname).length > 25) return never();
     return routes[pathname]?.() ?? new Response(null, { status: 404 });
   }) as typeof fetch;
   return { asked };
 }
 
 function mount(path: string) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The production client, with its retries run at once.
+  const client = createQueryClient({ retryDelay: 0 });
   return render(
     <AppearanceProvider>
       <QueryClientProvider client={client}>
@@ -44,8 +50,6 @@ function mount(path: string) {
     </AppearanceProvider>,
   );
 }
-
-const never = () => new Promise<Response>(() => undefined);
 
 describe('the auth gate', () => {
   for (const path of ['/', '/projects', '/p/proj_1/sessions']) {
@@ -62,20 +66,34 @@ describe('the auth gate', () => {
     });
   }
 
-  it('signed out, shows the sign-in page and nothing else', async () => {
+  it('signed out, shows the sign-in page and nothing else, and asks /auth/me exactly once', async () => {
     const { asked } = server({ '/auth/me': () => new Response(null, { status: 401 }), '/api/projects': () => Response.json({ projects: [] }) });
     mount('/projects');
     const link = await screen.findByText('Sign in with GitHub');
     expect(link.getAttribute('href')).toBe('/auth/login');
     expect(screen.queryByRole('navigation')).toBeNull();
-    expect([...new Set(asked)]).toEqual(['/auth/me']);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(asked).toEqual(['/auth/me']);
   });
 
-  it('a server that does not answer the session gets the unreachable state, not the application', async () => {
-    server({ '/auth/me': () => new Response(null, { status: 503 }) });
+  it('a server that does not answer the session gets the unreachable state after the retries, not the application', async () => {
+    const { asked } = server({ '/auth/me': () => new Response(null, { status: 503 }) });
     mount('/projects');
     expect(await screen.findByText('This server is not answering')).toBeTruthy();
     expect(screen.queryByRole('navigation')).toBeNull();
+    expect(asked).toEqual(['/auth/me', '/auth/me', '/auth/me']);
+  });
+
+  it('a session that ends while the dashboard is open hands the view back to the gate, asking /auth/me once more and no more', async () => {
+    let signedIn = true;
+    const { asked } = server({
+      '/auth/me': () => (signedIn ? Response.json(ME) : new Response(null, { status: 401 })),
+      '/api/projects': () => { signedIn = false; return new Response(null, { status: 401 }); },
+    });
+    mount('/projects');
+    expect(await screen.findByText('Sign in with GitHub')).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(asked.filter((p) => p === '/auth/me')).toEqual(['/auth/me', '/auth/me']);
   });
 
   it('a member reaches the application', async () => {
