@@ -10,6 +10,7 @@ import { ProjectAccess } from './pages/ProjectAccess';
 import { NotFound } from './pages/NotFound';
 import { ProjectHome } from './pages/ProjectHome';
 import { Projects } from './pages/Projects';
+import { Sessions } from './pages/Sessions';
 import { Skills } from './pages/Skills';
 import { Status } from './pages/Status';
 
@@ -28,6 +29,8 @@ export default function App() {
       <Route element={<Layout />}>
         <Route path="/projects" element={<Projects />} />
         <Route path="/p/:projectId" element={<ProjectHome />} />
+        <Route path="/p/:projectId/sessions" element={<Sessions />} />
+        <Route path="/p/:projectId/sessions/:sessionId" element={<Sessions />} />
         <Route path="/p/:projectId/cortex" element={<Cortex />} />
         <Route path="/p/:projectId/skills" element={<Skills />} />
         <Route path="/p/:projectId/skills/:skillId" element={<Skills />} />
