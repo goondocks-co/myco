@@ -14,7 +14,7 @@ import { handleBlobRead } from './api/blobs.js';
 import { handleGetSpore, handleListSpores, handleResolveSpore, handleSaveSpore } from './api/spores.js';
 import {
   handleProjectDigestRevisions, handleProjectDigests, handleProjectReleaseStates,
-  handleProjectSkill, handleProjectSkills, handleProjectSpore, handleProjectSpores,
+  handleProjectSkill, handleProjectSkills, handleProjectSpore, handleProjectSpores, handleProjectInstructions,
 } from './api/intelligence.js';
 import {
   handleAdmitResume, handleAgents, handleClaimRun, handleGetRun, handleReadState, handleRecordFailure,
@@ -27,6 +27,7 @@ import {
 } from './api/access.js';
 import { handleGrants, handleMintGrant, handleRevokeGrant, handleRotateGrant } from './api/grants.js';
 import { handleProjectSessions, handleSession, handleSessionChildren, handleTranscript } from './api/sessions.js';
+import { handleProjectRun, handleProjectRuns } from './api/agent-runs.js';
 import { MAX_BLOB_BYTES, MEMBER_ID_SEGMENT } from './constants.js';
 import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
@@ -115,6 +116,9 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/api/projects/{projectId}/grants/{grantId}/revoke', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants\/(?<grantId>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeGrant },
   { method: 'GET', path: '/api/agents', auth: 'owner', handler: handleAgents },
   { method: 'PUT', path: '/api/agents/{agentId}', pattern: /^\/api\/agents\/(?<agentId>[A-Za-z0-9._-]{1,64})$/, auth: 'owner', handler: handleRegisterAgent },
+  { method: 'GET', path: '/api/projects/{projectId}/runs', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs$/, auth: 'owner', handler: handleProjectRuns },
+  { method: 'GET', path: '/api/projects/{projectId}/runs/{runId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})$/, auth: 'owner', handler: handleProjectRun },
+  { method: 'GET', path: '/api/projects/{projectId}/cortex/instructions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/cortex\/instructions$/, auth: 'owner', handler: handleProjectInstructions },
   { method: 'GET', path: '/api/projects/{projectId}/spores', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores$/, auth: 'owner', handler: handleProjectSpores },
   { method: 'GET', path: '/api/projects/{projectId}/spores/{sporeId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores\/(?<sporeId>[^/]{1,192})$/, auth: 'owner', handler: handleProjectSpore },
   { method: 'GET', path: '/api/projects/{projectId}/skills', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skills$/, auth: 'owner', handler: handleProjectSkills },

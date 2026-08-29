@@ -29,7 +29,7 @@ export function ProjectHome() {
         <StatCard label="Connected" value={formatRelative(project.createdAt)} sublabel={formatDateTime(project.createdAt)} accent="outline" />
       </div>
       <p className="mt-6 font-sans text-sm text-on-surface-variant">
-        Sessions, Cortex, Skills and Agent runs for this project are on their way.
+        Sessions for this project are on their way.
       </p>
     </PageContainer>
   );
