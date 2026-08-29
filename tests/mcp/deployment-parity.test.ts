@@ -14,9 +14,11 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { issueExternalGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { EXTERNAL_TOOLS } from '@myco-server-worker/mcp/external.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
@@ -108,6 +110,8 @@ describe('the member tool surface over a real Deployment', () => {
 
     const client = new Client({ name: 'myco-agent-test', version: '1.0.0' });
     const transport = new StdioClientTransport({ command: process.execPath, args: [CLI, 'mcp', '--credential', 'env'], cwd: scratchCwd(), env, stderr: 'pipe' });
+    let bridgeStderr = '';
+    transport.stderr?.on('data', (chunk) => { bridgeStderr += String(chunk); });
     try {
       await client.connect(transport);
       const tools = await client.listTools();
@@ -118,7 +122,48 @@ describe('the member tool surface over a real Deployment', () => {
     } finally {
       await client.close().catch(() => undefined);
     }
+    // The bridge's upstream reported no error: the post-initialize GET the
+    // client opens ended in the 405 the Deployment answers, not a refusal.
+    expect({ ready: /bridge ready/.test(bridgeStderr), upstreamErrors: bridgeStderr.split('\n').filter((l) => /upstream:/.test(l)) }).toEqual({ ready: true, upstreamErrors: [] });
 
     expect(credentials(databasePath)).toBe(1);
+  }, 60_000);
+});
+
+describe('the external read-only surface over a real Deployment', () => {
+  it('serves an independently hosted agent the six read-only tools over its grant key alone, refuses a write and myco_agent as tools that do not exist, and refuses the key the moment it is rotated', async () => {
+    const { url, databasePath } = await deployment();
+    const sqlite = new Database(databasePath);
+    const db = sqliteRelationalStore(sqlite);
+    const grant = await issueExternalGrant(db, { projectId: 'proj_1' }, 'review bot', 'mem_machine_1', Date.now());
+
+    const connect = async (key: string) => {
+      const client = new Client({ name: 'review-bot', version: '1.0.0' });
+      const transport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`), { requestInit: { headers: { authorization: `Bearer ${key}` } } });
+      await client.connect(transport);
+      return client;
+    };
+    const bot = await connect(grant.key);
+    try {
+      const tools = await bot.listTools();
+      expect(tools.tools.map((t) => t.name).sort()).toEqual([...EXTERNAL_TOOLS].sort());
+      const plans = await bot.callTool({ name: 'myco_plans', arguments: { op: 'list' } });
+      expect((plans.structuredContent as { result: unknown[] }).result).toEqual([]);
+      await expect(bot.callTool({ name: 'myco_spores', arguments: { op: 'save', type: 'gotcha', content: 'x' } })).rejects.toThrow(/Unknown tool: myco_spores/);
+      await expect(bot.callTool({ name: 'myco_agent', arguments: { op: 'runs' } })).rejects.toThrow(/Unknown tool: myco_agent/);
+      await expect(bot.callTool({ name: 'myco_plans', arguments: { op: 'list', project_id: 'proj_2' } })).rejects.toThrow(/Unknown tool: myco_plans/);
+
+      const rotated = await rotateExternalGrant(db, { projectId: 'proj_1' }, grant.id, 'mem_machine_1', Date.now());
+      await expect(bot.callTool({ name: 'myco_plans', arguments: { op: 'list' } })).rejects.toMatchObject({ status: 401 });
+      const successor = await connect(rotated!.key);
+      try {
+        expect(((await successor.callTool({ name: 'myco_plans', arguments: { op: 'list' } })).structuredContent as { result: unknown[] }).result).toEqual([]);
+      } finally {
+        await successor.close().catch(() => undefined);
+      }
+    } finally {
+      await bot.close().catch(() => undefined);
+      sqlite.close();
+    }
   }, 60_000);
 });

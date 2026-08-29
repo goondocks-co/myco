@@ -1,7 +1,5 @@
 import fs from 'node:fs';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { McpError } from '@modelcontextprotocol/sdk/types.js';
+import { Client, ProtocolError, SdkHttpError, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { DaemonClient } from '@myco/daemon/client.js';
 import { buildBridgeRequestHeaders } from '@myco/mcp/stdio-bridge.js';
 import { declaredCredentialSource, deploymentTransport, resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
@@ -253,51 +251,53 @@ const HOST_REFUSAL_HINTS: Record<string, string> = {
 
 /**
  * Translate an error thrown by the MCP client into the CLI's stable error
- * envelope. Two shapes reach here:
+ * envelope. Three shapes reach here:
  *
- *   - `McpError` — a JSON-RPC error response from a dispatched tool call
+ *   - `ProtocolError` — a JSON-RPC error response from a dispatched tool call
  *     (unknown tool, invalid input, a tool's own failure), OR a member-side
  *     Team Host refusal (`host_unreachable` / `host_auth_rejected` /
  *     `host_protocol_mismatch` — schema-valid since the proxy echoes the
  *     request id, so the SDK classifies them as proper JSON-RPC errors).
  *     `.data.code` carries the original code (see `tools/error.ts` and
  *     `daemon/host-proxy.ts` `mcpSoftFail`).
- *   - `StreamableHTTPError` — a non-2xx HTTP response the transport never
- *     got to parse as JSON-RPC (the `/mcp` handler's pre-dispatch refusals:
- *     `legacy_vault` 503, `unauthorized_context_switch` 401, `foreign_grove`
- *     403, `unknown_tenancy` 404 — see `mcp/http.ts`). Best-effort recovers
- *     the same structured `{code, message}` from the embedded JSON body;
- *     falls back to a generic `tool_call_failed` with the raw HTTP detail.
+ *   - `SdkHttpError` — a non-2xx HTTP response the transport never got to
+ *     parse as JSON-RPC: the Deployment pipeline's refusals in the `answered`
+ *     shape (`no_project`, `body_cap`, `unavailable`), and the local `/mcp`
+ *     handler's pre-dispatch refusals (`legacy_vault` 503, `foreign_grove`
+ *     403, `unknown_tenancy` 404 — see `mcp/http.ts`). The response body
+ *     travels as `data.text`; the same structured `{code, message}` is
+ *     recovered from it. A 401 is the credential itself refused —
+ *     `unauthorized` — and anything else a generic `tool_call_failed` with
+ *     the status.
  */
 function classifyMcpError(error: unknown): ToolCliError {
-  if (error instanceof McpError) {
+  if (error instanceof ProtocolError) {
     const data = error.data as { code?: unknown } | undefined;
     const code = typeof data?.code === 'string' ? data.code : 'tool_call_failed';
     const message = error.message.replace(/^MCP error -?\d+: /, '');
     const hint = HOST_REFUSAL_HINTS[code];
     return { code, message: hint ? `${message} ${hint}` : message };
   }
-  if (error instanceof StreamableHTTPError) {
-    const structured = extractStructuredHttpError(error.message);
+  if (error instanceof SdkHttpError) {
+    const structured = typeof error.data.text === 'string' ? extractStructuredHttpError(error.data.text) : null;
     if (structured) return structured;
+    if (error.status === 401) return { code: 'unauthorized', message: 'The upstream refused the credential (HTTP 401).' };
     return {
       code: 'tool_call_failed',
-      message: `The Myco daemon rejected the request (HTTP ${error.code}): ${error.message.replace(/^Streamable HTTP error: /, '')}`,
+      message: `The upstream rejected the request (HTTP ${error.status}): ${error.message}`,
     };
   }
   return { code: 'tool_call_failed', message: (error as Error)?.message ?? String(error) };
 }
 
-/** Recover `{code, message}` from a `legacy_vault`-style JSON-RPC error body
- *  embedded in a `StreamableHTTPError`'s message text (the transport only
- *  surfaces the raw response text for a non-2xx that never reached the
- *  JSON-RPC dispatcher). Returns null when the body isn't the expected
- *  `{error:{message, data:{code}}}` shape. */
-function extractStructuredHttpError(message: string): ToolCliError | null {
-  const start = message.indexOf('{');
+/** Recover `{code, message}` from a JSON-RPC error body the transport surfaced
+ *  as text for a non-2xx that never reached the JSON-RPC dispatcher. Returns
+ *  null when the body isn't the expected `{error:{message, data:{code}}}` shape. */
+function extractStructuredHttpError(text: string): ToolCliError | null {
+  const start = text.indexOf('{');
   if (start === -1) return null;
   try {
-    const body = JSON.parse(message.slice(start)) as { error?: { message?: string; data?: { code?: unknown } } };
+    const body = JSON.parse(text.slice(start)) as { error?: { message?: string; data?: { code?: unknown } } };
     const code = body.error?.data?.code;
     const msg = body.error?.message;
     if (typeof code === 'string' && typeof msg === 'string') return { code, message: msg };
