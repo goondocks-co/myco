@@ -39,7 +39,13 @@ export type RefreshOutcome =
   | { class: 'refused'; code: MemberCode; reason: string; refreshAfter?: number }
   | Extract<Outcome, { class: 'retry' | 'route_missing' | 'unauthorized' | 'protocol' }>;
 
+export type LinkOutcome =
+  | { class: 'linked'; key: string; expiresAt: number }
+  | { class: 'refused'; code: MemberCode; reason: string }
+  | Extract<Outcome, { class: 'retry' | 'route_missing' | 'unauthorized' | 'protocol' }>;
+
 const EVENTS_PATH = '/events';
+const LINK_GITHUB_PATH = '/members/link-github';
 const BLOBS_PATH = '/blobs';
 const REFRESH_PATH = '/tokens/refresh';
 const HEALTH_PATH = '/health';
@@ -116,6 +122,11 @@ export class ServerClient {
   async postEvent(envelope: MemberEnvelope, budget: RequestBudget): Promise<Outcome> {
     const raw = await this.request('POST', EVENTS_PATH, { body: JSON.stringify(envelope), headers: { 'content-type': JSON_CONTENT_TYPE }, budget });
     return classifyEventAnswer(raw);
+  }
+
+  async linkGithub(budget: RequestBudget): Promise<LinkOutcome> {
+    const raw = await this.request('POST', LINK_GITHUB_PATH, { body: '{}', headers: { 'content-type': JSON_CONTENT_TYPE }, budget });
+    return classifyLinkAnswer(raw);
   }
 
   async postBlob(bytes: Uint8Array, sha256: string, mediaType: string, budget: RequestBudget): Promise<Outcome> {
@@ -196,6 +207,21 @@ export function classifyEventAnswer(raw: RawAnswer): Outcome {
 
 export function classifyBlobAnswer(raw: RawAnswer): Outcome {
   return classifyCommon(raw) ?? classifyShape(raw as Extract<RawAnswer, { kind: 'response' }>, 'stored');
+}
+
+/** `POST /members/link-github`: a one-time key the member opens in a browser to connect a GitHub account. */
+export function classifyLinkAnswer(raw: RawAnswer): LinkOutcome {
+  const common = classifyCommon(raw);
+  if (common !== null) {
+    if (common.class === 'retry' || common.class === 'route_missing' || common.class === 'unauthorized' || common.class === 'protocol') return common;
+    return { class: 'retry', detail: 'unexpected answer on the link route' };
+  }
+  const body = (raw as Extract<RawAnswer, { kind: 'response' }>).json;
+  if (body === null) return { class: 'retry', status: 200, detail: 'malformed 200 body' };
+  if (body.persisted === true && typeof body.key === 'string' && typeof body.expiresAt === 'number') {
+    return { class: 'linked', key: body.key, expiresAt: body.expiresAt };
+  }
+  return { class: 'refused', code: memberCode(body.code) ?? 'refused', reason: reasonOf(body) };
 }
 
 export function classifyRefreshAnswer(raw: RawAnswer): RefreshOutcome {

@@ -465,6 +465,11 @@ The shell is static build output carrying no vault data; every data path is Work
 | D6 | `POST /p/proj_1` | 405 from the asset layer (edge) / the static wrapper (self-hosted) |
 | D7 | signed in as the owner, `GET /` | the Projects landing lists this machine's projects; `/status` shows schema current and every capability configured |
 
+| D8 | `GET /auth/me` (no cookie) | 401 |
+| D9 | sign in with a GitHub account no member is linked to | 302 `/`, session set; `/auth/me` → `member: null`; `/api/projects` → 401; the shell shows "isn't connected to a member yet" |
+| D10 | `myco member link-github` on a joined machine, open the link, confirm | the page names the member; after confirm `/auth/me` → the member; `/api/projects` → 200 |
+| D11 | the same link opened again | "expired or was already used" |
+
 Self-hosted: `npm run image:build:native && docker compose up`, then D1–D6 with `-H 'Host: 127.0.0.1:8787'` against `http://127.0.0.1:8787`. D7 is Cloudflare-only until #1009.
 
 ### Last observed output — self-hosted (image `dev-1008`, 2026-08-28)

@@ -19,6 +19,7 @@ import { listRegistryEntries, readRegistryEntry, removeRegistryEntry, writeRegis
 import { applySpoolRetention, lastAckAt } from '../member/retention.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
+import { openBrowser } from './open-browser.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
 
@@ -37,6 +38,9 @@ Ops:
                      last acknowledgement and refusal, and the offline latch.
   refresh [--all]    Rotate the member token when its refresh window is open. The predecessor keeps
                      working until the successor is first used; an env-sourced token is never rotated.
+  link-github [--root <dir>] [--open]
+                     Connect your GitHub account to this membership for the dashboard: prints a one-time
+                     link to open in a browser within ten minutes. --open hands it to the browser as well.
 `;
 
 export interface MemberCliDeps {
@@ -51,6 +55,8 @@ export interface MemberCliDeps {
   env?: NodeJS.ProcessEnv;
   /** Where `--provision` writes; defaults to the real package root. */
   packageRoot?: string;
+  /** Opens a URL in the browser for `link-github --open`; defaults to the platform opener. */
+  openBrowser?: (url: string) => void;
 }
 
 const redact = (token: string): string => `${token.slice(0, 4)}…${token.slice(-4)}`;
@@ -150,6 +156,7 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   };
   writeRegistryEntry(entry, { mycoHome });
   out(`joined ${parsed.project} at ${parsed.serverUrl} for ${root}`);
+  out('connect your GitHub account for the dashboard: myco member link-github');
 
   if (parsed.provision) {
     const manifest = loadManifests().find((m) => m.name === parsed.provision);
@@ -279,6 +286,50 @@ function refreshLine(report: RefreshReport): string {
   }
 }
 
+/** The URL a member opens to connect a GitHub account: the key rides the fragment, which never reaches the server or a log. */
+export function linkUrl(serverUrl: string, key: string): string {
+  return `${serverUrl.replace(/\/+$/, '')}/link#${key}`;
+}
+
+/**
+ * Mint a one-time link for this root's membership and print the URL to open.
+ * The key appears once, on stdout; the browser opener is used only on request,
+ * as a child process argv is visible on the machine for a moment.
+ */
+export async function runLinkGithub(args: readonly string[], deps: MemberCliDeps = {}): Promise<string | null> {
+  const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
+  const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
+  const fail = (line: string): null => { err(`myco member link-github: ${line}`); process.exitCode = 2; return null; };
+  let root: string | undefined;
+  let open = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--open') open = true;
+    else if (arg === '--root') { root = args[++i]; if (root === undefined || root.startsWith('--')) return fail('--root needs a value'); }
+    else return fail(`unknown option ${arg.split('=')[0]}`);
+  }
+  const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const resolved = path.resolve(root ?? resolveMemberProjectRoot(deps.cwd));
+  const entry = readRegistryEntry(resolved, mycoHome);
+  if (!entry) return fail(`no registry entry for ${resolved} — an env-sourced credential has none; run \`myco member join\` on this machine first`);
+  const client = new ServerClient({ serverUrl: entry.serverUrl, token: entry.token, projectId: entry.projectId }, deps.fetch ?? globalThis.fetch);
+  const outcome = await client.linkGithub(unboundedBudget());
+  switch (outcome.class) {
+    case 'linked': {
+      const url = linkUrl(entry.serverUrl, outcome.key);
+      out(`Open this link within ten minutes to connect your GitHub account to this membership:`);
+      out(url);
+      if (open) (deps.openBrowser ?? openBrowser)(url);
+      return url;
+    }
+    case 'unauthorized': return fail('the server refused this credential — re-provision with `myco member join`');
+    case 'route_missing': return fail('this server does not link GitHub accounts');
+    case 'protocol': return fail('the server refuses this build\'s member protocol — upgrade myco');
+    case 'refused': return fail(`the server refused: ${outcome.reason || outcome.code}`);
+    case 'retry': return fail(`the server did not answer: ${outcome.detail}`);
+  }
+}
+
 export async function run(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
   const [op, ...rest] = args;
   switch (op) {
@@ -287,6 +338,7 @@ export async function run(args: readonly string[], deps: MemberCliDeps = {}): Pr
     case 'drain': await runDrain(rest, deps); return;
     case 'status': runStatus(rest, deps); return;
     case 'refresh': await runRefresh(rest, deps); return;
+    case 'link-github': await runLinkGithub(rest, deps); return;
     default:
       (deps.stderr ?? ((l) => process.stderr.write(`${l}\n`)))(MEMBER_HELP.trimEnd());
       process.exitCode = 2;

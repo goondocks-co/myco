@@ -9,6 +9,7 @@ import { resolveProject } from './ingest/projects.js';
 import { classify, emit, SchemaMismatchError, UNAVAILABLE, type Classifier } from './telemetry.js';
 import { ownerConfig } from './auth/owner/config.js';
 import { readCookie, verifySession } from './auth/owner/cookie.js';
+import { memberByGithubId } from './auth/identity-link.js';
 
 /**
  * The platform's error recogniser, read defensively.
@@ -195,12 +196,23 @@ export function createServer(deps: ServerDeps) {
       }
       const presented = readCookie(request.headers.get('cookie'));
       const session = presented === null ? null : await verifySession(config.sessionSecret, presented, now);
-      if (session === null || session.sub !== config.ownerGithubId) return anonymous();
+      if (session === null) return anonymous();
       if (!sameOrigin(request, url)) return forbidden();
       const bounded = await boundedRequest(request);
       if (bounded === null) return refuseOversized();
       try {
-        return await matched.route.handler(env, { request: bounded, session, config, params: matched.params, url, now });
+        // Membership is decided per request: a session names a GitHub account, and
+        // the account is a member only while a live member row is linked to it.
+        const member = await memberByGithubId(env.db, session.sub);
+        const context = { request: bounded, session, config, params: matched.params, url, now };
+        if (matched.route.membership === 'optional') {
+          // The two routes that serve an account ahead of membership meter a
+          // non-member like credential-free traffic: a valid session is free to mint.
+          if (member === null && !(await env.sourceLimit.limit({ key: source })).success) return limited();
+          return await matched.route.handler(env, { ...context, member });
+        }
+        if (member === null) return anonymous();
+        return await matched.route.handler(env, { ...context, member });
       } catch (err) {
         emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
         return unavailable();

@@ -8,7 +8,7 @@ const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
 const RESERVED = new Set(['.', '..']);
 
 export async function handleProjects(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  return ok({ projects: await listVisibleProjects(env.db, ctx.session) });
+  return ok({ projects: await listVisibleProjects(env.db, ctx.member) });
 }
 
 /** Create a project. The owner API onboards a project so a first token can be minted for it; `scripts/mint-local.ts` remains the break-glass mirror. */

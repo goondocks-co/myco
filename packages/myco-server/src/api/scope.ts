@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
-import type { OwnerSession } from '../auth/owner/cookie.js';
+import type { DashboardMember } from '../auth/identity-link.js';
 import type { ReadScope } from '../read/scope.js';
 import { listProjects, projectExists, sessionInScope as coreSessionInScope, type ProjectRow } from '../read/sessions.js';
 
@@ -9,7 +9,7 @@ import { listProjects, projectExists, sessionInScope as coreSessionInScope, type
  * adding per-project grants would change every call site, which is the whole
  * reason the chokepoint exists. It is taken now so phase 2 is one edit here.
  */
-export type Principal = OwnerSession;
+export type Principal = DashboardMember;
 
 /** The scope a project id resolves to for this principal, or null when there is no such project it may see. A project the principal does not hold is indistinguishable from one that does not exist. */
 export async function resolveProjectScope(db: RelationalStore, _principal: Principal, projectId: string): Promise<ReadScope | null> {

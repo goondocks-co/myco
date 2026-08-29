@@ -69,7 +69,6 @@ export function serverEnvFromBunConfig(config: BunServerConfig): ServerEnv {
   const now = config.now ?? (() => Date.now());
   return {
     secrets: {
-      OWNER_GITHUB_ID: config.OWNER_GITHUB_ID,
       GITHUB_CLIENT_ID: config.GITHUB_CLIENT_ID,
       GITHUB_CLIENT_SECRET: config.GITHUB_CLIENT_SECRET,
       SESSION_SECRET: config.SESSION_SECRET,

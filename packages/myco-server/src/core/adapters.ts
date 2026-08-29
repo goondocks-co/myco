@@ -105,9 +105,8 @@ export type BlobFailureClassifier = (message: string) => BlobStoreFailure | null
 // The environment the core runs against
 // ---------------------------------------------------------------------------
 
-/** Owner identity and session material, supplied at deploy. Absent `OWNER_GITHUB_ID` ⇒ no human route answers. */
+/** Sign-in material, supplied at deploy. Absent, no human route answers; who may enter is a membership question. */
 export interface OwnerBindings {
-  OWNER_GITHUB_ID?: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
   SESSION_SECRET?: string;

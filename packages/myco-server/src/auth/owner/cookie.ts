@@ -6,9 +6,10 @@ export const SESSION_COOKIE = '__Host-myco_session';
 /** A session's fixed life. */
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** `sub` is the owner's numeric GitHub account id as text — never the login. */
+/** `sub` is the numeric GitHub account id as text — never the login, which is display only and may be stale after a rename. */
 export interface OwnerSession {
   sub: string;
+  login: string;
   iat: number;
   exp: number;
 }
@@ -74,7 +75,8 @@ export async function signSession(secret: string, session: OwnerSession): Promis
 export async function verifySession(secret: string, value: string, now: number): Promise<OwnerSession | null> {
   const session = await verifyPayload<OwnerSession>(secret, SESSION_TYP, value, now);
   if (session === null) return null;
-  return typeof session.sub === 'string' && typeof session.iat === 'number' ? session : null;
+  if (typeof session.sub !== 'string' || typeof session.iat !== 'number') return null;
+  return { ...session, login: typeof session.login === 'string' ? session.login : '' };
 }
 
 export function setCookie(value: string, maxAgeSeconds: number): string {

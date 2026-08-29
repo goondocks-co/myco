@@ -53,6 +53,8 @@ export function migrateAndSeed(sqlite: Database): Database {
   sqlite.query(`INSERT INTO projects (project_id,name,created_at) VALUES ('proj_1','a',0),('proj_2','b',0)`).run();
   const members = [...Array(10).keys()].map((i) => `('mem_machine_${i}','machine_${i}',0,NULL)`).join(',');
   sqlite.query(`INSERT INTO members (id,label,created_at,revoked_at) VALUES ${members},('mem_anon',NULL,0,NULL),('mem_m','m',0,NULL)`).run();
+  // The owner-route suites sign in as GitHub account 583231; it is a linked member.
+  sqlite.query(`UPDATE members SET github_id = '583231' WHERE id = 'mem_machine_1'`).run();
   return sqlite;
 }
 

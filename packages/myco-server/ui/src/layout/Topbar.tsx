@@ -24,7 +24,7 @@ async function signOut(): Promise<void> {
   }
 }
 
-export function Topbar({ projectName, className }: { projectName?: string; className?: string }) {
+export function Topbar({ projectName, login, className }: { projectName?: string; login?: string; className?: string }) {
   const location = useLocation();
   const params = useParams();
   const scope = scopeOf(location.pathname);
@@ -46,10 +46,11 @@ export function Topbar({ projectName, className }: { projectName?: string; class
       <Badge variant="outline" className="font-mono text-[10px] uppercase tracking-wide">
         {scope === 'project' ? 'Project' : 'Server-wide'}
       </Badge>
+      {login && <span className="ml-auto font-mono text-xs text-on-surface-variant">@{login}</span>}
       <button
         type="button"
         onClick={() => void signOut()}
-        className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md px-2 font-sans text-xs text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
+        className={cn(login ? '' : 'ml-auto', 'inline-flex h-7 items-center gap-1.5 rounded-md px-2 font-sans text-xs text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface')}
       >
         <LogOut className="h-3.5 w-3.5" />
         Sign out

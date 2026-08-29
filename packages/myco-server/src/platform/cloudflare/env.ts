@@ -93,7 +93,6 @@ export function serverEnvFromBindings(bindings: CloudflareBindings): ServerEnv {
       'SECRET_WRAP_KEY',
     ),
     secrets: {
-      OWNER_GITHUB_ID: bindings.OWNER_GITHUB_ID,
       GITHUB_CLIENT_ID: bindings.GITHUB_CLIENT_ID,
       GITHUB_CLIENT_SECRET: bindings.GITHUB_CLIENT_SECRET,
       SESSION_SECRET: bindings.SESSION_SECRET,

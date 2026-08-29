@@ -35,10 +35,9 @@ export async function handleCallback(request: Request, ctx: AuthContext): Promis
   const accessToken = await exchangeCode(ctx.fetchImpl, ctx.config, redirectUriFor(ctx.origin), code);
   if (accessToken === null) return new Response(null, { status: 400, headers: { 'set-cookie': stateCookie('', 0) } });
   const identity = await fetchIdentity(ctx.fetchImpl, accessToken);
-  if (identity === null || identity.id !== ctx.config.ownerGithubId) {
-    return new Response(null, { status: 403, headers: { 'set-cookie': stateCookie('', 0) } });
-  }
-  const session = await signSession(ctx.config.sessionSecret, { sub: identity.id, iat: ctx.now, exp: ctx.now + SESSION_TTL_MS });
+  if (identity === null) return new Response(null, { status: 403, headers: { 'set-cookie': stateCookie('', 0) } });
+  // The session names the account; whether that account is a member is decided on every request it makes.
+  const session = await signSession(ctx.config.sessionSecret, { sub: identity.id, login: identity.login, iat: ctx.now, exp: ctx.now + SESSION_TTL_MS });
   const headers = new Headers({ location: '/' });
   headers.append('set-cookie', setCookie(session, Math.floor(SESSION_TTL_MS / 1000)));
   headers.append('set-cookie', stateCookie('', 0));

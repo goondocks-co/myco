@@ -35,7 +35,7 @@ const BLOB_SECURITY: Record<string, string> = {
  * `(project_id, key)`, so the project is in the path and the row is read before the object.
  */
 export async function handleBlobRead(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   const row = await getBlob(env.db, scope, ctx.params.key);
   if (row === null) return notFound();

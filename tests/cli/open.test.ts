@@ -35,6 +35,7 @@ mock.module('@myco/daemon/eviction.js', () => ({
 }));
 
 import { run } from '@myco/cli/open.js';
+import { writeRegistryEntry, REGISTRY_VERSION } from '@myco/member/registry.js';
 import { resolveGlobalDaemonPort } from '@myco/daemon/service-state.js';
 
 describe('myco open targets the global daemon without a project context', () => {
@@ -67,6 +68,21 @@ describe('myco open targets the global daemon without a project context', () => 
     // Probed the global port (context-free) and opened that exact URL.
     expect(fakeProbe.calls).toEqual([expectedPort]);
     expect(openState.urls).toEqual([`http://localhost:${expectedPort}/`]);
+  });
+
+  it('opens the Deployment dashboard for a root that has joined one, without probing the local daemon', async () => {
+    const root = path.join(testDir, 'repo');
+    fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+    writeRegistryEntry({
+      version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: 'https://deployment.example/', token: 'mt_' + 'a'.repeat(40),
+      root, machineId: 'machine_1', joinedAt: 0, updatedAt: 0,
+    }, { mycoHome: process.env.MYCO_HOME });
+    const opened: string[] = [];
+
+    await run([], { cwd: root, mycoHome: process.env.MYCO_HOME, openBrowser: (url) => opened.push(url) });
+
+    expect(opened).toEqual(['https://deployment.example/']);
+    expect(fakeProbe.calls).toEqual([]);
   });
 
   it('exits with an install hint when no daemon answers — does not open a dead URL', async () => {

@@ -6,11 +6,11 @@ import { OWNER_ENV, SESSION_SECRET } from './helpers/owner.js';
 
 const SECRET = 'test-secret-value-not-a-real-one';
 
-const FULL = { OWNER_GITHUB_ID: '583231', GITHUB_CLIENT_ID: 'cid', GITHUB_CLIENT_SECRET: 'csecret', SESSION_SECRET };
+const FULL = { GITHUB_CLIENT_ID: 'cid', GITHUB_CLIENT_SECRET: 'csecret', SESSION_SECRET };
 
 describe('owner config', () => {
   it('resolves when every value is present', () => {
-    expect(ownerConfig({ secrets: FULL } as never)).toEqual({ ownerGithubId: '583231', clientId: 'cid', clientSecret: 'csecret', sessionSecret: SESSION_SECRET });
+    expect(ownerConfig({ secrets: FULL } as never)).toEqual({ clientId: 'cid', clientSecret: 'csecret', sessionSecret: SESSION_SECRET });
   });
 
   it('is absent when any value is missing or blank — no partial human surface', () => {
@@ -25,14 +25,11 @@ describe('owner config', () => {
     expect(ownerConfig({ secrets: { ...FULL, SESSION_SECRET: 'x'.repeat(32) } } as never)).not.toBeNull();
   });
 
-  it('is absent when the owner id is not a numeric account id', () => {
-    for (const bad of ['octocat', '12a', '', '-1', '1.5']) expect(ownerConfig({ secrets: { ...FULL, OWNER_GITHUB_ID: bad } } as never)).toBeNull();
-  });
 });
 
 import { authorizeUrl, exchangeCode, fetchIdentity } from '@myco-server-worker/auth/owner/github.js';
 
-const CONFIG = { ownerGithubId: '583231', clientId: 'cid', clientSecret: 'csecret', sessionSecret: SESSION_SECRET };
+const CONFIG = { clientId: 'cid', clientSecret: 'csecret', sessionSecret: SESSION_SECRET };
 
 describe('github oauth', () => {
   it('builds an authorize url carrying the state and redirect', () => {
@@ -82,7 +79,7 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 
 async function ownerCookie(now = Date.now()): Promise<string> {
-  const value = await signSession(SESSION_SECRET, { sub: '583231', iat: now, exp: now + 60_000 });
+  const value = await signSession(SESSION_SECRET, { sub: '583231', login: 'octocat', iat: now, exp: now + 60_000 });
   return setCookie(value, 60).split(';')[0];
 }
 
@@ -179,10 +176,10 @@ describe('sign-in', () => {
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe('/');
     const session = cookieValue(res.headers.get('set-cookie')!, SESSION_COOKIE)!;
-    expect((await verifySession(SESSION_SECRET, session, Date.now()))?.sub).toBe('583231');
+    expect(await verifySession(SESSION_SECRET, session, Date.now())).toMatchObject({ sub: '583231', login: 'octocat' });
   });
 
-  it('refuses an identity whose login matches the owner but whose id does not', async () => {
+  it('signs in an account no member is linked to, and that session reaches no member route: membership is decided per request, not at the door', async () => {
     const e = sqliteEnv();
     const env = { ...e.env, ...OWNER_ENV };
     const login = await worker.fetch(new Request('https://s/auth/login', { headers: { 'cf-connecting-ip': '1.2.3.4' } }), env);
@@ -193,8 +190,13 @@ describe('sign-in', () => {
       new Request(`https://s/auth/callback?code=c&state=${state}`, { headers: { 'cf-connecting-ip': '1.2.3.4', cookie: `${OAUTH_STATE_COOKIE}=${state}` } }),
       serverEnvFromBindings(env as never)
     );
-    expect(res.status).toBe(403);
-    expect(res.headers.get('set-cookie') ?? '').not.toContain(SESSION_COOKIE);
+    expect(res.status).toBe(302);
+    const session = cookieValue(res.headers.get('set-cookie')!, SESSION_COOKIE)!;
+    expect((await verifySession(SESSION_SECRET, session, Date.now()))?.sub).toBe('999999');
+    const projects = await worker.fetch(new Request('https://s/api/projects', { headers: { cookie: `${SESSION_COOKIE}=${session}`, 'cf-connecting-ip': '1.2.3.4' } }), env);
+    expect(projects.status).toBe(401);
+    const me = await worker.fetch(new Request('https://s/auth/me', { headers: { cookie: `${SESSION_COOKIE}=${session}`, 'cf-connecting-ip': '1.2.3.4' } }), env);
+    expect({ status: me.status, body: await me.json() }).toEqual({ status: 200, body: { sub: '999999', login: 'octocat', member: null } });
   });
 
   it('refuses a callback whose state does not match the planted cookie', async () => {
@@ -348,12 +350,12 @@ describe('no owner configured means no human surface at all', () => {
   });
 });
 
-describe('a principal who is not the owner reaches nothing', () => {
-  it('is refused on every owner route, cookie signed by this server or not', async () => {
+describe('an account no member is linked to reaches nothing', () => {
+  it('is refused on every member route, cookie signed by this server or not', async () => {
     const e = sqliteEnv();
     const now = Date.now();
     // Correctly signed by this server, but for a different GitHub account.
-    const stranger = await signSession(SESSION_SECRET, { sub: '999999', iat: now, exp: now + 60_000 });
+    const stranger = await signSession(SESSION_SECRET, { sub: '999999', login: 'nobody', iat: now, exp: now + 60_000 });
     for (const path of ['/api/projects', '/api/status', '/api/projects/proj_1/tokens']) {
       const res = await worker.fetch(
         new Request(`https://s${path}`, { headers: { cookie: `${SESSION_COOKIE}=${stranger}`, 'cf-connecting-ip': '1.2.3.4' } }),

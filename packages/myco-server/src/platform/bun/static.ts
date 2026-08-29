@@ -37,6 +37,9 @@ function isFile(path: string): boolean {
   return statSync(path, { throwIfNoEntry: false })?.isFile() === true;
 }
 
+/** The shell is never framed: a page that binds an account to a member must be the top-level document the person reads. */
+export const FRAME_HEADERS = { 'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'" } as const;
+
 const notFound = (): Response => new Response(null, { status: 404 });
 
 export type Fetch = (request: Request) => Promise<Response>;
@@ -51,6 +54,7 @@ export function withStaticAssets(uiDir: string, next: Fetch): Fetch {
     const headers = {
       'content-type': TYPES[extname(path)] ?? 'application/octet-stream',
       'cache-control': cacheControlFor(pathname),
+      ...FRAME_HEADERS,
     };
     if (method === 'HEAD') return new Response(null, { status: 200, headers });
     return new Response(Bun.file(path), { status: 200, headers });

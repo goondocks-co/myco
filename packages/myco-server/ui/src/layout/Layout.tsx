@@ -1,10 +1,12 @@
 import { Activity, Bot, Brain, FolderTree, LayoutDashboard, MessageSquare, Sparkles } from 'lucide-react';
 import { NavLink, Outlet, useNavigate, useParams } from 'react-router-dom';
 import { PageLoading } from '../components/ui/page-loading';
+import { useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
 import { SignedOutError } from '../lib/api';
 import { cn } from '../lib/cn';
 import { rememberProject } from '../lib/project-memory';
+import { NotAMember } from '../pages/NotAMember';
 import { SignedOut } from '../pages/SignedOut';
 import { AppearanceSection } from './AppearanceSection';
 import { Topbar } from './Topbar';
@@ -37,10 +39,14 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
   );
 
 export function Layout() {
-  const projects = useProjects();
+  const me = useMe();
+  // Projects are read only for a member; a signed-in non-member sees the link instructions instead.
+  const projects = useProjects({ enabled: me.data?.member != null });
   const params = useParams();
   const navigate = useNavigate();
 
+  if (me.error instanceof SignedOutError) return <SignedOut />;
+  if (me.data && me.data.member === null) return <NotAMember login={me.data.login} />;
   if (projects.error instanceof SignedOutError) return <SignedOut />;
 
   const list = projects.data?.projects ?? [];
@@ -114,9 +120,9 @@ export function Layout() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar projectName={current?.name} />
+        <Topbar projectName={current?.name} login={me.data?.login} />
         <main className="flex-1 p-6">
-          <PageLoading isLoading={projects.isPending} error={projects.error}>
+          <PageLoading isLoading={me.isPending || projects.isPending} error={me.error ?? projects.error}>
             <Outlet />
           </PageLoading>
         </main>
