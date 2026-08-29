@@ -37,6 +37,7 @@ jobs:
       # Host-target only in CI — full cross-compile is reserved for release.
       - run: TARGET=linux-x64 npm run build:binary -w @goondocks/myco
       - run: npm run build:ui -w @goondocks/myco
+      - run: npm run build:ui -w @goondocks/myco-server
       # Full test suite under `bun test` (Phase 5 of the bun migration).
       # `npm test` runs both the Node-env and jsdom passes via the
       # run-bun-tests.mjs driver, handling tsx UI tests in their own pass.

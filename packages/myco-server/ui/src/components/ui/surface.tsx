@@ -1,0 +1,69 @@
+import { forwardRef, type HTMLAttributes } from 'react';
+import { cva, type VariantProps } from 'class-variance-authority';
+import { cn } from '../../lib/cn';
+
+const surfaceVariants = cva('rounded-md transition-colors', {
+  variants: {
+    level: {
+      lowest: 'bg-surface-container-lowest',
+      low: 'bg-surface-container-low',
+      default: 'bg-surface-container',
+      high: 'bg-surface-container-high',
+      highest: 'bg-surface-container-highest',
+      bright: 'bg-surface-bright',
+    },
+    interactive: {
+      true: 'cursor-pointer hover-lift hover:brightness-[1.08]',
+      false: '',
+    },
+    ghostBorder: {
+      true: 'border border-[var(--ghost-border)]',
+      false: '',
+    },
+    glass: {
+      true: 'backdrop-blur-xl bg-surface-variant/60',
+      false: '',
+    },
+    glow: {
+      true: 'shadow-[inset_0_0_12px_rgba(171,207,184,0.2)]',
+      false: '',
+    },
+    accent: {
+      none: '',
+      sage: 'border-t-2 border-t-sage',
+      ochre: 'border-t-2 border-t-ochre',
+      terra: 'border-t-2 border-t-terracotta',
+      outline: 'border-t-2 border-t-outline-variant',
+    },
+  },
+  defaultVariants: {
+    level: 'low',
+    interactive: false,
+    ghostBorder: false,
+    glass: false,
+    glow: false,
+    accent: 'none',
+  },
+});
+
+export interface SurfaceProps
+  extends HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof surfaceVariants> {}
+
+const Surface = forwardRef<HTMLDivElement, SurfaceProps>(
+  ({ className, level, interactive, ghostBorder, glass, glow, accent, ...props }, ref) => {
+    return (
+      <div
+        ref={ref}
+        className={cn(
+          surfaceVariants({ level, interactive, ghostBorder, glass, glow, accent }),
+          className,
+        )}
+        {...props}
+      />
+    );
+  },
+);
+Surface.displayName = 'Surface';
+
+export { Surface, surfaceVariants };

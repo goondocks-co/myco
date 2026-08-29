@@ -23,7 +23,7 @@
     "test:watch": "bun test --watch",
     "lint:skills": "tsx packages/myco/scripts/lint-skill-content.ts",
     "lint:skills:strict": "tsx packages/myco/scripts/lint-skill-content.ts --strict",
-    "lint": "npm run lint:skills:strict && tsc --noEmit && npm run typecheck:ui && npm run check:workers"
+    "lint": "npm run lint:skills:strict && tsc --noEmit && npm run typecheck:ui && npm run check:workers && npm run check:ui -w @goondocks/myco-server"
   },
   "repository": {
     "type": "git",

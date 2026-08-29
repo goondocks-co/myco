@@ -30,6 +30,7 @@ Bun.plugin({
 const NESTED_UI_NODE_MODULES = [
   path.join(repoRoot, 'packages/myco/ui/node_modules'),
   path.join(repoRoot, 'packages/myco-team/ui/node_modules'),
+  path.join(repoRoot, 'packages/myco-server/ui/node_modules'),
 ];
 const NESTED_REACT_PKGS = ['react', 'react-dom', 'react-router-dom', 'react-router', '@tanstack/react-query'];
 for (const base of NESTED_UI_NODE_MODULES) {

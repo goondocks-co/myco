@@ -450,3 +450,37 @@ M4 v1 + a session whose token has no machine_id: CHECK constraint failed: ok = 1
    events has no producer_adapter column (the guard runs ahead of every ADD COLUMN)
 M4 repaired: 0002 ✅; sessions = sess_ok/machine_1 (backfilled), sess_orphan/machine_recovered (repaired)
 ```
+
+## D · dashboard
+
+The shell is static build output carrying no vault data; every data path is Worker-first and credentialed. Recorded divergence from "no route is unauthenticated": a GET to an unowned path answers `200 index.html` with no credential on both targets, and any other method there answers 405.
+
+| | request | expect |
+|---|---|---|
+| D1 | `GET /` (no cookie) | 200, `text/html`, the shell |
+| D2 | `GET /p/proj_1/sessions` (no cookie) | 200, `text/html` — deep route on hard refresh |
+| D3 | `GET /assets/<hashed>.js` | 200, `text/javascript`, `cache-control: public, max-age=31536000, immutable` |
+| D4 | `GET /api/status` (no cookie) | 401 — the asset layer never answers an owned path |
+| D5 | `POST /sessions/register` | 401 from the Worker — a retired prefix is owned, not shell |
+| D6 | `POST /p/proj_1` | 405 from the asset layer (edge) / the static wrapper (self-hosted) |
+| D7 | signed in as the owner, `GET /` | the Projects landing lists this machine's projects; `/status` shows schema current and every capability configured |
+
+Self-hosted: `npm run image:build:native && docker compose up`, then D1–D6 with `-H 'Host: 127.0.0.1:8787'` against `http://127.0.0.1:8787`. D7 is Cloudflare-only until #1009.
+
+### Last observed output — self-hosted (image `dev-1008`, 2026-08-28)
+
+`docker run -p 127.0.0.1:18787:18787 -e MYCO_PORT=18787 -e MYCO_BIND=all -e MYCO_SOURCE_FROM=socket`, probes with `-H 'Host: 127.0.0.1:18787'`:
+
+| | observed |
+|---|---|
+| D1 `GET /` | 200 `text/html; charset=utf-8`, `cache-control: no-cache`, the shell |
+| D2 `GET /p/proj_1/sessions` | 200 `text/html; charset=utf-8` |
+| D3 `GET /assets/index-<hash>.js` | 200 `text/javascript; charset=utf-8`, `cache-control: public, max-age=31536000, immutable` |
+| D4 `GET /api/status` | 401 (503 `no_source_identity` when the container declares no `MYCO_SOURCE_FROM`, as CI's own smoke runs it — the core's documented refusal, not the shell's) |
+| D5 `POST /sessions/register` | 401 from the server |
+| D6 `POST /p/proj_1` | 405, `allow: GET, HEAD` |
+| `HEAD /` | 200, no body |
+| `GET /assets/..%2f..%2fserver.js` | 404 |
+| `Host: evil.example.com` | 421 ahead of any asset |
+
+Cloudflare: `wrangler deploy --dry-run` on both tomls reads 18 files from `ui/dist` (174 KiB). D1–D7 on the edge await the promotion.
