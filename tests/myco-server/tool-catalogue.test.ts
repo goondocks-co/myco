@@ -22,6 +22,10 @@ const LEDGER = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
 
 interface ToolRow { tool: string; disposition: string; surfaces: string[] }
 
+/** The ledger's closed vocabularies (§4, §7). A row outside them is malformed, and a malformed row must fail by name rather than fall out of the gate. */
+const DISPOSITIONS = new Set(['KEEP', 'REPLACE', 'DROP']);
+const SURFACES = new Set(['M', 'MS', 'Core', 'W', 'C', 'UI', 'MCP']);
+
 /** Every §7.3 row: first backticked token, disposition, and the surface cell split on commas. */
 function ledgerMcpRows(): ToolRow[] {
   const doc = fs.readFileSync(LEDGER, 'utf8');
@@ -40,15 +44,18 @@ function ledgerMcpRows(): ToolRow[] {
 }
 
 describe('the tool catalogue', () => {
-  it('parses a non-trivial §7.3 (guards against a silently empty parse)', () => {
+  it('parses a non-trivial §7.3 whose every row uses the closed vocabularies, so a malformed row fails by name rather than leaving the gate', () => {
     const rows = ledgerMcpRows();
-    expect(rows.length).toBeGreaterThanOrEqual(7);
-    expect(rows.every((r) => r.tool.startsWith('myco_'))).toBe(true);
+    expect(rows.length).toBeGreaterThan(0);
+    const malformed = rows
+      .filter((r) => !r.tool.startsWith('myco_') || !DISPOSITIONS.has(r.disposition) || r.surfaces.some((s) => !SURFACES.has(s)))
+      .map((r) => `${r.tool} [${r.disposition}] {${r.surfaces.join(',')}}`);
+    expect(malformed, 'a §7.3 row outside the ledger\'s closed vocabularies').toEqual([]);
   });
 
   it('names every MCP tool the ledger keeps, and none it does not', () => {
     const kept = ledgerMcpRows()
-      .filter((r) => r.disposition !== 'DROP' && r.surfaces.includes('MCP'))
+      .filter((r) => (r.disposition === 'KEEP' || r.disposition === 'REPLACE') && r.surfaces.includes('MCP'))
       .map((r) => r.tool);
 
     const unserved = kept.filter((t) => !isServedTool(t));
