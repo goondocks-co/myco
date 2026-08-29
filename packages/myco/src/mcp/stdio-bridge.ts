@@ -54,7 +54,7 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { resolveVaultDir } from '../vault/resolve.js';
-import { declaredCredentialSource, deploymentTransport, probeDeploymentHealth, resolveDeploymentUpstream } from './deployment-upstream.js';
+import { DEPLOYMENT_HEARTBEAT_INTERVAL_MS, DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS, declaredCredentialSource, deploymentTransport, probeDeploymentHealth, resolveDeploymentUpstream } from './deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
 import { DaemonClient } from '../daemon/client.js';
 import {
@@ -212,6 +212,7 @@ export async function probeDaemonHealth(portRef: { port: number }): Promise<bool
 function startDaemonHeartbeat(
   probe: () => Promise<boolean>,
   triggerSelfHeal: () => void,
+  intervalMs: number = DAEMON_HEARTBEAT_INTERVAL_MS,
 ): void {
   let consecutiveFailures = 0;
   const timer = setInterval(async () => {
@@ -227,7 +228,7 @@ function startDaemonHeartbeat(
       logErr('heartbeat threshold reached — triggering self-heal');
       triggerSelfHeal();
     }
-  }, DAEMON_HEARTBEAT_INTERVAL_MS);
+  }, intervalMs);
   timer.unref();
 }
 
@@ -309,10 +310,14 @@ interface Upstream {
  */
 interface UpstreamSource {
   describe: string;
-  /** The first upstream, taking whatever startup the source needs (the daemon is started if it is not running). */
+  /** The first upstream, taking whatever startup the source needs (the daemon is started if it is not running; the Deployment is probed once). */
   first(): Promise<Upstream | null>;
   /** The current upstream, freshly resolved, or null when the source has none right now. */
   resolve(): Upstream | null;
+  /** How often the idle bridge probes this source's health. */
+  heartbeatMs: number;
+  /** How many rebuild attempts a self-heal makes before answering the waiting request with an error; null retries without end. */
+  maxHealAttempts: number | null;
 }
 
 function daemonUpstreamSource(vaultDir: string): UpstreamSource {
@@ -331,6 +336,8 @@ function daemonUpstreamSource(vaultDir: string): UpstreamSource {
       return resolve();
     },
     resolve,
+    heartbeatMs: DAEMON_HEARTBEAT_INTERVAL_MS,
+    maxHealAttempts: null,
   };
 }
 
@@ -344,7 +351,23 @@ function deploymentUpstreamSource(source: CredentialSource): UpstreamSource {
       label: `deployment ${upstream.mcpUrl.origin} project ${upstream.projectId} (credential: ${source})`,
     };
   };
-  return { describe: `deployment (credential: ${source})`, async first() { return resolve(); }, resolve };
+  return {
+    describe: `deployment (credential: ${source})`,
+    // A Deployment that does not answer at startup is a configuration error the
+    // agent should see at once, not a request left waiting.
+    async first() {
+      const upstream = resolve();
+      if (!upstream) return null;
+      if (!(await upstream.probe())) {
+        logErr(`${upstream.label}: health probe failed at startup`);
+        return null;
+      }
+      return upstream;
+    },
+    resolve,
+    heartbeatMs: DEPLOYMENT_HEARTBEAT_INTERVAL_MS,
+    maxHealAttempts: DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS,
+  };
 }
 
 export function buildBridgeRequestHeaders(
@@ -359,7 +382,13 @@ export function buildBridgeRequestHeaders(
 }
 
 export async function main(): Promise<void> {
-  const source = declaredCredentialSource(process.argv);
+  let source: CredentialSource | null;
+  try {
+    source = declaredCredentialSource(process.argv);
+  } catch (err) {
+    logErr((err as Error).message);
+    process.exit(2);
+  }
   const upstreamSource = source === null ? daemonUpstreamSource(resolveVaultDir()) : deploymentUpstreamSource(source);
   const initial = await upstreamSource.first();
   if (!initial) {
@@ -428,6 +457,10 @@ export async function main(): Promise<void> {
     reconnectInFlight = (async () => {
       logErr('self-heal: probing daemon and rebuilding upstream');
       for (let attempt = 0; ; attempt++) {
+        if (upstreamSource.maxHealAttempts !== null && attempt >= upstreamSource.maxHealAttempts) {
+          logErr(`self-heal: ${upstreamSource.describe} did not answer in ${attempt} attempts; the waiting request is answered with an error`);
+          return false;
+        }
         if (attempt > 0) {
           const backoffIdx = Math.min(attempt - 1, SELF_HEAL_PROBE_BACKOFFS_MS.length - 1);
           await sleepMs(SELF_HEAL_PROBE_BACKOFFS_MS[backoffIdx]!);
@@ -504,8 +537,8 @@ export async function main(): Promise<void> {
       } catch (err) {
         const errMsg = (err as Error).message;
         logErr(`upstream send failed: ${errMsg} — entering self-heal (attempt ${attempt + 1})`);
-        await reconnectUpstream(); // never returns false — keeps trying indefinitely
-        if (attempt < REQUEST_RESEND_MAX_ATTEMPTS) {
+        const healed = await reconnectUpstream();
+        if (healed && attempt < REQUEST_RESEND_MAX_ATTEMPTS) {
           logErr(`self-heal succeeded; re-sending message through rebuilt upstream`);
           return send(attempt + 1);
         }
@@ -558,7 +591,7 @@ export async function main(): Promise<void> {
     void reconnectUpstream().catch((err: Error) =>
       logErr(`heartbeat-triggered self-heal failed unexpectedly: ${err.message}`),
     );
-  });
+  }, upstreamSource.heartbeatMs);
 
   logErr('bridge ready');
 }

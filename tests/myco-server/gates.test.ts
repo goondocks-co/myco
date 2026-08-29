@@ -1074,11 +1074,27 @@ describe('gates', () => {
     const runtime = manifest.dependencies ?? {};
     const declared = new Set([...Object.keys(runtime), ...Object.keys(manifest.devDependencies ?? {})]);
     const packageOf = (spec: string): string => (spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]);
-    const specifiers = (source: string): string[] =>
-      [...source.matchAll(/^\s*(?:import|export)\b[^'"\n]*\bfrom\s*['"]([^'"]+)['"]/gm), ...source.matchAll(/^\s*import\s*['"]([^'"]+)['"]/gm), ...source.matchAll(/\bimport\(\s*['"]([^'"]+)['"]/g)]
-        .map((m) => m[1])
+    const unquote = (text: string): string => text.slice(1, -1);
+    /** Every module specifier a source names — static imports and re-exports in any layout, side-effect imports, and dynamic imports — read from the token stream so a declaration spread over lines is seen. */
+    const specifiers = (source: string): string[] => {
+      const tokens = tokensOf(source);
+      const out: string[] = [];
+      for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (t.kind !== K.ImportKeyword && t.kind !== K.ExportKeyword) continue;
+        if (t.kind === K.ImportKeyword && tokens[i + 1]?.kind === K.StringLiteral) { out.push(unquote(tokens[i + 1].text)); continue; }
+        if (t.kind === K.ImportKeyword && tokens[i + 1]?.kind === K.OpenParenToken && tokens[i + 2]?.kind === K.StringLiteral) { out.push(unquote(tokens[i + 2].text)); continue; }
+        for (let j = i + 1; j < tokens.length; j++) {
+          const u = tokens[j];
+          if (u.kind === K.SemicolonToken || u.kind === K.ImportKeyword || u.kind === K.ExportKeyword) break;
+          if (u.kind === K.FromKeyword && tokens[j + 1]?.kind === K.StringLiteral) { out.push(unquote(tokens[j + 1].text)); break; }
+        }
+      }
+      return out
         .filter((spec) => !spec.startsWith('.') && !spec.startsWith('/') && !/^(bun|node|cloudflare):/.test(spec))
         .map(packageOf);
+    };
+    expect(specifiers("import {\n  a,\n  b,\n} from 'pkg-a/sub';\nexport * from '@scope/pkg-b';\nimport 'pkg-c';\nconst x = await import('pkg-d');\nimport type { T } from './local.js';")).toEqual(['pkg-a', '@scope/pkg-b', 'pkg-c', 'pkg-d']);
     const imported = new Map<string, Set<string>>();
     for (const f of files(SRC)) for (const pkg of specifiers(readFileSync(f, 'utf8'))) (imported.get(pkg) ?? imported.set(pkg, new Set()).get(pkg)!).add(f);
     expect([...imported.keys()].filter((pkg) => !declared.has(pkg))).toEqual([]);

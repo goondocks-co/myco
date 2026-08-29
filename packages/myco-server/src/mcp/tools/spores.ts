@@ -6,7 +6,7 @@
  * does in 1.4, and no session: the bridge that relays the call knows none.
  * Every resolution is one atomic write of the status and its event.
  */
-import { countSpores, getSpore, insertSpore, listSpores, listSupersedingSporeIds, resolveSpore, type SporeRow } from '../../core/spores.js';
+import { consolidateSpores, countSpores, getSpore, insertSpore, listSpores, listSupersedingSporeIds, resolveSpore, MAX_SPORE_CONTENT_BYTES, type SporeRow } from '../../core/spores.js';
 import type { ReadScope } from '../../read/scope.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
 import { snake } from '../shape.js';
@@ -16,6 +16,8 @@ import type { ToolInput } from '../validate.js';
 export const USER_AGENT_ID = 'user';
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
+const overCap = (text: string): boolean => new TextEncoder().encode(text).byteLength > MAX_SPORE_CONTENT_BYTES;
+const CAP_REASON = `content exceeds ${MAX_SPORE_CONTENT_BYTES} bytes`;
 const int = (v: unknown): number | undefined => (typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined);
 const tagsOf = (v: unknown): string | null => (Array.isArray(v) && v.length > 0 ? v.map(String).join(', ') : null);
 
@@ -50,6 +52,7 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
     const type = str(input.type);
     if (content === undefined) return failure('content is required for op: save');
     if (type === undefined) return failure('type is required for op: save');
+    if (overCap(content)) return failure(CAP_REASON);
     const spore = await insertSpore(db, scope, {
       id: sporeId(type), agentId: USER_AGENT_ID, sessionId: null, promptId: null, observationType: type,
       content, context: null, filePath: null, tags: tagsOf(input.tags), contentHash: null, properties: null, createdAt: ctx.now,
@@ -85,15 +88,13 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
     if (sources.length === 0) return failure('source_spore_ids is required for op: consolidate');
     if (content === undefined) return failure('consolidated_content is required for op: consolidate');
     if (type === undefined) return failure('observation_type is required for op: consolidate');
+    if (overCap(content)) return failure(CAP_REASON);
     for (const id of sources) if ((await getSpore(db, scope, id)) === null) return failure(`source_spore_id not found: ${id}`);
-    const wisdom = await insertSpore(db, scope, {
+    const { wisdom, consolidated } = await consolidateSpores(db, scope, {
       id: sporeId(type), agentId: USER_AGENT_ID, sessionId: null, promptId: null, observationType: type,
       content, context: null, filePath: null, tags: tagsOf(input.tags), contentHash: null, properties: null, createdAt: ctx.now,
-    });
+    }, sources, { agentId: USER_AGENT_ID, reason: str(input.reason) ?? null, sessionId: null, createdAt: ctx.now }, ctx.now);
     if (wisdom === null) return failure('Consolidated spore was not recorded');
-    const reason = str(input.reason) ?? null;
-    let consolidated = 0;
-    for (const id of sources) if (await resolve(ctx, scope, id, 'consolidated', 'consolidate', wisdom.id, reason)) consolidated += 1;
     return { new_spore_id: wisdom.id, sources_consolidated: consolidated, status: 'consolidated', created_at: wisdom.createdAt };
   }
 

@@ -8,6 +8,8 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';
+import { archiveProject } from '@myco-server-worker/read/sessions.js';
 import { upsertDigest } from '@myco-server-worker/core/digests.js';
 import { insertSkillRecord } from '@myco-server-worker/core/skills.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
@@ -105,7 +107,8 @@ describe('POST /mcp', () => {
     const listed = (await call(t1.token, 'myco_plans', { op: 'list' })).result;
     expect(listed).toEqual([{ id: first.id, title: 'X', status: 'active', progress: '1/2', tags: ['t1'], created_at: first.created_at }]);
 
-    const updated = (await call(t1.token, 'myco_plans', { op: 'save', id: first.id, status: 'in_progress' })).result;
+    expect((await call(t1.token, 'myco_plans', { op: 'save', id: first.id, status: 'in_progress' })).result).toEqual({ ok: false, error: 'session_id is required for op: save' });
+    const updated = (await call(t1.token, 'myco_plans', { op: 'save', id: first.id, session_id: 'sess_a', status: 'in_progress' })).result;
     expect({ ok: updated.ok, id: updated.id, status: updated.status, title: updated.title }).toEqual({ ok: true, id: first.id, status: 'in_progress', title: 'X' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM plans`).get() as any).c).toBe(1);
 
@@ -128,6 +131,33 @@ describe('POST /mcp', () => {
 
     const foreign = await worker.fetch(new Request('https://s/events', { method: 'POST', headers: memberHeaders(t2.token), body: JSON.stringify(envelope({ sessionId: 'sess_a' })) }), env);
     expect(await foreign.json()).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
+  });
+
+  it('refuses a plan into an archived Project from the ingest path while an editorial spore still lands, and reads the archived Project', async () => {
+    const { call, db, t1 } = await setup();
+    await archiveProject(db, 'proj_1', 'mem_machine_1', Date.now());
+    const plan = await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'k', content: 'c' });
+    expect({ status: plan.status, result: plan.result }).toEqual({ status: 200, result: { ok: false, code: 'project_archived', error: 'this project is archived on the server; unarchive it from the dashboard to resume capture' } });
+    expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'still editable' })).result.status).toBe('active');
+    expect((await call(t1.token, 'myco_plans', {})).result).toEqual([]);
+  });
+
+  it('ignores an argument the tool does not declare: myco_agent cannot pivot, and an unknown key never reaches a handler', async () => {
+    const { call, t1 } = await setup();
+    expect((await call(t1.token, 'myco_agent', { project_id: 'proj_unknown' })).result).toEqual({ ok: true, op: 'runs', data: { runs: [], cursor: null } });
+    expect((await call(t1.token, 'myco_plans', { limit: 5, purge: true })).result).toEqual([]);
+  });
+
+  it('caps a spore body, and consolidates in one write counting only the sources it moved', async () => {
+    const { call, sqlite, t1 } = await setup();
+    expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x'.repeat(MAX_SPORE_CONTENT_BYTES + 1) })).result).toEqual({ ok: false, error: `content exceeds ${MAX_SPORE_CONTENT_BYTES} bytes` });
+    const a = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'a' })).result;
+    const b = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'b' })).result;
+    expect((await call(t1.token, 'myco_spores', { op: 'obsolete', id: b.id, reason: 'gone' })).result.status).toBe('obsolete');
+    const merged = (await call(t1.token, 'myco_spores', { op: 'consolidate', source_spore_ids: [a.id, b.id], consolidated_content: 'ab', observation_type: 'wisdom' })).result;
+    expect({ sources: merged.sources_consolidated, status: merged.status }).toEqual({ sources: 1, status: 'consolidated' });
+    expect(sqlite.query(`SELECT id, status FROM spores WHERE id IN (?, ?) ORDER BY id`).all(a.id, b.id)).toEqual([{ id: a.id, status: 'consolidated' }, { id: b.id, status: 'obsolete' }].sort((x, y) => x.id.localeCompare(y.id)));
+    expect((sqlite.query(`SELECT COUNT(*) c FROM resolution_events WHERE new_spore_id = ?`).get(merged.new_spore_id) as any).c).toBe(1);
   });
 
   it('answers a plan the size the payload cap admits, and an over-quota save as a result rather than a failure', async () => {

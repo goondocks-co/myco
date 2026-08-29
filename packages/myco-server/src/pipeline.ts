@@ -5,7 +5,7 @@ import { HSTS_MAX_AGE_SECONDS, LINEAGE_REPLAY_GRACE_MS, MEMBER_TOKEN_BYTE_QUOTA,
 import { sha256Hex } from './hash.js';
 import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
 import { QUOTA_REASON } from './ingest/events.js';
-import { resolveProject } from './ingest/projects.js';
+import { PROJECT_ARCHIVED, resolveProject } from './ingest/projects.js';
 import { classify, emit, SchemaMismatchError, UNAVAILABLE, type Classifier } from './telemetry.js';
 import { ownerConfig } from './auth/owner/config.js';
 import { readCookie, verifySession } from './auth/owner/cookie.js';
@@ -101,8 +101,6 @@ const unsupportedProtocol = () =>
   Response.json({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL }, { status: 409 });
 export const NO_MACHINE_IDENTITY = 'token has no machine identity';
 export const NO_PROJECT = 'project header required';
-/** Capture into an archived Project is refused on every capture route, in the route's shape; nothing else about the credential changes. */
-const PROJECT_ARCHIVED = 'this project is archived on the server; unarchive it from the dashboard to resume capture';
 /** The routes a member's capture writes through — the ones charged to its quota. */
 const captureRoute = (route: MemberRoute): boolean => route.quotaPrecheck !== false;
 /** What may be presented as a Project id on the wire. Exported so the member can be pinned against it: the member decides a Project id at `myco member join` and the server never sees it until the first capture, so a member that admits more than this prints "joined" and is then refused every request. */

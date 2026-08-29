@@ -4,7 +4,7 @@ import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { emit, refusal, StorageContractError, type Classifier, type Refusal } from '../telemetry.js';
 import { parseEnvelope, type CaptureEnvelope } from './envelope.js';
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
-import { planKind, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
+import { planKind, projectLive, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { withinQuota } from './quota.js';
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
@@ -68,7 +68,7 @@ export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body:
   const contentHash = await contentHashOf(spec, p);
   const plan: KindPlan = planKind(spec, { db, ctx: write, e, p, contentHash });
   const quotaAdmission = withinQuota(write, ctx.bodyBytes);
-  const checks = sharedChecks(spec, write, e, p, plan.identities);
+  const checks = [projectLive(write), ...sharedChecks(spec, write, e, p, plan.identities)];
   const admission: Fragment[] = [quotaAdmission, ...checks.map((c) => c.admission), ...plan.admission];
 
   const raw = db

@@ -2,6 +2,7 @@ import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
 import type { CaptureEnvelope } from './envelope.js';
 import { blobFields, promptReferenceFields, type KindSpec, type Payload } from './kinds.js';
 import { refusal, type Refusal } from '../telemetry.js';
+import { PROJECT_ARCHIVED } from './projects.js';
 
 /** The identity of the write in flight: project, token, machine, the server clock, and the nonce that names this request's raw row. */
 export interface WriteContext {
@@ -105,6 +106,13 @@ interface Inputs {
   /** sha256 of the inline text, or the blob key when spilled. */
   contentHash: string | null;
 }
+
+/** A capture lands only in a live Project: an archived one refuses every event, whatever route carried it. The admission fragment sits on the raw insert; the read tells an archived Project from an absent row. */
+export const projectLive = (ctx: WriteContext): SharedCheck => ({
+  admission: { sql: `EXISTS (SELECT 1 FROM projects WHERE project_id = ? AND archived_at IS NULL)`, params: [ctx.projectId] },
+  read: { sql: `SELECT archived_at FROM projects WHERE project_id = ?`, params: [ctx.projectId] },
+  refusal: (row) => (row !== undefined && row.archived_at !== null ? refusal(PROJECT_ARCHIVED, 'project_archived') : null),
+});
 
 /** The checks every kind shares, derived from the catalogue and the kind's declared identities in the one order they are admitted, read, and refused: the session's machine, then every continued row the kind names, then every referenced blob present, then every referenced prompt absent or owned by this machine. */
 export function sharedChecks(spec: KindSpec, ctx: WriteContext, e: CaptureEnvelope, p: Payload, identities: Identity[]): SharedCheck[] {

@@ -14,6 +14,7 @@
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, type CredentialSource } from '../member/constants.js';
 import { parseCredentialFlag, resolveCredential, type CredentialRecord } from '../member/credential.js';
+import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES } from '../member/constants.js';
 
 export const MCP_PATH = '/mcp';
 export const HEALTH_PATH = '/health';
@@ -68,5 +69,24 @@ export async function probeDeploymentHealth(healthUrl: URL): Promise<boolean> {
   }
 }
 
-/** The credential source a command line declares, or null: the caller then takes the local daemon path. */
-export const declaredCredentialSource = (argv: readonly string[]): CredentialSource | null => parseCredentialFlag(argv);
+/** True when the command line carries the credential flag at all, whatever its value. */
+export const credentialFlagPresent = (argv: readonly string[]): boolean => argv.some((arg) => arg === CREDENTIAL_FLAG || arg.startsWith(`${CREDENTIAL_FLAG}=`));
+
+/**
+ * The credential source a command line declares: a known source; null when
+ * the flag is absent (the caller takes the local daemon path); a thrown error
+ * when the flag is present with a value that is not a source — a mistyped
+ * flag must never fall through to the daemon in silence.
+ */
+export function declaredCredentialSource(argv: readonly string[]): CredentialSource | null {
+  const source = parseCredentialFlag(argv);
+  if (source === null && credentialFlagPresent(argv)) {
+    throw new Error(`${CREDENTIAL_FLAG} must be one of ${CREDENTIAL_SOURCES.join('|')}`);
+  }
+  return source;
+}
+
+/** Bridge and Deployment liveness: how often the bridge asks the Deployment for its health while idle. Far looser than the daemon's cadence — every probe is a metered request to a remote. */
+export const DEPLOYMENT_HEARTBEAT_INTERVAL_MS = 60_000;
+/** How many rebuild attempts the bridge makes against a Deployment that stopped answering before it answers the agent's waiting request with an error and keeps serving. */
+export const DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS = 8;

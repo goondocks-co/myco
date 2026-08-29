@@ -195,6 +195,23 @@ export async function sessionCounts(db: RelationalStore, scope: ReadScope, sessi
   return counts as unknown as SessionCounts;
 }
 
+/** The child counts of every named session, one statement per table for the whole set; a session with no rows in a table counts zero. */
+export async function sessionCountsFor(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[]): Promise<Map<string, SessionCounts>> {
+  const out = new Map<string, SessionCounts>(sessionIds.map((id) => [id, { prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 }]));
+  if (sessionIds.length === 0) return out;
+  const tables = [['prompts', 'prompt_batches'], ['toolCalls', 'tool_calls'], ['responses', 'responses'], ['plans', 'plans'], ['attachments', 'attachments']] as const;
+  const placeholders = sessionIds.map(() => '?').join(', ');
+  const results = await db.batch(tables.map(([, table]) =>
+    db.prepare(`SELECT session_id, COUNT(*) AS n FROM ${table} WHERE project_id = ? AND session_id IN (${placeholders}) GROUP BY session_id`).bind(scope.projectId, ...sessionIds)));
+  tables.forEach(([key], i) => {
+    for (const row of results[i].results as { session_id: string; n: number }[]) {
+      const counts = out.get(row.session_id);
+      if (counts) counts[key] = row.n;
+    }
+  });
+  return out;
+}
+
 /** What the project holds, one count per projection: they share no key, and a join would multiply rows. */
 export async function projectStats(db: RelationalStore, scope: ReadScope, nowMs: number): Promise<ProjectStats> {
   const sessions = await db

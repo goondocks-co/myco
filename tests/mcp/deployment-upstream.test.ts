@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { withoutCredentialFlag } from '@myco/cli/tool.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL } from '@myco/member/credential.js';
 import { MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
-import { declaredCredentialSource, deploymentHeaders, resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
+import { credentialFlagPresent, declaredCredentialSource, deploymentHeaders, resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
 
 /**
  * The Deployment upstream a declared credential source resolves to: the
@@ -43,7 +43,10 @@ describe('deployment upstream', () => {
     expect(declaredCredentialSource(['mcp', '--credential', 'registry'])).toBe('registry');
     expect(declaredCredentialSource(['call', 'myco_plans', '--credential=env', '--json'])).toBe('env');
     expect(declaredCredentialSource(['call', 'myco_plans', '--json'])).toBeNull();
-    expect(declaredCredentialSource(['call', '--credential', 'nowhere'])).toBeNull();
+    expect(() => declaredCredentialSource(['call', '--credential', 'nowhere'])).toThrow(/registry\|env/);
+    expect(() => declaredCredentialSource(['call', '--credential'])).toThrow(/registry\|env/);
+    expect(credentialFlagPresent(['call', '--credential=env'])).toBe(true);
+    expect(credentialFlagPresent(['call', '--json'])).toBe(false);
     expect(withoutCredentialFlag(['call', 'myco_plans', '--credential', 'env', '--json', '--input', '{}'])).toEqual(['call', 'myco_plans', '--json', '--input', '{}']);
     expect(withoutCredentialFlag(['list', '--credential=registry'])).toEqual(['list']);
   });

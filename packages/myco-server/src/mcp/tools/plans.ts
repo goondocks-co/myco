@@ -6,7 +6,10 @@
  * the key is the member's own derivation. A status-only update re-reads the
  * row and re-emits it whole: the kind carries the plan entire, never a delta.
  * Plans are Project-shared editorial rows: any member may update one, and the
- * credential that did is recorded on it.
+ * credential that did is recorded on it. Every save names the caller's own
+ * session — the one its hooks capture on this machine — never the row's: a
+ * session belongs to the machine that captured it, and an event naming
+ * another machine's session is refused as capture into it would be.
  *
  * Deleting is not served: a Deployment keeps every plan; `abandoned` is the
  * status for one that no longer applies.
@@ -93,7 +96,7 @@ async function save(input: ToolInput, ctx: ToolContext, scope: ReadScope): Promi
   const content = str(input.content);
   const sessionId = str(input.session_id);
   if (content === undefined && id === undefined) return failure('content is required when creating a new plan');
-  if (id === undefined && sessionId === undefined) return failure('session_id is required for op: save');
+  if (sessionId === undefined) return failure('session_id is required for op: save');
   if (input.source_path !== undefined && input.plan_key !== undefined) return failure('Pass either source_path or plan_key, not both');
 
   const planKey = await planKeyFor(scope.projectId, { id, source_path: str(input.source_path), plan_key: str(input.plan_key) });
@@ -115,7 +118,7 @@ async function save(input: ToolInput, ctx: ToolContext, scope: ReadScope): Promi
   };
   const envelope = {
     eventId: crypto.randomUUID(),
-    sessionId: sessionId ?? existing!.sessionId,
+    sessionId,
     kind: 'plan',
     createdAt: ctx.now,
     channel: 'http',

@@ -7,7 +7,7 @@
  * and answer null and empty. Timestamps are the Deployment's, in milliseconds.
  */
 import { getPlan } from '../../read/plans.js';
-import { getSession, listSessions, sessionCounts, type SessionRow } from '../../read/sessions.js';
+import { getSession, listSessions, sessionCounts, sessionCountsFor, type SessionRow } from '../../read/sessions.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
@@ -83,5 +83,6 @@ export async function handleSessions(input: ToolInput, ctx: ToolContext): Promis
     memberLabel: str(input.user),
     sessionId,
   });
-  return Promise.all(page.rows.map(async (row) => summary(row, await sessionCounts(db, scope, row.sessionId))));
+  const counts = await sessionCountsFor(db, scope, page.rows.map((row) => row.sessionId));
+  return page.rows.map((row) => summary(row, counts.get(row.sessionId)!));
 }

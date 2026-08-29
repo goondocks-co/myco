@@ -67,7 +67,14 @@ export function withoutCredentialFlag(args: readonly string[]): string[] {
 }
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
-  const source = declaredCredentialSource(args);
+  let source: CredentialSource | null;
+  try {
+    source = declaredCredentialSource(args);
+  } catch (error) {
+    await writeEnvelope({ ok: false, error: { code: 'invalid_arguments', message: (error as Error).message } });
+    process.exitCode = 1;
+    return;
+  }
   const [subcommand, ...rest] = withoutCredentialFlag(args);
   const json = rest.includes('--json');
 

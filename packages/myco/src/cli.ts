@@ -281,7 +281,7 @@ async function main(): Promise<void> {
   // A tool call that declares a credential source reaches the Deployment over
   // the member credential and reads no project vault, so it sits above the
   // myco.yaml gate like every other member operation.
-  if (cmd === 'tool' && (await import('./member/credential.js')).parseCredentialFlag(args) !== null) {
+  if (cmd === 'tool' && (await import('./mcp/deployment-upstream.js')).credentialFlagPresent(args)) {
     return (await import('./cli/tool.js')).run(args, resolveVaultDir());
   }
 

@@ -120,7 +120,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         },
         "project_id": {
           "type": "string",
-          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown or archived Project answers not found."
+          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."
         }
       },
       "required": [
@@ -172,7 +172,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         },
         "project_id": {
           "type": "string",
-          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown or archived Project answers not found."
+          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."
         },
         "path": {
           "type": "string",
@@ -271,7 +271,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         },
         "project_id": {
           "type": "string",
-          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown or archived Project answers not found."
+          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."
         }
       }
     }
@@ -330,7 +330,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         },
         "project_id": {
           "type": "string",
-          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown or archived Project answers not found."
+          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."
         }
       }
     }
@@ -369,7 +369,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         },
         "project_id": {
           "type": "string",
-          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown or archived Project answers not found."
+          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."
         }
       }
     }
@@ -499,7 +499,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         },
         "project_id": {
           "type": "string",
-          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown or archived Project answers not found."
+          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."
         }
       }
     }

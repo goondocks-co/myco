@@ -19,7 +19,7 @@ import { emit } from '../telemetry.js';
 import type { ToolContext } from './context.js';
 import { TOOL_DEFINITIONS, definitionOf } from './definitions.js';
 import { entryFor, opOf } from './registry.js';
-import { normalizeInput, ToolError, validateInput } from './validate.js';
+import { normalizeInput, ToolError, validateInput, type ToolInput } from './validate.js';
 
 export const SERVER_NAME = 'myco';
 /** The JSON-RPC error code every tool failure answers with; `data.code` carries the name. */
@@ -39,11 +39,15 @@ const isDigest = (r: unknown): r is { content: string; tier: number; fallback: b
 
 const toolError = (err: ToolError): ProtocolError => new ProtocolError(TOOL_ERROR_CODE, err.message, { code: err.code });
 
+/** The arguments the definition declares; an undeclared key never reaches a handler, so no tool answers to an argument its schema does not name. */
+const declaredOnly = (definition: { inputSchema: { properties: Record<string, unknown> } }, input: ToolInput): ToolInput =>
+  Object.fromEntries(Object.entries(input).filter(([key]) => key in definition.inputSchema.properties));
+
 /** Run one tool call for this context: validation, op resolution, the handler. Every failure leaves as a `ToolError`. */
 export async function callTool(ctx: ToolContext, name: string, args: unknown): Promise<{ tool: ServedTool; op: string; result: unknown }> {
   if (!isServedTool(name)) throw new ToolError('unknown_tool', `Unknown tool: ${name}`);
   const definition = definitionOf(name)!;
-  const input = normalizeInput(args);
+  const input = declaredOnly(definition, normalizeInput(args));
   validateInput(definition, input);
   const op = opOf(name, input);
   const entry = entryFor(name, op);
