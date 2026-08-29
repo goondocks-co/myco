@@ -326,16 +326,28 @@ describe('POST /mcp over an External Agent grant', () => {
   });
 
   it('records use once per interval, keys the limiter on the grant id, never charges the source bucket, and issues no write but that record on any allowlisted call', async () => {
-    const { grant, callAs, lastUsed, tokenKeys, sourceKeys, executed } = await grantSetup();
+    const { db, grant, callAs, memberCall, lastUsed, tokenKeys, sourceKeys, executed } = await grantSetup();
+    const spore = (await memberCall('myco_spores', { op: 'save', type: 'gotcha', content: 'seed' })).result.id as string;
+    const plan = (await memberCall('myco_plans', { op: 'save', content: '# p', session_id: 'sess-seed', plan_key: 'seed' })).result;
+    await insertSkillRecord(db, { projectId: 'proj_1' }, { id: 'skill-seed', agentId: 'user', name: 'seed', displayName: 'Seed', description: 'd', candidateId: null, sourceIds: '[]', path: 'skills/seed/SKILL.md', createdAt: 5 });
+    await upsertDigest(db, { projectId: 'proj_1' }, { id: 'd-seed', agentId: 'user', tier: 5000, content: 'seed digest', substrateHash: null, generatedAt: 10 });
     const from = executed.length;
+    const keysFrom = tokenKeys.length;
     await callAs(grant.key, 'myco_plans', { op: 'list' });
     const first = lastUsed();
     expect(typeof first).toBe('number');
-    for (const [name, args] of [['myco_sessions', {}], ['myco_skills', {}], ['myco_spores', {}], ['myco_cortex', {}], ['myco_search', { query: 'q' }]] as Array<[string, Record<string, unknown>]>) await callAs(grant.key, name, args);
+    const reads: Array<[string, Record<string, unknown>]> = [
+      ['myco_sessions', {}], ['myco_skills', {}], ['myco_spores', {}], ['myco_cortex', {}], ['myco_search', { query: 'q' }],
+      ['myco_spores', { op: 'get', id: spore }], ['myco_plans', { op: 'get', id: plan.id }], ['myco_skills', { op: 'get', id: 'skill-seed' }], ['myco_sessions', { op: 'get', id: 'sess-seed' }], ['myco_cortex', { op: 'digest', tier: 5000 }],
+    ];
+    for (const [name, args] of reads) {
+      const res = await callAs(grant.key, name, args);
+      expect({ name, args, answered: res.error === undefined || res.error.data?.code === 'not_served' }).toEqual({ name, args, answered: true });
+    }
     expect(lastUsed()).toBe(first);
     expect(executed.slice(from).filter((sql) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)).every((sql) => /UPDATE external_grants/.test(sql))).toBe(true);
     expect(executed.slice(from).some((sql) => /UPDATE external_grants/.test(sql))).toBe(true);
-    expect({ tokenKeys: [...new Set(tokenKeys)], sourceKeys }).toEqual({ tokenKeys: [grant.id], sourceKeys: [] });
+    expect({ tokenKeys: [...new Set(tokenKeys.slice(keysFrom))], sourceKeys }).toEqual({ tokenKeys: [grant.id], sourceKeys: [] });
   });
 
   it('refuses a revoked grant and a rotated grant\'s predecessor with 401, admits the successor, and charges the source bucket for a key it does not hold', async () => {
@@ -368,14 +380,23 @@ describe('POST /mcp over an External Agent grant', () => {
     sqlite.query(`UPDATE projects SET archived_at = 1, archived_by = 'mem_machine_1' WHERE project_id = 'proj_1'`).run();
     expect((await callAs(grant.key, 'myco_plans', { op: 'list' })).result).toEqual([]);
 
-    const faulty = await grantSetup({ onSql: (sql) => { if (/FROM skill_records/.test(sql)) throw new Error('storage is away'); } });
-    const fault = await worker.fetch(grantRequest(faulty.grant.key, rpc('tools/call', { name: 'myco_skills', arguments: {} })), faulty.env);
-    expect({ status: fault.status, retry: fault.headers.get('retry-after') !== null, code: ((await fault.json()) as any).error?.data?.code }).toEqual({ status: 503, retry: true, code: 'unavailable' });
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (line: unknown) => { lines.push(String(line)); };
+    try {
+      const faulty = await grantSetup({ onSql: (sql) => { if (/FROM skill_records/.test(sql)) throw new Error('storage is away'); } });
+      const fault = await worker.fetch(grantRequest(faulty.grant.key, rpc('tools/call', { name: 'myco_skills', arguments: {} })), faulty.env);
+      expect({ status: fault.status, retry: fault.headers.get('retry-after') !== null, code: ((await fault.json()) as any).error?.data?.code }).toEqual({ status: 503, retry: true, code: 'unavailable' });
+      expect(lines.map((l) => JSON.parse(l)).filter((e) => e.kind === 'mcp_error').map((e) => ({ grantId: e.grantId, memberId: e.memberId }))).toEqual([{ grantId: faulty.grant.id, memberId: undefined }]);
 
-    const limiterless = await grantSetup();
-    limiterless.env.TOKEN_LIMIT = { limit: async () => { throw new Error('limiter is away'); } };
-    const early = await worker.fetch(grantRequest(limiterless.grant.key, rpc('tools/list')), limiterless.env);
-    expect({ status: early.status, retry: early.headers.get('retry-after') !== null }).toEqual({ status: 503, retry: true });
+      const limiterless = await grantSetup();
+      limiterless.env.TOKEN_LIMIT = { limit: async () => { throw new Error('limiter is away'); } };
+      const early = await worker.fetch(grantRequest(limiterless.grant.key, rpc('tools/list')), limiterless.env);
+      expect({ status: early.status, retry: early.headers.get('retry-after') !== null }).toEqual({ status: 503, retry: true });
+      expect(lines.map((l) => JSON.parse(l)).filter((e) => e.kind === 'request_error').map((e) => e.grantId)).toEqual([limiterless.grant.id]);
+    } finally {
+      console.log = original;
+    }
   });
 
   it('names a served tool or the literal unknown in telemetry, never the caller\'s text, and the member backstop refuses a grant as a tool that does not exist', async () => {
@@ -391,6 +412,6 @@ describe('POST /mcp over an External Agent grant', () => {
     }
     const tools = lines.map((l) => JSON.parse(l)).filter((e) => e.kind === 'mcp_tool').map((e) => ({ tool: e.tool, status: e.status, grantId: e.grantId }));
     expect(tools).toEqual([{ tool: 'unknown', status: 'unknown_tool', grantId: grant.id }, { tool: 'myco_spores', status: 'unknown_tool', grantId: grant.id }]);
-    expect(() => memberOf(grantToolContext(serverEnv, { projectId: 'proj_1', grantId: grant.id, body: '', bodyBytes: 0, now: 0 }), 'myco_plans')).toThrow('Unknown tool: myco_plans');
+    expect(() => memberOf(grantToolContext(serverEnv, { projectId: 'proj_1', grantId: grant.id, body: '', now: 0 }), 'myco_plans')).toThrow('Unknown tool: myco_plans');
   });
 });

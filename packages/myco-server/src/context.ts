@@ -44,12 +44,11 @@ export interface RouteContext {
   now: number;
 }
 
-/** Context for a route reached over an External Agent grant: the grant's Project, the grant, and the body the pipeline read. Nothing of a member travels here. */
+/** Context for a route reached over an External Agent grant: the grant's Project, the grant, and the body the pipeline read. Nothing of a member travels here, and nothing is charged: a grant writes nothing. */
 export interface GrantContext {
   projectId: string;
   grantId: string;
   body: string;
-  bodyBytes: number;
   now: number;
 }
 

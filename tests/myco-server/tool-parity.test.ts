@@ -16,7 +16,7 @@ import { TOOL_DEFINITIONS as MEMBER_DEFINITIONS } from '@myco/tools/definitions.
 import { EXTERNAL_TOOL_ALLOWLIST as MEMBER_ALLOWLIST, isAllowedExternalCall } from '@myco/mcp/external-surface.js';
 import { SERVED_TOOLS, type ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
-import { EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
+import { EXTERNAL_PROJECT_ID_DESCRIPTION, EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
 import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
 
 /** The one property whose description the server words for a Deployment. */
@@ -88,16 +88,18 @@ describe('tool parity', () => {
       for (const op of ops) expect({ tool, op, keyed: op === NO_OP ? entry.defaultOp === null && NO_OP in entry.ops : op in entry.ops }).toEqual({ tool, op, keyed: true });
     }
     expect(externalDefinitions().map((d) => d.name).sort()).toEqual([...EXTERNAL_TOOLS].sort());
-    const narrowed = TOOL_DEFINITIONS.filter((d) => EXTERNAL_TOOLS.includes(d.name)).map((d) => {
-      const op = d.inputSchema.properties.op as { enum?: readonly unknown[] } | undefined;
-      if (op?.enum === undefined) return d;
-      return { ...d, inputSchema: { ...d.inputSchema, properties: { ...d.inputSchema.properties, op: { ...op, enum: op.enum.filter((v) => typeof v === 'string' && EXTERNAL_TOOL_ALLOWLIST[d.name].has(v)) } } } };
-    });
-    expect(externalDefinitions()).toEqual(narrowed);
+    const served = byName(TOOL_DEFINITIONS);
     for (const d of externalDefinitions()) {
       const op = d.inputSchema.properties.op as { enum?: readonly unknown[] } | undefined;
-      if (op?.enum === undefined) continue;
-      expect({ tool: d.name, offered: [...op.enum].sort() }).toEqual({ tool: d.name, offered: [...EXTERNAL_TOOL_ALLOWLIST[d.name]].sort() });
+      const offered = op?.enum === undefined ? null : [...op.enum].sort();
+      expect({ tool: d.name, offered }).toEqual({ tool: d.name, offered: op?.enum === undefined ? null : [...EXTERNAL_TOOL_ALLOWLIST[d.name]].sort() });
+      const pivot = d.inputSchema.properties.project_id as { description?: string } | undefined;
+      expect({ tool: d.name, pivot: pivot?.description ?? null }).toEqual({ tool: d.name, pivot: pivot === undefined ? null : EXTERNAL_PROJECT_ID_DESCRIPTION });
+      const rest = (def: (typeof TOOL_DEFINITIONS)[number]) => {
+        const { op: _op, project_id: _pivot, ...properties } = def.inputSchema.properties as Record<string, unknown>;
+        return { ...def, inputSchema: { ...def.inputSchema, properties } };
+      };
+      expect({ tool: d.name, rest: rest(d) }).toEqual({ tool: d.name, rest: rest(served.get(d.name)!) });
     }
   });
 

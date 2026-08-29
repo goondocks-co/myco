@@ -93,8 +93,8 @@ const limited = () => Response.json({ error: 'rate limited' }, { status: 429, he
  */
 function wrongMethod(method: string, pathname: string, admitted: (route: Route) => boolean): Response | null {
   const methods = methodsServing(pathname, admitted);
-  if (methods.length === 0 || methods.includes(method)) return null;
-  return Response.json({ error: 'method_not_allowed', allow: methods }, { status: 405, headers: { allow: methods.join(', ') } });
+  if (methods.length === 0) return null;
+  return Response.json({ error: 'method_not_allowed', method, allow: methods }, { status: 405, headers: { allow: methods.join(', ') } });
 }
 const forbidden = () => Response.json({ error: 'forbidden' }, { status: 403 });
 const refuseOversized = () => Response.json({ error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` }, { status: 400 });
@@ -342,7 +342,7 @@ export function createServer(deps: ServerDeps) {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
       if (!body.ok) return refuseGrant(auth, route, body.reason, 'body_cap');
       await touchGrant(env.db, auth.grantId, now);
-      return await route.grant(env, { projectId: auth.projectId, grantId: auth.grantId, body: body.text, bodyBytes: body.bytes, now });
+      return await route.grant(env, { projectId: auth.projectId, grantId: auth.grantId, body: body.text, now });
     } catch (err) {
       emit({ kind: 'mcp_error', grantId: auth.grantId, error_class: classify(err, errorClassifierOf(env)) });
       return unavailableFor(route);

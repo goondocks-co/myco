@@ -14,7 +14,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { GrantContext, RouteContext } from '../context.js';
 import type { ReadScope } from '../read/scope.js';
 import { resolveProjectScope } from '../api/scope.js';
-import { ToolError, type ToolInput } from './validate.js';
+import { unknownTool, type ToolInput } from './validate.js';
 
 export interface MemberPrincipal {
   kind: 'member';
@@ -62,7 +62,7 @@ export function principalFields(ctx: ToolContext): Record<string, string> {
 
 /** The member behind a call that writes on its behalf. A grant never reaches such a call — the allowlist refuses it first — and is refused the same way here. */
 export function memberOf(ctx: ToolContext, tool: string): MemberPrincipal {
-  if (ctx.principal.kind !== 'member') throw new ToolError('unknown_tool', `Unknown tool: ${tool}`);
+  if (ctx.principal.kind !== 'member') throw unknownTool(tool);
   return ctx.principal;
 }
 

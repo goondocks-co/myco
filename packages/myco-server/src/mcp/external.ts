@@ -33,19 +33,25 @@ export function isExternalCall(tool: ServedTool, op: string): boolean {
   return ops.has(ANY_OP) || ops.has(op);
 }
 
+/** What `project_id` means on the surface: the grant's own Project, named or not. */
+export const EXTERNAL_PROJECT_ID_DESCRIPTION = 'The Project this access key reads. Optional; it may name only that Project.';
+
 /**
  * The definitions the surface lists: the allowlisted names, each definition as
  * the Deployment serves it to a member with its `op` enum narrowed to the ops
- * the surface answers. An agent reads the schema before it calls; a schema that
- * offers `save` and refuses it sends the agent into a refusal it could have
- * avoided. The narrowing is presentation: `callTool` judges every call by the
- * allowlist whatever schema the caller read.
+ * the surface answers and `project_id` described for a key that reads one
+ * Project. An agent reads the schema before it calls; a schema that offers
+ * `save` and refuses it sends the agent into a refusal it could have avoided.
+ * The narrowing is presentation: `callTool` judges every call by the allowlist
+ * whatever schema the caller read.
  */
 export function externalDefinitions(): ToolDefinition[] {
   return TOOL_DEFINITIONS.filter((d) => d.name in EXTERNAL_TOOL_ALLOWLIST).map((d) => {
     const ops = EXTERNAL_TOOL_ALLOWLIST[d.name];
-    const op = d.inputSchema.properties.op;
-    if (ops.has(ANY_OP) || op === undefined || !Array.isArray(op.enum)) return d;
-    return { ...d, inputSchema: { ...d.inputSchema, properties: { ...d.inputSchema.properties, op: { ...op, enum: op.enum.filter((v) => typeof v === 'string' && ops.has(v)) } } } };
+    const properties = { ...d.inputSchema.properties };
+    const op = properties.op;
+    if (!ops.has(ANY_OP) && op !== undefined && Array.isArray(op.enum)) properties.op = { ...op, enum: op.enum.filter((v) => typeof v === 'string' && ops.has(v)) };
+    if (properties.project_id !== undefined) properties.project_id = { ...properties.project_id, description: EXTERNAL_PROJECT_ID_DESCRIPTION };
+    return { ...d, inputSchema: { ...d.inputSchema, properties } };
   });
 }

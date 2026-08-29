@@ -278,6 +278,18 @@ describe('gates', () => {
     expect(grantRoutes()).toEqual(['POST /mcp']);
   });
 
+  it('names the credential class on every failed authentication it records, from a fixed pair of literals', () => {
+    const seen: string[] = [];
+    for (const f of files(SRC)) {
+      for (const call of emitArguments(readFileSync(f, 'utf8'))) {
+        if (!/kind:\s*'auth_failed'/.test(call)) continue;
+        const credential = /credential:\s*('[a-z]+')/.exec(call)?.[1] ?? 'absent';
+        seen.push(credential);
+      }
+    }
+    expect(seen.sort()).toEqual(["'grant'", "'member'"]);
+  });
+
   it('tells an authenticated principal a served path\'s methods only among the routes it could reach: a member is told 405 on a member path and 401 on an owner, auth or enrollment path; a grant is told 405 on the grant route alone', async () => {
     const { env: e, db } = sqliteEnv();
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());

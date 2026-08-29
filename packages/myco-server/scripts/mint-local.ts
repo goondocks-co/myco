@@ -7,23 +7,27 @@ import { sqlCapture } from './sql-capture.ts';
 const USAGE = [
   'usage: bun scripts/mint-local.ts <member_id> <machine_id> [--print-token]',
   '       bun scripts/mint-local.ts --grant <project_id> [--label <text>] [--by <member_id>] [--print-token]',
+  '       (a grant names a Project the Deployment already holds; the emitted SQL is refused otherwise)',
 ].join('\n');
 
 const args = process.argv.slice(2);
 const printToken = args.includes('--print-token');
+/** The value after `flag`, or undefined when the flag is absent; a flag followed by another flag or nothing is a usage error. */
 const valueOf = (flag: string): string | undefined => {
   const at = args.indexOf(flag);
-  return at === -1 ? undefined : args[at + 1];
+  if (at === -1) return undefined;
+  const value = args[at + 1];
+  if (value === undefined || value.startsWith('--')) {
+    console.error(`${flag} needs a value\n${USAGE}`);
+    process.exit(2);
+  }
+  return value;
 };
 const now = Date.now();
 const { db, statements } = sqlCapture();
 
 if (args.includes('--grant')) {
-  const projectId = valueOf('--grant');
-  if (!projectId || projectId.startsWith('--')) {
-    console.error(USAGE);
-    process.exit(2);
-  }
+  const projectId = valueOf('--grant')!;
   const issued = await issueExternalGrant(db, { projectId }, valueOf('--label') ?? null, valueOf('--by') ?? 'operator', now);
   console.log(`-- grant_id ${issued.id} project ${projectId}`);
   for (const statement of statements) console.log(`${statement};`);

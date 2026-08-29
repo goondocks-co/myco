@@ -263,20 +263,19 @@ const HOST_REFUSAL_HINTS: Record<string, string> = {
  *   - `SdkHttpError` — a non-2xx HTTP response the transport never got to
  *     parse as JSON-RPC: the Deployment pipeline's refusals in the `answered`
  *     shape (`no_project`, `body_cap`, `unavailable`), and the local `/mcp`
- *     handler's pre-dispatch refusals (`legacy_vault` 503, `foreign_grove`
- *     403, `unknown_tenancy` 404 — see `mcp/http.ts`). The response body
- *     travels as `data.text`; the same structured `{code, message}` is
- *     recovered from it. A 401 is the credential itself refused —
- *     `unauthorized` — and anything else a generic `tool_call_failed` with
- *     the status.
+ *     handler's pre-dispatch refusals (`legacy_vault` 503 as a JSON-RPC
+ *     error body; `foreign_grove` 403 and `unknown_tenancy` 404 as
+ *     `{error, message}` — see `mcp/http.ts`). The response body travels as
+ *     `data.text`; the structured `{code, message}` is recovered from either
+ *     shape. A 401 is the credential itself refused — `unauthorized` — and
+ *     anything else a generic `tool_call_failed` with the status.
  */
 function classifyMcpError(error: unknown): ToolCliError {
   if (error instanceof ProtocolError) {
     const data = error.data as { code?: unknown } | undefined;
     const code = typeof data?.code === 'string' ? data.code : 'tool_call_failed';
-    const message = error.message.replace(/^MCP error -?\d+: /, '');
     const hint = HOST_REFUSAL_HINTS[code];
-    return { code, message: hint ? `${message} ${hint}` : message };
+    return { code, message: hint ? `${error.message} ${hint}` : error.message };
   }
   if (error instanceof SdkHttpError) {
     const structured = typeof error.data.text === 'string' ? extractStructuredHttpError(error.data.text) : null;
@@ -290,16 +289,18 @@ function classifyMcpError(error: unknown): ToolCliError {
   return { code: 'tool_call_failed', message: (error as Error)?.message ?? String(error) };
 }
 
-/** Recover `{code, message}` from a JSON-RPC error body the transport surfaced
- *  as text for a non-2xx that never reached the JSON-RPC dispatcher. Returns
- *  null when the body isn't the expected `{error:{message, data:{code}}}` shape. */
+/** Recover `{code, message}` from the body the transport surfaced as text for a
+ *  non-2xx that never reached the JSON-RPC dispatcher: a JSON-RPC error body
+ *  `{error:{message, data:{code}}}`, or the router-route twin `{error, message}`.
+ *  Returns null for anything else. */
 function extractStructuredHttpError(text: string): ToolCliError | null {
   const start = text.indexOf('{');
   if (start === -1) return null;
   try {
-    const body = JSON.parse(text.slice(start)) as { error?: { message?: string; data?: { code?: unknown } } };
-    const code = body.error?.data?.code;
-    const msg = body.error?.message;
+    const body = JSON.parse(text.slice(start)) as { error?: string | { message?: string; data?: { code?: unknown } }; message?: string };
+    if (typeof body.error === 'string' && typeof body.message === 'string') return { code: body.error, message: body.message };
+    const code = typeof body.error === 'object' ? body.error?.data?.code : undefined;
+    const msg = typeof body.error === 'object' ? body.error?.message : undefined;
     if (typeof code === 'string' && typeof msg === 'string') return { code, message: msg };
   } catch {
     // Not JSON — fall through to the generic message.
