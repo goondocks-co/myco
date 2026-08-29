@@ -74,6 +74,8 @@ const REFUSALS: Record<string, string> = {
   already_revoked: 'Already removed.',
   member_revoked: 'That member has been removed.',
   bad_request: 'The server could not accept that.',
+  already_archived: 'Already archived.',
+  not_archived: 'Not archived.',
 };
 
 /** What to tell the person when the server refused, in their words. */

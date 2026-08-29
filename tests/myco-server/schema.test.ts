@@ -29,6 +29,8 @@ describe('server schema', () => {
 
   it('gives project_id referential identity and tracks token write volume with a named quota constraint', () => {
     expect(table('projects')).toBeDefined();
+    expect(SCHEMA_DDL).toContain('ALTER TABLE projects ADD COLUMN archived_at INTEGER');
+    expect(SCHEMA_DDL).toContain('ALTER TABLE projects ADD COLUMN archived_by TEXT');
     expect(table('member_tokens')).toMatch(/REFERENCES projects/);
     expect(table('member_tokens')).toMatch(/bytes_written INTEGER NOT NULL DEFAULT 0/);
     expect(table('member_tokens')).toMatch(new RegExp(`CONSTRAINT member_tokens_quota CHECK \\(bytes_written <= ${MEMBER_TOKEN_BYTE_QUOTA}\\)`));

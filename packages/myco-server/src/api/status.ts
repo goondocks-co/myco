@@ -43,13 +43,13 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   let projects: Awaited<ReturnType<typeof listVisibleProjects>> = [];
   try {
     found = await schemaVersion(env.db);
-    projects = await listVisibleProjects(env.db, ctx.member);
+    projects = await listVisibleProjects(env.db, ctx.member, { includeArchived: true });
   } catch {
     return ok({ schema: { expected: SERVER_SCHEMA_VERSION, found: null, matches: false }, capabilities, projects: [] });
   }
   return ok({
     schema: { expected: SERVER_SCHEMA_VERSION, found, matches: found === SERVER_SCHEMA_VERSION },
     capabilities,
-    projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount })),
+    projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
   });
 }

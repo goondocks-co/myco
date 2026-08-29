@@ -51,7 +51,7 @@ export function Status() {
                   <tbody>
                     {data.projects.map((p) => (
                       <tr key={p.projectId} className="border-t border-outline-variant/10">
-                        <td className="py-1.5 font-mono text-xs text-on-surface">{p.projectId}</td>
+                        <td className="py-1.5 font-mono text-xs text-on-surface">{p.projectId}{p.archivedAt != null && <span className="ml-2 font-sans text-[10px] uppercase tracking-wide text-on-surface-variant">archived</span>}</td>
                         <td className="py-1.5 text-on-surface-variant">{formatCount(p.sessionCount, 'session')}</td>
                         <td className="py-1.5 text-on-surface-variant">{formatRelative(p.lastActivityAt)}</td>
                       </tr>

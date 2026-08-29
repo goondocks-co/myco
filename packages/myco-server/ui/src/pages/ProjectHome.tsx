@@ -1,11 +1,13 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { PageContainer } from '../components/ui/page-container';
 import { PageHeader } from '../components/ui/page-header';
 import { PageLoading } from '../components/ui/page-loading';
 import { Panel } from '../components/ui/panel';
 import { StatCard } from '../components/ui/stat-card';
-import { useProjects } from '../hooks/use-projects';
+import { useProjectActions, useProjects } from '../hooks/use-projects';
+import { refusalText } from '../hooks/use-access';
+import { isArchived } from '../lib/api';
 import { useActivity, type FeedItem } from '../hooks/use-sessions';
 import { formatCount, formatDateTime, formatRelative } from '../lib/format';
 import { forgetProject, rememberProject } from '../lib/project-memory';
@@ -28,8 +30,23 @@ export function ProjectHome() {
   return (
     <PageContainer>
       <PageHeader title={project.name} subtitle={project.projectId} />
+      {isArchived(project) && <ArchivedBanner projectId={project.projectId} archivedAt={project.archivedAt} archivedBy={project.archivedBy} />}
       <Activity projectId={project.projectId} />
     </PageContainer>
+  );
+}
+
+/** An archived project says so first: runtimes are refused until it is unarchived, and everything captured stays. */
+function ArchivedBanner({ projectId, archivedAt, archivedBy }: { projectId: string; archivedAt: number | null; archivedBy: string | null }) {
+  const actions = useProjectActions();
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <Panel tone="terra" eyebrow="Archived" title="Runtimes are refused until you unarchive" className="mb-4" data-testid="archived-banner" actions={
+      <button type="button" className="rounded-md bg-primary px-3 py-1.5 font-sans text-sm text-on-primary transition-opacity hover:opacity-90" disabled={actions.unarchive.isPending} onClick={() => { setError(null); actions.unarchive.mutate(projectId, { onError: (err) => setError(refusalText(err)) }); }}>Unarchive</button>
+    }>
+      <p className="font-sans text-sm text-on-surface-variant">Archived {formatRelative(archivedAt)}{archivedBy ? ` by ${archivedBy}` : ''}. Everything captured before stays readable.</p>
+      {error !== null && <p className="mt-2 font-sans text-xs text-tertiary">{error}</p>}
+    </Panel>
   );
 }
 

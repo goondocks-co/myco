@@ -65,6 +65,10 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   digest_mismatch: (r) => r.fetch(blobPost(r.t1.token, 'c'.repeat(64), bytes)),
   empty_body: async (r) => r.fetch(blobPost(r.t1.token, await sha256HexOf(new Uint8Array(0)), new Uint8Array(0))),
   blob_absent: (r) => r.post(r.t1.token, { payload: { promptId: uuid(2), blob: 'd'.repeat(64), origin: 'user' } }),
+  project_archived: (r) => {
+    r.e.sqlite.query(`UPDATE projects SET archived_at = 1, archived_by = 'mem_machine_1' WHERE project_id = 'proj_1'`).run();
+    return r.post(r.t1.token, {});
+  },
   offset_gap: async (r) => { const t = await r.transcript(); return r.segment(1, t.a.byteLength + 5, t.kb, t.b.byteLength); },
   offset_overlap: async (r) => { const t = await r.transcript(); return r.segment(2, 0, t.kb, t.b.byteLength); },
   blob_length_mismatch: async (r) => { const t = await r.transcript(); return r.segment(3, t.a.byteLength, t.kb, t.b.byteLength + 1); },

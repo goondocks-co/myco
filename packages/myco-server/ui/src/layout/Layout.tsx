@@ -3,7 +3,7 @@ import { NavLink, Outlet, useNavigate, useParams } from 'react-router-dom';
 import { PageLoading } from '../components/ui/page-loading';
 import { useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
-import { SignedOutError } from '../lib/api';
+import { isArchived, SignedOutError } from '../lib/api';
 import { cn } from '../lib/cn';
 import { rememberProject } from '../lib/project-memory';
 import { NotAMember } from '../pages/NotAMember';
@@ -51,8 +51,10 @@ export function Layout() {
   if (me.data && me.data.member === null) return <NotAMember login={me.data.login} />;
   if (projects.error instanceof SignedOutError) return <SignedOut />;
 
-  const list = projects.data?.projects ?? [];
-  const current = params.projectId ? list.find((p) => p.projectId === params.projectId) : undefined;
+  const all = projects.data?.projects ?? [];
+  const current = params.projectId ? all.find((p) => p.projectId === params.projectId) : undefined;
+  // Live projects, plus the archived one the page is on, so it stays navigable.
+  const list = all.filter((p) => !isArchived(p) || p.projectId === current?.projectId);
 
   return (
     <div className="flex min-h-screen bg-background text-foreground">

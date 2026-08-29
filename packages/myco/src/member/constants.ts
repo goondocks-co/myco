@@ -29,6 +29,7 @@ export const MEMBER_CODES = [
   'unknown_kind', 'unknown_field', 'id_grammar', 'clock_skew', 'event_id_conflict', 'projection_conflict',
   'refresh_too_early', 'lineage_expired',
   'enrollment_unknown', 'enrollment_used', 'enrollment_expired', 'enrollment_revoked', 'identity_claimed',
+  'project_archived',
   'unavailable',
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];

@@ -4,7 +4,7 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { clampLimit, decodeCursor, encodeCursor, page, DEFAULT_PAGE, MAX_PAGE } from '@myco-server-worker/read/scope.js';
 
-import { getSession, listProjects, listSessions, projectStats } from '@myco-server-worker/read/sessions.js';
+import { archiveProject, getSession, listProjects, listSessions, projectStats, unarchiveProject } from '@myco-server-worker/read/sessions.js';
 
 function seedSessions(sqlite: import('bun:sqlite').Database) {
   sqlite.run(`INSERT OR REPLACE INTO projects (project_id, name, created_at) VALUES ('proj_1','One',1), ('proj_2','Two',2)`);
@@ -81,9 +81,23 @@ describe('read/sessions', () => {
     seedSessions(sqlite);
     const rows = await listProjects(db);
     expect(rows).toEqual([
-      { projectId: 'proj_2', name: 'Two', createdAt: 2, sessionCount: 1, lastActivityAt: 99 },
-      { projectId: 'proj_1', name: 'One', createdAt: 1, sessionCount: 3, lastActivityAt: 30 },
+      { projectId: 'proj_2', name: 'Two', createdAt: 2, sessionCount: 1, lastActivityAt: 99, archivedAt: null, archivedBy: null },
+      { projectId: 'proj_1', name: 'One', createdAt: 1, sessionCount: 3, lastActivityAt: 30, archivedAt: null, archivedBy: null },
     ]);
+  });
+
+  it('hides an archived project by default, lists it on request with who archived it, and restores it', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedSessions(sqlite);
+    expect(await archiveProject(db, 'proj_1', 'mem_a', 50)).toBe('archived');
+    expect(await archiveProject(db, 'proj_1', 'mem_b', 51)).toBe('already_archived');
+    expect(await archiveProject(db, 'absent', 'mem_a', 52)).toBe('absent');
+    expect((await listProjects(db)).map((p) => p.projectId)).toEqual(['proj_2']);
+    const all = await listProjects(db, { includeArchived: true });
+    expect(all.map((p) => [p.projectId, p.archivedAt, p.archivedBy])).toEqual([['proj_2', null, null], ['proj_1', 50, 'mem_a']]);
+    expect(await unarchiveProject(db, 'proj_2')).toBe('not_archived');
+    expect(await unarchiveProject(db, 'proj_1')).toBe('restored');
+    expect((await listProjects(db)).map((p) => p.projectId)).toEqual(['proj_2', 'proj_1']);
   });
 });
 
@@ -186,7 +200,7 @@ describe('D1 adapter', () => {
 
 describe('schema v4', () => {
   it('adds a recency index on sessions and stamps the build version', () => {
-    expect(SERVER_SCHEMA_VERSION).toBe(9);
+    expect(SERVER_SCHEMA_VERSION).toBe(10);
     const v4 = SCHEMA_STEPS.find((s) => s.version === 4);
     expect(v4?.statements.some((s) => s.includes('idx_sessions_recent'))).toBe(true);
   });
@@ -206,7 +220,7 @@ describe('read/meta', () => {
   it('reports the schema version the database carries', async () => {
     const { db } = sqliteEnv();
     const { schemaVersion } = await import('@myco-server-worker/read/meta.js');
-    expect(await schemaVersion(db)).toBe(9);
+    expect(await schemaVersion(db)).toBe(10);
   });
 });
 
