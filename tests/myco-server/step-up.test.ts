@@ -107,7 +107,7 @@ describe('the settings authorizer', () => {
     // Single use: the same key does not authorise a second endpoint change.
     expect(await w.setLeaf('embedding.base_url', 'https://also.example', 'mem_1', NOW))
       .toMatchObject({ applied: false, refusal: { reason: 'unauthorized' } });
-    expect(await w.leaves()).toEqual({ 'agent.provider.base_url': 'https://ok.example' });
+    expect((await w.leaves())['agent.provider.base_url']?.value).toBe('https://ok.example');
   });
 
   it('gates a redirect hidden inside a document leaf, not only the leaves named for one', async () => {

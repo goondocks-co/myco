@@ -72,7 +72,9 @@ export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise
     leaves: DEPLOYMENT_LEAVES.map((leaf) => ({
       leaf,
       configured: leaf in stored,
-      value: stored[leaf] ?? null,
+      value: stored[leaf]?.value ?? null,
+      updatedAt: stored[leaf]?.updatedAt ?? null,
+      updatedBy: stored[leaf]?.updatedBy ?? null,
       requiresStepUp: requiresStepUp(leaf),
     })),
   });

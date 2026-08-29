@@ -228,3 +228,34 @@ npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
 
 Deleting the rows is not one of the choices: `events.token_id` references them,
 and the owner API's activity read resolves a token id through this table.
+
+# Break-glass: minting a step-up key
+
+Four operations sit outside the flat member model and need a step-up key beyond membership: storing or removing a provider credential, changing a provider or embedding endpoint (`agent.provider.type`, `agent.provider.base_url`, `embedding.base_url`, or any value that carries an endpoint), Deployment lifecycle, enrollment-root rotation, and Project Reassignment. The dashboard asks for the key at the change and sends it once; a key works exactly once and expires on its TTL.
+
+Minting is break-glass by design — whoever controls the Deployment's store mints one. `scripts/mint-step-up.ts` renders the SQL and never connects; the raw key goes to stderr only with `--print-key`.
+
+```bash
+cd packages/myco-server
+# Render the insert for a provider-credential change, valid ten minutes. Prints the digest, never the key.
+bun scripts/mint-step-up.ts provider_credential 10
+
+# Print the key to stderr as well, once.
+bun scripts/mint-step-up.ts provider_credential 10 --print-key 2>/dev/null
+```
+
+Apply it on the hosted target:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(bun scripts/mint-step-up.ts provider_credential 10)"
+```
+
+Self-hosted, apply the same statement against the SQLite file on the mounted volume. Then paste the key into the dashboard's step-up prompt. Purposes: `provider_credential` (credentials and endpoint settings), `deployment_lifecycle`, `enrollment_root_rotation`, `project_reassignment`.
+
+Revoke an unused key you no longer want outstanding:
+
+```sql
+UPDATE step_up_authorities SET revoked_at = <now_ms> WHERE id = '<ID>' AND revoked_at IS NULL AND used_at IS NULL;
+```
+
+Mint one per change and let it expire — do not keep a standing key.
