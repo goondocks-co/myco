@@ -40,9 +40,6 @@ export const MEMBER_ID_PREFIX = 'mem_';
 /** The header a caller presents a step-up authority in, for the operations flat membership does not cover. */
 export const STEP_UP_HEADER = 'x-myco-step-up';
 
-/** The prefix marking an actor that is the Deployment's owner acting through the dashboard rather than a member. It keeps `member_credentials.revoked_by` readable: member ids carry `mem_`, and a bare GitHub id in the same column is indistinguishable from one. */
-export const OWNER_ACTOR_PREFIX = 'owner:';
-
 /**
  * How long after a successor's first use a request on its predecessor is still
  * attributable to a rotation race rather than to a second holder.

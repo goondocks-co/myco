@@ -45,8 +45,8 @@ describe('static assets beside the self-hosted server', () => {
     const handle = withStaticAssets(build(), next);
 
     const deep = await handle(new Request('https://s/p/proj_1/sessions'));
-    expect({ status: deep.status, type: deep.headers.get('content-type'), cache: deep.headers.get('cache-control') })
-      .toEqual({ status: 200, type: 'text/html; charset=utf-8', cache: 'no-cache' });
+    expect({ status: deep.status, type: deep.headers.get('content-type'), cache: deep.headers.get('cache-control'), frame: deep.headers.get('x-frame-options'), csp: deep.headers.get('content-security-policy') })
+      .toEqual({ status: 200, type: 'text/html; charset=utf-8', cache: 'no-cache', frame: 'DENY', csp: "frame-ancestors 'none'" });
     expect(await deep.text()).toContain('id="root"');
 
     const asset = await handle(new Request('https://s/assets/app.js'));

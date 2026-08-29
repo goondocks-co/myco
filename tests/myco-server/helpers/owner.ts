@@ -2,15 +2,18 @@ import { setCookie, signSession } from '@myco-server-worker/auth/owner/cookie.js
 
 /** A session secret at the enforced minimum length, so the fixture exercises the real floor. */
 export const SESSION_SECRET = 'test-session-secret-of-sufficient-length';
-export const OWNER_ENV = { OWNER_GITHUB_ID: '583231', GITHUB_CLIENT_ID: 'cid', GITHUB_CLIENT_SECRET: 'csecret', SESSION_SECRET };
+export const OWNER_ENV = { GITHUB_CLIENT_ID: 'cid', GITHUB_CLIENT_SECRET: 'csecret', SESSION_SECRET };
 
-export async function ownerCookie(now = Date.now()): Promise<string> {
-  const value = await signSession(SESSION_SECRET, { sub: '583231', iat: now, exp: now + 60_000 });
+/** The GitHub account the seeded member `mem_machine_1` is linked to (`helpers/d1.ts`). */
+export const LINKED_SUB = '583231';
+
+export async function ownerCookie(now = Date.now(), sub = LINKED_SUB): Promise<string> {
+  const value = await signSession(SESSION_SECRET, { sub, login: 'octocat', iat: now, exp: now + 60_000 });
   return setCookie(value, 60).split(';')[0];
 }
 
-/** The owner session every owner-route test authenticates as. */
-export const PRINCIPAL = { sub: '583231', iat: 0, exp: 9_999_999_999_999 };
+/** The member every owner-route test acts as: the one the seeded account is linked to. */
+export const PRINCIPAL = { id: 'mem_machine_1', label: 'machine_1' };
 
 /** An authenticated owner GET. */
 export const asOwner = async (path: string): Promise<Request> =>

@@ -79,7 +79,7 @@ const MAX_SECRET_CHARS = 4096;
 async function spentForCredential(env: ServerEnv, ctx: OwnerContext): Promise<boolean> {
   const presented = ctx.request.headers.get(STEP_UP_HEADER);
   if (presented === null) return false;
-  return (await spendStepUpAuthority(env.db, presented, 'provider_credential', ctx.session.sub, ctx.now)).ok;
+  return (await spendStepUpAuthority(env.db, presented, 'provider_credential', ctx.member.id, ctx.now)).ok;
 }
 
 /** Every Deployment leaf this server accepts, with whatever is stored for it. A leaf with no row is reported absent rather than defaulted — the reader layers its own defaults. */
@@ -100,26 +100,26 @@ export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promi
   const body = await jsonObject(ctx);
   if (body === null || !('value' in body)) return malformed(ctx.params.leaf, 'body must be a JSON object carrying a value');
 
-  const result = await writerFor(env, ctx).setLeaf(ctx.params.leaf, body.value, ctx.session.sub, ctx.now);
+  const result = await writerFor(env, ctx).setLeaf(ctx.params.leaf, body.value, ctx.member.id, ctx.now);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
 }
 
 /** What this Project is admitted to. Every capability is reported, so an absent row reads as `false` rather than as missing. */
 export async function handleProjectCapabilities(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   return ok({ capabilities: await settingsWriter(env.db).capabilities(ctx.params.projectId) });
 }
 
 /** Admit or withdraw one capability for one Project. */
 export async function handleSetProjectCapability(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   const body = await jsonObject(ctx);
   if (body === null || typeof body.enabled !== 'boolean') return malformed(`project.${ctx.params.capability}`, 'body must carry a boolean `enabled`');
 
   const result = await writerFor(env, ctx)
-    .setCapability(ctx.params.projectId, ctx.params.capability, body.enabled, ctx.session.sub, ctx.now);
+    .setCapability(ctx.params.projectId, ctx.params.capability, body.enabled, ctx.member.id, ctx.now);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
 }
 
@@ -154,7 +154,7 @@ export async function handleSetSecret(env: ServerEnv, ctx: OwnerContext): Promis
   if (body.value.length > MAX_SECRET_CHARS) return malformed(slot, `value must be at most ${MAX_SECRET_CHARS} characters`);
   if (!(await spentForCredential(env, ctx))) return refused({ reason: 'unauthorized', leaf: `secret.${ctx.params.name}` });
 
-  await deploymentSecretStore(env.db, env.wrappingKey).put(ctx.params.name, body.value, ctx.session.sub, ctx.now);
+  await deploymentSecretStore(env.db, env.wrappingKey).put(ctx.params.name, body.value, ctx.member.id, ctx.now);
   // The answer is the description, so a caller that just wrote a value learns only
   // what every other reader may learn about it.
   const description: SecretDescription = await deploymentSecretStore(env.db, env.wrappingKey).describe(ctx.params.name);
@@ -171,7 +171,7 @@ export async function handleSetSecret(env: ServerEnv, ctx: OwnerContext): Promis
 export async function handleDeleteSecret(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (!(SECRET_SLOTS as readonly string[]).includes(ctx.params.name)) return notFound();
   if (!(await spentForCredential(env, ctx))) return refused({ reason: 'unauthorized', leaf: `secret.${ctx.params.name}` });
-  return ok(await deploymentSecretStore(env.db, env.wrappingKey).delete(ctx.params.name, ctx.session.sub, ctx.now));
+  return ok(await deploymentSecretStore(env.db, env.wrappingKey).delete(ctx.params.name, ctx.member.id, ctx.now));
 }
 
 export { SECRET_SLOTS, PROJECT_CAPABILITIES, type ProjectCapability };

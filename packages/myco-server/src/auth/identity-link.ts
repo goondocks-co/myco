@@ -18,8 +18,8 @@ import { emit } from '../telemetry.js';
 
 /** Bytes of entropy in a link key. 32 = 256 bits. */
 export const IDENTITY_LINK_KEY_BYTES = 32;
-/** Lifetime of a freshly minted authority: the member is at the keyboard, so minutes suffice. */
-export const IDENTITY_LINK_TTL_MS = 10 * 60 * 1000;
+/** Lifetime of a freshly minted authority: the member is at the keyboard, and a first sign-in with a second factor fits inside it. */
+export const IDENTITY_LINK_TTL_MS = 15 * 60 * 1000;
 export const IDENTITY_LINK_ID_PREFIX = 'il_';
 const IDENTITY_LINK_ID_BYTES = 12;
 /** How long a finished authority stays before the spend path reclaims it. */
@@ -115,14 +115,34 @@ export async function spendIdentityLinkAuthority(
   if (member === null || member.revoked_at !== null) return { ok: false, reason: 'member_revoked' };
   if (member.github_id !== null && member.github_id !== githubId) return { ok: false, reason: 'member_linked' };
 
-  const bind = await db
-    .prepare(`UPDATE members SET github_id = ? WHERE id = ? AND revoked_at IS NULL AND (github_id IS NULL OR github_id = ?)`)
-    .bind(githubId, memberId, githubId)
-    .run();
-  if (bind.meta.changes !== 1) return { ok: false, reason: 'member_linked' };
+  let changes: number;
+  try {
+    const bind = await db
+      .prepare(`UPDATE members SET github_id = ? WHERE id = ? AND revoked_at IS NULL AND (github_id IS NULL OR github_id = ?)`)
+      .bind(githubId, memberId, githubId)
+      .run();
+    changes = bind.meta.changes;
+  } catch (err) {
+    // A bind racing another for the same account meets the unique index; the account is then another member's.
+    if (/UNIQUE constraint failed: members\.github_id/.test(err instanceof Error ? err.message : String(err))) return { ok: false, reason: 'identity_taken' };
+    throw err;
+  }
+  if (changes !== 1) return { ok: false, reason: 'member_linked' };
 
   emit({ kind: 'identity_linked', memberId, sub: githubId });
   return { ok: true, member: { id: member.id, label: member.label } };
+}
+
+/** The member a live key names, for the page that asks the account holder to confirm. Spends nothing. */
+export async function previewIdentityLinkAuthority(db: RelationalStore, presentedKey: string, nowMs: number): Promise<DashboardMember | null> {
+  if (!IDENTITY_LINK_KEY_PATTERN.test(presentedKey)) return null;
+  const row = await db
+    .prepare(`SELECT m.id, m.label, m.revoked_at FROM identity_link_authorities a JOIN members m ON m.id = a.member_id
+               WHERE a.key_hash = ? AND a.used_at IS NULL AND a.revoked_at IS NULL AND a.expires_at > ?`)
+    .bind(await sha256Hex(presentedKey), nowMs)
+    .first<{ id: string; label: string | null; revoked_at: number | null }>();
+  if (row === null || row.revoked_at !== null) return null;
+  return { id: row.id, label: row.label };
 }
 
 /** The unrevoked member this GitHub account is linked to, or null. Read on every dashboard request. */

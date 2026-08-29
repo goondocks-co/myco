@@ -1,5 +1,7 @@
 import type { ServerEnv } from './core/adapters.js';
-import type { AuthContext, OwnerContext, RouteContext, StreamContext } from './context.js';
+import type { AuthContext, OwnerContext, RouteContext, SessionContext, StreamContext } from './context.js';
+import { handleLink, handleMe } from './api/identity.js';
+import { handleLinkGithub } from './auth/members.js';
 import { clearCookie } from './auth/owner/cookie.js';
 import { handleCallback, handleLogin } from './auth/owner/routes.js';
 import { handleCreateProject, handleProjects } from './api/projects.js';
@@ -37,6 +39,8 @@ export type StreamHandler = (env: ServerEnv, request: Request, ctx: StreamContex
 export type AuthHandler = (request: Request, ctx: AuthContext) => Promise<Response>;
 /** Owner handlers run only after a valid owner session; they receive the bindings and the resolved session. */
 export type OwnerHandler = (env: ServerEnv, ctx: OwnerContext) => Promise<Response>;
+/** Session handlers run after a valid session whether or not its account is a member; exactly the routes that serve a signed-in non-member carry them. */
+export type SessionHandler = (env: ServerEnv, ctx: SessionContext) => Promise<Response>;
 /** Enroll handlers present an enrollment authority rather than a credential, so they reach storage without an authenticated member. They receive the unread request and consume its body themselves, within the bound the pipeline enforces. */
 export type EnrollHandler = (env: ServerEnv, request: Request, now: number) => Promise<Response>;
 
@@ -50,7 +54,8 @@ export type Route =
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; quotaPrecheck?: boolean; maxBodyBytes: number; handler: StreamHandler }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
   | { method: string; path: string; auth: 'enroll'; handler: EnrollHandler }
-  | { method: string; path: string; pattern?: RegExp; auth: 'owner'; handler: OwnerHandler };
+  | { method: string; path: string; pattern?: RegExp; auth: 'owner'; membership?: never; handler: OwnerHandler }
+  | { method: string; path: string; pattern?: RegExp; auth: 'owner'; membership: 'optional'; handler: SessionHandler };
 
 async function health(): Promise<Response> {
   return Response.json({ ok: true });
@@ -81,6 +86,9 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/runs/state/read', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleReadState },
   { method: 'POST', path: '/runs/state/write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteState },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
+  { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleLinkGithub },
+  { method: 'GET', path: '/auth/me', auth: 'owner', membership: 'optional', handler: handleMe },
+  { method: 'POST', path: '/auth/link', auth: 'owner', membership: 'optional', handler: handleLink },
   { method: 'GET', path: '/api/status', auth: 'owner', handler: handleStatus },
   { method: 'GET', path: '/api/projects', auth: 'owner', handler: handleProjects },
   { method: 'POST', path: '/api/projects', auth: 'owner', handler: handleCreateProject },

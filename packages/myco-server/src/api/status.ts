@@ -43,7 +43,7 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   let projects: Awaited<ReturnType<typeof listVisibleProjects>> = [];
   try {
     found = await schemaVersion(env.db);
-    projects = await listVisibleProjects(env.db, ctx.session);
+    projects = await listVisibleProjects(env.db, ctx.member);
   } catch {
     return ok({ schema: { expected: SERVER_SCHEMA_VERSION, found: null, matches: false }, capabilities, projects: [] });
   }

@@ -44,7 +44,7 @@ export function paging(url: URL): { limit?: number; cursor?: string } | Response
 }
 
 export async function handleProjectSessions(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
@@ -54,7 +54,7 @@ export async function handleProjectSessions(env: ServerEnv, ctx: OwnerContext): 
 export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();
-  const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   const session = await getSession(env.db, scope, sessionId);
   if (session === null) return notFound();
@@ -66,7 +66,7 @@ export async function handleSessionChildren(env: ServerEnv, ctx: OwnerContext): 
   if (sessionId === null) return notFound();
   const query = CHILDREN[ctx.params.child as keyof typeof CHILDREN];
   if (query === undefined) return notFound();
-  const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
   const page = paging(ctx.url);
@@ -78,7 +78,7 @@ export async function handleSessionChildren(env: ServerEnv, ctx: OwnerContext): 
 export async function handleTranscript(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();
-  const scope = await resolveProjectScope(env.db, ctx.session, ctx.params.projectId);
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   const transcript = await getTranscript(env.db, scope, sessionId);
   if (transcript === null) return notFound();

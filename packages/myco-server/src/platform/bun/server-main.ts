@@ -27,7 +27,6 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { serve } from '../../entry/bun.js';
-import { renderMigrationFile } from '../../db/migrate.js';
 import { SCHEMA_STEPS } from '../../db/schema.js';
 
 class StartupError extends Error {}
@@ -97,7 +96,17 @@ export function migrateOnly(databasePath: string): number {
     let applied = 0;
     for (const step of SCHEMA_STEPS) {
       if (step.version <= stamped) continue;
-      sqlite.exec(renderMigrationFile(step));
+      // Statement by statement, so a step that failed part-way re-runs: every
+      // statement but ADD COLUMN is written to re-apply, and a column that is
+      // already there is the one shape SQLite cannot express as IF NOT EXISTS.
+      for (const statement of step.statements) {
+        try {
+          sqlite.exec(statement);
+        } catch (err) {
+          const duplicateColumn = /^ALTER TABLE \w+ ADD COLUMN/.test(statement) && /duplicate column name/i.test((err as Error).message);
+          if (!duplicateColumn) throw err;
+        }
+      }
       applied += 1;
     }
     return applied;
@@ -159,7 +168,6 @@ export async function main(): Promise<void> {
     SESSION_SECRET: secretOf('SESSION_SECRET', false),
     GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET: secretOf('GITHUB_CLIENT_SECRET', false),
-    OWNER_GITHUB_ID: process.env.OWNER_GITHUB_ID,
   });
 
   // SIGTERM is the orchestrator asking for a drain, and the drain is what is

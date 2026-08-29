@@ -1,6 +1,7 @@
 import type { RuntimeClaims } from './auth/tokens.js';
 import type { OwnerConfig } from './auth/owner/config.js';
 import type { OwnerSession } from './auth/owner/cookie.js';
+import type { DashboardMember } from './auth/identity-link.js';
 
 /** Context for a credential-free auth route: the owner configuration and outbound fetch, and deliberately no bindings. */
 export interface AuthContext {
@@ -11,15 +12,20 @@ export interface AuthContext {
   origin: string;
 }
 
-/** Context for an owner route: the verified session and the request, after the owner has been authenticated. */
+/** Context for an owner route: the verified session, the member its account is linked to, and the request. */
 export interface OwnerContext {
   request: Request;
   session: OwnerSession;
+  /** The member the session's GitHub account is linked to. Every owner route runs for a member. */
+  member: DashboardMember;
   config: OwnerConfig;
   params: Record<string, string>;
   url: URL;
   now: number;
 }
+
+/** Context for the two routes that serve a signed-in account ahead of membership: `member` is null for an account no member is linked to. */
+export type SessionContext = Omit<OwnerContext, 'member'> & { member: DashboardMember | null };
 
 /** Context for a json route: the pipeline has read the body. `machineId` is the token's; the pipeline refuses a token without one before any handler runs. The token's lifetime and lineage travel with it for the refresh route. */
 export interface RouteContext {

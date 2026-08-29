@@ -568,6 +568,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/state/write', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/state/write', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ agentId: 'agent_gate', key: `k_${runSeq++}`, value: 'v' }) }),
       },
+      'POST /members/link-github': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+      },
     };
     expect(ROUTES.filter((r) => r.auth === 'member').map((r) => `${r.method} ${r.path}`).sort()).toEqual(Object.keys(FIXTURES).sort());
     const machineless: Record<string, unknown>[] = [];
@@ -844,6 +849,30 @@ describe('gates', () => {
     expect(free).toEqual(['GET /auth/callback', 'GET /auth/login', 'GET /health']);
   });
 
+  it('serves a signed-in account ahead of membership on exactly the two routes that link it, and every other owner route runs for a member', () => {
+    const optional = ROUTES.filter((r) => r.auth === 'owner' && r.membership === 'optional').map((r) => `${r.method} ${r.path}`).sort();
+    expect(optional).toEqual(['GET /auth/me', 'POST /auth/link']);
+    const context = readFileSync(join(SRC, 'context.ts'), 'utf8');
+    expect(context).toMatch(/export interface OwnerContext \{[^}]*\n  member: DashboardMember;\n/);
+    const importers = files(SRC).filter((f) => /\bSessionContext\b/.test(readFileSync(f, 'utf8'))).map((f) => f.slice(SRC.length + 1)).sort();
+    expect(importers).toEqual(['api/identity.ts', 'context.ts', 'routes.ts']);
+  });
+
+  it('compares no session to a configured owner: who may enter is a membership question', () => {
+    for (const f of [...files(SRC), ...files(join(WORKER, 'scripts'))]) {
+      expect({ file: f, named: /OWNER_GITHUB_ID|ownerGithubId/.test(readFileSync(f, 'utf8')) }).toEqual({ file: f, named: false });
+    }
+    expect(readFileSync(join(WORKER, 'wrangler.toml'), 'utf8')).not.toMatch(/OWNER_GITHUB_ID/);
+  });
+
+  it('never lets the shell be framed, on either target', () => {
+    const headers = readFileSync(join(WORKER, 'ui', 'public', '_headers'), 'utf8');
+    expect(headers).toMatch(/^\/\*\n  X-Frame-Options: DENY\n  Content-Security-Policy: frame-ancestors 'none'\n/);
+    const bun = readFileSync(join(SRC, 'platform', 'bun', 'static.ts'), 'utf8');
+    expect(bun).toContain("'x-frame-options': 'DENY'");
+    expect(bun).toContain("frame-ancestors 'none'");
+  });
+
   it('gives no credential-free route access to the bindings by type', () => {
     const source = readFileSync(join(SRC, 'routes.ts'), 'utf8');
     expect(source).toContain('export type PublicHandler = (request: Request) => Promise<Response>');
@@ -902,6 +931,7 @@ describe('gates', () => {
       'enroll POST /members/join',
       'member POST /blobs/{sha256}',
       'member POST /events',
+      'member POST /members/link-github',
       'member POST /runs/admission',
       'member POST /runs/claim',
       'member POST /runs/cortex-instructions',
@@ -939,9 +969,11 @@ describe('gates', () => {
       'owner GET /api/secrets',
       'owner GET /api/settings',
       'owner GET /api/status',
+      'owner GET /auth/me',
       'owner POST /api/projects',
       'owner POST /api/projects/{projectId}/tokens',
       'owner POST /api/projects/{projectId}/tokens/{tokenId}/revoke',
+      'owner POST /auth/link',
       'owner POST /auth/logout',
       'owner PUT /api/agents/{agentId}',
       'owner PUT /api/projects/{projectId}/capabilities/{capability}',
