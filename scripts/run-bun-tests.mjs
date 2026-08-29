@@ -1365,6 +1365,7 @@ function stripDuplicateReact() {
   const candidates = [
     path.join(REPO, 'packages/myco/ui/node_modules'),
     path.join(REPO, 'packages/myco-team/ui/node_modules'),
+    path.join(REPO, 'packages/myco-server/ui/node_modules'),
   ];
   for (const base of candidates) {
     for (const pkg of [

@@ -83,3 +83,16 @@ Rate limits: `SOURCE_LIMIT` is charged only when a request ends without a member
 Tokens are compared by SHA-256 digest through a unique index; the digest is never a caller-steerable value. Telemetry carries classifiers, server-issued identifiers, and a digest prefix of the source identity — never a request body, path, address, or refusal text.
 
 Member tokens: `npm run token:mint -- <member_id> <machine_id> [--print-token]` (a token without a machine identity is refused every write) prints the `INSERT OR IGNORE` for `members` and the `INSERT` for `member_credentials` on stdout — the row roots its own lineage (`lineage_root = id`, `lineage_started_at = now`, no predecessor); the raw token is printed to stderr only with `--print-token`. `npm run token:revoke -- <token_id>` prints the matching `UPDATE`; `npm run token:revoke -- <any_id_in_the_chain> --lineage` prints the one `UPDATE` that revokes every live token of that lineage — predecessors and successors alike — which is the revocation for a stolen token, since a single-token revoke leaves its refreshed successors live. The scripts render the statements `issueMemberToken` / `revokeMemberToken` / `revokeMemberLineage` execute; see `BREAK-GLASS.md` for the emergency procedure.
+
+## Dashboard
+
+`ui/` is the server dashboard: a nested Vite + React package (own `package-lock.json`, installed on demand by `npm run build:ui` / `npm run check:ui`) building to `ui/dist`. Project scope rides the URL (`/p/<projectId>/…`); Deployment-wide pages are labelled server-wide. Appearance (theme, mode, font, density) is each viewer's own, held in the browser.
+
+Serving is the platform's own shape on each target, with one rule shared between them — every path in `ownedPathPatterns()` (`src/routes.ts`: the live route prefixes and the retired 1.4 prefixes) is the server's; everything else is the shell:
+
+- **Cloudflare** — Workers Static Assets, assets-first. `wrangler.toml`'s `[assets]` block names `ui/dist`, `single-page-application` not-found handling, and `run_worker_first` held equal to `ownedPathPatterns()` by `tests/myco-server/gates.test.ts`. No `ASSETS` binding: the Worker never fetches an asset itself. A GET to any unowned path answers the shell without a credential; any other method there answers 405 from the asset layer. The gitignored `wrangler.deploy.toml` carries the same block.
+- **Self-hosted** — `platform/bun/static.ts` wraps the request handler when `MYCO_UI_DIR` names a build (the image sets `/app/ui`; the Dockerfile builds the UI in its own stage). Owned paths reach the server; other GET/HEAD requests answer a file or `index.html`; other methods answer 405. Static serving sits inside the loopback Host allowlist and ahead of source identity, so an asset request is never metered. A build directory without `index.html` refuses to start.
+
+Sign-in is the owner session from `/auth/login` until #1009 lands member sign-in; on Compose, `GITHUB_CLIENT_ID`/`OWNER_GITHUB_ID` are not set, so the shell renders its signed-out state and the sign-in link answers 401 there.
+
+Local development: `cd ui && npm run dev` proxies `/api`, `/auth` and `/health` to `http://127.0.0.1:8787` (override with `MYCO_SERVER_URL`), rewriting the Host to the loopback literal the self-hosted server admits.

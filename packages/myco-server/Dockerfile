@@ -24,6 +24,16 @@ RUN bun build src/platform/bun/server-main.ts \
       --target=bun \
       --outfile=/build/server.js
 
+# --- dashboard -------------------------------------------------------------
+# Built once, on the build host's own architecture: the output is static files
+# and is identical for every target platform.
+FROM --platform=$BUILDPLATFORM node:22-slim AS ui
+WORKDIR /build/ui
+COPY packages/myco-server/ui/package.json packages/myco-server/ui/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY packages/myco-server/ui ./
+RUN npx vite build
+
 # --- runtime ---------------------------------------------------------------
 FROM oven/bun:${BUN_VERSION}-slim AS runtime
 
@@ -39,6 +49,7 @@ RUN groupadd --system --gid 10001 myco \
 
 WORKDIR /app
 COPY --from=build /build/server.js ./server.js
+COPY --from=ui /build/ui/dist ./ui
 COPY packages/myco-server/migrations ./migrations
 COPY packages/myco-server/docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh
@@ -52,6 +63,7 @@ USER myco
 
 ENV MYCO_DATABASE=/data/myco.sqlite \
     MYCO_BLOB_DIR=/data/blobs \
+    MYCO_UI_DIR=/app/ui \
     MYCO_PORT=8787 \
     MYCO_TRANSPORT=loopback
 

@@ -14,6 +14,7 @@ import { createServer } from '../pipeline.js';
 import { assertSchemaCurrent, openDatabase } from '../platform/bun/database.js';
 import { sweepPartialObjects } from '../platform/bun/blobs.js';
 import { serverEnvFromBunConfig, type BunServerConfig } from '../platform/bun/env.js';
+import { withStaticAssets } from '../platform/bun/static.js';
 import { socketSourceOf, trustedProxySourceOf, type AddressableServer, type TrustedProxyConfig } from '../platform/bun/source.js';
 import {
   LOOPBACK_V4,
@@ -58,6 +59,8 @@ export interface BunServerOptions extends Omit<BunServerConfig, 'sqlite'>, Trust
    * publishing for the same restriction.
    */
   bind?: 'loopback' | 'all';
+  /** Directory holding the dashboard's static build. Absent, the deployment serves no dashboard and answers every unowned path as the server does. */
+  uiDir?: string;
 }
 
 export interface BunHandler {
@@ -81,8 +84,9 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
   let bound: AddressableServer | null = null;
   const sourceOf = options.sourceFrom === 'socket' ? socketSourceOf(() => bound) : trustedProxySourceOf(options);
   const server = createServer({ now: () => Date.now(), sourceOf, fetchImpl: fetch });
+  const core = (request: Request) => server.handleRequest(request, env);
   return {
-    fetch: (request: Request) => server.handleRequest(request, env),
+    fetch: options.uiDir === undefined ? core : withStaticAssets(options.uiDir, core),
     bind: (listening: AddressableServer) => { bound = listening; },
     close: () => { sqlite.close(); },
   };

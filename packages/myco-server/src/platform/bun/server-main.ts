@@ -23,7 +23,8 @@
  * process. A `*_FILE` variable names the file; the plain variable remains for
  * a non-Compose operator.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { serve } from '../../entry/bun.js';
 import { renderMigrationFile } from '../../db/migrate.js';
@@ -138,8 +139,15 @@ export async function main(): Promise<void> {
     throw new StartupError(`MYCO_BIND must be 'loopback' or 'all', and is ${JSON.stringify(bind)}`);
   }
 
+  // A dashboard directory is optional; one that is named must hold the shell.
+  const uiDir = process.env.MYCO_UI_DIR === '' ? undefined : process.env.MYCO_UI_DIR;
+  if (uiDir !== undefined && statSync(join(uiDir, 'index.html'), { throwIfNoEntry: false })?.isFile() !== true) {
+    throw new StartupError(`MYCO_UI_DIR names ${uiDir}, which holds no index.html`);
+  }
+
   const started = await serve({
     bind,
+    uiDir,
     databasePath: requireEnv('MYCO_DATABASE'),
     blobDir: requireEnv('MYCO_BLOB_DIR'),
     port: positiveInt('MYCO_PORT', 8787),

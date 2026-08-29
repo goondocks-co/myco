@@ -7,6 +7,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "check": "tsc --noEmit && tsc --noEmit -p tsconfig.bun.json",
+    "check:ui": "cd ui && { test -d node_modules || npm ci; } && npm run typecheck",
+    "build:ui": "cd ui && { test -d node_modules || npm ci; } && npx vite build",
     "migrations:emit": "bun scripts/emit-migrations.ts",
     "migrations:apply": "wrangler d1 migrations apply myco-server --local",
     "migrations:apply:remote": "wrangler d1 migrations apply myco-server --remote -c wrangler.deploy.toml",

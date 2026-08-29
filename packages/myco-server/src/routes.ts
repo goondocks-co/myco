@@ -131,6 +131,25 @@ export const RETIRED_ROUTES: readonly RetiredRoute[] = [
   { method: 'POST', path: '/context/subagent', replacedBy: ['subagent.start'] },
 ];
 
+/**
+ * Every path prefix the server answers itself, live and retired. An exact path
+ * stays exact; a path with further segments becomes `/<first>/*`. A static
+ * shell served beside the server hands these paths to it and answers the rest.
+ */
+export function ownedPathPatterns(): string[] {
+  const out = new Set<string>();
+  for (const { path } of [...ROUTES, ...RETIRED_ROUTES]) {
+    const segments = path.split('/').filter((s) => s.length > 0);
+    out.add(segments.length === 1 ? `/${segments[0]}` : `/${segments[0]}/*`);
+  }
+  return [...out].sort();
+}
+
+/** True when a pattern from `ownedPathPatterns()` covers this path. */
+export function isOwnedPath(pathname: string, patterns: readonly string[] = ownedPathPatterns()): boolean {
+  return patterns.some((p) => (p.endsWith('/*') ? pathname === p.slice(0, -2) || pathname.startsWith(p.slice(0, -1)) : pathname === p));
+}
+
 export interface RouteMatch {
   route: Route;
   params: Record<string, string>;
