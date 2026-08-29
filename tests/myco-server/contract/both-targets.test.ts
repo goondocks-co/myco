@@ -273,3 +273,33 @@ describe('one server product, two deployment targets', () => {
 
 
 });
+
+import { authenticateServerMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { authenticateGrant, issueExternalGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
+import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
+import { sha256Hex } from '@myco-server-worker/hash.js';
+
+describe('access administration agrees on both stores', () => {
+  it('offboards a member in one transaction and rotates a grant atomically, with the same outcomes on each target', async () => {
+    const outcomes: Record<string, unknown>[] = [];
+    for (const t of TARGETS) {
+      const now = Date.now();
+      const token = await t.token();
+      const credential = (await issueMemberToken(t.env.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now)).token;
+      const revoked = await revokeMember(t.env.db, 'mem_machine_2', 'mem_machine_1', now);
+      const afterRevoke = await authenticateServerMemberToken(t.env.db, await sha256Hex(credential), now + 1);
+      const grant = await issueExternalGrant(t.env.db, { projectId: 'proj_1' }, 'bot', 'mem_machine_1', now);
+      const rotated = await rotateExternalGrant(t.env.db, { projectId: 'proj_1' }, grant.id, 'mem_machine_1', now + 1);
+      const foreign = await rotateExternalGrant(t.env.db, { projectId: 'proj_2' }, rotated!.id, 'mem_machine_1', now + 2);
+      outcomes.push({
+        revoked, afterRevoke,
+        oldKey: await authenticateGrant(t.env.db, await sha256Hex(grant.key)),
+        newKey: (await authenticateGrant(t.env.db, await sha256Hex(rotated!.key)))?.projectId,
+        foreign,
+        stillLive: (await authenticateServerMemberToken(t.env.db, await sha256Hex(token), now + 1)) !== null,
+      });
+    }
+    expect(outcomes[0]).toEqual({ revoked: { ok: true }, afterRevoke: null, oldKey: null, newKey: 'proj_1', foreign: null, stillLive: true });
+    expect(outcomes[1]).toEqual(outcomes[0]);
+  });
+});

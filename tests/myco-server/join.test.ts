@@ -136,7 +136,7 @@ describe('member join', () => {
     expect((await json(await r.join({ key: spent.key, machineId: 'machine_ok' }))).joined).toBe(true);
     const expired = await issueEnrollmentAuthority(r.e.db, r.now - ENROLLMENT_TTL_MS * 2);
     const revoked = await r.key();
-    await revokeEnrollmentAuthority(r.e.db, revoked.id, r.now);
+    await revokeEnrollmentAuthority(r.e.db, revoked.id, r.now, 'mem_machine_1');
 
     const cases: Array<[string, string]> = [
       ['n'.repeat(43), 'enrollment_unknown'],

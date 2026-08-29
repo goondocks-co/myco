@@ -46,15 +46,16 @@ describe('operator scripts', () => {
   });
 
   it('revoke prints the revocation update for the given id', () => {
-    const { code, out } = run('revoke-local.ts', ['mt_x']);
+    const { code, out } = run('revoke-local.ts', ['mt_x', 'mem_m']);
     expect(code).toBe(0);
-    expect(out.trim()).toMatch(/^UPDATE member_credentials SET revoked_at = \d+ WHERE id = 'mt_x' AND revoked_at IS NULL;$/);
+    expect(out.trim()).toMatch(/^UPDATE member_credentials SET revoked_at = \d+, revoked_by = 'mem_m' WHERE id = 'mt_x' AND revoked_at IS NULL;$/);
+    expect(run('revoke-local.ts', ['mt_x']).code).toBe(2);
   });
 
   it('revoke --lineage prints the one update that revokes every live token of the lineage the id belongs to, applicable as printed', () => {
-    const { code, out, err } = run('revoke-local.ts', ['mt_mid', '--lineage']);
+    const { code, out, err } = run('revoke-local.ts', ['mt_mid', 'mem_m', '--lineage']);
     expect(code).toBe(0);
-    expect(out.trim()).toMatch(/^UPDATE member_credentials SET revoked_at = \d+ WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = 'mt_mid'\) AND revoked_at IS NULL;$/);
+    expect(out.trim()).toMatch(/^UPDATE member_credentials SET revoked_at = \d+, revoked_by = 'mem_m' WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = 'mt_mid'\) AND revoked_at IS NULL;$/);
     expect(err).toContain('lineage');
     const sqlite = new Database(':memory:');
     for (const f of renderMigrationFiles()) sqlite.exec(f.sql);

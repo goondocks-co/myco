@@ -21,9 +21,13 @@ import {
   handleRegisterAgent, handleRunAdmission,
   handleRunReports, handleSupersedeRuns, handleUpdateRun, handleUpsertCortexInstructions, handleWriteState,
 } from './api/runs.js';
-import { handleMintToken, handleRevokeToken, handleTokenActivity, handleTokens } from './api/tokens.js';
+import {
+  handleCredentialActivity, handleCredentials, handleInvitations, handleMembers, handleMintInvitation,
+  handleRevokeCredential, handleRevokeInvitation, handleRevokeMember,
+} from './api/access.js';
+import { handleGrants, handleMintGrant, handleRevokeGrant, handleRotateGrant } from './api/grants.js';
 import { handleProjectSessions, handleSession, handleSessionChildren, handleTranscript } from './api/sessions.js';
-import { MAX_BLOB_BYTES } from './constants.js';
+import { MAX_BLOB_BYTES, MEMBER_ID_SEGMENT } from './constants.js';
 import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
 import { handleBlob } from './ingest/blobs.js';
@@ -97,10 +101,18 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/{child}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/(?<child>prompts|tool-calls|responses|plans|attachments)$/, auth: 'owner', handler: handleSessionChildren },
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/transcript', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/transcript$/, auth: 'owner', handler: handleTranscript },
   { method: 'GET', path: '/api/projects/{projectId}/blobs/{key}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'owner', handler: handleBlobRead },
-  { method: 'GET', path: '/api/projects/{projectId}/tokens', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/tokens$/, auth: 'owner', handler: handleTokens },
-  { method: 'POST', path: '/api/projects/{projectId}/tokens', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/tokens$/, auth: 'owner', handler: handleMintToken },
-  { method: 'POST', path: '/api/projects/{projectId}/tokens/{tokenId}/revoke', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/tokens\/(?<tokenId>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeToken },
-  { method: 'GET', path: '/api/projects/{projectId}/tokens/{tokenId}/activity', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/tokens\/(?<tokenId>[A-Za-z0-9._-]{1,64})\/activity$/, auth: 'owner', handler: handleTokenActivity },
+  { method: 'GET', path: '/api/members', auth: 'owner', handler: handleMembers },
+  { method: 'POST', path: '/api/members/{memberId}/revoke', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/revoke$`), auth: 'owner', handler: handleRevokeMember },
+  { method: 'GET', path: '/api/enrollment', auth: 'owner', handler: handleInvitations },
+  { method: 'POST', path: '/api/enrollment', auth: 'owner', handler: handleMintInvitation },
+  { method: 'POST', path: '/api/enrollment/{id}/revoke', pattern: /^\/api\/enrollment\/(?<id>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeInvitation },
+  { method: 'GET', path: '/api/credentials', auth: 'owner', handler: handleCredentials },
+  { method: 'POST', path: '/api/credentials/{id}/revoke', pattern: /^\/api\/credentials\/(?<id>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeCredential },
+  { method: 'GET', path: '/api/credentials/{id}/activity', pattern: /^\/api\/credentials\/(?<id>[A-Za-z0-9._-]{1,64})\/activity$/, auth: 'owner', handler: handleCredentialActivity },
+  { method: 'GET', path: '/api/projects/{projectId}/grants', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants$/, auth: 'owner', handler: handleGrants },
+  { method: 'POST', path: '/api/projects/{projectId}/grants', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants$/, auth: 'owner', handler: handleMintGrant },
+  { method: 'POST', path: '/api/projects/{projectId}/grants/{grantId}/rotate', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants\/(?<grantId>[A-Za-z0-9._-]{1,64})\/rotate$/, auth: 'owner', handler: handleRotateGrant },
+  { method: 'POST', path: '/api/projects/{projectId}/grants/{grantId}/revoke', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants\/(?<grantId>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeGrant },
   { method: 'GET', path: '/api/agents', auth: 'owner', handler: handleAgents },
   { method: 'PUT', path: '/api/agents/{agentId}', pattern: /^\/api\/agents\/(?<agentId>[A-Za-z0-9._-]{1,64})$/, auth: 'owner', handler: handleRegisterAgent },
   { method: 'GET', path: '/api/projects/{projectId}/spores', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores$/, auth: 'owner', handler: handleProjectSpores },

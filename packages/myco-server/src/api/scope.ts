@@ -31,3 +31,19 @@ export const notFound = (): Response => Response.json({ error: 'not_found' }, { 
 export const badRequest = (reason: string): Response => Response.json({ error: 'bad_request', reason }, { status: 400 });
 
 export const ok = (body: unknown): Response => Response.json(body);
+
+/**
+ * The request body as a JSON object, or null for anything else — malformed text,
+ * `null`, an array, a scalar. A caller dereferencing a body that is not an object
+ * would throw, and the owner branch answers a throw as a retryable 503; a body of
+ * the caller's own making is refused as terminal instead.
+ */
+export async function readJsonObject(request: Request): Promise<Record<string, unknown> | null> {
+  let parsed: unknown;
+  try {
+    parsed = await request.json();
+  } catch {
+    return null;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+}
