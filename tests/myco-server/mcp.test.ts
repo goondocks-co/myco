@@ -16,6 +16,10 @@ import { uuidv5 } from '@myco-server-worker/hash.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { NO_DIGEST_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
 import { FIRST_MODERN_REVISION, SERVED_PROTOCOL_VERSIONS } from '@myco-server-worker/mcp/server.js';
+import { issueExternalGrant, revokeExternalGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
+import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
+import { EXTERNAL_TOOLS, externalDefinitions } from '@myco-server-worker/mcp/external.js';
+import { grantToolContext, memberOf } from '@myco-server-worker/mcp/context.js';
 import { envelope, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 
 const rpc = (method: string, params?: unknown, id: number = 1) => JSON.stringify({ jsonrpc: '2.0', id, method, ...(params === undefined ? {} : { params }) });
@@ -243,5 +247,150 @@ describe('POST /mcp', () => {
     const res = await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_skills', arguments: {} })), e.env);
     const body = await res.json() as any;
     expect({ status: res.status, retry: res.headers.get('retry-after') !== null, code: body.error?.data?.code }).toEqual({ status: 503, retry: true, code: 'unavailable' });
+  });
+});
+
+/** A request over a grant key: the bearer alone — no protocol header, no Project header. */
+const grantRequest = (key: string, body: string | undefined, over: { path?: string; method?: string; headers?: Record<string, string> } = {}) =>
+  new Request(`https://s${over.path ?? '/mcp'}`, { method: over.method ?? 'POST', headers: { authorization: `Bearer ${key}`, 'cf-connecting-ip': '1.2.3.4', ...over.headers }, body });
+
+async function grantSetup(opts: Parameters<typeof sqliteEnv>[0] = {}) {
+  const e = sqliteEnv(opts);
+  const now = Date.now();
+  const t1 = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
+  const grant = await issueExternalGrant(e.db, { projectId: 'proj_1' }, 'review bot', 'mem_machine_1', now);
+  const callAs = async (key: string, name: string, args: Record<string, unknown> = {}, headers: Record<string, string> = {}) => {
+    const res = await worker.fetch(grantRequest(key, rpc('tools/call', { name, arguments: args }), { headers }), e.env);
+    const body = await res.json() as any;
+    return { status: res.status, body, result: body.result?.structuredContent?.result, error: body.error };
+  };
+  const memberCall = async (name: string, args: Record<string, unknown> = {}, extra: Record<string, string> = {}) => {
+    const res = await worker.fetch(post(t1.token, rpc('tools/call', { name, arguments: args }), extra), e.env);
+    const body = await res.json() as any;
+    return { status: res.status, body, result: body.result?.structuredContent?.result, error: body.error };
+  };
+  const lastUsed = () => (e.sqlite.query(`SELECT last_used_at FROM external_grants WHERE id = ?`).get(grant.id) as any).last_used_at;
+  return { ...e, now, t1, grant, callAs, memberCall, lastUsed };
+}
+
+describe('POST /mcp over an External Agent grant', () => {
+  it('lists the six read-only tools as the member side declares them, and answers every allowlisted op in the member-side shape', async () => {
+    const { env, db, grant, callAs, memberCall } = await grantSetup();
+    const listed = await (await worker.fetch(grantRequest(grant.key, rpc('tools/list')), env)).json() as any;
+    expect(listed.result.tools.map((t: any) => t.name).sort()).toEqual([...EXTERNAL_TOOLS].sort());
+    expect(listed.result.tools).toEqual(externalDefinitions().map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema, annotations: d.annotations })));
+    await memberCall('myco_spores', { op: 'save', type: 'gotcha', content: 'seen by the bot' });
+    await upsertDigest(db, { projectId: 'proj_1' }, { id: 'd-bot', agentId: 'user', tier: 5000, content: 'the digest', substrateHash: null, generatedAt: 10 });
+    const spores = await callAs(grant.key, 'myco_spores', { op: 'list' });
+    expect({ total: spores.result.total, content: spores.result.spores[0].content }).toEqual({ total: 1, content: 'seen by the bot' });
+    expect((await callAs(grant.key, 'myco_spores', { op: 'get', id: spores.result.spores[0].id })).result.content).toBe('seen by the bot');
+    expect((await callAs(grant.key, 'myco_plans', { op: 'list' })).result).toEqual([]);
+    expect((await callAs(grant.key, 'myco_sessions', {})).result).toEqual([]);
+    expect((await callAs(grant.key, 'myco_skills', { op: 'list' })).result).toEqual([]);
+    expect((await callAs(grant.key, 'myco_cortex', { op: 'digest', tier: 5000 })).result.content).toBe('the digest');
+    const search = await callAs(grant.key, 'myco_search', { query: 'q' });
+    expect({ code: search.error.data.code, names: /#1027/.test(search.error.message) }).toEqual({ code: 'not_served', names: true });
+  });
+
+  it('refuses every write, every admin read, myco_agent, an op outside the enum and an empty op exactly as a tool that does not exist', async () => {
+    const { grant, callAs } = await grantSetup();
+    const unknown = await callAs(grant.key, 'myco_nope');
+    expect({ status: unknown.status, error: unknown.error }).toEqual({ status: 200, error: { code: -32000, message: 'Unknown tool: myco_nope', data: { code: 'unknown_tool' } } });
+    const refused: Array<[string, Record<string, unknown>]> = [
+      ['myco_spores', { op: 'save', type: 'gotcha', content: 'x' }], ['myco_spores', { op: 'supersede', old_spore_id: 'a', new_spore_id: 'b' }],
+      ['myco_spores', { op: 'consolidate' }], ['myco_spores', { op: 'obsolete', id: 'a', reason: 'r' }],
+      ['myco_plans', { op: 'save', content: 'x', session_id: 's', plan_key: 'k' }], ['myco_plans', { op: 'delete', id: 'x' }],
+      ['myco_cortex', { op: 'instructions' }], ['myco_cortex', { op: 'projects_activity' }], ['myco_cortex', { op: 'canopy_map' }],
+      ['myco_agent', { op: 'runs' }], ['myco_agent', {}], ['myco_sessions', { op: 'purge' }], ['myco_plans', { op: '' }],
+    ];
+    for (const [name, args] of refused) {
+      const res = await callAs(grant.key, name, args);
+      expect({ name, args, status: res.status, error: res.error }).toEqual({ name, args, status: 200, error: { ...unknown.error, message: `Unknown tool: ${name}` } });
+    }
+  });
+
+  it('accepts project_id naming its own Project, refuses any other value as a tool that does not exist without looking the Project up, and reads its own Project whatever the header names', async () => {
+    const { grant, callAs, memberCall, executed } = await grantSetup();
+    await memberCall('myco_spores', { op: 'save', type: 'gotcha', content: 'in proj_1' });
+    const plain = await callAs(grant.key, 'myco_spores', { op: 'list' });
+    const own = await callAs(grant.key, 'myco_spores', { op: 'list', project_id: 'proj_1' });
+    expect(own.body).toEqual(plain.body);
+    const from = executed.length;
+    const foreign = await callAs(grant.key, 'myco_spores', { op: 'list', project_id: 'proj_2' });
+    const absent = await callAs(grant.key, 'myco_spores', { op: 'list', project_id: 'proj_nowhere' });
+    expect({ foreign: foreign.error, absent: absent.error }).toEqual({ foreign: { code: -32000, message: 'Unknown tool: myco_spores', data: { code: 'unknown_tool' } }, absent: foreign.error });
+    expect(executed.slice(from).filter((sql) => /\bprojects\b/i.test(sql))).toEqual([]);
+    const misnamed = await callAs(grant.key, 'myco_spores', { op: 'list' }, { [PROJECT_HEADER]: 'proj_2' });
+    expect(misnamed.result.total).toBe(1);
+    expect((await memberCall('myco_spores', { op: 'list' }, { [PROJECT_HEADER]: 'proj_2' })).result.total).toBe(0);
+  });
+
+  it('records use once per interval, keys the limiter on the grant id, never charges the source bucket, and issues no write but that record on any allowlisted call', async () => {
+    const { grant, callAs, lastUsed, tokenKeys, sourceKeys, executed } = await grantSetup();
+    const from = executed.length;
+    await callAs(grant.key, 'myco_plans', { op: 'list' });
+    const first = lastUsed();
+    expect(typeof first).toBe('number');
+    for (const [name, args] of [['myco_sessions', {}], ['myco_skills', {}], ['myco_spores', {}], ['myco_cortex', {}], ['myco_search', { query: 'q' }]] as Array<[string, Record<string, unknown>]>) await callAs(grant.key, name, args);
+    expect(lastUsed()).toBe(first);
+    expect(executed.slice(from).filter((sql) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)).every((sql) => /UPDATE external_grants/.test(sql))).toBe(true);
+    expect(executed.slice(from).some((sql) => /UPDATE external_grants/.test(sql))).toBe(true);
+    expect({ tokenKeys: [...new Set(tokenKeys)], sourceKeys }).toEqual({ tokenKeys: [grant.id], sourceKeys: [] });
+  });
+
+  it('refuses a revoked grant and a rotated grant\'s predecessor with 401, admits the successor, and charges the source bucket for a key it does not hold', async () => {
+    const { env, db, grant, callAs, now, sourceKeys } = await grantSetup();
+    const rotated = await rotateExternalGrant(db, { projectId: 'proj_1' }, grant.id, 'mem_machine_1', now);
+    expect((await worker.fetch(grantRequest(grant.key, rpc('tools/list')), env)).status).toBe(401);
+    expect((await callAs(rotated!.key, 'myco_plans', { op: 'list' })).result).toEqual([]);
+    await revokeExternalGrant(db, { projectId: 'proj_1' }, rotated!.id, 'mem_machine_1', now);
+    expect((await worker.fetch(grantRequest(rotated!.key, rpc('tools/list')), env)).status).toBe(401);
+    expect(sourceKeys).toEqual(['1.2.3.4', '1.2.3.4']);
+  });
+
+  it('reaches POST /mcp alone: every other path answers 401, and a served path asked with the wrong method answers 405 naming the method, to a member and to a grant alike', async () => {
+    const { env, grant, t1 } = await grantSetup();
+    for (const [method, path, body] of [['POST', '/events', envelope()], ['POST', '/spores/save', '{}'], ['GET', '/api/enrollment', undefined], ['DELETE', '/api/secrets/x', undefined], ['POST', '/nope', '{}']] as Array<[string, string, string | undefined]>) {
+      const res = await worker.fetch(grantRequest(grant.key, body, { method, path }), env);
+      expect({ method, path, status: res.status }).toEqual({ method, path, status: 401 });
+    }
+    const grantGet = await worker.fetch(grantRequest(grant.key, undefined, { method: 'GET' }), env);
+    expect({ status: grantGet.status, allow: grantGet.headers.get('allow') }).toEqual({ status: 405, allow: 'POST' });
+    const memberGet = await worker.fetch(new Request('https://s/mcp', { method: 'GET', headers: memberHeaders(t1.token) }), env);
+    expect({ status: memberGet.status, allow: memberGet.headers.get('allow') }).toEqual({ status: 405, allow: 'POST' });
+    expect((await worker.fetch(new Request('https://s/mcp', { method: 'GET', headers: { 'cf-connecting-ip': '1.2.3.4' } }), env)).status).toBe(401);
+  });
+
+  it('refuses an over-cap body in the answered shape, keeps reading an archived Project, and answers a storage fault or a limiter fault as a retryable 503', async () => {
+    const { env, sqlite, grant, callAs } = await grantSetup();
+    const capped = await worker.fetch(grantRequest(grant.key, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: { pad: 'x'.repeat(MAX_BODY_BYTES) } })), env);
+    expect({ status: capped.status, code: ((await capped.json()) as any).error?.data?.code }).toEqual({ status: 400, code: 'body_cap' });
+    sqlite.query(`UPDATE projects SET archived_at = 1, archived_by = 'mem_machine_1' WHERE project_id = 'proj_1'`).run();
+    expect((await callAs(grant.key, 'myco_plans', { op: 'list' })).result).toEqual([]);
+
+    const faulty = await grantSetup({ onSql: (sql) => { if (/FROM skill_records/.test(sql)) throw new Error('storage is away'); } });
+    const fault = await worker.fetch(grantRequest(faulty.grant.key, rpc('tools/call', { name: 'myco_skills', arguments: {} })), faulty.env);
+    expect({ status: fault.status, retry: fault.headers.get('retry-after') !== null, code: ((await fault.json()) as any).error?.data?.code }).toEqual({ status: 503, retry: true, code: 'unavailable' });
+
+    const limiterless = await grantSetup();
+    limiterless.env.TOKEN_LIMIT = { limit: async () => { throw new Error('limiter is away'); } };
+    const early = await worker.fetch(grantRequest(limiterless.grant.key, rpc('tools/list')), limiterless.env);
+    expect({ status: early.status, retry: early.headers.get('retry-after') !== null }).toEqual({ status: 503, retry: true });
+  });
+
+  it('names a served tool or the literal unknown in telemetry, never the caller\'s text, and the member backstop refuses a grant as a tool that does not exist', async () => {
+    const { serverEnv, grant, callAs } = await grantSetup();
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (line: unknown) => { lines.push(String(line)); };
+    try {
+      await callAs(grant.key, 'myco_<script>', {});
+      await callAs(grant.key, 'myco_spores', { op: 'save', content: 'x', type: 'gotcha' });
+    } finally {
+      console.log = original;
+    }
+    const tools = lines.map((l) => JSON.parse(l)).filter((e) => e.kind === 'mcp_tool').map((e) => ({ tool: e.tool, status: e.status, grantId: e.grantId }));
+    expect(tools).toEqual([{ tool: 'unknown', status: 'unknown_tool', grantId: grant.id }, { tool: 'myco_spores', status: 'unknown_tool', grantId: grant.id }]);
+    expect(() => memberOf(grantToolContext(serverEnv, { projectId: 'proj_1', grantId: grant.id, body: '', bodyBytes: 0, now: 0 }), 'myco_plans')).toThrow('Unknown tool: myco_plans');
   });
 });
