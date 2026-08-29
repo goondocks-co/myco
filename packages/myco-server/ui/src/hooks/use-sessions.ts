@@ -138,6 +138,10 @@ export const RENDERABLE_IMAGE_TYPES: readonly string[] = ['image/png', 'image/jp
 const seg = (value: string) => encodeURIComponent(value);
 const project = (projectId: string) => `/api/projects/${seg(projectId)}`;
 
+/** Who captured a session, in the words the reader knows: the member's label, then the member id, then the credential id. */
+export const memberName = (s: SessionRow): string => s.memberLabel ?? s.memberId ?? s.createdByTokenId;
+export const runtimeName = (s: SessionRow): string | null => s.runtimeLabel ?? s.runtimeKind;
+
 export const blobUrl = (projectId: string, key: string) => `${project(projectId)}/blobs/${seg(key)}`;
 
 export function useSessions(projectId: string) {

@@ -48,9 +48,13 @@ describe('read/sessions', () => {
     sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
                 VALUES ('proj_1','s1','p1','e1','a','user','h1',1,1,'t',1), ('proj_2','other','p2','e2','b','user','h2',1,1,'t',1)`);
     sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content_hash, status, created_at, updated_at, token_id, received_at)
-                VALUES ('proj_1','pl1','s1','e3','m1','h3','active',1,1,'t',1)`);
+                VALUES ('proj_1','pl1','s1','e3','m1','h3','active',1,1,'t',1), ('proj_2','pl2','other','e4','m9','h4','active',1,1,'t',1)`);
+    sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, tool_name, success, created_at, token_id, received_at)
+                VALUES ('proj_1','s1','tc1','e5','Read',1,1,'t',1), ('proj_2','other','tc2','e6','Read',1,1,'t',1)`);
+    sqlite.run(`INSERT INTO attachments (project_id, attachment_id, session_id, event_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
+                VALUES ('proj_1','a1','s1','e7','${'a'.repeat(64)}','image/png',9,1,'t',1), ('proj_2','a2','other','e8','${'b'.repeat(64)}','image/png',9,1,'t',1)`);
     expect(await projectStats(db, { projectId: 'proj_1' }, 3 + 7 * 24 * 60 * 60 * 1000)).toEqual({
-      sessions: 3, openSessions: 2, sessionsLast7d: 1, prompts: 1, toolCalls: 0, plans: 1, attachments: 0, lastActivityAt: 30,
+      sessions: 3, openSessions: 2, sessionsLast7d: 1, prompts: 1, toolCalls: 1, plans: 1, attachments: 1, lastActivityAt: 30,
     });
   });
 

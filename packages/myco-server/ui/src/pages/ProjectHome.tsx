@@ -51,7 +51,7 @@ function Activity({ projectId }: { projectId: string }) {
             <StatCard label="Plans" value={activity.data.stats.plans.toLocaleString()} sublabel={formatCount(activity.data.stats.attachments, 'attachment')} accent="outline" />
             <StatCard label="Last activity" value={formatRelative(activity.data.stats.lastActivityAt)} sublabel={formatDateTime(activity.data.stats.lastActivityAt)} accent="outline" />
           </div>
-          <Panel title="Activity" padded={activity.data.items.length > 0 ? false : true}>
+          <Panel title="Activity" padded={activity.data.items.length === 0}>
             {activity.data.items.length === 0 ? (
               <p className="font-sans text-sm text-on-surface-variant">Nothing captured yet.</p>
             ) : (

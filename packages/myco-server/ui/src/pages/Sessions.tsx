@@ -8,7 +8,7 @@ import { Row } from '../components/ui/row';
 import { StatusDot } from '../components/ui/status-dot';
 import { SubtabPill } from '../components/ui/subtab-pill';
 import { SessionDetail } from '../components/sessions/SessionDetail';
-import { useSessions, type SessionRow } from '../hooks/use-sessions';
+import { memberName, runtimeName, useSessions, type SessionRow } from '../hooks/use-sessions';
 import { formatRelative } from '../lib/format';
 
 /** Open means no end was recorded — a runtime that died never ends its session, so this is what the data says, not a liveness claim. */
@@ -19,9 +19,6 @@ const STATUS_TABS = [
 ];
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
-
-export const memberName = (s: SessionRow): string => s.memberLabel ?? s.memberId ?? s.createdByTokenId;
-const runtimeName = (s: SessionRow): string | null => s.runtimeLabel ?? s.runtimeKind;
 
 function matches(s: SessionRow, status: string, text: string): boolean {
   if (status === 'open' && s.endedAt !== null) return false;
@@ -65,13 +62,17 @@ export function Sessions() {
             master={
               sessions.rows.length === 0 ? (
                 <p className="p-4 font-sans text-sm text-on-surface-variant">No sessions yet. Sessions appear here as your runtimes capture them.</p>
-              ) : shown.length === 0 ? (
-                <p className="p-4 font-sans text-sm text-on-surface-variant">No sessions match.</p>
               ) : (
-                <div role="table" aria-label="Sessions">
-                  {shown.map((s) => (
-                    <SessionRowView key={s.sessionId} session={s} active={s.sessionId === sessionId} onOpen={() => navigate(`${base}/${encodeURIComponent(s.sessionId)}`)} />
-                  ))}
+                <div>
+                  {shown.length === 0 ? (
+                    <p className="p-4 font-sans text-sm text-on-surface-variant">No sessions match.</p>
+                  ) : (
+                    <div role="table" aria-label="Sessions">
+                      {shown.map((s) => (
+                        <SessionRowView key={s.sessionId} session={s} active={s.sessionId === sessionId} onOpen={() => navigate(`${base}/${encodeURIComponent(s.sessionId)}`)} />
+                      ))}
+                    </div>
+                  )}
                   {sessions.hasMore && (
                     <div className="p-3">
                       <button type="button" className={button} onClick={sessions.more}>Load more</button>

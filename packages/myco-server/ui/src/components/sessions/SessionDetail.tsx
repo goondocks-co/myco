@@ -8,7 +8,7 @@ import { StatCard } from '../ui/stat-card';
 import { StatusDot } from '../ui/status-dot';
 import { SubtabPill } from '../ui/subtab-pill';
 import {
-  blobUrl, RENDERABLE_IMAGE_TYPES, useBlobText, useSession, useSessionChildren, useTranscript,
+  blobUrl, memberName, RENDERABLE_IMAGE_TYPES, runtimeName, useBlobText, useSession, useSessionChildren, useTranscript,
   type AttachmentRow, type PlanRow, type PromptRow, type ResponseRow, type SessionRow, type ToolCallRow,
 } from '../../hooks/use-sessions';
 import { ApiError } from '../../lib/api';
@@ -65,8 +65,8 @@ function Facts({ projectId, session }: { projectId: string; session: SessionRow 
       <dl className="mt-3 grid gap-x-6 gap-y-1 font-sans text-sm sm:grid-cols-2">
         <Fact label="Started" value={session.startedAt === null ? null : `${formatRelative(session.startedAt)} · ${formatDateTime(session.startedAt)}`} />
         <Fact label={open ? 'Last received' : 'Ended'} value={open ? formatRelative(session.lastReceivedAt) : `${formatRelative(session.endedAt)} · ${formatDuration(session.startedAt, session.endedAt)}`} />
-        <Fact label="Member" value={session.memberLabel ?? session.memberId ?? session.createdByTokenId} />
-        <Fact label="Runtime" value={[session.runtimeLabel ?? session.runtimeKind, session.machineId].filter((v) => v !== null).join(' · ') || null} />
+        <Fact label="Member" value={memberName(session)} />
+        <Fact label="Runtime" value={[runtimeName(session), session.machineId].filter((v) => v !== null).join(' · ') || null} />
         <Fact label="Path" value={session.originPath} />
         <Fact label="Parent" value={session.parentSessionId === null ? null : (
           <Link to={`/p/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(session.parentSessionId)}`} className={link}>
@@ -106,6 +106,9 @@ type TimelineItem =
   | { kind: 'tool'; at: number; id: string; row: ToolCallRow }
   | { kind: 'response'; at: number; id: string; row: ResponseRow };
 
+/** On the same millisecond a prompt comes before its tool calls, and those before the response. */
+const KIND_RANK: Record<TimelineItem['kind'], number> = { prompt: 0, tool: 1, response: 2 };
+
 /** Prompts, tool calls and responses, each its own paged read, shown as one timeline; a page of one child can outrun another, so "Load more" is per child. */
 function Conversation({ projectId, sessionId }: { projectId: string; sessionId: string }) {
   const prompts = useSessionChildren<PromptRow>(projectId, sessionId, 'prompts');
@@ -115,7 +118,7 @@ function Conversation({ projectId, sessionId }: { projectId: string; sessionId: 
     ...prompts.rows.map((row) => ({ kind: 'prompt' as const, at: row.orderedAt, id: `p:${row.promptId}`, row })),
     ...tools.rows.map((row) => ({ kind: 'tool' as const, at: row.orderedAt, id: `t:${row.toolCallId}`, row })),
     ...responses.rows.map((row) => ({ kind: 'response' as const, at: row.orderedAt, id: `r:${row.responseId}`, row })),
-  ].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+  ].sort((a, b) => a.at - b.at || KIND_RANK[a.kind] - KIND_RANK[b.kind] || a.id.localeCompare(b.id));
   const more = [prompts, tools, responses].filter((c) => c.hasMore);
   return (
     <PageLoading isLoading={prompts.isPending || tools.isPending || responses.isPending} error={prompts.error ?? tools.error ?? responses.error}>
