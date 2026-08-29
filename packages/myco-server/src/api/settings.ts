@@ -1,6 +1,6 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { badRequest, notFound, ok, resolveProjectScope } from './scope.js';
+import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import {
   DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, requiresStepUp, settingsWriter,
@@ -48,23 +48,6 @@ function writerFor(env: ServerEnv, ctx: OwnerContext) {
   });
 }
 
-/**
- * A JSON object body, or null for anything else.
- *
- * `null` is valid JSON, so `request.json()` resolves for it and a later property
- * read throws — which the owner catch turns into a 503 with retry-after. A
- * malformed body is the caller's own fault and must be terminal, so the shape is
- * checked here rather than discovered by dereferencing it.
- */
-async function jsonObject(ctx: OwnerContext): Promise<Record<string, unknown> | null> {
-  let parsed: unknown;
-  try {
-    parsed = await ctx.request.json();
-  } catch {
-    return null;
-  }
-  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-}
 
 /**
  * The longest credential this surface accepts.
@@ -97,7 +80,7 @@ export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise
 
 /** Set one Deployment leaf. */
 export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const body = await jsonObject(ctx);
+  const body = await readJsonObject(ctx.request);
   if (body === null || !('value' in body)) return malformed(ctx.params.leaf, 'body must be a JSON object carrying a value');
 
   const result = await writerFor(env, ctx).setLeaf(ctx.params.leaf, body.value, ctx.member.id, ctx.now);
@@ -115,7 +98,7 @@ export async function handleProjectCapabilities(env: ServerEnv, ctx: OwnerContex
 export async function handleSetProjectCapability(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  const body = await jsonObject(ctx);
+  const body = await readJsonObject(ctx.request);
   if (body === null || typeof body.enabled !== 'boolean') return malformed(`project.${ctx.params.capability}`, 'body must carry a boolean `enabled`');
 
   const result = await writerFor(env, ctx)
@@ -148,7 +131,7 @@ export async function handleSecrets(env: ServerEnv, ctx: OwnerContext): Promise<
  */
 export async function handleSetSecret(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (!(SECRET_SLOTS as readonly string[]).includes(ctx.params.name)) return notFound();
-  const body = await jsonObject(ctx);
+  const body = await readJsonObject(ctx.request);
   const slot = `secret.${ctx.params.name}`;
   if (body === null || typeof body.value !== 'string' || body.value.length === 0) return malformed(slot, 'body must carry a non-empty string `value`');
   if (body.value.length > MAX_SECRET_CHARS) return malformed(slot, `value must be at most ${MAX_SECRET_CHARS} characters`);

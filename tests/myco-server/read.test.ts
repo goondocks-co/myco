@@ -81,25 +81,26 @@ describe('read/children', () => {
   });
 });
 
-import { listTokens, tokenActivity } from '@myco-server-worker/read/tokens.js';
+import { credentialActivity, listCredentials } from '@myco-server-worker/read/credentials.js';
 
-describe('read/tokens', () => {
-  it('reports what a token wrote, newest first, inside the scope', async () => {
+describe('read/credentials', () => {
+  it('reports what a credential wrote, newest first, across every project', async () => {
     const { db, sqlite } = sqliteEnv();
     sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at)
                 VALUES ('proj_1','e1','s1','tok_1','prompt','cli','{}','h1',10,10),
                        ('proj_1','e2','s1','tok_1','response','cli','{}','h2',20,20),
-                       ('proj_1','e3','s2','tok_2','prompt','cli','{}','h3',30,30)`);
-    const { rows } = await tokenActivity(db, { projectId: 'proj_1' }, 'tok_1');
-    expect(rows.map((r) => r.eventId)).toEqual(['e2', 'e1']);
-    expect(rows[0]).toMatchObject({ kind: 'response', sessionId: 's1' });
+                       ('proj_1','e3','s2','tok_2','prompt','cli','{}','h3',30,30),
+                       ('proj_2','e4','s3','tok_1','prompt','cli','{}','h4',40,40)`);
+    const { rows } = await credentialActivity(db, 'tok_1');
+    expect(rows.map((r) => r.eventId)).toEqual(['e4', 'e2', 'e1']);
+    expect(rows[0]).toMatchObject({ kind: 'prompt', sessionId: 's3', projectId: 'proj_2' });
   });
 
-  it('lists a project\'s tokens with quota and lineage', async () => {
+  it('lists the Deployment\'s credentials with quota and lineage, one page at a time', async () => {
     const { db, sqlite, env } = sqliteEnv();
     const { issueMemberToken } = await import('@myco-server-worker/auth/tokens.js');
     await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 1_000);
-    const rows = await listTokens(db, { projectId: 'proj_1' });
+    const { rows } = await listCredentials(db);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ machineId: 'machine_1', bytesWritten: 0, revokedAt: null });
     expect(rows[0].lineageRoot).toBe(rows[0].id);
@@ -144,7 +145,7 @@ describe('D1 adapter', () => {
 
 describe('schema v4', () => {
   it('adds a recency index on sessions and stamps the build version', () => {
-    expect(SERVER_SCHEMA_VERSION).toBe(8);
+    expect(SERVER_SCHEMA_VERSION).toBe(9);
     const v4 = SCHEMA_STEPS.find((s) => s.version === 4);
     expect(v4?.statements.some((s) => s.includes('idx_sessions_recent'))).toBe(true);
   });
@@ -164,7 +165,7 @@ describe('read/meta', () => {
   it('reports the schema version the database carries', async () => {
     const { db } = sqliteEnv();
     const { schemaVersion } = await import('@myco-server-worker/read/meta.js');
-    expect(await schemaVersion(db)).toBe(8);
+    expect(await schemaVersion(db)).toBe(9);
   });
 });
 

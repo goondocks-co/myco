@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
-import { clampLimit, decodeCursor, page, type Page, type ReadScope } from './scope.js';
+import { keyset, page, type Page, type ReadScope } from './scope.js';
 
 export interface ProjectRow {
   projectId: string;
@@ -80,22 +80,13 @@ export async function listProjects(db: RelationalStore): Promise<ProjectRow[]> {
 
 /** A project's sessions, most recently started first, over `idx_sessions_recent`. The key is `first_received_at` paired with `session_id`: a keyset page must order by a column no later write moves, or an actively capturing session slips above the cursor between two pages and appears on neither. */
 export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } = {}): Promise<Page<SessionRow>> {
-  const limit = clampLimit(opts.limit);
-  const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
-  if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
-  const statement = after
-    ? db
-        .prepare(
-          `SELECT ${SESSION_COLUMNS} FROM sessions
-            WHERE project_id = ? AND (first_received_at < ? OR (first_received_at = ? AND session_id < ?))
-            ORDER BY first_received_at DESC, session_id DESC LIMIT ?`
-        )
-        .bind(scope.projectId, after.createdAt, after.createdAt, after.id, limit + 1)
-    : db
-        .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE project_id = ? ORDER BY first_received_at DESC, session_id DESC LIMIT ?`)
-        .bind(scope.projectId, limit + 1);
-  const { results } = await statement.all<Record<string, unknown>>();
-  return page(results.map(toSession), limit, (r) => ({ createdAt: r.firstReceivedAt, id: r.sessionId }));
+  const k = keyset(opts, { order: 'first_received_at', id: 'session_id', direction: 'DESC' });
+  if (k === null) return { rows: [], cursor: null };
+  const { results } = await db
+    .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE project_id = ? ${k.where === '' ? '' : `AND ${k.where}`} ORDER BY first_received_at DESC, session_id DESC LIMIT ?`)
+    .bind(scope.projectId, ...k.params, k.limit + 1)
+    .all<Record<string, unknown>>();
+  return page(results.map(toSession), k.limit, (r) => ({ createdAt: r.firstReceivedAt, id: r.sessionId }));
 }
 
 /** One session inside the scope, or null — including when the session exists under another project. */

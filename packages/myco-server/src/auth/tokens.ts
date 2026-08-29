@@ -4,6 +4,7 @@ import { SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../const
 import { sha256Hex } from '../hash.js';
 import { heldBytes, TOKEN_LIVE } from '../ingest/quota.js';
 import { emit, SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
+import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 
 export const MEMBER_TOKEN_BYTES = 32;
 export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -73,6 +74,8 @@ interface AuthRow {
   first_used_at: number | null;
   runtime_label: string | null;
   runtime_kind: string | null;
+  /** The credential's member, present only while that member is live. */
+  member_live: string | null;
 }
 
 export function mintMemberToken(): string {
@@ -120,15 +123,6 @@ export async function issueMemberToken(
   return issued;
 }
 
-/** Marks a token revoked; a revoked token never authenticates again. `revoked` is false when no live row matched the id. */
-export async function revokeMemberToken(db: RelationalStore, tokenId: string, nowMs: number): Promise<{ revoked: boolean }> {
-  const result = await db
-    .prepare(`UPDATE member_credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`)
-    .bind(nowMs, tokenId)
-    .run();
-  return { revoked: result.meta.changes === 1 };
-}
-
 /**
  * Revoke a credential on behalf of a member. Membership is flat: any member may
  * revoke any credential, so the write carries no ownership predicate.
@@ -139,23 +133,35 @@ export async function revokeMemberToken(db: RelationalStore, tokenId: string, no
  * re-derivation of who owns what, and until there is one, an operator can always
  * answer who ended a credential.
  */
+/** The one attributed revocation of a credential, as a statement: the runner above executes and records it; the break-glass script renders it. */
+export function revokeCredentialStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number): PreparedStatement {
+  return db
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND revoked_at IS NULL`)
+    .bind(nowMs, revokedBy, tokenId);
+}
+
 export async function revokeCredentialAsMember(
   db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number,
 ): Promise<{ revoked: boolean; revokedBy: string }> {
-  const result = await db
-    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND revoked_at IS NULL`)
-    .bind(nowMs, revokedBy, tokenId)
-    .run();
+  const result = await revokeCredentialStatement(db, revokedBy, tokenId, nowMs).run();
   const revoked = result.meta.changes === 1;
   emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked });
   return { revoked, revokedBy };
 }
 
+/** Every live credential of a member, revoked and attributed in one statement — effective only once the member row itself carries this revocation, so a batch whose first statement changed nothing changes nothing here either. */
+export function revokeCredentialsOfMember(db: RelationalStore, memberId: string, revokedBy: string, nowMs: number): PreparedStatement {
+  return db
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ?
+               WHERE member_id = ? AND revoked_at IS NULL AND ${MEMBER_REVOKED_BY}`)
+    .bind(nowMs, revokedBy, memberId, ...memberRevokedByParams(memberId, nowMs, revokedBy));
+}
+
 /** Revokes every live token of the lineage `tokenId` belongs to — the named token, its predecessors, and its successors — in one statement; `revoked` counts the rows that changed. */
-export async function revokeMemberLineage(db: RelationalStore, tokenId: string, nowMs: number): Promise<{ revoked: number }> {
+export async function revokeMemberLineage(db: RelationalStore, tokenId: string, nowMs: number, revokedBy: string): Promise<{ revoked: number }> {
   const result = await db
-    .prepare(`UPDATE member_credentials SET revoked_at = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL`)
-    .bind(nowMs, tokenId)
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL`)
+    .bind(nowMs, revokedBy, tokenId)
     .run();
   return { revoked: result.meta.changes };
 }
@@ -189,7 +195,7 @@ export async function activateSuccessor(db: RelationalStore, auth: Pick<MemberAu
   ]);
 }
 
-/** One read: the database schema version, joined to the member row for the digest when one exists. The version must equal this build's before any token decision is made; a missing version row is a mismatch. A row without its lineage columns never authenticates. */
+/** One read: the database schema version, joined to the credential row for the digest and to its member, kept only while that member is live. The version must equal this build's before any token decision is made; a missing version row is a mismatch. A row without its lineage columns, or whose member is revoked, never authenticates. */
 export async function authenticateServerMemberToken(
   db: RelationalStore, digest: string, nowMs: number,
 ): Promise<MemberAuth | null> {
@@ -197,9 +203,10 @@ export async function authenticateServerMemberToken(
     .prepare(`SELECT s.value AS schema_version,
                      t.id, t.member_id, t.machine_id, t.expires_at, t.revoked_at, t.bytes_written,
                      t.lineage_root, t.lineage_started_at, t.predecessor_id, t.first_used_at,
-                     t.runtime_label, t.runtime_kind
+                     t.runtime_label, t.runtime_kind, m.id AS member_live
                 FROM schema_meta s
                 LEFT JOIN member_credentials t ON t.token_hash = ?
+                LEFT JOIN members m ON m.id = t.member_id AND m.revoked_at IS NULL
                WHERE s.key = 'version'`)
     .bind(digest)
     .first<AuthRow>();
@@ -209,6 +216,7 @@ export async function authenticateServerMemberToken(
   if (row.id === null || row.member_id === null || row.expires_at === null || row.bytes_written === null) return null;
   if (row.lineage_root === null || row.lineage_started_at === null) return null;
   if (row.revoked_at !== null) return null;
+  if (row.member_live === null) return null;
   if (row.expires_at <= nowMs) return null;
   return {
     memberId: row.member_id, tokenId: row.id, machineId: row.machine_id, bytesWritten: row.bytes_written,

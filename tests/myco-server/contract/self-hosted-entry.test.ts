@@ -30,6 +30,8 @@ function volume({ migrated = true }: { migrated?: boolean } = {}): { databasePat
     sqlite.exec('PRAGMA foreign_keys = ON');
     for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
     sqlite.query(`INSERT INTO projects (project_id,name,created_at) VALUES ('proj_1','a',0)`).run();
+    // A credential authenticates only for a live member, so the volume carries the member the test issues for.
+    sqlite.query(`INSERT INTO members (id,label,created_at,revoked_at) VALUES ('mem_machine_1','machine_1',0,NULL)`).run();
   }
   sqlite.close();
   return { databasePath, blobDir: join(root, 'blobs') };

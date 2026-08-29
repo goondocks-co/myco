@@ -32,6 +32,27 @@ export function clampLimit(limit: number | undefined): number {
   return Math.min(limit, MAX_PAGE);
 }
 
+/** How a keyset page is ordered: the column no later write moves, the tie-breaking id, and the direction. */
+export interface KeysetSpec {
+  order: string;
+  id: string;
+  direction: 'ASC' | 'DESC';
+}
+
+/** The page size and the cursor's predicate for one keyset read, or null for a malformed cursor — refused rather than treated as absent. `where` is empty on page one; `params` bind it. */
+export function keyset(opts: { limit?: number; cursor?: string }, spec: KeysetSpec): { limit: number; where: string; params: readonly (number | string)[] } | null {
+  const limit = clampLimit(opts.limit);
+  if (opts.cursor === undefined) return { limit, where: '', params: [] };
+  const after = decodeCursor(opts.cursor);
+  if (after === null) return null;
+  const cmp = spec.direction === 'DESC' ? '<' : '>';
+  return {
+    limit,
+    where: `(${spec.order} ${cmp} ? OR (${spec.order} = ? AND ${spec.id} ${cmp} ?))`,
+    params: [after.createdAt, after.createdAt, after.id],
+  };
+}
+
 /** Trims an over-fetched row set to the page and emits a cursor only when the extra row proved another page exists. */
 export function page<T>(rows: readonly T[], limit: number, key: (row: T) => { createdAt: number; id: string }): Page<T> {
   const more = rows.length > limit;

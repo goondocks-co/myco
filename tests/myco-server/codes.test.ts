@@ -92,7 +92,7 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   },
   enrollment_revoked: async (r) => {
     const key = await issueEnrollmentAuthority(r.e.db, r.now);
-    expect(await revokeEnrollmentAuthority(r.e.db, key.id, r.now)).toEqual({ revoked: true });
+    expect(await revokeEnrollmentAuthority(r.e.db, key.id, r.now, 'mem_machine_1')).toEqual({ revoked: true });
     return r.join(key.key, 'machine_revoked');
   },
   unknown_kind: (r) => r.post(r.t1.token, { kind: 'made.up', payload: {} }),

@@ -217,7 +217,7 @@ describe('versioned schema steps', () => {
     }
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_events', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
-      'attachments', 'blob_reservations', 'blobs', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts',
+      'attachments', 'blob_reservations', 'blobs', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts', 'external_grants',
       'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'project_capabilities', 'projects',
       'prompt_batches', 'resolution_events', 'responses', 'skill_candidates', 'skill_lineage', 'skill_records',
       'skill_usage', 'spores', 'tags', 'tool_calls', 'transcript_segments', 'transcripts',

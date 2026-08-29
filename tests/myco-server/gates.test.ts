@@ -47,7 +47,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 31;
+const EMIT_CALLS = 37;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -441,7 +441,7 @@ describe('gates', () => {
     // spans every Project in its Deployment, so the quota admission looks reservations
     // up by credential, and the foreign key on a run's dispatching credential is
     // checked by credential alone. Both have to lead with what they are read by.
-    const byCredential = /idx_blob_reservations_credential|idx_agent_runs_credential/;
+    const byCredential = /idx_blob_reservations_credential|idx_agent_runs_credential|idx_external_grants_hash|idx_events_token_only/;
     for (const s of SCHEMA_DDL.filter((x) => /CREATE (UNIQUE )?INDEX .* ON \w+/.test(x) && !deploymentScoped.test(x) && !byCredential.test(x))) {
       expect(s).toMatch(/\(project_id/);
     }
@@ -886,7 +886,7 @@ describe('gates', () => {
     const { OWNER_ENV, ownerCookie } = await import('./helpers/owner.js');
     const cookie = await ownerCookie();
     for (const r of owner) {
-      const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{tokenId}', 'mt_x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64));
+      const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{memberId}', 'mem_machine_2').replace('{grantId}', 'eg_x').replace('{id}', 'x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64));
       const e = sqliteEnv();
       const res = await worker.fetch(
         new Request(`https://s${path}`, { method: r.method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' }, body: r.method === 'POST' ? '{}' : undefined }),
@@ -950,11 +950,16 @@ describe('gates', () => {
       'member POST /tokens/refresh',
       'owner DELETE /api/secrets/{name}',
       'owner GET /api/agents',
+      'owner GET /api/credentials',
+      'owner GET /api/credentials/{id}/activity',
+      'owner GET /api/enrollment',
+      'owner GET /api/members',
       'owner GET /api/projects',
       'owner GET /api/projects/{projectId}/blobs/{key}',
       'owner GET /api/projects/{projectId}/capabilities',
       'owner GET /api/projects/{projectId}/digests',
       'owner GET /api/projects/{projectId}/digests/{tier}/revisions',
+      'owner GET /api/projects/{projectId}/grants',
       'owner GET /api/projects/{projectId}/release-states',
       'owner GET /api/projects/{projectId}/sessions',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}',
@@ -964,15 +969,18 @@ describe('gates', () => {
       'owner GET /api/projects/{projectId}/skills/{skillId}',
       'owner GET /api/projects/{projectId}/spores',
       'owner GET /api/projects/{projectId}/spores/{sporeId}',
-      'owner GET /api/projects/{projectId}/tokens',
-      'owner GET /api/projects/{projectId}/tokens/{tokenId}/activity',
       'owner GET /api/secrets',
       'owner GET /api/settings',
       'owner GET /api/status',
       'owner GET /auth/me',
+      'owner POST /api/credentials/{id}/revoke',
+      'owner POST /api/enrollment',
+      'owner POST /api/enrollment/{id}/revoke',
+      'owner POST /api/members/{memberId}/revoke',
       'owner POST /api/projects',
-      'owner POST /api/projects/{projectId}/tokens',
-      'owner POST /api/projects/{projectId}/tokens/{tokenId}/revoke',
+      'owner POST /api/projects/{projectId}/grants',
+      'owner POST /api/projects/{projectId}/grants/{grantId}/revoke',
+      'owner POST /api/projects/{projectId}/grants/{grantId}/rotate',
       'owner POST /auth/link',
       'owner POST /auth/logout',
       'owner PUT /api/agents/{agentId}',

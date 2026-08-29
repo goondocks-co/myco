@@ -5,7 +5,7 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import {
   MEMBER_TOKEN_MAX_LINEAGE_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS,
-  issueMemberToken, revokeMemberLineage, revokeMemberToken,
+  issueMemberToken, revokeCredentialAsMember, revokeMemberLineage,
 } from '@myco-server-worker/auth/tokens.js';
 import { BLOB_RESERVATION_TTL_MS, MEMBER_TOKEN_BYTE_QUOTA, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
@@ -305,21 +305,21 @@ describe('token refresh', () => {
     for (const [pred, succ] of [[r.root, s1], [s1, s2], [s2, s3]] as const) expect(r.row(pred.tokenId).revoked_at).toBe(r.row(succ.tokenId).first_used_at);
     expect(r.row(s3.tokenId)).toMatchObject({ revoked_at: null, first_used_at: null });
     expect(r.e.sqlite.query(`SELECT id FROM member_credentials WHERE lineage_root = ? AND revoked_at IS NULL ORDER BY expires_at`).all(r.root.tokenId)).toEqual([{ id: s2.tokenId }, { id: s3.tokenId }]);
-    expect(await revokeMemberLineage(r.e.db, s2.tokenId, r.clock.now)).toEqual({ revoked: 2 });
+    expect(await revokeMemberLineage(r.e.db, s2.tokenId, r.clock.now, 'mem_machine_1')).toEqual({ revoked: 2 });
     expect(r.e.sqlite.query(`SELECT id FROM member_credentials WHERE lineage_root = ? AND revoked_at IS NULL`).all(r.root.tokenId)).toEqual([]);
     for (const t of [r.root, s1, s2, s3]) expect((await r.post(t.token, 9)).status).toBe(401);
     expect((await json(await r.post(other.token, 9))).persisted).toBe(true);
-    expect(await revokeMemberLineage(r.e.db, 'mt_nobody', r.clock.now)).toEqual({ revoked: 0 });
+    expect(await revokeMemberLineage(r.e.db, 'mt_nobody', r.clock.now, 'mem_machine_1')).toEqual({ revoked: 0 });
     const fresh = await rig();
     const a = await successorOf(fresh, fresh.root.token, fresh.root.expiresAt);
-    expect(await revokeMemberLineage(fresh.e.db, fresh.root.tokenId, fresh.clock.now)).toEqual({ revoked: 2 });
+    expect(await revokeMemberLineage(fresh.e.db, fresh.root.tokenId, fresh.clock.now, 'mem_machine_1')).toEqual({ revoked: 2 });
     for (const t of [fresh.root, a]) expect((await fresh.post(t.token, 9)).status).toBe(401);
   });
 
   it('refuses an expired or a revoked token on the refresh route like any other: 401 without a row written', async () => {
     const r = await rig();
     const revoked = await issueMemberToken(r.e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, T0);
-    await revokeMemberToken(r.e.db, revoked.tokenId, T0 + 1);
+    await revokeCredentialAsMember(r.e.db, 'mem_machine_1', revoked.tokenId, T0 + 1);
     r.clock.now = WINDOW_OPENS;
     expect((await r.refresh(revoked.token)).status).toBe(401);
     r.clock.now = r.root.expiresAt;

@@ -107,7 +107,7 @@ describe('superseded credential', () => {
     }, root.expiresAt - 1_000);
     expect(refreshed.refreshed).toBe(true);
     expect((e.sqlite.query(`SELECT first_used_at f FROM member_credentials WHERE predecessor_id = ?`).get(root.tokenId) as any).f).toBeNull();
-    await revokeMemberLineage(e.db, root.tokenId, now);
+    await revokeMemberLineage(e.db, root.tokenId, now, 'mem_machine_1');
 
     const { value: res, lines } = await emitted(() => worker.fetch(post(root.token), e.env));
     expect(res.status).toBe(401);

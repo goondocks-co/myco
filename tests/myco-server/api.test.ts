@@ -92,80 +92,41 @@ describe('sessions', () => {
   });
 });
 
-describe('tokens', () => {
-  it('mints once, lists without the hash, revokes, and reports what the token wrote', async () => {
+describe('credentials', () => {
+  it('lists without the hash, pages newest lineage first, reports what a credential wrote across projects, and revokes naming who', async () => {
     const e = sqliteEnv();
-    const minted = await worker.fetch(await asOwnerPost('/api/projects/proj_1/tokens', { machineId: 'machine_1' }), { ...e.env, ...OWNER_ENV });
-    expect(minted.status).toBe(201);
-    const issued = await minted.json() as { id: string; token: string };
-    // The id carries the `mt_` prefix; the secret itself is bare base64url and must satisfy
-    // the pattern the pipeline admits, or a freshly minted token could not authenticate.
-    expect(issued.id.startsWith('mt_')).toBe(true);
-    expect(MEMBER_TOKEN_PATTERN.test(issued.token)).toBe(true);
-
-    const listed = await worker.fetch(await asOwner('/api/projects/proj_1/tokens'), { ...e.env, ...OWNER_ENV });
-    const raw = await listed.text();
-    expect(raw).not.toContain(issued.token);
-    expect(raw).not.toContain('token_hash');
-    expect((JSON.parse(raw) as { tokens: { id: string }[] }).tokens.map((t) => t.id)).toEqual([issued.id]);
-
+    const { issueMemberToken } = await import('@myco-server-worker/auth/tokens.js');
+    const first = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 1_000);
+    const second = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, 2_000);
     e.sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at)
-                  VALUES ('proj_1','ev1','s1','${issued.id}','prompt','cli','{}','h1',10,10)`);
-    const activity = await worker.fetch(await asOwner(`/api/projects/proj_1/tokens/${issued.id}/activity`), { ...e.env, ...OWNER_ENV });
-    expect((await activity.json() as { rows: { eventId: string }[] }).rows.map((r) => r.eventId)).toEqual(['ev1']);
+                  VALUES ('proj_1','ev1','s1',?,'prompt','cli','{}','h1',10,10), ('proj_2','ev2','s2',?,'prompt','cli','{}','h2',20,20)`, [first.tokenId, first.tokenId]);
 
-    const revoked = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${issued.id}/revoke`), { ...e.env, ...OWNER_ENV });
+    const listed = await worker.fetch(await asOwner('/api/credentials?limit=1'), { ...e.env, ...OWNER_ENV });
+    const raw = await listed.text();
+    expect(raw).not.toContain('token_hash');
+    const page = JSON.parse(raw) as { rows: { id: string }[]; cursor: string | null };
+    expect(page.rows.map((t) => t.id)).toEqual([second.tokenId]);
+    const next = await worker.fetch(await asOwner(`/api/credentials?limit=1&cursor=${encodeURIComponent(page.cursor!)}`), { ...e.env, ...OWNER_ENV });
+    expect((await next.json() as { rows: { id: string }[] }).rows.map((t) => t.id)).toEqual([first.tokenId]);
+
+    const activity = await worker.fetch(await asOwner(`/api/credentials/${first.tokenId}/activity`), { ...e.env, ...OWNER_ENV });
+    expect((await activity.json() as { rows: { eventId: string; projectId: string }[] }).rows.map((r) => `${r.projectId}:${r.eventId}`)).toEqual(['proj_2:ev2', 'proj_1:ev1']);
+
+    const revoked = await worker.fetch(await asOwnerPost(`/api/credentials/${first.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
     expect(await revoked.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
-  });
-
-  it('revokes a credential whatever project segment the path carries, and names who revoked it', async () => {
-    // Membership is flat: a credential belongs to a member and the Deployment, so no
-    // project owns it and none can withhold it. The project segment is inert here — the
-    // dashboard re-scope in #918 removes it — and every revocation records its actor.
-    const e = sqliteEnv();
-    const minted = await worker.fetch(await asOwnerPost('/api/projects/proj_2/tokens', { machineId: 'machine_2' }), { ...e.env, ...OWNER_ENV });
-    const issued = await minted.json() as { id: string };
-    const res = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${issued.id}/revoke`), { ...e.env, ...OWNER_ENV });
-    expect(await res.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
-    // The actor lands in the same statement that revokes: a revocation and the record of
-    // who made it cannot come apart, so an operator can always answer who ended it. The
-    // `owner:` prefix marks the dashboard rather than a member — member ids carry
-    // `mem_`, and an unprefixed GitHub id is indistinguishable from one.
-    expect(e.sqlite.query(`SELECT revoked_by FROM member_credentials WHERE id = ?`).get(issued.id)).toEqual({ revoked_by: PRINCIPAL.id });
-    expect((e.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(issued.id) as any).revoked_at).not.toBeNull();
-    // A second revoke changes nothing: the row is already revoked.
-    const again = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${issued.id}/revoke`), { ...e.env, ...OWNER_ENV });
+    expect(e.sqlite.query(`SELECT revoked_by FROM member_credentials WHERE id = ?`).get(first.tokenId)).toEqual({ revoked_by: PRINCIPAL.id });
+    const again = await worker.fetch(await asOwnerPost(`/api/credentials/${first.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
     expect(await again.json()).toEqual({ revoked: false, revokedBy: PRINCIPAL.id });
   });
 
   it('denial of enrollment is attributable, not prevented: one member can revoke another\'s credential, and the record names who did', async () => {
-    // Flat membership puts revocation in reach of every member, so the threat here is
-    // denial of service rather than disclosure — a member ending somebody else's
-    // credential. That is accepted (D5) on the condition it can always be attributed:
-    // a destroy path that does not record its actor is the shape of Vault
-    // CVE-2023-24999, where an endpoint neither checked nor recorded who called it.
     const e = sqliteEnv();
-    const theirs = await worker.fetch(await asOwnerPost('/api/projects/proj_1/tokens', { machineId: 'machine_2', memberId: 'mem_them' }), { ...e.env, ...OWNER_ENV });
-    const victim = await theirs.json() as { id: string; token: string };
-
-    const revoked = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${victim.id}/revoke`), { ...e.env, ...OWNER_ENV });
+    const { issueMemberToken } = await import('@myco-server-worker/auth/tokens.js');
+    const theirs = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, 1_000);
+    const revoked = await worker.fetch(await asOwnerPost(`/api/credentials/${theirs.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
     expect(await revoked.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
-
-    // The victim is denied — and the row says who denied them, and whose credential it was.
-    expect(e.sqlite.query(`SELECT member_id, revoked_by FROM member_credentials WHERE id = ?`).get(victim.id))
-      .toEqual({ member_id: 'mem_them', revoked_by: PRINCIPAL.id });
-    const after = await worker.fetch(new Request('https://s/events', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${victim.token}`, 'cf-connecting-ip': '1.2.3.4', 'x-myco-project': 'proj_1', 'x-myco-protocol': '1' },
-      body: '{}',
-    }), e.env);
-    expect(after.status).toBe(401);
-  });
-
-  it('refuses a mint with no machine identity', async () => {
-    const e = sqliteEnv();
-    const res = await worker.fetch(await asOwnerPost('/api/projects/proj_1/tokens', {}), { ...e.env, ...OWNER_ENV });
-    expect(res.status).toBe(400);
+    expect(e.sqlite.query(`SELECT member_id, revoked_by FROM member_credentials WHERE id = ?`).get(theirs.tokenId))
+      .toEqual({ member_id: 'mem_machine_2', revoked_by: PRINCIPAL.id });
   });
 });
 
@@ -217,11 +178,11 @@ describe('GET /api/status', () => {
 });
 
 describe('project creation', () => {
-  it('onboards a project and then mints its first token', async () => {
+  it('onboards a project, and a member then mints an invitation for a runtime', async () => {
     const e = sqliteEnv();
     const created = await worker.fetch(await asOwnerPost('/api/projects', { projectId: 'proj_new', name: 'New' }), { ...e.env, ...OWNER_ENV });
     expect(created.status).toBe(201);
-    const minted = await worker.fetch(await asOwnerPost('/api/projects/proj_new/tokens', { machineId: 'machine_1' }), { ...e.env, ...OWNER_ENV });
+    const minted = await worker.fetch(await asOwnerPost('/api/enrollment', { memberId: 'mem_machine_1' }), { ...e.env, ...OWNER_ENV });
     expect(minted.status).toBe(201);
   });
 
@@ -282,19 +243,19 @@ describe('owner request bodies are bounded', () => {
     const e = sqliteEnv();
     const huge = 'x'.repeat(400_000);
     const res = await worker.fetch(
-      new Request('https://s/api/projects/proj_1/tokens', {
+      new Request('https://s/api/enrollment', {
         method: 'POST',
         headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
-        body: JSON.stringify({ machineId: 'm', pad: huge }),
+        body: JSON.stringify({ pad: huge }),
       }),
       { ...e.env, ...OWNER_ENV }
     );
     expect(res.status).toBe(400);
   });
 
-  it('refuses a machine identity outside the grammar ingest accepts', async () => {
+  it('refuses a member id outside the grammar the join path records', async () => {
     const e = sqliteEnv();
-    const res = await worker.fetch(await asOwnerPost('/api/projects/proj_1/tokens', { machineId: 'x'.repeat(65) }), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwnerPost('/api/enrollment', { memberId: `mem_${'x'.repeat(65)}` }), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(400);
   });
 });

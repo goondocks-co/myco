@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
-import { clampLimit, decodeCursor, page, type Page, type ReadScope } from './scope.js';
+import { keyset, page, type Page, type ReadScope } from './scope.js';
 
 /** A child projection read: its table, the columns to select, and the id column that breaks a tie on `created_at`. Ordered oldest-first — a session reads forward in time. */
 interface ChildQuery<T> {
@@ -18,20 +18,14 @@ async function listChildren<T>(
   sessionId: string,
   opts: { limit?: number; cursor?: string } = {}
 ): Promise<Page<T & { orderedAt: number }>> {
-  const limit = clampLimit(opts.limit);
-  const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
-  if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
   const order = query.orderColumn;
-  const where = after
-    ? `AND (${order} > ? OR (${order} = ? AND ${query.idColumn} > ?))`
-    : '';
+  const k = keyset(opts, { order, id: query.idColumn, direction: 'ASC' });
+  if (k === null) return { rows: [], cursor: null };
+  const limit = k.limit;
   const sql = `SELECT ${query.columns}, ${order} AS order_at, ${query.idColumn} FROM ${query.table}
-                WHERE project_id = ? AND session_id = ? ${where}
+                WHERE project_id = ? AND session_id = ? ${k.where === '' ? '' : `AND ${k.where}`}
                 ORDER BY ${order} ASC, ${query.idColumn} ASC LIMIT ?`;
-  const statement = after
-    ? db.prepare(sql).bind(scope.projectId, sessionId, after.createdAt, after.createdAt, after.id, limit + 1)
-    : db.prepare(sql).bind(scope.projectId, sessionId, limit + 1);
-  const { results } = await statement.all<Record<string, unknown>>();
+  const { results } = await db.prepare(sql).bind(scope.projectId, sessionId, ...k.params, limit + 1).all<Record<string, unknown>>();
   const rows = results.map((row) => ({ ...query.map(row), orderedAt: row.order_at as number, __id: row[query.idColumn] as string }));
   const paged = page(rows, limit, (r) => ({ createdAt: r.orderedAt, id: r.__id }));
   return { rows: paged.rows.map(({ __id, ...rest }) => rest as T & { orderedAt: number }), cursor: paged.cursor };

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   MEMBER_TOKEN_BYTES, MEMBER_TOKEN_TTL_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_MAX_LINEAGE_MS,
-  mintMemberToken, issueMemberToken, revokeMemberToken, revokeMemberLineage, authenticateServerMemberToken,
+  mintMemberToken, issueMemberToken, revokeCredentialAsMember, revokeMemberLineage, authenticateServerMemberToken,
 } from '@myco-server-worker/auth/tokens.js';
 import { MEMBER_TOKEN_BYTE_QUOTA, TOKEN_ID_PREFIX } from '@myco-server-worker/constants.js';
 import { SchemaMismatchError } from '@myco-server-worker/telemetry.js';
@@ -61,19 +61,19 @@ describe('member tokens', () => {
 
   it('revokes a whole lineage by any of its ids in one statement, counting the rows that changed', async () => {
     const { db, calls } = recordingDb(3);
-    expect(await revokeMemberLineage(db, 'mt_mid', 9_000)).toEqual({ revoked: 3 });
+    expect(await revokeMemberLineage(db, 'mt_mid', 9_000, 'mem_machine_1')).toEqual({ revoked: 3 });
     expect(calls).toHaveLength(1);
-    expect(calls[0].sql).toMatch(/UPDATE member_credentials SET revoked_at = \? WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = \?\) AND revoked_at IS NULL/);
-    expect(calls[0].params).toEqual([9_000, 'mt_mid']);
-    expect(await revokeMemberLineage(recordingDb(0).db, 'mt_missing', 9_000)).toEqual({ revoked: 0 });
+    expect(calls[0].sql).toMatch(/UPDATE member_credentials SET revoked_at = \?, revoked_by = \? WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = \?\) AND revoked_at IS NULL/);
+    expect(calls[0].params).toEqual([9_000, 'mem_machine_1', 'mt_mid']);
+    expect(await revokeMemberLineage(recordingDb(0).db, 'mt_missing', 9_000, 'mem_machine_1')).toEqual({ revoked: 0 });
   });
 
   it('revokes by id and only once, reporting whether a live row matched', async () => {
     const { db, calls } = recordingDb();
-    expect(await revokeMemberToken(db, 'mt_1', 9_000)).toEqual({ revoked: true });
-    expect(calls[0].sql).toMatch(/UPDATE member_credentials SET revoked_at = \? WHERE id = \? AND revoked_at IS NULL/);
-    expect(calls[0].params).toEqual([9_000, 'mt_1']);
-    expect(await revokeMemberToken(recordingDb(0).db, 'mt_missing', 9_000)).toEqual({ revoked: false });
+    expect(await revokeCredentialAsMember(db, 'mem_machine_1', 'mt_1', 9_000)).toEqual({ revoked: true, revokedBy: 'mem_machine_1' });
+    expect(calls[0].sql).toMatch(/UPDATE member_credentials SET revoked_at = \?, revoked_by = \? WHERE id = \? AND revoked_at IS NULL/);
+    expect(calls[0].params).toEqual([9_000, 'mem_machine_1', 'mt_1']);
+    expect(await revokeCredentialAsMember(recordingDb(0).db, 'mem_machine_1', 'mt_missing', 9_000)).toEqual({ revoked: false, revokedBy: 'mem_machine_1' });
   });
 
   it('authenticates a live token digest and returns its bound machine, volume, lifetime, lineage, predecessor and first use', async () => {

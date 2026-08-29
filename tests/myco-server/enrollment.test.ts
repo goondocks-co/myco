@@ -70,12 +70,12 @@ describe('enrollment authorities', () => {
   it('refuses a revoked key, and revoking a spent key reports no change', async () => {
     const { db } = store();
     const a = await issueEnrollmentAuthority(db, NOW);
-    expect(await revokeEnrollmentAuthority(db, a.id, NOW)).toEqual({ revoked: true });
+    expect(await revokeEnrollmentAuthority(db, a.id, NOW, 'mem_machine_1')).toEqual({ revoked: true });
     expect(await spendEnrollmentAuthority(db, a.key, NOW, 'r')).toEqual({ ok: false, reason: 'revoked' });
 
     const b = await issueEnrollmentAuthority(db, NOW);
     await spendEnrollmentAuthority(db, b.key, NOW, 'r');
-    expect(await revokeEnrollmentAuthority(db, b.id, NOW)).toEqual({ revoked: false });
+    expect(await revokeEnrollmentAuthority(db, b.id, NOW, 'mem_machine_1')).toEqual({ revoked: false });
   });
 
   it('refuses an unknown key, and text that is not a key at all', async () => {

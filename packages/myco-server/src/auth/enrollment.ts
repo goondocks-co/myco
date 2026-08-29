@@ -20,6 +20,7 @@
 import { toBase64Url } from '../base64.js';
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
+import { MEMBER_REVOKED_BY, memberLive, memberRevokedByParams } from '../db/liveness.js';
 
 /** Bytes of entropy in an enrollment key. 32 = 256 bits. */
 export const ENROLLMENT_KEY_BYTES = 32;
@@ -111,31 +112,72 @@ export async function spendEnrollmentAuthority(
 
   const spend = await db
     .prepare(`UPDATE enrollment_authorities SET used_at = ?, used_by_runtime = ?
-               WHERE key_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?`)
+               WHERE key_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+                 AND (member_id IS NULL OR ${memberLive('enrollment_authorities.member_id')})
+                 AND (created_by_member IS NULL OR ${memberLive('enrollment_authorities.created_by_member')})`)
     .bind(nowMs, runtime, keyHash, nowMs)
     .run();
 
+  // The read only explains a refusal. An invitation whose member, or whose minter, is revoked is void: it answers as revoked.
   const row = await db
-    .prepare(`SELECT id, used_at, revoked_at, expires_at, member_id FROM enrollment_authorities WHERE key_hash = ?`)
+    .prepare(`SELECT a.id, a.used_at, a.revoked_at, a.expires_at, a.member_id,
+                     ((a.member_id IS NOT NULL AND NOT ${memberLive('a.member_id')}) OR (a.created_by_member IS NOT NULL AND NOT ${memberLive('a.created_by_member')})) AS voided
+                FROM enrollment_authorities a WHERE a.key_hash = ?`)
     .bind(keyHash)
-    .first<{ id: string; used_at: number | null; revoked_at: number | null; expires_at: number; member_id: string | null }>();
+    .first<{ id: string; used_at: number | null; revoked_at: number | null; expires_at: number; member_id: string | null; voided: number }>();
 
   if (spend.meta.changes === 1) return { ok: true, id: row!.id, memberId: row!.member_id };
   if (row === null) return { ok: false, reason: 'unknown' };
-  if (row.revoked_at !== null) return { ok: false, reason: 'revoked' };
+  if (row.revoked_at !== null || Number(row.voided) === 1) return { ok: false, reason: 'revoked' };
   if (row.used_at !== null) return { ok: false, reason: 'already_used' };
   return { ok: false, reason: 'expired' };
 }
 
-/** Revokes an unused key. `revoked` is false when no unused row matched the id. */
+/** Revokes an unused key, naming who. `revoked` is false when no unused row matched the id. */
 export async function revokeEnrollmentAuthority(
-  db: RelationalStore, id: string, nowMs: number,
+  db: RelationalStore, id: string, nowMs: number, revokedBy: string,
 ): Promise<{ revoked: boolean }> {
   const result = await db
-    .prepare(`UPDATE enrollment_authorities SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL AND used_at IS NULL`)
-    .bind(nowMs, id)
+    .prepare(`UPDATE enrollment_authorities SET revoked_at = ?, revoked_by = ? WHERE id = ? AND revoked_at IS NULL AND used_at IS NULL`)
+    .bind(nowMs, revokedBy, id)
     .run();
   return { revoked: result.meta.changes === 1 };
+}
+
+/** Every unspent invitation minted for a member or by a member, revoked and attributed — effective only once the member row carries this revocation. */
+export function revokeInvitationsOfMember(db: RelationalStore, memberId: string, revokedBy: string, nowMs: number): PreparedStatement {
+  return db
+    .prepare(`UPDATE enrollment_authorities SET revoked_at = ?, revoked_by = ?
+               WHERE (member_id = ? OR created_by_member = ?) AND used_at IS NULL AND revoked_at IS NULL AND ${MEMBER_REVOKED_BY}`)
+    .bind(nowMs, revokedBy, memberId, memberId, ...memberRevokedByParams(memberId, nowMs, revokedBy));
+}
+
+export interface InvitationRow {
+  id: string;
+  /** The member the invitation adds a runtime to, or null for a new member. */
+  memberId: string | null;
+  createdBy: string | null;
+  createdAt: number;
+  expiresAt: number;
+}
+
+/** Every live invitation: unspent, unrevoked, unexpired, and its member and minter live. Never the key or its digest. */
+export async function listInvitations(db: RelationalStore, nowMs: number): Promise<InvitationRow[]> {
+  const { results } = await db
+    .prepare(`SELECT id, member_id, created_by_member, created_at, expires_at FROM enrollment_authorities
+               WHERE used_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+                 AND (member_id IS NULL OR ${memberLive('enrollment_authorities.member_id')})
+                 AND (created_by_member IS NULL OR ${memberLive('enrollment_authorities.created_by_member')})
+               ORDER BY created_at DESC, id DESC`)
+    .bind(nowMs)
+    .all<Record<string, unknown>>();
+  return results.map((r) => ({
+    id: r.id as string,
+    memberId: (r.member_id as string | null) ?? null,
+    createdBy: (r.created_by_member as string | null) ?? null,
+    createdAt: r.created_at as number,
+    expiresAt: r.expires_at as number,
+  }));
 }
 
 /**
