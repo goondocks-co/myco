@@ -886,7 +886,7 @@ describe('gates', () => {
     const { OWNER_ENV, ownerCookie } = await import('./helpers/owner.js');
     const cookie = await ownerCookie();
     for (const r of owner) {
-      const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{memberId}', 'mem_machine_2').replace('{grantId}', 'eg_x').replace('{id}', 'x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64));
+      const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{runId}', 'r1').replace('{memberId}', 'mem_machine_2').replace('{grantId}', 'eg_x').replace('{id}', 'x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64));
       const e = sqliteEnv();
       const res = await worker.fetch(
         new Request(`https://s${path}`, { method: r.method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' }, body: r.method === 'POST' ? '{}' : undefined }),
@@ -957,10 +957,13 @@ describe('gates', () => {
       'owner GET /api/projects',
       'owner GET /api/projects/{projectId}/blobs/{key}',
       'owner GET /api/projects/{projectId}/capabilities',
+      'owner GET /api/projects/{projectId}/cortex/instructions',
       'owner GET /api/projects/{projectId}/digests',
       'owner GET /api/projects/{projectId}/digests/{tier}/revisions',
       'owner GET /api/projects/{projectId}/grants',
       'owner GET /api/projects/{projectId}/release-states',
+      'owner GET /api/projects/{projectId}/runs',
+      'owner GET /api/projects/{projectId}/runs/{runId}',
       'owner GET /api/projects/{projectId}/sessions',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}/transcript',

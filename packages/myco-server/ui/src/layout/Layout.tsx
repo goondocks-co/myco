@@ -22,9 +22,9 @@ interface ProjectNavItem {
 const PROJECT_NAV: ProjectNavItem[] = [
   { label: 'Overview', icon: LayoutDashboard, suffix: '' },
   { label: 'Sessions', icon: MessageSquare, suffix: null },
-  { label: 'Cortex', icon: Brain, suffix: null },
-  { label: 'Skills', icon: Sparkles, suffix: null },
-  { label: 'Agent runs', icon: Bot, suffix: null },
+  { label: 'Cortex', icon: Brain, suffix: '/cortex' },
+  { label: 'Skills', icon: Sparkles, suffix: '/skills' },
+  { label: 'Agent runs', icon: Bot, suffix: '/runs' },
   { label: 'Access', icon: KeyRound, suffix: '/access' },
 ];
 
@@ -93,7 +93,7 @@ export function Layout() {
                 );
               }
               return (
-                <NavLink key={item.label} to={`/p/${encodeURIComponent(current.projectId)}${item.suffix}`} end className={linkClass}>
+                <NavLink key={item.label} to={`/p/${encodeURIComponent(current.projectId)}${item.suffix}`} end={item.suffix === ''} className={linkClass}>
                   <Icon className="h-4 w-4" />
                   {item.label}
                 </NavLink>

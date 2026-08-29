@@ -37,7 +37,7 @@ function importSpecifiers(source: string): string[] {
 }
 
 /** The modules the core is made of. A named floor, not a count: a count sails through a silent collapse. */
-const CORE_MODULES = ['blobs.ts', 'children.ts', 'meta.ts', 'scope.ts', 'credentials.ts', 'sessions.ts', 'transcript.ts'] as const;
+const CORE_MODULES = ['blobs.ts', 'children.ts', 'cortex.ts', 'meta.ts', 'runs.ts', 'scope.ts', 'credentials.ts', 'sessions.ts', 'transcript.ts'] as const;
 
 const FORBIDDEN_IMPORT = [/\/auth\//, /cookie/i, /\/pipeline\.js/, /\/routes\.js/, /\/context\.js/, /\/api\//];
 
@@ -58,6 +58,15 @@ describe('read layer', () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it('never names the run columns that carry configuration: overrides, context, cost detail', () => {
+    // The run table holds the resolved provider configuration in three columns a
+    // dashboard has no use for. A column selected under an alias still has to be
+    // named, so the names appearing anywhere in the run reader is the gate.
+    const source = readFileSync(join(READ_DIR, 'runs.ts'), 'utf8');
+    const named = ['execution_overrides', 'run_context', 'cost_data'].filter((column) => source.includes(column));
+    expect(named).toEqual([]);
   });
 
   it('names no Request type and takes no full Env', () => {

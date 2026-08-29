@@ -3,11 +3,14 @@ import { Layout } from './layout/Layout';
 import { readPendingLink } from './lib/pending-link';
 import { readLastProject } from './lib/project-memory';
 import { Access } from './pages/Access';
+import { AgentRuns } from './pages/AgentRuns';
+import { Cortex } from './pages/Cortex';
 import { LinkPage } from './pages/Link';
 import { ProjectAccess } from './pages/ProjectAccess';
 import { NotFound } from './pages/NotFound';
 import { ProjectHome } from './pages/ProjectHome';
 import { Projects } from './pages/Projects';
+import { Skills } from './pages/Skills';
 import { Status } from './pages/Status';
 
 /** `/` is where sign-in lands: a pending link resumes first, then the last project, then Projects. */
@@ -25,6 +28,11 @@ export default function App() {
       <Route element={<Layout />}>
         <Route path="/projects" element={<Projects />} />
         <Route path="/p/:projectId" element={<ProjectHome />} />
+        <Route path="/p/:projectId/cortex" element={<Cortex />} />
+        <Route path="/p/:projectId/skills" element={<Skills />} />
+        <Route path="/p/:projectId/skills/:skillId" element={<Skills />} />
+        <Route path="/p/:projectId/runs" element={<AgentRuns />} />
+        <Route path="/p/:projectId/runs/:runId" element={<AgentRuns />} />
         <Route path="/p/:projectId/access" element={<ProjectAccess />} />
         <Route path="/access" element={<Access />} />
         <Route path="/status" element={<Status />} />

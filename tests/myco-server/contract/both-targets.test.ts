@@ -33,6 +33,7 @@ import { migrateAndSeed } from '../helpers/d1.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MAX_BLOB_BYTES, MAX_PROJECTS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
+import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
 
 import { blobPost, envelope, memberPost, sqliteEnv, TEXT_MEDIA_TYPE, uuid } from '../helpers/fixtures.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
@@ -300,6 +301,35 @@ describe('access administration agrees on both stores', () => {
       });
     }
     expect(outcomes[0]).toEqual({ revoked: { ok: true }, afterRevoke: null, oldKey: null, newKey: 'proj_1', foreign: null, stillLive: true });
+    expect(outcomes[1]).toEqual(outcomes[0]);
+  });
+});
+
+describe('agent runs read the same on both stores', () => {
+  it('lists a failed run as failed and opens it with its record and phases, identically on each target', async () => {
+    const checkpoints = JSON.stringify({ schemaVersion: 2, harness: 'h', providerConfig: { type: 'openai', apiKey: 'sk-canary' }, phases: { prepare: { name: 'prepare', status: 'completed', updatedAt: 5, turnsUsed: 2 }, write: { status: 'failed', updatedAt: 6, capHit: true, summary: 'ran out of turns' } } });
+    const outcomes: unknown[] = [];
+    for (const t of TARGETS) {
+      await t.env.db.prepare(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_c', 'c', 'built-in', 1, 1)`).run();
+      await t.env.db.prepare(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, error, checkpoints, execution_overrides, resume_status, resumable)
+        VALUES ('proj_1', 'run_c', 'agent_c', 'digest', 'failed', 1000, 2000, 'boom', ?, '{"provider":{"apiKey":"sk-canary"}}', 'session_expired', 1)`).bind(checkpoints).run();
+      const listed = await listRuns(t.env.db, { projectId: 'proj_1' });
+      const detail = await getRunDetail(t.env.db, { projectId: 'proj_1' }, 'run_c');
+      const foreign = await getRunDetail(t.env.db, { projectId: 'proj_2' }, 'run_c');
+      outcomes.push({ listed, detail, foreign, leaks: /sk-canary|providerConfig/.test(JSON.stringify({ listed, detail })) });
+    }
+    expect(outcomes[0]).toEqual({
+      listed: { rows: [{ id: 'run_c', agentId: 'agent_c', task: 'digest', status: 'failed', provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true }], cursor: null },
+      detail: {
+        run: { id: 'run_c', agentId: 'agent_c', task: 'digest', status: 'failed', provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true, instruction: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: null, reasoningLevel: null, resumeMode: null, resumeAttempts: 0, error: 'boom', dispatchedBy: null, usageData: null, actionsTaken: null },
+        phases: [
+          { name: 'prepare', status: 'completed', updatedAt: 5, summary: null, turnsUsed: 2, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: false, semanticCheckBlocked: false, postConditionFailed: false },
+          { name: 'write', status: 'failed', updatedAt: 6, summary: 'ran out of turns', turnsUsed: null, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: true, semanticCheckBlocked: false, postConditionFailed: false },
+        ],
+      },
+      foreign: null,
+      leaks: false,
+    });
     expect(outcomes[1]).toEqual(outcomes[0]);
   });
 });

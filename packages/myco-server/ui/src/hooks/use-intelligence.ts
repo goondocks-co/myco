@@ -1,0 +1,200 @@
+import { useQuery } from '@tanstack/react-query';
+import { fetchJson } from '../lib/api';
+import { usePaged } from './use-paged';
+
+export interface RunListRow {
+  id: string;
+  agentId: string;
+  task: string | null;
+  status: string;
+  provider: string | null;
+  model: string | null;
+  startedAt: number | null;
+  resumedAt: number | null;
+  completedAt: number | null;
+  tokensUsed: number | null;
+  costUsd: number | null;
+  costSource: string | null;
+  dryRun: boolean;
+  resumable: boolean;
+  resumeStatus: string | null;
+  failed: boolean;
+}
+
+export interface RunDetailRow extends RunListRow {
+  instruction: string | null;
+  sessionRef: string | null;
+  actualCostUsd: number | null;
+  estimatedCostUsd: number | null;
+  reasoningLevel: string | null;
+  resumeMode: string | null;
+  resumeAttempts: number;
+  error: string | null;
+  dispatchedBy: string | null;
+  usageData: string | null;
+  actionsTaken: string | null;
+}
+
+export interface PhaseRow {
+  name: string;
+  status: string;
+  updatedAt: number | null;
+  summary: string | null;
+  turnsUsed: number | null;
+  allowedMaxTurns: number | null;
+  tokensUsed: number | null;
+  costUsd: number | null;
+  costSource: string | null;
+  capHit: boolean;
+  semanticCheckBlocked: boolean;
+  postConditionFailed: boolean;
+}
+
+export interface ReportRow {
+  id: number;
+  runId: string;
+  agentId: string;
+  action: string;
+  summary: string;
+  details: string | null;
+  createdAt: number;
+}
+
+export interface RunDetailResponse {
+  run: RunDetailRow;
+  /** Empty when the run recorded no phases; null when its record could not be read. */
+  phases: PhaseRow[] | null;
+  reports: ReportRow[];
+  projectId: string;
+}
+
+export interface AgentRow {
+  id: string;
+  name: string;
+  provider: string | null;
+  model: string | null;
+  enabled: boolean;
+}
+
+export interface SkillRecord {
+  id: string;
+  agentId: string;
+  name: string;
+  displayName: string;
+  description: string;
+  status: string;
+  generation: number;
+  sourceIds: string;
+  usageCount: number;
+  lastUsedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LineageRow {
+  id: string;
+  skillId: string;
+  generation: number;
+  action: string;
+  rationale: string;
+  sourceIdsAdded: string;
+  contentSnapshot: string;
+  createdAt: number;
+}
+
+export interface ReleaseStateRow {
+  id: string;
+  namespace: string;
+  recordId: string;
+  state: string;
+  confidence: string;
+  basisKind: string | null;
+  basisRef: string | null;
+  basisSha: string | null;
+  releasePrNumber: number | null;
+  reason: string | null;
+  checkedAt: number;
+}
+
+export interface DigestRow {
+  id: string;
+  agentId: string;
+  tier: number;
+  content: string;
+  substrateHash: string | null;
+  generatedAt: number;
+}
+
+export interface DigestRevisionRow {
+  id: number;
+  tier: number;
+  content: string;
+  metadata: string | null;
+  runId: string | null;
+  parentRevisionId: number | null;
+  createdAt: number;
+}
+
+export interface InstructionsRow {
+  id: string;
+  agentId: string;
+  content: string;
+  inputHash: string;
+  sourceRunId: string | null;
+  generatedAt: number;
+}
+
+const seg = (value: string) => encodeURIComponent(value);
+const project = (projectId: string) => `/api/projects/${seg(projectId)}`;
+
+/** A project's runs, newest first; `status` narrows to one status or, null, none. */
+export function useRuns(projectId: string, status: string | null) {
+  return usePaged<RunListRow>(['runs', projectId, status ?? 'all'], `${project(projectId)}/runs?limit=50${status === null ? '' : `&status=${seg(status)}`}`);
+}
+
+export function useRun(projectId: string, runId: string | undefined) {
+  return useQuery({
+    queryKey: ['run', projectId, runId],
+    queryFn: ({ signal }) => fetchJson<RunDetailResponse>(`${project(projectId)}/runs/${seg(runId ?? '')}`, signal),
+    enabled: runId !== undefined,
+  });
+}
+
+export function useAgents() {
+  return useQuery({ queryKey: ['agents'], queryFn: ({ signal }) => fetchJson<{ agents: AgentRow[] }>('/api/agents', signal) });
+}
+
+export function useSkills(projectId: string) {
+  return useQuery({ queryKey: ['skills', projectId], queryFn: ({ signal }) => fetchJson<{ skills: SkillRecord[] }>(`${project(projectId)}/skills?limit=200`, signal) });
+}
+
+export function useSkill(projectId: string, skillId: string | undefined) {
+  return useQuery({
+    queryKey: ['skill', projectId, skillId],
+    queryFn: ({ signal }) => fetchJson<{ content: string | null; lineage: LineageRow[] }>(`${project(projectId)}/skills/${seg(skillId ?? '')}`, signal),
+    enabled: skillId !== undefined,
+  });
+}
+
+export function useSkillReleaseStates(projectId: string) {
+  return useQuery({
+    queryKey: ['release-states', projectId, 'skill'],
+    queryFn: ({ signal }) => fetchJson<{ releaseStates: ReleaseStateRow[] }>(`${project(projectId)}/release-states?namespace=skill&limit=200`, signal),
+  });
+}
+
+export function useDigests(projectId: string) {
+  return useQuery({ queryKey: ['digests', projectId], queryFn: ({ signal }) => fetchJson<{ digests: DigestRow[] }>(`${project(projectId)}/digests`, signal) });
+}
+
+export function useDigestRevisions(projectId: string, agentId: string | null, tier: number | null) {
+  return useQuery({
+    queryKey: ['digest-revisions', projectId, agentId, tier],
+    queryFn: ({ signal }) => fetchJson<{ revisions: DigestRevisionRow[] }>(`${project(projectId)}/digests/${tier ?? 0}/revisions?agentId=${seg(agentId ?? '')}`, signal),
+    enabled: agentId !== null && tier !== null,
+  });
+}
+
+export function useInstructions(projectId: string) {
+  return useQuery({ queryKey: ['instructions', projectId], queryFn: ({ signal }) => fetchJson<{ instructions: InstructionsRow[] }>(`${project(projectId)}/cortex/instructions`, signal) });
+}
