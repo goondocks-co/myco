@@ -265,6 +265,14 @@ var set.
   the old version is unloaded. Missing any of these leaves ghost state that
   contaminates the upgrade test.
 
+- **`git checkout -- <file>` restores from the INDEX, not HEAD — unsafe for
+  planted-negative revert steps.** When running mutate-a-file /
+  verify-gate-fails / restore-the-file cycles during upgrade-path testing, do
+  not restore with `git checkout -- <file>`. During a long change the index is
+  usually stale, so the "restore" silently reverts real uncommitted work
+  rather than just the test mutation. Snapshot the file before mutating and
+  restore from that snapshot instead.
+
 - **CI environment is authoritative for upgrade path, not local.** This is a design
   principle, not a workaround. Upgrade-path correctness is defined by behavior on a
   clean machine — exactly what CI provides.
