@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, afterAll } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -36,6 +36,19 @@ function volume({ migrated = true }: { migrated?: boolean } = {}): { databasePat
 }
 
 describe('the self-hosted entry point', () => {
+  it('serves the dashboard shell beside the API when a build directory is given, and the API keeps its own refusals', async () => {
+    const uiDir = mkdtempSync(join(tmpdir(), 'myco-ui-'));
+    roots.push(uiDir);
+    writeFileSync(join(uiDir, 'index.html'), '<!doctype html><title>Myco</title>');
+    const handler = await createBunHandler({ ...volume(), header: 'x-forwarded-for', uiDir });
+    const shell = await handler.fetch(new Request('https://s/p/proj_1/sessions'));
+    expect({ status: shell.status, type: shell.headers.get('content-type') }).toEqual({ status: 200, type: 'text/html; charset=utf-8' });
+    const api = new Request('https://s/api/status');
+    api.headers.set('x-forwarded-for', '203.0.113.7');
+    expect((await handler.fetch(api)).status).toBe(401);
+    handler.close();
+  });
+
   it('serves health from a mounted volume', async () => {
     const handler = await createBunHandler({ ...volume(), header: 'x-forwarded-for' });
     expect((await handler.fetch(new Request('https://s/health'))).status).toBe(200);

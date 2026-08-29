@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RETIRED_ROUTES, ROUTES } from '@myco-server-worker/routes.js';
+import { RETIRED_ROUTES, ROUTES, isOwnedPath, ownedPathPatterns } from '@myco-server-worker/routes.js';
 import worker from '@myco-server-worker/index.js';
 import { createIngestThrottle } from './helpers/throttle.js';
 import { issueMemberToken, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
@@ -20,6 +20,16 @@ import { OWNER_ENV as OWNER_ENV2, ownerCookie as ownerCookie2 } from './helpers/
 const WORKER = fileURLToPath(new URL('../../packages/myco-server/', import.meta.url));
 const SRC = join(WORKER, 'src');
 const TESTS = fileURLToPath(new URL('./', import.meta.url));
+
+/** The `[assets]` table of the deploy config, up to the next table header. */
+function assetsBlock(): string {
+  const toml = readFileSync(join(WORKER, 'wrangler.toml'), 'utf8');
+  const start = toml.indexOf('[assets]');
+  expect(start).toBeGreaterThan(-1);
+  const rest = toml.slice(start + '[assets]'.length);
+  const end = rest.search(/^\[/m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
 const allFiles = (dir: string): string[] =>
   readdirSync(dir).flatMap((e) => {
     const f = join(dir, e);
@@ -867,6 +877,22 @@ describe('gates', () => {
       .filter(({ line }) => line.length > 0 && !line.startsWith('#'))
       .filter(({ line }) => !/^\[\[?[A-Za-z0-9_.]+\]\]?$/.test(line) && !/^[A-Za-z0-9_]+\s*=/.test(line) && !/^[\]}]/.test(line) && !/^["'\d]/.test(line));
     expect(malformed).toEqual([]);
+  });
+
+  it('names in run_worker_first exactly the paths the server owns, live and retired, so the shell answers nothing the server should', () => {
+    const list = /^run_worker_first = \[([^\]]*)\]$/m.exec(assetsBlock())?.[1] ?? '';
+    const patterns = [...list.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+    expect(patterns).toEqual(ownedPathPatterns());
+    for (const { path } of [...ROUTES, ...RETIRED_ROUTES]) {
+      expect({ path, owned: isOwnedPath(path, patterns) }).toEqual({ path, owned: true });
+    }
+  });
+
+  it('serves the shell from the edge store in the platform\'s own shape, and declares no asset binding the server never reads', () => {
+    const assets = assetsBlock();
+    expect(assets).toMatch(/^directory = "ui\/dist"$/m);
+    expect(assets).toMatch(/^not_found_handling = "single-page-application"$/m);
+    expect(assets).not.toMatch(/^binding = /m);
   });
 
   it('pins the full route table, so no route of any kind is added without a decision', () => {

@@ -1,0 +1,55 @@
+/*
+ * Theme-stable accent palette.
+ *
+ * --sage / --sage-dim / --ochre / --terracotta are intentionally NOT scoped by
+ * `[data-theme=...]`. They read the same hue regardless of which theme primary
+ * is active, so sage stays sage in Plum and ochre stays ochre in Moss. Values
+ * still shift between dark and light mode for legibility on either ground.
+ *
+ * --secondary / --tertiary continue to follow the older neutral-accent family
+ * (moss/dusk/plum/slate) — the sage and terracotta themes already define their
+ * own values in their theme files.
+ */
+
+/* --- Theme-stable accents (dark mode default) -------------------------- */
+:root {
+  --sage: #abcfb8;
+  --sage-dim: #7b9e89;
+  --ochre: #edbf7f;
+  --terracotta: #ffb4a1;
+}
+
+/* --- Theme-stable accents (light mode) --------------------------------- */
+:root.light {
+  --sage: #446553;
+  --sage-dim: #5d8270;
+  --ochre: #8a5e15;
+  --terracotta: #8B5C44;
+}
+
+/* --- Neutral-accent family secondary/tertiary -------------------------- */
+:root[data-theme="moss"],
+:root[data-theme="dusk"],
+:root[data-theme="plum"],
+:root[data-theme="slate"] {
+  --secondary: #d3b172;
+  --on-secondary: #3d2b0c;
+  --secondary-container: #5a3f10;
+
+  --tertiary: #d28a73;
+  --on-tertiary: #44180e;
+  --tertiary-container: #7f4334;
+}
+
+:root[data-theme="moss"].light,
+:root[data-theme="dusk"].light,
+:root[data-theme="plum"].light,
+:root[data-theme="slate"].light {
+  --secondary: #6b4e1e;
+  --on-secondary: #ffffff;
+  --secondary-container: #e6d1a3;
+
+  --tertiary: #8f4d3c;
+  --on-tertiary: #ffffff;
+  --tertiary-container: #e7b5aa;
+}

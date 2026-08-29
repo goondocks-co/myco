@@ -73,6 +73,7 @@ function manifestPaths(): string[] {
     'packages/myco/ui/package.json',
     'packages/myco-team/worker/package.json',
     'packages/myco-server/package.json',
+    'packages/myco-server/ui/package.json',
   ]) {
     paths.add(nested);
   }
