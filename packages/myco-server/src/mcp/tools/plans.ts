@@ -19,7 +19,7 @@ import { utf8, uuidv5 } from '../../hash.js';
 import { ingestEvent } from '../../ingest/events.js';
 import { getPlan, listProjectPlans, type ProjectPlanRow } from '../../read/plans.js';
 import type { ReadScope } from '../../read/scope.js';
-import { failure, scopeOf, type ToolContext } from '../context.js';
+import { failure, memberOf, scopeOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
 /** What the `plan` events this tool emits say produced them. */
@@ -126,7 +126,8 @@ async function save(input: ToolInput, ctx: ToolContext, scope: ReadScope): Promi
     payload,
   };
   const bodyBytes = utf8(JSON.stringify(payload)).byteLength;
-  const result = await ingestEvent(ctx.env.db, { projectId: scope.projectId, machineId: ctx.machineId, tokenId: ctx.tokenId, bodyBytes, now: ctx.now }, envelope);
+  const member = memberOf(ctx, 'myco_plans');
+  const result = await ingestEvent(ctx.env.db, { projectId: scope.projectId, machineId: member.machineId, tokenId: member.tokenId, bodyBytes, now: ctx.now }, envelope);
   if (!result.persisted || result.projected === false) return { ok: false, code: result.code, error: result.reason };
 
   const row = await getPlan(ctx.env.db, scope, planKey);

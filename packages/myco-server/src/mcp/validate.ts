@@ -18,6 +18,9 @@ export class ToolError extends Error {
   }
 }
 
+/** The one refusal for a tool the caller may not reach, whatever the cause: a name that is not a tool, a (tool, op) off the caller's surface, a Project the caller may not name. Byte-identical across causes, so no cause is disclosed. */
+export const unknownTool = (name: string): ToolError => new ToolError('unknown_tool', `Unknown tool: ${name}`);
+
 /** The arguments as an object; absent arguments are an empty object, anything else is refused. */
 export function normalizeInput(args: unknown): ToolInput {
   if (args === undefined || args === null) return {};

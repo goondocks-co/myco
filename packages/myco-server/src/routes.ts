@@ -1,5 +1,5 @@
 import type { ServerEnv } from './core/adapters.js';
-import type { AuthContext, OwnerContext, RouteContext, SessionContext, StreamContext } from './context.js';
+import type { AuthContext, GrantContext, OwnerContext, RouteContext, SessionContext, StreamContext } from './context.js';
 import { handleLink, handleMe } from './api/identity.js';
 import { handleLinkGithub } from './auth/members.js';
 import { clearCookie } from './auth/owner/cookie.js';
@@ -33,12 +33,14 @@ import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
 import { handleBlob } from './ingest/blobs.js';
 import { handleEvents } from './ingest/events.js';
-import { handleMcp } from './mcp/http.js';
+import { handleGrantMcp, handleMcp } from './mcp/http.js';
 
 /** Public handlers receive the request only; they cannot reach storage or bindings. */
 export type PublicHandler = (request: Request) => Promise<Response>;
 /** Member handlers on json routes receive the bindings and the consumed request as context; the request stream is spent by the pipeline. */
 export type MemberHandler = (env: ServerEnv, ctx: RouteContext) => Promise<Response>;
+/** Grant handlers answer a json route reached over an External Agent grant: the grant's Project and the consumed body, nothing of a member. A route declares one to admit grants at all. */
+export type GrantHandler = (env: ServerEnv, ctx: GrantContext) => Promise<Response>;
 /** Member handlers on stream routes receive the unread request; the handler alone consumes the body. */
 export type StreamHandler = (env: ServerEnv, request: Request, ctx: StreamContext) => Promise<Response>;
 /** Auth handlers require no credential but do need the owner configuration and outbound fetch. They receive a narrowed context and never an `ServerEnv`, so a credential-free route still cannot reach storage or bindings by type. */
@@ -56,7 +58,7 @@ export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
 /** `quotaPrecheck: false` marks a member route the pipeline does not pre-check against the byte quota and never reads a constraint failure as a quota refusal; what such a route stores through the ingest path is still charged there. Absent, the route is pre-checked. */
 export type Route =
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
-  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; quotaPrecheck?: boolean; handler: MemberHandler }
+  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; quotaPrecheck?: boolean; handler: MemberHandler; grant?: GrantHandler }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; quotaPrecheck?: boolean; maxBodyBytes: number; handler: StreamHandler }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
   | { method: string; path: string; auth: 'enroll'; handler: EnrollHandler }
@@ -91,9 +93,10 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/spores/resolve', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleResolveSpore },
   { method: 'POST', path: '/runs/state/read', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleReadState },
   { method: 'POST', path: '/runs/state/write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteState },
-  // The member tool surface: the seven MCP tools over the Deployment, answered as
-  // JSON-RPC. `answered` is its refusal shape — an error envelope, at 400 or 503.
-  { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', quotaPrecheck: false, handler: handleMcp },
+  // The tool surface: the seven MCP tools over the Deployment for a member, the
+  // read-only six for an External Agent grant, answered as JSON-RPC. `answered`
+  // is its refusal shape — an error envelope, at 400 or 503.
+  { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', quotaPrecheck: false, handler: handleMcp, grant: handleGrantMcp },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleLinkGithub },
   { method: 'GET', path: '/auth/me', auth: 'owner', membership: 'optional', handler: handleMe },
@@ -179,6 +182,22 @@ export function ownedPathPatterns(): string[] {
 /** True when a pattern from `ownedPathPatterns()` covers this path. */
 export function isOwnedPath(pathname: string, patterns: readonly string[] = ownedPathPatterns()): boolean {
   return patterns.some((p) => (p.endsWith('/*') ? pathname === p.slice(0, -2) || pathname.startsWith(p.slice(0, -1)) : pathname === p));
+}
+
+/** Every route that admits an External Agent grant, as `METHOD path`. */
+export function grantRoutes(): string[] {
+  return ROUTES.filter((r) => r.auth === 'member' && r.bodyMode === 'json' && r.grant !== undefined).map((r) => `${r.method} ${r.path}`).sort();
+}
+
+/** The methods the routes `admitted` admits serve at this path, sorted and distinct; empty when none does. */
+export function methodsServing(pathname: string, admitted: (route: Route) => boolean): string[] {
+  const out = new Set<string>();
+  for (const route of ROUTES) {
+    if (!admitted(route)) continue;
+    const pattern = 'pattern' in route ? route.pattern : undefined;
+    if (pattern !== undefined ? pattern.test(pathname) : route.path === pathname) out.add(route.method);
+  }
+  return [...out].sort();
 }
 
 export interface RouteMatch {

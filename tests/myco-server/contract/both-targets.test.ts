@@ -34,6 +34,8 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MAX_BLOB_BYTES, MAX_PROJECTS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
+import { issueExternalGrant, revokeExternalGrant } from '@myco-server-worker/auth/grants.js';
+import { externalDefinitions } from '@myco-server-worker/mcp/external.js';
 
 import { blobPost, envelope, memberPost, sqliteEnv, TEXT_MEDIA_TYPE, uuid } from '../helpers/fixtures.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
@@ -342,5 +344,23 @@ describe('archival refuses capture the same on both stores', () => {
     for (const t of TARGETS) await t.env.db.prepare(`UPDATE projects SET archived_at = NULL, archived_by = NULL WHERE project_id = 'proj_1'`).run();
     const restored = await onBoth(async (t) => t.fetch(memberPost(await t.token(), envelope({ eventId: uuid(72) }))));
     agreeing(restored, { status: 200, body: { persisted: true, projected: true } });
+  });
+});
+
+describe('an External Agent grant reads the same on both stores', () => {
+  it('lists the read-only surface, answers a read, refuses a write as a tool that does not exist, and refuses a revoked grant with 401, identically on each target', async () => {
+    const keys = new Map<Target, { key: string; id: string }>();
+    for (const t of TARGETS) keys.set(t, await issueExternalGrant(t.env.db, { projectId: 'proj_1' }, 'bot', 'mem_machine_1', Date.now()));
+    const rpc = (method: string, params?: unknown) => JSON.stringify({ jsonrpc: '2.0', id: 1, method, ...(params === undefined ? {} : { params }) });
+    const over = (t: Target, body: string) => new Request('https://s/mcp', { method: 'POST', headers: { authorization: `Bearer ${keys.get(t)!.key}` }, body });
+    const listed = await onBoth((t) => t.fetch(over(t, rpc('tools/list'))));
+    agreeing(listed, { status: 200, body: JSON.parse(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: externalDefinitions().map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema, annotations: d.annotations })) } })) });
+    const read = await onBoth((t) => t.fetch(over(t, rpc('tools/call', { name: 'myco_plans', arguments: { op: 'list' } }))));
+    agreeing(read, { status: 200, body: { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '[]' }], structuredContent: { result: [] } } } });
+    const write = await onBoth((t) => t.fetch(over(t, rpc('tools/call', { name: 'myco_spores', arguments: { op: 'save', type: 'gotcha', content: 'x' } }))));
+    agreeing(write, { status: 200, body: { jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'Unknown tool: myco_spores', data: { code: 'unknown_tool' } } } });
+    for (const t of TARGETS) await revokeExternalGrant(t.env.db, { projectId: 'proj_1' }, keys.get(t)!.id, 'mem_machine_1', Date.now());
+    const revoked = await onBoth((t) => t.fetch(over(t, rpc('tools/list'))));
+    agreeing(revoked, { status: 401, body: { error: 'unauthorized' } });
   });
 });

@@ -1,6 +1,7 @@
 import type { ErrorClassifier, ServerEnv } from './core/adapters.js';
-import { matchRoute, type Route, type Shape } from './routes.js';
+import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
+import { authenticateGrant, GRANT_KEY_PATTERN, touchGrant } from './auth/grants.js';
 import { HSTS_MAX_AGE_SECONDS, LINEAGE_REPLAY_GRACE_MS, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from './constants.js';
 import { sha256Hex } from './hash.js';
 import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
@@ -56,8 +57,16 @@ const RETRY_AFTER = { 'retry-after': String(RETRY_AFTER_SECONDS) };
 const unauthorized = () => Response.json({ error: 'unauthorized' }, { status: 401, headers: { 'www-authenticate': 'Bearer realm="myco"' } });
 const unavailable = () => Response.json({ error: UNAVAILABLE }, { status: 503, headers: RETRY_AFTER });
 type MemberRoute = Extract<Route, { auth: 'member' }>;
+/** A member route that also admits an External Agent grant. */
+type GrantRoute = Extract<MemberRoute, { bodyMode: 'json' }> & { grant: NonNullable<Extract<MemberRoute, { bodyMode: 'json' }>['grant']> };
+const admitsGrant = (route: Route): route is GrantRoute => route.auth === 'member' && route.bodyMode === 'json' && route.grant !== undefined;
 /** The refusal shape of a member route, as the route table declares it. */
 const shapeOf = (route: MemberRoute): Shape => route.shape;
+/** A grant authenticated to its Project. */
+interface GrantAuth {
+  grantId: string;
+  projectId: string;
+}
 /** A server-side failure in the route's refusal shape. Only an authenticated member sees it; before authentication every failure answers the same bare error, so the shape discloses nothing about the route table. */
 const unavailableFor = (route: MemberRoute): Response => refusalResponse(shapeOf(route), UNAVAILABLE, UNAVAILABLE, 'retryable');
 /**
@@ -74,6 +83,19 @@ function refusalResponse(shape: Shape, code: string, reason: string, outcome: 't
   return Response.json({ [shape]: false, code, reason }, retryable ? { status: 503, headers: RETRY_AFTER } : undefined);
 }
 const limited = () => Response.json({ error: 'rate limited' }, { status: 429, headers: RETRY_AFTER });
+/**
+ * 405 for a served path asked with a method it does not serve, naming the
+ * methods it does — or null when no route the predicate admits serves the
+ * path at all. Answered only to an authenticated principal, and only among
+ * the routes that principal could be admitted to, so the route table is
+ * disclosed to nobody it is not already open to. An MCP client opens a GET
+ * stream on the endpoint it POSTs to and ends it on 405 without complaint.
+ */
+function wrongMethod(method: string, pathname: string, admitted: (route: Route) => boolean): Response | null {
+  const methods = methodsServing(pathname, admitted);
+  if (methods.length === 0) return null;
+  return Response.json({ error: 'method_not_allowed', method, allow: methods }, { status: 405, headers: { allow: methods.join(', ') } });
+}
 const forbidden = () => Response.json({ error: 'forbidden' }, { status: 403 });
 const refuseOversized = () => Response.json({ error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` }, { status: 400 });
 
@@ -133,12 +155,22 @@ function refuse(auth: MemberAuth, shape: Shape, reason: string, classifier: Clas
   return refusalResponse(shape, classifier, reason, 'terminal');
 }
 
-/** The presented credential, or null unless it has the minted token shape. The scheme name is case-insensitive. */
-function bearer(request: Request): string | null {
+/** A terminal refusal of a grant's own request, in the route's shape; telemetry carries the classifier only. */
+function refuseGrant(auth: GrantAuth, route: MemberRoute, reason: string, classifier: Classifier): Response {
+  emit({ kind: 'mcp_refused', grantId: auth.grantId, reason: classifier });
+  return refusalResponse(shapeOf(route), classifier, reason, 'terminal');
+}
+
+type Presented = { kind: 'member'; token: string } | { kind: 'grant'; key: string };
+
+/** The presented credential by its shape — a minted member token or an External Agent grant key — or null for anything else. The two shapes are disjoint. The scheme name is case-insensitive. */
+function credential(request: Request): Presented | null {
   const header = request.headers.get('authorization');
   const match = header === null ? null : /^bearer\s+(\S+)$/i.exec(header);
   if (!match) return null;
-  return MEMBER_TOKEN_PATTERN.test(match[1]) ? match[1] : null;
+  if (MEMBER_TOKEN_PATTERN.test(match[1])) return { kind: 'member', token: match[1] };
+  if (GRANT_KEY_PATTERN.test(match[1])) return { kind: 'grant', key: match[1] };
+  return null;
 }
 
 /** True when the member's declared protocol is an integer inside the server's inclusive window. */
@@ -233,8 +265,10 @@ export function createServer(deps: ServerDeps) {
       }
     }
 
-    const presented = bearer(request);
-    if (!presented) return anonymous();
+    const credentialPresented = credential(request);
+    if (!credentialPresented) return anonymous();
+    if (credentialPresented.kind === 'grant') return grant(request, env, credentialPresented.key, matched, url, now, source, anonymous);
+    const presented = credentialPresented.token;
 
     let auth: MemberAuth | null;
     try {
@@ -247,7 +281,7 @@ export function createServer(deps: ServerDeps) {
     }
     if (!auth) {
       const digest = await sha256Hex(presented);
-      emit({ kind: 'auth_failed', matched: matched !== null, source: (await sha256Hex(source)).slice(0, 16) });
+      emit({ kind: 'auth_failed', credential: 'member', matched: matched !== null, source: (await sha256Hex(source)).slice(0, 16) });
       // A superseded credential answers 401 like any other, and the answer is the same
       // to the holder either way. The record is what differs: this names which lineage
       // is still being presented after it moved on, and how long after.
@@ -262,20 +296,70 @@ export function createServer(deps: ServerDeps) {
       }
       return anonymous();
     }
-    return withProtocol(await member(request, env, auth, matched, now));
+    return withProtocol(await member(request, env, auth, matched, url, now));
+  }
+
+  /**
+   * An External Agent grant: authenticated by its key's digest to the one
+   * Project its row names, admitted to the one route that declares a grant
+   * handler, and refused everywhere else exactly as an authenticated member on
+   * a path it cannot reach. None of the member concepts apply — no protocol
+   * window, no machine identity, no Project header, no protocol disclosure on
+   * the response. Every failure after authentication answers in the route's
+   * shape once a grant route is known, as the member path does.
+   */
+  async function grant(
+    request: Request, env: ServerEnv, key: string, matched: ReturnType<typeof matchRoute>, url: URL, now: number, source: string,
+    anonymous: () => Promise<Response>,
+  ): Promise<Response> {
+    let auth: GrantAuth | null;
+    try {
+      auth = await authenticateGrant(env.db, await sha256Hex(key));
+    } catch (err) {
+      if (!(err instanceof SchemaMismatchError)) throw err;
+      emit({ kind: 'schema_mismatch', expected: err.expected, found: err.found });
+      return matched && admitsGrant(matched.route) ? unavailableFor(matched.route) : unavailable();
+    }
+    if (!auth) {
+      emit({ kind: 'auth_failed', credential: 'grant', matched: matched !== null, source: (await sha256Hex(source)).slice(0, 16) });
+      return anonymous();
+    }
+    try {
+      return await admittedGrant(request, env, auth, matched, url, now);
+    } catch (err) {
+      emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)), grantId: auth.grantId });
+      return matched && admitsGrant(matched.route) ? unavailableFor(matched.route) : unavailable();
+    }
+  }
+
+  /** Order: grant limit → route (a served path asked with the wrong method is told so; anything else a grant cannot reach answers 401) → body → use recorded → handler. The Project is the row's; the request names none. */
+  async function admittedGrant(request: Request, env: ServerEnv, auth: GrantAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number): Promise<Response> {
+    if (!(await env.tokenLimit.limit({ key: auth.grantId })).success) return limited();
+    if (!matched) return wrongMethod(request.method, url.pathname, admitsGrant) ?? unauthorized();
+    const { route } = matched;
+    if (!admitsGrant(route)) return unauthorized();
+    try {
+      const body = await readBoundedBody(request, MAX_BODY_BYTES);
+      if (!body.ok) return refuseGrant(auth, route, body.reason, 'body_cap');
+      await touchGrant(env.db, auth.grantId, now);
+      return await route.grant(env, { projectId: auth.projectId, grantId: auth.grantId, body: body.text, now });
+    } catch (err) {
+      emit({ kind: 'mcp_error', grantId: auth.grantId, error_class: classify(err, errorClassifierOf(env)) });
+      return unavailableFor(route);
+    }
   }
 
   /** Every failure after authentication answers in the route's shape once the route is known, and carries the protocol number; only what `admitted` returns leaves here. */
-  async function member(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, now: number): Promise<Response> {
+  async function member(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number): Promise<Response> {
     try {
-      return await admitted(request, env, auth, matched, now);
+      return await admitted(request, env, auth, matched, url, now);
     } catch (err) {
       emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)), memberId: auth.memberId, tokenId: auth.tokenId });
       return matched && matched.route.auth === 'member' ? unavailableFor(matched.route) : unavailable();
     }
   }
 
-  async function admitted(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, now: number): Promise<Response> {
+  async function admitted(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number): Promise<Response> {
     if (auth.predecessorId !== null && auth.firstUsedAt === null) {
       await activateSuccessor(env.db, { tokenId: auth.tokenId, predecessorId: auth.predecessorId }, now);
       emit({ kind: 'successor_activated', memberId: auth.memberId, tokenId: auth.tokenId, predecessorId: auth.predecessorId });
@@ -285,7 +369,7 @@ export function createServer(deps: ServerDeps) {
       emit({ kind: 'protocol_unsupported', memberId: auth.memberId, tokenId: auth.tokenId });
       return unsupportedProtocol();
     }
-    if (!matched) return unauthorized();
+    if (!matched) return wrongMethod(request.method, url.pathname, (r) => r.auth === 'member') ?? unauthorized();
     const { route, params } = matched;
     if (route.auth === 'public') return route.handler(request);
     if (route.auth !== 'member') return unauthorized();

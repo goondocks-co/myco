@@ -3,7 +3,8 @@ import { Database } from 'bun:sqlite';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RETIRED_ROUTES, ROUTES, isOwnedPath, ownedPathPatterns, type Shape } from '@myco-server-worker/routes.js';
+import { RETIRED_ROUTES, ROUTES, grantRoutes, isOwnedPath, ownedPathPatterns, type Shape } from '@myco-server-worker/routes.js';
+import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
 import worker from '@myco-server-worker/index.js';
 import { createIngestThrottle } from './helpers/throttle.js';
 import { issueMemberToken, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
@@ -47,7 +48,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 41;
+const EMIT_CALLS = 46;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -271,6 +272,51 @@ describe('gates', () => {
     }
     expect(sourceKeys).toEqual([]);
     expect(tokenKeys).toEqual(paths.map(() => t1.tokenId));
+  });
+
+  it('admits an External Agent grant on exactly one route', () => {
+    expect(grantRoutes()).toEqual(['POST /mcp']);
+  });
+
+  it('names the credential class on every failed authentication it records, from a fixed pair of literals', () => {
+    const seen: string[] = [];
+    for (const f of files(SRC)) {
+      for (const call of emitArguments(readFileSync(f, 'utf8'))) {
+        if (!/kind:\s*'auth_failed'/.test(call)) continue;
+        const credential = /credential:\s*('[a-z]+')/.exec(call)?.[1] ?? 'absent';
+        seen.push(credential);
+      }
+    }
+    expect(seen.sort()).toEqual(["'grant'", "'member'"]);
+  });
+
+  it('tells an authenticated principal a served path\'s methods only among the routes it could reach: a member is told 405 on a member path and 401 on an owner, auth or enrollment path; a grant is told 405 on the grant route alone', async () => {
+    const { env: e, db } = sqliteEnv();
+    const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+    const grant = await issueExternalGrant(db, { projectId: 'proj_1' }, null, 'mem_machine_1', Date.now());
+    const concrete = (path: string) => path.replace(/\{(sha256|key)\}/g, 'a'.repeat(64)).replace(/\{tier\}/g, '1').replace(/\{[^}]+\}/g, 'a');
+    const asMember = (path: string) => worker.fetch(withSource(path, { method: 'PATCH', headers: { authorization: `Bearer ${t1.token}`, ...PROTOCOL } }), e);
+    const asGrant = (path: string) => worker.fetch(withSource(path, { method: 'PATCH', headers: { authorization: `Bearer ${grant.key}` } }), e);
+    const outcomes: Record<string, unknown>[] = [];
+    for (const r of ROUTES) {
+      if (r.auth === 'public') continue;
+      const path = concrete(r.path);
+      const member = await asMember(path);
+      const asGrantRes = await asGrant(path);
+      outcomes.push({ route: `${r.auth} ${r.method} ${r.path}`, member: member.status, memberAllow: member.headers.get('allow'), grant: asGrantRes.status, grantAllow: asGrantRes.headers.get('allow') });
+    }
+    const memberPaths = new Set(ROUTES.filter((r) => r.auth === 'member').map((r) => concrete(r.path)));
+    const grantPaths = new Set(grantRoutes().map((s) => concrete(s.slice(s.indexOf(' ') + 1))));
+    expect(outcomes).toEqual(ROUTES.filter((r) => r.auth !== 'public').map((r) => {
+      const path = concrete(r.path);
+      const memberMethods = [...new Set(ROUTES.filter((m) => m.auth === 'member' && concrete(m.path) === path).map((m) => m.method))].sort().join(', ');
+      const grantMethods = [...new Set(ROUTES.filter((m) => m.auth === 'member' && m.bodyMode === 'json' && m.grant !== undefined && concrete(m.path) === path).map((m) => m.method))].sort().join(', ');
+      return {
+        route: `${r.auth} ${r.method} ${r.path}`,
+        member: memberPaths.has(path) ? 405 : 401, memberAllow: memberPaths.has(path) ? memberMethods : null,
+        grant: grantPaths.has(path) ? 405 : 401, grantAllow: grantPaths.has(path) ? grantMethods : null,
+      };
+    }));
   });
 
   it('keys the token limiter on the issued token id and never on credential material', async () => {
