@@ -181,6 +181,53 @@ export interface DeploymentRecord {
   bucketName: string;
   versionId: string | null;
   deployedAt: string;
+  /** The Deployment's public URL — the custom domain or the workers.dev host — once an operator has named it. */
+  url?: string;
+}
+
+/** The Worker's sign-in secrets, named as the Worker reads them. */
+export interface WorkerSecrets {
+  GITHUB_CLIENT_ID: string;
+  GITHUB_CLIENT_SECRET: string;
+}
+
+export interface WorkerSecretTarget {
+  accountId: string;
+  workerName: string;
+  runner?: CommandRunner;
+}
+
+/** Raised when wrangler is not installed where `npx` would find it; `npx` would otherwise ask on stdin whether to fetch it, and stdin carries the secrets. */
+export class WranglerAbsent extends Error {
+  constructor() {
+    super('wrangler is not installed; `npm install -g wrangler` (or run from a checkout that has it) and retry');
+    this.name = 'WranglerAbsent';
+  }
+}
+
+/** True when `npx` resolves wrangler without fetching it. */
+export async function wranglerPresent(runner: CommandRunner = systemRunner()): Promise<boolean> {
+  const result = await runner.run('npx', ['--no-install', 'wrangler', '--version'], {});
+  return result.code === 0;
+}
+
+/**
+ * Install the Worker's sign-in secrets in one request.
+ *
+ * `wrangler secret bulk` takes the whole set on stdin and sends it as one
+ * request, so a Worker never holds a client id whose secret is missing. The
+ * account is pinned in the environment and the Worker named on the command
+ * line: an operator's machine holds no `wrangler.toml` for a Deployment, and
+ * this needs none. Nothing here writes a secret to argv or to a file.
+ */
+export async function putWorkerSecrets(target: WorkerSecretTarget, secrets: WorkerSecrets): Promise<void> {
+  if (!target.accountId) throw new AccountNotSelected([]);
+  const runner = target.runner ?? systemRunner();
+  if (!(await wranglerPresent(runner))) throw new WranglerAbsent();
+  await runOrThrow(runner, 'npx', wrangler('secret', 'bulk', '--name', target.workerName), {
+    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: target.accountId },
+    input: JSON.stringify(secrets),
+  });
 }
 
 export function deploymentRecordPath(mycoHome = resolveMycoHome()): string {

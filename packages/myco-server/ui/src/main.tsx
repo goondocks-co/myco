@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { applyCachedAppearance } from './lib/appearance-apply';
@@ -12,7 +12,14 @@ import './index.css';
 // reload does not flash the default theme.
 applyCachedAppearance();
 
-const queryClient = new QueryClient({
+const queryClient: QueryClient = new QueryClient({
+  // A session that ends while the dashboard is open surfaces as a 401 on some
+  // later read; re-asking `/auth/me` hands the whole view back to the gate.
+  queryCache: new QueryCache({
+    onError: (error) => {
+      if (error instanceof SignedOutError) void queryClient.invalidateQueries({ queryKey: ['me'] });
+    },
+  }),
   defaultOptions: {
     queries: {
       staleTime: 30_000,

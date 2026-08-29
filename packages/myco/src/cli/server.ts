@@ -20,6 +20,8 @@ import {
 } from '../server/deployment.js';
 import { CommandFailed } from '../server/runner.js';
 import { UpdateRolledBack } from '../server/deployment.js';
+import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
+import { WranglerAbsent } from '../server/cloudflare.js';
 import { parseFlags } from './shared.js';
 
 export const SERVER_HELP = `Usage: myco server <command>
@@ -35,9 +37,23 @@ Commands:
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
   adopt                                   Write a bundle for a stack this machine did not provision.
   destroy [--data] [--yes]                Stop and remove the stack. --data also removes the volume.
+  github-app --url <https://…> [--org <name>] [--name <text>] [--target cloudflare|compose]
+                                          Register the dashboard's sign-in app on GitHub (one click
+                                          there) and install its credentials on the Deployment.
 
 The bundle is ordinary Compose. Everything here is also runnable with
 \`docker compose\` from the deployment directory.`;
+
+/** Opens a URL in the operator's browser where one is available; failure is silent and the URL is printed anyway. */
+async function openInBrowser(url: string): Promise<void> {
+  const { spawn } = await import('node:child_process');
+  const [command, args] = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
+  await new Promise<void>((resolve) => {
+    const child = spawn(command, args, { stdio: 'ignore', detached: true });
+    child.on('error', () => resolve());
+    child.on('spawn', () => { child.unref(); resolve(); });
+  });
+}
 
 function fail(message: string): never {
   console.error(message);
@@ -138,6 +154,26 @@ export async function run(args: string[]): Promise<void> {
       return;
     }
 
+    if (command === 'github-app') {
+      const url = flags.get('url');
+      if (url === undefined || url === 'true' || url === '') fail('github-app needs --url <https://…>, the address members open the dashboard at.');
+      const target = resolveSignInTarget(flags.get('target'));
+      const result = await registerGitHubApp({
+        url: url!,
+        org: flags.get('org'),
+        name: flags.get('name'),
+        target,
+        openUrl: openInBrowser,
+        log: (line) => console.log(line),
+      });
+      console.log(`\nGitHub App:  ${result.app.name} (${result.app.htmlUrl})`);
+      console.log(`Callback:    ${result.callbackUrl}`);
+      console.log(`Installed:   ${target.kind === 'cloudflare' ? `Worker ${target.record.workerName}` : target.paths.root}`);
+      if (result.verified.ok) console.log(`Verified:    ${url} sends sign-in to GitHub and back.`);
+      else fail(`Installed, but sign-in did not verify: ${result.verified.reason}`);
+      return;
+    }
+
     console.error(`Unknown command: ${command}\n`);
     console.log(SERVER_HELP);
     process.exit(2);
@@ -145,6 +181,7 @@ export async function run(args: string[]): Promise<void> {
     // A rolled-back update is a failure, and the operator needs to know the
     // Deployment is serving again on the version it started from.
     if (err instanceof UpdateRolledBack) fail(err.message);
+    if (err instanceof RegistrationRefused || err instanceof WranglerAbsent) fail(err.message);
     // A Compose failure is the operator's to read, verbatim.
     if (err instanceof CommandFailed) fail(err.message);
     fail(err instanceof Error ? err.message : String(err));
