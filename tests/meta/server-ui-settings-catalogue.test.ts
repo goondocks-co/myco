@@ -6,7 +6,9 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { DEPLOYMENT_LEAVES, STEP_UP_LEAVES } from '@myco-server-worker/core/settings.js';
+import { STEP_UP_HEADER } from '@myco-server-worker/constants.js';
 import { LEAF_FIELDS, LEAF_GROUPS } from '../../packages/myco-server/ui/src/settings/catalogue.js';
+import { STEP_UP_HEADER as UI_STEP_UP_HEADER } from '../../packages/myco-server/ui/src/hooks/use-settings.js';
 
 describe('settings catalogue', () => {
   it('names every Deployment leaf exactly once, and nothing else', () => {
@@ -20,6 +22,10 @@ describe('settings catalogue', () => {
       const field = LEAF_FIELDS.find((f) => f.leaf === leaf);
       expect({ leaf, note: field?.note ?? '' }).toEqual({ leaf, note: expect.stringMatching(/step-up key/) });
     }
+  });
+
+  it('sends the step-up key in the header the server reads', () => {
+    expect(UI_STEP_UP_HEADER).toBe(STEP_UP_HEADER);
   });
 
   it('gives every select its options and every group a note', () => {

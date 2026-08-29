@@ -45,6 +45,7 @@ function server(routes: Record<string, (init?: RequestInit) => Response>): { sen
 const base = (extra: Record<string, (init?: RequestInit) => Response> = {}) => ({
   '/auth/me': () => Response.json(ME),
   '/api/projects': () => Response.json(PROJECTS),
+  '/api/members': () => Response.json({ members: [{ id: 'mem_1', label: 'chris', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 }] }),
   '/api/settings': () => Response.json(leaves({ 'cortex.digest.inject_on_session_start': { value: true, updatedBy: 'mem_1', updatedAt: NOW } })),
   '/api/secrets': () => Response.json(secrets(true)),
   '/api/projects/x/capabilities': () => Response.json({ capabilities: { cortex: true, canopy: false, skills: false, vault_evolution: false } }),
@@ -74,7 +75,7 @@ describe('Deployment Settings', () => {
     }
     expect(controls).toBe(LEAF_FIELDS.length);
     await tab('Cortex');
-    expect(screen.getByTestId('saved-cortex.digest.inject_on_session_start').textContent).toMatch(/Saved · by mem_1/);
+    expect(screen.getByTestId('saved-cortex.digest.inject_on_session_start').textContent).toMatch(/Saved · by chris/);
     expect(screen.getByTestId('saved-cortex.digest.tier').textContent).toBe('Server default');
   });
 
@@ -133,8 +134,7 @@ describe('Deployment Settings', () => {
     expect(await screen.findByText('s…c')).toBeTruthy();
     fireEvent.click(screen.getAllByRole('button', { name: 'Rotate' })[0]!);
     fireEvent.change(await screen.findByLabelText('Credential value'), { target: { value: SECRET } });
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    fireEvent.change(await screen.findByLabelText('Step-up key'), { target: { value: 'k'.repeat(43) } });
+    fireEvent.change(screen.getByLabelText('Step-up key'), { target: { value: 'k'.repeat(43) } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/secrets/anthropic', body: { value: SECRET } });
@@ -143,6 +143,14 @@ describe('Deployment Settings', () => {
     expect(document.body.textContent).not.toContain(SECRET);
     expect(document.body.innerHTML).not.toContain(SECRET);
     for (const el of document.querySelectorAll('input, textarea')) expect((el as HTMLInputElement).value).not.toBe(SECRET);
+  });
+
+  it('saves a numeric select as a number, and lands on the tab a link names', async () => {
+    const { sent } = server(base({ '/api/settings/cortex.digest.tier': () => Response.json({ applied: true }) }));
+    mount('/settings?tab=cortex');
+    fireEvent.change(await screen.findByLabelText('Digest size'), { target: { value: '5000' } });
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.digest.tier', body: { value: 5000 } });
   });
 
   it('toggles a project capability through the project route', async () => {

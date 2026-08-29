@@ -10,7 +10,7 @@ export function Notifications() {
       <PageHeader title="Notifications" subtitle="What this server wants you to know." />
       <Panel title="Nothing recorded yet" eyebrow="Pending" tone="ochre" data-testid="pending-notifications">
         <p className="font-sans text-sm text-on-surface-variant">
-          Notifications arrive with the observability work. How long they are kept is set under <Link to="/settings" className="text-primary underline">Settings · Records</Link>.
+          Notifications arrive with the observability work. How long they are kept is set under <Link to="/settings?tab=records" className="text-primary underline">Settings · Records</Link>.
         </p>
       </Panel>
     </PageContainer>
