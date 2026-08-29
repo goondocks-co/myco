@@ -25,7 +25,7 @@ describe('deployment settings', () => {
   it('sets a leaf, records who set it, and reads it back', async () => {
     const r = rig();
     expect(await r.w.setLeaf('cortex.digest.tier', 5000, 'mem_1', 1_000)).toEqual({ applied: true });
-    expect(await r.w.leaves()).toEqual({ 'cortex.digest.tier': 5000 });
+    expect(await r.w.leaves()).toEqual({ 'cortex.digest.tier': { value: 5000, updatedAt: 1_000, updatedBy: 'mem_1' } });
     expect(r.sqlite.query(`SELECT updated_by, updated_at FROM deployment_settings WHERE leaf='cortex.digest.tier'`).get())
       .toEqual({ updated_by: 'mem_1', updated_at: 1_000 });
   });
@@ -49,7 +49,7 @@ describe('deployment settings', () => {
     const r = rig();
     await r.w.setLeaf('embedding.model', 'bge-m3', 'mem_1', 1_000);
     await r.w.setLeaf('embedding.model', 'other', 'mem_2', 2_000);
-    expect(await r.w.leaves()).toEqual({ 'embedding.model': 'other' });
+    expect((await r.w.leaves())['embedding.model']?.value).toBe('other');
     expect((r.sqlite.query(`SELECT COUNT(*) c FROM deployment_settings`).get() as any).c).toBe(1);
     expect(r.sqlite.query(`SELECT updated_by FROM deployment_settings WHERE leaf='embedding.model'`).get()).toEqual({ updated_by: 'mem_2' });
   });

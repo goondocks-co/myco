@@ -10,13 +10,14 @@ cd packages/myco-server
 bun scripts/mint-enrollment.ts 30
 
 # Print the key to stderr as well, once. Nothing stores it; if you lose it, mint another.
-bun scripts/mint-enrollment.ts 30 --print-key 2>/dev/null
+bun scripts/mint-enrollment.ts 30 --print-key
 ```
 
 Apply it on the hosted target:
 
 ```bash
-npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(bun scripts/mint-enrollment.ts 30)"
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(bun scripts/mint-enrollment.ts 30 --print-key)"
+# The key lands on your terminal from stderr; the command substitution carries only the SQL.
 ```
 
 Self-hosted, apply the same statement against the SQLite file on the mounted volume.
@@ -228,3 +229,35 @@ npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
 
 Deleting the rows is not one of the choices: `events.token_id` references them,
 and the owner API's activity read resolves a token id through this table.
+
+# Break-glass: minting a step-up key
+
+Four purposes sit outside the flat member model and need a step-up key beyond membership. `provider_credential` covers storing or removing a provider credential and changing a provider or embedding endpoint (`agent.provider.type`, `agent.provider.base_url`, `embedding.base_url`, or any value that carries an endpoint); `deployment_lifecycle`, `enrollment_root_rotation` and `project_reassignment` are minted the same way and spent by the work that lands them — today only `provider_credential` has a spend path. The dashboard asks for the key at the change and sends it once; a key works exactly once and expires on its TTL.
+
+Minting is break-glass by design — whoever controls the Deployment's store mints one. `scripts/mint-step-up.ts` renders the SQL and never connects; the raw key goes to stderr only with `--print-key`.
+
+```bash
+cd packages/myco-server
+# Render the insert for a provider-credential change, valid ten minutes. Prints the digest, never the key.
+bun scripts/mint-step-up.ts provider_credential 10
+
+# Print the key to stderr as well, once.
+bun scripts/mint-step-up.ts provider_credential 10 --print-key
+```
+
+Apply it on the hosted target:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(bun scripts/mint-step-up.ts provider_credential 10 --print-key)"
+# The key lands on your terminal from stderr; the command substitution carries only the SQL.
+```
+
+Self-hosted, apply the same statement against the SQLite file on the mounted volume. Then paste the key into the dashboard's step-up prompt.
+
+Revoke an unused key you no longer want outstanding:
+
+```sql
+UPDATE step_up_authorities SET revoked_at = <now_ms> WHERE id = '<ID>' AND revoked_at IS NULL AND used_at IS NULL;
+```
+
+Mint one per change and let it expire — do not keep a standing key.

@@ -8,6 +8,9 @@ import { Cortex } from './pages/Cortex';
 import { LinkPage } from './pages/Link';
 import { ProjectAccess } from './pages/ProjectAccess';
 import { NotFound } from './pages/NotFound';
+import { Notifications } from './pages/Notifications';
+import { Operations } from './pages/Operations';
+import { Settings } from './pages/Settings';
 import { ProjectHome } from './pages/ProjectHome';
 import { Projects } from './pages/Projects';
 import { Sessions } from './pages/Sessions';
@@ -39,6 +42,9 @@ export default function App() {
         <Route path="/p/:projectId/access" element={<ProjectAccess />} />
         <Route path="/access" element={<Access />} />
         <Route path="/status" element={<Status />} />
+        <Route path="/settings" element={<Settings />} />
+        <Route path="/operations" element={<Operations />} />
+        <Route path="/notifications" element={<Notifications />} />
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>

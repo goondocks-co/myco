@@ -1,4 +1,4 @@
-import { Activity, Bot, Brain, FolderTree, KeyRound, LayoutDashboard, MessageSquare, Sparkles, Users } from 'lucide-react';
+import { Activity, Bell, Bot, Brain, FolderTree, KeyRound, LayoutDashboard, MessageSquare, Settings2, Sparkles, Users, Wrench } from 'lucide-react';
 import { NavLink, Outlet, useNavigate, useParams } from 'react-router-dom';
 import { PageLoading } from '../components/ui/page-loading';
 import { useMe } from '../hooks/use-me';
@@ -32,6 +32,9 @@ const SERVER_NAV = [
   { label: 'Projects', icon: FolderTree, to: '/projects' },
   { label: 'Status', icon: Activity, to: '/status' },
   { label: 'Access', icon: Users, to: '/access' },
+  { label: 'Settings', icon: Settings2, to: '/settings' },
+  { label: 'Operations', icon: Wrench, to: '/operations' },
+  { label: 'Notifications', icon: Bell, to: '/notifications' },
 ];
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>

@@ -148,6 +148,13 @@ export type SettingsRefusal =
   | { reason: 'unauthorized'; leaf: string }
   | { reason: 'unknown_capability'; capability: string };
 
+/** A stored leaf: its value and who last wrote it. */
+export interface LeafRecord {
+  value: unknown;
+  updatedAt: number;
+  updatedBy: string;
+}
+
 export type SettingsResult = { applied: true } | { applied: false; refusal: SettingsRefusal };
 
 /**
@@ -169,7 +176,7 @@ export interface SettingsWriter {
   /** Admit or withdraw a Project's capability. */
   setCapability(projectId: string, capability: string, enabled: boolean, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Every stored Deployment leaf. Absent leaves are not defaulted here; a reader layers these over its own defaults. */
-  leaves(): Promise<Record<string, unknown>>;
+  leaves(): Promise<Record<string, LeafRecord>>;
   /**
    * Whether `projectId` is admitted to `capability`.
    *
@@ -267,9 +274,11 @@ export function settingsWriter(
     },
 
     async leaves() {
-      const { results } = await db.prepare(`SELECT leaf, value FROM deployment_settings`).all<{ leaf: string; value: string }>();
-      const out: Record<string, unknown> = {};
-      for (const r of results) out[r.leaf] = JSON.parse(r.value);
+      const { results } = await db
+        .prepare(`SELECT leaf, value, updated_at, updated_by FROM deployment_settings`)
+        .all<{ leaf: string; value: string; updated_at: number; updated_by: string }>();
+      const out: Record<string, LeafRecord> = {};
+      for (const r of results) out[r.leaf] = { value: JSON.parse(r.value), updatedAt: r.updated_at, updatedBy: r.updated_by };
       return out;
     },
 

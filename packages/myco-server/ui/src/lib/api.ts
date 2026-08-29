@@ -37,6 +37,15 @@ export function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   return request<T>(path, { method: 'GET', headers: { accept: 'application/json' }, signal });
 }
 
+/** A write with a JSON body and, when a change needs one, the step-up key in its header. */
+export function putJson<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
+  return request<T>(path, { method: 'PUT', headers: { accept: 'application/json', 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+}
+
+export function deleteJson<T>(path: string, headers: Record<string, string> = {}): Promise<T> {
+  return request<T>(path, { method: 'DELETE', headers: { accept: 'application/json', ...headers } });
+}
+
 export function postJson<T>(path: string, body?: unknown): Promise<T> {
   return request<T>(path, {
     method: 'POST',

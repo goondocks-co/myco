@@ -185,3 +185,50 @@ describe('project capability admission through the surface', () => {
       .toEqual({ status: 400, body: { applied: false, reason: 'unknown_capability', capability: 'made_up' } });
   });
 });
+
+import { DEPLOYMENT_LEAVES, STEP_UP_LEAVES } from '@myco-server-worker/core/settings.js';
+import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { memberPost } from './helpers/fixtures.js';
+
+/** A value shaped for the leaf, from its name: the kinds the dashboard catalogue renders. */
+function sampleFor(leaf: string): unknown {
+  if (leaf === 'agent.tasks') return { digest: { model: 'claude' } };
+  if (/thinking_budget_map/.test(leaf)) return { adaptive: true };
+  if (/patterns$/.test(leaf)) return ['dist/**'];
+  if (/(_enabled|inject_on_|inject_intent|prevent_deep_sleep|auto_optimize$|auto_integrity_check$|semantic_write_check)/.test(leaf)) return true;
+  if (/(_days|_hours|_minutes|_bytes|tier$|max_per_prompt|context_length|batch_interval|keep_daily|keep_weekly)/.test(leaf)) return 7;
+  if (leaf === 'skills.confidence_threshold') return 0.75;
+  if (/base_url$/.test(leaf)) return 'https://provider.example';
+  return 'sample';
+}
+
+describe('every Deployment leaf, the way the dashboard writes it', () => {
+  it('round-trips a kind-shaped value for every leaf, attributed to who wrote it, with a step-up key where one is required', async () => {
+    const e = env();
+    for (const leaf of DEPLOYMENT_LEAVES) {
+      const value = sampleFor(leaf);
+      const headers = (STEP_UP_LEAVES as readonly string[]).includes(leaf)
+        ? { [STEP_UP_HEADER]: (await issueStepUpAuthority(e.db, 'provider_credential', Date.now())).key }
+        : {};
+      const answer = await json(await worker.fetch(await put(`/api/settings/${leaf}`, { value }, headers), e.all));
+      expect({ leaf, answer }).toEqual({ leaf, answer: { applied: true } });
+    }
+    const leaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    for (const leaf of DEPLOYMENT_LEAVES) {
+      const row = leaves.find((l) => l.leaf === leaf)!;
+      expect({ leaf, value: row.value, updatedBy: row.updatedBy, updatedAt: typeof row.updatedAt }).toEqual({ leaf, value: sampleFor(leaf), updatedBy: 'mem_machine_1', updatedAt: 'number' });
+    }
+  });
+
+  it('changes task admission on the next run when a capability is toggled', async () => {
+    const e = env();
+    const token = (await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now())).token;
+    e.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_s', 'a', 'built-in', 1, ?)`).run(Date.now());
+    const claim = async (id: string) => json(await worker.fetch(memberPost(token, { id, agentId: 'agent_s', task: `digest_${id}`, maxAgeSeconds: 3600, capability: 'cortex' }, '/runs/claim'), e.all));
+    expect(await claim('run_off')).toMatchObject({ persisted: true, claimed: false, notAdmitted: 'cortex' });
+    expect(await json(await worker.fetch(await put('/api/projects/proj_1/capabilities/cortex', { enabled: true }), e.all))).toEqual({ applied: true });
+    expect(await claim('run_on')).toMatchObject({ persisted: true, claimed: true });
+    expect(await json(await worker.fetch(await put('/api/projects/proj_1/capabilities/cortex', { enabled: false }), e.all))).toEqual({ applied: true });
+    expect(await claim('run_off_again')).toMatchObject({ persisted: true, claimed: false, notAdmitted: 'cortex' });
+  });
+});
