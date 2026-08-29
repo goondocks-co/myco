@@ -8,7 +8,7 @@ import { PageLoading } from '../components/ui/page-loading';
 import { Panel } from '../components/ui/panel';
 import { StatusDot } from '../components/ui/status-dot';
 import { KeyReveal } from '../components/access/KeyReveal';
-import { useAccessActions, useGrants, useMembers, type GrantRow } from '../hooks/use-access';
+import { refusalText, useAccessActions, useGrants, useMembers, type GrantRow } from '../hooks/use-access';
 import { formatRelative } from '../lib/format';
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
@@ -25,7 +25,10 @@ export function ProjectAccess() {
   const [revealed, setRevealed] = useState<{ title: string; key: string } | null>(null);
   const [rotating, setRotating] = useState<GrantRow | null>(null);
   const [revoking, setRevoking] = useState<GrantRow | null>(null);
-  const nameOf = (id: string) => members.data?.members.find((m) => m.id === id)?.label ?? id;
+  const [addError, setAddError] = useState<string | null>(null);
+  const [rotateError, setRotateError] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
+  const nameOf = (id: string | null) => (id === null ? null : members.data?.members.find((m) => m.id === id)?.label ?? id);
   const list = grants.data?.grants ?? [];
 
   return (
@@ -43,13 +46,13 @@ export function ProjectAccess() {
                   <div className="min-w-0 flex-1">
                     <div className="text-on-surface">{g.label ?? g.id}</div>
                     <div className="text-xs text-on-surface-variant">
-                      added {formatRelative(g.createdAt)} by {nameOf(g.createdBy)} · {g.revokedAt !== null ? `ended by ${nameOf(g.revokedBy ?? '')}${g.rotatedTo ? ' (rotated)' : ''}` : g.lastUsedAt === null ? 'never used' : `last used ${formatRelative(g.lastUsedAt)}`}
+                      added {formatRelative(g.createdAt)} by {nameOf(g.createdBy)} · {g.revokedAt !== null ? `${g.rotatedTo ? 'rotated' : 'revoked'}${nameOf(g.revokedBy) ? ` by ${nameOf(g.revokedBy)}` : ''}` : g.lastUsedAt === null ? 'never used' : `last used ${formatRelative(g.lastUsedAt)}`}
                     </div>
                   </div>
                   {g.revokedAt === null && (
                     <>
-                      <button type="button" className={button} onClick={() => setRotating(g)}>Rotate</button>
-                      <button type="button" className={button} onClick={() => setRevoking(g)}>Revoke</button>
+                      <button type="button" className={button} onClick={() => { setRotateError(null); setRotating(g); }}>Rotate</button>
+                      <button type="button" className={button} onClick={() => { setRevokeError(null); setRevoking(g); }}>Revoke</button>
                     </>
                   )}
                 </li>
@@ -59,7 +62,7 @@ export function ProjectAccess() {
         </Panel>
       </PageLoading>
 
-      <Dialog open={addOpen} onOpenChange={(open) => { setAddOpen(open); if (!open) setRevealed(null); }}>
+      <Dialog open={addOpen} onOpenChange={(open) => { setAddOpen(open); if (!open) { setRevealed(null); setAddError(null); actions.mintGrant.reset(); actions.rotateGrant.reset(); } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{revealed ? revealed.title : 'Add an external agent'}</DialogTitle>
@@ -70,12 +73,14 @@ export function ProjectAccess() {
           ) : (
             <form className="flex flex-col gap-3" onSubmit={(e) => {
               e.preventDefault();
-              actions.mintGrant.mutate({ projectId, ...(label.trim() === '' ? {} : { label: label.trim() }) }, { onSuccess: (r) => setRevealed({ title: 'Access key ready', key: r.key }) });
+              setAddError(null);
+              actions.mintGrant.mutate({ projectId, ...(label.trim() === '' ? {} : { label: label.trim() }) }, { onSuccess: (r) => setRevealed({ title: 'Access key ready', key: r.key }), onError: (err) => setAddError(refusalText(err)) });
             }}>
               <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">
                 Name
-                <input value={label} maxLength={80} onChange={(e) => setLabel(e.target.value)} placeholder="review bot" className="rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1.5 text-sm text-on-surface" />
+                <input value={label} maxLength={80} pattern="[\x20-\x7E]{1,80}" title="Up to 80 plain characters" onChange={(e) => setLabel(e.target.value)} placeholder="review bot" className="rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1.5 text-sm text-on-surface" />
               </label>
+              {addError && <p className="font-sans text-xs text-tertiary">{addError}</p>}
               <button type="submit" className={primary} disabled={actions.mintGrant.isPending}>Create key</button>
             </form>
           )}
@@ -90,9 +95,10 @@ export function ProjectAccess() {
         confirmLabel="Rotate"
         variant="destructive"
         isPending={actions.rotateGrant.isPending}
+        errorMessage={rotateError}
         onConfirm={() => {
           if (!rotating) return;
-          actions.rotateGrant.mutate({ projectId, grantId: rotating.id }, { onSuccess: (r) => { setRotating(null); setRevealed({ title: 'New access key', key: r.key }); setAddOpen(true); } });
+          actions.rotateGrant.mutate({ projectId, grantId: rotating.id }, { onSuccess: (r) => { setRotating(null); setRevealed({ title: 'New access key', key: r.key }); setAddOpen(true); }, onError: (err) => setRotateError(refusalText(err)) });
         }}
       />
 
@@ -103,9 +109,10 @@ export function ProjectAccess() {
         description="The agent loses access at once. Nothing it read is affected."
         confirmLabel="Revoke"
         isPending={actions.revokeGrant.isPending}
+        errorMessage={revokeError}
         onConfirm={() => {
           if (!revoking) return;
-          actions.revokeGrant.mutate({ projectId, grantId: revoking.id }, { onSuccess: () => setRevoking(null) });
+          actions.revokeGrant.mutate({ projectId, grantId: revoking.id }, { onSuccess: () => setRevoking(null), onError: (err) => setRevokeError(refusalText(err)) });
         }}
       />
     </PageContainer>

@@ -62,6 +62,30 @@ describe('Deployment Access', () => {
     expect((await screen.findByTestId('key-reveal')).textContent).toBe('k'.repeat(43));
     expect(screen.getByText(/shown once/)).toBeTruthy();
     expect(posts).toEqual([{ path: '/api/enrollment', body: { ttlMinutes: 60 } }]);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    expect(screen.queryByTestId('key-reveal')).toBeNull();
+    fireEvent.click(screen.getByText('Invite'));
+    expect(await screen.findByText('Create invitation')).toBeTruthy();
+    expect(screen.queryByTestId('key-reveal')).toBeNull();
+    expect(posts).toHaveLength(1);
+  });
+
+  it('says the server\'s refusal in the person\'s words, and offers no Stop for an expired runtime', async () => {
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json({ projects: [] }),
+      '/api/members': () => Response.json(MEMBERS),
+      '/api/members/mem_1/revoke': () => Response.json({ error: 'last_member' }, { status: 409 }),
+      '/api/enrollment': () => Response.json({ invitations: [] }),
+      '/api/credentials': () => Response.json({ rows: [{ id: 'mt_1', memberId: 'mem_1', machineId: 'old-laptop', expiresAt: 1, revokedAt: null, revokedBy: null, bytesWritten: 0, lineageStartedAt: 0, firstUsedAt: null, live: false }], cursor: null }),
+    });
+    mount('/access');
+    expect(await screen.findByText('old-laptop')).toBeTruthy();
+    expect(screen.getByText('expired')).toBeTruthy();
+    expect(screen.queryByText('Stop')).toBeNull();
+    fireEvent.click(screen.getAllByText('Remove')[0]!);
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+    expect(await screen.findByText(/nobody who can sign in/)).toBeTruthy();
   });
 });
 
@@ -82,5 +106,20 @@ describe('Project Access', () => {
     fireEvent.click(await screen.findByText('Create key'));
     expect((await screen.findByTestId('key-reveal')).textContent).toBe('mycoext_' + 'x'.repeat(43));
     expect(posts).toEqual([{ path: '/api/projects/proj_1/grants', body: {} }]);
+  });
+
+  it('rotates from a confirm and shows the new key once', async () => {
+    const { posts } = server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json({ projects: [{ projectId: 'proj_1', name: 'Alpha', createdAt: 0, sessionCount: 0, lastActivityAt: null }] }),
+      '/api/members': () => Response.json(MEMBERS),
+      '/api/projects/proj_1/grants': () => Response.json({ grants: [{ id: 'eg_1', projectId: 'proj_1', label: 'review bot', createdBy: 'mem_1', createdAt: 0, lastUsedAt: 5, revokedAt: null, revokedBy: null, rotatedTo: null }] }),
+      '/api/projects/proj_1/grants/eg_1/rotate': () => Response.json({ key: 'mycoext_' + 'y'.repeat(43), id: 'eg_2', rotatedFrom: 'eg_1' }, { status: 201 }),
+    });
+    mount('/p/proj_1/access');
+    fireEvent.click(await screen.findByText('Rotate'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Rotate' }));
+    expect((await screen.findByTestId('key-reveal')).textContent).toBe('mycoext_' + 'y'.repeat(43));
+    expect(posts).toEqual([{ path: '/api/projects/proj_1/grants/eg_1/rotate', body: undefined }]);
   });
 });

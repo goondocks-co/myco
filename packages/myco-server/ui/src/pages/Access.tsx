@@ -8,25 +8,17 @@ import { Panel } from '../components/ui/panel';
 import { SlideoutDetailPanel } from '../components/ui/slideout-detail-panel';
 import { StatusDot } from '../components/ui/status-dot';
 import { KeyReveal } from '../components/access/KeyReveal';
-import { useAccessActions, useInvitations, useMembers, usePaged, type ActivityRow, type CredentialRow } from '../hooks/use-access';
+import { refusalText, useAccessActions, useInvitations, useMembers, usePaged, type ActivityRow, type CredentialRow } from '../hooks/use-access';
 import { useMe } from '../hooks/use-me';
-import { ApiError } from '../lib/api';
+import { useProjects } from '../hooks/use-projects';
 import { formatCount, formatDateTime, formatRelative } from '../lib/format';
 
-const REFUSALS: Record<string, string> = {
-  last_member: 'This is the last member with a connected account; the server would be left with nobody who can sign in.',
-  already_revoked: 'Already removed.',
-  member_revoked: 'That member has been removed.',
+/** What a captured event is, in the person's words. */
+const KIND_LABEL: Record<string, string> = {
+  'session.start': 'Session started', 'session.end': 'Session ended', prompt: 'Prompt', 'tool.use': 'Tool call', 'tool.failure': 'Tool failed',
+  response: 'Response', plan: 'Plan', attachment: 'Attachment', 'transcript.segment': 'Transcript', 'compaction.pre': 'Compaction', 'compaction.post': 'Compaction',
+  'subagent.start': 'Subagent started', 'subagent.stop': 'Subagent stopped', 'stop.failure': 'Stop failed', 'task.completed': 'Task completed', notification: 'Notification', error: 'Error',
 };
-
-function refusalText(err: unknown): string {
-  if (err instanceof ApiError) {
-    const code = (err.body as { error?: unknown } | null)?.error;
-    if (typeof code === 'string' && REFUSALS[code]) return REFUSALS[code];
-    return `The server refused (${err.status}).`;
-  }
-  return 'Could not reach the server.';
-}
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
 const primary = 'rounded-md bg-primary px-3 py-1.5 font-sans text-sm text-on-primary transition-opacity hover:opacity-90';
@@ -45,19 +37,22 @@ export function Access() {
   const [inviteMinutes, setInviteMinutes] = useState(60);
   const [invited, setInvited] = useState<{ key: string; expiresAt: number } | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
-  const [openCredential, setOpenCredential] = useState<CredentialRow | null>(null);
+  const [openCredentialId, setOpenCredentialId] = useState<string | null>(null);
+  const [withdrawError, setWithdrawError] = useState<string | null>(null);
+  const [stopError, setStopError] = useState<string | null>(null);
   const [revokeCredentialId, setRevokeCredentialId] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
 
   const list = members.data?.members ?? [];
   const target = list.find((m) => m.id === revokeMemberId);
   const isMe = (id: string) => me.data?.member?.id === id;
-  const nameOf = (id: string) => list.find((m) => m.id === id)?.label ?? id;
+  const nameOf = (id: string | null) => (id === null ? null : list.find((m) => m.id === id)?.label ?? id);
+  const openCredential = credentials.rows.find((c) => c.id === openCredentialId) ?? null;
 
   return (
     <PageContainer>
       <PageHeader title="Access" subtitle="Members, invitations and runtimes of this server. Everything here is open to every member, and every change names who made it." />
-      <PageLoading isLoading={members.isPending} error={members.error}>
+      <PageLoading isLoading={members.isPending} error={members.error ?? invitations.error ?? credentials.error}>
         <div className="flex flex-col gap-4">
           <Panel padded title="Members" actions={<button type="button" className={primary} onClick={() => { setInvited(null); setInviteError(null); setInviteFor(''); setInviteOpen(true); }}>Invite</button>}>
             <ul className="flex flex-col divide-y divide-outline-variant/10" aria-label="Members">
@@ -68,7 +63,7 @@ export function Access() {
                     <div className="text-on-surface">{m.label ?? m.id}{isMe(m.id) && <span className="ml-2 font-mono text-[10px] uppercase text-on-surface-variant">you</span>}</div>
                     <div className="font-mono text-[11px] text-on-surface-variant">{m.id}</div>
                   </div>
-                  <span className="text-xs text-on-surface-variant">{m.revokedAt !== null ? `removed ${formatRelative(m.revokedAt)} by ${nameOf(m.revokedBy ?? '')}` : m.linked ? 'account connected' : 'no account yet'}</span>
+                  <span className="text-xs text-on-surface-variant">{m.revokedAt !== null ? `removed ${formatRelative(m.revokedAt)}${nameOf(m.revokedBy) ? ` by ${nameOf(m.revokedBy)}` : ''}` : m.linked ? 'account connected' : 'no account yet'}</span>
                   <span className="text-xs text-on-surface-variant">{formatCount(m.liveCredentials, 'runtime')}</span>
                   {m.revokedAt === null && (
                     <button type="button" className={button} onClick={() => { setRefusal(null); setRevokeMemberId(m.id); }}>Remove</button>
@@ -87,13 +82,14 @@ export function Access() {
                   <li key={i.id} className="flex items-center gap-3 py-2 font-sans text-sm">
                     <div className="min-w-0 flex-1">
                       <div className="text-on-surface">{i.memberId === null ? 'A new member' : `Another runtime for ${nameOf(i.memberId)}`}</div>
-                      <div className="text-xs text-on-surface-variant">by {nameOf(i.createdBy ?? '')} · expires {formatRelative(i.expiresAt)}</div>
+                      <div className="text-xs text-on-surface-variant">{nameOf(i.createdBy) ? `by ${nameOf(i.createdBy)} · ` : ''}expires {formatRelative(i.expiresAt)}</div>
                     </div>
-                    <button type="button" className={button} onClick={() => actions.revokeInvitation.mutate(i.id)}>Withdraw</button>
+                    <button type="button" className={button} onClick={() => { setWithdrawError(null); actions.revokeInvitation.mutate(i.id, { onError: (err) => setWithdrawError(refusalText(err)) }); }}>Withdraw</button>
                   </li>
                 ))}
               </ul>
             )}
+            {withdrawError && <p className="mt-2 font-sans text-xs text-tertiary">{withdrawError}</p>}
           </Panel>
 
           <Panel padded title="Runtimes">
@@ -101,12 +97,12 @@ export function Access() {
               {credentials.rows.map((c) => (
                 <li key={c.id} className="flex items-center gap-3 py-2 font-sans text-sm">
                   <StatusDot tone={c.live ? 'sage' : 'outline'} />
-                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setOpenCredential(c)}>
+                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setOpenCredentialId(c.id)}>
                     <div className="text-on-surface">{c.machineId ?? c.id} <span className="text-xs text-on-surface-variant">· {nameOf(c.memberId)}</span></div>
                     <div className="font-mono text-[11px] text-on-surface-variant">{c.id} · started {formatRelative(c.lineageStartedAt)}</div>
                   </button>
-                  <span className="text-xs text-on-surface-variant">{c.live ? 'writing' : c.revokedAt !== null ? `stopped by ${nameOf(c.revokedBy ?? '')}` : 'stopped'}</span>
-                  {c.revokedAt === null && <button type="button" className={button} onClick={() => setRevokeCredentialId(c.id)}>Stop</button>}
+                  <span className="text-xs text-on-surface-variant">{c.live ? 'writing' : c.revokedAt !== null ? `stopped${nameOf(c.revokedBy) ? ` by ${nameOf(c.revokedBy)}` : ''}` : 'expired'}</span>
+                  {c.live && <button type="button" className={button} onClick={() => { setStopError(null); setRevokeCredentialId(c.id); }}>Stop</button>}
                 </li>
               ))}
             </ul>
@@ -143,20 +139,21 @@ export function Access() {
         description="It stops writing at once. What it already wrote stays, attributed to it."
         confirmLabel="Stop"
         isPending={actions.revokeCredential.isPending}
+        errorMessage={stopError}
         onConfirm={() => {
           if (revokeCredentialId === null) return;
-          actions.revokeCredential.mutate(revokeCredentialId, { onSuccess: () => { setRevokeCredentialId(null); credentials.reset(); } });
+          actions.revokeCredential.mutate(revokeCredentialId, { onSuccess: () => setRevokeCredentialId(null), onError: (err) => setStopError(refusalText(err)) });
         }}
       />
 
-      <Dialog open={inviteOpen} onOpenChange={(open) => { setInviteOpen(open); if (!open) setInvited(null); }}>
+      <Dialog open={inviteOpen} onOpenChange={(open) => { setInviteOpen(open); if (!open) { setInvited(null); actions.mintInvitation.reset(); } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{invited ? 'Invitation ready' : 'Invite'}</DialogTitle>
             <DialogDescription>{invited ? 'Give this key to the person joining. It works once and expires on its own.' : 'An invitation joins a new member, or adds another runtime to a member already here.'}</DialogDescription>
           </DialogHeader>
           {invited ? (
-            <KeyReveal label="Invitation key" value={invited.key} hint={`Expires ${formatDateTime(invited.expiresAt)}. On the joining machine: myco member join <this server> …`} />
+            <KeyReveal label="Invitation key" value={invited.key} hint={`Expires ${formatDateTime(invited.expiresAt)}. The person joining exchanges it for their own credential when they set up; until then, keep it private.`} />
           ) : (
             <form className="flex flex-col gap-3" onSubmit={(e) => {
               e.preventDefault();
@@ -184,8 +181,8 @@ export function Access() {
         </DialogContent>
       </Dialog>
 
-      <SlideoutDetailPanel open={openCredential !== null} onClose={() => setOpenCredential(null)} ariaLabel="Runtime activity">
-        {openCredential && <CredentialActivity credential={openCredential} memberName={nameOf(openCredential.memberId)} />}
+      <SlideoutDetailPanel open={openCredential !== null} onClose={() => setOpenCredentialId(null)} ariaLabel="Runtime activity">
+        {openCredential && <CredentialActivity credential={openCredential} memberName={nameOf(openCredential.memberId) ?? openCredential.memberId} />}
       </SlideoutDetailPanel>
     </PageContainer>
   );
@@ -193,24 +190,26 @@ export function Access() {
 
 function CredentialActivity({ credential, memberName }: { credential: CredentialRow; memberName: string }) {
   const activity = usePaged<ActivityRow>(['credential-activity', credential.id], `/api/credentials/${encodeURIComponent(credential.id)}/activity?limit=50`);
+  const projects = useProjects();
+  const projectName = (id: string) => projects.data?.projects.find((p) => p.projectId === id)?.name ?? id;
   return (
     <div className="flex flex-col gap-3 p-4">
       <div>
         <div className="font-serif text-lg text-on-surface">{credential.machineId ?? credential.id}</div>
-        <div className="font-sans text-xs text-on-surface-variant">{memberName} · {credential.live ? 'writing' : 'stopped'} · {(credential.bytesWritten / 1_048_576).toFixed(1)} MB written</div>
+        <div className="font-sans text-xs text-on-surface-variant">{memberName} · {credential.live ? 'writing' : credential.revokedAt !== null ? 'stopped' : 'expired'} · {(credential.bytesWritten / 1_048_576).toFixed(1)} MB written</div>
       </div>
       <PageLoading isLoading={activity.isPending} error={activity.error}>
         {activity.rows.length === 0 ? (
           <p className="font-sans text-sm text-on-surface-variant">Nothing written yet.</p>
         ) : (
           <table className="w-full font-sans text-xs">
-            <thead className="text-left text-[10px] uppercase tracking-wide text-on-surface-variant"><tr><th>When</th><th>Project</th><th>Kind</th><th>Session</th></tr></thead>
+            <thead className="text-left text-[10px] uppercase tracking-wide text-on-surface-variant"><tr><th>When</th><th>Project</th><th>What</th><th>Session</th></tr></thead>
             <tbody>
               {activity.rows.map((a) => (
                 <tr key={a.eventId} className="border-t border-outline-variant/10">
                   <td className="py-1 text-on-surface-variant">{formatRelative(a.createdAt)}</td>
-                  <td className="py-1 font-mono text-on-surface">{a.projectId}</td>
-                  <td className="py-1 text-on-surface-variant">{a.kind}</td>
+                  <td className="py-1 text-on-surface">{projectName(a.projectId)}</td>
+                  <td className="py-1 text-on-surface-variant">{KIND_LABEL[a.kind] ?? a.kind}</td>
                   <td className="py-1 font-mono text-on-surface-variant">{a.sessionId.slice(0, 12)}</td>
                 </tr>
               ))}

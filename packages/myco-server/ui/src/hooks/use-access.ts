@@ -1,6 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
-import { fetchJson, postJson } from '../lib/api';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ApiError, fetchJson, postJson } from '../lib/api';
 
 export interface MemberRow {
   id: string;
@@ -71,26 +70,41 @@ export function useGrants(projectId: string) {
   });
 }
 
-/** A cursor-paged read accumulated page by page; `more()` fetches the next page while a cursor remains. */
+/** A cursor-paged read, page after page; `more()` fetches the next while a cursor remains. Refetch, focus and remount all keep one copy of every row. */
 export function usePaged<T>(key: readonly unknown[], path: string) {
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [pages, setPages] = useState<T[][]>([]);
-  const query = useQuery({
-    queryKey: [...key, cursor],
-    queryFn: async ({ signal }) => {
-      const page = await fetchJson<Page<T>>(cursor === null ? path : `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(cursor)}`, signal);
-      setPages((prev) => (cursor === null ? [page.rows] : [...prev, page.rows]));
-      return page;
-    },
+  const query = useInfiniteQuery({
+    queryKey: [...key],
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }) =>
+      fetchJson<Page<T>>(pageParam === null ? path : `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(pageParam)}`, signal),
+    getNextPageParam: (last) => last.cursor ?? undefined,
   });
   return {
-    rows: pages.flat(),
+    rows: query.data?.pages.flatMap((p) => p.rows) ?? [],
     isPending: query.isPending,
     error: query.error,
-    hasMore: query.data?.cursor != null,
-    more: () => { if (query.data?.cursor) setCursor(query.data.cursor); },
-    reset: () => { setPages([]); setCursor(null); },
+    hasMore: query.hasNextPage,
+    more: () => { void query.fetchNextPage(); },
   };
+}
+
+const REFUSALS: Record<string, string> = {
+  last_member: 'This is the last member with a connected account; the server would be left with nobody who can sign in.',
+  already_revoked: 'Already removed.',
+  member_revoked: 'That member has been removed.',
+  bad_request: 'The server could not accept that.',
+};
+
+/** What to tell the person when the server refused, in their words. */
+export function refusalText(err: unknown): string {
+  if (err instanceof ApiError) {
+    const body = err.body as { error?: unknown; reason?: unknown } | null;
+    const code = body?.error;
+    if (typeof code === 'string' && REFUSALS[code]) return typeof body?.reason === 'string' ? `${REFUSALS[code]} ${body.reason}.` : REFUSALS[code];
+    if (err.status === 404) return 'That is no longer here.';
+    return `The server refused (${err.status}).`;
+  }
+  return 'Could not reach the server.';
 }
 
 /** One mutation per access act; each refreshes the lists it changes. */
@@ -99,11 +113,12 @@ export function useAccessActions() {
   const refresh = (...keys: string[]) => Promise.all(keys.map((k) => client.invalidateQueries({ queryKey: [k] })));
   return {
     revokeMember: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/members/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('members', 'invitations', 'credentials') }),
-    mintInvitation: useMutation({ mutationFn: (body: { memberId?: string; ttlMinutes?: number }) => postJson<{ key: string; id: string; expiresAt: number }>('/api/enrollment', body), onSuccess: () => refresh('invitations') }),
+    // A minted key lives only in the page's own state: the mutation keeps no copy once it has answered.
+    mintInvitation: useMutation({ gcTime: 0, mutationFn: (body: { memberId?: string; ttlMinutes?: number }) => postJson<{ key: string; id: string; expiresAt: number }>('/api/enrollment', body), onSuccess: () => refresh('invitations') }),
     revokeInvitation: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/enrollment/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('invitations') }),
     revokeCredential: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/credentials/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('credentials', 'members') }),
-    mintGrant: useMutation({ mutationFn: (v: { projectId: string; label?: string }) => postJson<{ key: string; id: string }>(`/api/projects/${encodeURIComponent(v.projectId)}/grants`, v.label === undefined ? {} : { label: v.label }), onSuccess: () => refresh('grants') }),
-    rotateGrant: useMutation({ mutationFn: (v: { projectId: string; grantId: string }) => postJson<{ key: string; id: string }>(`/api/projects/${encodeURIComponent(v.projectId)}/grants/${encodeURIComponent(v.grantId)}/rotate`), onSuccess: () => refresh('grants') }),
+    mintGrant: useMutation({ gcTime: 0, mutationFn: (v: { projectId: string; label?: string }) => postJson<{ key: string; id: string }>(`/api/projects/${encodeURIComponent(v.projectId)}/grants`, v.label === undefined ? {} : { label: v.label }), onSuccess: () => refresh('grants') }),
+    rotateGrant: useMutation({ gcTime: 0, mutationFn: (v: { projectId: string; grantId: string }) => postJson<{ key: string; id: string }>(`/api/projects/${encodeURIComponent(v.projectId)}/grants/${encodeURIComponent(v.grantId)}/rotate`), onSuccess: () => refresh('grants') }),
     revokeGrant: useMutation({ mutationFn: (v: { projectId: string; grantId: string }) => postJson<{ revoked: boolean }>(`/api/projects/${encodeURIComponent(v.projectId)}/grants/${encodeURIComponent(v.grantId)}/revoke`), onSuccess: () => refresh('grants') }),
   };
 }
