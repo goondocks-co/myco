@@ -119,4 +119,8 @@ describe('the gate is the one place signed-out is decided', () => {
     walk(UI);
     expect(importers).toEqual(['components/auth-gate.tsx']);
   });
+  it('the layout decides nothing about being signed out', () => {
+    const layout = readFileSync(`${UI}layout/Layout.tsx`, 'utf8');
+    expect({ signedOutError: /SignedOutError/.test(layout), signIn: /sign in/i.test(layout) }).toEqual({ signedOutError: false, signIn: false });
+  });
 });
