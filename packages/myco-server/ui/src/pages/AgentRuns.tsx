@@ -9,7 +9,7 @@ import { Row } from '../components/ui/row';
 import { StatCard } from '../components/ui/stat-card';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
 import { SubtabPill } from '../components/ui/subtab-pill';
-import { useAgents, useRun, useRuns, type PhaseRow, type RunDetailRow, type RunListRow } from '../hooks/use-intelligence';
+import { useAgents, useRun, useRuns, type PhaseRow, type ReportRow, type RunDetailRow, type RunListRow } from '../hooks/use-intelligence';
 import { ApiError } from '../lib/api';
 import { formatCost, formatDateTime, formatDuration, formatRelative, formatTokens } from '../lib/format';
 import { NotFound } from './NotFound';
@@ -26,7 +26,7 @@ const STATUS_TONE: Record<string, StatusTone> = { running: 'ochre', completed: '
 
 const RESUME_TEXT: Record<string, string> = {
   ready: 'Can be resumed.',
-  session_expired: 'The provider session expired; the run can start again from its checkpoint.',
+  session_expired: 'The provider session expired; the checkpoint is discarded and the next run starts fresh.',
   postcondition_unsatisfiable: 'A phase could not satisfy its post-condition; resuming would fail the same way.',
   superseded: 'A later run replaced it.',
   exhausted: 'Resume attempts are used up.',
@@ -112,7 +112,7 @@ function RunDetail({ projectId, runId }: { projectId: string; runId: string }) {
   );
 }
 
-function RunBody({ run, phases, reports, agentName }: { run: RunDetailRow; phases: PhaseRow[] | null; reports: { id: number; action: string; summary: string; details: string | null; createdAt: number }[]; agentName: string | null }) {
+function RunBody({ run, phases, reports, agentName }: { run: RunDetailRow; phases: PhaseRow[] | null; reports: ReportRow[]; agentName: string | null }) {
   const failed = run.status === 'failed' || run.error !== null;
   return (
     <div className="flex flex-col gap-4">
@@ -149,7 +149,7 @@ function RunBody({ run, phases, reports, agentName }: { run: RunDetailRow; phase
         <dl className="grid gap-x-6 gap-y-1 font-sans text-sm sm:grid-cols-2">
           <Fact label="Agent" value={agentName ?? run.agentId} />
           <Fact label="Model" value={run.provider === null && run.model === null ? null : `${run.provider ?? ''}${run.provider && run.model ? ' · ' : ''}${run.model ?? ''}`} />
-          <Fact label="Started by" value={run.dispatchedBy === null ? 'a schedule' : `runtime ${run.dispatchedBy}`} />
+          <Fact label="Credential" value={run.dispatchedBy} />
           <Fact label="Reasoning" value={run.reasoningLevel} />
           <Fact label="Dry run" value={run.dryRun ? 'yes' : 'no'} />
           <Fact label="Resumable" value={run.resumable ? 'yes' : 'no'} />

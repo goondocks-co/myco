@@ -152,12 +152,8 @@ export function useRuns(projectId: string, status: string | null) {
   return usePaged<RunListRow>(['runs', projectId, status ?? 'all'], `${project(projectId)}/runs?limit=50${status === null ? '' : `&status=${seg(status)}`}`);
 }
 
-export function useRun(projectId: string, runId: string | undefined) {
-  return useQuery({
-    queryKey: ['run', projectId, runId],
-    queryFn: ({ signal }) => fetchJson<RunDetailResponse>(`${project(projectId)}/runs/${seg(runId ?? '')}`, signal),
-    enabled: runId !== undefined,
-  });
+export function useRun(projectId: string, runId: string) {
+  return useQuery({ queryKey: ['run', projectId, runId], queryFn: ({ signal }) => fetchJson<RunDetailResponse>(`${project(projectId)}/runs/${seg(runId)}`, signal) });
 }
 
 export function useAgents() {
@@ -168,12 +164,8 @@ export function useSkills(projectId: string) {
   return useQuery({ queryKey: ['skills', projectId], queryFn: ({ signal }) => fetchJson<{ skills: SkillRecord[] }>(`${project(projectId)}/skills?limit=200`, signal) });
 }
 
-export function useSkill(projectId: string, skillId: string | undefined) {
-  return useQuery({
-    queryKey: ['skill', projectId, skillId],
-    queryFn: ({ signal }) => fetchJson<{ content: string | null; lineage: LineageRow[] }>(`${project(projectId)}/skills/${seg(skillId ?? '')}`, signal),
-    enabled: skillId !== undefined,
-  });
+export function useSkill(projectId: string, skillId: string) {
+  return useQuery({ queryKey: ['skill', projectId, skillId], queryFn: ({ signal }) => fetchJson<{ content: string | null; lineage: LineageRow[] }>(`${project(projectId)}/skills/${seg(skillId)}`, signal) });
 }
 
 export function useSkillReleaseStates(projectId: string) {
@@ -187,12 +179,8 @@ export function useDigests(projectId: string) {
   return useQuery({ queryKey: ['digests', projectId], queryFn: ({ signal }) => fetchJson<{ digests: DigestRow[] }>(`${project(projectId)}/digests`, signal) });
 }
 
-export function useDigestRevisions(projectId: string, agentId: string | null, tier: number | null) {
-  return useQuery({
-    queryKey: ['digest-revisions', projectId, agentId, tier],
-    queryFn: ({ signal }) => fetchJson<{ revisions: DigestRevisionRow[] }>(`${project(projectId)}/digests/${tier ?? 0}/revisions?agentId=${seg(agentId ?? '')}`, signal),
-    enabled: agentId !== null && tier !== null,
-  });
+export function useDigestRevisions(projectId: string, agentId: string, tier: number) {
+  return useQuery({ queryKey: ['digest-revisions', projectId, agentId, tier], queryFn: ({ signal }) => fetchJson<{ revisions: DigestRevisionRow[] }>(`${project(projectId)}/digests/${tier}/revisions?agentId=${seg(agentId)}`, signal) });
 }
 
 export function useInstructions(projectId: string) {
