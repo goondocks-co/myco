@@ -283,12 +283,41 @@ export function pinnedVersion(paths: DeploymentPaths): string | null {
   return line === undefined ? null : line.slice('MYCO_VERSION='.length);
 }
 
+/** Set one key in the bundle's `.env`, or drop it when `value` is null; every other line survives. */
+function upsertEnv(paths: DeploymentPaths, key: string, value: string | null): void {
+  const current = existsSync(paths.envFile) ? readFileSync(paths.envFile, 'utf8') : '';
+  const kept = current.split('\n').filter((l) => l !== '' && !l.startsWith(`${key}=`));
+  const lines = value === null ? kept : [...kept, `${key}=${value}`];
+  writeFileSync(paths.envFile, lines.length > 0 ? `${lines.join('\n')}\n` : '', { mode: 0o600 });
+}
+
 /** Rewrite the pin, or drop it when `version` is null. */
 function writePin(paths: DeploymentPaths, version: string | null): void {
-  const current = existsSync(paths.envFile) ? readFileSync(paths.envFile, 'utf8') : '';
-  const kept = current.split('\n').filter((l) => l !== '' && !l.startsWith('MYCO_VERSION='));
-  const lines = version === null ? kept : [...kept, `MYCO_VERSION=${version}`];
-  writeFileSync(paths.envFile, lines.length > 0 ? `${lines.join('\n')}\n` : '', { mode: 0o600 });
+  upsertEnv(paths, 'MYCO_VERSION', version);
+}
+
+/** The sign-in credentials a Deployment holds: the id in `.env` (Compose passes it as an environment value), the secret as a mounted file. */
+export interface SignInSecrets {
+  clientId: string;
+  clientSecret: string;
+}
+
+/**
+ * Write the sign-in credentials into the bundle. The secret goes into the
+ * mounted secret file the compose file already declares, 0600; the id is an
+ * `.env` value the compose file passes through. The running container reads
+ * neither until it is recreated (`recreateDeployment`).
+ */
+export function writeSignInSecrets(paths: DeploymentPaths, secrets: SignInSecrets): void {
+  mkdirSync(paths.secretsDir, { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(paths.secretsDir, 'github_client_secret'), secrets.clientSecret, { mode: 0o600 });
+  upsertEnv(paths, 'GITHUB_CLIENT_ID', secrets.clientId);
+}
+
+/** Recreate the container so it reads the bundle's current secrets and env; a plain `up` leaves a running container on the bytes it started with. */
+export async function recreateDeployment(options: DeploymentOptions = {}): Promise<void> {
+  const { paths, runner } = resolved(options);
+  await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--force-recreate', '--wait'), { cwd: paths.root });
 }
 
 export class UpdateRolledBack extends Error {
@@ -351,7 +380,7 @@ export async function rotateSecrets(options: DeploymentOptions = {}): Promise<st
     writeFileSync(path.join(paths.secretsDir, name), crypto.randomBytes(bytes).toString('base64'), { mode: 0o600 });
     rotated.push(name);
   }
-  await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--force-recreate', '--wait'), { cwd: paths.root });
+  await recreateDeployment({ paths, runner });
   return rotated;
 }
 

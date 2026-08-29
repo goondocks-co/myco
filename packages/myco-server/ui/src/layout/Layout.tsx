@@ -3,11 +3,10 @@ import { NavLink, Outlet, useNavigate, useParams } from 'react-router-dom';
 import { PageLoading } from '../components/ui/page-loading';
 import { useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
-import { isArchived, SignedOutError } from '../lib/api';
+import { isArchived } from '../lib/api';
 import { cn } from '../lib/cn';
 import { rememberProject } from '../lib/project-memory';
 import { NotAMember } from '../pages/NotAMember';
-import { SignedOut } from '../pages/SignedOut';
 import { AppearanceSection } from './AppearanceSection';
 import { Topbar } from './Topbar';
 
@@ -50,9 +49,7 @@ export function Layout() {
   const params = useParams();
   const navigate = useNavigate();
 
-  if (me.error instanceof SignedOutError) return <SignedOut />;
   if (me.data && me.data.member === null) return <NotAMember login={me.data.login} />;
-  if (projects.error instanceof SignedOutError) return <SignedOut />;
 
   const all = projects.data?.projects ?? [];
   const current = params.projectId ? all.find((p) => p.projectId === params.projectId) : undefined;

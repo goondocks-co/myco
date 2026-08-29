@@ -50,10 +50,16 @@ services:
       MYCO_SOURCE_FROM: \${MYCO_SOURCE_FROM:-socket}
       MYCO_TRUSTED_HEADER: \${MYCO_TRUSTED_HEADER:-}
       MYCO_TRUSTED_HOPS: \${MYCO_TRUSTED_HOPS:-}
+      # Sign-in: the client id is a value; every secret is read from the file
+      # its \`*_FILE\` variable names, mounted under /run/secrets below.
+      GITHUB_CLIENT_ID: \${GITHUB_CLIENT_ID:-}
+      SECRET_WRAP_KEY_FILE: /run/secrets/myco_secret_wrap_key
+      SESSION_SECRET_FILE: /run/secrets/myco_session_secret
+      GITHUB_CLIENT_SECRET_FILE: /run/secrets/myco_github_client_secret
 
-    # Values, not paths, are what the process reads. Compose secrets arrive as
-    # files under /run/secrets and the entrypoint loads them, keeping them out
-    # of \`docker inspect\` and the shell history that \`environment:\` exposes.
+    # Compose secrets arrive as files under /run/secrets; the process reads each
+    # from the path its \`*_FILE\` variable names, keeping the values out of
+    # \`docker inspect\` and the shell history that \`environment:\` exposes.
     secrets:
       - myco_secret_wrap_key
       - myco_session_secret

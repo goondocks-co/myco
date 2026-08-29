@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
+import { AuthGate } from './components/auth-gate';
 import { Layout } from './layout/Layout';
 import { readPendingLink } from './lib/pending-link';
 import { readLastProject } from './lib/project-memory';
@@ -26,6 +27,7 @@ function RootRedirect() {
 
 export default function App() {
   return (
+    <AuthGate>
     <Routes>
       <Route path="/" element={<RootRedirect />} />
       <Route path="/link" element={<LinkPage />} />
@@ -48,5 +50,6 @@ export default function App() {
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
+    </AuthGate>
   );
 }

@@ -26,6 +26,18 @@ describe('compose template', () => {
   it('selects the container bind shape', () => {
     expect(COMPOSE_TEMPLATE).toContain('MYCO_BIND: all');
   });
+
+  it('hands every mounted secret to the process by its *_FILE variable, and passes the sign-in client id', () => {
+    // The process reads a secret from the path `<NAME>_FILE` names
+    // (`platform/bun/server-main.ts secretOf`); a mount without that variable is
+    // a file nothing reads, and sign-in stays unconfigured with every file in place.
+    const declared = [...COMPOSE_TEMPLATE.matchAll(/^\s{2}(myco_[a-z_]+):\n\s+file: \.\/secrets\/([a-z_]+)$/gm)].map((m) => ({ secret: m[1]!, file: m[2]! }));
+    expect(declared.map((d) => d.file).sort()).toEqual(['github_client_secret', 'secret_wrap_key', 'session_secret']);
+    for (const { secret, file } of declared) {
+      expect({ file, env: COMPOSE_TEMPLATE.includes(`${file.toUpperCase()}_FILE: /run/secrets/${secret}`) }).toEqual({ file, env: true });
+    }
+    expect(COMPOSE_TEMPLATE).toContain('GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}');
+  });
 });
 
 describe('resource limits are declared where Compose reads them', () => {

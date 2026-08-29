@@ -17,8 +17,15 @@ export interface CommandResult {
   stderr: string;
 }
 
+/** How a command is run: where, with what environment, and what it reads on stdin. A secret travels on stdin, never in argv. */
+export interface RunOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  input?: string;
+}
+
 export interface CommandRunner {
-  run(command: string, args: readonly string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv }): Promise<CommandResult>;
+  run(command: string, args: readonly string[], options?: RunOptions): Promise<CommandResult>;
 }
 
 /** Spawns for real. */
@@ -30,7 +37,7 @@ export function systemRunner(): CommandRunner {
         const child = spawn(command, [...args], {
           cwd: options?.cwd,
           env: options?.env ?? process.env,
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: [options?.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
         });
         let stdout = '';
         let stderr = '';
@@ -38,6 +45,10 @@ export function systemRunner(): CommandRunner {
         child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
         child.on('error', reject);
         child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+        if (options?.input !== undefined && child.stdin) {
+          child.stdin.on('error', () => undefined);
+          child.stdin.end(options.input);
+        }
       });
     },
   };
@@ -55,7 +66,7 @@ export async function runOrThrow(
   runner: CommandRunner,
   command: string,
   args: readonly string[],
-  options?: { cwd?: string; env?: NodeJS.ProcessEnv },
+  options?: RunOptions,
 ): Promise<CommandResult> {
   const result = await runner.run(command, args, options);
   if (result.code !== 0) throw new CommandFailed(command, args, result);
