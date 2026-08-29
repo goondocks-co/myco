@@ -32,7 +32,7 @@ const clampLimit = (raw: string | null): number => {
 /** Resolve the Project or answer 404. A Project the caller does not hold is indistinguishable from one that does not exist. */
 async function scopeOf(env: ServerEnv, ctx: OwnerContext) {
   const projectId = ctx.params.projectId;
-  return projectId === undefined ? null : await resolveProjectScope(env.db, ctx.session, projectId);
+  return projectId === undefined ? null : await resolveProjectScope(env.db, ctx.member, projectId);
 }
 
 export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

@@ -36,6 +36,22 @@ UPDATE enrollment_authorities SET revoked_at = <now_ms> WHERE id = '<ID>' AND re
 
 **Every use of this path should be a cause for investigation.** It bypasses the join flow's ordinary attribution: the resulting authority names no minting member. Mint one, use it, and let it expire — do not keep a standing key.
 
+# Break-glass: linking a GitHub account directly
+
+The steady-state path is `myco member link-github` on a machine that has joined: it mints a one-time link, the member opens it, signs in through GitHub, and confirms — the account is proven, never typed. This path proves nothing. Use it when no linked member can sign in — the first member of a fresh Deployment before the CLI path exists on their machine, or a member whose account must change (an account is fixed once linked; this is the only way to replace it).
+
+`scripts/link-github.ts` renders the UPDATE for you to apply. Find the member id first (`SELECT id, label, github_id FROM members WHERE revoked_at IS NULL`), and the numeric GitHub account id from `https://api.github.com/users/<login>` — never the login, which can be renamed and reclaimed.
+
+```bash
+cd packages/myco-server
+bun scripts/link-github.ts mem_xxxxxxxx 583231
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(bun scripts/link-github.ts mem_xxxxxxxx 583231)"
+```
+
+Self-hosted, apply the same statement against the SQLite file on the mounted volume.
+
+**Every use of this path should be a cause for investigation**: it binds an account nobody proved control of, on the operator's word.
+
 # Break-glass: revoking a member token
 
 A leaked member token is revoked by setting `revoked_at` on its row. The pipeline refuses a revoked token on the next request; there is no cache to flush.

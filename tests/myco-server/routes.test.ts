@@ -14,7 +14,7 @@ describe('route table', () => {
    * a human's capture allowance would let ordinary agent work exhaust that
    * member's ability to record their own sessions.
    */
-  const QUOTA_EXEMPT = new Set(['/tokens/refresh', '/runs/admission', '/runs/claim', '/runs/get', '/runs/update', '/runs/failed', '/runs/resume-admission', '/runs/supersede', '/runs/reports', '/runs/cortex-instructions', '/runs/state/read', '/runs/state/write', '/spores/save', '/spores/list', '/spores/get', '/spores/resolve']);
+  const QUOTA_EXEMPT = new Set(['/tokens/refresh', '/members/link-github', '/runs/admission', '/runs/claim', '/runs/get', '/runs/update', '/runs/failed', '/runs/resume-admission', '/runs/supersede', '/runs/reports', '/runs/cortex-instructions', '/runs/state/read', '/runs/state/write', '/spores/save', '/spores/list', '/spores/get', '/spores/resolve']);
 
   it('declares an auth kind and a body mode for every route, a shape for every member route, and charges every member route to the quota but the named exemptions', () => {
     for (const r of ROUTES) {
@@ -28,7 +28,7 @@ describe('route table', () => {
         expect({ path: r.path, quotaPrecheck: r.quotaPrecheck }).toEqual({ path: r.path, quotaPrecheck: QUOTA_EXEMPT.has(r.path) ? false : undefined });
       }
     }
-    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /runs/claim', 'POST /runs/admission', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/cortex-instructions', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /runs/state/read', 'POST /runs/state/write']);
+    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /runs/claim', 'POST /runs/admission', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/cortex-instructions', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /runs/state/read', 'POST /runs/state/write', 'POST /members/link-github']);
   });
 
   it('routes exactly the child segments the handler serves', async () => {

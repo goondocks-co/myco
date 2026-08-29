@@ -115,7 +115,7 @@ describe('tokens', () => {
     expect((await activity.json() as { rows: { eventId: string }[] }).rows.map((r) => r.eventId)).toEqual(['ev1']);
 
     const revoked = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${issued.id}/revoke`), { ...e.env, ...OWNER_ENV });
-    expect(await revoked.json()).toEqual({ revoked: true, revokedBy: `owner:${PRINCIPAL.sub}` });
+    expect(await revoked.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
   });
 
   it('revokes a credential whatever project segment the path carries, and names who revoked it', async () => {
@@ -126,16 +126,16 @@ describe('tokens', () => {
     const minted = await worker.fetch(await asOwnerPost('/api/projects/proj_2/tokens', { machineId: 'machine_2' }), { ...e.env, ...OWNER_ENV });
     const issued = await minted.json() as { id: string };
     const res = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${issued.id}/revoke`), { ...e.env, ...OWNER_ENV });
-    expect(await res.json()).toEqual({ revoked: true, revokedBy: `owner:${PRINCIPAL.sub}` });
+    expect(await res.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
     // The actor lands in the same statement that revokes: a revocation and the record of
     // who made it cannot come apart, so an operator can always answer who ended it. The
     // `owner:` prefix marks the dashboard rather than a member — member ids carry
     // `mem_`, and an unprefixed GitHub id is indistinguishable from one.
-    expect(e.sqlite.query(`SELECT revoked_by FROM member_credentials WHERE id = ?`).get(issued.id)).toEqual({ revoked_by: `owner:${PRINCIPAL.sub}` });
+    expect(e.sqlite.query(`SELECT revoked_by FROM member_credentials WHERE id = ?`).get(issued.id)).toEqual({ revoked_by: PRINCIPAL.id });
     expect((e.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(issued.id) as any).revoked_at).not.toBeNull();
     // A second revoke changes nothing: the row is already revoked.
     const again = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${issued.id}/revoke`), { ...e.env, ...OWNER_ENV });
-    expect(await again.json()).toEqual({ revoked: false, revokedBy: `owner:${PRINCIPAL.sub}` });
+    expect(await again.json()).toEqual({ revoked: false, revokedBy: PRINCIPAL.id });
   });
 
   it('denial of enrollment is attributable, not prevented: one member can revoke another\'s credential, and the record names who did', async () => {
@@ -149,11 +149,11 @@ describe('tokens', () => {
     const victim = await theirs.json() as { id: string; token: string };
 
     const revoked = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/tokens/${victim.id}/revoke`), { ...e.env, ...OWNER_ENV });
-    expect(await revoked.json()).toEqual({ revoked: true, revokedBy: `owner:${PRINCIPAL.sub}` });
+    expect(await revoked.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
 
     // The victim is denied — and the row says who denied them, and whose credential it was.
     expect(e.sqlite.query(`SELECT member_id, revoked_by FROM member_credentials WHERE id = ?`).get(victim.id))
-      .toEqual({ member_id: 'mem_them', revoked_by: `owner:${PRINCIPAL.sub}` });
+      .toEqual({ member_id: 'mem_them', revoked_by: PRINCIPAL.id });
     const after = await worker.fetch(new Request('https://s/events', {
       method: 'POST',
       headers: { authorization: `Bearer ${victim.token}`, 'cf-connecting-ip': '1.2.3.4', 'x-myco-project': 'proj_1', 'x-myco-protocol': '1' },
