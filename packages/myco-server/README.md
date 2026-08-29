@@ -97,6 +97,8 @@ Sign-in is GitHub OAuth (`/auth/login`), and who may enter is a membership quest
 
 Cut-over to schema v8 (the first release carrying member sign-in) on a Deployment that signed in as a configured owner: migrate the remote database, bind the owner's member to their GitHub account with `scripts/link-github.ts` (BREAK-GLASS.md), deploy, then delete the `OWNER_GITHUB_ID` secret — in that order, so nobody is locked out between steps. Every later member links with `myco member link-github`.
 
+The dashboard's **Access** page (`/access`) administers members, invitations and runtimes; a project's **Access** page (`/p/<projectId>/access`) administers the external agents that may read it. Keys are shown once, every removal confirms what stops, and every act names who did it.
+
 Local development: `cd ui && npm run dev` proxies `/api`, `/auth` and `/health` to `http://127.0.0.1:8787` (override with `MYCO_SERVER_URL`), rewriting the Host to the loopback literal the self-hosted server admits.
 
 ## Access
