@@ -10,14 +10,33 @@
 
 ARG BUN_VERSION=1.3.13
 
+# --- dependencies ----------------------------------------------------------
+# The server's runtime dependencies, resolved from the root lockfile so the
+# image carries exactly what CI installs. The set is pure JavaScript, so it is
+# resolved once on the build host for every target platform.
+# `tests/myco-server/gates.test.ts` pins the declared set to what `src` imports;
+# a second dependency is a decision there before it is one here.
+FROM --platform=$BUILDPLATFORM node:22-slim AS deps
+WORKDIR /build
+COPY package.json package-lock.json ./
+COPY packages/myco/package.json packages/myco/
+COPY packages/myco-darwin-arm64/package.json packages/myco-darwin-arm64/
+COPY packages/myco-darwin-x64/package.json packages/myco-darwin-x64/
+COPY packages/myco-deploy/package.json packages/myco-deploy/
+COPY packages/myco-linux-arm64/package.json packages/myco-linux-arm64/
+COPY packages/myco-linux-x64/package.json packages/myco-linux-x64/
+COPY packages/myco-member/package.json packages/myco-member/
+COPY packages/myco-server/package.json packages/myco-server/
+COPY packages/myco-shared/package.json packages/myco-shared/
+COPY packages/myco-team/package.json packages/myco-team/
+COPY packages/myco-windows-x64/package.json packages/myco-windows-x64/
+RUN npm ci --workspace=@goondocks/myco-server --omit=dev --ignore-scripts --no-audit --no-fund
+
 # --- build -----------------------------------------------------------------
 FROM oven/bun:${BUN_VERSION}-slim AS build
 WORKDIR /build
 
-# No install step: every import in packages/myco-server/src resolves to a
-# builtin or a relative file, so the package has no npm dependency to fetch.
-# `tests/myco-server/gates.test.ts` holds that property — shared source may not
-# name a bare specifier — and this stage is what it buys.
+COPY --from=deps /build/node_modules ./node_modules
 COPY packages/myco-server/src ./src
 
 RUN bun build src/platform/bun/server-main.ts \

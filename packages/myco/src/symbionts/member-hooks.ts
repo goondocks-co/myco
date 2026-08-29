@@ -53,3 +53,22 @@ export function memberHookTemplate(template: Record<string, unknown>, source: Cr
   }
   return block;
 }
+
+/**
+ * The member's MCP server block for `template`: the same stdio launcher the
+ * project install writes, with `--credential <source>` appended to its
+ * arguments so the bridge it spawns reaches the Deployment over the member
+ * credential. A server whose launcher is neither an `args` list nor a
+ * `command` list is refused rather than written without the flag.
+ */
+export function memberMcpTemplate(template: Record<string, unknown>, source: CredentialSource): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [name, def] of Object.entries(template)) {
+    if (!def || typeof def !== 'object' || Array.isArray(def)) throw new Error(`Refusing to emit a member MCP server: ${name} is not an object`);
+    const server = def as Record<string, unknown>;
+    if (Array.isArray(server.args)) out[name] = { ...server, args: [...server.args, CREDENTIAL_FLAG, source] };
+    else if (Array.isArray(server.command)) out[name] = { ...server, command: [...server.command, CREDENTIAL_FLAG, source] };
+    else throw new Error(`Refusing to emit a member MCP server: ${name} declares no argument list to carry ${CREDENTIAL_FLAG} ${source}`);
+  }
+  return out;
+}

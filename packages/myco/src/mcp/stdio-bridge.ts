@@ -54,6 +54,8 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { resolveVaultDir } from '../vault/resolve.js';
+import { DEPLOYMENT_HEARTBEAT_INTERVAL_MS, DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS, declaredCredentialSource, deploymentTransport, probeDeploymentHealth, resolveDeploymentUpstream } from './deployment-upstream.js';
+import type { CredentialSource } from '../member/constants.js';
 import { DaemonClient } from '../daemon/client.js';
 import {
   REQUEST_CONTEXT_AUTH_HEADER,
@@ -208,12 +210,13 @@ export async function probeDaemonHealth(portRef: { port: number }): Promise<bool
  * agent's MCP surface dead until manual /mcp reconnect).
  */
 function startDaemonHeartbeat(
-  portRef: { port: number },
+  probe: () => Promise<boolean>,
   triggerSelfHeal: () => void,
+  intervalMs: number = DAEMON_HEARTBEAT_INTERVAL_MS,
 ): void {
   let consecutiveFailures = 0;
   const timer = setInterval(async () => {
-    const ok = await probeDaemonHealth(portRef);
+    const ok = await probe();
     if (ok) {
       consecutiveFailures = 0;
       return;
@@ -225,7 +228,7 @@ function startDaemonHeartbeat(
       logErr('heartbeat threshold reached — triggering self-heal');
       triggerSelfHeal();
     }
-  }, DAEMON_HEARTBEAT_INTERVAL_MS);
+  }, intervalMs);
   timer.unref();
 }
 
@@ -291,6 +294,82 @@ function buildUpstreamForCurrentDaemon(
   return { transport, port: info.port };
 }
 
+/** A resolved upstream: the transport to pump into, how to ask whether it is alive, and a label for the stderr trace. */
+interface Upstream {
+  transport: StreamableHTTPClientTransport;
+  probe: () => Promise<boolean>;
+  label: string;
+}
+
+/**
+ * Where the bridge's upstream comes from. The local daemon, resolved from
+ * daemon.json on every rebuild, or the Deployment, resolved from the member
+ * credential the command line declares. One self-heal loop serves both: a
+ * source is re-read on every rebuild, so a daemon that moved ports or a
+ * credential the hooks refreshed is picked up without the bridge knowing why.
+ */
+interface UpstreamSource {
+  describe: string;
+  /** The first upstream, taking whatever startup the source needs (the daemon is started if it is not running; the Deployment is probed once). */
+  first(): Promise<Upstream | null>;
+  /** The current upstream, freshly resolved, or null when the source has none right now. */
+  resolve(): Upstream | null;
+  /** How often the idle bridge probes this source's health. */
+  heartbeatMs: number;
+  /** How many rebuild attempts a self-heal makes before answering the waiting request with an error; null retries without end. */
+  maxHealAttempts: number | null;
+}
+
+function daemonUpstreamSource(vaultDir: string): UpstreamSource {
+  const resolve = (): Upstream | null => {
+    const built = buildUpstreamForCurrentDaemon(vaultDir);
+    if (!built) return null;
+    const portRef = { port: built.port };
+    return { transport: built.transport, probe: () => probeDaemonHealth(portRef), label: `daemon port ${built.port}` };
+  };
+  return {
+    describe: 'local daemon',
+    async first() {
+      const client = new DaemonClient(vaultDir);
+      const ready = await client.ensureRunning();
+      if (!ready) return null;
+      return resolve();
+    },
+    resolve,
+    heartbeatMs: DAEMON_HEARTBEAT_INTERVAL_MS,
+    maxHealAttempts: null,
+  };
+}
+
+function deploymentUpstreamSource(source: CredentialSource): UpstreamSource {
+  const resolve = (): Upstream | null => {
+    const upstream = resolveDeploymentUpstream(source, { cwd: process.cwd(), env: process.env });
+    if (!upstream) return null;
+    return {
+      transport: deploymentTransport(upstream),
+      probe: () => probeDeploymentHealth(upstream.healthUrl),
+      label: `deployment ${upstream.mcpUrl.origin} project ${upstream.projectId} (credential: ${source})`,
+    };
+  };
+  return {
+    describe: `deployment (credential: ${source})`,
+    // A Deployment that does not answer at startup is a configuration error the
+    // agent should see at once, not a request left waiting.
+    async first() {
+      const upstream = resolve();
+      if (!upstream) return null;
+      if (!(await upstream.probe())) {
+        logErr(`${upstream.label}: health probe failed at startup`);
+        return null;
+      }
+      return upstream;
+    },
+    resolve,
+    heartbeatMs: DEPLOYMENT_HEARTBEAT_INTERVAL_MS,
+    maxHealAttempts: DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS,
+  };
+}
+
 export function buildBridgeRequestHeaders(
   vaultDir: string,
   env: Record<string, string | undefined>,
@@ -303,28 +382,27 @@ export function buildBridgeRequestHeaders(
 }
 
 export async function main(): Promise<void> {
-  const vaultDir = resolveVaultDir();
-  const client = new DaemonClient(vaultDir);
-
-  const ready = await client.ensureRunning();
-  const info = client.getInfo();
-  if (!ready || !info) {
-    logErr('daemon failed to start; cannot bridge stdio MCP');
+  let source: CredentialSource | null;
+  try {
+    source = declaredCredentialSource(process.argv);
+  } catch (err) {
+    logErr((err as Error).message);
+    process.exit(2);
+  }
+  const upstreamSource = source === null ? daemonUpstreamSource(resolveVaultDir()) : deploymentUpstreamSource(source);
+  const initial = await upstreamSource.first();
+  if (!initial) {
+    logErr(`${upstreamSource.describe}: no upstream to bridge stdio MCP to`);
     process.exit(1);
   }
 
-  logErr(`bridge starting (pid=${process.pid}, ppid=${process.ppid}, daemon_port=${info.port})`);
+  logErr(`bridge starting (pid=${process.pid}, ppid=${process.ppid}, upstream=${initial.label})`);
 
-  const headers = buildBridgeRequestHeaders(vaultDir, process.env, info.auth_token);
-  let upstream = new StreamableHTTPClientTransport(
-    new URL(`http://127.0.0.1:${info.port}/mcp`),
-    { requestInit: { headers } },
-  );
+  let upstream = initial.transport;
+  // The probe of the CURRENT upstream, swapped with it on every self-heal so
+  // the heartbeat follows a rebuild without re-registering.
+  let probe = initial.probe;
   const downstream = new StdioServerTransport();
-
-  // Port reference shared with the heartbeat so self-heal updates are
-  // visible to the background watchdog without re-registering it.
-  const portRef = { port: info.port };
 
   // Single-flight reconnect mutex. While a reconnect is in progress, new
   // downstream messages wait for it to settle before being sent.
@@ -379,21 +457,24 @@ export async function main(): Promise<void> {
     reconnectInFlight = (async () => {
       logErr('self-heal: probing daemon and rebuilding upstream');
       for (let attempt = 0; ; attempt++) {
+        if (upstreamSource.maxHealAttempts !== null && attempt >= upstreamSource.maxHealAttempts) {
+          logErr(`self-heal: ${upstreamSource.describe} did not answer in ${attempt} attempts; the waiting request is answered with an error`);
+          return false;
+        }
         if (attempt > 0) {
           const backoffIdx = Math.min(attempt - 1, SELF_HEAL_PROBE_BACKOFFS_MS.length - 1);
           await sleepMs(SELF_HEAL_PROBE_BACKOFFS_MS[backoffIdx]!);
         }
-        const rebuilt = buildUpstreamForCurrentDaemon(vaultDir);
+        const rebuilt = upstreamSource.resolve();
         if (!rebuilt) {
           if (attempt === 0 || attempt % 5 === 0) {
-            logErr(`self-heal: attempt ${attempt + 1} — no daemon.json yet, retrying`);
+            logErr(`self-heal: attempt ${attempt + 1} — ${upstreamSource.describe} has no upstream yet, retrying`);
           }
           continue;
         }
-        // Health-check against the freshly-discovered port BEFORE swapping
-        // upstream, so we don't tear down a working transport in favor of
-        // a not-yet-listening one.
-        const ok = await probeDaemonHealth({ port: rebuilt.port });
+        // Health-check the freshly-resolved upstream BEFORE swapping, so we
+        // don't tear down a working transport in favor of one not yet listening.
+        const ok = await rebuilt.probe();
         if (!ok) {
           if (attempt === 0 || attempt % 5 === 0) {
             logErr(`self-heal: attempt ${attempt + 1} — /health probe failed, retrying`);
@@ -412,11 +493,11 @@ export async function main(): Promise<void> {
           logErr(`self-heal: old upstream close errored (ignored): ${(err as Error).message}`);
         }
         upstream = rebuilt.transport;
-        portRef.port = rebuilt.port;
+        probe = rebuilt.probe;
         wireUpstream(upstream);
         try {
           await upstream.start();
-          logErr(`self-heal: upstream rebuilt on port ${rebuilt.port} after ${attempt + 1} attempts`);
+          logErr(`self-heal: upstream rebuilt (${rebuilt.label}) after ${attempt + 1} attempts`);
           return true;
         } catch (err) {
           logErr(`self-heal: new upstream start() failed: ${(err as Error).message} — continuing to retry`);
@@ -456,8 +537,8 @@ export async function main(): Promise<void> {
       } catch (err) {
         const errMsg = (err as Error).message;
         logErr(`upstream send failed: ${errMsg} — entering self-heal (attempt ${attempt + 1})`);
-        await reconnectUpstream(); // never returns false — keeps trying indefinitely
-        if (attempt < REQUEST_RESEND_MAX_ATTEMPTS) {
+        const healed = await reconnectUpstream();
+        if (healed && attempt < REQUEST_RESEND_MAX_ATTEMPTS) {
           logErr(`self-heal succeeded; re-sending message through rebuilt upstream`);
           return send(attempt + 1);
         }
@@ -506,11 +587,11 @@ export async function main(): Promise<void> {
   // fails before this point, we'll have already exited via the catch path
   // and the timers would never have fired.
   startParentWatchdog();
-  startDaemonHeartbeat(portRef, () => {
+  startDaemonHeartbeat(() => probe(), () => {
     void reconnectUpstream().catch((err: Error) =>
       logErr(`heartbeat-triggered self-heal failed unexpectedly: ${err.message}`),
     );
-  });
+  }, upstreamSource.heartbeatMs);
 
   logErr('bridge ready');
 }

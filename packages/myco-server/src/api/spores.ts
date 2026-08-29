@@ -9,14 +9,13 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import {
   countSpores, getSpore, insertSpore, listSpores, listSupersedingSporeIds, resolveSpore,
-  MAX_SPORE_LIMIT, RESOLUTION_ACTIONS, SPORE_STATUSES,
+  MAX_SPORE_CONTENT_BYTES, MAX_SPORE_LIMIT, RESOLUTION_ACTIONS, SPORE_STATUSES,
   type ResolutionAction, type SporeStatus,
 } from '../core/spores.js';
 import { refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 
-/** The largest spore body this surface accepts, bounding one row against a caller that would grow it without limit. */
-export const MAX_SPORE_CONTENT_BYTES = 256 * 1024;
+export { MAX_SPORE_CONTENT_BYTES };
 const MAX_ID_CHARS = 192;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);

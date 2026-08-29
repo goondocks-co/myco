@@ -20,6 +20,7 @@ import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpe
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, type CredentialSource } from '../member/constants.js';
+import { memberMcpTemplate } from './member-hooks.js';
 import { runGit } from '../utils/git.js';
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
 import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
@@ -348,10 +349,10 @@ const SCOPE_CAPABILITIES: Record<InstallScope, ScopeCapabilities> = {
     agentsMd: false, gitignore: false, instructions: false, pluginPackage: false,
     globalLauncher: true, flatSkills: true, detectionGate: true,
   },
-  // The 2.0 member scope writes ONE file: the symbiont's memberHooksTarget.
-  // Every project-content surface, the launchers, skills, MCP and the settings
-  // template are off, so no path through this scope can reach the file a 1.4
-  // project install owns.
+  // The 2.0 member scope writes the symbiont's memberHooksTarget and, for an
+  // mcp-transport symbiont, its MCP server list. Every project-content surface,
+  // the launchers, skills and the settings template are off, so no path through
+  // this scope can reach the file a 1.4 project install owns.
   'member-project': {
     agentsMd: false, gitignore: false, instructions: false, pluginPackage: false,
     globalLauncher: false, flatSkills: false, detectionGate: false,
@@ -759,7 +760,10 @@ export class SymbiontInstaller {
 
   /** Run all registration steps. */
   install(): InstallResult {
-    if (this.installScope === 'member-project') return { ...emptyInstallResult(), hooks: this.installMemberHooks() };
+    if (this.installScope === 'member-project') {
+      const hooks = this.installMemberHooks();
+      return { ...emptyInstallResult(), hooks, mcp: hooks && this.installMemberMcp() };
+    }
     if (this.deferGlobalSymbiontConfig()) return emptyInstallResult();
     const reg = this.manifest.registration;
     if (this.capabilities.detectionGate && !this.isAvailableForScope()) {
@@ -1686,6 +1690,76 @@ export class SymbiontInstaller {
     const written = writeJsonFile(targetPath, settings);
     this.ensureGitIgnored(targetPath);
     return written;
+  }
+
+  /**
+   * The member's MCP server block for `source`: the symbiont's own stdio
+   * launcher carrying the credential flag. Null for a symbiont without an MCP
+   * template or one that reaches Myco through the CLI.
+   */
+  renderMemberMcp(source: CredentialSource): Record<string, unknown> | null {
+    const reg = this.manifest.registration;
+    if (!reg?.mcpTarget || !this.shouldProvisionMcpServer()) return null;
+    const template = this.loadMcpTemplate();
+    return template === null ? null : memberMcpTemplate(template, source);
+  }
+
+  /** The member's MCP server list file: the manifest's mcpTarget under the project root, or null. */
+  private memberMcpTargetPath(): string | null {
+    const target = this.manifest.registration?.mcpTarget;
+    return target ? path.join(this.projectRoot, target) : null;
+  }
+
+  /**
+   * Write the member's MCP server into the manifest's mcpTarget under the
+   * symbiont's server-list key, keeping every other server the file holds and
+   * sweeping a `myco` entry left under a historical key. The file is left to
+   * git as the 1.4 project install leaves it: a repository may track its MCP
+   * server list, and an exclude entry on a tracked file hides its changes.
+   */
+  installMemberMcp(): boolean {
+    const block = this.renderMemberMcp('registry');
+    const targetPath = this.memberMcpTargetPath();
+    if (block === null || targetPath === null) return false;
+    const reg = this.manifest.registration!;
+    const serversKey = reg.mcpServersKey ?? 'mcpServers';
+    const data = readJsonFile(targetPath);
+    for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
+      if (candidateKey === serversKey) continue;
+      const candidate = data[candidateKey];
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+      const bag = candidate as Record<string, unknown>;
+      if (!(MYCO_MCP_SERVER_NAME in bag)) continue;
+      delete bag[MYCO_MCP_SERVER_NAME];
+      if (Object.keys(bag).length === 0) delete data[candidateKey];
+    }
+    const servers = (data[serversKey] ?? {}) as Record<string, unknown>;
+    for (const [name, def] of Object.entries(block)) servers[name] = def;
+    data[serversKey] = servers;
+    return writeJsonFile(targetPath, data);
+  }
+
+  /** Remove the `myco` MCP server from the member target under every known key, deleting the file when nothing is left. The inverse of `installMemberMcp`. */
+  uninstallMemberMcp(): boolean {
+    const targetPath = this.memberMcpTargetPath();
+    if (targetPath === null || !fs.existsSync(targetPath)) return false;
+    const data = readJsonFile(targetPath);
+    let removed = false;
+    for (const key of KNOWN_MCP_SERVERS_KEYS) {
+      const candidate = data[key];
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+      const bag = candidate as Record<string, unknown>;
+      if (!(MYCO_MCP_SERVER_NAME in bag)) continue;
+      delete bag[MYCO_MCP_SERVER_NAME];
+      removed = true;
+      if (Object.keys(bag).length === 0) delete data[key];
+    }
+    if (!removed) return false;
+    if (Object.keys(data).length === 0) {
+      fs.rmSync(targetPath, { force: true });
+      return true;
+    }
+    return writeJsonFile(targetPath, data);
   }
 
   /**

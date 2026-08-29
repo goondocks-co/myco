@@ -21,6 +21,9 @@ import { MAX_PROJECTS } from '../constants.js';
  * Steady state is one statement — a primary-key lookup. Only a Project that does
  * not exist costs a second.
  */
+/** The refusal text for capture into an archived Project, on every route and through every writer. */
+export const PROJECT_ARCHIVED = 'this project is archived on the server; unarchive it from the dashboard to resume capture';
+
 export type ProjectResolution = { resolved: true; archived: boolean } | { resolved: false };
 
 const LOOKUP = `SELECT archived_at FROM projects WHERE project_id = ?`;

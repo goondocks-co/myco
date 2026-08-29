@@ -4,6 +4,8 @@ import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontex
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
 import { DaemonClient } from '@myco/daemon/client.js';
 import { buildBridgeRequestHeaders } from '@myco/mcp/stdio-bridge.js';
+import { declaredCredentialSource, deploymentTransport, resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
+import { CREDENTIAL_FLAG, type CredentialSource } from '@myco/member/constants.js';
 import { getPluginVersion } from '@myco/version.js';
 
 /**
@@ -52,12 +54,32 @@ const DAEMON_UNAVAILABLE_MESSAGE =
   'The Myco daemon is not running and could not be started automatically. '
   + 'Run `myco doctor` to diagnose, or `myco service start` to start it, then try again.';
 
+/** The credential flag and its value removed from an argument list; the flag names the Deployment path and is no tool argument. */
+export function withoutCredentialFlag(args: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === CREDENTIAL_FLAG) { i++; continue; }
+    if (arg.startsWith(`${CREDENTIAL_FLAG}=`)) continue;
+    out.push(arg);
+  }
+  return out;
+}
+
 export async function run(args: string[], vaultDir: string): Promise<void> {
-  const [subcommand, ...rest] = args;
+  let source: CredentialSource | null;
+  try {
+    source = declaredCredentialSource(args);
+  } catch (error) {
+    await writeEnvelope({ ok: false, error: { code: 'invalid_arguments', message: (error as Error).message } });
+    process.exitCode = 1;
+    return;
+  }
+  const [subcommand, ...rest] = withoutCredentialFlag(args);
   const json = rest.includes('--json');
 
   if (subcommand === 'list') {
-    const listed = await withMcpClient(vaultDir, (client) => client.listTools());
+    const listed = await withMcpClient(vaultDir, source, (client) => client.listTools());
     if (!listed.ok) {
       await writeEnvelope({ ok: false, error: listed.error });
       process.exitCode = 1;
@@ -118,14 +140,18 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
       return;
     }
 
-    const called = await withMcpClient(vaultDir, (client) =>
+    const called = await withMcpClient(vaultDir, source, (client) =>
       client.callTool({ name: tool, arguments: input as Record<string, unknown> }));
     if (!called.ok) {
       await writeEnvelope({ ok: false, tool, error: called.error });
       process.exitCode = 1;
       return;
     }
-    await writeEnvelope({ ok: true, tool, result: extractStructuredResult(called.value) });
+    let result = extractStructuredResult(called.value);
+    // The Deployment serves instructions bare; how this host reaches the
+    // tools is this host's own knowledge, so the CLI renders the directive.
+    if (source !== null && tool === 'myco_cortex' && (input as { op?: unknown }).op === 'instructions') result = await withCliTransportDirective(result);
+    await writeEnvelope({ ok: true, tool, result });
     return;
   }
 
@@ -139,27 +165,44 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
  * first (spawns/recovers exactly like every other daemon-backed CLI path),
  * then a clear, actionable error instead of a hung connection attempt.
  */
-async function withMcpClient<T>(
-  vaultDir: string,
-  fn: (client: Client) => Promise<T>,
-): Promise<{ ok: true; value: T } | { ok: false; error: ToolCliError }> {
+/** Prefix an instructions result with the CLI transport directive, the way the daemon does for a CLI caller. */
+async function withCliTransportDirective(result: unknown): Promise<unknown> {
+  if (!result || typeof result !== 'object') return result;
+  const body = result as { content?: unknown };
+  if (typeof body.content !== 'string' || !body.content.trim()) return result;
+  const { cliToolTransportDirective } = await import('@myco/context/cortex-injection-context.js');
+  const { resolveBinary } = await import('@myco/runtime/binary-resolution.js');
+  return { ...body, content: `${cliToolTransportDirective(resolveBinary('instruction', { kind: 'machine' }).path)}\n\n${body.content}` };
+}
+
+/** The transport for this invocation: the Deployment when a credential source is declared, the local daemon otherwise. */
+async function transportFor(vaultDir: string, source: CredentialSource | null): Promise<{ ok: true; transport: StreamableHTTPClientTransport } | { ok: false; error: ToolCliError }> {
+  if (source !== null) {
+    const upstream = resolveDeploymentUpstream(source, { env: process.env });
+    if (!upstream) return { ok: false, error: { code: 'credential_unavailable', message: `No member credential resolves for ${CREDENTIAL_FLAG} ${source}; the reason is on stderr.` } };
+    return { ok: true, transport: deploymentTransport(upstream, { 'x-myco-tool-transport': 'cli' }) };
+  }
   const daemonClient = new DaemonClient(vaultDir);
   const ready = await daemonClient.ensureRunning();
   const info = daemonClient.getInfo();
-  if (!ready || !info) {
-    return { ok: false, error: { code: 'daemon_unavailable', message: DAEMON_UNAVAILABLE_MESSAGE } };
-  }
-
+  if (!ready || !info) return { ok: false, error: { code: 'daemon_unavailable', message: DAEMON_UNAVAILABLE_MESSAGE } };
   const headers = {
     ...buildBridgeRequestHeaders(vaultDir, process.env, info.auth_token),
     // Marks this /mcp caller as shell-CLI so tool responses that carry
     // transport guidance (myco_cortex op:instructions) render the CLI form.
     'x-myco-tool-transport': 'cli',
   };
-  const transport = new StreamableHTTPClientTransport(
-    new URL(`http://127.0.0.1:${info.port}/mcp`),
-    { requestInit: { headers } },
-  );
+  return { ok: true, transport: new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${info.port}/mcp`), { requestInit: { headers } }) };
+}
+
+async function withMcpClient<T>(
+  vaultDir: string,
+  source: CredentialSource | null,
+  fn: (client: Client) => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false; error: ToolCliError }> {
+  const resolved = await transportFor(vaultDir, source);
+  if (!resolved.ok) return resolved;
+  const transport = resolved.transport;
   const client = new Client({ name: 'myco-cli', version: getPluginVersion() });
   try {
     await client.connect(transport);

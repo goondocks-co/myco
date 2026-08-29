@@ -5,7 +5,7 @@ import { HSTS_MAX_AGE_SECONDS, LINEAGE_REPLAY_GRACE_MS, MEMBER_TOKEN_BYTE_QUOTA,
 import { sha256Hex } from './hash.js';
 import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
 import { QUOTA_REASON } from './ingest/events.js';
-import { resolveProject } from './ingest/projects.js';
+import { PROJECT_ARCHIVED, resolveProject } from './ingest/projects.js';
 import { classify, emit, SchemaMismatchError, UNAVAILABLE, type Classifier } from './telemetry.js';
 import { ownerConfig } from './auth/owner/config.js';
 import { readCookie, verifySession } from './auth/owner/cookie.js';
@@ -59,7 +59,20 @@ type MemberRoute = Extract<Route, { auth: 'member' }>;
 /** The refusal shape of a member route, as the route table declares it. */
 const shapeOf = (route: MemberRoute): Shape => route.shape;
 /** A server-side failure in the route's refusal shape. Only an authenticated member sees it; before authentication every failure answers the same bare error, so the shape discloses nothing about the route table. */
-const unavailableFor = (route: MemberRoute): Response => Response.json({ [shapeOf(route)]: false, code: UNAVAILABLE, reason: UNAVAILABLE }, { status: 503, headers: RETRY_AFTER });
+const unavailableFor = (route: MemberRoute): Response => refusalResponse(shapeOf(route), UNAVAILABLE, UNAVAILABLE, 'retryable');
+/**
+ * A refusal in the route's shape. An `answered` route speaks JSON-RPC, so its
+ * refusals are error envelopes carrying the classifier as `data.code`: 400 for a
+ * terminal one, 503 with retry-after for a retryable one — the statuses an MCP
+ * client surfaces to its caller as a request it can or cannot repeat.
+ */
+function refusalResponse(shape: Shape, code: string, reason: string, outcome: 'terminal' | 'retryable'): Response {
+  const retryable = outcome === 'retryable';
+  if (shape === 'answered') {
+    return Response.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: reason, data: { code } } }, retryable ? { status: 503, headers: RETRY_AFTER } : { status: 400 });
+  }
+  return Response.json({ [shape]: false, code, reason }, retryable ? { status: 503, headers: RETRY_AFTER } : undefined);
+}
 const limited = () => Response.json({ error: 'rate limited' }, { status: 429, headers: RETRY_AFTER });
 const forbidden = () => Response.json({ error: 'forbidden' }, { status: 403 });
 const refuseOversized = () => Response.json({ error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` }, { status: 400 });
@@ -88,8 +101,6 @@ const unsupportedProtocol = () =>
   Response.json({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL }, { status: 409 });
 export const NO_MACHINE_IDENTITY = 'token has no machine identity';
 export const NO_PROJECT = 'project header required';
-/** Capture into an archived Project is refused on every capture route, in the route's shape; nothing else about the credential changes. */
-const PROJECT_ARCHIVED = 'this project is archived on the server; unarchive it from the dashboard to resume capture';
 /** The routes a member's capture writes through — the ones charged to its quota. */
 const captureRoute = (route: MemberRoute): boolean => route.quotaPrecheck !== false;
 /** What may be presented as a Project id on the wire. Exported so the member can be pinned against it: the member decides a Project id at `myco member join` and the server never sees it until the first capture, so a member that admits more than this prints "joined" and is then refused every request. */
@@ -118,8 +129,8 @@ const PROTOCOL_VALUE = /^[0-9]+$/;
 
 /** A terminal refusal of the caller's own request: 200, never retried, in the route's refusal shape, carrying the classifier as its `code` beside the `reason`; telemetry carries the classifier only. */
 function refuse(auth: MemberAuth, shape: Shape, reason: string, classifier: Classifier): Response {
-  emit({ kind: shape === 'stored' ? 'blob_refused' : 'ingest_refused', memberId: auth.memberId, tokenId: auth.tokenId, reason: classifier });
-  return Response.json({ [shape]: false, code: classifier, reason });
+  emit({ kind: shape === 'stored' ? 'blob_refused' : shape === 'answered' ? 'mcp_refused' : 'ingest_refused', memberId: auth.memberId, tokenId: auth.tokenId, reason: classifier });
+  return refusalResponse(shape, classifier, reason, 'terminal');
 }
 
 /** The presented credential, or null unless it has the minted token shape. The scheme name is case-insensitive. */
@@ -149,7 +160,7 @@ async function failed(env: ServerEnv, auth: MemberAuth, route: MemberRoute, err:
   const shape = shapeOf(route);
   const errorClass = classify(err, errorClassifierOf(env));
   if (captureRoute(route) && (errorClass === 'quota' || (errorClass === 'constraint' && (await overQuota(env, auth.tokenId, bytes))))) return refuse(auth, shape, QUOTA_REASON, 'quota');
-  emit({ kind: shape === 'stored' ? 'blob_error' : shape === 'refreshed' ? 'refresh_error' : 'ingest_error', memberId: auth.memberId, tokenId: auth.tokenId, error_class: errorClass });
+  emit({ kind: shape === 'stored' ? 'blob_error' : shape === 'refreshed' ? 'refresh_error' : shape === 'answered' ? 'mcp_error' : 'ingest_error', memberId: auth.memberId, tokenId: auth.tokenId, error_class: errorClass });
   return unavailableFor(route);
 }
 

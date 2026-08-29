@@ -17,6 +17,9 @@
     "image:build": "docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t ghcr.io/goondocks-co/myco-server:${MYCO_VERSION:-dev} ../..",
     "image:build:native": "docker buildx build -f Dockerfile -t ghcr.io/goondocks-co/myco-server:${MYCO_VERSION:-dev} --load ../.."
   },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0"
+  },
   "devDependencies": {
     "@cloudflare/containers": "^0.3.7",
     "@cloudflare/workers-types": "^5.20260731.1",
