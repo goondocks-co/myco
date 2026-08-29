@@ -332,7 +332,7 @@ export function createServer(deps: ServerDeps) {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
       bodyBytes = body.bytes;
-      if (route.quotaPrecheck !== false && auth.bytesWritten + body.bytes > MEMBER_TOKEN_BYTE_QUOTA) return refuse(auth, shapeOf(route), QUOTA_REASON, 'quota');
+      if (captureRoute(route) && auth.bytesWritten + body.bytes > MEMBER_TOKEN_BYTE_QUOTA) return refuse(auth, shapeOf(route), QUOTA_REASON, 'quota');
       const limit = await resolved();
       if (limit !== null) return limit;
       return await route.handler(env, {

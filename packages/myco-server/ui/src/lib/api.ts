@@ -63,6 +63,7 @@ export interface ProjectReceipt {
   projectId: string;
   lastActivityAt: number | null;
   sessionCount: number;
+  archivedAt: number | null;
 }
 
 /** `GET /api/projects`. */
