@@ -85,8 +85,13 @@ describe('the member-project install scope', () => {
     // The 1.4 project file and the user-global file are the two a member install must never reach.
     expect(fs.existsSync(path.join(projectRoot, PROJECT_TARGET))).toBe(false);
     expect(fs.existsSync(path.join(home, '.claude', 'settings.json'))).toBe(false);
-    expect(fs.readdirSync(projectRoot)).toEqual(['.claude']);
+    // The member scope writes two files for an mcp-transport symbiont: the hooks target and the MCP server list.
+    expect(fs.readdirSync(projectRoot).sort()).toEqual(['.claude', '.mcp.json']);
     expect(fs.readdirSync(path.join(projectRoot, '.claude'))).toEqual(['settings.local.json']);
+    const mcp = JSON.parse(fs.readFileSync(path.join(projectRoot, '.mcp.json'), 'utf8')) as { mcpServers: Record<string, { command: string; args: string[] }> };
+    expect(Object.keys(mcp.mcpServers)).toEqual(['myco']);
+    expect(mcp.mcpServers.myco.args).toEqual(['mcp', CREDENTIAL_FLAG, 'registry']);
+    expect(path.isAbsolute(mcp.mcpServers.myco.command)).toBe(true);
   });
 
   it('preserves the file\'s other keys and every hook it does not own', () => {

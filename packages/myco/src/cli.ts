@@ -278,6 +278,12 @@ async function main(): Promise<void> {
   // re-exec'd even on a host with no project vault; the pinned binary owns the
   // gate decision after re-exec.
   if (cmd === 'tool') runLaunchPreamble('tool', args);
+  // A tool call that declares a credential source reaches the Deployment over
+  // the member credential and reads no project vault, so it sits above the
+  // myco.yaml gate like every other member operation.
+  if (cmd === 'tool' && (await import('./member/credential.js')).parseCredentialFlag(args) !== null) {
+    return (await import('./cli/tool.js')).run(args, resolveVaultDir());
+  }
 
   const vaultDir = resolveVaultDir();
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
