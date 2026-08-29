@@ -8,6 +8,8 @@ ALTER TABLE identity_link_authorities ADD COLUMN revoked_by TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_member_credentials_started ON member_credentials (lineage_started_at, id);
 
+CREATE INDEX IF NOT EXISTS idx_member_credentials_member ON member_credentials (member_id, revoked_at);
+
 CREATE INDEX IF NOT EXISTS idx_events_token_only ON events (token_id, created_at, event_id);
 
 CREATE TABLE IF NOT EXISTS external_grants (
@@ -24,6 +26,6 @@ CREATE TABLE IF NOT EXISTS external_grants (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_external_grants_hash ON external_grants (key_hash);
 
-CREATE INDEX IF NOT EXISTS idx_external_grants_project ON external_grants (project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_external_grants_project ON external_grants (project_id, created_at, id);
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '9');

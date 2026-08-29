@@ -10,6 +10,7 @@
  */
 import type { RelationalStore } from '../core/adapters.js';
 import { emit } from '../telemetry.js';
+import { credentialLive } from '../db/liveness.js';
 import { revokeInvitationsOfMember } from './enrollment.js';
 import { revokeLinkKeysOfMember } from './identity-link.js';
 import { revokeCredentialsOfMember } from './tokens.js';
@@ -28,7 +29,7 @@ export interface MemberRow {
 export async function listMembers(db: RelationalStore, nowMs: number): Promise<MemberRow[]> {
   const { results } = await db
     .prepare(`SELECT m.id, m.label, m.github_id IS NOT NULL AS linked, m.created_at, m.revoked_at, m.revoked_by,
-                     (SELECT COUNT(*) FROM member_credentials c WHERE c.member_id = m.id AND c.revoked_at IS NULL AND c.expires_at > ?) AS live_credentials
+                     (SELECT COUNT(*) FROM member_credentials c WHERE c.member_id = m.id AND ${credentialLive('c')}) AS live_credentials
                 FROM members m ORDER BY m.created_at ASC, m.id ASC`)
     .bind(nowMs)
     .all<Record<string, unknown>>();

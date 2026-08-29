@@ -5,8 +5,7 @@
  * A grant belongs to one Project by row and is read-only by what this module
  * offers: it authenticates a bearer to a Project and nothing else. Any member
  * mints, rotates and revokes; every one of those names who. A grant has no
- * expiry — an agent's access ends by an attributed act, never by a silent
- * clock — and `last_used_at`, written at authentication, shows an agent that
+ * expiry; `last_used_at`, written at authentication, shows an agent that
  * stopped calling.
  */
 import { toBase64Url } from '../base64.js';
@@ -22,7 +21,8 @@ export const GRANT_ID_PREFIX = 'eg_';
 const GRANT_ID_BYTES = 12;
 export const GRANT_KEY_PATTERN = new RegExp(`^${GRANT_KEY_PREFIX}[A-Za-z0-9_-]{${Math.ceil((GRANT_KEY_BYTES * 4) / 3)}}$`);
 /** A label a person reads: printable, bounded. */
-export const GRANT_LABEL_PATTERN = /^[\x20-\x7E]{1,80}$/;
+export const GRANT_LABEL_MAX = 80;
+export const GRANT_LABEL_PATTERN = new RegExp(`^[\\x20-\\x7E]{1,${GRANT_LABEL_MAX}}$`);
 /** How often `last_used_at` moves; the throttle lives in the statement. */
 export const GRANT_TOUCH_INTERVAL_MS = 60_000;
 
@@ -111,7 +111,7 @@ export async function revokeExternalGrant(db: RelationalStore, scope: ReadScope,
     .bind(nowMs, actor, grantId, scope.projectId)
     .run();
   const revoked = result.meta.changes === 1;
-  emit({ kind: 'grant_revoked', grantId, projectId: scope.projectId, actor, revoked });
+  if (revoked) emit({ kind: 'grant_revoked', grantId, projectId: scope.projectId, actor });
   return { revoked };
 }
 

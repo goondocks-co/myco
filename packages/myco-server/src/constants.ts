@@ -31,11 +31,15 @@ export const MAX_BLOB_BYTES = 26_214_400;
 export const BLOB_RESERVATION_TTL_MS = 900_000;
 export const MAX_CLOCK_SKEW_MS = 300_000;
 export const RETRY_AFTER_SECONDS = 60;
+export const MINUTE_MS = 60_000;
 export const HSTS_MAX_AGE_SECONDS = 31_536_000;
 export const TOKEN_ID_PREFIX = 'mt_';
 
 /** The prefix of a server-named member id, minted when a join enrolls a new person. */
 export const MEMBER_ID_PREFIX = 'mem_';
+/** The one grammar of a member id: the prefix and up to 64 identity characters — long enough for the ids the v5 backfill named after machines. */
+export const MEMBER_ID_SEGMENT = `${MEMBER_ID_PREFIX}[A-Za-z0-9._-]{1,64}`;
+export const MEMBER_ID = new RegExp(`^${MEMBER_ID_SEGMENT}$`);
 
 /** The header a caller presents a step-up authority in, for the operations flat membership does not cover. */
 export const STEP_UP_HEADER = 'x-myco-step-up';

@@ -1,7 +1,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { SessionContext } from '../context.js';
 import { IDENTITY_LINK_KEY_PATTERN, previewIdentityLinkAuthority, spendIdentityLinkAuthority, type IdentityLinkRefusal } from '../auth/identity-link.js';
-import { badRequest, ok } from './scope.js';
+import { badRequest, ok, readJsonObject } from './scope.js';
 
 /** `GET /auth/me`: the signed-in account, and the member it is linked to, or null. The one read that tells "signed in" from "a member". */
 export async function handleMe(_env: ServerEnv, ctx: SessionContext): Promise<Response> {
@@ -18,12 +18,8 @@ const CODE: Record<IdentityLinkRefusal, string> = { denied: 'link_denied', ident
  * member. The account is the session's, never the body's.
  */
 export async function handleLink(env: ServerEnv, ctx: SessionContext): Promise<Response> {
-  let body: { key?: unknown; confirm?: unknown };
-  try {
-    body = (await ctx.request.json()) as { key?: unknown; confirm?: unknown };
-  } catch {
-    return badRequest('body must be JSON');
-  }
+  const body = await readJsonObject(ctx.request);
+  if (body === null) return badRequest('body must be a JSON object');
   if (typeof body.key !== 'string' || !IDENTITY_LINK_KEY_PATTERN.test(body.key)) return badRequest('key must be a link key');
   if (body.confirm !== true) {
     const member = await previewIdentityLinkAuthority(env.db, body.key, ctx.now);

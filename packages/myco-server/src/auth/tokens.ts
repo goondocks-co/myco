@@ -4,6 +4,7 @@ import { SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../const
 import { sha256Hex } from '../hash.js';
 import { heldBytes, TOKEN_LIVE } from '../ingest/quota.js';
 import { emit, SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
+import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 
 export const MEMBER_TOKEN_BYTES = 32;
 export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -122,15 +123,6 @@ export async function issueMemberToken(
   return issued;
 }
 
-/** Marks a token revoked; a revoked token never authenticates again. `revoked` is false when no live row matched the id. */
-export async function revokeMemberToken(db: RelationalStore, tokenId: string, nowMs: number): Promise<{ revoked: boolean }> {
-  const result = await db
-    .prepare(`UPDATE member_credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`)
-    .bind(nowMs, tokenId)
-    .run();
-  return { revoked: result.meta.changes === 1 };
-}
-
 /**
  * Revoke a credential on behalf of a member. Membership is flat: any member may
  * revoke any credential, so the write carries no ownership predicate.
@@ -141,13 +133,17 @@ export async function revokeMemberToken(db: RelationalStore, tokenId: string, no
  * re-derivation of who owns what, and until there is one, an operator can always
  * answer who ended a credential.
  */
+/** The one attributed revocation of a credential, as a statement: the runner above executes and records it; the break-glass script renders it. */
+export function revokeCredentialStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number): PreparedStatement {
+  return db
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND revoked_at IS NULL`)
+    .bind(nowMs, revokedBy, tokenId);
+}
+
 export async function revokeCredentialAsMember(
   db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number,
 ): Promise<{ revoked: boolean; revokedBy: string }> {
-  const result = await db
-    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND revoked_at IS NULL`)
-    .bind(nowMs, revokedBy, tokenId)
-    .run();
+  const result = await revokeCredentialStatement(db, revokedBy, tokenId, nowMs).run();
   const revoked = result.meta.changes === 1;
   emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked });
   return { revoked, revokedBy };
@@ -157,16 +153,15 @@ export async function revokeCredentialAsMember(
 export function revokeCredentialsOfMember(db: RelationalStore, memberId: string, revokedBy: string, nowMs: number): PreparedStatement {
   return db
     .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ?
-               WHERE member_id = ? AND revoked_at IS NULL
-                 AND EXISTS (SELECT 1 FROM members WHERE id = ? AND revoked_at = ? AND revoked_by = ?)`)
-    .bind(nowMs, revokedBy, memberId, memberId, nowMs, revokedBy);
+               WHERE member_id = ? AND revoked_at IS NULL AND ${MEMBER_REVOKED_BY}`)
+    .bind(nowMs, revokedBy, memberId, ...memberRevokedByParams(memberId, nowMs, revokedBy));
 }
 
 /** Revokes every live token of the lineage `tokenId` belongs to — the named token, its predecessors, and its successors — in one statement; `revoked` counts the rows that changed. */
-export async function revokeMemberLineage(db: RelationalStore, tokenId: string, nowMs: number): Promise<{ revoked: number }> {
+export async function revokeMemberLineage(db: RelationalStore, tokenId: string, nowMs: number, revokedBy: string): Promise<{ revoked: number }> {
   const result = await db
-    .prepare(`UPDATE member_credentials SET revoked_at = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL`)
-    .bind(nowMs, tokenId)
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL`)
+    .bind(nowMs, revokedBy, tokenId)
     .run();
   return { revoked: result.meta.changes };
 }

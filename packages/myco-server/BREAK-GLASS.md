@@ -31,7 +31,7 @@ npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
 Revoke an unused key you no longer want outstanding:
 
 ```sql
-UPDATE enrollment_authorities SET revoked_at = <now_ms> WHERE id = '<ID>' AND revoked_at IS NULL AND used_at IS NULL;
+UPDATE enrollment_authorities SET revoked_at = <now_ms>, revoked_by = '<your member id>' WHERE id = '<ID>' AND revoked_at IS NULL AND used_at IS NULL;
 ```
 
 **Every use of this path should be a cause for investigation.** It bypasses the join flow's ordinary attribution: the resulting authority names no minting member. Mint one, use it, and let it expire — do not keep a standing key.
@@ -59,13 +59,13 @@ Ordinary offboarding is the dashboard (`POST /api/members/{memberId}/revoke`): o
 
 A leaked member token is revoked by setting `revoked_at` on its row. The pipeline refuses a revoked token on the next request; there is no cache to flush.
 
-`revokeMemberToken` is the code path; `npm run token:revoke -- <TOKEN_ID>` prints its `UPDATE`. Find the credential by member and machine, print the statement, apply it with `wrangler d1 execute`, then confirm the command reported one changed row — zero rows means no live credential had that id:
+`revokeCredentialAsMember` is the code path; `npm run token:revoke -- <TOKEN_ID> <YOUR_MEMBER_ID>` prints its attributed `UPDATE`. Find the credential by member and machine, print the statement, apply it with `wrangler d1 execute`, then confirm the command reported one changed row — zero rows means no live credential had that id:
 
 ```bash
 cd packages/myco-server
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
   "SELECT id, member_id, machine_id, expires_at, revoked_at, bytes_written FROM member_credentials WHERE member_id = '<MEMBER_ID>'"
-npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(npm run -s token:revoke -- <TOKEN_ID>)"
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(npm run -s token:revoke -- <TOKEN_ID> <YOUR_MEMBER_ID>)"
 ```
 
 Attribution: every `events` row carries the `token_id` that wrote it, so what a revoked credential wrote is a query, not a guess. A credential spans the Deployment, so the query below is per Project and answers for that Project only — drop `project_id` from the predicate to see the whole footprint, at the cost of the `idx_events_token (project_id, token_id, created_at)` index it is ordered by. `sessions.created_by_token_id` names the token that first opened the session and is not updated by later writers; query `events`, not `sessions`, for a token's footprint:
@@ -86,13 +86,13 @@ Rows and objects written by a revoked token are never deleted by this procedure.
 
 # Break-glass: revoking a token lineage
 
-A member token refreshes itself inside the last quarter of its TTL (`POST /tokens/refresh`), so a leaked token may already have a successor — and its successor another — each a live credential with its own digest. Every token of a chain carries `lineage_root`, the id of the operator-minted token the chain began with; `revokeMemberLineage` sets `revoked_at` on every live row of that lineage in one statement, and `npm run token:revoke -- <TOKEN_ID> --lineage` prints it for any id in the chain. Read the chain first, then revoke it whole, then confirm the count of changed rows matches the live rows you read:
+A member token refreshes itself inside the last quarter of its TTL (`POST /tokens/refresh`), so a leaked token may already have a successor — and its successor another — each a live credential with its own digest. Every token of a chain carries `lineage_root`, the id of the operator-minted token the chain began with; `revokeMemberLineage` sets `revoked_at` on every live row of that lineage in one statement, and `npm run token:revoke -- <TOKEN_ID> <YOUR_MEMBER_ID> --lineage` prints it, attributed, for any id in the chain. Read the chain first, then revoke it whole, then confirm the count of changed rows matches the live rows you read:
 
 ```bash
 cd packages/myco-server
 npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
   "SELECT id, predecessor_id, lineage_root, expires_at, first_used_at, revoked_at, bytes_written FROM member_credentials WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = '<TOKEN_ID>') ORDER BY expires_at"
-npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(npm run -s token:revoke -- <TOKEN_ID> --lineage)"
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(npm run -s token:revoke -- <TOKEN_ID> <YOUR_MEMBER_ID> --lineage)"
 ```
 
 `first_used_at` on a successor is the instant it first authenticated — the instant its predecessor was revoked — and `predecessor_id` names which token refreshed it; a successor the owner never used, on a lineage the owner never refreshed, is the thief's. Revoking one token (`token:revoke` without `--lineage`) is right only when its successors are known to be the owner's; it leaves them live. After a lineage revoke the member is re-provisioned: mint a new root with `token:mint`. Attribution is unchanged — every `events` row names the `token_id` that wrote it, so the footprint of each token in the chain is the query above.

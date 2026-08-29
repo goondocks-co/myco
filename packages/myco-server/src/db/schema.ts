@@ -931,6 +931,7 @@ const V9_STATEMENTS: readonly string[] = [
   `ALTER TABLE enrollment_authorities ADD COLUMN revoked_by TEXT`,
   `ALTER TABLE identity_link_authorities ADD COLUMN revoked_by TEXT`,
   `CREATE INDEX IF NOT EXISTS idx_member_credentials_started ON member_credentials (lineage_started_at, id)`,
+  `CREATE INDEX IF NOT EXISTS idx_member_credentials_member ON member_credentials (member_id, revoked_at)`,
   `CREATE INDEX IF NOT EXISTS idx_events_token_only ON events (token_id, created_at, event_id)`,
   `CREATE TABLE IF NOT EXISTS external_grants (
      id           TEXT PRIMARY KEY,
@@ -944,7 +945,7 @@ const V9_STATEMENTS: readonly string[] = [
      revoked_by   TEXT,
      rotated_to   TEXT)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_external_grants_hash ON external_grants (key_hash)`,
-  `CREATE INDEX IF NOT EXISTS idx_external_grants_project ON external_grants (project_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_external_grants_project ON external_grants (project_id, created_at, id)`,
 ];
 
 function withStamp(version: number, statements: readonly string[]): SchemaStep {

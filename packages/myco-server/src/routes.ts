@@ -27,7 +27,7 @@ import {
 } from './api/access.js';
 import { handleGrants, handleMintGrant, handleRevokeGrant, handleRotateGrant } from './api/grants.js';
 import { handleProjectSessions, handleSession, handleSessionChildren, handleTranscript } from './api/sessions.js';
-import { MAX_BLOB_BYTES } from './constants.js';
+import { MAX_BLOB_BYTES, MEMBER_ID_SEGMENT } from './constants.js';
 import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
 import { handleBlob } from './ingest/blobs.js';
@@ -102,7 +102,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/transcript', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/transcript$/, auth: 'owner', handler: handleTranscript },
   { method: 'GET', path: '/api/projects/{projectId}/blobs/{key}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'owner', handler: handleBlobRead },
   { method: 'GET', path: '/api/members', auth: 'owner', handler: handleMembers },
-  { method: 'POST', path: '/api/members/{memberId}/revoke', pattern: /^\/api\/members\/(?<memberId>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeMember },
+  { method: 'POST', path: '/api/members/{memberId}/revoke', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/revoke$`), auth: 'owner', handler: handleRevokeMember },
   { method: 'GET', path: '/api/enrollment', auth: 'owner', handler: handleInvitations },
   { method: 'POST', path: '/api/enrollment', auth: 'owner', handler: handleMintInvitation },
   { method: 'POST', path: '/api/enrollment/{id}/revoke', pattern: /^\/api\/enrollment\/(?<id>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeInvitation },

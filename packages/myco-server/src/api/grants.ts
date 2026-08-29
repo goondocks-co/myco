@@ -1,7 +1,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { GRANT_LABEL_PATTERN, issueExternalGrant, listExternalGrants, revokeExternalGrant, rotateExternalGrant } from '../auth/grants.js';
-import { badRequest, notFound, ok, resolveProjectScope } from './scope.js';
+import { GRANT_LABEL_MAX, GRANT_LABEL_PATTERN, issueExternalGrant, listExternalGrants, revokeExternalGrant, rotateExternalGrant } from '../auth/grants.js';
+import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 
 /** Every grant of the Project, live and revoked. Never a key. */
 export async function handleGrants(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
@@ -14,15 +14,11 @@ export async function handleGrants(env: ServerEnv, ctx: OwnerContext): Promise<R
 export async function handleMintGrant(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  let body: { label?: unknown };
-  try {
-    body = (await ctx.request.json()) as { label?: unknown };
-  } catch {
-    return badRequest('body must be JSON');
-  }
+  const body = await readJsonObject(ctx.request);
+  if (body === null) return badRequest('body must be a JSON object');
   let label: string | null = null;
   if (body.label !== undefined) {
-    if (typeof body.label !== 'string' || !GRANT_LABEL_PATTERN.test(body.label)) return badRequest('label must be 1 to 80 printable characters');
+    if (typeof body.label !== 'string' || !GRANT_LABEL_PATTERN.test(body.label)) return badRequest(`label must be 1 to ${GRANT_LABEL_MAX} printable characters`);
     label = body.label;
   }
   const issued = await issueExternalGrant(env.db, scope, label, ctx.member.id, ctx.now);

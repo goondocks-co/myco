@@ -45,6 +45,7 @@ describe('revoking a member', () => {
     const cred = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, NOW);
     const forThem = await issueEnrollmentAuthority(e.db, NOW, { memberId: 'mem_machine_2' });
     const byThem = await issueEnrollmentAuthority(e.db, NOW, { createdByMember: 'mem_machine_2' });
+    const byThemForOther = await issueEnrollmentAuthority(e.db, NOW, { createdByMember: 'mem_machine_2', memberId: 'mem_machine_3' });
     const link = await issueIdentityLinkAuthority(e.db, 'mem_machine_2', NOW);
     e.sqlite.query(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_2', 'mem_machine_2', ?)`).run(NOW);
 
@@ -54,7 +55,7 @@ describe('revoking a member', () => {
     expect(e.sqlite.query(`SELECT revoked_by FROM members WHERE id = 'mem_machine_2'`).get()).toEqual({ revoked_by: PRINCIPAL.id });
     expect(e.sqlite.query(`SELECT revoked_by FROM member_credentials WHERE id = ?`).get(cred.tokenId)).toEqual({ revoked_by: PRINCIPAL.id });
     expect(e.sqlite.query(`SELECT id, revoked_by FROM enrollment_authorities WHERE revoked_by = ? ORDER BY id`).all(PRINCIPAL.id))
-      .toEqual([forThem.id, byThem.id].sort().map((id) => ({ id, revoked_by: PRINCIPAL.id })));
+      .toEqual([forThem.id, byThem.id, byThemForOther.id].sort().map((id) => ({ id, revoked_by: PRINCIPAL.id })));
     expect(e.sqlite.query(`SELECT revoked_by FROM identity_link_authorities WHERE id = ?`).get(link.id)).toEqual({ revoked_by: PRINCIPAL.id });
     expect(e.sqlite.query(`SELECT member_id FROM machine_claims WHERE machine_id = 'machine_2'`).get()).toEqual({ member_id: 'mem_machine_2' });
     expect(await spendEnrollmentAuthority(e.db, byThem.key, NOW + 1, 'runtime')).toEqual({ ok: false, reason: 'revoked' });
@@ -121,7 +122,11 @@ describe('members and invitations', () => {
     expect((await worker.fetch(await asOwnerPost('/api/enrollment', { memberId: 'mem_nobody' }), env)).status).toBe(404);
     expect((await worker.fetch(await asOwnerPost('/api/enrollment', { ttlMinutes: 1441 }), env)).status).toBe(400);
     e.sqlite.query(`UPDATE members SET revoked_at = ? WHERE id = 'mem_machine_3'`).run(Date.now());
-    expect((await worker.fetch(await asOwnerPost('/api/enrollment', { memberId: 'mem_machine_3' }), env)).status).toBe(400);
+    expect((await worker.fetch(await asOwnerPost('/api/enrollment', { memberId: 'mem_machine_3' }), env)).status).toBe(409);
+    for (const body of ['null', '[]', '"x"']) {
+      const res = await worker.fetch(new Request('https://s/api/enrollment', { method: 'POST', headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' }, body }), env);
+      expect({ body, status: res.status }).toEqual({ body, status: 400 });
+    }
 
     const listed = await worker.fetch(await asOwner('/api/enrollment'), env);
     const { invitations } = await listed.json() as { invitations: { id: string; memberId: string | null; createdBy: string }[] };
@@ -142,6 +147,20 @@ describe('members and invitations', () => {
       const rows = e.sqlite.query(plan.sql).all() as { detail: string }[];
       expect({ index: plan.index, used: rows.some((r) => r.detail.includes(plan.index)) }).toEqual({ index: plan.index, used: true });
     }
+  });
+});
+
+describe('a revoked minter', () => {
+  it('voids the invitations it minted and hides them, whether revoked through the API or the store', async () => {
+    const e = sqliteEnv();
+    const env = { ...e.env, ...OWNER_ENV };
+    e.sqlite.query(`UPDATE members SET github_id = '9002' WHERE id = 'mem_machine_2'`).run();
+    const minted = await issueEnrollmentAuthority(e.db, NOW, { createdByMember: 'mem_machine_2' });
+    e.sqlite.query(`UPDATE members SET revoked_at = ? WHERE id = 'mem_machine_2'`).run(NOW);
+    expect((await (await worker.fetch(await asOwner('/api/enrollment'), env)).json() as { invitations: unknown[] }).invitations).toEqual([]);
+    expect(await spendEnrollmentAuthority(e.db, minted.key, NOW + 1, 'runtime')).toEqual({ ok: false, reason: 'revoked' });
+    const credentials = await (await worker.fetch(await asOwner('/api/credentials'), env)).json() as { rows: { memberId: string; live: boolean }[] };
+    expect(credentials.rows.filter((r) => r.memberId === 'mem_machine_2').every((r) => r.live === false)).toBe(true);
   });
 });
 

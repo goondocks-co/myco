@@ -5,12 +5,11 @@ import { listMembers, memberState, revokeMember } from '../auth/members-admin.js
 import { revokeCredentialAsMember } from '../auth/tokens.js';
 import { credentialActivity, listCredentials } from '../read/credentials.js';
 import { emit } from '../telemetry.js';
-import { badRequest, notFound, ok } from './scope.js';
+import { badRequest, notFound, ok, readJsonObject } from './scope.js';
+import { MEMBER_ID, MINUTE_MS } from '../constants.js';
 import { paging } from './sessions.js';
 
-/** The member-id grammar the join path records. */
-const MEMBER_ID = /^mem_[A-Za-z0-9._-]{1,64}$/;
-/** The longest invitation the dashboard mints, in minutes: a day. A standing invitation is a standing privilege. */
+/** The longest invitation the dashboard mints, in minutes: one day. */
 export const MAX_INVITATION_MINUTES = 1440;
 
 export async function handleMembers(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
@@ -31,18 +30,14 @@ export async function handleInvitations(env: ServerEnv, ctx: OwnerContext): Prom
 
 /** `POST /api/enrollment {memberId?, ttlMinutes?}`: an invitation for a new member, or for another runtime of an existing one. The key is answered once. */
 export async function handleMintInvitation(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  let body: { memberId?: unknown; ttlMinutes?: unknown };
-  try {
-    body = (await ctx.request.json()) as { memberId?: unknown; ttlMinutes?: unknown };
-  } catch {
-    return badRequest('body must be JSON');
-  }
+  const body = await readJsonObject(ctx.request);
+  if (body === null) return badRequest('body must be a JSON object');
   let memberId: string | null = null;
   if (body.memberId !== undefined) {
     if (typeof body.memberId !== 'string' || !MEMBER_ID.test(body.memberId)) return badRequest('memberId must match the member-id grammar');
     const state = await memberState(env.db, body.memberId);
     if (state === 'absent') return notFound();
-    if (state === 'revoked') return badRequest('member_revoked');
+    if (state === 'revoked') return Response.json({ error: 'member_revoked' }, { status: 409 });
     memberId = body.memberId;
   }
   let ttlMs = ENROLLMENT_TTL_MS;
@@ -50,7 +45,7 @@ export async function handleMintInvitation(env: ServerEnv, ctx: OwnerContext): P
     if (typeof body.ttlMinutes !== 'number' || !Number.isInteger(body.ttlMinutes) || body.ttlMinutes < 1 || body.ttlMinutes > MAX_INVITATION_MINUTES) {
       return badRequest(`ttlMinutes must be an integer from 1 to ${MAX_INVITATION_MINUTES}`);
     }
-    ttlMs = body.ttlMinutes * 60_000;
+    ttlMs = body.ttlMinutes * MINUTE_MS;
   }
   const issued = await issueEnrollmentAuthority(env.db, ctx.now, { ttlMs, createdByMember: ctx.member.id, memberId });
   emit({ kind: 'invitation_issued', invitationId: issued.id, memberId, createdBy: ctx.member.id });
@@ -59,7 +54,7 @@ export async function handleMintInvitation(env: ServerEnv, ctx: OwnerContext): P
 
 export async function handleRevokeInvitation(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const result = await revokeEnrollmentAuthority(env.db, ctx.params.id, ctx.now, ctx.member.id);
-  emit({ kind: 'invitation_revoked', invitationId: ctx.params.id, actor: ctx.member.id, revoked: result.revoked });
+  if (result.revoked) emit({ kind: 'invitation_revoked', invitationId: ctx.params.id, actor: ctx.member.id });
   return ok({ revoked: result.revoked, revokedBy: ctx.member.id });
 }
 
@@ -67,7 +62,7 @@ export async function handleRevokeInvitation(env: ServerEnv, ctx: OwnerContext):
 export async function handleCredentials(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
-  return ok(await listCredentials(env.db, page));
+  return ok(await listCredentials(env.db, ctx.now, page));
 }
 
 export async function handleRevokeCredential(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

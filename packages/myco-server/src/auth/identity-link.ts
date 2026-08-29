@@ -15,6 +15,7 @@ import { toBase64Url } from '../base64.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
 import { emit } from '../telemetry.js';
+import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 
 /** Bytes of entropy in a link key. 32 = 256 bits. */
 export const IDENTITY_LINK_KEY_BYTES = 32;
@@ -176,9 +177,8 @@ export async function reclaimIdentityLinkAuthorities(db: RelationalStore, nowMs:
 export function revokeLinkKeysOfMember(db: RelationalStore, memberId: string, revokedBy: string, nowMs: number) {
   return db
     .prepare(`UPDATE identity_link_authorities SET revoked_at = ?, revoked_by = ?
-               WHERE member_id = ? AND used_at IS NULL AND revoked_at IS NULL
-                 AND EXISTS (SELECT 1 FROM members WHERE id = ? AND revoked_at = ? AND revoked_by = ?)`)
-    .bind(nowMs, revokedBy, memberId, memberId, nowMs, revokedBy);
+               WHERE member_id = ? AND used_at IS NULL AND revoked_at IS NULL AND ${MEMBER_REVOKED_BY}`)
+    .bind(nowMs, revokedBy, memberId, ...memberRevokedByParams(memberId, nowMs, revokedBy));
 }
 
 /** The break-glass bind: the statement an operator applies with their own store access. Clears any earlier account. */
