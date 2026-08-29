@@ -21,7 +21,7 @@ interface ProjectNavItem {
 /** Pages under a Project. A null suffix is a page a later slice delivers; it is shown so the shape is visible, and it is not a route. */
 const PROJECT_NAV: ProjectNavItem[] = [
   { label: 'Overview', icon: LayoutDashboard, suffix: '' },
-  { label: 'Sessions', icon: MessageSquare, suffix: null },
+  { label: 'Sessions', icon: MessageSquare, suffix: '/sessions' },
   { label: 'Cortex', icon: Brain, suffix: '/cortex' },
   { label: 'Skills', icon: Sparkles, suffix: '/skills' },
   { label: 'Agent runs', icon: Bot, suffix: '/runs' },

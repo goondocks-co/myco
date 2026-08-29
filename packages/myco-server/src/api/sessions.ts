@@ -1,6 +1,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { getSession, listSessions, sessionCounts } from '../read/sessions.js';
+import { getSession, listSessions, projectStats, sessionCounts } from '../read/sessions.js';
+import { activityFeed } from '../read/activity.js';
 import { badRequest, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listPlans, listPrompts, listResponses, listToolCalls } from '../read/children.js';
@@ -71,7 +72,20 @@ export async function handleSessionChildren(env: ServerEnv, ctx: OwnerContext): 
   if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
-  return ok(await query(env.db, scope, ctx.params.sessionId, page));
+  return ok(await query(env.db, scope, sessionId, page));
+}
+
+/** The project's home: what it holds, and what happened most recently. */
+export async function handleProjectActivity(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  const rawLimit = ctx.url.searchParams.get('limit');
+  if (rawLimit !== null && !/^[0-9]+$/.test(rawLimit)) return badRequest('limit must be a positive integer');
+  const [items, stats] = await Promise.all([
+    activityFeed(env.db, scope, rawLimit === null ? undefined : Number(rawLimit)),
+    projectStats(env.db, scope, ctx.now),
+  ]);
+  return ok({ items, stats });
 }
 
 /** A session's transcript record and its segments. The bytes live in the blob store and are fetched per segment through the blob route. */

@@ -4,7 +4,7 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { clampLimit, decodeCursor, encodeCursor, page, DEFAULT_PAGE, MAX_PAGE } from '@myco-server-worker/read/scope.js';
 
-import { getSession, listProjects, listSessions } from '@myco-server-worker/read/sessions.js';
+import { getSession, listProjects, listSessions, projectStats } from '@myco-server-worker/read/sessions.js';
 
 function seedSessions(sqlite: import('bun:sqlite').Database) {
   sqlite.run(`INSERT OR REPLACE INTO projects (project_id, name, created_at) VALUES ('proj_1','One',1), ('proj_2','Two',2)`);
@@ -23,8 +23,39 @@ describe('read/sessions', () => {
     expect(rows[0]).toEqual({
       sessionId: 's3', machineId: 'm2', createdByTokenId: 'tok_1', firstReceivedAt: 3, lastReceivedAt: 20,
       agent: 'claude-code', branch: 'main', startedAt: 3, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null,
+      memberId: null, memberLabel: null, runtimeLabel: null, runtimeKind: null,
     });
     expect(cursor).toBeNull();
+  });
+
+  it('names the member and runtime behind each session, lists a session whose credential is gone, and keeps the order', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedSessions(sqlite);
+    sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at) VALUES ('mem_a', 'chris', 1)`);
+    sqlite.run(`INSERT INTO member_credentials (id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, lineage_root, lineage_started_at)
+                VALUES ('tok_1', 'mem_a', 'h', 'm1', 'laptop', 'host', 1, 99, 'tok_1', 1)`);
+    const { rows } = await listSessions(db, { projectId: 'proj_1' });
+    expect(rows.map((r) => [r.sessionId, r.memberLabel, r.runtimeLabel, r.runtimeKind])).toEqual([
+      ['s3', 'chris', 'laptop', 'host'], ['s2', null, null, null], ['s1', 'chris', 'laptop', 'host'],
+    ]);
+    expect((await getSession(db, { projectId: 'proj_1' }, 's2'))?.memberId).toBeNull();
+  });
+
+  it('counts what a project holds, and only that project', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedSessions(sqlite);
+    sqlite.run(`UPDATE sessions SET ended_at = 9 WHERE project_id = 'proj_1' AND session_id = 's1'`);
+    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+                VALUES ('proj_1','s1','p1','e1','a','user','h1',1,1,'t',1), ('proj_2','other','p2','e2','b','user','h2',1,1,'t',1)`);
+    sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content_hash, status, created_at, updated_at, token_id, received_at)
+                VALUES ('proj_1','pl1','s1','e3','m1','h3','active',1,1,'t',1), ('proj_2','pl2','other','e4','m9','h4','active',1,1,'t',1)`);
+    sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, tool_name, success, created_at, token_id, received_at)
+                VALUES ('proj_1','s1','tc1','e5','Read',1,1,'t',1), ('proj_2','other','tc2','e6','Read',1,1,'t',1)`);
+    sqlite.run(`INSERT INTO attachments (project_id, attachment_id, session_id, event_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
+                VALUES ('proj_1','a1','s1','e7','${'a'.repeat(64)}','image/png',9,1,'t',1), ('proj_2','a2','other','e8','${'b'.repeat(64)}','image/png',9,1,'t',1)`);
+    expect(await projectStats(db, { projectId: 'proj_1' }, 3 + 7 * 24 * 60 * 60 * 1000)).toEqual({
+      sessions: 3, openSessions: 2, sessionsLast7d: 1, prompts: 1, toolCalls: 1, plans: 1, attachments: 1, lastActivityAt: 30,
+    });
   });
 
   it('pages with a cursor and never repeats or drops a row', async () => {
@@ -56,7 +87,7 @@ describe('read/sessions', () => {
   });
 });
 
-import { listPrompts, listToolCalls } from '@myco-server-worker/read/children.js';
+import { INPUT_PREVIEW_CHARS, listPrompts, listToolCalls } from '@myco-server-worker/read/children.js';
 
 describe('read/children', () => {
   it('lists a session\'s prompts oldest first inside the scope', async () => {
@@ -66,6 +97,16 @@ describe('read/children', () => {
                        ('proj_2','s1','pX','eX','other','user','hX',15,15,'t1',15)`);
     const { rows } = await listPrompts(db, { projectId: 'proj_1' }, 's1');
     expect(rows.map((r) => r.text)).toEqual(['first', 'second']);
+  });
+
+  it('carries how each tool call went, with a bounded input preview and the input\'s full size', async () => {
+    const { db, sqlite } = sqliteEnv();
+    const input = 'x'.repeat(190_000);
+    sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, tool_name, myco_tool, input, output_preview, success, error_message, duration_ms, created_at, token_id, received_at)
+                VALUES ('proj_1','s1','tc1','ev1','Write',NULL,?,'wrote it',0,'disk full',42,1,'t1',1)`, [input]);
+    const { rows } = await listToolCalls(db, { projectId: 'proj_1' }, 's1');
+    expect(rows.map((r) => [r.toolName, r.success, r.errorMessage, r.durationMs, r.outputPreview, r.inputPreview?.length, r.inputBytes]))
+      .toEqual([['Write', false, 'disk full', 42, 'wrote it', INPUT_PREVIEW_CHARS, 190_000]]);
   });
 
   it('pages tool calls and stops cleanly at the end', async () => {

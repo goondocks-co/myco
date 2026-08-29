@@ -34,6 +34,7 @@ const base = (extra: Record<string, () => Response> = {}) => ({
   '/auth/me': () => Response.json(ME),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/agents': () => Response.json({ agents: [{ id: 'agent_1', name: 'Myco agent', provider: 'anthropic', model: 'claude', enabled: true }] }),
+  '/api/projects/x/activity': () => Response.json({ items: [], stats: { sessions: 0, openSessions: 0, sessionsLast7d: 0, prompts: 0, toolCalls: 0, plans: 0, attachments: 0, lastActivityAt: null } }),
   ...extra,
 });
 

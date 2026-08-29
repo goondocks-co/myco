@@ -955,6 +955,7 @@ describe('gates', () => {
       'owner GET /api/enrollment',
       'owner GET /api/members',
       'owner GET /api/projects',
+      'owner GET /api/projects/{projectId}/activity',
       'owner GET /api/projects/{projectId}/blobs/{key}',
       'owner GET /api/projects/{projectId}/capabilities',
       'owner GET /api/projects/{projectId}/cortex/instructions',
