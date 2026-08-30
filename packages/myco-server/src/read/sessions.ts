@@ -31,6 +31,13 @@ export interface SessionRow {
   memberLabel: string | null;
   runtimeLabel: string | null;
   runtimeKind: string | null;
+  /** The title written on the Deployment after the session ended; null until then. */
+  title: string | null;
+  summary: string | null;
+  /** The time of the titling attempt, whatever its outcome; null while nothing has tried. */
+  titledAt: number | null;
+  /** What a list or a header shows: the title, else the opening line of the first user prompt, else the agent, else the id. */
+  label: string;
 }
 
 /** What a project holds, counted for its home page. */
@@ -55,9 +62,34 @@ export interface SessionCounts {
   attachments: number;
 }
 
+/** How much of the first prompt the label rule reads. */
+export const FIRST_PROMPT_CHARS = 160;
+/** The longest label the fallback rule produces. */
+export const LABEL_MAX_CHARS = 80;
+
+/** The opening of a session's first inline user prompt, for the label of a session with no title. Correlated on the alias `s`; it walks `idx_prompt_batches_session` and stops at the first row, and a spilled prompt (no inline text) is skipped. */
+export const FIRST_PROMPT_SQL = `(SELECT substr(pb.text, 1, ${FIRST_PROMPT_CHARS}) FROM prompt_batches pb
+       WHERE pb.project_id = s.project_id AND pb.session_id = s.session_id AND pb.origin = 'user' AND pb.text IS NOT NULL
+       ORDER BY pb.created_at, pb.prompt_id LIMIT 1)`;
+
+/** The one label rule for a session, shared by the list, the detail and the activity feed. A stored title is shown as is; the first prompt contributes its first line, whitespace collapsed, cut at `LABEL_MAX_CHARS` on a word boundary; then the agent; then the id's first eight characters. */
+export function sessionLabel(title: string | null, firstPrompt: string | null, agent: string | null, sessionId: string): string {
+  if (title !== null && title.trim() !== '') return title.trim();
+  const line = firstPrompt === null ? '' : (firstPrompt.split(/\r?\n/).find((l) => l.trim() !== '') ?? '').replace(/\s+/g, ' ').trim();
+  if (line !== '') {
+    if (line.length <= LABEL_MAX_CHARS) return line;
+    const cut = line.slice(0, LABEL_MAX_CHARS);
+    const space = cut.lastIndexOf(' ');
+    return `${(space > LABEL_MAX_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+  }
+  if (agent !== null && agent.trim() !== '') return agent.trim();
+  return sessionId.slice(0, 8);
+}
+
 /** Both joins land on primary keys, so the row count and the order are those of `sessions` alone. */
 const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
      s.agent, s.branch, s.started_at, s.ended_at, s.origin_path, s.parent_session_id, s.parent_reason,
+     s.title, s.summary, s.titled_at, ${FIRST_PROMPT_SQL} AS first_prompt,
      c.member_id, c.runtime_label, c.runtime_kind, m.label AS member_label`;
 const SESSION_FROM = `FROM sessions s
      LEFT JOIN member_credentials c ON c.id = s.created_by_token_id
@@ -85,6 +117,10 @@ function toSession(row: Record<string, unknown>): SessionRow {
     memberLabel: text(row.member_label),
     runtimeLabel: text(row.runtime_label),
     runtimeKind: text(row.runtime_kind),
+    title: text(row.title),
+    summary: text(row.summary),
+    titledAt: num(row.titled_at),
+    label: sessionLabel(text(row.title), text(row.first_prompt), text(row.agent), row.session_id as string),
   };
 }
 
@@ -249,6 +285,12 @@ export async function sessionInScope(db: RelationalStore, scope: ReadScope, sess
     .bind(scope.projectId, sessionId)
     .first<{ present: number }>();
   return row !== null;
+}
+
+/** Give a project a new display name; `absent` when no row carries the id. Archived projects rename too: the name is display, not capture. */
+export async function renameProject(db: RelationalStore, projectId: string, name: string): Promise<'renamed' | 'absent'> {
+  const result = await db.prepare(`UPDATE projects SET name = ? WHERE project_id = ?`).bind(name, projectId).run();
+  return result.meta.changes === 1 ? 'renamed' : 'absent';
 }
 
 /** Insert a project, answering false when one already carries the id. */

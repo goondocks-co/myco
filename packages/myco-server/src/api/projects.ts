@@ -1,6 +1,6 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { archiveProject, createProject, unarchiveProject } from '../read/sessions.js';
+import { archiveProject, createProject, renameProject, unarchiveProject } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
 import { readJsonObject, badRequest, listVisibleProjects, notFound, ok } from './scope.js';
 
@@ -29,6 +29,17 @@ export async function handleUnarchiveProject(env: ServerEnv, ctx: OwnerContext):
   if (outcome === 'not_archived') return Response.json({ error: outcome }, { status: 409 });
   emit({ kind: 'project_unarchived', projectId: ctx.params.projectId, actor: ctx.member.id });
   return ok({ archived: false });
+}
+
+/** `PATCH /api/projects/{projectId}`: a new display name, under the same grammar as creation; an archived project renames too. */
+export async function handleRenameProject(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const body = await readJsonObject(ctx.request);
+  if (body === null) return badRequest('body must be a JSON object');
+  const name = body.name;
+  if (typeof name !== 'string' || name.length === 0 || name.length > 200) return badRequest('name is required');
+  if ((await renameProject(env.db, ctx.params.projectId, name)) === 'absent') return notFound();
+  emit({ kind: 'project_renamed', projectId: ctx.params.projectId, actor: ctx.member.id });
+  return ok({ projectId: ctx.params.projectId, name });
 }
 
 /** Create a project. The owner API onboards a project so a first token can be minted for it; `scripts/mint-local.ts` remains the break-glass mirror. */

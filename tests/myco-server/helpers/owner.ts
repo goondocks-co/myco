@@ -19,6 +19,14 @@ export const PRINCIPAL = { id: 'mem_machine_1', label: 'machine_1' };
 export const asOwner = async (path: string): Promise<Request> =>
   new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } });
 
+/** An authenticated owner PATCH, same-origin so the CSRF check admits it. */
+export const asOwnerPatch = async (path: string, body?: unknown): Promise<Request> =>
+  new Request(`https://s${path}`, {
+    method: 'PATCH',
+    headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
 /** An authenticated owner POST, same-origin so the CSRF check admits it. */
 export const asOwnerPost = async (path: string, body?: unknown): Promise<Request> =>
   new Request(`https://s${path}`, {

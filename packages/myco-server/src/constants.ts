@@ -1,4 +1,15 @@
-export const SERVER_SCHEMA_VERSION = 11;
+export const SERVER_SCHEMA_VERSION = 12;
+
+/** Titling: one provider call per ended session, at most this many per Project per hour. */
+export const MAX_TITLES_PER_PROJECT_PER_HOUR = 120;
+/** Titling: the provider call is abandoned after this long. */
+export const TITLING_TIMEOUT_MS = 20_000;
+/** Titling: how many of a session's earliest user prompts (with their first response) reach the model. */
+export const MAX_MATERIAL_PROMPTS = 12;
+/** Titling: the material's total character budget. */
+export const MAX_MATERIAL_CHARS = 8_000;
+/** Titling: each prompt or response excerpt is cut to this many characters. */
+export const MATERIAL_EXCERPT_CHARS = 600;
 export const SERVER_PROTOCOL = 1;
 export const MIN_COMPAT_MEMBER_PROTOCOL = 1;
 export const PROTOCOL_HEADER = 'x-myco-protocol';
