@@ -94,7 +94,7 @@ describe('read layer', () => {
     //   read/**       the query core
     //   ingest/**     the write path
     //   db/**         schema and migration
-    //   auth/tokens.ts, auth/refresh.ts, auth/enrollment.ts, auth/step-up.ts
+    //   auth/tokens.ts, auth/refresh.ts, auth/enrollment.ts
     //                     the credential store
     //   core/secrets.ts   the Deployment secret store — it OWNS deployment_secrets,
     //                     and holds the only decrypt in the codebase
@@ -121,7 +121,7 @@ describe('read layer', () => {
     //                     and holds the one write that moves a status and records
     //                     why it moved as a single commit
     //   pipeline.ts   one quota re-read on the ingest admission path
-    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/step-up\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/runs\.ts$/, /^core\/digests\.ts$/, /^core\/provenance\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/spores\.ts$/, /^pipeline\.ts$/];
+    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/runs\.ts$/, /^core\/digests\.ts$/, /^core\/provenance\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/spores\.ts$/, /^pipeline\.ts$/];
     const offenders: string[] = [];
     for (const file of tsFiles(SRC)) {
       const rel = file.slice(SRC.length);

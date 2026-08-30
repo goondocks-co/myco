@@ -424,9 +424,9 @@ const V5_STATEMENTS: readonly string[] = [
  * makes them bounded by the number of settings rather than by time. No project
  * deletion exists, so no orphan accumulates behind a removed Project either.
  *
- * `step_up_authorities` is the exception and is the only one swept: it grows once
- * per mint and a spent authority resolves nothing afterwards. The operation it
- * authorised keeps its own record on the row it changed.
+ * `step_up_authorities` grew once per mint and its spend path swept finished
+ * rows; dormant as of 2026-08-30 (#1036), nothing writes or reads it. The
+ * operation an old row authorised keeps its own record on the row it changed.
  */
 const V6_STATEMENTS: readonly string[] = [
   /**
@@ -476,6 +476,9 @@ const V6_STATEMENTS: readonly string[] = [
    * second — a confused deputy, and a single token covering all four reads as
    * protection while granting every one of them.
    */
+  // Dormant as of 2026-08-30 (#1036): the step-up mechanism left the product and
+  // nothing writes or reads these rows. The table stays in the chain — steps are
+  // expand-only — and in databases, inert.
   `CREATE TABLE IF NOT EXISTS step_up_authorities (
      id          TEXT PRIMARY KEY,
      key_hash    TEXT NOT NULL,

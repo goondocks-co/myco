@@ -46,9 +46,9 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Agent',
     note: 'The provider and model that generate this server\'s intelligence.',
     leaves: [
-      { leaf: 'agent.provider.type', label: 'Provider', kind: 'select', options: PROVIDERS, note: 'Changing the provider needs a step-up key.' },
+      { leaf: 'agent.provider.type', label: 'Provider', kind: 'select', options: PROVIDERS, note: 'Which service generates this server\'s intelligence; its credential lives under Credentials.' },
       { leaf: 'agent.provider.model', label: 'Model', kind: 'text', note: 'The provider\'s model identifier.' },
-      { leaf: 'agent.provider.base_url', label: 'Provider endpoint', kind: 'text', note: 'For self-hosted or compatible endpoints. Needs a step-up key.' },
+      { leaf: 'agent.provider.base_url', label: 'Provider endpoint', kind: 'text', note: 'For self-hosted or compatible endpoints. The server sends no stored credential to a custom endpoint.' },
       { leaf: 'agent.provider.context_length', label: 'Context length', kind: 'number', min: 1, unit: 'tokens' },
       { leaf: 'agent.provider.local_backend', label: 'Local backend', kind: 'select', options: ['ollama', 'lmstudio'] },
       { leaf: 'agent.reasoningLevel', label: 'Reasoning profile', kind: 'select', options: ['low', 'default', 'high'] },
@@ -103,7 +103,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     leaves: [
       { leaf: 'embedding.provider', label: 'Provider', kind: 'select', options: ['ollama', 'openai-compatible', 'openrouter', 'openai'] },
       { leaf: 'embedding.model', label: 'Model', kind: 'text' },
-      { leaf: 'embedding.base_url', label: 'Embedding endpoint', kind: 'text', note: 'Needs a step-up key.' },
+      { leaf: 'embedding.base_url', label: 'Embedding endpoint', kind: 'text', note: 'Where embeddings are computed.' },
       { leaf: 'embedding.prevent_deep_sleep', label: 'Keep embedding while idle', kind: 'toggle' },
     ],
   },
@@ -152,7 +152,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     note: 'Per-tier provider settings and per-task overrides, as documents.',
     leaves: [
       ...tierMaps(),
-      { leaf: 'agent.tasks', label: 'Task overrides', kind: 'json', note: 'A JSON object keyed by task name. A provider or endpoint inside it needs a step-up key.' },
+      { leaf: 'agent.tasks', label: 'Task overrides', kind: 'json', note: 'A JSON object keyed by task name.' },
     ],
   },
 ];

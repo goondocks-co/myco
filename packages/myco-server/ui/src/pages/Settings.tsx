@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { PageContainer } from '../components/ui/page-container';
 import { PageHeader } from '../components/ui/page-header';
@@ -9,7 +10,7 @@ import { SubtabPill } from '../components/ui/subtab-pill';
 import { AppearanceSection } from '../layout/AppearanceSection';
 import { useMembers } from '../hooks/use-access';
 import { useProjects } from '../hooks/use-projects';
-import { needsStepUp, settingsRefusalText, useCapabilities, useSecrets, useSettings, useSettingsActions, type LeafRow, type SecretRow } from '../hooks/use-settings';
+import { settingsRefusalText, useCapabilities, useSecrets, useSettings, useSettingsActions, type LeafRow, type SecretRow } from '../hooks/use-settings';
 import { isArchived } from '../lib/api';
 import { formatRelative } from '../lib/format';
 import { LEAF_GROUPS, type LeafField } from '../settings/catalogue';
@@ -22,9 +23,6 @@ const inputClass = 'rounded-md border border-outline-variant/30 bg-surface-conta
 
 const CAPABILITY_LABEL: Record<string, string> = { cortex: 'Cortex: digests and instructions', canopy: 'Code map', skills: 'Skills', vault_evolution: 'Memory upkeep' };
 
-/** What a step-up dialog is waiting to do once it has a key. */
-type PendingChange = { kind: 'leaf'; leaf: string; label: string; value: unknown } | { kind: 'delete'; name: string };
-
 /** Who a member id is, in the words the page shows elsewhere. */
 function useMemberName(): (id: string | null) => string | null {
   const members = useMembers();
@@ -36,15 +34,14 @@ export function Settings() {
   const requested = params.get('tab');
   const tab = TABS.some((t) => t.id === requested) ? (requested as string) : LEAF_GROUPS[0]!.id;
   const setTab = (id: string) => setParams(id === LEAF_GROUPS[0]!.id ? {} : { tab: id });
-  const [pending, setPending] = useState<PendingChange | null>(null);
   return (
     <PageContainer>
       <PageHeader title="Settings" subtitle="What this server holds for every member. Each change saves as you make it and names who made it." />
       <div className="mb-4">
         <SubtabPill tabs={TABS} activeTab={tab} onTabChange={setTab} />
       </div>
-      {LEAF_GROUPS.map((g) => g.id === tab && <LeafGroupPanel key={g.id} groupId={g.id} onStepUp={setPending} />)}
-      {tab === 'secrets' && <Secrets onRemove={(name) => setPending({ kind: 'delete', name })} />}
+      {LEAF_GROUPS.map((g) => g.id === tab && <LeafGroupPanel key={g.id} groupId={g.id} />)}
+      {tab === 'secrets' && <Secrets />}
       {tab === 'capabilities' && <ProjectCapabilities />}
       {tab === 'browser' && (
         <Panel title="This browser" eyebrow="Appearance">
@@ -52,12 +49,11 @@ export function Settings() {
           <AppearanceSection />
         </Panel>
       )}
-      <StepUpDialog pending={pending} onClose={() => setPending(null)} />
     </PageContainer>
   );
 }
 
-function LeafGroupPanel({ groupId, onStepUp }: { groupId: string; onStepUp: (p: PendingChange) => void }) {
+function LeafGroupPanel({ groupId }: { groupId: string }) {
   const group = LEAF_GROUPS.find((g) => g.id === groupId)!;
   const settings = useSettings();
   const rows = new Map((settings.data?.leaves ?? []).map((l) => [l.leaf, l]));
@@ -66,7 +62,7 @@ function LeafGroupPanel({ groupId, onStepUp }: { groupId: string; onStepUp: (p: 
       <Panel title={group.label} eyebrow="Server">
         <p className="mb-3 font-sans text-sm text-on-surface-variant">{group.note}</p>
         <ul className="flex flex-col divide-y divide-outline-variant/10" aria-label={group.label}>
-          {group.leaves.map((f) => <LeafControl key={f.leaf} field={f} row={rows.get(f.leaf)} onStepUp={onStepUp} />)}
+          {group.leaves.map((f) => <LeafControl key={f.leaf} field={f} row={rows.get(f.leaf)} />)}
         </ul>
       </Panel>
     </PageLoading>
@@ -80,7 +76,7 @@ const textOf = (field: LeafField, value: unknown): string => {
   return String(value);
 };
 
-function LeafControl({ field, row, onStepUp }: { field: LeafField; row: LeafRow | undefined; onStepUp: (p: PendingChange) => void }) {
+function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
   const actions = useSettingsActions();
   const nameOf = useMemberName();
   const [draft, setDraft] = useState<string | null>(null);
@@ -91,9 +87,8 @@ function LeafControl({ field, row, onStepUp }: { field: LeafField; row: LeafRow 
   const save = (next: unknown) => {
     setError(null);
     if (field.readOnly) return;
-    if (row?.requiresStepUp) { onStepUp({ kind: 'leaf', leaf: field.leaf, label: field.label, value: next }); return; }
     actions.setLeaf.mutate({ leaf: field.leaf, value: next }, {
-      onError: (err) => (needsStepUp(err) ? onStepUp({ kind: 'leaf', leaf: field.leaf, label: field.label, value: next }) : setError(settingsRefusalText(err, false))),
+      onError: (err) => setError(settingsRefusalText(err)),
       onSuccess: () => setDraft(null),
     });
   };
@@ -153,20 +148,20 @@ function LeafControl({ field, row, onStepUp }: { field: LeafField; row: LeafRow 
   );
 }
 
-function Secrets({ onRemove }: { onRemove: (name: string) => void }) {
+function Secrets() {
   const secrets = useSecrets();
   const actions = useSettingsActions();
   const nameOf = useMemberName();
   const [editing, setEditing] = useState<SecretRow | null>(null);
+  const [removing, setRemoving] = useState<SecretRow | null>(null);
   const [draft, setDraft] = useState('');
-  const [key, setKey] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const close = () => { setEditing(null); setDraft(''); setKey(''); setError(null); actions.setSecret.reset(); };
+  const close = () => { setEditing(null); setDraft(''); setError(null); actions.setSecret.reset(); };
   const LABEL: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', openrouter: 'OpenRouter', github: 'GitHub' };
   return (
     <PageLoading isLoading={secrets.isPending} error={secrets.error}>
       <Panel title="Provider credentials" eyebrow="Server">
-        <p className="mb-3 font-sans text-sm text-on-surface-variant">Stored once, shown masked, never sent back. Every change needs a step-up key.</p>
+        <p className="mb-3 font-sans text-sm text-on-surface-variant">Stored once, shown masked, never sent back. Runs bill to whichever account a credential belongs to, and every change names who made it.</p>
         <ul className="flex flex-col divide-y divide-outline-variant/10" aria-label="Credentials">
           {(secrets.data?.secrets ?? []).map((s) => (
             <li key={s.name} className="flex items-center gap-3 py-2 font-sans text-sm">
@@ -176,7 +171,7 @@ function Secrets({ onRemove }: { onRemove: (name: string) => void }) {
                 {s.configured && <div className="text-xs text-on-surface-variant">updated {formatRelative(s.updatedAt)}{s.updatedBy ? ` by ${nameOf(s.updatedBy)}` : ''}</div>}
               </div>
               <button type="button" className={button} onClick={() => { setDraft(''); setEditing(s); }}>{s.configured ? 'Rotate' : 'Set'}</button>
-              {s.configured && <button type="button" className={button} onClick={() => onRemove(s.name)}>Remove</button>}
+              {s.configured && <button type="button" className={button} onClick={() => setRemoving(s)}>Remove</button>}
             </li>
           ))}
         </ul>
@@ -185,63 +180,32 @@ function Secrets({ onRemove }: { onRemove: (name: string) => void }) {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{editing?.configured ? `Rotate the ${LABEL[editing.name] ?? editing.name} credential` : `Set the ${editing ? LABEL[editing.name] ?? editing.name : ''} credential`}</DialogTitle>
-            <DialogDescription>The value is stored and never shown again. This change needs a step-up key; ask whoever runs this server for one — each key works once.</DialogDescription>
+            <DialogDescription>The value is stored and never shown again. Runs that use this provider bill to the account it belongs to.</DialogDescription>
           </DialogHeader>
-          <form className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); if (editing && draft.length > 0 && key !== '') { setError(null); actions.setSecret.mutate({ name: editing.name, value: draft, stepUpKey: key }, { onSuccess: close, onError: (err) => setError(settingsRefusalText(err, true)) }); } }}>
+          <form className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); if (editing && draft.length > 0) { setError(null); actions.setSecret.mutate({ name: editing.name, value: draft }, { onSuccess: close, onError: (err) => setError(settingsRefusalText(err)) }); } }}>
             <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">
               Credential
               <input type="password" autoComplete="off" aria-label="Credential value" className={inputClass} value={draft} onChange={(e) => setDraft(e.target.value)} />
             </label>
-            <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">
-              Step-up key
-              <input type="password" autoComplete="off" aria-label="Step-up key" className={inputClass} value={key} onChange={(e) => setKey(e.target.value)} />
-            </label>
             {error !== null && <p className="font-sans text-xs text-tertiary">{error}</p>}
             <div className="flex justify-end">
-              <button type="submit" className={primary} disabled={draft.length === 0 || key === '' || actions.setSecret.isPending}>Save</button>
+              <button type="submit" className={primary} disabled={draft.length === 0 || actions.setSecret.isPending}>Save</button>
             </div>
           </form>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        open={removing !== null}
+        onOpenChange={(open) => { if (!open) { setRemoving(null); actions.deleteSecret.reset(); } }}
+        title={`Remove the ${removing ? LABEL[removing.name] ?? removing.name : ''} credential?`}
+        description="Anything that uses this provider stops working until a new credential is stored."
+        confirmLabel="Remove"
+        variant="destructive"
+        isPending={actions.deleteSecret.isPending}
+        errorMessage={actions.deleteSecret.error ? settingsRefusalText(actions.deleteSecret.error) : null}
+        onConfirm={() => { if (removing) actions.deleteSecret.mutate({ name: removing.name }, { onSuccess: () => setRemoving(null) }); }}
+      />
     </PageLoading>
-  );
-}
-
-/** Asks for the step-up key a change needs, then performs the change once with it. */
-function StepUpDialog({ pending, onClose }: { pending: PendingChange | null; onClose: () => void }) {
-  const actions = useSettingsActions();
-  const [key, setKey] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const busy = actions.setLeaf.isPending || actions.deleteSecret.isPending;
-  const close = () => { setKey(''); setError(null); actions.setLeaf.reset(); actions.deleteSecret.reset(); onClose(); };
-  const title = pending === null ? '' : pending.kind === 'leaf' ? `Change ${pending.label}` : 'Remove the credential';
-  const submit = () => {
-    if (pending === null || key === '') return;
-    setError(null);
-    const opts = { onSuccess: close, onError: (err: unknown) => setError(settingsRefusalText(err, true)) };
-    if (pending.kind === 'leaf') actions.setLeaf.mutate({ leaf: pending.leaf, value: pending.value, stepUpKey: key }, opts);
-    else actions.deleteSecret.mutate({ name: pending.name, stepUpKey: key }, opts);
-  };
-  return (
-    <Dialog open={pending !== null} onOpenChange={(open) => { if (!open) close(); }}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>This change needs a step-up key. Ask whoever runs this server for one; each key works once.</DialogDescription>
-        </DialogHeader>
-        <form className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); submit(); }}>
-          <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">
-            Step-up key
-            <input type="password" autoComplete="off" aria-label="Step-up key" className={inputClass} value={key} onChange={(e) => setKey(e.target.value)} />
-          </label>
-          {error !== null && <p className="font-sans text-xs text-tertiary">{error}</p>}
-          <div className="flex justify-end gap-2">
-            <button type="button" className={button} onClick={close}>Cancel</button>
-            <button type="submit" className={primary} disabled={key === '' || busy}>{pending?.kind === 'delete' ? 'Remove' : 'Save'}</button>
-          </div>
-        </form>
-      </DialogContent>
-    </Dialog>
   );
 }
 
@@ -274,7 +238,7 @@ function ProjectCapabilityPanel({ projectId, name }: { projectId: string; name: 
               <span className="min-w-0 flex-1 text-on-surface">{CAPABILITY_LABEL[capability] ?? capability}</span>
               <button type="button" role="switch" aria-checked={enabled} aria-label={`${CAPABILITY_LABEL[capability] ?? capability} for ${name}`} disabled={actions.setCapability.isPending}
                 className={`${button} ${enabled ? 'bg-primary/15 text-primary' : ''}`}
-                onClick={() => { setError(null); actions.setCapability.mutate({ projectId, capability, enabled: !enabled }, { onError: (err) => setError(settingsRefusalText(err, false)) }); }}>
+                onClick={() => { setError(null); actions.setCapability.mutate({ projectId, capability, enabled: !enabled }, { onError: (err) => setError(settingsRefusalText(err)) }); }}>
                 {enabled ? 'On' : 'Off'}
               </button>
             </li>

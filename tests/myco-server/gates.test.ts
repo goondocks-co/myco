@@ -658,32 +658,6 @@ describe('gates', () => {
     }
   });
 
-  it('keeps step-up sized to the one consumer in scope, and spends an authority from one statement', () => {
-    // #907 names four operations; exactly one of them is in this issue. Building a
-    // general step-up framework for one consumer is the pattern this project has
-    // paid for before, and "build it no larger than the consumer" is a property
-    // with nothing that fails when it stops holding — so this is that.
-    //
-    // When the second consumer lands (#923's destroy/restore, or the enrollment
-    // root rotation) this list grows by one and the gate keeps its meaning.
-    const callers = files(SRC)
-      .filter((f) => f !== join(SRC, 'auth', 'step-up.ts'))
-      .filter((f) => /spendStepUpAuthority|stepUpAuthorizer/.test(readFileSync(f, 'utf8')))
-      .map((f) => f.slice(SRC.length + 1));
-    // One: the settings surface, which is the single in-scope consumer. #923's
-    // destroy/restore and the enrollment-root rotation each add one when they land.
-    expect(callers).toEqual([join('api', 'settings.ts')]);
-
-    // The spend is one conditional update carrying every condition. A read-then-mark
-    // spend admits two winners; this is the same shape #912 H4 required of enrollment.
-    const stepUp = readFileSync(join(SRC, 'auth', 'step-up.ts'), 'utf8');
-    expect(stepUp.match(/UPDATE step_up_authorities SET used_at/g)).toHaveLength(1);
-    expect(stepUp).toMatch(/WHERE key_hash = \? AND purpose = \? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > \?/);
-    // The digest is stored, never the key.
-    expect(stepUp).toMatch(/await sha256Hex\(key\)/);
-    expect(stepUp).not.toMatch(/INSERT INTO step_up_authorities[\s\S]*?VALUES[^`]*\bkey\b(?!_hash)/);
-  });
-
   it('writes settings and capability admission from exactly one module, keyed on the tables themselves', () => {
     // Keying this on MODULE PATHS alone would not hold: the read-layer allowlist
     // already permits every file under `ingest/` and `db/` to issue SQL, so a
