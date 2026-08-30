@@ -22,6 +22,10 @@ import { leafValues, providerConfiguredFor } from './settings.js';
 export const TITLING_TASK = 'title-summary';
 export const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 export const ANTHROPIC_VERSION = '2023-06-01';
+/** A stored Anthropic credential that is a subscription sign-in rather than an API key travels as a bearer with this capability named. */
+export const ANTHROPIC_OAUTH_BETA = 'oauth-2025-04-20';
+/** The shape a subscription sign-in credential carries; an API key starts `sk-ant-api…` and travels as `x-api-key`. */
+export const ANTHROPIC_OAUTH_PREFIX = 'sk-ant-oat';
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5';
 export const ANSWER_MAX_TOKENS = 4096;
 export const TITLE_MAX_CHARS = 80;
@@ -149,11 +153,18 @@ export function parseTitleAnswer(text: string): { title: string; summary: string
 /** The request for the provider, and how its answer's text is read back. */
 export function providerRequest(provider: TitlingProvider, prompt: string): { url: string; init: RequestInit; text: (body: unknown) => string | null } {
   if (provider.kind === 'anthropic') {
+    const oauth = provider.key.startsWith(ANTHROPIC_OAUTH_PREFIX);
     return {
       url: ANTHROPIC_MESSAGES_URL,
       init: {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-api-key': provider.key, 'anthropic-version': ANTHROPIC_VERSION },
+        headers: {
+          'content-type': 'application/json',
+          'anthropic-version': ANTHROPIC_VERSION,
+          ...(oauth
+            ? { authorization: `Bearer ${provider.key}`, 'anthropic-beta': ANTHROPIC_OAUTH_BETA }
+            : { 'x-api-key': provider.key }),
+        },
         body: JSON.stringify({ model: provider.model, max_tokens: ANSWER_MAX_TOKENS, messages: [{ role: 'user', content: prompt }] }),
       },
       text: (body) => {
