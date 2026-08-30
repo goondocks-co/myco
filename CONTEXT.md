@@ -65,7 +65,7 @@ An individually attributable credential issued when a member joins a Deployment.
 _Avoid_: Using runtime or machine identity as the member's human identity
 
 **Flat Membership (2.0)**:
-Every joined member has equal application access across the Deployment: capture, dashboard, project intelligence, normal MCP, generated intelligence, settings, enrollment, and external-agent grant management. A possible step-up admin credential for narrowly sensitive operations does not create user roles.
+Every joined member has equal application access across the Deployment: capture, dashboard, project intelligence, normal MCP, generated intelligence, settings, enrollment, and external-agent grant management. Provider settings and credentials included (the step-up credential was dropped 2026-08-30, #1036); a future guard, if ever wanted, is re-authentication of the signed-in member, never a second secret.
 _Avoid_: Reintroducing owner/member application roles in the initial 2.0 authorization model
 
 **Member Access**:
@@ -131,7 +131,7 @@ _Avoid_: Treating the Cloudflare target as a different product
 ## Configuration and intelligence
 
 **Deployment Settings**:
-Server-wide settings for intelligence providers, schedules, retention, server behavior, and protected provider credentials. All members can manage these settings in 2.0, with a possible step-up admin credential for sensitive secret changes.
+Server-wide settings for intelligence providers, schedules, retention, server behavior, and protected provider credentials. All members manage these settings and the provider credentials in 2.0 with their session alone; credentials stay write-only and masked.
 _Avoid_: Applying Deployment Settings to only the currently selected Project
 
 **Member Settings**:

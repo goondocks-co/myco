@@ -78,34 +78,3 @@ describe('operator scripts', () => {
     expect(readdirSync(MIGRATIONS).map((name) => [name, readFileSync(join(MIGRATIONS, name), 'utf8')])).toEqual(before);
   });
 });
-
-import { spendStepUpAuthority, STEP_UP_KEY_PATTERN } from '@myco-server-worker/auth/step-up.js';
-import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-
-describe('mint-step-up', () => {
-  it('renders an insert a fresh database accepts, whose key spends exactly once, without the raw key on stdout', async () => {
-    const { code, out, err } = run('mint-step-up.ts', ['provider_credential', '15', '--print-key']);
-    expect(code).toBe(0);
-    const key = /MYCO_STEP_UP_KEY=(\S+)/.exec(err)?.[1];
-    expect(key).toBeDefined();
-    expect(key).toMatch(STEP_UP_KEY_PATTERN);
-    expect(out).not.toContain(key!);
-    expect(out).not.toMatch(/\?/);
-    const sqlite = new Database(':memory:');
-    for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
-    for (const s of out.split('\n').filter((l) => l && !l.startsWith('--')).join('\n').split(';').map((x) => x.trim()).filter(Boolean)) sqlite.exec(s);
-    const db = sqliteRelationalStore(sqlite);
-    const now = Date.now();
-    expect((await spendStepUpAuthority(db, key!, 'provider_credential', 'mem_s', now)).ok).toBe(true);
-    expect(await spendStepUpAuthority(db, key!, 'provider_credential', 'mem_s', now + 1)).toEqual({ ok: false, reason: 'already_used' });
-  });
-
-  it('keeps the key off stderr unless asked, and refuses an unknown purpose', () => {
-    const quiet = run('mint-step-up.ts', ['provider_credential']);
-    expect(quiet.code).toBe(0);
-    expect(quiet.err).not.toMatch(/MYCO_STEP_UP_KEY=/);
-    const bad = run('mint-step-up.ts', ['make_coffee']);
-    expect(bad.code).toBe(2);
-    expect(bad.err).toContain('<purpose>');
-  });
-});

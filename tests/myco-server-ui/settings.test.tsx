@@ -6,7 +6,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { LEAF_FIELDS, LEAF_GROUPS } from '../../packages/myco-server/ui/src/settings/catalogue';
-import { STEP_UP_HEADER } from '../../packages/myco-server/ui/src/hooks/use-settings';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
 const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 0, lastActivityAt: null, archivedAt: null, archivedBy: null }] };
@@ -16,7 +15,7 @@ const SECRET = 'sk-full-secret-value-1234567890';
 const leaves = (over: Record<string, Partial<{ value: unknown; updatedBy: string; updatedAt: number }>> = {}) => ({
   leaves: LEAF_FIELDS.map((f) => {
     const o = over[f.leaf];
-    return { leaf: f.leaf, configured: o !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null, requiresStepUp: /base_url$|provider\.type$/.test(f.leaf) };
+    return { leaf: f.leaf, configured: o !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null };
   }),
 });
 const secrets = (anthropicConfigured: boolean) => ({ secrets: [
@@ -86,7 +85,6 @@ describe('Deployment Settings', () => {
     fireEvent.click(await screen.findByRole('switch', { name: 'Digest at session start' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.digest.inject_on_session_start', body: { value: false } });
-    expect(sent[0]!.headers[STEP_UP_HEADER]).toBeUndefined();
     await tab('Agent');
     const model = await screen.findByLabelText('Model');
     fireEvent.change(model, { target: { value: 'claude-opus' } });
@@ -95,26 +93,23 @@ describe('Deployment Settings', () => {
     expect(sent[1]).toMatchObject({ method: 'PUT', path: '/api/settings/agent.provider.model', body: { value: 'claude-opus' } });
   });
 
-  it('asks for a step-up key on a step-up leaf and sends it in the header', async () => {
+  it('applies an endpoint change directly on the member session, with no dialog and no extra header', async () => {
     const { sent } = server(base({ '/api/settings/agent.provider.base_url': () => Response.json({ applied: true }) }));
     mount('/settings');
     await tab('Agent');
     const url = await screen.findByLabelText('Provider endpoint');
     fireEvent.change(url, { target: { value: 'https://llm.example' } });
     fireEvent.blur(url);
-    expect(await screen.findByText(/This change needs a step-up key/)).toBeTruthy();
-    expect(sent).toHaveLength(0);
-    fireEvent.change(screen.getByLabelText('Step-up key'), { target: { value: 'k'.repeat(43) } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/agent.provider.base_url', body: { value: 'https://llm.example' } });
-    expect(sent[0]!.headers[STEP_UP_HEADER]).toBe('k'.repeat(43));
+    expect(Object.keys(sent[0]!.headers).some((h) => h.startsWith('x-myco-'))).toBe(false);
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('says the refusal in the person\'s words: an unauthorized change asks for a key, a foreign leaf is named as not held', async () => {
+  it('says the refusal in the person\'s words: a foreign leaf is named as not held, any other refusal carries its status', async () => {
     server(base({
       '/api/settings/cortex.digest.tier': () => Response.json({ applied: false, reason: 'not_deployment_tier', leaf: 'cortex.digest.tier' }, { status: 400 }),
-      '/api/settings/embedding.model': () => Response.json({ applied: false, reason: 'unauthorized', leaf: 'embedding.model' }, { status: 403 }),
+      '/api/settings/embedding.model': () => Response.json({ error: 'nope' }, { status: 503 }),
     }));
     mount('/settings');
     await tab('Cortex');
@@ -124,25 +119,28 @@ describe('Deployment Settings', () => {
     const model = await screen.findByLabelText('Model');
     fireEvent.change(model, { target: { value: 'nomic' } });
     fireEvent.blur(model);
-    expect(await screen.findByText(/This change needs a step-up key/)).toBeTruthy();
+    expect((await screen.findByTestId('saved-embedding.model')).textContent).toBe('The server refused (503).');
   });
 
-  it('stores a credential once with the key and never shows it afterwards', async () => {
-    const { sent } = server(base({ '/api/secrets/anthropic': () => Response.json({ name: 'anthropic', configured: true, readable: true, maskedValue: 's…0', updatedAt: NOW, updatedBy: 'mem_1' }) }));
+  it('stores a credential from the session alone and never shows it afterwards, and removes one behind a plain confirm', async () => {
+    const { sent } = server(base({ '/api/secrets/anthropic': (init) => (init?.method === 'DELETE' ? Response.json({ deleted: true }) : Response.json({ name: 'anthropic', configured: true, readable: true, maskedValue: 's…0', updatedAt: NOW, updatedBy: 'mem_1' })) }));
     mount('/settings');
     await tab('Credentials');
     expect(await screen.findByText('s…c')).toBeTruthy();
     fireEvent.click(screen.getAllByRole('button', { name: 'Rotate' })[0]!);
     fireEvent.change(await screen.findByLabelText('Credential value'), { target: { value: SECRET } });
-    fireEvent.change(screen.getByLabelText('Step-up key'), { target: { value: 'k'.repeat(43) } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/secrets/anthropic', body: { value: SECRET } });
-    expect(sent[0]!.headers[STEP_UP_HEADER]).toBe('k'.repeat(43));
-    await waitFor(() => expect(screen.queryByLabelText('Step-up key')).toBeNull());
+    await waitFor(() => expect(screen.queryByLabelText('Credential value')).toBeNull());
     expect(document.body.textContent).not.toContain(SECRET);
     expect(document.body.innerHTML).not.toContain(SECRET);
     for (const el of document.querySelectorAll('input, textarea')) expect((el as HTMLInputElement).value).not.toBe(SECRET);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0]!);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]).toMatchObject({ method: 'DELETE', path: '/api/secrets/anthropic' });
   });
 
   it('saves a numeric select as a number, and lands on the tab a link names', async () => {
