@@ -424,9 +424,9 @@ const V5_STATEMENTS: readonly string[] = [
  * makes them bounded by the number of settings rather than by time. No project
  * deletion exists, so no orphan accumulates behind a removed Project either.
  *
- * `step_up_authorities` is the exception and is the only one swept: it grows once
- * per mint and a spent authority resolves nothing afterwards. The operation it
- * authorised keeps its own record on the row it changed.
+ * `step_up_authorities` grew once per mint and its spend path swept finished
+ * rows; dormant as of 2026-08-30 (#1036), nothing writes or reads it. The
+ * operation an old row authorised keeps its own record on the row it changed.
  */
 const V6_STATEMENTS: readonly string[] = [
   /**

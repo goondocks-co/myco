@@ -39,8 +39,7 @@ const malformed = (leaf: string, reason: string): Response =>
   Response.json({ applied: false, reason: 'malformed', leaf, detail: reason }, { status: 400 });
 
 /** The writer for this request. Membership is the whole authorization: the write path still validates, persists, and records the actor in one order. */
-function writerFor(env: ServerEnv, ctx: OwnerContext) {
-  void ctx;
+function writerFor(env: ServerEnv) {
   return settingsWriter(env.db);
 }
 
@@ -74,7 +73,7 @@ export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promi
   const body = await readJsonObject(ctx.request);
   if (body === null || !('value' in body)) return malformed(ctx.params.leaf, 'body must be a JSON object carrying a value');
 
-  const result = await writerFor(env, ctx).setLeaf(ctx.params.leaf, body.value, ctx.member.id, ctx.now);
+  const result = await writerFor(env).setLeaf(ctx.params.leaf, body.value, ctx.member.id, ctx.now);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
 }
 
@@ -92,7 +91,7 @@ export async function handleSetProjectCapability(env: ServerEnv, ctx: OwnerConte
   const body = await readJsonObject(ctx.request);
   if (body === null || typeof body.enabled !== 'boolean') return malformed(`project.${ctx.params.capability}`, 'body must carry a boolean `enabled`');
 
-  const result = await writerFor(env, ctx)
+  const result = await writerFor(env)
     .setCapability(ctx.params.projectId, ctx.params.capability, body.enabled, ctx.member.id, ctx.now);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
 }

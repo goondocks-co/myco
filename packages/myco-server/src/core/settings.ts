@@ -105,10 +105,10 @@ export type SettingsResult = { applied: true } | { applied: false; refusal: Sett
 /**
  * Whether a member may make this particular change.
  *
- * Membership is flat, so ordinary settings need no decision at all and this
- * answers true. It exists as a seam: a future guard on a sensitive change plugs
- * a provider credential or the endpoint it is sent to — so that when #915 L3
- * lands, the check has one place to be rather than a new branch at each caller.
+ * Membership is flat, so every change is admitted and the default answers true.
+ * The seam stays: a future guard on a sensitive change — re-authentication of
+ * the signed-in member, never a second secret — plugs in here, one place rather
+ * than a new branch at each caller.
  */
 export type SettingsAuthorizer = (change: { leaf: string; value?: unknown; actor: string }) => Promise<boolean>;
 

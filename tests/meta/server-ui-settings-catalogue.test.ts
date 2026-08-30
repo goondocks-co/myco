@@ -11,12 +11,13 @@ import { DEPLOYMENT_LEAVES } from '@myco-server-worker/core/settings.js';
 import { LEAF_FIELDS, LEAF_GROUPS } from '../../packages/myco-server/ui/src/settings/catalogue.js';
 
 function walkSources(root: string): string[] {
+  if (statSync(root).isFile()) return [root];
   const out: string[] = [];
   for (const name of readdirSync(root)) {
     if (name === 'node_modules' || name === 'dist') continue;
     const path = join(root, name);
     if (statSync(path).isDirectory()) out.push(...walkSources(path));
-    else if (/\.(ts|tsx|css|html)$/.test(name)) out.push(path);
+    else if (/\.(ts|tsx|css|html|md)$/.test(name)) out.push(path);
   }
   return out;
 }
@@ -33,12 +34,13 @@ describe('settings catalogue', () => {
     // back through a note, a refusal string, or a helper. The schema alone keeps
     // the dormant table's chain history.
     const offenders: string[] = [];
-    for (const root of ['packages/myco-server/src', 'packages/myco-server/ui/src', 'packages/myco-server/scripts']) {
+    for (const root of ['packages/myco-server/src', 'packages/myco-server/ui/src', 'packages/myco-server/scripts', 'packages/myco-server/BREAK-GLASS.md', 'packages/myco-server/README.md', 'packages/myco-server/smoke.md']) {
       for (const file of walkSources(root)) {
         if (/step[ -_]?up/i.test(readFileSync(file, 'utf8').replace(/step_up_authorities/g, ''))) offenders.push(file);
       }
     }
-    expect(offenders).toEqual(['packages/myco-server/src/db/schema.ts']);
+    // The retirement note and the dormant table's chain history may say the name; nothing else may.
+    expect(offenders.sort()).toEqual(['packages/myco-server/BREAK-GLASS.md', 'packages/myco-server/src/db/schema.ts']);
   });
 
   it('gives every select its options and every group a note', () => {

@@ -233,27 +233,3 @@ and the owner API's activity read resolves a token id through this table.
 # A note on the retired step-up key
 
 Earlier builds guarded provider settings and credentials with a separate operator-minted key. That mechanism left the product on 2026-08-30 (#1036): a signed-in member changes provider settings and stores credentials directly, and the `step_up_authorities` table sits dormant in existing databases. Nothing here needs minting anymore.
-
-# Render the insert for a provider-credential change, valid ten minutes. Prints the digest, never the key.
-bun scripts/mint-step-up.ts provider_credential 10
-
-# Print the key to stderr as well, once.
-bun scripts/mint-step-up.ts provider_credential 10 --print-key
-```
-
-Apply it on the hosted target:
-
-```bash
-npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command "$(bun scripts/mint-step-up.ts provider_credential 10 --print-key)"
-# The key lands on your terminal from stderr; the command substitution carries only the SQL.
-```
-
-Self-hosted, apply the same statement against the SQLite file on the mounted volume. Then paste the key into the dashboard's step-up prompt.
-
-Revoke an unused key you no longer want outstanding:
-
-```sql
-UPDATE step_up_authorities SET revoked_at = <now_ms> WHERE id = '<ID>' AND revoked_at IS NULL AND used_at IS NULL;
-```
-
-Mint one per change and let it expire — do not keep a standing key.
