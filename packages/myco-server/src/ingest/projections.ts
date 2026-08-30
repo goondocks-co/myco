@@ -127,9 +127,22 @@ export function sharedChecks(spec: KindSpec, ctx: WriteContext, e: CaptureEnvelo
 
 const rawOnly = (): KindPlan => ({ identities: [], admission: [], projections: [], reads: [], refusal: () => NOT_STORED });
 
-/** Session facts come from the earliest `session.start` in the total order (client time, then the smaller event id), so any delivery order converges — ties included: an event that ranks earlier than the one whose facts are held replaces every fact, an absent one included; a later one changes nothing. `started_at` is the minimum and `ended_at` the maximum of the events that carry them; identity columns (`machine_id`, `created_by_token_id`, `first_received_at`) stay with the first writer. */
+/** The last segment of a path, split on either separator; null when the path names nothing a person would call a project (`''`, `.`, `..`, the home shorthand `~`). */
+export function basenameOf(path: unknown): string | null {
+  if (typeof path !== 'string') return null;
+  const segments = path.split(/[\\/]+/).map((s) => s.trim()).filter((s) => s !== '');
+  const last = segments.length === 0 ? '' : segments[segments.length - 1];
+  return last === '' || last === '.' || last === '..' || last === '~' ? null : last;
+}
+
+/** Session facts come from the earliest `session.start` in the total order (client time, then the smaller event id), so any delivery order converges — ties included: an event that ranks earlier than the one whose facts are held replaces every fact, an absent one included; a later one changes nothing. `started_at` is the minimum and `ended_at` the maximum of the events that carry them; identity columns (`machine_id`, `created_by_token_id`, `first_received_at`) stay with the first writer. A Project still named by its own id takes the basename of the first start that carries a usable origin path; a renamed or onboarded Project keeps its name. */
 const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
   const startedAt = orderingTime(spec, p, 'startedAt', e.createdAt);
+  const projectName = basenameOf(p.originPath);
+  const nameProject = projectName === null ? [] : [
+    db.prepare(`UPDATE projects SET name = ? WHERE project_id = ? AND name = project_id AND ${RAW_ROW_GATE}`)
+      .bind(projectName, ctx.projectId, ...rawGateParams(ctx, e)),
+  ];
   const earlier = 'started_at IS NULL OR ? < started_at OR (? = started_at AND (facts_event_id IS NULL OR ? < facts_event_id))';
   const rank = [startedAt, startedAt, e.eventId];
   /** A fact is the earliest event's, whether it carries the field or not; a later event leaves it alone. */
@@ -155,6 +168,7 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
               ...rank, e.eventId,
               ...rank, startedAt,
               ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
+      ...nameProject,
     ],
     reads: [],
     refusal: () => NOT_STORED,

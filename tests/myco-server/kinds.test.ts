@@ -3,7 +3,7 @@ import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { KINDS, kindSpec, parsePayload, blobFields, promptReferenceFields, orderingFields, idFields, PROMPT_ORIGINS, PLAN_STATUSES, MAX_ARRAY_ITEMS, MAX_TIME_MS, PROMPT_REFERENCE_COLUMNS, type Bound } from '@myco-server-worker/ingest/kinds.js';
-import { planKind, RAW_ROW_GATE, type WriteContext } from '@myco-server-worker/ingest/projections.js';
+import { basenameOf, planKind, RAW_ROW_GATE, type WriteContext } from '@myco-server-worker/ingest/projections.js';
 import { MAX_PAYLOAD_BYTES, PAYLOAD_CAP_REASON } from '@myco-server-worker/ingest/envelope.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, MEMBER_TOKEN_BYTE_QUOTA } from '@myco-server-worker/constants.js';
@@ -65,7 +65,7 @@ async function upload(env: ReturnType<typeof sqliteEnv>, token: string, bytes: U
 }
 
 /** Exact projection-statement totals, pinned per payload shape: a projection that vanishes fails the gate. */
-const FULL_PROJECTION_STATEMENTS = 13;
+const FULL_PROJECTION_STATEMENTS = 14;
 const REQUIRED_ONLY_PROJECTION_STATEMENTS = 12;
 /** Every field carrying the prompt-reference marker across the catalogue. */
 const PROMPT_REFERENCE_MARKERS = 8;
@@ -76,7 +76,7 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 44;
+const PLANNED_STATEMENTS = 45;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
 const ID_ROLES = { key: 7, prompt: 8, group: 1 };
@@ -592,6 +592,36 @@ describe('kind catalogue', () => {
     expect(observed).toEqual(foreign.map(([kind]) => ({ kind, res: kind === 'plan' ? { persisted: false, code: 'blob_absent', reason: `blob not present: ${absent}` } : { persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' } })));
     const ownAbsent = await json(await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(n++), kind: 'plan', payload: { planKey: uuid(905), blob: absent } })), e.env));
     expect(ownAbsent).toEqual({ persisted: false, code: 'blob_absent', reason: `blob not present: ${absent}` });
+  });
+
+  it('names a capture-created Project after the first start that carries a usable origin path, and leaves a renamed or onboarded Project alone', async () => {
+    const e = sqliteEnv();
+    const t = await member(e);
+    const nameOf = (id: string) => (e.sqlite.query(`SELECT name FROM projects WHERE project_id = ?`).get(id) as { name: string } | null)?.name;
+    const start = async (project: string, session: string, n: number, payload: Record<string, unknown>) =>
+      (await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(n), sessionId: session, kind: 'session.start', createdAt: n, payload }), '/events', { [PROJECT_HEADER]: project }), e.env))).persisted;
+
+    expect(await start('proj_fresh', 'sess_a', 3000, { agent: 'a', startedAt: 100, originPath: '~/Repos/myco' })).toBe(true);
+    expect(nameOf('proj_fresh')).toBe('myco');
+    expect(await start('proj_fresh', 'sess_b', 3001, { agent: 'a', startedAt: 50, originPath: '/elsewhere/other' })).toBe(true);
+    expect(nameOf('proj_fresh')).toBe('myco');
+
+    expect(await start('proj_pathless', 'sess_c', 3002, { agent: 'a', startedAt: 100 })).toBe(true);
+    expect(nameOf('proj_pathless')).toBe('proj_pathless');
+    expect(await start('proj_pathless', 'sess_d', 3003, { agent: 'a', startedAt: 200, originPath: 'C:\\Users\\me\\work\\tool\\' })).toBe(true);
+    expect(nameOf('proj_pathless')).toBe('tool');
+
+    for (const [project, originPath] of [['proj_home', '~'], ['proj_dot', '.'], ['proj_root', '/'], ['proj_blank', '   ']] as const) {
+      expect(await start(project, `sess_${project}`, 3004 + originPath.length, { agent: 'a', startedAt: 100, originPath })).toBe(true);
+      expect(nameOf(project)).toBe(project);
+    }
+
+    e.sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_named', 'Chosen by hand', 0)`);
+    expect(await start('proj_named', 'sess_e', 3100, { agent: 'a', startedAt: 100, originPath: '/repo/ignored' })).toBe(true);
+    expect(nameOf('proj_named')).toBe('Chosen by hand');
+
+    expect([basenameOf('/a/b/c'), basenameOf('a\\b\\c '), basenameOf('~/x/'), basenameOf('~'), basenameOf('..'), basenameOf(''), basenameOf(undefined), basenameOf(7)])
+      .toEqual(['c', 'c', 'x', null, null, null, null, null]);
   });
 
   it('settles a tie on client time by the smaller event id, for session facts, prompts, and plans alike', async () => {
