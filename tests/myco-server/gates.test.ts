@@ -122,10 +122,10 @@ const normalize = (source: string) => stripComments(source).replace(/\s+/g, ' ')
 
 const CANONICAL_ENTRY = `
 import { createServer } from '../pipeline.js';
-import { cloudflareSourceOf, serverEnvFromBindings, type CloudflareBindings } from '../platform/cloudflare/env.js';
+import { cloudflareSourceOf, serverEnvFromBindings, type CloudflareBindings, type DeferredWork } from '../platform/cloudflare/env.js';
 const server = createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf, fetchImpl: (input, init) => fetch(input, init) });
-export async function handleRequest(request: Request, bindings: CloudflareBindings): Promise<Response> {
-  return server.handleRequest(request, serverEnvFromBindings(bindings));
+export async function handleRequest(request: Request, bindings: CloudflareBindings, deferred?: DeferredWork): Promise<Response> {
+  return server.handleRequest(request, serverEnvFromBindings(bindings, deferred));
 }
 export default { fetch: handleRequest };
 `;
