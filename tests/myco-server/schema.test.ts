@@ -42,7 +42,7 @@ describe('server schema', () => {
     const events = columns(sqlite, 'events').map((c) => c.name);
     expect(events).toEqual(expect.arrayContaining(['producer_adapter', 'producer_version', 'blob_key', 'payload_bytes']));
     const sessions = columns(sqlite, 'sessions').map((c) => c.name);
-    expect(sessions).toEqual(['project_id', 'session_id', 'machine_id', 'created_by_token_id', 'first_received_at', 'last_received_at', 'agent', 'branch', 'started_at', 'ended_at', 'origin_path', 'parent_session_id', 'parent_reason', 'facts_event_id']);
+    expect(sessions).toEqual(['project_id', 'session_id', 'machine_id', 'created_by_token_id', 'first_received_at', 'last_received_at', 'agent', 'branch', 'started_at', 'ended_at', 'origin_path', 'parent_session_id', 'parent_reason', 'facts_event_id', 'title', 'summary', 'titled_at']);
     expect(sessions.some((c) => /count|canopy|transport|injection/.test(c))).toBe(false);
   });
 

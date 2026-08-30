@@ -15,15 +15,17 @@ const EMPTY_ACTIVITY = { items: [], stats: { sessions: 0, openSessions: 0, sessi
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
 
-function server(routes: Record<string, (init?: RequestInit) => Response>): { posts: string[] } {
+function server(routes: Record<string, (init?: RequestInit) => Response>): { posts: string[]; patches: Array<{ path: string; body: unknown }> } {
   const posts: string[] = [];
+  const patches: Array<{ path: string; body: unknown }> = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const pathname = new URL(href, 'https://s').pathname;
     if (init?.method === 'POST') posts.push(pathname);
+    if (init?.method === 'PATCH') patches.push({ path: pathname, body: JSON.parse(String(init.body)) });
     return routes[pathname]?.(init) ?? new Response(null, { status: 404 });
   }) as typeof fetch;
-  return { posts };
+  return { posts, patches };
 }
 
 const base = (projects: unknown[], extra: Record<string, (init?: RequestInit) => Response> = {}) => ({
@@ -92,5 +94,23 @@ describe('an archived project\'s home and navigation', () => {
     const select = screen.getByRole('combobox', { name: 'Project' }) as HTMLSelectElement;
     expect([...select.options].map((o) => o.value)).toEqual(['', 'live']);
     expect(screen.queryByTestId('archived-banner')).toBeNull();
+  });
+
+  it('renames a project from its card, sending the typed name, and shows the new name once the list refreshes', async () => {
+    let name = 'Live';
+    const { patches } = server(base([], {
+      '/api/projects': () => Response.json({ projects: [{ ...LIVE, name }] }),
+      '/api/projects/live': (init) => { name = (JSON.parse(String(init?.body)) as { name: string }).name; return Response.json({ projectId: 'live', name }); },
+    }));
+    mount('/projects');
+    fireEvent.click(await screen.findByRole('button', { name: 'Rename' }));
+    const dialog = screen.getByRole('dialog');
+    const input = within(dialog).getByLabelText('Name') as HTMLInputElement;
+    expect(input.value).toBe('Live');
+    fireEvent.change(input, { target: { value: '  Myco  ' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
+    expect(await screen.findByText('Myco')).toBeTruthy();
+    expect(patches).toEqual([{ path: '/api/projects/live', body: { name: 'Myco' } }]);
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

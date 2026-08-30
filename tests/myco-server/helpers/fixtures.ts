@@ -121,6 +121,7 @@ export function sqliteEnv(opts: { staleBytesWritten?: number; onSql?: (sql: stri
   // these tests a check of the shared core rather than of D1. The both-targets proof
   // lives in `tests/myco-server/contract/`.
   const e = { MYCO_DB: db, BUCKET: bucket, SOURCE_LIMIT: source, TOKEN_LIMIT: token } as any;
+  const deferred = recordingDeferred();
   // `env` is what the deployed Cloudflare entry receives; `serverEnv` is the same
   // deployment mapped into the vocabulary the core speaks, for tests that drive the
   // core handler directly rather than through an entry point. It re-maps on every
@@ -128,8 +129,18 @@ export function sqliteEnv(opts: { staleBytesWritten?: number; onSql?: (sql: stri
   // binding to inject a storage failure is reflected, as it would be in production.
   return {
     env: e,
-    get serverEnv() { return serverEnvFromBindings(e); },
-    db, sqlite, bucket, sourceKeys: source.keys, tokenKeys: token.keys, executed,
+    get serverEnv() { return serverEnvFromBindings(e, deferred); },
+    db, sqlite, bucket, sourceKeys: source.keys, tokenKeys: token.keys, executed, deferred,
+  };
+}
+
+/** Records every piece of work handed to the deferral and settles it on request, so a test observes what a request scheduled past its answer. */
+export function recordingDeferred() {
+  const pending: Promise<unknown>[] = [];
+  return {
+    waitUntil: (promise: Promise<unknown>) => { pending.push(promise); },
+    pending,
+    settle: async () => { await Promise.allSettled(pending); },
   };
 }
 

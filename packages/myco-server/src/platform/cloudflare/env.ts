@@ -79,8 +79,18 @@ export function cloudflarePlatform(bindings: CloudflareBindings): PlatformDescri
  * surface needs reach the core, so a binding added to this deployment for any
  * other purpose never lands on the object every handler receives.
  */
-export function serverEnvFromBindings(bindings: CloudflareBindings): ServerEnv {
+/** What the runtime hands a request for work that outlives its answer. */
+export interface DeferredWork {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
+export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: DeferredWork): ServerEnv {
   return {
+    // The runtime hands every request a deferral, and the work rides it past the
+    // answer. A caller that supplies none has asked for the answer alone: nothing
+    // starts, so no work of one request can outlive it unobserved.
+    afterResponse: deferred === undefined ? () => {} : (work) => deferred.waitUntil(work()),
+    outbound: (input, init) => fetch(input, init),
     platform: cloudflarePlatform(bindings),
     db: bindings.MYCO_DB,
     blobs: bindings.BUCKET,

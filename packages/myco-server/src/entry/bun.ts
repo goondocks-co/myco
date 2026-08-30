@@ -67,7 +67,8 @@ export interface BunHandler {
   fetch(request: Request): Promise<Response>;
   /** Binds the listening server, which is what can report a socket address. */
   bind(server: AddressableServer): void;
-  close(): void;
+  /** Waits for work deferred past an answer, then closes the store. */
+  close(): Promise<void>;
 }
 
 /** The request handler for a self-hosted deployment, without binding a socket, so a test drives it exactly as the hosted entry point is driven. */
@@ -88,7 +89,7 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
   return {
     fetch: options.uiDir === undefined ? core : withStaticAssets(options.uiDir, core),
     bind: (listening: AddressableServer) => { bound = listening; },
-    close: () => { sqlite.close(); },
+    close: async () => { await env.settle(); sqlite.close(); },
   };
 }
 
@@ -145,7 +146,7 @@ export async function serve(options: BunServerOptions): Promise<{ port: number; 
     }
   } catch (err) {
     for (const server of servers) server.stop();
-    handler.close();
+    await handler.close();
     throw err;
   }
 
@@ -162,7 +163,7 @@ export async function serve(options: BunServerOptions): Promise<{ port: number; 
      */
     stop: async () => {
       await Promise.all(servers.map((server) => server.stop()));
-      handler.close();
+      await handler.close();
     },
   };
 }

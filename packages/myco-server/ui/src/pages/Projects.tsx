@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { PageContainer } from '../components/ui/page-container';
 import { PageHeader } from '../components/ui/page-header';
 import { Panel } from '../components/ui/panel';
@@ -17,6 +18,7 @@ export function Projects() {
   const actions = useProjectActions();
   const [showArchived, setShowArchived] = useState(false);
   const [archiving, setArchiving] = useState<ProjectSummary | null>(null);
+  const [renaming, setRenaming] = useState<ProjectSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const all = projects.data?.projects ?? [];
   const live = all.filter((p) => !isArchived(p));
@@ -44,7 +46,16 @@ export function Projects() {
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Projects">
           {live.map((p) => (
-            <ProjectCard key={p.projectId} project={p} action={<button type="button" className={button} onClick={() => { setError(null); setArchiving(p); }}>Archive</button>} />
+            <ProjectCard
+              key={p.projectId}
+              project={p}
+              action={(
+                <span className="flex gap-2">
+                  <button type="button" className={button} onClick={() => { setError(null); setRenaming(p); }}>Rename</button>
+                  <button type="button" className={button} onClick={() => { setError(null); setArchiving(p); }}>Archive</button>
+                </span>
+              )}
+            />
           ))}
         </ul>
       )}
@@ -63,6 +74,13 @@ export function Projects() {
           </ul>
         </section>
       )}
+      <RenameDialog
+        project={renaming}
+        isPending={actions.rename.isPending}
+        errorMessage={actions.rename.error ? refusalText(actions.rename.error) : null}
+        onClose={() => { setRenaming(null); actions.rename.reset(); }}
+        onRename={(name) => { if (renaming) actions.rename.mutate({ projectId: renaming.projectId, name }, { onSuccess: () => setRenaming(null) }); }}
+      />
       <ConfirmDialog
         open={archiving !== null}
         onOpenChange={(open) => { if (!open) { setArchiving(null); actions.archive.reset(); } }}
@@ -75,6 +93,43 @@ export function Projects() {
         onConfirm={() => { if (archiving) actions.archive.mutate(archiving.projectId, { onSuccess: () => setArchiving(null) }); }}
       />
     </PageContainer>
+  );
+}
+
+/** One input and one action: the name a project shows everywhere it is listed. */
+function RenameDialog({ project, isPending, errorMessage, onClose, onRename }: { project: ProjectSummary | null; isPending: boolean; errorMessage: string | null; onClose: () => void; onRename: (name: string) => void }) {
+  const [name, setName] = useState('');
+  const [openedFor, setOpenedFor] = useState<string | null>(null);
+  if (project !== null && openedFor !== project.projectId) { setOpenedFor(project.projectId); setName(project.name); }
+  if (project === null && openedFor !== null) setOpenedFor(null);
+  const trimmed = name.trim();
+  return (
+    <Dialog open={project !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-md border border-outline-variant/20">
+        <form onSubmit={(e) => { e.preventDefault(); if (trimmed !== '' && !isPending) onRename(trimmed); }}>
+          <DialogHeader>
+            <DialogTitle>Rename {project?.name ?? ''}</DialogTitle>
+            <DialogDescription>The new name shows everywhere this project is listed. Its id stays the same.</DialogDescription>
+          </DialogHeader>
+          <label className="mt-4 block font-sans text-xs text-on-surface-variant" htmlFor="project-rename">
+            Name
+            <input
+              id="project-rename"
+              className="mt-1 w-full rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1.5 font-sans text-sm text-on-surface"
+              value={name}
+              maxLength={200}
+              autoFocus
+              onChange={(e) => setName(e.target.value)}
+            />
+          </label>
+          {errorMessage !== null && <p className="mt-2 font-sans text-xs text-tertiary">{errorMessage}</p>}
+          <DialogFooter className="mt-4">
+            <button type="button" className={button} onClick={onClose}>Cancel</button>
+            <button type="submit" className={button} disabled={trimmed === '' || isPending}>Rename</button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
