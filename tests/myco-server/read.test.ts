@@ -34,7 +34,7 @@ describe('read/sessions', () => {
     seedSessions(sqlite);
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1','s4','m1','tok_1',4,40)`);
     sqlite.run(`UPDATE sessions SET title = 'Wave-based executor', summary = 'Built it.', titled_at = 50 WHERE session_id = 's3'`);
-    const long = `${'word '.repeat(30).trim()}\nsecond line`;
+    const long = `${'abcde '.repeat(30).trim()}\nsecond line`;
     sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
                 VALUES ('proj_1','s1','p2','e2','later prompt','user','h2',20,20,'t1',20),
                        ('proj_1','s1','p1','e1',?,'user','h1',10,10,'t1',10),
@@ -48,7 +48,7 @@ describe('read/sessions', () => {
     expect(byId.s3.titledAt).toBe(50);
     expect(byId.s1.label.endsWith('…')).toBe(true);
     expect(byId.s1.label.length).toBeLessThanOrEqual(LABEL_MAX_CHARS + 1);
-    expect(byId.s1.label).toBe(`${'word '.repeat(16).trim()}…`);
+    expect(byId.s1.label).toBe(`${'abcde '.repeat(13).trim()}…`);
     expect(byId.s2.label).toBe('claude-code');
     expect(byId.s4.label).toBe('s4');
     expect((await getSession(db, { projectId: 'proj_1' }, 's1'))?.label).toBe(byId.s1.label);

@@ -205,7 +205,9 @@ describe('titleSession', () => {
     expect(await h.title('s3')).toBe('unreachable');
     expect(await h.title('s4')).toBe('malformed');
     for (const id of ['s1', 's2', 's3', 's4']) expect(h.row(id)).toEqual({ title: null, summary: null, titled_at: NOW });
-    expect(logged.filter((l) => l.includes('session_title_failed'))).toHaveLength(4);
+    const broken = { ...h.env, db: { prepare: () => { throw new Error('store detached'); } } as never };
+    expect(await titleSession(broken, { projectId: 'proj_1', sessionId: 's1', now: NOW })).toBe('unreachable');
+    expect(logged.filter((l) => l.includes('session_title_failed'))).toHaveLength(5);
     expect(logged.some((l) => l.includes('"status":429'))).toBe(true);
     expect(logged.join('\n')).not.toContain('nope');
     expect(logged.join('\n')).not.toContain('<html>');
@@ -214,15 +216,20 @@ describe('titleSession', () => {
   it('bounds the material by prompt count and by characters, and reads only inline user prompts with their first inline response', async () => {
     const h = harness();
     h.session('s1');
-    for (let i = 0; i < MAX_MATERIAL_PROMPTS + 3; i += 1) h.prompt('s1', `p${String(i).padStart(2, '0')}`, `prompt ${i} ${'x'.repeat(MATERIAL_EXCERPT_CHARS + 50)}`, NOW - 20_000 + i);
+    for (let i = 0; i < MAX_MATERIAL_PROMPTS + 3; i += 1) {
+      h.prompt('s1', `p${String(i).padStart(2, '0')}`, `prompt ${i} ${'x'.repeat(MATERIAL_EXCERPT_CHARS + 50)}`, NOW - 20_000 + i);
+      if (i > 1) h.response('s1', `p${String(i).padStart(2, '0')}`, `r${i}`, `response ${i} ${'y'.repeat(MATERIAL_EXCERPT_CHARS + 50)}`, NOW - 20_000 + i);
+    }
     h.response('s1', 'p00', 'r_late', 'later response', NOW - 19_000);
     h.response('s1', 'p00', 'r_first', 'first response', NOW - 19_500);
     h.response('s1', 'p01', 'r_spilled', null, NOW - 19_000);
     const material = await sessionMaterial(h.env.db, 'proj_1', 's1');
     expect(material.length).toBeLessThanOrEqual(MAX_MATERIAL_PROMPTS);
+    expect(material.length).toBeGreaterThan(2);
     expect(material[0].prompt.length).toBe(MATERIAL_EXCERPT_CHARS);
     expect(material[0].response).toBe('first response');
     expect(material[1].response).toBeNull();
+    expect(material[2].response?.length).toBe(MATERIAL_EXCERPT_CHARS);
     expect(material.reduce((n, m) => n + m.prompt.length + (m.response?.length ?? 0), 0)).toBeLessThanOrEqual(MAX_MATERIAL_CHARS);
     expect(titlingPrompt({ agent: null, branch: null }, material)).toContain('agent unknown; branch unknown');
   });
