@@ -54,6 +54,9 @@ describe('read/sessions', () => {
     expect((await getSession(db, { projectId: 'proj_1' }, 's1'))?.label).toBe(byId.s1.label);
     expect(sessionLabel(null, '  first line here  \n\nmore', null, 'x')).toBe('first line here');
     expect(sessionLabel(null, 'a'.repeat(100), null, 'x')).toBe(`${'a'.repeat(LABEL_MAX_CHARS)}…`);
+    const exact = `${'abcdefghi '.repeat(8).trim()} tail words`;
+    expect(exact.slice(0, LABEL_MAX_CHARS).length).toBe(LABEL_MAX_CHARS);
+    expect(sessionLabel(null, exact, null, 'x')).toBe(`${'abcdefghi '.repeat(8).trim()}…`);
     expect(sessionLabel('  Titled  ', 'prompt', 'agent', 'x')).toBe('Titled');
   });
 

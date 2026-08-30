@@ -23,7 +23,7 @@ export const TITLING_TASK = 'title-summary';
 export const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 export const ANTHROPIC_VERSION = '2023-06-01';
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5';
-export const ANSWER_MAX_TOKENS = 400;
+export const ANSWER_MAX_TOKENS = 4096;
 export const TITLE_MAX_CHARS = 80;
 export const SUMMARY_MAX_CHARS = 1200;
 const HOUR_MS = 60 * 60 * 1000;
@@ -38,7 +38,18 @@ const NAMED_ENDPOINT_PROVIDERS = new Set(['openai-compatible', 'ollama', 'lmstud
 
 export type TitlingOutcome =
   | 'already' | 'budget' | 'no_material' | 'no_provider' | 'no_credential' | 'local_provider' | 'no_endpoint' | 'no_model'
-  | 'malformed' | 'provider' | 'unreachable' | 'titled';
+  | 'malformed' | 'provider' | 'unreachable' | 'superseded' | 'error' | 'titled';
+
+/** The path an OpenAI-shaped endpoint serves its API under; a local backend's endpoint names the server root and gains it. */
+const OPENAI_API_PATH = '/v1';
+
+/** A local backend's endpoint with the API path in place: the operator names the server root (`http://ollama.internal:11434`), and an endpoint already carrying `/v1` is kept. */
+export function localBackendEndpoint(baseUrl: string): string {
+  let url: URL;
+  try { url = new URL(baseUrl); } catch { return baseUrl.replace(/\/+$/, ''); }
+  if (url.pathname !== OPENAI_API_PATH && !url.pathname.startsWith(`${OPENAI_API_PATH}/`)) url.pathname = `${url.pathname.replace(/\/+$/, '')}${OPENAI_API_PATH}`;
+  return url.toString().replace(/\/+$/, '');
+}
 
 export type TitlingProvider =
   | { kind: 'anthropic'; model: string; key: string }
@@ -69,7 +80,7 @@ export async function resolveTitlingProvider(db: RelationalStore, secrets: Secre
     return { ok: true, provider: { kind: 'anthropic', model: configuredModel ?? DEFAULT_ANTHROPIC_MODEL, key } };
   }
   if (configuredModel === null) return { ok: false, outcome: 'no_model' };
-  const fixed = FIXED_ENDPOINTS[type];
+  const fixed = Object.hasOwn(FIXED_ENDPOINTS, type) ? FIXED_ENDPOINTS[type] : undefined;
   if (fixed !== undefined) {
     const bearer = await secrets.get(type);
     if (bearer === null) return { ok: false, outcome: 'no_credential' };
@@ -77,7 +88,8 @@ export async function resolveTitlingProvider(db: RelationalStore, secrets: Secre
   }
   if (NAMED_ENDPOINT_PROVIDERS.has(type)) {
     if (baseUrl === null) return { ok: false, outcome: type === 'openai-compatible' ? 'no_endpoint' : 'local_provider' };
-    return { ok: true, provider: { kind: 'openai', provider: type, url: baseUrl.replace(/\/+$/, ''), model: configuredModel, bearer: null } };
+    const url = type === 'openai-compatible' ? baseUrl.replace(/\/+$/, '') : localBackendEndpoint(baseUrl);
+    return { ok: true, provider: { kind: 'openai', provider: type, url, model: configuredModel, bearer: null } };
   }
   return { ok: false, outcome: 'no_provider' };
 }
@@ -157,7 +169,8 @@ export function providerRequest(provider: TitlingProvider, prompt: string): { ur
     init: {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...(provider.bearer === null ? {} : { authorization: `Bearer ${provider.bearer}` }) },
-      body: JSON.stringify({ model: provider.model, max_tokens: ANSWER_MAX_TOKENS, messages: [{ role: 'user', content: prompt }] }),
+      // OpenAI's own endpoint takes the answer budget as `max_completion_tokens`; the compatible endpoints take `max_tokens`.
+      body: JSON.stringify({ model: provider.model, [provider.provider === 'openai' ? 'max_completion_tokens' : 'max_tokens']: ANSWER_MAX_TOKENS, messages: [{ role: 'user', content: prompt }] }),
     },
     text: (body) => {
       const content = (body as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content;
@@ -199,10 +212,10 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget): Promi
     const answer = text === null ? null : parseTitleAnswer(text);
     if (answer === null) return failed('malformed');
 
-    if (!(await writeTitle(env.db, projectId, sessionId, answer.title, answer.summary))) return skipped('already');
+    if (!(await writeTitle(env.db, projectId, sessionId, answer.title, answer.summary))) return failed('superseded');
     emit({ kind: 'session_titled', projectId, sessionId, provider: resolved.provider.kind === 'anthropic' ? 'anthropic' : resolved.provider.provider });
     return 'titled';
   } catch {
-    return failed('unreachable');
+    return failed('error');
   }
 }

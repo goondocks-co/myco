@@ -22,6 +22,8 @@ describe('the events route', () => {
     expect(e.deferred.pending).toHaveLength(1);
     expect(await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_000 } })).toEqual({ persisted: true, duplicate: true });
     expect(e.deferred.pending).toHaveLength(1);
+    expect((await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_500 } })).code).toBe('event_id_conflict');
+    expect(e.deferred.pending).toHaveLength(1);
     await e.deferred.settle();
     expect((e.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = 'sess_1'`).get() as { titled_at: number | null }).titled_at).not.toBeNull();
 

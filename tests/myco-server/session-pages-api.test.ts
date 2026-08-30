@@ -109,7 +109,8 @@ describe('the session pages', () => {
 describe('a project\'s name', () => {
   it('is renamed by the owner, archived or not, under the creation grammar, and 404 names only an absent project', async () => {
     const { get, patch, sqlite } = await harness();
-    expect(await patch('/api/projects/proj_1', { name: 'Myco' })).toEqual({ status: 200, body: { projectId: 'proj_1', name: 'Myco' } });
+    expect(await patch('/api/projects/proj_1', { name: '  Myco  ' })).toEqual({ status: 200, body: { projectId: 'proj_1', name: 'Myco' } });
+    expect((await patch('/api/projects/proj_1', { name: '   ' })).status).toBe(400);
     const listed = (await get('/api/projects')).body.projects as { projectId: string; name: string }[];
     expect(listed.find((p) => p.projectId === 'proj_1')?.name).toBe('Myco');
     sqlite.run(`UPDATE projects SET archived_at = ?, archived_by = 'mem_x' WHERE project_id = 'proj_2'`, [NOW]);

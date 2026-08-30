@@ -67,7 +67,7 @@ export const FIRST_PROMPT_CHARS = 160;
 /** The longest label the fallback rule produces. */
 export const LABEL_MAX_CHARS = 80;
 
-/** The opening of a session's first inline user prompt, for the label of a session with no title. Correlated on the alias `s`; it walks `idx_prompt_batches_session` and stops at the first row, and a spilled prompt (no inline text) is skipped. */
+/** The opening of a session's first inline user prompt, for the label of a session with no title. Correlated on the alias `s`; `idx_prompt_batches_first` serves the whole order, so it stops at the first row, and a spilled prompt (no inline text) is skipped. */
 export const FIRST_PROMPT_SQL = `(SELECT substr(pb.text, 1, ${FIRST_PROMPT_CHARS}) FROM prompt_batches pb
        WHERE pb.project_id = s.project_id AND pb.session_id = s.session_id AND pb.origin = 'user' AND pb.text IS NOT NULL
        ORDER BY pb.created_at, pb.prompt_id LIMIT 1)`;
@@ -79,8 +79,8 @@ export function sessionLabel(title: string | null, firstPrompt: string | null, a
   if (line !== '') {
     if (line.length <= LABEL_MAX_CHARS) return line;
     const cut = line.slice(0, LABEL_MAX_CHARS);
-    const space = cut.lastIndexOf(' ');
-    return `${(space > LABEL_MAX_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+    const boundary = line[LABEL_MAX_CHARS] === ' ' ? LABEL_MAX_CHARS : cut.lastIndexOf(' ');
+    return `${(boundary > LABEL_MAX_CHARS / 2 ? cut.slice(0, boundary) : cut).trimEnd()}…`;
   }
   if (agent !== null && agent.trim() !== '') return agent.trim();
   return sessionId.slice(0, 8);

@@ -8,4 +8,6 @@ ALTER TABLE sessions ADD COLUMN titled_at INTEGER;
 
 CREATE INDEX IF NOT EXISTS idx_sessions_titled ON sessions (project_id, titled_at);
 
+CREATE INDEX IF NOT EXISTS idx_prompt_batches_first ON prompt_batches (project_id, session_id, created_at, prompt_id);
+
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '12');

@@ -58,6 +58,8 @@ interface Target {
   env: ServerEnv;
   fetch(request: Request): Promise<Response>;
   token(): Promise<string>;
+  /** Resolves once every piece of work a request deferred past its answer has settled. */
+  settle(): Promise<void>;
 }
 
 /**
@@ -65,26 +67,29 @@ interface Target {
  * recognisers a deployed Worker gets — over a relational store and limiter that
  * stand in for the hosted ones, which cannot run in this process.
  */
-function cloudflareTarget(): Target {
+function cloudflareTarget(outbound?: typeof fetch): Target {
   const e = sqliteEnv();
-  const env = serverEnvFromBindings(e.env as never);
+  const env: ServerEnv = { ...serverEnvFromBindings(e.env as never, e.deferred), ...(outbound === undefined ? {} : { outbound }) };
   const server = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: fetch });
   return {
     name: 'cloudflare',
     env,
     fetch: (request) => server.handleRequest(request, env),
     token: async () => (await issueMemberToken(env.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now())).token,
+    settle: e.deferred.settle,
   };
 }
 
 /** Target C: the self-hosted adapter set entire, over a real SQLite file and a real blob directory. */
-function selfHostedTarget(): Target {
+function selfHostedTarget(outbound?: typeof fetch): Target {
   const { sqlite, blobDir } = seededFile();
-  const env = serverEnvFromBunConfig({ sqlite, blobDir });
+  const base = serverEnvFromBunConfig({ sqlite, blobDir });
+  const env: ServerEnv = { ...base, ...(outbound === undefined ? {} : { outbound }) };
   const server = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: fetch });
   return {
     name: 'self-hosted',
     env,
+    settle: base.settle,
     fetch: (request) => server.handleRequest(request, env),
     token: async () => (await issueMemberToken(env.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now())).token,
   };
@@ -339,44 +344,55 @@ describe('agent runs read the same on both stores', () => {
 });
 
 describe('archival refuses capture the same on both stores', () => {
-  it('titles an ended session once through the configured endpoint, labels it before that from its first prompt, and renames its project, identically on each target', async () => {
+  it('titles an ended session through the route on each target — once, through the configured endpoint, without a credential — labels it before that from its first prompt, and renames its project', async () => {
     const outcomes: unknown[] = [];
-    for (const t of TARGETS) {
-      const token = await t.token();
+    for (const make of [cloudflareTarget, selfHostedTarget]) {
       const sent: string[] = [];
       const answer = { title: 'Retry added to the runner', summary: 'Added a retry to runner.ts and covered it with a test.' };
       const outbound = (async (input: string | URL | Request, init?: RequestInit) => {
         sent.push(`${String(input)} ${(init?.headers as Record<string, string> | undefined)?.authorization ?? 'no-credential'}`);
         return Response.json({ choices: [{ message: { content: JSON.stringify(answer) } }] });
       }) as unknown as typeof fetch;
-      const env = { ...t.env, outbound };
+      const t = make(outbound);
+      const token = await t.token();
       const post = async (over: Record<string, unknown>) => json(await t.fetch(memberPost(token, envelope(over))));
       const scope = { projectId: 'proj_1' };
+      const row = async (id: string) => (await listSessions(t.env.db, scope, { sessionId: id })).rows[0];
+      const settings = async (rows: Array<[string, string]>) => {
+        await t.env.db.prepare(`DELETE FROM deployment_settings`).run();
+        for (const [leaf, value] of rows) await t.env.db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'mem_1')`).bind(leaf, JSON.stringify(value)).run();
+      };
+      await settings([['agent.provider.type', 'openai-compatible'], ['agent.provider.model', 'local-model'], ['agent.provider.base_url', 'http://titles.internal/v1']]);
 
       expect((await post({ eventId: uuid(300), sessionId: 'sess_t', kind: 'session.start', payload: { agent: 'claude-code', branch: 'main', startedAt: 1_000 } })).persisted).toBe(true);
       expect((await post({ eventId: uuid(301), sessionId: 'sess_t', payload: { promptId: uuid(310), text: 'Add a retry to the runner\nplease', origin: 'user' } })).persisted).toBe(true);
-      const beforeEnd = await titleSession(env, { projectId: 'proj_1', sessionId: 'sess_t', now: 5_000 });
-      const labelBefore = (await listSessions(env.db, scope, { sessionId: 'sess_t' })).rows[0]?.label;
+      const labelBefore = (await row('sess_t'))?.label;
+      const beforeEnd = await titleSession(t.env, { projectId: 'proj_1', sessionId: 'sess_t', now: 5_000 });
       expect(await post({ eventId: uuid(302), sessionId: 'sess_t', kind: 'session.end', createdAt: 6_000, payload: { endedAt: 6_000 } })).toEqual({ persisted: true, projected: true });
-      // Each target runs the route's deferred titling by its own mechanism; the contract below drives the titler directly on a reset claim.
-      await env.db.prepare(`UPDATE sessions SET titled_at = NULL WHERE session_id = 'sess_t'`).run();
-      const noProvider = await titleSession(env, { projectId: 'proj_1', sessionId: 'sess_t', now: 7_000 });
+      await t.settle();
+      const titled = await row('sess_t');
+      expect(await post({ eventId: uuid(303), sessionId: 'sess_t', kind: 'session.end', createdAt: 7_000, payload: { endedAt: 7_000 } })).toEqual({ persisted: true, projected: true });
+      await t.settle();
+      const sentAfterSecondEnd = sent.length;
 
-      await env.db.prepare(`UPDATE sessions SET titled_at = NULL WHERE session_id = 'sess_t'`).run();
-      for (const [leaf, value] of [['agent.provider.type', 'openai-compatible'], ['agent.provider.model', 'local-model'], ['agent.provider.base_url', 'http://titles.internal/v1']]) {
-        await env.db.prepare(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'mem_1')`).bind(leaf, JSON.stringify(value)).run();
-      }
-      const titled = await titleSession(env, { projectId: 'proj_1', sessionId: 'sess_t', now: 8_000 });
-      const again = await titleSession(env, { projectId: 'proj_1', sessionId: 'sess_t', now: 9_000 });
-      const row = (await listSessions(env.db, scope, { sessionId: 'sess_t' })).rows[0];
-      const renamed = await renameProject(env.db, 'proj_1', 'Myco');
-      const absent = await renameProject(env.db, 'proj_nobody', 'Nobody');
-      outcomes.push({ beforeEnd, labelBefore, noProvider, titled, again, sent, label: row?.label, title: row?.title, summary: row?.summary, renamed, absent });
+      await settings([]);
+      expect((await post({ eventId: uuid(320), sessionId: 'sess_n', kind: 'session.start', payload: { agent: 'codex', startedAt: 1_000 } })).persisted).toBe(true);
+      expect((await post({ eventId: uuid(321), sessionId: 'sess_n', payload: { promptId: uuid(330), text: 'No provider here', origin: 'user' } })).persisted).toBe(true);
+      expect((await post({ eventId: uuid(322), sessionId: 'sess_n', kind: 'session.end', createdAt: 8_000, payload: { endedAt: 8_000 } })).projected).toBe(true);
+      await t.settle();
+      const unprovided = await row('sess_n');
+
+      const renamed = await renameProject(t.env.db, 'proj_1', 'Myco');
+      const absent = await renameProject(t.env.db, 'proj_nobody', 'Nobody');
+      outcomes.push({
+        labelBefore, beforeEnd, title: titled?.title, summary: titled?.summary, label: titled?.label, attempted: titled?.titledAt !== null,
+        sent, sentAfterSecondEnd, unprovided: { attempted: unprovided?.titledAt !== null, title: unprovided?.title, label: unprovided?.label }, renamed, absent,
+      });
     }
     const expected = {
-      beforeEnd: 'already', labelBefore: 'Add a retry to the runner', noProvider: 'no_provider', titled: 'titled', again: 'already',
-      sent: ['http://titles.internal/v1/chat/completions no-credential'],
-      label: 'Retry added to the runner', title: 'Retry added to the runner', summary: 'Added a retry to runner.ts and covered it with a test.', renamed: 'renamed', absent: 'absent',
+      labelBefore: 'Add a retry to the runner', beforeEnd: 'already', title: 'Retry added to the runner', summary: 'Added a retry to runner.ts and covered it with a test.', label: 'Retry added to the runner', attempted: true,
+      sent: ['http://titles.internal/v1/chat/completions no-credential'], sentAfterSecondEnd: 1,
+      unprovided: { attempted: true, title: null, label: 'No provider here' }, renamed: 'renamed', absent: 'absent',
     };
     expect({ cloudflare: outcomes[0], selfHosted: outcomes[1] }).toEqual({ cloudflare: expected, selfHosted: expected });
   });

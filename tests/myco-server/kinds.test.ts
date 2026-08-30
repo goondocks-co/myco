@@ -620,8 +620,8 @@ describe('kind catalogue', () => {
     expect(await start('proj_named', 'sess_e', 3100, { agent: 'a', startedAt: 100, originPath: '/repo/ignored' })).toBe(true);
     expect(nameOf('proj_named')).toBe('Chosen by hand');
 
-    expect([basenameOf('/a/b/c'), basenameOf('a\\b\\c '), basenameOf('~/x/'), basenameOf('~'), basenameOf('..'), basenameOf(''), basenameOf(undefined), basenameOf(7)])
-      .toEqual(['c', 'c', 'x', null, null, null, null, null]);
+    expect([basenameOf('/a/b/c'), basenameOf('a\\b\\c '), basenameOf('~/x/'), basenameOf('~'), basenameOf('..'), basenameOf(''), basenameOf(undefined), basenameOf(7), basenameOf(`/r/${'n'.repeat(201)}`), basenameOf(`/r/${'n'.repeat(200)}`)])
+      .toEqual(['c', 'c', 'x', null, null, null, null, null, null, 'n'.repeat(200)]);
   });
 
   it('settles a tie on client time by the smaller event id, for session facts, prompts, and plans alike', async () => {

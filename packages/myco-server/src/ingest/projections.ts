@@ -127,12 +127,15 @@ export function sharedChecks(spec: KindSpec, ctx: WriteContext, e: CaptureEnvelo
 
 const rawOnly = (): KindPlan => ({ identities: [], admission: [], projections: [], reads: [], refusal: () => NOT_STORED });
 
-/** The last segment of a path, split on either separator; null when the path names nothing a person would call a project (`''`, `.`, `..`, the home shorthand `~`). */
+/** The longest name a project takes from a path; the rename route's grammar. */
+export const MAX_PROJECT_NAME_CHARS = 200;
+
+/** The last segment of a path, split on either separator; null when the path names nothing a person would call a project (`''`, `.`, `..`, the home shorthand `~`, or a segment longer than a name may be). */
 export function basenameOf(path: unknown): string | null {
   if (typeof path !== 'string') return null;
   const segments = path.split(/[\\/]+/).map((s) => s.trim()).filter((s) => s !== '');
   const last = segments.length === 0 ? '' : segments[segments.length - 1];
-  return last === '' || last === '.' || last === '..' || last === '~' ? null : last;
+  return last === '' || last === '.' || last === '..' || last === '~' || last.length > MAX_PROJECT_NAME_CHARS ? null : last;
 }
 
 /** Session facts come from the earliest `session.start` in the total order (client time, then the smaller event id), so any delivery order converges — ties included: an event that ranks earlier than the one whose facts are held replaces every fact, an absent one included; a later one changes nothing. `started_at` is the minimum and `ended_at` the maximum of the events that carry them; identity columns (`machine_id`, `created_by_token_id`, `first_received_at`) stay with the first writer. A Project still named by its own id takes the basename of the first start that carries a usable origin path; a renamed or onboarded Project keeps its name. */

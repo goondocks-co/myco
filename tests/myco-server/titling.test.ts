@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import {
-  ANSWER_MAX_TOKENS, ANTHROPIC_MESSAGES_URL, ANTHROPIC_VERSION, DEFAULT_ANTHROPIC_MODEL, parseTitleAnswer, resolveTitlingProvider, sessionMaterial, titleSession, titlingPrompt,
+  ANSWER_MAX_TOKENS, ANTHROPIC_MESSAGES_URL, ANTHROPIC_VERSION, DEFAULT_ANTHROPIC_MODEL, localBackendEndpoint, parseTitleAnswer, resolveTitlingProvider, sessionMaterial, titleSession, titlingPrompt,
 } from '@myco-server-worker/core/titling.js';
 import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MAX_TITLES_PER_PROJECT_PER_HOUR, MATERIAL_EXCERPT_CHARS } from '@myco-server-worker/constants.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
@@ -77,6 +77,8 @@ describe('titleSession', () => {
     const body = JSON.parse(call.init.body as string) as { model: string; max_tokens: number; messages: Array<{ role: string; content: string }> };
     expect(body.model).toBe(DEFAULT_ANTHROPIC_MODEL);
     expect(body.max_tokens).toBe(ANSWER_MAX_TOKENS);
+    expect(ANSWER_MAX_TOKENS).toBeGreaterThanOrEqual(2048);
+    expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model']);
     expect(body.messages[0].content).toContain('Prompt 1: Fix the flaky test in runner.ts\nplease\nResponse: Looking at runner.ts now.');
     expect(body.messages[0].content).toContain('Prompt 2: Now add the retry');
     expect(body.messages[0].content).not.toContain('system preamble');
@@ -87,6 +89,7 @@ describe('titleSession', () => {
     expect(h.sent).toHaveLength(1);
     expect(logged.join('\n')).not.toContain(KEY);
     expect(logged.join('\n')).not.toContain(ANSWER.summary);
+    expect(logged.join('\n')).not.toContain('Wave-based executor');
   });
 
   it('makes one attempt per session even when two ends race, and none for a session that has not ended', async () => {
@@ -177,9 +180,25 @@ describe('titleSession', () => {
       ['https://openrouter.ai/api/v1/chat/completions', 'Bearer sk-or-TEST'],
       ['https://evil.example/v1/chat/completions', null],
     ]);
+    const budgetKey = (s: Sent) => Object.keys(JSON.parse(s.init.body as string) as Record<string, unknown>).filter((k) => k.startsWith('max_'));
+    expect(h.sent.map(budgetKey)).toEqual([['max_completion_tokens'], ['max_tokens'], ['max_tokens']]);
     expect(h.row('s3').title).toBe('Wave-based executor and per-task provider config');
     expect(logged.join('\n')).not.toContain('sk-openai-TEST');
     expect(logged.join('\n')).not.toContain('sk-or-TEST');
+  });
+
+  it('reaches a local backend at the server root the operator named, with the API path added once', async () => {
+    const h = harness();
+    h.setting('agent.provider.type', 'ollama');
+    h.setting('agent.provider.model', 'llama3');
+    const at = async (base: string) => { h.setting('agent.provider.base_url', base); const r = await resolveTitlingProvider(h.env.db, h.secrets); return r.ok && r.provider.kind === 'openai' ? r.provider.url : r; };
+    expect(await at('http://ollama.internal:11434')).toBe('http://ollama.internal:11434/v1');
+    expect(await at('http://ollama.internal:11434/')).toBe('http://ollama.internal:11434/v1');
+    expect(await at('http://ollama.internal:11434/v1/')).toBe('http://ollama.internal:11434/v1');
+    expect(await at('http://ollama.internal:11434/v1')).toBe('http://ollama.internal:11434/v1');
+    h.setting('agent.provider.type', 'openai-compatible');
+    expect(await at('http://gateway.internal/openai')).toBe('http://gateway.internal/openai');
+    expect(localBackendEndpoint('not a url/')).toBe('not a url');
   });
 
   it('takes the task override for provider and model ahead of the defaults', async () => {
@@ -206,11 +225,25 @@ describe('titleSession', () => {
     expect(await h.title('s4')).toBe('malformed');
     for (const id of ['s1', 's2', 's3', 's4']) expect(h.row(id)).toEqual({ title: null, summary: null, titled_at: NOW });
     const broken = { ...h.env, db: { prepare: () => { throw new Error('store detached'); } } as never };
-    expect(await titleSession(broken, { projectId: 'proj_1', sessionId: 's1', now: NOW })).toBe('unreachable');
+    expect(await titleSession(broken, { projectId: 'proj_1', sessionId: 's1', now: NOW })).toBe('error');
     expect(logged.filter((l) => l.includes('session_title_failed'))).toHaveLength(5);
+    expect(logged.some((l) => l.includes('"outcome":"error"'))).toBe(true);
     expect(logged.some((l) => l.includes('"status":429'))).toBe(true);
     expect(logged.join('\n')).not.toContain('nope');
     expect(logged.join('\n')).not.toContain('<html>');
+  });
+
+  it('reports a title that landed from elsewhere while the provider answered as superseded, and writes nothing over it', async () => {
+    const h = harness();
+    await seedAnthropic(h);
+    h.session('s1');
+    h.prompt('s1', 'p1', 'hello', NOW - 9000);
+    const racing: typeof fetch = (async () => {
+      h.sqlite.run(`UPDATE sessions SET title = 'Written first', summary = 'by another hand' WHERE session_id = 's1'`);
+      return Response.json({ content: [{ type: 'text', text: JSON.stringify(ANSWER) }] });
+    }) as unknown as typeof fetch;
+    expect(await titleSession({ ...h.env, outbound: racing }, { projectId: 'proj_1', sessionId: 's1', now: NOW })).toBe('superseded');
+    expect(h.row('s1')).toEqual({ title: 'Written first', summary: 'by another hand', titled_at: NOW });
   });
 
   it('bounds the material by prompt count and by characters, and reads only inline user prompts with their first inline response', async () => {

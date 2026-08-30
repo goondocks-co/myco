@@ -35,8 +35,8 @@ export async function handleUnarchiveProject(env: ServerEnv, ctx: OwnerContext):
 export async function handleRenameProject(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const body = await readJsonObject(ctx.request);
   if (body === null) return badRequest('body must be a JSON object');
-  const name = body.name;
-  if (typeof name !== 'string' || name.length === 0 || name.length > 200) return badRequest('name is required');
+  const name = typeof body.name === 'string' ? body.name.trim() : null;
+  if (name === null || name.length === 0 || name.length > 200) return badRequest('name is required');
   if ((await renameProject(env.db, ctx.params.projectId, name)) === 'absent') return notFound();
   emit({ kind: 'project_renamed', projectId: ctx.params.projectId, actor: ctx.member.id });
   return ok({ projectId: ctx.params.projectId, name });
