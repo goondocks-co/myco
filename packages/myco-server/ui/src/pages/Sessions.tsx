@@ -25,7 +25,7 @@ function matches(s: SessionRow, status: string, text: string): boolean {
   if (status === 'ended' && s.endedAt === null) return false;
   if (text === '') return true;
   const needle = text.toLowerCase();
-  return [s.agent, s.branch, memberName(s), runtimeName(s), s.machineId, s.sessionId].some((v) => v !== null && v.toLowerCase().includes(needle));
+  return [s.label, s.title, s.agent, s.branch, memberName(s), runtimeName(s), s.machineId, s.sessionId].some((v) => v !== null && v.toLowerCase().includes(needle));
 }
 
 /** `/p/:projectId/sessions` and `/p/:projectId/sessions/:sessionId`: what each runtime captured, session by session. Filtering is over the rows loaded so far. */
@@ -95,10 +95,11 @@ function SessionRowView({ session, active, onOpen }: { session: SessionRow; acti
     <Row isActive={active} onClick={onOpen}>
       <div className="flex items-center gap-2 font-sans text-sm">
         <StatusDot tone={open ? 'sage' : 'outline'} />
-        <span className="min-w-0 flex-1 truncate text-on-surface">{session.agent ?? 'session'}</span>
+        <span className="min-w-0 flex-1 truncate font-serif italic text-on-surface">{session.label}</span>
         {session.branch !== null && <span className="truncate font-mono text-[11px] text-on-surface-variant">{session.branch}</span>}
       </div>
       <div className="mt-1 flex flex-wrap gap-x-3 font-mono text-[11px] text-on-surface-variant">
+        <span>{session.agent ?? 'unknown agent'}</span>
         <span>{memberName(session)}</span>
         <span>{[runtimeName(session), session.machineId].filter((v) => v !== null).join(' · ') || '—'}</span>
         <span>{open ? `last ${formatRelative(session.lastReceivedAt)}` : `ended ${formatRelative(session.endedAt)}`}</span>
