@@ -342,7 +342,7 @@ Task YAML, the phased executor, turn budgets, model routing, and the `agent_runs
 | `skill-generate` | KEEP | Core | Blk | Skill lifecycle | #919 |
 | `skill-evolve` | KEEP | Core | Blk | Skill lifecycle | #919 |
 | `extract-only` | KEEP | Core | Blk | Spore extraction | #919 |
-| `title-summary` | KEEP | Core | Blk | | #919 |
+| `title-summary` | KEEP | Core | Blk | The title and summary are written on the Deployment after the answer to a session's end, through the configured API-key provider (#1033); the harness task re-titles and backfills | #919, #1033 |
 | `review-session` | KEEP | Core | Blk | | #919 |
 | `vault-evolve` | KEEP | Core | Blk | | #919 |
 | `supersession-sweep` | KEEP | Core | Blk | | #919 |

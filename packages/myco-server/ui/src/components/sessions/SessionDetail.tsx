@@ -34,6 +34,11 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
       {detail.data && (
         <div className="flex flex-col gap-4">
           <Facts projectId={projectId} session={detail.data.session} />
+          {detail.data.session.summary !== null && (
+            <Panel padded title="Summary">
+              <pre className="whitespace-pre-wrap break-words font-sans text-sm text-on-surface">{detail.data.session.summary}</pre>
+            </Panel>
+          )}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <StatCard label="Prompts" value={detail.data.counts.prompts.toLocaleString()} accent="sage" />
             <StatCard label="Tool calls" value={detail.data.counts.toolCalls.toLocaleString()} accent="ochre" />
@@ -60,7 +65,8 @@ function Facts({ projectId, session }: { projectId: string; session: SessionRow 
         <StatusDot tone={open ? 'sage' : 'outline'} />
         <div className="font-sans text-[10px] uppercase tracking-wide text-on-surface-variant">Session · {open ? 'open' : 'ended'}</div>
       </div>
-      <h2 className="font-serif text-xl text-on-surface">{session.agent ?? 'Session'}{session.branch ? <span className="font-mono text-base text-on-surface-variant"> on {session.branch}</span> : null}</h2>
+      <h2 className="font-serif text-xl text-on-surface">{session.label}</h2>
+      <div className="font-sans text-xs text-on-surface-variant">{session.agent ?? 'unknown agent'}{session.branch ? <span className="font-mono"> on {session.branch}</span> : null}</div>
       <div className="font-mono text-[11px] text-on-surface-variant">{session.sessionId}</div>
       <dl className="mt-3 grid gap-x-6 gap-y-1 font-sans text-sm sm:grid-cols-2">
         <Fact label="Started" value={session.startedAt === null ? null : `${formatRelative(session.startedAt)} · ${formatDateTime(session.startedAt)}`} />

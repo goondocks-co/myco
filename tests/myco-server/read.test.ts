@@ -4,7 +4,7 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { clampLimit, decodeCursor, encodeCursor, page, DEFAULT_PAGE, MAX_PAGE } from '@myco-server-worker/read/scope.js';
 
-import { archiveProject, getSession, listProjects, listSessions, projectStats, unarchiveProject } from '@myco-server-worker/read/sessions.js';
+import { archiveProject, getSession, listProjects, listSessions, projectStats, renameProject, sessionLabel, unarchiveProject, LABEL_MAX_CHARS } from '@myco-server-worker/read/sessions.js';
 
 function seedSessions(sqlite: import('bun:sqlite').Database) {
   sqlite.run(`INSERT OR REPLACE INTO projects (project_id, name, created_at) VALUES ('proj_1','One',1), ('proj_2','Two',2)`);
@@ -24,8 +24,50 @@ describe('read/sessions', () => {
       sessionId: 's3', machineId: 'm2', createdByTokenId: 'tok_1', firstReceivedAt: 3, lastReceivedAt: 20,
       agent: 'claude-code', branch: 'main', startedAt: 3, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null,
       memberId: null, memberLabel: null, runtimeLabel: null, runtimeKind: null,
+      title: null, summary: null, titledAt: null, label: 'claude-code',
     });
     expect(cursor).toBeNull();
+  });
+
+  it('labels a session by its title, else by the first line of its first user prompt cut on a word boundary, else by its agent, else by its id', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedSessions(sqlite);
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1','s4','m1','tok_1',4,40)`);
+    sqlite.run(`UPDATE sessions SET title = 'Wave-based executor', summary = 'Built it.', titled_at = 50 WHERE session_id = 's3'`);
+    const long = `${'abcde '.repeat(30).trim()}\nsecond line`;
+    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+                VALUES ('proj_1','s1','p2','e2','later prompt','user','h2',20,20,'t1',20),
+                       ('proj_1','s1','p1','e1',?,'user','h1',10,10,'t1',10),
+                       ('proj_1','s1','p0','e0','assistant text first','assistant','h0',5,5,'t1',5),
+                       ('proj_1','s2','pS','eS',NULL,'user','hS',10,10,'t1',10),
+                       ('proj_1','s3','p3','e3','ignored: the title wins','user','h3',10,10,'t1',10)`, [long]);
+    const rows = (await listSessions(db, { projectId: 'proj_1' })).rows;
+    const byId = Object.fromEntries(rows.map((r) => [r.sessionId, r]));
+    expect(byId.s3.label).toBe('Wave-based executor');
+    expect(byId.s3.summary).toBe('Built it.');
+    expect(byId.s3.titledAt).toBe(50);
+    expect(byId.s1.label.endsWith('…')).toBe(true);
+    expect(byId.s1.label.length).toBeLessThanOrEqual(LABEL_MAX_CHARS + 1);
+    expect(byId.s1.label).toBe(`${'abcde '.repeat(13).trim()}…`);
+    expect(byId.s2.label).toBe('claude-code');
+    expect(byId.s4.label).toBe('s4');
+    expect((await getSession(db, { projectId: 'proj_1' }, 's1'))?.label).toBe(byId.s1.label);
+    expect(sessionLabel(null, '  first line here  \n\nmore', null, 'x')).toBe('first line here');
+    expect(sessionLabel(null, 'a'.repeat(100), null, 'x')).toBe(`${'a'.repeat(LABEL_MAX_CHARS)}…`);
+    const exact = `${'abcdefghij '.repeat(7)}abc tail words`;
+    expect(exact[LABEL_MAX_CHARS]).toBe(' ');
+    expect(sessionLabel(null, exact, null, 'x')).toBe(`${'abcdefghij '.repeat(7)}abc…`);
+    expect(sessionLabel('  Titled  ', 'prompt', 'agent', 'x')).toBe('Titled');
+  });
+
+  it('renames a project, archived or not, and says so when none carries the id', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedSessions(sqlite);
+    expect(await renameProject(db, 'proj_1', 'Myco')).toBe('renamed');
+    expect(await archiveProject(db, 'proj_2', 'mem_a', 5)).toBe('archived');
+    expect(await renameProject(db, 'proj_2', 'Archived one')).toBe('renamed');
+    expect(await renameProject(db, 'proj_9', 'Nobody')).toBe('absent');
+    expect((await listProjects(db, { includeArchived: true })).map((p) => [p.projectId, p.name]).sort()).toEqual([['proj_1', 'Myco'], ['proj_2', 'Archived one']]);
   });
 
   it('names the member and runtime behind each session, lists a session whose credential is gone, and keeps the order', async () => {
@@ -200,7 +242,7 @@ describe('D1 adapter', () => {
 
 describe('schema v4', () => {
   it('adds a recency index on sessions and stamps the build version', () => {
-    expect(SERVER_SCHEMA_VERSION).toBe(11);
+    expect(SERVER_SCHEMA_VERSION).toBe(12);
     const v4 = SCHEMA_STEPS.find((s) => s.version === 4);
     expect(v4?.statements.some((s) => s.includes('idx_sessions_recent'))).toBe(true);
   });
@@ -220,7 +262,7 @@ describe('read/meta', () => {
   it('reports the schema version the database carries', async () => {
     const { db } = sqliteEnv();
     const { schemaVersion } = await import('@myco-server-worker/read/meta.js');
-    expect(await schemaVersion(db)).toBe(11);
+    expect(await schemaVersion(db)).toBe(12);
   });
 });
 

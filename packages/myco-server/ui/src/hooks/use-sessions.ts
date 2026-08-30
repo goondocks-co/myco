@@ -19,6 +19,12 @@ export interface SessionRow {
   memberLabel: string | null;
   runtimeLabel: string | null;
   runtimeKind: string | null;
+  /** Written on the server once the session ended and a model looked at it; null until then. */
+  title: string | null;
+  summary: string | null;
+  titledAt: number | null;
+  /** What a list or a header shows: the title, else the opening line of the first prompt, else the agent, else the id. */
+  label: string;
 }
 
 export interface SessionCounts {

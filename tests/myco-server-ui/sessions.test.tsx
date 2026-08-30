@@ -18,7 +18,8 @@ const BLOB = (key: string) => `/api/projects/x/blobs/${key}`;
 const session = (over: Record<string, unknown> = {}) => ({
   sessionId: 's1', machineId: 'mac-1', createdByTokenId: 'tok_1', firstReceivedAt: NOW - 3_600_000, lastReceivedAt: NOW - 60_000,
   agent: 'claude-code', branch: 'main', startedAt: NOW - 3_600_000, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null,
-  memberId: 'mem_1', memberLabel: 'chris', runtimeLabel: 'laptop', runtimeKind: 'host', ...over,
+  memberId: 'mem_1', memberLabel: 'chris', runtimeLabel: 'laptop', runtimeKind: 'host',
+  title: null, summary: null, titledAt: null, label: (over.title as string | undefined) ?? (over.label as string | undefined) ?? (over.agent as string | undefined) ?? 'claude-code', ...over,
 });
 const page = (rows: unknown[]) => Response.json({ rows, cursor: null });
 const counts = { prompts: 1, toolCalls: 1, responses: 1, plans: 0, attachments: 2 };
@@ -50,13 +51,15 @@ function mount(path: string) {
 
 describe('Sessions list', () => {
   it('shows each session with its agent, branch, member and runtime, open or ended, and filters client-side', async () => {
-    server(base({ '/api/projects/x/sessions': () => page([session(), session({ sessionId: 's2', agent: 'codex', branch: 'fix', endedAt: NOW - 1000, memberLabel: null, memberId: null, runtimeLabel: null })]) }));
+    server(base({ '/api/projects/x/sessions': () => page([session({ title: 'Wave-based executor', label: 'Wave-based executor' }), session({ sessionId: 's2', agent: 'codex', branch: 'fix', endedAt: NOW - 1000, memberLabel: null, memberId: null, runtimeLabel: null, label: 'Fix the flaky test…' })]) }));
     mount('/p/x/sessions');
     const rows = await screen.findAllByRole('row');
     expect(rows.map((r) => r.textContent)).toEqual([
-      expect.stringContaining('claude-code'),
-      expect.stringContaining('codex'),
+      expect.stringContaining('Wave-based executor'),
+      expect.stringContaining('Fix the flaky test…'),
     ]);
+    expect(rows[0]!.textContent).toContain('claude-code');
+    expect(rows[1]!.textContent).toContain('codex');
     expect(rows[0]!.textContent).toContain('chris');
     expect(rows[0]!.textContent).toContain('laptop · mac-1');
     expect(rows[0]!.textContent).toContain('last ');
@@ -111,6 +114,20 @@ describe('Session detail', () => {
     expect(requested.filter((p) => p.startsWith('/api/projects/x/blobs/'))).toEqual([BLOB(KEY_TEXT)]);
     expect(screen.getByText('chris')).toBeTruthy();
     expect(screen.getByText('laptop · mac-1')).toBeTruthy();
+  });
+
+  it('heads the detail with the label and shows a summary only once one is stored', async () => {
+    server(detailRoutes());
+    mount('/p/x/sessions/s1');
+    expect((await screen.findByRole('heading', { level: 2 })).textContent).toBe('claude-code');
+    expect(screen.queryByText('Summary')).toBeNull();
+    cleanup();
+    server(detailRoutes({ '/api/projects/x/sessions/s1': () => Response.json({ session: session({ title: 'Wave-based executor', summary: 'Built the executor.\nTests pass.', titledAt: NOW }), counts, projectId: 'x' }) }));
+    mount('/p/x/sessions/s1');
+    expect((await screen.findByRole('heading', { level: 2 })).textContent).toBe('Wave-based executor');
+    expect(screen.getByText('Summary')).toBeTruthy();
+    expect(screen.getByText(/Built the executor\./).textContent).toBe('Built the executor.\nTests pass.');
+    expect(screen.getByText(/claude-code/).textContent).toContain('claude-code on main');
   });
 
   it('renders an image attachment inline only for the renderable types, and links the rest', async () => {
