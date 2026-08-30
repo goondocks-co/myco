@@ -48,7 +48,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 47;
+const EMIT_CALLS = 50;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -721,6 +721,17 @@ describe('gates', () => {
     }
   });
 
+  it('schedules work past an answer from exactly one module, and that module is the events route', () => {
+    // `afterResponse` is the one way a request leaves work behind. Holding its
+    // callers to the events route keeps every deferred piece of work a consequence
+    // of a capture the caller made, never of a read or a refusal.
+    const callers = files(SRC)
+      .filter((f) => /\bafterResponse\(/.test(stripComments(readFileSync(f, 'utf8'))))
+      .map((f) => f.slice(SRC.length + 1))
+      .filter((f) => !f.startsWith('platform/') && !f.startsWith('core/adapters'));
+    expect(callers).toEqual([join('ingest', 'events.ts')]);
+  });
+
   it('opens a Deployment secret from exactly one function under src, and no display surface calls it', () => {
     // `get()` is the only thing that returns a credential. The whole point of
     // sealing values is defeated if a settings page, a status route or a log line
@@ -740,10 +751,10 @@ describe('gates', () => {
       .filter((f) => f !== join(SRC, 'core', 'secrets.ts'))
       .filter((f) => /deploymentSecretStore\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1));
-    // One: the settings surface, which only ever calls `describe`/`list`/`put`/
-    // `delete`. When a consumer of the PLAINTEXT read lands, it adds a file here and
-    // the addition is the thing to look at.
-    expect(callers).toEqual([join('api', 'settings.ts')]);
+    // The settings surface, which only ever calls `describe`/`list`/`put`/`delete`,
+    // and the titler, which opens a provider credential to call the provider and
+    // hands it to nothing else. A new file here is the thing to look at.
+    expect(callers.sort()).toEqual([join('api', 'settings.ts'), join('core', 'titling.ts')]);
     const surface = stripComments(readFileSync(join(SRC, 'api', 'settings.ts'), 'utf8'));
     expect(surface).not.toMatch(/\.get\(\s*ctx\.params\.name/);
   });

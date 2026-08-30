@@ -4,6 +4,7 @@ import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { emit, refusal, StorageContractError, type Classifier, type Refusal } from '../telemetry.js';
 import { parseEnvelope, type CaptureEnvelope } from './envelope.js';
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
+import { titleSession } from '../core/titling.js';
 import { planKind, projectLive, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { withinQuota } from './quota.js';
 
@@ -139,6 +140,9 @@ export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body:
   return { ...refused(ctx, sharedRefusal ?? plan.refusal(reads)), ...extra };
 }
 
+/** The kind whose projected arrival schedules a title for its session, past the answer. */
+const SESSION_END_KIND = 'session.end';
+
 export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   let parsed: unknown;
   try {
@@ -146,5 +150,10 @@ export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<R
   } catch {
     return Response.json(refused(ctx, refusal('body must be JSON', 'parse')));
   }
-  return Response.json(await ingestEvent(env.db, ctx, parsed));
+  const result = await ingestEvent(env.db, ctx, parsed);
+  const envelope = parsed as { kind?: unknown; sessionId?: unknown } | null;
+  if (result.persisted && result.projected === true && envelope?.kind === SESSION_END_KIND && typeof envelope.sessionId === 'string') {
+    env.afterResponse(titleSession(env, { projectId: ctx.projectId, sessionId: envelope.sessionId, now: ctx.now }).then(() => undefined));
+  }
+  return Response.json(result);
 }

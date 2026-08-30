@@ -201,11 +201,18 @@ export interface SettingsWriter {
  * Deployment, not to a Project, so this asks what the server can do rather than
  * what a Project is admitted to.
  */
-export async function providerConfiguredFor(db: RelationalStore, taskName: string): Promise<boolean> {
+/** The stored value of each named leaf, as the JSON text the settings surface wrote; a leaf never written is absent from the map. */
+export async function leafValues(db: RelationalStore, leaves: readonly string[]): Promise<Map<string, string>> {
+  if (leaves.length === 0) return new Map();
   const rows = await db
-    .prepare(`SELECT leaf, value FROM deployment_settings WHERE leaf IN ('agent.provider.type', 'agent.tasks')`)
+    .prepare(`SELECT leaf, value FROM deployment_settings WHERE leaf IN (${leaves.map(() => '?').join(', ')})`)
+    .bind(...leaves)
     .all<{ leaf: string; value: string }>();
-  const byLeaf = new Map(rows.results.map((r) => [r.leaf, r.value]));
+  return new Map(rows.results.map((r) => [r.leaf, r.value]));
+}
+
+export async function providerConfiguredFor(db: RelationalStore, taskName: string): Promise<boolean> {
+  const byLeaf = await leafValues(db, ['agent.provider.type', 'agent.tasks']);
 
   const perTask = byLeaf.get('agent.tasks');
   if (perTask !== undefined) {

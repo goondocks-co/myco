@@ -30,6 +30,8 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { migrateAndSeed } from '../helpers/d1.js';
+import { titleSession } from '@myco-server-worker/core/titling.js';
+import { listSessions, renameProject } from '@myco-server-worker/read/sessions.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MAX_BLOB_BYTES, MAX_PROJECTS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
@@ -337,6 +339,48 @@ describe('agent runs read the same on both stores', () => {
 });
 
 describe('archival refuses capture the same on both stores', () => {
+  it('titles an ended session once through the configured endpoint, labels it before that from its first prompt, and renames its project, identically on each target', async () => {
+    const outcomes: unknown[] = [];
+    for (const t of TARGETS) {
+      const token = await t.token();
+      const sent: string[] = [];
+      const answer = { title: 'Retry added to the runner', summary: 'Added a retry to runner.ts and covered it with a test.' };
+      const outbound = (async (input: string | URL | Request, init?: RequestInit) => {
+        sent.push(`${String(input)} ${(init?.headers as Record<string, string> | undefined)?.authorization ?? 'no-credential'}`);
+        return Response.json({ choices: [{ message: { content: JSON.stringify(answer) } }] });
+      }) as unknown as typeof fetch;
+      const env = { ...t.env, outbound };
+      const post = async (over: Record<string, unknown>) => json(await t.fetch(memberPost(token, envelope(over))));
+      const scope = { projectId: 'proj_1' };
+
+      expect((await post({ eventId: uuid(300), sessionId: 'sess_t', kind: 'session.start', payload: { agent: 'claude-code', branch: 'main', startedAt: 1_000 } })).persisted).toBe(true);
+      expect((await post({ eventId: uuid(301), sessionId: 'sess_t', payload: { promptId: uuid(310), text: 'Add a retry to the runner\nplease', origin: 'user' } })).persisted).toBe(true);
+      const beforeEnd = await titleSession(env, { projectId: 'proj_1', sessionId: 'sess_t', now: 5_000 });
+      const labelBefore = (await listSessions(env.db, scope, { sessionId: 'sess_t' })).rows[0]?.label;
+      expect(await post({ eventId: uuid(302), sessionId: 'sess_t', kind: 'session.end', createdAt: 6_000, payload: { endedAt: 6_000 } })).toEqual({ persisted: true, projected: true });
+      // The route itself schedules a titling past its answer, which claims the session; the explicit call finds the claim.
+      const afterRoute = await titleSession(env, { projectId: 'proj_1', sessionId: 'sess_t', now: 7_000 });
+      const claimedByRoute = (await listSessions(env.db, scope, { sessionId: 'sess_t' })).rows[0]?.titledAt !== null;
+
+      await env.db.prepare(`UPDATE sessions SET titled_at = NULL WHERE session_id = 'sess_t'`).run();
+      for (const [leaf, value] of [['agent.provider.type', 'openai-compatible'], ['agent.provider.model', 'local-model'], ['agent.provider.base_url', 'http://titles.internal/v1']]) {
+        await env.db.prepare(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'mem_1')`).bind(leaf, JSON.stringify(value)).run();
+      }
+      const titled = await titleSession(env, { projectId: 'proj_1', sessionId: 'sess_t', now: 8_000 });
+      const again = await titleSession(env, { projectId: 'proj_1', sessionId: 'sess_t', now: 9_000 });
+      const row = (await listSessions(env.db, scope, { sessionId: 'sess_t' })).rows[0];
+      const renamed = await renameProject(env.db, 'proj_1', 'Myco');
+      const absent = await renameProject(env.db, 'proj_nobody', 'Nobody');
+      outcomes.push({ beforeEnd, labelBefore, afterRoute, claimedByRoute, titled, again, sent, label: row?.label, title: row?.title, summary: row?.summary, renamed, absent });
+    }
+    const expected = {
+      beforeEnd: 'already', labelBefore: 'Add a retry to the runner', afterRoute: 'already', claimedByRoute: true, titled: 'titled', again: 'already',
+      sent: ['http://titles.internal/v1/chat/completions no-credential'],
+      label: 'Retry added to the runner', title: 'Retry added to the runner', summary: 'Added a retry to runner.ts and covered it with a test.', renamed: 'renamed', absent: 'absent',
+    };
+    expect({ cloudflare: outcomes[0], selfHosted: outcomes[1] }).toEqual({ cloudflare: expected, selfHosted: expected });
+  });
+
   it('answers the named terminal refusal in the route shape on each target, and restores after unarchive', async () => {
     for (const t of TARGETS) await t.env.db.prepare(`UPDATE projects SET archived_at = 1, archived_by = 'mem_machine_1' WHERE project_id = 'proj_1'`).run();
     const refused = await onBoth(async (t) => t.fetch(memberPost(await t.token(), envelope({ eventId: uuid(71) }))));
