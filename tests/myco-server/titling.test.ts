@@ -92,6 +92,30 @@ describe('titleSession', () => {
     expect(logged.join('\n')).not.toContain('Wave-based executor');
   });
 
+  it('sends a subscription sign-in credential as a bearer with the capability named, and an API key as x-api-key, never both', async () => {
+    const OAT = 'sk-ant-oat01-SUBSCRIPTION-TEST-TOKEN';
+    const h = harness();
+    h.setting('agent.provider.type', 'anthropic');
+    await h.secrets.put('anthropic', OAT, 'mem_1', NOW);
+    h.session('s1');
+    h.prompt('s1', 'p1', 'hello', NOW - 9000);
+    expect(await h.title('s1')).toBe('titled');
+    const headers = h.sent[0]!.init.headers as Record<string, string>;
+    expect(headers.authorization).toBe(`Bearer ${OAT}`);
+    expect(headers['anthropic-beta']).toBe('oauth-2025-04-20');
+    expect(headers['x-api-key']).toBeUndefined();
+    expect(logged.join('\n')).not.toContain(OAT);
+
+    await h.secrets.put('anthropic', KEY, 'mem_1', NOW);
+    h.session('s2');
+    h.prompt('s2', 'p2', 'hello', NOW - 9000);
+    expect(await h.title('s2')).toBe('titled');
+    const apiHeaders = h.sent[1]!.init.headers as Record<string, string>;
+    expect(apiHeaders['x-api-key']).toBe(KEY);
+    expect(apiHeaders.authorization).toBeUndefined();
+    expect(apiHeaders['anthropic-beta']).toBeUndefined();
+  });
+
   it('makes one attempt per session even when two ends race, and none for a session that has not ended', async () => {
     const h = harness();
     await seedAnthropic(h);
