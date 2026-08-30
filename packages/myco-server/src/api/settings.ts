@@ -3,11 +3,9 @@ import type { OwnerContext } from '../context.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import {
-  DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, requiresStepUp, settingsWriter,
+  DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsWriter,
   type ProjectCapability, type SettingsRefusal,
 } from '../core/settings.js';
-import { spendStepUpAuthority, stepUpAuthorizer } from '../auth/step-up.js';
-import { STEP_UP_HEADER } from '../constants.js';
 
 /**
  * The Deployment Settings surface.
@@ -40,12 +38,10 @@ const refused = (r: SettingsRefusal): Response => Response.json({ applied: false
 const malformed = (leaf: string, reason: string): Response =>
   Response.json({ applied: false, reason: 'malformed', leaf, detail: reason }, { status: 400 });
 
-/** The writer for this request, carrying whatever step-up authority the caller presented. */
+/** The writer for this request. Membership is the whole authorization: the write path still validates, persists, and records the actor in one order. */
 function writerFor(env: ServerEnv, ctx: OwnerContext) {
-  const presented = ctx.request.headers.get(STEP_UP_HEADER);
-  return settingsWriter(env.db, {
-    authorize: stepUpAuthorizer(env.db, requiresStepUp, () => presented, () => ctx.now),
-  });
+  void ctx;
+  return settingsWriter(env.db);
 }
 
 
@@ -58,12 +54,6 @@ function writerFor(env: ServerEnv, ctx: OwnerContext) {
  */
 const MAX_SECRET_CHARS = 4096;
 
-/** Spends the step-up authority a credential change requires, from the header carrying it. */
-async function spentForCredential(env: ServerEnv, ctx: OwnerContext): Promise<boolean> {
-  const presented = ctx.request.headers.get(STEP_UP_HEADER);
-  if (presented === null) return false;
-  return (await spendStepUpAuthority(env.db, presented, 'provider_credential', ctx.member.id, ctx.now)).ok;
-}
 
 /** Every Deployment leaf this server accepts, with whatever is stored for it. A leaf with no row is reported absent rather than defaulted — the reader layers its own defaults. */
 export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
@@ -75,7 +65,6 @@ export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise
       value: stored[leaf]?.value ?? null,
       updatedAt: stored[leaf]?.updatedAt ?? null,
       updatedBy: stored[leaf]?.updatedBy ?? null,
-      requiresStepUp: requiresStepUp(leaf),
     })),
   });
 }
@@ -124,12 +113,10 @@ export async function handleSecrets(env: ServerEnv, ctx: OwnerContext): Promise<
 /**
  * Store a provider credential. The value is written and never returned.
  *
- * Step-up gated, and the risk it answers is SUBSTITUTION rather than disclosure.
- * The stored value is already write-only and masked, so a member cannot read the
- * Deployment's key — but a member who writes their OWN key into the `anthropic`
- * slot has every later intelligence run dispatched against an account they
- * control and can read. That is the same outcome as redirecting the endpoint,
- * reached through the slot #907 named first.
+ * A member session is the whole authorization. The risks that matter are answered
+ * in structure: the stored value is write-only and masked, a credentialed
+ * provider's key travels only to its provider's own fixed endpoint, and every
+ * write records its actor.
  */
 export async function handleSetSecret(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (!(SECRET_SLOTS as readonly string[]).includes(ctx.params.name)) return notFound();
@@ -137,7 +124,6 @@ export async function handleSetSecret(env: ServerEnv, ctx: OwnerContext): Promis
   const slot = `secret.${ctx.params.name}`;
   if (body === null || typeof body.value !== 'string' || body.value.length === 0) return malformed(slot, 'body must carry a non-empty string `value`');
   if (body.value.length > MAX_SECRET_CHARS) return malformed(slot, `value must be at most ${MAX_SECRET_CHARS} characters`);
-  if (!(await spentForCredential(env, ctx))) return refused({ reason: 'unauthorized', leaf: `secret.${ctx.params.name}` });
 
   await deploymentSecretStore(env.db, env.wrappingKey).put(ctx.params.name, body.value, ctx.member.id, ctx.now);
   // The answer is the description, so a caller that just wrote a value learns only
@@ -155,7 +141,6 @@ export async function handleSetSecret(env: ServerEnv, ctx: OwnerContext): Promis
  */
 export async function handleDeleteSecret(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (!(SECRET_SLOTS as readonly string[]).includes(ctx.params.name)) return notFound();
-  if (!(await spentForCredential(env, ctx))) return refused({ reason: 'unauthorized', leaf: `secret.${ctx.params.name}` });
   return ok(await deploymentSecretStore(env.db, env.wrappingKey).delete(ctx.params.name, ctx.member.id, ctx.now));
 }
 

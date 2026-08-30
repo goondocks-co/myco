@@ -159,7 +159,7 @@ export async function memberByGithubId(db: RelationalStore, githubId: string): P
 /**
  * Reclaims authorities that are finished — spent, revoked, or expired — and older
  * than `IDENTITY_LINK_RETENTION_MS`. Runs on the spend path, the idiom the
- * step-up reclaim uses; a live authority is never touched whatever its age.
+ * enrollment reclaim uses; a live authority is never touched whatever its age.
  */
 export async function reclaimIdentityLinkAuthorities(db: RelationalStore, nowMs: number): Promise<{ reclaimed: number }> {
   const cutoff = nowMs - IDENTITY_LINK_RETENTION_MS;

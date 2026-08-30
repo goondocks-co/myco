@@ -73,7 +73,7 @@ A **Project** is the shared body of collective intelligence for equivalent Git c
 
 Server Provisioning creates **Enrollment Authority**. Joining exchanges it for an individually attributable **Member Credential** — the enrollment secret is never the credential used for ordinary requests.
 
-**Membership is flat in the initial release:** every joined member has equal full application access across the Deployment. A narrow step-up credential may protect sensitive infrastructure administration without creating a role hierarchy.
+**Membership is flat in the initial release:** every joined member has equal full application access across the Deployment, provider settings and credentials included (the separate step-up credential was dropped 2026-08-30, #1036; a future guard, if one is ever wanted, is re-authentication of the signed-in member, never a second secret).
 
 Human member identity is distinct from machine, runtime, or coding-agent metadata. A persistent developer machine and an ephemeral **Sandbox Runtime** act as the **same member with the same capabilities**. Independently hosted cloud agents (e.g. a Copilot review agent) are **not members** and receive project-scoped read-only **External Agent Access**.
 
@@ -169,7 +169,7 @@ Actors follow [`actors-and-boundaries.md`](actors-and-boundaries.md): the **Myco
 | **Capture** | — | Hooks write-ahead to spool, drain to Deployment (**M** → **Core**) | — | — | none |
 | **Intelligence** | Views results (**UI**) | Reads via MCP (**MCP**) | Runs tasks in the harness container (**Core** + **W**/**C**) | — | none |
 | **Recall** | — | `UserPromptSubmit` recall endpoint (**Core**) | — | — | Read-only project MCP (**MCP**) |
-| **Admin** | Deployment Settings, enrollment, external grants — all members, flat (**UI**, **Core**) | — | — | Step-up credential for sensitive infrastructure (**Core**) | none |
+| **Admin** | Deployment Settings, enrollment, external grants, provider credentials — all members, flat (**UI**, **Core**) | — | — | — | none |
 | **Local health** | `myco doctor` (**M**) | — | — | — | — |
 | **Maintenance** | — | — | — | — | — |
 | ↳ machine-side | Managed Asset Reconciliation, continuous (**MS**) | — | — | — | — |
@@ -491,7 +491,7 @@ Classification is **per leaf, not per registry row**. Seven of the registry's 31
 
 **Coverage is measured against DECLARED leaves, not defaulted ones.** A leaf declared `.optional()` with no default never appears in a parsed config, so anything enumerating that way cannot see it — and the leaves that go missing are not a random sample. `agent.provider.base_url`, `agent.provider.type` and `embedding.base_url` are all optional, and they name the endpoint a Deployment's own credential is sent to. A coverage gate blind to those is blind exactly where it matters most, which is why `declaredLeafPaths()` walks the schema rather than an instance of it.
 
-**Three leaves are step-up gated, and so is any value that carries an endpoint**, marked in the table. #907 justifies step-up on provider credentials as *"a member could exfiltrate a provider key"* — but a stored secret is already write-only and masked, so the reachable path is not reading the key, it is **changing where the key is sent**. `agent/harness/openai.ts` locks `openai` and `openrouter` to hardcoded base URLs for exactly this reason; `agent.provider.base_url` is the same value left open for `openai-compatible`, and on a Deployment every member can write settings.
+**Every Deployment leaf is member-writable (the step-up gate was dropped 2026-08-30, #1036).** The substitution risk #907 named is answered in structure: a credentialed provider's key travels only to its provider's own fixed endpoint (member-side `agent/provider.ts`, server-side `core/titling.ts`), stored credentials are write-only and masked, and every write records its actor. A custom `base_url` receives no stored Deployment credential — the rule every future provider consumer (#914 harness auth) must keep.
 
 A leaf-name list alone is not enough, and assuming it was left a real bypass. Several Deployment leaves are whole documents: `agent.tasks` is a record of per-task overrides, each of which may carry its own `provider: { type, base_url }`. Writing that one leaf redirects the credential while naming none of the gated leaves. So the requirement is derived from what a submitted value CONTAINS — any `base_url` at any depth, or any `provider` object — and the gate that proves it walks the declared schema rather than echoing the list.
 
@@ -527,8 +527,8 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `agent.harness` | REPLACE | Deployment | Core | Which harness the Deployment runs tasks under | #919 |
 | `agent.model` | REPLACE | Deployment | Core | Model pin the Deployment applies when a task sets none | #919 |
 | `agent.reasoningLevel` | REPLACE | Deployment | Core | Default reasoning tier the Deployment resolves through the provider's map | #919 |
-| `agent.provider.type` | REPLACE | Deployment | Core | **Step-up.** Selects the provider, and with it which endpoint family the Deployment's credential is sent to | #915 |
-| `agent.provider.base_url` | REPLACE | Deployment | Core | **Step-up.** The endpoint the Deployment's own credential is sent to; a member-writable value here redirects it | #915 |
+| `agent.provider.type` | REPLACE | Deployment | Core | Selects the provider, and with it which endpoint family the Deployment's credential is sent to | #915 |
+| `agent.provider.base_url` | REPLACE | Deployment | Core | A custom endpoint; no stored Deployment credential is sent to one | #915 |
 | `agent.provider.local_backend` | REPLACE | Deployment | Core | Which local runtime a local provider targets | #915 |
 | `agent.provider.model` | REPLACE | Deployment | Core | Model the provider is asked for | #915 |
 | `agent.provider.context_length` | REPLACE | Deployment | Core | Context window the Deployment requests of a local provider | #915 |
@@ -544,7 +544,7 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `agent.provider.effort_map.low.effort` | REPLACE | Deployment | Core | Effort this provider applies at the `low` tier | #919 |
 | `agent.provider.effort_map.low.verbosity` | REPLACE | Deployment | Core | Verbosity this provider applies at the `low` tier | #919 |
 | `agent.provider.thinking_budget_map.low` | REPLACE | Deployment | Core | Thinking budget this provider applies at the `low` tier | #919 |
-| `embedding.base_url` | REPLACE | Deployment | Core | **Step-up.** The endpoint the Deployment's embedding credential is sent to | #915 |
+| `embedding.base_url` | REPLACE | Deployment | Core | Where embeddings are computed | #915 |
 | `backup.dir` | DROP | — | — | A member-writable server-side filesystem path is the #907 H5 family, and has no meaning on a Worker. Where a self-hosted Deployment writes backups is operator configuration, not a member setting | #923 |
 | `agent.tasks` | REPLACE | Deployment | Core | Per-task overrides the Deployment applies to its own harness runs | #919 |
 | `notifications.domains` | KEEP | Member | M | Per-viewer delivery preference for each notification domain | #915 |

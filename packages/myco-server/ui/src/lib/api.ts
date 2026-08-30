@@ -37,7 +37,7 @@ export function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   return request<T>(path, { method: 'GET', headers: { accept: 'application/json' }, signal });
 }
 
-/** A write with a JSON body and, when a change needs one, the step-up key in its header. */
+/** A write with a JSON body. */
 export function putJson<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
   return request<T>(path, { method: 'PUT', headers: { accept: 'application/json', 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
 }

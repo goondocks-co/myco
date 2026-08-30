@@ -52,8 +52,6 @@ export const MEMBER_ID_PREFIX = 'mem_';
 export const MEMBER_ID_SEGMENT = `${MEMBER_ID_PREFIX}[A-Za-z0-9._-]{1,64}`;
 export const MEMBER_ID = new RegExp(`^${MEMBER_ID_SEGMENT}$`);
 
-/** The header a caller presents a step-up authority in, for the operations flat membership does not cover. */
-export const STEP_UP_HEADER = 'x-myco-step-up';
 
 /**
  * How long after a successor's first use a request on its predecessor is still

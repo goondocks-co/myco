@@ -476,6 +476,9 @@ const V6_STATEMENTS: readonly string[] = [
    * second — a confused deputy, and a single token covering all four reads as
    * protection while granting every one of them.
    */
+  // Dormant as of 2026-08-30 (#1036): the step-up mechanism left the product and
+  // nothing writes or reads these rows. The table stays in the chain — steps are
+  // expand-only — and in databases, inert.
   `CREATE TABLE IF NOT EXISTS step_up_authorities (
      id          TEXT PRIMARY KEY,
      key_hash    TEXT NOT NULL,
