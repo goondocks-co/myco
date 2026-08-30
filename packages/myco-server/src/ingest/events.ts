@@ -152,8 +152,10 @@ export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<R
   }
   const result = await ingestEvent(env.db, ctx, parsed);
   const envelope = parsed as { kind?: unknown; sessionId?: unknown } | null;
-  if (result.persisted && result.projected === true && envelope?.kind === SESSION_END_KIND && typeof envelope.sessionId === 'string') {
-    env.afterResponse(titleSession(env, { projectId: ctx.projectId, sessionId: envelope.sessionId, now: ctx.now }).then(() => undefined));
+  const endedSession = envelope?.kind === SESSION_END_KIND && typeof envelope.sessionId === 'string' ? envelope.sessionId : null;
+  if (result.persisted && result.projected === true && endedSession !== null) {
+    const target = { projectId: ctx.projectId, sessionId: endedSession, now: ctx.now };
+    env.afterResponse(() => titleSession(env, target).then(() => undefined));
   }
   return Response.json(result);
 }

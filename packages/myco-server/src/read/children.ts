@@ -108,3 +108,21 @@ export const listAttachments = (db: RelationalStore, scope: ReadScope, sessionId
       description: (r.description as string | null) ?? null,
     }),
   }, scope, sessionId, opts);
+
+export interface MaterialRow { prompt: string; response: string | null }
+
+/** A session's earliest inline user prompts, each cut to `excerptChars`, with the start of its first inline response; `limit` prompts at most, oldest first. */
+export async function sessionMaterialRows(db: RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }): Promise<MaterialRow[]> {
+  const { results } = await db
+    .prepare(`SELECT substr(pb.text, 1, ?) AS prompt,
+                     (SELECT substr(r.text, 1, ?) FROM responses r
+                       WHERE r.project_id = pb.project_id AND r.session_id = pb.session_id AND r.prompt_id = pb.prompt_id AND r.text IS NOT NULL
+                       ORDER BY r.created_at, r.response_id LIMIT 1) AS response
+                FROM prompt_batches pb
+               WHERE pb.project_id = ? AND pb.session_id = ? AND pb.origin = 'user' AND pb.text IS NOT NULL
+               ORDER BY pb.created_at, pb.prompt_id LIMIT ?`)
+    .bind(opts.excerptChars, opts.excerptChars, projectId, sessionId, opts.limit)
+    .all<{ prompt: string; response: string | null }>();
+  return results.map((r) => ({ prompt: r.prompt, response: r.response ?? null }));
+}
+

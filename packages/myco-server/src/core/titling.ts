@@ -14,6 +14,8 @@
 import { MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MAX_TITLES_PER_PROJECT_PER_HOUR, TITLING_TIMEOUT_MS } from '../constants.js';
 import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
+import { sessionMaterialRows, type MaterialRow } from '../read/children.js';
+import { claimTitling, sessionFacts, titlingsSince, writeTitle } from '../read/sessions.js';
 import { deploymentSecretStore, type SecretStore } from './secrets.js';
 import { leafValues, providerConfiguredFor } from './settings.js';
 
@@ -80,23 +82,14 @@ export async function resolveTitlingProvider(db: RelationalStore, secrets: Secre
   return { ok: false, outcome: 'no_provider' };
 }
 
-export interface MaterialLine { prompt: string; response: string | null }
+export type MaterialLine = MaterialRow;
 
 /** The session's earliest inline user prompts, each with the start of its first inline response, inside the character budget. */
 export async function sessionMaterial(db: RelationalStore, projectId: string, sessionId: string): Promise<MaterialLine[]> {
-  const { results } = await db
-    .prepare(`SELECT substr(pb.text, 1, ?) AS prompt,
-                     (SELECT substr(r.text, 1, ?) FROM responses r
-                       WHERE r.project_id = pb.project_id AND r.session_id = pb.session_id AND r.prompt_id = pb.prompt_id AND r.text IS NOT NULL
-                       ORDER BY r.created_at, r.response_id LIMIT 1) AS response
-                FROM prompt_batches pb
-               WHERE pb.project_id = ? AND pb.session_id = ? AND pb.origin = 'user' AND pb.text IS NOT NULL
-               ORDER BY pb.created_at, pb.prompt_id LIMIT ?`)
-    .bind(MATERIAL_EXCERPT_CHARS, MATERIAL_EXCERPT_CHARS, projectId, sessionId, MAX_MATERIAL_PROMPTS)
-    .all<{ prompt: string; response: string | null }>();
+  const rows = await sessionMaterialRows(db, projectId, sessionId, { limit: MAX_MATERIAL_PROMPTS, excerptChars: MATERIAL_EXCERPT_CHARS });
   const lines: MaterialLine[] = [];
   let used = 0;
-  for (const row of results) {
+  for (const row of rows) {
     const cost = row.prompt.length + (row.response?.length ?? 0);
     if (used + cost > MAX_MATERIAL_CHARS) break;
     used += cost;
@@ -181,17 +174,8 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget): Promi
   const skipped = (outcome: TitlingOutcome): TitlingOutcome => { emit({ kind: 'session_title_skipped', projectId, sessionId, outcome }); return outcome; };
   const failed = (outcome: TitlingOutcome, extra: Record<string, unknown> = {}): TitlingOutcome => { emit({ kind: 'session_title_failed', projectId, sessionId, outcome, ...extra }); return outcome; };
   try {
-    const claim = await env.db
-      .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND ended_at IS NOT NULL AND titled_at IS NULL`)
-      .bind(now, projectId, sessionId)
-      .run();
-    if (claim.meta.changes !== 1) return skipped('already');
-
-    const recent = await env.db
-      .prepare(`SELECT COUNT(*) AS n FROM sessions WHERE project_id = ? AND titled_at > ?`)
-      .bind(projectId, now - HOUR_MS)
-      .first<{ n: number }>();
-    if ((recent?.n ?? 0) > MAX_TITLES_PER_PROJECT_PER_HOUR) return skipped('budget');
+    if (!(await claimTitling(env.db, projectId, sessionId, now))) return skipped('already');
+    if ((await titlingsSince(env.db, projectId, now - HOUR_MS)) > MAX_TITLES_PER_PROJECT_PER_HOUR) return skipped('budget');
 
     const material = await sessionMaterial(env.db, projectId, sessionId);
     if (material.length === 0) return skipped('no_material');
@@ -200,8 +184,7 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget): Promi
     const resolved = await resolveTitlingProvider(env.db, deploymentSecretStore(env.db, env.wrappingKey));
     if (!resolved.ok) return skipped(resolved.outcome);
 
-    const facts = await env.db.prepare(`SELECT agent, branch FROM sessions WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ agent: string | null; branch: string | null }>();
-    const request = providerRequest(resolved.provider, titlingPrompt(facts ?? { agent: null, branch: null }, material));
+    const request = providerRequest(resolved.provider, titlingPrompt(await sessionFacts(env.db, projectId, sessionId), material));
 
     let response: Response;
     try {
@@ -216,11 +199,7 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget): Promi
     const answer = text === null ? null : parseTitleAnswer(text);
     if (answer === null) return failed('malformed');
 
-    const written = await env.db
-      .prepare(`UPDATE sessions SET title = ?, summary = ? WHERE project_id = ? AND session_id = ? AND title IS NULL`)
-      .bind(answer.title, answer.summary, projectId, sessionId)
-      .run();
-    if (written.meta.changes !== 1) return skipped('already');
+    if (!(await writeTitle(env.db, projectId, sessionId, answer.title, answer.summary))) return skipped('already');
     emit({ kind: 'session_titled', projectId, sessionId, provider: resolved.provider.kind === 'anthropic' ? 'anthropic' : resolved.provider.provider });
     return 'titled';
   } catch {

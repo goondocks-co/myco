@@ -358,9 +358,9 @@ describe('archival refuses capture the same on both stores', () => {
       const beforeEnd = await titleSession(env, { projectId: 'proj_1', sessionId: 'sess_t', now: 5_000 });
       const labelBefore = (await listSessions(env.db, scope, { sessionId: 'sess_t' })).rows[0]?.label;
       expect(await post({ eventId: uuid(302), sessionId: 'sess_t', kind: 'session.end', createdAt: 6_000, payload: { endedAt: 6_000 } })).toEqual({ persisted: true, projected: true });
-      // The route itself schedules a titling past its answer, which claims the session; the explicit call finds the claim.
-      const afterRoute = await titleSession(env, { projectId: 'proj_1', sessionId: 'sess_t', now: 7_000 });
-      const claimedByRoute = (await listSessions(env.db, scope, { sessionId: 'sess_t' })).rows[0]?.titledAt !== null;
+      // Each target runs the route's deferred titling by its own mechanism; the contract below drives the titler directly on a reset claim.
+      await env.db.prepare(`UPDATE sessions SET titled_at = NULL WHERE session_id = 'sess_t'`).run();
+      const noProvider = await titleSession(env, { projectId: 'proj_1', sessionId: 'sess_t', now: 7_000 });
 
       await env.db.prepare(`UPDATE sessions SET titled_at = NULL WHERE session_id = 'sess_t'`).run();
       for (const [leaf, value] of [['agent.provider.type', 'openai-compatible'], ['agent.provider.model', 'local-model'], ['agent.provider.base_url', 'http://titles.internal/v1']]) {
@@ -371,10 +371,10 @@ describe('archival refuses capture the same on both stores', () => {
       const row = (await listSessions(env.db, scope, { sessionId: 'sess_t' })).rows[0];
       const renamed = await renameProject(env.db, 'proj_1', 'Myco');
       const absent = await renameProject(env.db, 'proj_nobody', 'Nobody');
-      outcomes.push({ beforeEnd, labelBefore, afterRoute, claimedByRoute, titled, again, sent, label: row?.label, title: row?.title, summary: row?.summary, renamed, absent });
+      outcomes.push({ beforeEnd, labelBefore, noProvider, titled, again, sent, label: row?.label, title: row?.title, summary: row?.summary, renamed, absent });
     }
     const expected = {
-      beforeEnd: 'already', labelBefore: 'Add a retry to the runner', afterRoute: 'already', claimedByRoute: true, titled: 'titled', again: 'already',
+      beforeEnd: 'already', labelBefore: 'Add a retry to the runner', noProvider: 'no_provider', titled: 'titled', again: 'already',
       sent: ['http://titles.internal/v1/chat/completions no-credential'],
       label: 'Retry added to the runner', title: 'Retry added to the runner', summary: 'Added a retry to runner.ts and covered it with a test.', renamed: 'renamed', absent: 'absent',
     };

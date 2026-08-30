@@ -86,9 +86,10 @@ export interface DeferredWork {
 
 export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: DeferredWork): ServerEnv {
   return {
-    // With a deferral the work is kept alive past the answer; without one it still
-    // runs, detached, which is what a caller that supplies none has asked for.
-    afterResponse: deferred === undefined ? (work) => { void work; } : (work) => deferred.waitUntil(work),
+    // The runtime hands every request a deferral, and the work rides it past the
+    // answer. A caller that supplies none has asked for the answer alone: nothing
+    // starts, so no work of one request can outlive it unobserved.
+    afterResponse: deferred === undefined ? () => {} : (work) => deferred.waitUntil(work()),
     outbound: (input, init) => fetch(input, init),
     platform: cloudflarePlatform(bindings),
     db: bindings.MYCO_DB,

@@ -76,7 +76,7 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
   const pending = new Set<Promise<void>>();
   return {
     afterResponse: (work) => {
-      const tracked: Promise<void> = work.catch(() => undefined).finally(() => { pending.delete(tracked); });
+      const tracked: Promise<void> = work().catch(() => undefined).finally(() => { pending.delete(tracked); });
       pending.add(tracked);
     },
     settle: async () => { await Promise.allSettled([...pending]); },

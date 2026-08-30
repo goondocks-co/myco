@@ -6,4 +6,6 @@ ALTER TABLE sessions ADD COLUMN summary TEXT;
 
 ALTER TABLE sessions ADD COLUMN titled_at INTEGER;
 
+CREATE INDEX IF NOT EXISTS idx_sessions_titled ON sessions (project_id, titled_at);
+
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '12');

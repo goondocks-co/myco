@@ -974,6 +974,7 @@ const V12_STATEMENTS: readonly string[] = [
   `ALTER TABLE sessions ADD COLUMN title TEXT`,
   `ALTER TABLE sessions ADD COLUMN summary TEXT`,
   `ALTER TABLE sessions ADD COLUMN titled_at INTEGER`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_titled ON sessions (project_id, titled_at)`,
 ];
 
 function withStamp(version: number, statements: readonly string[]): SchemaStep {
