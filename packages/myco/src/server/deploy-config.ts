@@ -68,14 +68,17 @@ export function renderDeployConfig(record: DeploymentRecord): string {
 /**
  * The committed configuration shaped for a local parity/dev boot:
  * `global_fetch_strictly_public` dropped (a scenario's loopback provider stub
- * must be reachable) and the `[assets]` table dropped (a fresh worktree holds
- * no ui/dist, and every parity route is worker-owned). A multi-line flags
- * array or a second flag fails loudly rather than shipping a silently
- * different runtime.
+ * must be reachable), the `[assets]` table dropped (a fresh worktree holds no
+ * ui/dist, and every parity route is worker-owned), and the container tables
+ * dropped (a local container needs Docker; the probe surface answers a
+ * refusal where the binding is absent). A multi-line flags array or a second
+ * flag fails loudly rather than shipping a silently different runtime.
  */
+const PARITY_DROPPED_TABLES = ['[assets]', '[[durable_objects.bindings]]', '[[migrations]]', '[[containers]]'];
+
 export function parityWranglerConfig(): string {
   const kept: string[] = [];
-  let inAssets = false;
+  let dropping = false;
   for (const line of WRANGLER_TEMPLATE.split('\n')) {
     if (line.startsWith('compatibility_flags')) {
       if (!line.includes(']')) throw new Error('compatibility_flags spans lines; teach parityWranglerConfig before reformatting wrangler.toml');
@@ -83,9 +86,10 @@ export function parityWranglerConfig(): string {
       if (/"/.test(stripped.split('=')[1] ?? '')) kept.push(stripped);
       continue;
     }
-    if (line.trim() === '[assets]') { inAssets = true; continue; }
-    if (inAssets && /^\[/.test(line.trim())) inAssets = false;
-    if (!inAssets) kept.push(line);
+    const header = line.trim();
+    if (PARITY_DROPPED_TABLES.includes(header)) { dropping = true; continue; }
+    if (dropping && /^\[/.test(header)) dropping = PARITY_DROPPED_TABLES.includes(header);
+    if (!dropping) kept.push(line);
   }
   return kept.join('\n');
 }

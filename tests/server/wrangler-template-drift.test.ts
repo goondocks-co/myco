@@ -77,4 +77,13 @@ describe('parityWranglerConfig', () => {
       expect(config).toContain(kept);
     }
   });
+
+  it('drops the container tables a local boot cannot serve, which the committed file carries', () => {
+    expect(WRANGLER_TEMPLATE).toContain('[[containers]]');
+    expect(WRANGLER_TEMPLATE).toContain('class_name = "HarnessContainer"');
+    const config = parityWranglerConfig();
+    for (const dropped of ['[[containers]]', '[[durable_objects.bindings]]', '[[migrations]]', 'HARNESS']) {
+      expect(config).not.toContain(dropped);
+    }
+  });
 });

@@ -12,6 +12,7 @@ import type {
   PlatformDescriptor, RateLimiter, RelationalStore, ServerEnv,
 } from '../../core/adapters.js';
 import { cloudflareSourceOf } from './source.js';
+import type { HarnessContainer } from './harness-container.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
 
 /** The bindings `wrangler.toml` declares, exactly as the Worker receives them. */
@@ -28,6 +29,8 @@ export interface CloudflareBindings extends OwnerBindings {
    * attempt to seal or open rather than refusing unrelated traffic at boot.
    */
   SECRET_WRAP_KEY?: { get(): Promise<string> };
+  /** The harness container namespace; absent in local dev and the parity harness, where the probe answers a refusal. */
+  HARNESS?: DurableObjectNamespace<HarnessContainer>;
 }
 
 // Compile-time proof that the platform's own types satisfy the adapter interfaces.
@@ -89,6 +92,22 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     // The runtime hands every request a deferral, and the work rides it past the
     // answer. A caller that supplies none has asked for the answer alone: nothing
     // starts, so no work of one request can outlive it unobserved.
+    ...(bindings.HARNESS === undefined ? {} : {
+      harnessProbe: async (runId: string, timeoutSeconds: number): Promise<Record<string, unknown>> => {
+        // One Durable Object per run, keyed by the run id; inlined so the shared
+        // test graph never loads the containers package's workerd-only imports.
+        const namespace = bindings.HARNESS!;
+        const stub = namespace.get(namespace.idFromName(runId));
+        await stub.beginRun(runId, timeoutSeconds);
+        const answered = await stub.fetch('http://harness/probe');
+        // A start failure arrives as a text/plain response, and that text is
+        // the one line saying why; it must reach the caller, never a parser.
+        const text = await answered.text();
+        let container: unknown = text;
+        try { container = JSON.parse(text); } catch { /* the text stands */ }
+        return { held: true, status: answered.status, ok: answered.ok, container };
+      },
+    }),
     afterResponse: deferred === undefined ? () => {} : (work) => deferred.waitUntil(work()),
     outbound: (input, init) => fetch(input, init),
     platform: cloudflarePlatform(bindings),
