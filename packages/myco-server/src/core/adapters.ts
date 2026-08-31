@@ -218,6 +218,8 @@ export interface ServerEnv {
    * proposal in `deferred-adapters.ts` subsumes this seam when dispatch lands.
    */
   harnessProbe?: (runId: string, timeoutSeconds: number) => Promise<Record<string, unknown>>;
+  /** Launch a held harness runtime for one run, its dispatch handed as environment. Present only where a target has one. */
+  harnessLaunch?: (spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }) => Promise<void>;
   /** Starts `work` to finish after the answer has been sent. The work settles its own failures; nothing in the request awaits it. */
   afterResponse(work: () => Promise<void>): void;
   /** The Deployment's outbound HTTP, for a call the core makes on its own behalf. */

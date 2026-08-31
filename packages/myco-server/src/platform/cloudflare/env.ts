@@ -93,6 +93,10 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     // answer. A caller that supplies none has asked for the answer alone: nothing
     // starts, so no work of one request can outlive it unobserved.
     ...(bindings.HARNESS === undefined ? {} : {
+      harnessLaunch: async (spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }): Promise<void> => {
+        const namespace = bindings.HARNESS!;
+        await namespace.get(namespace.idFromName(spec.runId)).launch(spec);
+      },
       harnessProbe: async (runId: string, timeoutSeconds: number): Promise<Record<string, unknown>> => {
         // One Durable Object per run, keyed by the run id; inlined so the shared
         // test graph never loads the containers package's workerd-only imports.
