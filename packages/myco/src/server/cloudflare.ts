@@ -13,6 +13,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
+import { ensureServerLayout } from './layout.js';
 import { runOrThrow, systemRunner, type CommandRunner } from './runner.js';
 
 /** Wrangler refuses to guess between accounts, and guessing is what must not happen. */
@@ -25,6 +26,8 @@ export class AccountNotSelected extends Error {
     this.name = 'AccountNotSelected';
   }
 }
+
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
 
 export interface CloudflareOptions {
   /**
@@ -39,6 +42,8 @@ export interface CloudflareOptions {
   runner?: CommandRunner;
   /** Directory holding `wrangler.toml`; the deployment's source of truth. */
   configDir: string;
+  /** A derived config inside `configDir` (`wrangler.deploy.toml`); commands read the committed file without one. */
+  configFile?: string;
 }
 
 function resolved(options: CloudflareOptions): { runner: CommandRunner; env: NodeJS.ProcessEnv } {
@@ -54,6 +59,11 @@ function resolved(options: CloudflareOptions): { runner: CommandRunner; env: Nod
 /** Every wrangler invocation carries the account explicitly. */
 function wrangler(...args: string[]): string[] {
   return ['wrangler', ...args];
+}
+
+/** The `-c` pair for a derived config, or nothing for the committed one. */
+function configArgs(options: { configFile?: string }): string[] {
+  return options.configFile === undefined ? [] : ['-c', options.configFile];
 }
 
 export interface AccountRef { name: string; id: string }
@@ -81,7 +91,7 @@ export interface DeployResult { versionId: string | null; url: string | null }
  */
 export async function deployWorker(options: CloudflareOptions & { dryRun?: boolean }): Promise<DeployResult> {
   const { runner, env } = resolved(options);
-  const args = wrangler('deploy', ...(options.dryRun === true ? ['--dry-run'] : []));
+  const args = wrangler('deploy', ...configArgs(options), ...(options.dryRun === true ? ['--dry-run'] : []));
   const result = await runOrThrow(runner, 'npx', args, { cwd: options.configDir, env });
 
   return {
@@ -94,8 +104,72 @@ export async function deployWorker(options: CloudflareOptions & { dryRun?: boole
 export async function applyMigrations(options: CloudflareOptions & { databaseName: string }): Promise<void> {
   const { runner, env } = resolved(options);
   await runOrThrow(runner, 'npx',
-    wrangler('d1', 'migrations', 'apply', options.databaseName, '--remote'),
+    wrangler('d1', 'migrations', 'apply', options.databaseName, '--remote', ...configArgs(options)),
     { cwd: options.configDir, env });
+}
+
+/** Create the D1 database and answer its UUID; an existing database of the name is answered, not an error. */
+export async function ensureDatabase(options: CloudflareOptions & { databaseName: string }): Promise<{ databaseId: string; created: boolean }> {
+  const { runner, env } = resolved(options);
+  const listed = await runner.run('npx', wrangler('d1', 'list', '--json'), { cwd: options.configDir, env });
+  if (listed.code === 0) {
+    try {
+      const rows = JSON.parse(listed.stdout) as { name: string; uuid: string }[];
+      const existing = rows.find((r) => r.name === options.databaseName);
+      if (existing !== undefined) return { databaseId: existing.uuid, created: false };
+    } catch { /* an unreadable list falls through to create, which reports its own conflict */ }
+  }
+  const result = await runOrThrow(runner, 'npx', wrangler('d1', 'create', options.databaseName), { cwd: options.configDir, env });
+  const id = UUID_RE.exec(result.stdout)?.[0];
+  if (id === undefined) throw new Error(`wrangler created ${options.databaseName} without printing its id; run \`wrangler d1 list\` and add databaseId to the deployment record`);
+  return { databaseId: id, created: true };
+}
+
+/** Create the R2 bucket; an existing bucket of the name is kept. */
+export async function ensureBucket(options: CloudflareOptions & { bucketName: string }): Promise<{ created: boolean }> {
+  const { runner, env } = resolved(options);
+  const result = await runner.run('npx', wrangler('r2', 'bucket', 'create', options.bucketName), { cwd: options.configDir, env });
+  if (result.code === 0) return { created: true };
+  if (/already (exists|owned)/i.test(result.stdout + result.stderr)) return { created: false };
+  throw new Error(`r2 bucket create failed: ${(result.stderr || result.stdout).slice(-500)}`);
+}
+
+/**
+ * The account's secrets store id, creating the store when the account has
+ * none. An account holds ONE store, so an existing store of any name is
+ * reused rather than a second attempted.
+ */
+export async function ensureSecretsStore(options: CloudflareOptions): Promise<{ storeId: string; created: boolean }> {
+  const { runner, env } = resolved(options);
+  const listed = await runner.run('npx', wrangler('secrets-store', 'store', 'list', '--remote'), { cwd: options.configDir, env });
+  const existing = /[0-9a-f]{32}/.exec(listed.stdout)?.[0];
+  if (listed.code === 0 && existing !== undefined) return { storeId: existing, created: false };
+  const result = await runOrThrow(runner, 'npx', wrangler('secrets-store', 'store', 'create', 'myco', '--remote'), { cwd: options.configDir, env });
+  const id = /[0-9a-f]{32}/.exec(result.stdout)?.[0];
+  if (id === undefined) throw new Error('wrangler created the secrets store without printing its id; run `wrangler secrets-store store list --remote` and add storeId to the deployment record');
+  return { storeId: id, created: true };
+}
+
+/** Install the wrapping key in the store, value on stdin, never argv. */
+export async function putStoreSecret(options: CloudflareOptions & { storeId: string; name: string; value: string }): Promise<void> {
+  const { runner, env } = resolved(options);
+  await runOrThrow(runner, 'npx',
+    wrangler('secrets-store', 'secret', 'create', options.storeId, '--name', options.name, '--scopes', 'workers', '--remote'),
+    { cwd: options.configDir, env, input: options.value });
+}
+
+/** Install one Worker secret, value on stdin, never argv. */
+export async function putWorkerSecretValue(options: CloudflareOptions & { workerName: string; name: string; value: string }): Promise<void> {
+  const { runner, env } = resolved(options);
+  await runOrThrow(runner, 'npx',
+    wrangler('secret', 'put', options.name, '--name', options.workerName),
+    { cwd: options.configDir, env, input: options.value });
+}
+
+/** Remove the Worker. The database, bucket, and store are left standing; data removal is its own explicit act. */
+export async function deleteWorker(options: CloudflareOptions & { workerName: string }): Promise<void> {
+  const { runner, env } = resolved(options);
+  await runOrThrow(runner, 'npx', wrangler('delete', '--name', options.workerName, '--force'), { cwd: options.configDir, env });
 }
 
 export interface CloudflareStatus {
@@ -110,9 +184,12 @@ export async function cloudflareStatus(options: CloudflareOptions & { workerName
     wrangler('deployments', 'list', '--name', options.workerName),
     { cwd: options.configDir, env });
 
+  // The list prints OLDEST first, and a version line takes one of two shapes
+  // depending on the wrangler release; the current version is the last match.
+  const versions = [...result.stdout.matchAll(/(?:Version ID:|Version\(s\):\s*\(\d+%\))\s*([0-9a-f-]{36})/g)];
   return {
     deployed: result.code === 0 && result.stdout.trim() !== '',
-    versionId: /Version ID:\s*([0-9a-f-]+)/.exec(result.stdout)?.[1] ?? null,
+    versionId: versions.at(-1)?.[1] ?? null,
     raw: result.stdout,
   };
 }
@@ -237,7 +314,8 @@ export async function putWorkerSecrets(target: WorkerSecretTarget, secrets: Work
 }
 
 export function deploymentRecordPath(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, 'server', 'cloudflare.json');
+  ensureServerLayout(mycoHome);
+  return path.join(mycoHome, 'server', 'cloudflare', 'record.json');
 }
 
 export function writeDeploymentRecord(record: DeploymentRecord, mycoHome = resolveMycoHome()): void {

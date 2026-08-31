@@ -226,7 +226,7 @@ describe('the whole flow on a loopback listener', () => {
     expect(result).toEqual({ app: { slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', clientId: 'Iv1.deadbeef', ownerLogin: 'goondocks-co' }, callbackUrl: `${URL_}/auth/callback`, verified: { ok: true } });
     expect(calls.map((c) => c.args.slice(0, 3))).toEqual([['--no-install', 'wrangler', '--version'], ['wrangler', 'secret', 'bulk']]);
     expect(calls[1]!.options?.env?.WRANGLER_LOG).toBe('log');
-    expect(JSON.parse(readFileSync(join(home, 'server', 'cloudflare.json'), 'utf8')).url).toBe(URL_);
+    expect(JSON.parse(readFileSync(join(home, 'server', 'cloudflare', 'record.json'), 'utf8')).url).toBe(URL_);
     expect(logs.join('\n')).not.toContain('s3cr3t');
     expect(logs.join('\n')).toContain('owned by goondocks-co');
   });
@@ -266,8 +266,8 @@ describe('the deployment record', () => {
   it('round-trips the url once an operator has named it', () => {
     const home = mkdtempSync(join(tmpdir(), 'myco-record-'));
     writeDeploymentRecord({ ...RECORD, url: URL_ }, home);
-    expect(JSON.parse(readFileSync(join(home, 'server', 'cloudflare.json'), 'utf8')).url).toBe(URL_);
-    writeFileSync(join(home, 'server', 'cloudflare.json'), JSON.stringify(RECORD));
+    expect(JSON.parse(readFileSync(join(home, 'server', 'cloudflare', 'record.json'), 'utf8')).url).toBe(URL_);
+    writeFileSync(join(home, 'server', 'cloudflare', 'record.json'), JSON.stringify(RECORD));
     expect(resolveSignInTarget('cloudflare', home)).toEqual({ kind: 'cloudflare', record: RECORD, mycoHome: home });
   });
 });

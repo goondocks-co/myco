@@ -92,6 +92,20 @@ describe('status', () => {
     const status = await cloudflareStatus({ ...base(), runner: runner({ code: 1 }), workerName: 'myco-server' });
     expect(status.deployed).toBe(false);
   });
+
+  it('answers the NEWEST version from a list wrangler prints oldest-first, in either version-line shape', async () => {
+    const out = [
+      'Created: 2026-08-29T21:26:44Z',
+      'Version(s):  (100%) 09a60d39-9de2-4dd0-a202-a1bd5766ec6b',
+      'Created: 2026-08-31T18:00:00Z',
+      'Version(s):  (100%) 53a749a3-5798-4392-9d4a-c06965686038',
+    ].join('\n');
+    const status = await cloudflareStatus({ ...base(), runner: runner({ stdout: out }), workerName: 'myco-server' });
+    expect(status.versionId).toBe('53a749a3-5798-4392-9d4a-c06965686038');
+
+    const legacy = await cloudflareStatus({ ...base(), runner: runner({ stdout: 'Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b' }), workerName: 'myco-server' });
+    expect(legacy.versionId).toBe('16a2423e-af96-4310-b61b-4e2b5fd1310b');
+  });
 });
 
 describe('backup coverage is stated, not implied', () => {
