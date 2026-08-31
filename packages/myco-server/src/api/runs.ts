@@ -22,9 +22,9 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
 import {
-  applyRunUpdate, claimRun, getRun, getState, listAgents, listReports, mutateState,
-  projectAdmission, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns, upsertAgent, upsertCortexInstructions,
-  type RunInsert, type RunUpdate,
+  applyRunUpdate, claimRun, getRun, getState, insertReport, listAgents, listReports, mutateState,
+  projectAdmission, recordRunEvents, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns, upsertAgent, upsertCortexInstructions,
+  type RunInsert, type RunUpdate, type RunEventRowInsert,
 } from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
 import type { RunAdmissionGate } from '../core/runs.js';
@@ -247,6 +247,69 @@ export async function handleSupersedeRuns(env: ServerEnv, ctx: RouteContext): Pr
 }
 
 /** Every report a run recorded, in the order they were written. */
+const EVENT_TYPES = ['pre_tool_use', 'post_tool_use', 'phase_start', 'phase_end'] as const;
+const EVENT_OUTCOMES = ['success', 'error'] as const;
+/** The most events one request may carry; a burst larger than this is split by the caller. */
+export const MAX_EVENTS_PER_REQUEST = 32;
+const MAX_SUMMARY_CHARS = 4_096;
+const MAX_DETAILS_CHARS = 65_536;
+const MAX_PAYLOAD_CHARS = 16_384;
+
+/**
+ * Record one report against a run. The run row is the tenancy anchor;
+ * `agentId` is the reporter's label and is not held to the run's own agent —
+ * attribution of the WRITE stays with the authenticated credential.
+ */
+export async function handleWriteReport(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (!body) return Response.json(refused(ctx, BAD_BODY));
+  const runId = str(body.runId);
+  const agentId = str(body.agentId);
+  const action = str(body.action);
+  const summary = str(body.summary, MAX_SUMMARY_CHARS);
+  const details = strOrNull(body.details, MAX_DETAILS_CHARS);
+  if (runId === null || agentId === null || action === null || summary === null || details === undefined) {
+    return Response.json(refused(ctx, refusal('a report requires runId, agentId, action and summary within bounds', 'parse')));
+  }
+  const recorded = await insertReport(env.db, { projectId: ctx.projectId }, { runId, agentId, action, summary, details, createdAt: ctx.now });
+  if (!recorded) return Response.json(refused(ctx, refusal('report names a run this Project does not hold, or an agent this Deployment does not know', 'parse')));
+  return Response.json({ persisted: true, recorded: true });
+}
+
+/** Record a burst of run events. Rows are validated one by one; a burst with any malformed row is refused whole. */
+export async function handleRecordRunEvents(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (!body) return Response.json(refused(ctx, BAD_BODY));
+  const raw = body.events;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_EVENTS_PER_REQUEST) {
+    return Response.json(refused(ctx, refusal(`events must be 1..${MAX_EVENTS_PER_REQUEST} entries`, 'parse')));
+  }
+  const events: RunEventRowInsert[] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry)) return Response.json(refused(ctx, BAD_BODY));
+    const runId = str(entry.runId);
+    const eventType = (EVENT_TYPES as readonly string[]).includes(entry.eventType as string) ? (entry.eventType as string) : null;
+    const outcome = entry.outcome === undefined || entry.outcome === null ? null
+      : (EVENT_OUTCOMES as readonly string[]).includes(entry.outcome as string) ? (entry.outcome as string) : undefined;
+    const phaseName = strOrNull(entry.phaseName);
+    const toolName = strOrNull(entry.toolName);
+    // Truncated, never refused: the largest tool payloads are exactly the
+    // events an audit log most needs, and the sender's catch swallows a refusal.
+    const payload = entry.payload === undefined || entry.payload === null ? null
+      : typeof entry.payload === 'string' ? entry.payload.slice(0, MAX_PAYLOAD_CHARS) : undefined;
+    const durationMs = entry.durationMs === undefined || entry.durationMs === null ? null : int(entry.durationMs);
+    // Epoch milliseconds, like every server timestamp; a malformed value is a
+    // refusal, not a silent substitution.
+    const recordedAt = entry.recordedAt === undefined ? ctx.now : int(entry.recordedAt);
+    if (runId === null || eventType === null || outcome === undefined || phaseName === undefined || toolName === undefined || payload === undefined || durationMs === undefined || recordedAt === null) {
+      return Response.json(refused(ctx, refusal('an event requires runId and a known eventType, with bounded optional fields', 'parse')));
+    }
+    events.push({ runId, phaseName, eventType, toolName, outcome, durationMs, payload, recordedAt });
+  }
+  const recorded = await recordRunEvents(env.db, { projectId: ctx.projectId }, events);
+  return Response.json({ persisted: true, recorded });
+}
+
 export async function handleRunReports(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
   if (!body) return Response.json(refused(ctx, BAD_BODY));

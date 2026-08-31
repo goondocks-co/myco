@@ -359,6 +359,51 @@ export async function listReports(db: RelationalStore, scope: ReadScope, runId: 
   return results;
 }
 
+export interface ReportInsert {
+  runId: string;
+  agentId: string;
+  action: string;
+  summary: string;
+  details: string | null;
+  createdAt: number;
+}
+
+/** Record one report against a run this Project holds; an unknown run or an unregistered agent writes nothing and answers false — a foreign-key throw would read as retryable, and neither condition is. */
+export async function insertReport(db: RelationalStore, scope: ReadScope, report: ReportInsert): Promise<boolean> {
+  const result = await db
+    .prepare(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, details, created_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
+          AND EXISTS (SELECT 1 FROM agents WHERE id = ?)`)
+    .bind(scope.projectId, report.runId, report.agentId, report.action, report.summary, report.details, report.createdAt,
+          scope.projectId, report.runId, report.agentId)
+    .run();
+  return result.meta.changes === 1;
+}
+
+export interface RunEventRowInsert {
+  runId: string;
+  phaseName: string | null;
+  eventType: string;
+  toolName: string | null;
+  outcome: string | null;
+  durationMs: number | null;
+  payload: string | null;
+  recordedAt: number;
+}
+
+/** Record a burst of run events in one batch; each row lands independently through its own EXISTS guard, and a row naming a run this Project does not hold writes nothing. Answers how many landed. */
+export async function recordRunEvents(db: RelationalStore, scope: ReadScope, events: readonly RunEventRowInsert[]): Promise<number> {
+  const statements = events.map((event) => db
+    .prepare(`INSERT INTO agent_run_events (project_id, run_id, phase_name, event_type, tool_name, outcome, duration_ms, payload, recorded_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`)
+    .bind(scope.projectId, event.runId, event.phaseName, event.eventType, event.toolName, event.outcome, event.durationMs, event.payload, event.recordedAt,
+          scope.projectId, event.runId));
+  const results = await db.batch(statements);
+  return results.reduce((landed, result) => landed + result.meta.changes, 0);
+}
+
 export interface CortexInstructionsUpsert {
   agentId: string;
   content: string;
