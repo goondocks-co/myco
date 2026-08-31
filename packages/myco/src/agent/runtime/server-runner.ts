@@ -106,7 +106,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     // The harness follows the provider, exactly as the local executor infers
     // it; a local-provider dispatch under the wrong harness would spawn the
     // wrong runtime.
-    const harnessId = options.provider?.type === undefined ? HARNESS_CLAUDE_SDK : inferHarnessFromProviderType(options.provider.type);
+    const harnessId = (options.provider?.type === undefined ? HARNESS_CLAUDE_SDK : inferHarnessFromProviderType(options.provider.type)) ?? HARNESS_CLAUDE_SDK;
     // No started_at: the server stamps its own clock, the only clock the
     // single-flight guard compares against.
     const claim = await store.claimRun(
