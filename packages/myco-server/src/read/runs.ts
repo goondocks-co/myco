@@ -68,6 +68,7 @@ export interface RunDetail {
 export interface RunFilters {
   status?: string;
   task?: string;
+  agentId?: string;
   limit?: number;
   cursor?: string;
 }
@@ -169,6 +170,7 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, opts: RunF
   const params: (string | number)[] = [scope.projectId];
   if (opts.status !== undefined) { conditions.push('status = ?'); params.push(opts.status); }
   if (opts.task !== undefined) { conditions.push('task = ?'); params.push(opts.task); }
+  if (opts.agentId !== undefined) { conditions.push('agent_id = ?'); params.push(opts.agentId); }
   if (k.where !== '') conditions.push(k.where);
   const { results } = await db
     .prepare(`SELECT ${LIST_COLUMNS} FROM agent_runs WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC, id DESC LIMIT ?`)

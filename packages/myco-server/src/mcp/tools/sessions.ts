@@ -2,9 +2,9 @@
  * `myco_sessions` over the Deployment's session facts.
  *
  * The shape is the member-side tool's: a summary per session with the field
- * names skills key on. Two of them the server does not hold — `title` and
- * `summary` come from an intelligence task that has no server-side run yet —
- * and answer null and empty. Timestamps are the Deployment's, in milliseconds.
+ * names skills key on. `title` and `summary` are the Deployment's own
+ * titling write, made after the session ends; they answer null and empty
+ * until it lands. Timestamps are the Deployment's, in milliseconds.
  */
 import { getPlan } from '../../read/plans.js';
 import { getSession, listSessions, sessionCounts, sessionCountsFor, type SessionRow } from '../../read/sessions.js';
@@ -21,8 +21,8 @@ interface SessionSummary {
   started_at: number | null;
   ended_at: number | null;
   status: 'active' | 'completed';
-  title: null;
-  summary: '';
+  title: string | null;
+  summary: string;
   prompt_count: number;
   tool_count: number;
   parent_session_id: string | null;
@@ -37,8 +37,8 @@ function summary(row: SessionRow, counts: { prompts: number; toolCalls: number }
     started_at: row.startedAt,
     ended_at: row.endedAt,
     status: row.endedAt === null ? 'active' : 'completed',
-    title: null,
-    summary: '',
+    title: row.title,
+    summary: row.summary ?? '',
     prompt_count: counts.prompts,
     tool_count: counts.toolCalls,
     parent_session_id: row.parentSessionId,
@@ -73,7 +73,7 @@ export async function handleSessions(input: ToolInput, ctx: ToolContext): Promis
   const sinceMs = since === undefined ? undefined : Date.parse(since);
   const status = str(input.status);
   const state = status === 'active' ? 'open' : status === 'completed' ? 'ended' : undefined;
-  if (status !== undefined && state === undefined) return [];
+  if (status !== undefined && state === undefined) return failure('status must be active or completed');
 
   const page = await listSessions(db, scope, {
     limit: typeof input.limit === 'number' ? input.limit : DEFAULT_LIMIT,

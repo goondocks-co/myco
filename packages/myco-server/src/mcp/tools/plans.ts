@@ -37,6 +37,9 @@ export interface PlanSummary {
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
 
+/** The statuses a save may write; the list filter alone admits 'all'. */
+const WRITABLE_PLAN_STATUSES = new Set(['active', 'in_progress', 'completed', 'abandoned']);
+
 /** `checked/total` over the plan's task list, or `N/A` when it has none. */
 export function progressOf(content: string | null): string {
   const text = content ?? '';
@@ -97,6 +100,8 @@ async function save(input: ToolInput, ctx: ToolContext, scope: ReadScope): Promi
   const sessionId = str(input.session_id);
   if (content === undefined && id === undefined) return failure('content is required when creating a new plan');
   if (sessionId === undefined) return failure('session_id is required for op: save');
+  const status = str(input.status);
+  if (status !== undefined && !WRITABLE_PLAN_STATUSES.has(status)) return failure('status must be one of: active, in_progress, completed, abandoned');
   if (input.source_path !== undefined && input.plan_key !== undefined) return failure('Pass either source_path or plan_key, not both');
 
   const planKey = await planKeyFor(scope.projectId, { id, source_path: str(input.source_path), plan_key: str(input.plan_key) });
@@ -111,7 +116,7 @@ async function save(input: ToolInput, ctx: ToolContext, scope: ReadScope): Promi
   const payload: Record<string, unknown> = {
     planKey,
     title: str(input.title) ?? existing?.title ?? undefined,
-    status: str(input.status) ?? existing?.status ?? 'active',
+    status: status ?? existing?.status ?? 'active',
     originPath: str(input.source_path) ?? existing?.originPath ?? undefined,
     tags,
     ...(text === null ? { blob } : { content: text }),
