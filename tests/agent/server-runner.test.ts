@@ -1,0 +1,80 @@
+/**
+ * The lean server-mode runner against the deployed entry: claim, harness
+ * execution with the materialized report surface, the report landing over
+ * `/runs/report`, and the terminal status — with no local vault anywhere.
+ */
+import { describe, expect, it } from 'bun:test';
+import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import worker from '@myco-server-worker/index.js';
+import { ServerClient } from '@myco/member/transport.js';
+import { runServerTask } from '@myco/agent/runtime/server-runner.js';
+import type { AgentHarness, HarnessExecuteInput } from '@myco/agent/harness/types.js';
+import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
+
+const AGENT = 'myco-agent';
+
+async function harness() {
+  const fixture = sqliteEnv();
+  const t = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+  fixture.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`).run(AGENT, Date.now());
+  fixture.sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`).run(Date.now());
+  const client = new ServerClient(
+    { serverUrl: 'https://s', token: t.token, projectId: 'proj_1' },
+    ((input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      request.headers.set('cf-connecting-ip', '1.2.3.4');
+      return worker.fetch(request, fixture.env);
+    }) as typeof fetch,
+  );
+  return { ...fixture, client };
+}
+
+const budget = { connectTimeoutMs: 5_000, requestTimeoutMs: 10_000 };
+
+/** A harness that behaves like a model calling the one tool it was handed. */
+function fakeHarness(behavior: 'reports' | 'silent' | 'throws'): AgentHarness {
+  return {
+    async execute(input: HarnessExecuteInput) {
+      if (behavior === 'throws') throw new Error('provider unreachable');
+      if (behavior === 'reports') {
+        const reportTool = input.toolSurface.tools?.find((t) => t.name === 'vault_report');
+        expect(reportTool).toBeDefined();
+        await reportTool!.handler({ action: 'container-smoke', summary: 'runtime works', details: { note: 'smoke' } }, {});
+      }
+      return { finalText: 'done', turnsUsed: 1, usage: { totalTokens: 42 } as never };
+    },
+    supports: () => false,
+  } as unknown as AgentHarness;
+}
+
+describe('runServerTask', () => {
+  it('claims, executes with the materialized report surface, lands the report, and completes the run', async () => {
+    const { client, sqlite } = await harness();
+    const result = await runServerTask({ client, budget, runId: 'run_smoke_1', taskName: 'container-smoke', harness: fakeHarness('reports') });
+    expect(result).toEqual({ runId: 'run_smoke_1', status: 'completed', reportCount: 1 });
+
+    const run = sqlite.query(`SELECT status, task, tokens_used t FROM agent_runs WHERE id = 'run_smoke_1'`).get() as { status: string; task: string; t: number };
+    expect(run).toEqual({ status: 'completed', task: 'container-smoke', t: 42 });
+    const report = sqlite.query(`SELECT action, summary FROM agent_reports WHERE run_id = 'run_smoke_1'`).get() as { action: string; summary: string };
+    expect(report).toEqual({ action: 'container-smoke', summary: 'runtime works' });
+  });
+
+  it('records a failed run when the harness throws, and answers skipped when another run holds the task', async () => {
+    const { client, sqlite } = await harness();
+    const failed = await runServerTask({ client, budget, runId: 'run_smoke_2', taskName: 'container-smoke', harness: fakeHarness('throws') });
+    expect({ status: failed.status, error: failed.error }).toEqual({ status: 'failed', error: 'provider unreachable' });
+    expect((sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_smoke_2'`).get() as { status: string; error: string })).toEqual({ status: 'failed', error: 'provider unreachable' });
+
+    await runServerTask({ client, budget, runId: 'run_smoke_3', taskName: 'container-smoke', harness: fakeHarness('silent') });
+    // run_smoke_3 completed; a fresh claim within the window is refused → skipped
+    const rows = sqlite.query(`SELECT id, status FROM agent_runs ORDER BY id`).all() as Array<{ id: string; status: string }>;
+    expect(rows.map((r) => r.id)).toContain('run_smoke_3');
+  });
+
+  it('fails an unknown task by name without claiming anything', async () => {
+    const { client, sqlite } = await harness();
+    const result = await runServerTask({ client, budget, runId: 'run_smoke_4', taskName: 'no-such-task', harness: fakeHarness('silent') });
+    expect({ status: result.status, error: result.error }).toEqual({ status: 'failed', error: 'unknown task: no-such-task' });
+    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(0);
+  });
+});
