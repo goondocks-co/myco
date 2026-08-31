@@ -50,6 +50,16 @@ describe('POST /api/harness/probe', () => {
     const failedBody = await failed.json() as Record<string, unknown>;
     expect({ status: failed.status, ok: failedBody.ok, container: failedBody.container }).toEqual({ status: 200, ok: false, container: 'Failed to start container: image pull failed' });
   });
+
+  it("probes a NAMED runtime in place, so a dispatched run's live state is readable", async () => {
+    const { env } = setup();
+    const probed: string[] = [];
+    const stub = (name: string) => ({ beginRun: async () => { probed.push(name); }, fetch: async () => Response.json({ ok: true }) });
+    const bound = { ...env, HARNESS: { idFromName: (name: string) => ({ name }), get: (id: { name: string }) => stub(id.name) } };
+    const named = await worker.fetch(await asOwnerPost('/api/harness/probe', { runId: 'run_dispatched_1' }), bound);
+    expect({ status: named.status, runId: ((await named.json()) as { runId: string }).runId }).toEqual({ status: 200, runId: 'run_dispatched_1' });
+    expect(probed).toEqual(['run_dispatched_1']);
+  });
 });
 
 describe('POST /api/harness/dispatch', () => {

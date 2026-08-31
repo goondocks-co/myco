@@ -10,6 +10,18 @@ import type { ProviderConfig } from '../types.js';
 const startedAt = Date.now();
 let result: ServerTaskResult | null = null;
 let running = false;
+let fatal: string | null = null;
+
+// The serve loop is this process's lifetime; a rejection that killed pid 1
+// would stop the container with its evidence still in memory.
+process.on('unhandledRejection', (reason) => {
+  fatal = reason instanceof Error ? reason.message : String(reason);
+  console.log(JSON.stringify({ kind: 'server_entry_rejection', fatal }));
+});
+process.on('uncaughtException', (error) => {
+  fatal = error instanceof Error ? error.message : String(error);
+  console.log(JSON.stringify({ kind: 'server_entry_exception', fatal }));
+});
 
 function env(name: string): string | undefined {
   const value = process.env[name];
@@ -53,7 +65,7 @@ Bun.serve({
   fetch: async (req) => {
     const path = new URL(req.url).pathname;
     if (path === '/probe') {
-      return Response.json({ ok: true, startedAt, uptimeMs: Date.now() - startedAt, pid: process.pid, running, result });
+      return Response.json({ ok: true, startedAt, uptimeMs: Date.now() - startedAt, pid: process.pid, running, result, fatal, dispatched: process.env.MYCO_RUN_ID ?? null });
     }
     if (path === '/spawn') {
       const child = Bun.spawn(['sh', '-c', 'echo child-ok'], { stdout: 'pipe' });
@@ -65,4 +77,7 @@ Bun.serve({
 });
 console.log('harness entry up on 8080');
 
-void executeFromEnv();
+executeFromEnv().catch((error) => {
+  fatal = error instanceof Error ? error.message : String(error);
+  console.log(JSON.stringify({ kind: 'server_entry_failed', fatal }));
+});
