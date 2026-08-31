@@ -32,6 +32,7 @@ import { MAX_BLOB_BYTES, MEMBER_ID_SEGMENT } from './constants.js';
 import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
 import { handleBlob } from './ingest/blobs.js';
+import { handleHarnessProbe } from './api/harness.js';
 import { handleEvents } from './ingest/events.js';
 import { handleGrantMcp, handleMcp } from './mcp/http.js';
 
@@ -71,6 +72,7 @@ async function health(): Promise<Response> {
 
 export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/health', auth: 'public', bodyMode: 'none', handler: health },
+  { method: 'POST', path: '/api/harness/probe', auth: 'owner', handler: handleHarnessProbe },
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
   { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, handler: handleRefresh },

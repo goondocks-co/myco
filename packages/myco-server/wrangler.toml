@@ -58,3 +58,21 @@ simple = { limit = 300, period = 60 }
 directory = "ui/dist"
 not_found_handling = "single-page-application"
 run_worker_first = [ "/api/*", "/auth/*", "/blobs/*", "/context/*", "/events", "/events/*", "/health", "/mcp", "/members/*", "/routed-capture/*", "/runs/*", "/sessions/*", "/spores/*", "/tokens/*" ]
+
+# The harness container: one Durable Object per run, each wrapping its own
+# container instance. The hold policy lives in src/platform/cloudflare/run-hold.ts;
+# the class is exported from src/index.ts so wrangler can bind it. Local dev and
+# the parity harness strip these three tables (a container needs Docker); the
+# probe route answers a refusal where the binding is absent.
+[[durable_objects.bindings]]
+name = "HARNESS"
+class_name = "HarnessContainer"
+
+[[migrations]]
+tag = "v1-harness"
+new_sqlite_classes = [ "HarnessContainer" ]
+
+[[containers]]
+class_name = "HarnessContainer"
+image = "./harness/Dockerfile"
+max_instances = 10

@@ -121,3 +121,17 @@ process.env.USERPROFILE = SANDBOX_HOME;
 
 // Clean the throwaway sandbox on process exit (bypass the fence via the captured orig).
 process.on('exit', () => { try { origRmSync(SANDBOX_HOME, { recursive: true, force: true }); } catch { /* ignore */ } });
+
+// `cloudflare:workers` is a workerd builtin; the containers package imports it
+// at module load, and the Worker index re-exports the harness container class.
+// Bun resolves the builtin to inert stand-ins so the graph loads; anything
+// exercising real Durable Object behavior runs under workerd, never here.
+Bun.plugin({
+  name: 'cloudflare-workers-builtin',
+  setup(build) {
+    build.module('cloudflare:workers', () => ({
+      exports: { DurableObject: class {}, WorkerEntrypoint: class {} },
+      loader: 'object',
+    }));
+  },
+});
