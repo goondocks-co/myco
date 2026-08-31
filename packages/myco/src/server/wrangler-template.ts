@@ -1,4 +1,12 @@
-name = "myco-server"
+/**
+ * The committed Cloudflare Worker configuration, embedded so `myco server
+ * config` renders a deploy config from a deployed install with no repo
+ * checkout. `tests/server/wrangler-template-drift.test.ts` holds this constant
+ * byte-identical to `packages/myco-server/wrangler.toml` — the file wrangler
+ * reads in development and CI, and the base every deploy config derives from.
+ * On drift, copy the file's bytes back into this constant.
+ */
+export const WRANGLER_TEMPLATE = `name = "myco-server"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
 compatibility_flags = [ "global_fetch_strictly_public" ]
@@ -38,11 +46,11 @@ simple = { limit = 300, period = 60 }
 # secrets store: reuse the existing store id (npx wrangler secrets-store
 # store list --remote) rather than creating a second.
 #   npx wrangler secrets-store store create myco --remote   # only when the account has none
-#   head -c 32 /dev/urandom | base64 | npx wrangler secrets-store secret create <STORE-ID> \
+#   head -c 32 /dev/urandom | base64 | npx wrangler secrets-store secret create <STORE-ID> \\
 #     --name myco-secret-wrap-key --scopes workers --remote
 #
 # Rotating this value makes every stored credential unreadable until it is
-# re-entered; a slot in that state reports `readable: false` rather than failing
+# re-entered; a slot in that state reports \`readable: false\` rather than failing
 # the whole surface. See #964.
 # [[secrets_store_secrets]]
 # binding = "SECRET_WRAP_KEY"
@@ -50,11 +58,12 @@ simple = { limit = 300, period = 60 }
 # secret_name = "myco-secret-wrap-key"
 
 # The dashboard: static build output served from the edge store before the
-# Worker runs. `run_worker_first` names every path the Worker owns — its live
+# Worker runs. \`run_worker_first\` names every path the Worker owns — its live
 # routes and the retired 1.4 prefixes it answers 401 — and is held equal to
-# `ownedPathPatterns()` in src/routes.ts by tests/myco-server/gates.test.ts.
+# \`ownedPathPatterns()\` in src/routes.ts by tests/myco-server/gates.test.ts.
 # No binding: the Worker never fetches an asset itself.
 [assets]
 directory = "ui/dist"
 not_found_handling = "single-page-application"
 run_worker_first = [ "/api/*", "/auth/*", "/blobs/*", "/context/*", "/events", "/events/*", "/health", "/mcp", "/members/*", "/routed-capture/*", "/runs/*", "/sessions/*", "/spores/*", "/tokens/*" ]
+`;
