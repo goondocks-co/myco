@@ -17,6 +17,7 @@
     "check:workers": "npm run check --prefix packages/myco-team/worker && npm run check -w @goondocks/myco-server",
     "typecheck:ui": "npm run typecheck:ui -w @goondocks/myco",
     "test": "node scripts/run-bun-tests.mjs",
+    "test:parity": "MYCO_PARITY=1 bun test tests/parity/parity.test.ts",
     "test:debug": "node scripts/run-bun-tests.mjs --bail=1 --only-failures",
     "test:fast": "MYCO_TEST_PROFILE=fast node scripts/run-bun-tests.mjs",
     "test:integration": "MYCO_TEST_PROFILE=integration node scripts/run-bun-tests.mjs",
