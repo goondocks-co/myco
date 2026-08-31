@@ -1,0 +1,25 @@
+# =============================================================================
+# Built-in Task: Container Smoke
+# =============================================================================
+# The end-to-end proof for a server-dispatched containerized run: claim, one
+# harness call, exactly one vault_report, terminal status. The report is the
+# whole point — a smoke run with no report is indistinguishable from a run
+# that never reached the harness.
+# =============================================================================
+
+name: container-smoke
+displayName: Container Smoke
+description: >-
+  One-call smoke for the containerized harness runtime: files a single
+  vault_report proving the claim, the harness, the tool surface, and the
+  run-control routes work end to end.
+agent: myco-agent
+isDefault: false
+reasoningLevel: low
+maxTurns: 4
+timeoutSeconds: 180
+prompt: >-
+  You are running inside the server-dispatched harness container. Call
+  `vault_report` exactly once with action "container-smoke", a one-sentence
+  summary confirming the runtime works, and details naming anything notable
+  about your environment. Then stop.

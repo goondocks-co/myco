@@ -13,6 +13,7 @@
 import { randomBytes } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { runOrThrow, systemRunner } from './runner.js';
 import {
   applyMigrations,
   cloudflareStatus,
@@ -38,6 +39,13 @@ const WRAP_KEY_SECRET = 'myco-secret-wrap-key';
 
 export interface LifecycleOptions extends Omit<CloudflareOptions, 'configFile'> {
   mycoHome?: string;
+}
+
+/** Build what the deploy ships: the dashboard bundle and the harness container entry. A deploy from a checkout that skipped either ships stale artifacts silently. */
+async function buildDeployArtifacts(options: LifecycleOptions): Promise<void> {
+  const runner = options.runner ?? systemRunner();
+  await runOrThrow(runner, 'npm', ['run', 'build:ui'], { cwd: options.configDir });
+  await runOrThrow(runner, 'npm', ['run', 'harness:bundle'], { cwd: options.configDir });
 }
 
 /** Render the record's deploy config into the checkout and answer its path. */
@@ -94,6 +102,7 @@ export async function createCloudflareDeployment(options: LifecycleOptions): Pro
 
   const configFile = writeDeployConfig(record, options.configDir);
   const withConfig = { ...options, configFile: path.basename(configFile) };
+  await buildDeployArtifacts(options);
 
   await applyMigrations({ ...withConfig, databaseName: DATABASE_NAME });
   const deployed = await deployWorker(withConfig);
@@ -116,6 +125,7 @@ export async function updateCloudflareDeployment(options: LifecycleOptions): Pro
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; `myco server create --target cloudflare` provisions one');
   const configFile = writeDeployConfig(record, options.configDir);
   const withConfig = { ...options, configFile: path.basename(configFile) };
+  await buildDeployArtifacts(options);
   await applyMigrations({ ...withConfig, databaseName: record.databaseName });
   const deployed = await deployWorker(withConfig);
   writeDeploymentRecord({ ...record, versionId: deployed.versionId, deployedAt: new Date().toISOString() }, options.mycoHome);

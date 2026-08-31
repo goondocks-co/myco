@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "npm run build:ui && wrangler deploy",
+    "deploy": "npm run build:ui && npm run harness:bundle && wrangler deploy",
     "check": "tsc --noEmit && tsc --noEmit -p tsconfig.bun.json",
     "check:ui": "cd ui && { test -d node_modules/react || npm ci; } && npm run typecheck",
     "build:ui": "cd ui && { test -d node_modules/react || npm ci; } && npx vite build",
@@ -15,7 +15,8 @@
     "token:mint": "bun scripts/mint-local.ts",
     "token:revoke": "bun scripts/revoke-local.ts",
     "image:build": "docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t ghcr.io/goondocks-co/myco-server:${MYCO_VERSION:-dev} ../..",
-    "image:build:native": "docker buildx build -f Dockerfile -t ghcr.io/goondocks-co/myco-server:${MYCO_VERSION:-dev} --load ../.."
+    "image:build:native": "docker buildx build -f Dockerfile -t ghcr.io/goondocks-co/myco-server:${MYCO_VERSION:-dev} --load ../..",
+    "harness:bundle": "bun build ../myco/src/agent/runtime/server-entry.ts --target=bun --outfile harness/entry.js"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0"

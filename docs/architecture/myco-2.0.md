@@ -350,6 +350,7 @@ Task YAML, the phased executor, turn budgets, model routing, and the `agent_runs
 | `canopy-map` | REPLACE | Core | Blk | Grows a scan/diff phase using normal harness code-exploration tools and content hashes; maintains the map as a living document. **Gated on #910's accepted content prototype** | #920 |
 | `canopy-describe` | DROP | — | Blk | Per-file fan-out and entry embeddings retire. **Named cost:** semantic Canopy search ends and `canopy_entry` returns mechanical fields only | #920 |
 | `harness-health` | DROP | — | Blk | Inspects a local harness — a machine question. Its checks move into `doctor` (**M**) | #917 |
+| `container-smoke` | KEEP | Core | Blk | New in 2.0: the end-to-end proof for a server-dispatched containerized run — claim, harness, one report, terminal status. Server-dispatched only; carries no schedule | #914 |
 
 ### 7.5 Scheduled jobs — `packages/myco/src/constants/power-jobs.ts`
 

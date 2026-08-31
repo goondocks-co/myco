@@ -22,6 +22,7 @@ import type { RunAdmissionGate } from './runs.js';
 
 /** Every retained task, with the gate it runs behind. Canopy's tasks belong to the map task and are not here. */
 export const TASK_ADMISSION: Readonly<Record<string, RunAdmissionGate>> = {
+  'container-smoke': { kind: 'capability', capability: 'cortex' },
   'cortex-instructions': { kind: 'capability', capability: 'cortex' },
   'cortex-prompt-builder': { kind: 'capability', capability: 'cortex' },
   'digest-only': { kind: 'capability', capability: 'cortex' },

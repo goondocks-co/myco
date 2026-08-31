@@ -68,10 +68,12 @@ describe('create', () => {
     expect(rendered).toContain(`store_id = "${STORE}"`);
 
     const flat = calls.map((c) => c.args.join(' '));
+    const uiAt = flat.findIndex((a) => a.includes('run build:ui'));
+    const bundleAt = flat.findIndex((a) => a.includes('run harness:bundle'));
     const migrateAt = flat.findIndex((a) => a.includes('migrations apply'));
     const deployAt = flat.findIndex((a) => /(^|\s)deploy(\s|$)/.test(a) && a.includes(DEPLOY_CONFIG_NAME));
     const secretAt = flat.findIndex((a) => a.includes('secret put SESSION_SECRET'));
-    expect({ migrateAt: migrateAt >= 0, deployAt: deployAt >= 0, order: migrateAt < deployAt, secretAfterDeploy: secretAt > deployAt }).toEqual({ migrateAt: true, deployAt: true, order: true, secretAfterDeploy: true });
+    expect({ migrateAt: migrateAt >= 0, deployAt: deployAt >= 0, order: migrateAt < deployAt, secretAfterDeploy: secretAt > deployAt, artifactsBeforeDeploy: uiAt >= 0 && bundleAt > uiAt && bundleAt < deployAt }).toEqual({ migrateAt: true, deployAt: true, order: true, secretAfterDeploy: true, artifactsBeforeDeploy: true });
     expect(flat[migrateAt]).toContain(DEPLOY_CONFIG_NAME);
   });
 
