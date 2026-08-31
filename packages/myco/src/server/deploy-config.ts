@@ -18,7 +18,7 @@ export class DeployConfigIncomplete extends Error {
   constructor(readonly missing: readonly string[]) {
     super(
       `the deployment record is missing ${missing.join(', ')}. `
-      + 'Add the field(s) to ~/.myco/server/cloudflare.json (databaseId: the D1 UUID from '
+      + 'Add the field(s) to ~/.myco/server/cloudflare/record.json (databaseId: the D1 UUID from '
       + '`wrangler d1 list`; storeId: from `wrangler secrets-store store list --remote`).',
     );
     this.name = 'DeployConfigIncomplete';
@@ -32,10 +32,10 @@ function routesLine(url: string | undefined): string | null {
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error(`the deployment record's url is not a URL: ${JSON.stringify(url)} (~/.myco/server/cloudflare.json)`);
+    throw new Error(`the deployment record's url is not a URL: ${JSON.stringify(url)} (~/.myco/server/cloudflare/record.json)`);
   }
   if (parsed.port !== '') {
-    throw new Error(`the deployment record's url carries a port (${parsed.host}); a Cloudflare custom domain has none (~/.myco/server/cloudflare.json)`);
+    throw new Error(`the deployment record's url carries a port (${parsed.host}); a Cloudflare custom domain has none (~/.myco/server/cloudflare/record.json)`);
   }
   if (parsed.hostname.endsWith('.workers.dev')) return null;
   return `routes = [ { pattern = "${parsed.hostname}", custom_domain = true } ]`;

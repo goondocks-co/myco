@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import { resolveMycoHome } from '../paths/home.js';
 import { runOrThrow, systemRunner, type CommandRunner } from './runner.js';
 import { COMPOSE_TEMPLATE } from './compose-template.js';
+import { ensureServerLayout } from './layout.js';
 
 /** Compose project name; every command is scoped to it so a stack is addressable without a path. */
 export const COMPOSE_PROJECT = 'myco';
@@ -44,7 +45,8 @@ export interface DeploymentPaths {
 }
 
 export function resolveDeploymentPaths(mycoHome = resolveMycoHome()): DeploymentPaths {
-  const root = path.join(mycoHome, 'server');
+  ensureServerLayout(mycoHome);
+  const root = path.join(mycoHome, 'server', 'compose');
   return {
     root,
     composeFile: path.join(root, 'compose.yaml'),
