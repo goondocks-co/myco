@@ -48,7 +48,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 50;
+const EMIT_CALLS = 51;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -130,7 +130,8 @@ export async function handleRequest(request: Request, bindings: CloudflareBindin
 export default { fetch: handleRequest };
 `;
 
-const CANONICAL_INDEX = `export { default, handleRequest } from './entry/cloudflare.js';`;
+const CANONICAL_INDEX = `export { default, handleRequest } from './entry/cloudflare.js';
+export { HarnessContainer } from './platform/cloudflare/harness-container.js';`;
 
 const env = () => ({
   MYCO_DB: { prepare: () => ({ bind: () => ({ first: async () => null, run: async () => ({}) }) }) },
@@ -874,7 +875,9 @@ describe('gates', () => {
     const keys = [...block![1].matchAll(/^\s*(\w+):/gm)].map((m) => m[1]).sort();
     expect(keys.length).toBeGreaterThan(0);
     const toml = readFileSync(join(WORKER, 'wrangler.toml'), 'utf8');
-    const bound = [...toml.matchAll(/^(?:binding|name) = "(\w+)"$/gm)].map((m) => m[1]).filter((name) => name !== 'myco-server').sort();
+    // HARNESS is optional in Env — absent in local dev and the parity harness —
+    // so it sits outside the required-binding equality, like SECRET_WRAP_KEY.
+    const bound = [...toml.matchAll(/^(?:binding|name) = "(\w+)"$/gm)].map((m) => m[1]).filter((name) => name !== 'myco-server' && name !== 'HARNESS').sort();
     expect(bound).toEqual(keys);
     expect(/^migrations_dir = "([^"]*)"$/m.exec(toml)?.[1]).toBe(MIGRATIONS_DIR);
   });
@@ -1026,6 +1029,7 @@ describe('gates', () => {
       'owner POST /api/credentials/{id}/revoke',
       'owner POST /api/enrollment',
       'owner POST /api/enrollment/{id}/revoke',
+      'owner POST /api/harness/probe',
       'owner POST /api/members/{memberId}/revoke',
       'owner POST /api/projects',
       'owner POST /api/projects/{projectId}/archive',
