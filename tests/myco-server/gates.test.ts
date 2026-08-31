@@ -48,7 +48,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 51;
+const EMIT_CALLS = 52;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -740,10 +740,12 @@ describe('gates', () => {
       .filter((f) => f !== join(SRC, 'core', 'secrets.ts'))
       .filter((f) => /deploymentSecretStore\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1));
-    // The settings surface, which only ever calls `describe`/`list`/`put`/`delete`,
-    // and the titler, which opens a provider credential to call the provider and
-    // hands it to nothing else. A new file here is the thing to look at.
-    expect(callers.sort()).toEqual([join('api', 'settings.ts'), join('core', 'titling.ts')]);
+    // The settings surface, which only ever calls `describe`/`list`/`put`/`delete`;
+    // the titler, which opens a provider credential to call the provider and
+    // hands it to nothing else; and the dispatcher, which opens one to hand it
+    // to the launched runtime's environment and nothing else. A new file here
+    // is the thing to look at.
+    expect(callers.sort()).toEqual([join('api', 'harness.ts'), join('api', 'settings.ts'), join('core', 'titling.ts')]);
     const surface = stripComments(readFileSync(join(SRC, 'api', 'settings.ts'), 'utf8'));
     expect(surface).not.toMatch(/\.get\(\s*ctx\.params\.name/);
   });
@@ -1045,6 +1047,7 @@ describe('gates', () => {
       'owner POST /api/credentials/{id}/revoke',
       'owner POST /api/enrollment',
       'owner POST /api/enrollment/{id}/revoke',
+      'owner POST /api/harness/dispatch',
       'owner POST /api/harness/probe',
       'owner POST /api/members/{memberId}/revoke',
       'owner POST /api/projects',

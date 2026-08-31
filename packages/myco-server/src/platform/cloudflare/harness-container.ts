@@ -44,6 +44,16 @@ export class HarnessContainer extends Container {
   }
 
   /**
+   * Start this run's container with its dispatch environment and take the
+   * hold. Start first: a hold on an instance that failed to start renews a
+   * container that is not there.
+   */
+  async launch(spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }): Promise<void> {
+    await this.startAndWaitForPorts({ startOptions: { envVars: spec.envVars } });
+    await this.beginRun(spec.runId, spec.timeoutSeconds);
+  }
+
+  /**
    * End the hold.
    *
    * The container then sleeps and stops on its own, which is what makes a

@@ -5,12 +5,16 @@
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
+import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
+
+const WRAP_KEY = Buffer.from(new Uint8Array(32).fill(7)).toString('base64');
 
 const setup = () => {
   const e = sqliteEnv();
-  return { ...e, env: { ...e.env, ...OWNER_ENV } };
+  return { ...e, env: { ...e.env, ...OWNER_ENV, SECRET_WRAP_KEY: { get: async () => WRAP_KEY } } };
 };
 
 describe('POST /api/harness/probe', () => {
@@ -45,5 +49,61 @@ describe('POST /api/harness/probe', () => {
     const failed = await worker.fetch(await asOwnerPost('/api/harness/probe', {}), failing);
     const failedBody = await failed.json() as Record<string, unknown>;
     expect({ status: failed.status, ok: failedBody.ok, container: failedBody.container }).toEqual({ status: 200, ok: false, container: 'Failed to start container: image pull failed' });
+  });
+});
+
+describe('POST /api/harness/dispatch', () => {
+  const seedProvider = (sqlite: { query: (sql: string) => { run: (...a: unknown[]) => unknown } }, leaves: Record<string, unknown>) => {
+    for (const [leaf, value] of Object.entries(leaves)) {
+      sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'test')`).run(leaf, JSON.stringify(value));
+    }
+  };
+
+  it('refuses without a bound runtime, an unknown project, and a missing provider, each by name', async () => {
+    const { env, sqlite } = setup();
+    const unbound = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), env);
+    expect(unbound.status).toBe(409);
+
+    const launch: unknown[] = [];
+    const bound = { ...env, HARNESS: { idFromName: (name: string) => ({ name }), get: () => ({ launch: async (spec: unknown) => { launch.push(spec); } }) } };
+    const ghost = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_ghost' }), bound);
+    expect({ status: ghost.status, reason: ((await ghost.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'projectId names no Project this Deployment holds' });
+
+    const unconfigured = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);
+    expect(unconfigured.status).toBe(400);
+    seedProvider(sqlite, { 'agent.provider.type': 'ollama' });
+    const unsupported = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);
+    expect(((await unsupported.json()) as { reason: string }).reason).toContain('ollama');
+    expect(launch).toEqual([]);
+  });
+
+  it('launches with the whole dispatch as environment: a minted member credential that actually claims, the subscription token under its own variable, and the provider config', async () => {
+    const { env, sqlite, db } = setup();
+    seedProvider(sqlite, { 'agent.provider.type': 'anthropic', 'agent.provider.model': 'claude-opus-5' });
+    await deploymentSecretStore(db, wrappingKeyFromText(async () => WRAP_KEY)).put('anthropic', 'sk-ant-oat-test-token', 'test', 1);
+
+    const launches: Array<{ runId: string; timeoutSeconds: number; envVars: Record<string, string> }> = [];
+    const bound = { ...env, HARNESS: { idFromName: (name: string) => ({ name }), get: () => ({ launch: async (spec: never) => { launches.push(spec); } }) } };
+    const res = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1', timeoutSeconds: 240 }), bound);
+    const body = await res.json() as Record<string, unknown>;
+    expect({ status: res.status, task: body.task, provider: body.provider }).toEqual({ status: 200, task: 'container-smoke', provider: 'anthropic' });
+
+    expect(launches).toHaveLength(1);
+    const spec = launches[0]!;
+    expect(spec.runId).toBe(String(body.runId));
+    expect(spec.timeoutSeconds).toBe(240);
+    const vars = spec.envVars;
+    expect({ url: vars.MYCO_SERVER_URL, project: vars.MYCO_PROJECT, task: vars.MYCO_TASK, run: vars.MYCO_RUN_ID, oat: vars.CLAUDE_CODE_OAUTH_TOKEN, apiKey: vars.ANTHROPIC_API_KEY, model: vars.MYCO_MODEL })
+      .toEqual({ url: 'https://s', project: 'proj_1', task: 'container-smoke', run: spec.runId, oat: 'sk-ant-oat-test-token', apiKey: undefined, model: 'claude-opus-5' });
+    expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic', model: 'claude-opus-5' });
+
+    // The minted credential is real: it claims a run over the member surface.
+    const claim = await worker.fetch(new Request('https://s/runs/claim', {
+      method: 'POST',
+      headers: memberHeaders(vars.MYCO_MEMBER_TOKEN!),
+      body: JSON.stringify({ id: spec.runId, agentId: 'user', task: 'container-smoke', maxAgeSeconds: 3600, capability: 'cortex' }),
+    }), bound);
+    const claimed = await claim.json() as Record<string, unknown>;
+    expect({ persisted: claimed.persisted, refusedOrClaimed: claimed.claimed !== undefined || claimed.notAdmitted !== undefined }).toEqual({ persisted: true, refusedOrClaimed: true });
   });
 });
