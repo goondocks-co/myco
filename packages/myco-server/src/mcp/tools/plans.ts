@@ -121,11 +121,16 @@ async function save(input: ToolInput, ctx: ToolContext, scope: ReadScope): Promi
     tags,
     ...(text === null ? { blob } : { content: text }),
   };
+  // An update is stamped strictly after the row it read, so a same-millisecond
+  // edit still projects as the newer write on replay in any order; the
+  // projection's tiebreak on equal timestamps compares event ids, which carry
+  // no edit order.
+  const createdAt = existing === null ? ctx.now : Math.max(ctx.now, existing.updatedAt + 1);
   const envelope = {
     eventId: crypto.randomUUID(),
     sessionId,
     kind: 'plan',
-    createdAt: ctx.now,
+    createdAt,
     channel: 'http',
     producer: MCP_PRODUCER,
     payload,
