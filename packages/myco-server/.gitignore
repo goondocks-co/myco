@@ -2,3 +2,4 @@
 mint*.sql
 wrangler.deploy.toml
 wrangler.smoke.toml
+wrangler.parity-*.toml
