@@ -23,13 +23,19 @@ import { UpdateRolledBack } from '../server/deployment.js';
 import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
 import { WranglerAbsent, readDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
+import { cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
+import { existsSync } from 'node:fs';
 import { parseFlags } from './shared.js';
 
 export const SERVER_HELP = `Usage: myco server <command>
 
-Commands:
+Commands (Compose is the default target; --target cloudflare selects the Worker):
   create [--port <n>] [--version <tag>]   Provision and start the Deployment.
+  create --target cloudflare --account-id <id> --dir <packages/myco-server checkout>
+                                          Provision D1/R2/secrets store, install generated secrets,
+                                          migrate, deploy, and write the deployment record.
   status                                  Report what is provisioned and running.
+                                          With --target cloudflare: the record and the deployed version.
   update [--version <tag>] [--no-rollback]
                                           Move to a new image; the container migrates on start.
                                           A failed update returns to the previous version.
@@ -38,6 +44,7 @@ Commands:
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
   adopt                                   Write a bundle for a stack this machine did not provision.
   destroy [--data] [--yes]                Stop and remove the stack. --data also removes the volume.
+                                          With --target cloudflare: removes the Worker only; data stands.
   config [--out <path>]                   Render the Cloudflare deploy config from the committed
                                           configuration and this machine's deployment record.
   github-app --url <https://…> [--org <name>] [--name <text>] [--target cloudflare|compose]
@@ -72,7 +79,63 @@ export async function run(args: string[]): Promise<void> {
 
   const { flags } = parseFlags(rest);
 
+  /** Which target a lifecycle verb acts on: named, else the one this machine holds. */
+  const target = (): 'cloudflare' | 'compose' => {
+    const named = flags.get('target');
+    if (named === 'cloudflare' || named === 'compose') return named;
+    if (named !== undefined) fail(`--target must be cloudflare or compose, and is ${JSON.stringify(named)}`);
+    const record = readDeploymentRecord();
+    const bundle = existsSync(resolveDeploymentPaths().composeFile);
+    if (record !== null && bundle) fail('this machine holds both a Cloudflare record and a Compose bundle; pass --target cloudflare or --target compose');
+    return record !== null ? 'cloudflare' : 'compose';
+  };
+
+  /** The Cloudflare lifecycle inputs a verb needs; only a deploying verb needs a checkout. */
+  const cloudflareOptions = (needs: { checkout: boolean }) => {
+    const record = readDeploymentRecord();
+    const accountId = flags.get('account-id') ?? record?.accountId;
+    if (accountId === undefined || accountId === '' || accountId === 'true') fail('pass --account-id <id> (npx wrangler whoami lists the accounts this login reaches).');
+    const dir = flags.get('dir');
+    if (needs.checkout && (dir === undefined || dir === '' || dir === 'true')) fail('pass --dir <path to packages/myco-server in a checkout at the version to deploy>.');
+    return { accountId, configDir: dir !== undefined && dir !== '' && dir !== 'true' ? dir : process.cwd() };
+  };
+
   try {
+    if (command === 'create' && target() === 'cloudflare') {
+      const created = await createCloudflareDeployment(cloudflareOptions({ checkout: true }));
+      console.log('\nCloudflare Deployment deployed.');
+      if (created.createdResources.length > 0) console.log(`  Provisioned: ${created.createdResources.join(', ')}`);
+      console.log(`  Version:     ${created.versionId ?? 'unknown'}`);
+      console.log('  Record:      ~/.myco/server/cloudflare/record.json');
+      if (created.record.url !== undefined) console.log(`  URL:         ${created.record.url}`);
+      return;
+    }
+
+    if (command === 'status' && target() === 'cloudflare') {
+      if (readDeploymentRecord() === null) { console.log('No Cloudflare Deployment record. myco server create --target cloudflare provisions one.'); return; }
+      const status = (await cloudflareDeploymentStatus(cloudflareOptions({ checkout: false })))!;
+      console.log('\nCloudflare Deployment');
+      console.log(`  Worker:     ${status.record.workerName} (account ${status.record.accountId})`);
+      console.log(`  Deployed:   ${status.deployed ? status.versionId ?? 'yes' : 'no'}`);
+      console.log(`  Recorded:   ${status.record.versionId ?? 'never'} at ${status.record.deployedAt}`);
+      if (status.record.url !== undefined) console.log(`  URL:        ${status.record.url}`);
+      return;
+    }
+
+    if (command === 'update' && target() === 'cloudflare') {
+      const updated = await updateCloudflareDeployment(cloudflareOptions({ checkout: true }));
+      console.log(`Cloudflare Deployment updated to version ${updated.versionId ?? 'unknown'} (migrations first, then the Worker).`);
+      return;
+    }
+
+    if (command === 'destroy' && target() === 'cloudflare') {
+      if (flags.has('data')) fail('--data does not apply to the Worker target: the database, bucket, and secrets store are never removed by this command.');
+      if (!flags.has('yes')) fail('destroy removes the Worker. The database, bucket, and secrets store are kept. Re-run with --yes to confirm.');
+      const destroyed = await destroyCloudflareDeployment(cloudflareOptions({ checkout: false }));
+      console.log(`Worker removed. Kept: ${destroyed.kept.join(', ')}.`);
+      return;
+    }
+
     if (command === 'create') {
       const portFlag = flags.get('port');
       const port = portFlag === undefined ? undefined : Number(portFlag);
