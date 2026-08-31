@@ -42,6 +42,9 @@ jobs:
       # `npm test` runs both the Node-env and jsdom passes via the
       # run-bun-tests.mjs driver, handling tsx UI tests in their own pass.
       - run: npm test
+      # Per-feature both-target parity scenarios (#1042): the Bun server
+      # in-process and the Worker under wrangler dev with local D1.
+      - run: npm run test:parity
 
   # The self-hosted Deployment, on the platform it actually ships to.
   #
