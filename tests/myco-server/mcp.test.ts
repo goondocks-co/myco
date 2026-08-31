@@ -117,6 +117,7 @@ describe('POST /mcp', () => {
     expect({ ok: updated.ok, id: updated.id, status: updated.status, title: updated.title }).toEqual({ ok: true, id: first.id, status: 'in_progress', title: 'X' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM plans`).get() as any).c).toBe(1);
 
+    expect((await call(t1.token, 'myco_plans', { op: 'save', id: first.id, session_id: 'sess_a', status: 'all' })).result).toEqual({ ok: false, error: 'status must be one of: active, in_progress, completed, abandoned' });
     const got = (await call(t1.token, 'myco_plans', { op: 'get', id: first.id })).result;
     expect({ content: got.content, progress: got.progress, status: got.status }).toEqual({ content: '- [x] one\n- [ ] two', progress: '1/2', status: 'in_progress' });
 
@@ -179,8 +180,10 @@ describe('POST /mcp', () => {
     const insert = sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', ?, 'machine_1', ?, ?, ?, 'claude-code', ?, ?, ?)`);
     insert.run('s_open', t1.tokenId, 1_000, 1_000, 'main', 1_000, null);
     insert.run('s_done', t1.tokenId, 2_000, 2_000, 'feature', 2_000, 3_000);
+    sqlite.query(`UPDATE sessions SET title = 'Fixed the parser', summary = 'What happened.', titled_at = 4000 WHERE session_id = 's_done'`).run();
     const all = (await call(t1.token, 'myco_sessions')).result;
-    expect(all.map((s: any) => [s.id, s.status, s.user, s.title, s.summary])).toEqual([['s_done', 'completed', 'machine_1', null, ''], ['s_open', 'active', 'machine_1', null, '']]);
+    expect(all.map((s: any) => [s.id, s.status, s.user, s.title, s.summary])).toEqual([['s_done', 'completed', 'machine_1', 'Fixed the parser', 'What happened.'], ['s_open', 'active', 'machine_1', null, '']]);
+    expect((await call(t1.token, 'myco_sessions', { status: 'abandoned' })).result).toEqual({ ok: false, error: 'status must be active or completed' });
     expect((await call(t1.token, 'myco_sessions', { branch: 'main' })).result.map((s: any) => s.id)).toEqual(['s_open']);
     expect((await call(t1.token, 'myco_sessions', { status: 'completed' })).result.map((s: any) => s.id)).toEqual(['s_done']);
     expect((await call(t1.token, 'myco_sessions', { since: new Date(1_500).toISOString() })).result.map((s: any) => s.id)).toEqual(['s_done']);
@@ -211,7 +214,7 @@ describe('POST /mcp', () => {
   });
 
   it('reads skills and runs in the member-side shapes', async () => {
-    const { call, db, t1 } = await setup();
+    const { call, db, sqlite, t1 } = await setup();
     await insertSkillRecord(db, { projectId: 'proj_1' }, { id: 'sk1', agentId: 'user', name: 'debug-capture', displayName: 'Debug capture', description: 'd', candidateId: null, sourceIds: '[]', path: 'skills/debug-capture/SKILL.md', createdAt: 5 });
     const listed = (await call(t1.token, 'myco_skills')).result;
     expect(listed.map((s: any) => [s.id, s.display_name, s.usage_count])).toEqual([['sk1', 'Debug capture', 0]]);
@@ -220,6 +223,12 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_skills', { op: 'get', id: 'nope' })).result).toEqual({ ok: false, error: 'Skill not found' });
     expect((await call(t1.token, 'myco_agent')).result).toEqual({ ok: true, op: 'runs', data: { runs: [], cursor: null } });
     expect((await call(t1.token, 'myco_agent', { op: 'run', id: 'nope' })).result).toEqual({ ok: false, op: 'run', error: 'run not found' });
+    sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('evolver', 'evolver', 'built-in', 1, 0)`).run();
+    const seedRun = sqlite.query(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', ?, ?, 'digest', 'completed', ?)`);
+    seedRun.run('r_user', 'user', 1_000);
+    seedRun.run('r_evolver', 'evolver', 2_000);
+    const filtered = (await call(t1.token, 'myco_agent', { agent_id: 'user', limit: 1 })).result;
+    expect(filtered.data.runs.map((r: any) => r.id)).toEqual(['r_user']);
   });
 
   it('reads another Project through project_id without creating one, and answers an unknown Project as absent', async () => {

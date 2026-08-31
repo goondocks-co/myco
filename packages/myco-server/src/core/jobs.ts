@@ -43,7 +43,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'agent-run-retention',
     runsThrough: 'sleep',
-    converges: 'no agent run is older than the retention window',
+    converges: 'no terminal agent run outlives the retention window; a running or lease-held run is never pruned',
   },
   {
     name: 'release-provenance-reconcile',

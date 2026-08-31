@@ -25,8 +25,6 @@ export async function handleAgent(input: ToolInput, ctx: ToolContext): Promise<u
     return { ok: true, op, data: { run: snake(detail.run), phases: detail.phases === null ? null : snake(detail.phases), reports: snake(await listReports(db, scope, id)) } };
   }
 
-  const page = await listRuns(db, scope, { task: str(input.task), limit: typeof input.limit === 'number' ? input.limit : 50 });
-  const agentId = str(input.agent_id);
-  const runs = agentId === undefined ? page.rows : page.rows.filter((r) => r.agentId === agentId);
-  return { ok: true, op, data: { runs: snake(runs), cursor: page.cursor } };
+  const page = await listRuns(db, scope, { task: str(input.task), agentId: str(input.agent_id), limit: typeof input.limit === 'number' ? input.limit : 50 });
+  return { ok: true, op, data: { runs: snake(page.rows), cursor: page.cursor } };
 }
