@@ -20,6 +20,7 @@ import { issueExternalGrant, revokeExternalGrant, rotateExternalGrant } from '@m
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { EXTERNAL_TOOLS, externalDefinitions } from '@myco-server-worker/mcp/external.js';
 import { grantToolContext, memberOf } from '@myco-server-worker/mcp/context.js';
+import { handlePlans } from '@myco-server-worker/mcp/tools/plans.js';
 import { envelope, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 
 const rpc = (method: string, params?: unknown, id: number = 1) => JSON.stringify({ jsonrpc: '2.0', id, method, ...(params === undefined ? {} : { params }) });
@@ -137,6 +138,16 @@ describe('POST /mcp', () => {
 
     const foreign = await worker.fetch(new Request('https://s/events', { method: 'POST', headers: memberHeaders(t2.token), body: JSON.stringify(envelope({ sessionId: 'sess_a' })) }), env);
     expect(await foreign.json()).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
+  });
+
+  it('projects a same-millisecond status update as the newer write, whatever the event-id tiebreak says', async () => {
+    const { serverEnv, t1 } = await setup();
+    const ctx = { env: serverEnv, projectId: 'proj_1', principal: { kind: 'member' as const, memberId: 'mem_machine_1', machineId: 'machine_1', tokenId: t1.tokenId }, now: 5_000 };
+    for (let i = 0; i < 10; i++) {
+      const created = await handlePlans({ op: 'save', session_id: 'sess_a', plan_key: `race-${i}`, content: 'v1' }, ctx) as any;
+      const updated = await handlePlans({ op: 'save', id: created.id, session_id: 'sess_a', status: 'abandoned' }, ctx) as any;
+      expect({ i, ok: updated.ok, status: updated.status }).toEqual({ i, ok: true, status: 'abandoned' });
+    }
   });
 
   it('refuses a plan into an archived Project from the ingest path while an editorial spore still lands, and reads the archived Project', async () => {
