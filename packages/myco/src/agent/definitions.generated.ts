@@ -156,6 +156,17 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
     }
   },
   {
+    "name": "container-smoke",
+    "displayName": "Container Smoke",
+    "description": "One-call smoke for the containerized harness runtime: files a single vault_report proving the claim, the harness, the tool surface, and the run-control routes work end to end.",
+    "agent": "myco-agent",
+    "prompt": "You are running inside the server-dispatched harness container. Call `vault_report` exactly once with action \"container-smoke\", a one-sentence summary confirming the runtime works, and details naming anything notable about your environment. Then stop.",
+    "isDefault": false,
+    "reasoningLevel": "low",
+    "maxTurns": 4,
+    "timeoutSeconds": 180
+  },
+  {
     "name": "cortex-instructions",
     "displayName": "Cortex Instructions",
     "description": "Author compact session-start instructions that teach downstream agents how to use Myco tool behavior correctly, especially retrieval and plan persistence.\n",
