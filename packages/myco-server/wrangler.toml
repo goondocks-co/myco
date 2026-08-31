@@ -34,8 +34,10 @@ simple = { limit = 300, period = 60 }
 # credential. NOT in REQUIRED_BINDINGS: a Deployment that never stores one serves
 # every other route without it, and the failure belongs at the first seal.
 #
-# Create the store and the secret once, then bind:
-#   npx wrangler secrets-store store create myco --remote
+# Create the store and the secret once, then bind. An account holds ONE
+# secrets store: reuse the existing store id (npx wrangler secrets-store
+# store list --remote) rather than creating a second.
+#   npx wrangler secrets-store store create myco --remote   # only when the account has none
 #   head -c 32 /dev/urandom | base64 | npx wrangler secrets-store secret create <STORE-ID> \
 #     --name myco-secret-wrap-key --scopes workers --remote
 #

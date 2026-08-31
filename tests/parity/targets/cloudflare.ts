@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { parityWranglerConfig } from '@myco/server/deploy-config.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, memberHeadersFor, type ParityTarget } from '../harness.ts';
 
@@ -14,33 +15,6 @@ process.on('exit', () => {
     try { proc.kill(); } catch { /* already gone */ }
   }
 });
-
-/**
- * The parity config derived from the shipped wrangler.toml:
- * - `compatibility_flags` dropped — `global_fetch_strictly_public` blocks the
- *   loopback provider stub a scenario points the Deployment at;
- * - the `[assets]` table dropped — a fresh worktree holds no ui/dist, and every
- *   route a scenario touches is worker-owned under `run_worker_first`.
- * The file must sit inside packages/myco-server: wrangler resolves `main` and
- * `migrations_dir` relative to the config's own location.
- */
-function deriveParityConfig(source: string): string {
-  const lines = source.split('\n');
-  const kept: string[] = [];
-  let inAssets = false;
-  for (const line of lines) {
-    if (line.startsWith('compatibility_flags')) {
-      if (!line.includes(']')) throw new Error('compatibility_flags spans lines; teach deriveParityConfig before reformatting wrangler.toml');
-      const stripped = line.replace(/"global_fetch_strictly_public"\s*,?\s*/, '');
-      if (/"/.test(stripped.split('=')[1] ?? '')) kept.push(stripped);
-      continue;
-    }
-    if (line.trim() === '[assets]') { inAssets = true; continue; }
-    if (inAssets && /^\[/.test(line.trim())) inAssets = false;
-    if (!inAssets) kept.push(line);
-  }
-  return kept.join('\n');
-}
 
 async function wrangler(args: string[], env: Record<string, string | undefined> = {}): Promise<string> {
   const proc = Bun.spawn(['npx', '--no-install', 'wrangler', ...args], {
@@ -63,7 +37,7 @@ export async function bootCloudflare(): Promise<ParityTarget> {
   const configName = `wrangler.parity-${tag}.toml`;
   const configPath = path.join(SERVER_DIR, configName);
   const persistDir = path.join(SERVER_DIR, '.wrangler', `parity-state-${tag}`);
-  fs.writeFileSync(configPath, deriveParityConfig(fs.readFileSync(path.join(SERVER_DIR, 'wrangler.toml'), 'utf8')));
+  fs.writeFileSync(configPath, parityWranglerConfig());
 
   const d1 = (command: string) =>
     wrangler(['d1', 'execute', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir, '--json', '--command', command]);

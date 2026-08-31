@@ -21,7 +21,8 @@ import {
 import { CommandFailed } from '../server/runner.js';
 import { UpdateRolledBack } from '../server/deployment.js';
 import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
-import { WranglerAbsent } from '../server/cloudflare.js';
+import { WranglerAbsent, readDeploymentRecord } from '../server/cloudflare.js';
+import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
 import { parseFlags } from './shared.js';
 
 export const SERVER_HELP = `Usage: myco server <command>
@@ -37,6 +38,8 @@ Commands:
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
   adopt                                   Write a bundle for a stack this machine did not provision.
   destroy [--data] [--yes]                Stop and remove the stack. --data also removes the volume.
+  config [--out <path>]                   Render the Cloudflare deploy config from the committed
+                                          configuration and this machine's deployment record.
   github-app --url <https://…> [--org <name>] [--name <text>] [--target cloudflare|compose]
                                           Register the dashboard's sign-in app on GitHub (one click
                                           there) and install its credentials on the Deployment.
@@ -154,6 +157,21 @@ export async function run(args: string[]): Promise<void> {
       return;
     }
 
+    if (command === 'config') {
+      const record = readDeploymentRecord();
+      if (record === null) fail('no Cloudflare deployment record on this machine (~/.myco/server/cloudflare.json).');
+      const rendered = renderDeployConfig(record);
+      const out = flags.get('out');
+      if (out === undefined || out === '' || out === 'true') {
+        process.stdout.write(rendered);
+      } else {
+        const { writeFileSync } = await import('node:fs');
+        writeFileSync(out, rendered, { mode: 0o600 });
+        console.log(`Deploy config written to ${out}`);
+      }
+      return;
+    }
+
     if (command === 'github-app') {
       const url = flags.get('url');
       if (url === undefined || url === 'true' || url === '') fail('github-app needs --url <https://…>, the address members open the dashboard at.');
@@ -182,6 +200,7 @@ export async function run(args: string[]): Promise<void> {
     // Deployment is serving again on the version it started from.
     if (err instanceof UpdateRolledBack) fail(err.message);
     if (err instanceof RegistrationRefused || err instanceof WranglerAbsent) fail(err.message);
+    if (err instanceof DeployConfigIncomplete) fail(err.message);
     // A Compose failure is the operator's to read, verbatim.
     if (err instanceof CommandFailed) fail(err.message);
     fail(err instanceof Error ? err.message : String(err));

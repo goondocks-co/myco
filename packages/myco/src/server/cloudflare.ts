@@ -183,6 +183,10 @@ export interface DeploymentRecord {
   deployedAt: string;
   /** The Deployment's public URL — the custom domain or the workers.dev host — once an operator has named it. */
   url?: string;
+  /** The D1 database UUID; the deploy config carries it where the committed file holds a placeholder. */
+  databaseId?: string;
+  /** The account's secrets store id; present once the wrapping key is provisioned. */
+  storeId?: string;
 }
 
 /** The Worker's sign-in secrets, named as the Worker reads them. */
@@ -245,5 +249,9 @@ export function writeDeploymentRecord(record: DeploymentRecord, mycoHome = resol
 export function readDeploymentRecord(mycoHome = resolveMycoHome()): DeploymentRecord | null {
   const file = deploymentRecordPath(mycoHome);
   if (!existsSync(file)) return null;
-  return JSON.parse(readFileSync(file, 'utf8')) as DeploymentRecord;
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')) as DeploymentRecord;
+  } catch (err) {
+    throw new Error(`${file} is not readable as a deployment record: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
