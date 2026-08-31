@@ -247,3 +247,50 @@ describe('failure and resume admission over HTTP', () => {
       .toEqual({ persisted: true, admit: false, status: 'absent' });
   });
 });
+
+describe('POST /runs/report and /runs/events', () => {
+  it('writes a report against a claimed run and reads it back; a run this Project does not hold is refused', async () => {
+    const { post } = await harness();
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    const written = await post('/runs/report', { runId: 'r1', agentId: AGENT, action: 'summary', summary: 'the finding', details: '{"n":1}' });
+    expect(written).toEqual({ persisted: true, recorded: true });
+    const read = await post('/runs/reports', { runId: 'r1' });
+    expect((read.reports as Array<{ action: string; summary: string }>).map((r) => [r.action, r.summary])).toEqual([['summary', 'the finding']]);
+
+    const foreign = await post('/runs/report', { runId: 'r_unknown', agentId: AGENT, action: 'a', summary: 's' });
+    expect(foreign.persisted).toBe(false);
+
+    const ghost = await post('/runs/report', { runId: 'r1', agentId: 'agent_nobody_knows', action: 'a', summary: 's' });
+    expect(ghost.persisted).toBe(false);
+  });
+
+  it('records an event burst with tenancy anchored on the run, refuses an unknown eventType, and bounds the burst', async () => {
+    const { post, sqlite } = await harness();
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    const burst = await post('/runs/events', { events: [
+      { runId: 'r1', eventType: 'phase_start', phaseName: 'p1' },
+      { runId: 'r1', eventType: 'post_tool_use', toolName: 'vault_report', outcome: 'success', durationMs: 12, payload: '{}' },
+      { runId: 'r_unknown', eventType: 'phase_end' },
+    ] });
+    expect(burst).toEqual({ persisted: true, recorded: 2 });
+    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_run_events WHERE run_id = 'r1'`).get() as { c: number }).c).toBe(2);
+
+    const bad = await post('/runs/events', { events: [{ runId: 'r1', eventType: 'not_a_kind' }] });
+    expect(bad.persisted).toBe(false);
+    const over = await post('/runs/events', { events: Array.from({ length: 33 }, () => ({ runId: 'r1', eventType: 'phase_start' })) });
+    expect(over.persisted).toBe(false);
+    const clock = await post('/runs/events', { events: [{ runId: 'r1', eventType: 'phase_start', recordedAt: 'yesterday' }] });
+    expect(clock.persisted).toBe(false);
+  });
+
+  it('truncates an oversized payload rather than dropping the event, and takes a full 32-event burst', async () => {
+    const { post, sqlite } = await harness();
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    const big = await post('/runs/events', { events: [{ runId: 'r1', eventType: 'post_tool_use', payload: 'x'.repeat(20_000) }] });
+    expect(big).toEqual({ persisted: true, recorded: 1 });
+    const row = sqlite.query(`SELECT LENGTH(payload) l FROM agent_run_events WHERE run_id = 'r1'`).get() as { l: number };
+    expect(row.l).toBe(16_384);
+    const full = await post('/runs/events', { events: Array.from({ length: 32 }, () => ({ runId: 'r1', eventType: 'phase_start' })) });
+    expect(full).toEqual({ persisted: true, recorded: 32 });
+  });
+});

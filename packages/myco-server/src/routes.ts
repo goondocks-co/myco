@@ -19,7 +19,7 @@ import {
 import {
   handleAdmitResume, handleAgents, handleClaimRun, handleGetRun, handleReadState, handleRecordFailure,
   handleRegisterAgent, handleRunAdmission,
-  handleRunReports, handleSupersedeRuns, handleUpdateRun, handleUpsertCortexInstructions, handleWriteState,
+  handleRunReports, handleWriteReport, handleRecordRunEvents, handleSupersedeRuns, handleUpdateRun, handleUpsertCortexInstructions, handleWriteState,
 } from './api/runs.js';
 import {
   handleCredentialActivity, handleCredentials, handleInvitations, handleMembers, handleMintInvitation,
@@ -88,6 +88,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/runs/resume-admission', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleAdmitResume },
   { method: 'POST', path: '/runs/supersede', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSupersedeRuns },
   { method: 'POST', path: '/runs/reports', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunReports },
+  { method: 'POST', path: '/runs/report', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteReport },
+  { method: 'POST', path: '/runs/events', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRecordRunEvents },
   { method: 'POST', path: '/runs/cortex-instructions', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleUpsertCortexInstructions },
   { method: 'POST', path: '/spores/save', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSaveSpore },
   { method: 'POST', path: '/spores/list', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleListSpores },

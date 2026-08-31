@@ -92,6 +92,20 @@ function body(answer: RawAnswer, path: string): Record<string, unknown> {
   return answer.json;
 }
 
+/** Record one report over the run-control surface; the server refuses a run this Project does not hold. */
+export async function postRunReport(
+  client: ServerClient,
+  budget: RequestBudget,
+  report: { runId: string; agentId: string; action: string; summary: string; details?: string | null },
+): Promise<void> {
+  const answer = await client.request('POST', '/runs/report', {
+    body: JSON.stringify(report),
+    headers: { 'content-type': 'application/json' },
+    budget,
+  });
+  body(answer, '/runs/report');
+}
+
 export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
   const { client, agentId, capabilityForTask, budget } = opts;
 
@@ -173,11 +187,19 @@ export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
       await post('/runs/supersede', { excludeRunId, agentId, taskName: match.taskName, dryRun: match.dryRun });
     },
 
-    async recordRunEvent(_event: RunEventInsert) {
-      // Run events have no route yet; the surface that records them lands with
-      // the task runtime. Dropping them silently would make a run's log
-      // incomplete with nothing saying so.
-      throw new RunControlError('/runs/events', 'run events are not served by this Deployment yet');
+    async recordRunEvent(event: RunEventInsert) {
+      await post('/runs/events', {
+        events: [{
+          runId: event.runId,
+          phaseName: event.phaseName ?? null,
+          eventType: event.eventType,
+          toolName: event.toolName ?? null,
+          outcome: event.outcome ?? null,
+          durationMs: event.durationMs ?? null,
+          payload: event.payload ?? null,
+          ...(event.recordedAt === undefined ? {} : { recordedAt: event.recordedAt }),
+        }],
+      });
     },
 
     async listReports(runId) {

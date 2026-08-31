@@ -524,6 +524,10 @@ describe('gates', () => {
     const bytes = new TextEncoder().encode('blob-bytes');
     const key = await sha256Hex('blob-bytes');
     /** Per non-public route: a malformed request the route refuses, and a well-formed one it would store. */
+        // One run the write fixtures may report against: a report on an unknown run
+    // is refused, and a fixture must be a single accepted request.
+    sqlite.query(`INSERT OR IGNORE INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'run_gate', 'user', 'gate', 'running', 1)`).run();
+
     const FIXTURES: Record<string, { shape: Shape; malformed: (token: string) => Request; wellFormed: (token: string) => Request }> = {
       'POST /events': {
         shape: 'persisted',
@@ -579,6 +583,16 @@ describe('gates', () => {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/reports', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/reports', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope' }) }),
+      },
+      'POST /runs/report': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', agentId: 'user', action: 'gate', summary: 's' }) }),
+      },
+      'POST /runs/events': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ events: [{ runId: 'nope', eventType: 'phase_start' }] }) }),
       },
       'POST /runs/cortex-instructions': {
         shape: 'persisted',
@@ -983,8 +997,10 @@ describe('gates', () => {
       'member POST /runs/admission',
       'member POST /runs/claim',
       'member POST /runs/cortex-instructions',
+      'member POST /runs/events',
       'member POST /runs/failed',
       'member POST /runs/get',
+      'member POST /runs/report',
       'member POST /runs/reports',
       'member POST /runs/resume-admission',
       'member POST /runs/state/read',

@@ -138,10 +138,13 @@ describe('HTTP RunStore — lifecycle', () => {
     expect(row).toEqual({ d: token.tokenId, status: 'running' });
   });
 
-  it('reports a missing run event surface rather than dropping the event', async () => {
-    const { store } = await harness();
-    await expect(store.recordRunEvent({ run_id: 'r1', event_type: 'x', recorded_at: 1 } as never))
-      .rejects.toBeInstanceOf(RunControlError);
+  it('records a run event against a claimed run, and an unknown run records nothing without failing the run', async () => {
+    const { store, sqlite } = await harness();
+    await store.claimRun(insert('r1', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 });
+    await store.recordRunEvent({ runId: 'r1', eventType: 'phase_start', phaseName: 'p1' });
+    await store.recordRunEvent({ runId: 'r_unknown', eventType: 'phase_end' });
+    const rows = sqlite.query(`SELECT run_id AS r, event_type AS e FROM agent_run_events ORDER BY id`).all() as Array<{ r: string; e: string }>;
+    expect(rows).toEqual([{ r: 'r1', e: 'phase_start' }]);
   });
 
   it('answers admission for the capability the task needs', async () => {
