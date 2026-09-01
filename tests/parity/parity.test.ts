@@ -2,9 +2,10 @@ import { afterAll, beforeAll, describe, it, test } from 'bun:test';
 import type { ParityTarget } from './harness.ts';
 import { bootSelfhosted } from './targets/selfhosted.ts';
 import { bootCloudflare } from './targets/cloudflare.ts';
+import { backupRestore } from './scenarios/backup-restore.ts';
 import { sessionsTitling } from './scenarios/sessions-titling.ts';
 
-const scenarios = [sessionsTitling];
+const scenarios = [sessionsTitling, backupRestore];
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

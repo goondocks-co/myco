@@ -162,10 +162,11 @@ describe('Deployment Settings', () => {
 });
 
 describe('Operations and Notifications', () => {
-  it('name what is pending rather than showing nothing, and the nav carries the three entries', async () => {
-    server(base());
+  it('serves the live Backup panel, names what is still pending, and the nav carries the three entries', async () => {
+    server(base({ '/api/backups': () => Response.json({ backups: [] }) }));
     mount('/operations');
-    expect(await screen.findByTestId('pending-backup')).toBeTruthy();
+    expect(await screen.findByText('No backups yet. The first one is a click away.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Create backup' })).toBeTruthy();
     expect(screen.getByTestId('pending-diagnostics')).toBeTruthy();
     const nav = screen.getByRole('navigation', { name: 'Server' });
     expect(within(nav).getByRole('link', { name: /Settings/ })).toBeTruthy();
