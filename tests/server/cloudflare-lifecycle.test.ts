@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createCloudflareDeployment,
+  rollbackCloudflareDeployment,
   destroyCloudflareDeployment,
   updateCloudflareDeployment,
   DEPLOY_CONFIG_NAME,
@@ -146,5 +147,30 @@ describe('destroy', () => {
     expect(flat.some((a) => a.includes('delete --name myco-server'))).toBe(true);
     expect(flat.some((a) => a.includes('d1 delete') || a.includes('bucket delete'))).toBe(false);
     expect(readDeploymentRecord(home)).not.toBeNull();
+  });
+});
+
+describe('rollback', () => {
+  const VERSION = '99999999-8888-4777-8666-555555555555';
+
+  it('rolls the Worker back to the named version through wrangler and re-stamps the record', async () => {
+    const { home, options } = setup();
+    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: 'old-version', deployedAt: 'then', databaseId: DB_ID }, home);
+    const rolled = await rollbackCloudflareDeployment({ ...options, runner: runner(), versionId: VERSION, message: 'smoke failed' });
+    expect(rolled.versionId).toBe(VERSION);
+    const flat = calls.map((c) => c.args.join(' '));
+    expect(flat.some((a) => a.includes(`rollback ${VERSION} --name myco-server -y -m smoke failed`))).toBe(true);
+    expect(readDeploymentRecord(home)!.versionId).toBe(VERSION);
+  });
+
+  it('defaults to the record version, and refuses when neither the flag nor the record names one', async () => {
+    const { home, options } = setup();
+    await expect(rollbackCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(/no Cloudflare deployment record/);
+    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: 'then', databaseId: DB_ID }, home);
+    await expect(rollbackCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(/no version to roll back to/);
+    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: VERSION, deployedAt: 'then', databaseId: DB_ID }, home);
+    const rolled = await rollbackCloudflareDeployment({ ...options, runner: runner() });
+    expect(rolled.versionId).toBe(VERSION);
+    expect(calls.some((c) => c.args.join(' ').includes('rollback ' + VERSION))).toBe(true);
   });
 });

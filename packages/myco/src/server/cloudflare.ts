@@ -196,6 +196,14 @@ export async function deleteWorker(options: CloudflareOptions & { workerName: st
   await runOrThrow(runner, 'npx', wrangler('delete', '--name', options.workerName, '--force'), { cwd: options.configDir, env });
 }
 
+/** Return the Worker to a version it already deployed; that version's own code and bindings apply. */
+export async function rollbackWorker(options: CloudflareOptions & { workerName: string; versionId: string; message: string }): Promise<void> {
+  const { runner, env } = resolved(options);
+  await runOrThrow(runner, 'npx',
+    wrangler('rollback', options.versionId, '--name', options.workerName, '-y', '-m', options.message, ...configArgs(options)),
+    { cwd: options.configDir, env });
+}
+
 export interface CloudflareStatus {
   deployed: boolean;
   versionId: string | null;

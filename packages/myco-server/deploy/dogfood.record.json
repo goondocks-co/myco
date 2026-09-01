@@ -1,0 +1,12 @@
+{
+  "accountId": "b134c2135129c4800082e677fbffb286",
+  "workerName": "myco-server",
+  "databaseName": "myco-server",
+  "bucketName": "myco-server-blobs",
+  "versionId": "baaa1ae7-0943-46ec-9edf-3263e2276b0c",
+  "deployedAt": "2026-09-01T15:48:58.858Z",
+  "url": "https://myco.goondocks.co",
+  "databaseId": "95f0d072-46f1-40c3-be51-f9714a502f37",
+  "storeId": "8048d84f378e40809937ee87da796cd9",
+  "harnessImage": "registry.cloudflare.com/b134c2135129c4800082e677fbffb286/myco-server-harnesscontainer@sha256:8558ab8d68194b52903b57940f703bb37ddb74c7271385e8069c3dc214068686"
+}

@@ -20,6 +20,7 @@ import {
   deleteWorker,
   buildAndPushHarnessImage,
   deployWorker,
+  rollbackWorker,
   ensureBucket,
   ensureDatabase,
   ensureSecretsStore,
@@ -135,6 +136,25 @@ export async function updateCloudflareDeployment(options: LifecycleOptions): Pro
   const deployed = await deployWorker(withConfig);
   writeDeploymentRecord({ ...pinned, versionId: deployed.versionId, deployedAt: new Date().toISOString() }, options.mycoHome);
   return { versionId: deployed.versionId };
+}
+
+/**
+ * Return the Worker to an earlier version.
+ *
+ * The target defaults to the record's last recorded version — a failed update
+ * never records one, so after a deploy that threw, the record still names the
+ * version that served. A deploy that succeeded and then failed its smoke has
+ * already recorded the bad version, and that caller passes the pre-deploy
+ * version it captured.
+ */
+export async function rollbackCloudflareDeployment(options: LifecycleOptions & { versionId?: string; message?: string }): Promise<{ versionId: string }> {
+  const record = readDeploymentRecord(options.mycoHome);
+  if (record === null) throw new Error('no Cloudflare deployment record on this machine; nothing to roll back');
+  const target = options.versionId ?? record.versionId ?? '';
+  if (target === '') throw new Error('no version to roll back to: pass --version <id> (`wrangler deployments list` names them)');
+  await rollbackWorker({ ...options, workerName: record.workerName, versionId: target, message: options.message ?? 'myco server rollback' });
+  writeDeploymentRecord({ ...record, versionId: target, deployedAt: new Date().toISOString() }, options.mycoHome);
+  return { versionId: target };
 }
 
 export interface CloudflareDeploymentStatus {
