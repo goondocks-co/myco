@@ -12,6 +12,8 @@ import type { DeploymentRecord } from './cloudflare.js';
 import { WRANGLER_TEMPLATE } from './wrangler-template.js';
 
 const DATABASE_ID_PLACEHOLDER = '<YOUR_D1_DATABASE_ID>';
+const DOCKERFILE_IMAGE_LINE = 'image = "./harness/Dockerfile"';
+const HARNESS_IMAGE_RE = /^registry\.cloudflare\.com\/[0-9a-f]{32}\/[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$/;
 
 /** Raised when the record cannot feed the renderer; names every missing fact. */
 export class DeployConfigIncomplete extends Error {
@@ -52,6 +54,15 @@ export function renderDeployConfig(record: DeploymentRecord): string {
   if (routes !== null) header.push(routes);
 
   let body = WRANGLER_TEMPLATE.replace(DATABASE_ID_PLACEHOLDER, record.databaseId!);
+  if (record.harnessImage !== undefined && record.harnessImage !== '') {
+    if (!HARNESS_IMAGE_RE.test(record.harnessImage)) {
+      throw new Error(`the deployment record's harnessImage is not a digest-pinned registry URI: ${JSON.stringify(record.harnessImage)} (~/.myco/server/cloudflare/record.json)`);
+    }
+    if (!body.includes(DOCKERFILE_IMAGE_LINE)) {
+      throw new Error('the template carries no Dockerfile image line to pin; renderDeployConfig and wrangler.toml have drifted');
+    }
+    body = body.replace(DOCKERFILE_IMAGE_LINE, `image = "${record.harnessImage}"`);
+  }
   if (record.storeId !== undefined && record.storeId !== '') {
     body += [
       '',
