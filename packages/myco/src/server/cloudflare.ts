@@ -100,6 +100,30 @@ export async function deployWorker(options: CloudflareOptions & { dryRun?: boole
   };
 }
 
+/** The registry URI a `containers build --push` output pins: the LAST manifest digest it exported, under the image name wrangler derives from the Worker and container class. */
+export function harnessImageUri(buildOutput: string, accountId: string, workerName: string): string {
+  const digests = [...buildOutput.matchAll(/exporting manifest sha256:([0-9a-f]{64})/g)];
+  const digest = digests.at(-1)?.[1];
+  if (digest === undefined) throw new Error('the container build output carries no manifest digest; the image cannot be pinned');
+  return `registry.cloudflare.com/${accountId}/${workerName}-harnesscontainer@sha256:${digest}`;
+}
+
+/**
+ * Build and push the harness container image, answering the registry URI of
+ * the exact bytes pushed. The deploy config pins this URI, so the container
+ * application rolls precisely when image content changes — a Dockerfile-path
+ * config rolls only on `[[containers]]` table edits, and an image-only deploy
+ * pushes a digest the application never adopts. The push is idempotent: an
+ * image already in the registry answers the same digest.
+ */
+export async function buildAndPushHarnessImage(options: CloudflareOptions & { workerName: string }): Promise<string> {
+  const { runner, env } = resolved(options);
+  const result = await runOrThrow(runner, 'npx',
+    wrangler('containers', 'build', './harness', '-t', `${options.workerName}-harnesscontainer:latest`, '--push'),
+    { cwd: options.configDir, env });
+  return harnessImageUri(`${result.stdout}\n${result.stderr}`, options.accountId, options.workerName);
+}
+
 /** Apply pending D1 migrations against the deployed database. */
 export async function applyMigrations(options: CloudflareOptions & { databaseName: string }): Promise<void> {
   const { runner, env } = resolved(options);
@@ -264,6 +288,8 @@ export interface DeploymentRecord {
   databaseId?: string;
   /** The account's secrets store id; present once the wrapping key is provisioned. */
   storeId?: string;
+  /** The pushed harness image's digest-pinned registry URI; the deploy config pins it once a push has recorded one. */
+  harnessImage?: string;
 }
 
 /** The Worker's sign-in secrets, named as the Worker reads them. */
