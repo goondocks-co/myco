@@ -23,7 +23,7 @@ import { UpdateRolledBack } from '../server/deployment.js';
 import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
 import { WranglerAbsent, readDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
-import { cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
+import { cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { existsSync } from 'node:fs';
 import { parseFlags } from './shared.js';
 
@@ -39,6 +39,10 @@ Commands (Compose is the default target; --target cloudflare selects the Worker)
   update [--version <tag>] [--no-rollback]
                                           Move to a new image; the container migrates on start.
                                           A failed update returns to the previous version.
+  rollback --target cloudflare [--version <id>] [--message <text>]
+                                          Return the Worker to an earlier version. Defaults to the
+                                          record's last recorded one — the version a failed update
+                                          left serving.
   backup --to <dir>                       Snapshot the database and blobs.
   restore --from <dir>                    Replace the Deployment's data with a backup.
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
@@ -120,6 +124,23 @@ export async function run(args: string[]): Promise<void> {
       console.log(`  Recorded:   ${status.record.versionId ?? 'never'} at ${status.record.deployedAt}`);
       if (status.record.url !== undefined) console.log(`  URL:        ${status.record.url}`);
       return;
+    }
+
+    if (command === 'rollback' && target() === 'cloudflare') {
+      const versionFlag = flags.get('version');
+      const messageFlag = flags.get('message');
+      if (versionFlag === '' || versionFlag === 'true') fail('pass --version <id> (`wrangler deployments list` names them), or omit the flag to use the record\'s last recorded version.');
+      const rolled = await rollbackCloudflareDeployment({
+        ...cloudflareOptions({ checkout: false }),
+        versionId: versionFlag,
+        message: messageFlag !== undefined && messageFlag !== '' && messageFlag !== 'true' ? messageFlag : undefined,
+      });
+      console.log(`Cloudflare Deployment rolled back to version ${rolled.versionId}.`);
+      return;
+    }
+
+    if (command === 'rollback') {
+      fail('rollback is a --target cloudflare verb; the Compose update path rolls back on its own (--no-rollback disables it).');
     }
 
     if (command === 'update' && target() === 'cloudflare') {
