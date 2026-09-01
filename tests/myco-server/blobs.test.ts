@@ -50,7 +50,7 @@ describe('blob route', () => {
     expect(res.status).toBe(200);
     expect(await json(res)).toEqual({ stored: true, duplicate: false, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' });
     expect(blobRow(e, key)).toEqual({ size: bytes.byteLength, media_type: 'text/plain; charset=utf-8', token_id: t.tokenId });
-    expect(e.bucket.objects.get(`proj_1/${key}`)).toEqual({ size: bytes.byteLength, contentType: 'text/plain; charset=utf-8' });
+    expect(e.bucket.objects.get(`proj_1/${key}`)).toEqual({ size: bytes.byteLength, contentType: 'text/plain; charset=utf-8', bytes });
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(bytes.byteLength);
   });
 

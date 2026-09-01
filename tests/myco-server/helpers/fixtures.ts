@@ -52,7 +52,7 @@ export function recordingLimiter() {
 }
 
 export interface MemoryBlobStore extends BlobStore {
-  objects: Map<string, { size: number; contentType?: string }>;
+  objects: Map<string, { size: number; contentType?: string; bytes: Uint8Array }>;
   puts: string[];
   heads: string[];
   deletes: string[];
@@ -80,7 +80,7 @@ export function memoryBlobStore(): MemoryBlobStore {
         size: o.size,
         body: new ReadableStream({
           start(controller) {
-            controller.enqueue(new Uint8Array(o.size));
+            controller.enqueue(o.bytes);
             controller.close();
           },
         }),
@@ -93,7 +93,7 @@ export function memoryBlobStore(): MemoryBlobStore {
       if (options?.sha256 && (await sha256HexOf(bytes)) !== options.sha256) {
         throw new Error('put: The SHA-256 checksum you specified did not match what we received. (10037)');
       }
-      store.objects.set(key, { size: bytes.byteLength, contentType: options?.httpMetadata?.contentType });
+      store.objects.set(key, { size: bytes.byteLength, contentType: options?.httpMetadata?.contentType, bytes });
       return { size: bytes.byteLength };
     },
     async delete(key) {

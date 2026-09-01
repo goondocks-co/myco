@@ -120,8 +120,11 @@ describe('read layer', () => {
     //   core/spores.ts    the spore store — it OWNS spores and resolution_events,
     //                     and holds the one write that moves a status and records
     //                     why it moved as a single commit
+    //   core/backup.ts    the backup engine — it OWNS backups, and its dump and
+    //                     additive restore are row transport over every table,
+    //                     which no facade abstraction can carry
     //   pipeline.ts   one quota re-read on the ingest admission path
-    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/runs\.ts$/, /^core\/digests\.ts$/, /^core\/provenance\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/spores\.ts$/, /^pipeline\.ts$/];
+    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/runs\.ts$/, /^core\/backup\.ts$/, /^core\/digests\.ts$/, /^core\/provenance\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/spores\.ts$/, /^pipeline\.ts$/];
     const offenders: string[] = [];
     for (const file of tsFiles(SRC)) {
       const rel = file.slice(SRC.length);

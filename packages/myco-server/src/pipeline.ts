@@ -97,12 +97,12 @@ function wrongMethod(method: string, pathname: string, admitted: (route: Route) 
   return Response.json({ error: 'method_not_allowed', method, allow: methods }, { status: 405, headers: { allow: methods.join(', ') } });
 }
 const forbidden = () => Response.json({ error: 'forbidden' }, { status: 403 });
-const refuseOversized = () => Response.json({ error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` }, { status: 400 });
+const refuseOversized = (bound: number) => Response.json({ error: 'bad_request', reason: `body exceeds ${bound} bytes` }, { status: 400 });
 
 /** The request with its body read under the same cap the member path enforces, or null when it exceeds it. A body-less method passes through untouched. */
-async function boundedRequest(request: Request): Promise<Request | null> {
+async function boundedRequest(request: Request, bound: number): Promise<Request | null> {
   if (request.method === 'GET' || request.method === 'HEAD') return request;
-  const body = await readBoundedBody(request, MAX_BODY_BYTES);
+  const body = await readBoundedBody(request, bound);
   if (!body.ok) return null;
   return new Request(request.url, { method: request.method, headers: request.headers, body: body.text });
 }
@@ -223,8 +223,9 @@ export function createServer(deps: ServerDeps) {
     // cost of one conditional update each time.
     if (matched?.route.auth === 'enroll') {
       if (!(await env.sourceLimit.limit({ key: source })).success) return limited();
-      const bounded = await boundedRequest(request);
-      if (bounded === null) return refuseOversized();
+      const bodyBound = (matched.route as { maxBodyBytes?: number }).maxBodyBytes ?? MAX_BODY_BYTES;
+      const bounded = await boundedRequest(request, bodyBound);
+      if (bounded === null) return refuseOversized(bodyBound);
       try {
         return await matched.route.handler(env, bounded, now);
       } catch (err) {
@@ -244,8 +245,9 @@ export function createServer(deps: ServerDeps) {
       const session = presented === null ? null : await verifySession(config.sessionSecret, presented, now);
       if (session === null) return anonymous();
       if (!sameOrigin(request, url)) return forbidden();
-      const bounded = await boundedRequest(request);
-      if (bounded === null) return refuseOversized();
+      const bodyBound = (matched.route as { maxBodyBytes?: number }).maxBodyBytes ?? MAX_BODY_BYTES;
+      const bounded = await boundedRequest(request, bodyBound);
+      if (bounded === null) return refuseOversized(bodyBound);
       try {
         // Membership is decided per request: a session names a GitHub account, and
         // the account is a member only while a live member row is linked to it.
