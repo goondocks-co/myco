@@ -220,7 +220,18 @@ export async function restoreBackup(
 ): Promise<RestoreOutcome | null> {
   const artifact = await readArtifact(db, blobs, opts.id);
   if (artifact === null) return null;
-  const lines = artifact.text.split('\n').filter((l) => l.length > 0);
+  return restoreArtifact(db, { text: artifact.text, allowForeignLineage: opts.allowForeignLineage });
+}
+
+/**
+ * Apply one artifact's text — the path an uploaded artifact shares with a
+ * stored one, so both meet the same gates in the same order.
+ */
+export async function restoreArtifact(
+  db: RelationalStore,
+  opts: { text: string; allowForeignLineage?: boolean },
+): Promise<RestoreOutcome> {
+  const lines = opts.text.split('\n').filter((l) => l.length > 0);
   const header = JSON.parse(lines[0]!) as BackupHeader;
 
   const live = await deploymentId(db);
@@ -259,6 +270,11 @@ export async function restoreBackup(
     outcome.tables[table] = { rows: rows.length, inserted };
   }
   return outcome;
+}
+
+/** One stored artifact's text and index row, for the download surface. */
+export async function backupArtifact(db: RelationalStore, blobs: BlobStore, id: string): Promise<{ row: BackupIndexRow; text: string } | null> {
+  return readArtifact(db, blobs, id);
 }
 
 /**

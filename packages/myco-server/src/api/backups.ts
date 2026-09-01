@@ -8,8 +8,9 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import {
-  BackupLineageError, BackupSchemaError, BackupTooLargeError,
-  createBackup, listBackups, previewRestore, pruneBackups, restoreBackup, setBackupPinned,
+  backupArtifact, BackupLineageError, BackupSchemaError, BackupTooLargeError,
+  createBackup, listBackups, MAX_BACKUP_BYTES, previewRestore, pruneBackups,
+  restoreArtifact, restoreBackup, setBackupPinned,
 } from '../core/backup.js';
 import { leafValues } from '../core/settings.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
@@ -71,6 +72,36 @@ export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Pr
     if (err instanceof BackupSchemaError) {
       return Response.json({ error: 'newer_schema', message: err.message }, { status: 409 });
     }
+    throw err;
+  }
+}
+
+/** The artifact itself, for an operator taking a copy off the Deployment. */
+export async function handleBackupArtifact(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const artifact = await backupArtifact(env.db, env.blobs, ctx.params.backupId);
+  if (artifact === null) return notFound('no backup holds that id, or its artifact is gone from the store');
+  return new Response(artifact.text, {
+    headers: {
+      'content-type': 'application/jsonl',
+      'content-disposition': `attachment; filename="${artifact.row.key.split('/').pop()}"`,
+    },
+  });
+}
+
+/** Restore an artifact carried in the request itself — the way a backup taken on one Deployment lands on another. */
+export async function handleRestoreUpload(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const body = await readJsonObject(ctx.request);
+  if (body === null || typeof body.artifact !== 'string' || body.artifact.length === 0) {
+    return badRequest('body must carry the artifact text');
+  }
+  if (body.artifact.length > MAX_BACKUP_BYTES) return badRequest('the artifact is past the byte bound this path serves');
+  try {
+    const outcome = await restoreArtifact(env.db, { text: body.artifact, allowForeignLineage: body.allowForeignLineage === true });
+    return ok({ applied: true, ...outcome });
+  } catch (err) {
+    if (err instanceof BackupLineageError) return Response.json({ error: 'foreign_lineage', message: err.message }, { status: 409 });
+    if (err instanceof BackupSchemaError) return Response.json({ error: 'newer_schema', message: err.message }, { status: 409 });
+    if (err instanceof SyntaxError) return badRequest('the artifact is not a backup this server can read');
     throw err;
   }
 }

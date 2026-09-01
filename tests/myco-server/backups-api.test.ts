@@ -55,4 +55,25 @@ describe('the backup routes', () => {
     const bad = await worker.fetch(await asOwnerPost(`/api/backups/${id}/pin`, { pinned: 'yes' }), env);
     expect(bad.status).toBe(400);
   });
+
+  it('serves the artifact for download, and restores an uploaded artifact through the same gates', async () => {
+    const { env } = setup();
+    const created = await worker.fetch(await asOwnerPost('/api/backups', {}), env);
+    const id = ((await created.json()) as { backup: { id: string } }).backup.id;
+
+    const artifact = await worker.fetch(await asOwner(`/api/backups/${id}/artifact`), env);
+    const text = await artifact.text();
+    expect({ status: artifact.status, jsonl: artifact.headers.get('content-type') }).toEqual({ status: 200, jsonl: 'application/jsonl' });
+    expect(text.split('\\n')[0]).toContain('"format":"myco-backup/1"');
+
+    const other = setup();
+    const refused = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact: text }), other.env);
+    expect({ status: refused.status, error: ((await refused.json()) as { error: string }).error }).toEqual({ status: 409, error: 'foreign_lineage' });
+
+    const adopted = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact: text, allowForeignLineage: true }), other.env);
+    expect({ status: adopted.status, applied: ((await adopted.json()) as { applied: boolean }).applied }).toEqual({ status: 200, applied: true });
+
+    const garbage = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact: 'not a backup' }), other.env);
+    expect(garbage.status).toBe(400);
+  });
 });
