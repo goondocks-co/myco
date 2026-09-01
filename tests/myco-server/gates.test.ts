@@ -483,7 +483,7 @@ describe('gates', () => {
     // Credential and membership tables are Deployment-scoped by design — a member
     // credential belongs to a member and a Deployment, not to one project — so
     // their indexes lead with what they are actually looked up by.
-    const deploymentScoped = /ON (member_tokens|members|member_credentials|enrollment_authorities|step_up_authorities|identity_link_authorities)\b/;
+    const deploymentScoped = /ON (member_tokens|members|member_credentials|enrollment_authorities|step_up_authorities|identity_link_authorities|backups)\b/;
     // Two indexes are keyed on the credential rather than the project: a credential
     // spans every Project in its Deployment, so the quota admission looks reservations
     // up by credential, and the foreign key on a run's dispatching credential is
@@ -698,6 +698,12 @@ describe('gates', () => {
       const source = stripComments(readFileSync(file, 'utf8'));
       for (const [table, owner] of Object.entries(OWNED)) {
         if (rel === owner) continue;
+        // The backup engine's exclusion ledger names these tables to keep them out
+        // of every artifact; only a line that also carries a SQL verb is a writer.
+        if (rel === join('core', 'backup.ts')) {
+          const sqlLines = source.split('\n').filter((l) => new RegExp(`\\b${table}\\b`).test(l) && /\b(INTO|UPDATE|DELETE|SELECT)\b/i.test(l));
+          if (sqlLines.length === 0) continue;
+        }
         if (new RegExp(`\\b${table}\\b`).test(source)) offenders.push(`${rel} names ${table}`);
       }
     }
@@ -795,6 +801,9 @@ describe('gates', () => {
       for (const line of readFileSync(file, 'utf8').split('\n')) {
         if (!/\bmember_tokens\b/.test(line)) continue;
         if (rel === 'telemetry.ts' && line.includes('member_tokens_quota')) continue;
+        // The backup engine's disposition ledger NAMES the table to keep it out of
+        // every artifact; a name on a line with no SQL verb is not a statement.
+        if (rel === join('core', 'backup.ts') && !/\b(INTO|UPDATE|DELETE|SELECT)\b/i.test(line)) continue;
         offenders.push(`${rel}: ${line.trim()}`);
       }
     }
