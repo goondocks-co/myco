@@ -1,0 +1,82 @@
+name: Deploy server
+
+# Deploys the dogfood Cloudflare Deployment through the same `myco server
+# update` verb an operator runs: build artifacts, push the harness image,
+# pin its digest in the rendered config, migrate, deploy. A deploy whose
+# health smoke fails is rolled back to the pre-deploy version.
+#
+# Requires the repository secret CLOUDFLARE_API_TOKEN: an account-scoped API
+# token with Workers Scripts:Edit, D1:Edit, and Containers registry access.
+# The deployment metadata (no secrets) is committed at
+# packages/myco-server/deploy/dogfood.record.json.
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this deploy is being run
+        required: false
+
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      MYCO_HOME: ${{ github.workspace }}/.ci-myco-home
+      RECORD: packages/myco-server/deploy/dogfood.record.json
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: npm ci
+
+      - name: Seed the deployment record
+        run: |
+          set -eu
+          mkdir -p "$MYCO_HOME/server/cloudflare"
+          cp "$RECORD" "$MYCO_HOME/server/cloudflare/record.json"
+          {
+            echo "account=$(python3 -c "import json;print(json.load(open('$RECORD'))['accountId'])")"
+            echo "url=$(python3 -c "import json;print(json.load(open('$RECORD'))['url'])")"
+          } >> "$GITHUB_ENV"
+
+      - name: Capture the pre-deploy version
+        id: before
+        run: |
+          set -eu
+          OUT=$(bun packages/myco/src/cli.ts server status --target cloudflare --account-id "$account")
+          echo "$OUT"
+          VERSION=$(echo "$OUT" | awk '/Deployed:/ {print $2}')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy
+        run: bun packages/myco/src/cli.ts server update --target cloudflare --account-id "$account" --dir packages/myco-server
+
+      - name: Health smoke
+        run: |
+          set -eu
+          for _ in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url/health" || true)
+            [ "$code" = "200" ] && exit 0
+            sleep 5
+          done
+          echo "health was $code, expected 200"
+          exit 1
+
+      - name: Roll back on a failed smoke
+        if: failure() && steps.before.outputs.version != '' && steps.before.outputs.version != 'no' && steps.before.outputs.version != 'yes'
+        run: |
+          bun packages/myco/src/cli.ts server rollback --target cloudflare --account-id "$account" \
+            --version "${{ steps.before.outputs.version }}" --message "CI auto-rollback (run ${{ github.run_id }})"
