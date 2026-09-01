@@ -75,7 +75,11 @@ new_sqlite_classes = [ "HarnessContainer" ]
 [[containers]]
 class_name = "HarnessContainer"
 image = "./harness/Dockerfile"
-max_instances = 10
+# wrangler rolls the container application only when THIS table changes; a
+# deploy whose only delta is image content pushes a new digest the
+# application never adopts. Touch a field here alongside image-only changes
+# until the deploy path pins the digest explicitly.
+max_instances = 12
 # The dev default is 256MiB; the harness spawns the Claude Code CLI beside bun,
 # and a run under the default is killed by memory mid-execution with no
 # JS-level evidence — the process dies, the entry's guards never fire.
