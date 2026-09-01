@@ -5,3 +5,4 @@ wrangler.smoke.toml
 wrangler.parity-*.toml
 harness/entry.js
 harness/definitions/
+harness/prompts/
