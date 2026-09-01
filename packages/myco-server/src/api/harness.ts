@@ -12,12 +12,15 @@ import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken } from '../auth/tokens.js';
 import { leafValues } from '../core/settings.js';
 import { deploymentSecretStore } from '../core/secrets.js';
+import { ensureAgent } from '../core/runs.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
 import { badRequest, ok, readJsonObject } from './scope.js';
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
-const HARNESS_MEMBER_ID = 'mem_harness';
+export const HARNESS_MEMBER_ID = 'mem_harness';
+/** The agent identity a dispatched runtime claims under when its task names none; matches DEFAULT_AGENT_ID in the runner (packages/myco/src/constants.ts). */
+const HARNESS_AGENT_ID = 'myco-agent';
 const HARNESS_MACHINE_ID = 'harness';
 const SUBSCRIPTION_TOKEN_PREFIX = 'sk-ant-oat';
 const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
@@ -68,6 +71,7 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   }
 
   await ensureMember(env.db, HARNESS_MEMBER_ID, ctx.now, 'harness runtime');
+  await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: providerType, model, enabled: true }, ctx.now);
   const minted = await issueMemberToken(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, ctx.now);
 
   const runId = `run_${crypto.randomUUID()}`;

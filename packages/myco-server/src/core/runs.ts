@@ -232,6 +232,20 @@ export async function upsertAgent(db: RelationalStore, agent: AgentIdentity, now
     .bind(agent.id, agent.name, agent.provider, agent.model, agent.enabled ? 1 : 0, now, now).run();
 }
 
+/**
+ * Declare an agent identity only where none exists.
+ *
+ * The dispatch path calls this so a first dispatch does not depend on a
+ * separate registration step, while an owner-registered row keeps every field
+ * of its registration: a dispatch never edits configuration.
+ */
+export async function ensureAgent(db: RelationalStore, agent: AgentIdentity, now: number): Promise<void> {
+  await db.prepare(`INSERT INTO agents (id, name, provider, model, source, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'built-in', ?, ?, ?)
+      ON CONFLICT (id) DO NOTHING`)
+    .bind(agent.id, agent.name, agent.provider, agent.model, agent.enabled ? 1 : 0, now, now).run();
+}
+
 export async function listAgents(db: RelationalStore): Promise<AgentIdentity[]> {
   const { results } = await db.prepare(`SELECT id, name, provider, model, enabled FROM agents ORDER BY id`)
     .all<{ id: string; name: string; provider: string | null; model: string | null; enabled: number }>();
@@ -253,6 +267,9 @@ export async function listAgents(db: RelationalStore): Promise<AgentIdentity[]> 
  * undoing the claim route's rule that the dispatcher comes from the credential
  * and never from the body.
  */
+/** The statuses after which a run does no further work; the update surface releases run-scoped resources when one lands. */
+export const TERMINAL_RUN_STATUSES = ['completed', 'failed', 'skipped'] as const;
+
 export const RUN_UPDATE_COLUMNS = [
   'status', 'task', 'instruction', 'harness', 'provider', 'model', 'session_ref',
   'resumable', 'resume_status', 'resume_mode', 'resumed_at', 'resume_attempts',

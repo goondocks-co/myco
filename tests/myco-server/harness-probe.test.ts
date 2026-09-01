@@ -116,4 +116,22 @@ describe('POST /api/harness/dispatch', () => {
     const claimed = await claim.json() as Record<string, unknown>;
     expect({ persisted: claimed.persisted, refusedOrClaimed: claimed.claimed !== undefined || claimed.notAdmitted !== undefined }).toEqual({ persisted: true, refusedOrClaimed: true });
   });
+
+  it('ensures the runtime agent row on dispatch, and never edits one an owner registered', async () => {
+    const { env, sqlite, db } = setup();
+    seedProvider(sqlite, { 'agent.provider.type': 'anthropic', 'agent.provider.model': 'claude-opus-5' });
+    await deploymentSecretStore(db, wrappingKeyFromText(async () => WRAP_KEY)).put('anthropic', 'sk-ant-oat-test-token', 'test', 1);
+    const bound = { ...env, HARNESS: { idFromName: (name: string) => ({ name }), get: () => ({ launch: async () => {} }) } };
+
+    const first = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);
+    expect(first.status).toBe(200);
+    const ensured = sqlite.query(`SELECT name, provider, model, enabled FROM agents WHERE id = 'myco-agent'`).get() as Record<string, unknown>;
+    expect(ensured).toEqual({ name: 'myco-agent', provider: 'anthropic', model: 'claude-opus-5', enabled: 1 });
+
+    sqlite.query(`UPDATE agents SET name = 'Custom Name', model = 'claude-sonnet-5' WHERE id = 'myco-agent'`).run();
+    const second = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);
+    expect(second.status).toBe(200);
+    const kept = sqlite.query(`SELECT name, model FROM agents WHERE id = 'myco-agent'`).get() as Record<string, unknown>;
+    expect(kept).toEqual({ name: 'Custom Name', model: 'claude-sonnet-5' });
+  });
 });
