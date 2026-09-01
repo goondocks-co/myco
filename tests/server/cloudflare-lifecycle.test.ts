@@ -39,6 +39,7 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
       'd1 create myco-server': { stdout: `database_id = "${DB_ID}"` },
       'secrets-store store list': { stdout: '', code: 0 },
       'secrets-store store create': { stdout: `Created store myco (${STORE})` },
+      'containers build': { stdout: `#12 exporting manifest sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee done` },
       'deploy -c wrangler.deploy.toml': { stdout: 'Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },
       ...over,
     };
@@ -66,14 +67,19 @@ describe('create', () => {
     const rendered = readFileSync(join(dir, DEPLOY_CONFIG_NAME), 'utf8');
     expect(rendered).toContain(`database_id = "${DB_ID}"`);
     expect(rendered).toContain(`store_id = "${STORE}"`);
+    const pinnedUri = `registry.cloudflare.com/${ACCOUNT}/myco-server-harnesscontainer@sha256:${'e'.repeat(64)}`;
+    expect(record.harnessImage).toBe(pinnedUri);
+    expect(rendered).toContain(`image = "${pinnedUri}"`);
+    expect(rendered).not.toContain('image = "./harness/Dockerfile"');
 
     const flat = calls.map((c) => c.args.join(' '));
     const uiAt = flat.findIndex((a) => a.includes('run build:ui'));
     const bundleAt = flat.findIndex((a) => a.includes('run harness:bundle'));
+    const pushAt = flat.findIndex((a) => a.includes('containers build'));
     const migrateAt = flat.findIndex((a) => a.includes('migrations apply'));
     const deployAt = flat.findIndex((a) => /(^|\s)deploy(\s|$)/.test(a) && a.includes(DEPLOY_CONFIG_NAME));
     const secretAt = flat.findIndex((a) => a.includes('secret put SESSION_SECRET'));
-    expect({ migrateAt: migrateAt >= 0, deployAt: deployAt >= 0, order: migrateAt < deployAt, secretAfterDeploy: secretAt > deployAt, artifactsBeforeDeploy: uiAt >= 0 && bundleAt > uiAt && bundleAt < deployAt }).toEqual({ migrateAt: true, deployAt: true, order: true, secretAfterDeploy: true, artifactsBeforeDeploy: true });
+    expect({ migrateAt: migrateAt >= 0, deployAt: deployAt >= 0, order: migrateAt < deployAt, secretAfterDeploy: secretAt > deployAt, artifactsBeforeDeploy: uiAt >= 0 && bundleAt > uiAt && bundleAt < deployAt, pushBeforeDeploy: pushAt > bundleAt && pushAt < deployAt }).toEqual({ migrateAt: true, deployAt: true, order: true, secretAfterDeploy: true, artifactsBeforeDeploy: true, pushBeforeDeploy: true });
     expect(flat[migrateAt]).toContain(DEPLOY_CONFIG_NAME);
   });
 
@@ -83,6 +89,14 @@ describe('create', () => {
     await expect(createCloudflareDeployment({ ...options, runner: failing })).rejects.toThrow();
     const record = readDeploymentRecord(home)!;
     expect({ db: record.databaseId, store: record.storeId }).toEqual({ db: DB_ID, store: STORE });
+  });
+
+  it('GATE: a push failure leaves the record on disk naming what exists, with no image pinned', async () => {
+    const { home, options } = setup();
+    const failing = runner({ 'containers build': { code: 1, stderr: 'docker daemon unreachable' } });
+    await expect(createCloudflareDeployment({ ...options, runner: failing })).rejects.toThrow();
+    const record = readDeploymentRecord(home)!;
+    expect({ db: record.databaseId, store: record.storeId, image: record.harnessImage }).toEqual({ db: DB_ID, store: STORE, image: undefined });
   });
 
   it('GATE: secrets travel on stdin, never argv', async () => {
@@ -105,6 +119,7 @@ describe('create', () => {
     expect(readDeploymentRecord(home)!.databaseId).toBe(DB_ID);
     expect(calls.some((c) => c.args.join(' ').includes('d1 create'))).toBe(false);
     expect(calls.some((c) => c.args.join(' ').includes('secret put SESSION_SECRET'))).toBe(false);
+    expect(readDeploymentRecord(home)!.harnessImage).toContain('@sha256:');
   });
 });
 
@@ -117,6 +132,7 @@ describe('update', () => {
     expect(updated.versionId).toBe('16a2423e-af96-4310-b61b-4e2b5fd1310b');
     expect(existsSync(join(dir, DEPLOY_CONFIG_NAME))).toBe(true);
     expect(readDeploymentRecord(home)!.versionId).toBe('16a2423e-af96-4310-b61b-4e2b5fd1310b');
+    expect(readDeploymentRecord(home)!.harnessImage).toContain('@sha256:');
   });
 });
 

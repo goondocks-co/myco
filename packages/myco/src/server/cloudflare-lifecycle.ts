@@ -18,6 +18,7 @@ import {
   applyMigrations,
   cloudflareStatus,
   deleteWorker,
+  buildAndPushHarnessImage,
   deployWorker,
   ensureBucket,
   ensureDatabase,
@@ -100,9 +101,11 @@ export async function createCloudflareDeployment(options: LifecycleOptions): Pro
   };
   writeDeploymentRecord(record, options.mycoHome);
 
+  await buildDeployArtifacts(options);
+  record = { ...record, harnessImage: await buildAndPushHarnessImage({ ...options, workerName: WORKER_NAME }) };
+  writeDeploymentRecord(record, options.mycoHome);
   const configFile = writeDeployConfig(record, options.configDir);
   const withConfig = { ...options, configFile: path.basename(configFile) };
-  await buildDeployArtifacts(options);
 
   await applyMigrations({ ...withConfig, databaseName: DATABASE_NAME });
   const deployed = await deployWorker(withConfig);
@@ -123,12 +126,14 @@ export async function createCloudflareDeployment(options: LifecycleOptions): Pro
 export async function updateCloudflareDeployment(options: LifecycleOptions): Promise<{ versionId: string | null }> {
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; `myco server create --target cloudflare` provisions one');
-  const configFile = writeDeployConfig(record, options.configDir);
-  const withConfig = { ...options, configFile: path.basename(configFile) };
   await buildDeployArtifacts(options);
+  const pinned = { ...record, harnessImage: await buildAndPushHarnessImage({ ...options, workerName: record.workerName }) };
+  writeDeploymentRecord(pinned, options.mycoHome);
+  const configFile = writeDeployConfig(pinned, options.configDir);
+  const withConfig = { ...options, configFile: path.basename(configFile) };
   await applyMigrations({ ...withConfig, databaseName: record.databaseName });
   const deployed = await deployWorker(withConfig);
-  writeDeploymentRecord({ ...record, versionId: deployed.versionId, deployedAt: new Date().toISOString() }, options.mycoHome);
+  writeDeploymentRecord({ ...pinned, versionId: deployed.versionId, deployedAt: new Date().toISOString() }, options.mycoHome);
   return { versionId: deployed.versionId };
 }
 

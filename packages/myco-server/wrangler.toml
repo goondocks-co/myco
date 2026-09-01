@@ -75,10 +75,11 @@ new_sqlite_classes = [ "HarnessContainer" ]
 [[containers]]
 class_name = "HarnessContainer"
 image = "./harness/Dockerfile"
-# wrangler rolls the container application only when THIS table changes; a
-# deploy whose only delta is image content pushes a new digest the
-# application never adopts. Touch a field here alongside image-only changes
-# until the deploy path pins the digest explicitly.
+# wrangler rolls the container application only when THIS table changes. A
+# rendered deploy config pins the pushed image's digest URI on the image line,
+# so a deploy rolls exactly when image content changes; the Dockerfile form
+# serves development and CI builds. An image-only change deployed through the
+# Dockerfile form still needs a field edit in this table to roll.
 max_instances = 12
 # The dev default is 256MiB; the harness spawns the Claude Code CLI beside bun,
 # and a run under the default is killed by memory mid-execution with no

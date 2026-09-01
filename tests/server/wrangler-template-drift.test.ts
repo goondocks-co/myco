@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { WRANGLER_TEMPLATE } from '@myco/server/wrangler-template.js';
 import { DeployConfigIncomplete, parityWranglerConfig, renderDeployConfig } from '@myco/server/deploy-config.js';
+import { harnessImageUri } from '@myco/server/cloudflare.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 
 const SHIPPED = fileURLToPath(new URL('../../packages/myco-server/wrangler.toml', import.meta.url));
@@ -85,5 +86,43 @@ describe('parityWranglerConfig', () => {
     for (const dropped of ['[[containers]]', '[[durable_objects.bindings]]', '[[migrations]]', 'HARNESS']) {
       expect(config).not.toContain(dropped);
     }
+  });
+});
+
+describe('harness image pinning', () => {
+  const ACCOUNT = 'a'.repeat(32);
+  const URI = `registry.cloudflare.com/${ACCOUNT}/myco-server-harnesscontainer@sha256:${'b'.repeat(64)}`;
+
+  it('pins the record image over the Dockerfile form, and keeps the Dockerfile form on a record without one', () => {
+    const pinned = renderDeployConfig(record({ databaseId: 'd1-uuid', harnessImage: URI }));
+    expect(pinned).toContain(`image = "${URI}"`);
+    expect(pinned).not.toContain('image = "./harness/Dockerfile"');
+    const unpinned = renderDeployConfig(record({ databaseId: 'd1-uuid' }));
+    expect(unpinned).toContain('image = "./harness/Dockerfile"');
+  });
+
+  it('refuses a harnessImage that is not a digest-pinned registry URI, naming the record', () => {
+    expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', harnessImage: 'myco-server-harnesscontainer:latest' })))
+      .toThrow(/harnessImage.*record\.json/);
+  });
+
+  it('composes the URI from the LAST exported manifest digest', () => {
+    const out = [
+      `#12 exporting manifest sha256:${'c'.repeat(64)} done`,
+      `#12 exporting manifest sha256:${'d'.repeat(64)} done`,
+      'Image already exists remotely, skipping push',
+    ].join('\n');
+    expect(harnessImageUri(out, ACCOUNT, 'myco-server')).toBe(`registry.cloudflare.com/${ACCOUNT}/myco-server-harnesscontainer@sha256:${'d'.repeat(64)}`);
+  });
+
+  it('derives the image name suffix from the template container class', () => {
+    const cls = /class_name = "([A-Za-z0-9]+)"/.exec(WRANGLER_TEMPLATE.split('[[containers]]')[1]!)?.[1];
+    expect(cls).toBe('HarnessContainer');
+    const out = `#12 exporting manifest sha256:${'c'.repeat(64)} done`;
+    expect(harnessImageUri(out, ACCOUNT, 'w')).toContain(`/w-${cls!.toLowerCase()}@sha256:`);
+  });
+
+  it('refuses build output with no manifest digest', () => {
+    expect(() => harnessImageUri('Login Succeeded', ACCOUNT, 'myco-server')).toThrow(/manifest digest/);
   });
 });
