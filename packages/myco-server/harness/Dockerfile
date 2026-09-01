@@ -9,5 +9,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 ENV PATH="/root/.local/bin:${PATH}"
 WORKDIR /app
 COPY entry.js .
+COPY definitions ./definitions
 EXPOSE 8080
 CMD ["bun", "run", "entry.js"]

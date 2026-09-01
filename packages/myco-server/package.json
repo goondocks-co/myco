@@ -16,7 +16,7 @@
     "token:revoke": "bun scripts/revoke-local.ts",
     "image:build": "docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t ghcr.io/goondocks-co/myco-server:${MYCO_VERSION:-dev} ../..",
     "image:build:native": "docker buildx build -f Dockerfile -t ghcr.io/goondocks-co/myco-server:${MYCO_VERSION:-dev} --load ../..",
-    "harness:bundle": "bun build ../myco/src/agent/runtime/server-entry.ts --target=bun --outfile harness/entry.js"
+    "harness:bundle": "bun build ../myco/src/agent/runtime/server-entry.ts --target=bun --outfile harness/entry.js && rm -rf harness/definitions && cp -R ../myco/src/agent/definitions harness/definitions"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0"
