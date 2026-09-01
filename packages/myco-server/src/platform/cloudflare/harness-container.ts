@@ -70,13 +70,16 @@ export class HarnessContainer extends Container {
   }
 
   /**
-   * End the hold.
+   * End the hold and stop the container.
    *
-   * The container then sleeps and stops on its own, which is what makes a
-   * per-run container cheap. Stopping between runs is the desired behaviour.
+   * Deleting the hold alone stops renewals but leaves the platform's own idle
+   * window (`sleepAfter`) to run out; stopping here is what makes a per-run
+   * container cheap. An alarm that fires after this finds no hold and releases
+   * with no effect.
    */
   async endRun(): Promise<void> {
     await this.ctx.storage.delete(HOLD_KEY);
+    await this.stop();
   }
 
   /**
