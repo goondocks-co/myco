@@ -23,7 +23,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
 import {
   applyRunUpdate, claimRun, getRun, getState, insertReport, listAgents, listReports, mutateState,
-  projectAdmission, recordRunEvents, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns, upsertAgent, upsertCortexInstructions,
+  projectAdmission, recordRunEvents, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns, TERMINAL_RUN_STATUSES, upsertAgent, upsertCortexInstructions,
   type RunInsert, type RunUpdate, type RunEventRowInsert,
 } from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
@@ -32,6 +32,8 @@ import { admitResume, classifyFailure, type FailureObservation } from '../core/r
 
 /** The failure classes a harness may report; anything else is refused rather than mapped to a default. */
 const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
+import { revokeCredentialAsMember } from '../auth/tokens.js';
+import { HARNESS_MEMBER_ID } from './harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
@@ -208,6 +210,22 @@ export async function handleGetRun(env: ServerEnv, ctx: RouteContext): Promise<R
 }
 
 /**
+ * Release what a dispatched run holds once it lands terminal: the container
+ * hold ends so the instance drains, and the dispatch-minted credential is
+ * revoked — it exists only for its run. Keyed on the run's own `dispatched_by`,
+ * so a runtime writing a sibling run's status keeps its credential, and only
+ * the credential that launched a container can end that container's hold.
+ */
+async function releaseDispatchedRun(env: ServerEnv, ctx: RouteContext, runId: string, status: unknown): Promise<void> {
+  if (ctx.memberId !== HARNESS_MEMBER_ID) return;
+  if (typeof status !== 'string' || !(TERMINAL_RUN_STATUSES as readonly string[]).includes(status)) return;
+  const run = await getRun(env.db, { projectId: ctx.projectId }, runId);
+  if (run === null || run.dispatchedBy !== ctx.tokenId) return;
+  try { await env.harnessEnd?.(runId); } catch { /* the hold's own deadline still ends the container */ }
+  await revokeCredentialAsMember(env.db, ctx.memberId, ctx.tokenId, ctx.now);
+}
+
+/**
  * Apply a partial update to one run.
  *
  * A column outside `RUN_UPDATE_COLUMNS` is a refusal rather than a silent
@@ -227,7 +245,9 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   if (rejected.length > 0) {
     return Response.json(refused(ctx, refusal(`update names columns it may not set: ${rejected.sort().join(', ')}`, 'refused')));
   }
-  const changed = await applyRunUpdate(env.db, { projectId: ctx.projectId }, runId, update as RunUpdate);
+  const runUpdate = update as RunUpdate;
+  const changed = await applyRunUpdate(env.db, { projectId: ctx.projectId }, runId, runUpdate);
+  if (changed === 1) await releaseDispatchedRun(env, ctx, runId, runUpdate.status);
   return Response.json({ persisted: true, changed });
 }
 
@@ -384,6 +404,7 @@ export async function handleRecordFailure(env: ServerEnv, ctx: RouteContext): Pr
   if (decision.clearCheckpoints) update.checkpoints = null;
 
   const changed = await applyRunUpdate(env.db, { projectId: ctx.projectId }, runId, update as RunUpdate);
+  if (changed === 1) await releaseDispatchedRun(env, ctx, runId, 'failed');
   return Response.json({ persisted: true, changed, ...decision });
 }
 

@@ -111,6 +111,10 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
         try { container = JSON.parse(text); } catch { /* the text stands */ }
         return { held: true, status: answered.status, ok: answered.ok, container };
       },
+      harnessEnd: async (runId: string): Promise<void> => {
+        const namespace = bindings.HARNESS!;
+        await namespace.get(namespace.idFromName(runId)).endRun();
+      },
     }),
     afterResponse: deferred === undefined ? () => {} : (work) => deferred.waitUntil(work()),
     outbound: (input, init) => fetch(input, init),
