@@ -24,6 +24,7 @@ export const SLEEP_AFTER = '90m';
 const SLEEP_AFTER_MS = 90 * 60_000;
 
 const HOLD_KEY = 'run-hold';
+const DISPATCH_ENV_KEY = 'dispatch-env';
 
 export class HarnessContainer extends Container {
   override defaultPort = 8080;
@@ -49,8 +50,23 @@ export class HarnessContainer extends Container {
    * container that is not there.
    */
   async launch(spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }): Promise<void> {
-    await this.startAndWaitForPorts({ startOptions: { envVars: spec.envVars } });
+    // The dispatch environment is the INSTANCE'S, not one start's: a per-call
+    // start option applies once, and the next start — a probe, a platform
+    // restart — would come up with no dispatch. Persisted so it survives the
+    // Durable Object's own eviction too.
+    await this.ctx.storage.put(DISPATCH_ENV_KEY, spec.envVars);
+    this.envVars = spec.envVars;
+    await this.startAndWaitForPorts();
     await this.beginRun(spec.runId, spec.timeoutSeconds);
+  }
+
+  /** Every start reads `envVars` from the instance; a re-created object restores it before serving. */
+  override async fetch(request: Request): Promise<Response> {
+    if (Object.keys(this.envVars ?? {}).length === 0) {
+      const stored = await this.ctx.storage.get<Record<string, string>>(DISPATCH_ENV_KEY);
+      if (stored !== undefined) this.envVars = stored;
+    }
+    return super.fetch(request);
   }
 
   /**
