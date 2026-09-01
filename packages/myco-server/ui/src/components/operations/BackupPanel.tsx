@@ -38,6 +38,7 @@ export function BackupPanel() {
     );
   };
   const skips = outcome === null ? [] : Object.entries(outcome.tables).filter(([, t]) => t.skipped !== undefined);
+  const actionError = backups.create.error ?? backups.restore.error ?? backups.pin.error;
 
   return (
     <Panel
@@ -71,6 +72,7 @@ export function BackupPanel() {
                 onClick={() => backups.pin.mutate({ id: row.id, pinned: row.pinned !== 1 })}>
                 {row.pinned === 1 ? 'Unpin' : 'Pin'}
               </button>
+              {row.present && <a className={button} href={`/api/backups/${row.id}/artifact`} download>Download</a>}
               <button type="button" className={button} disabled={!row.present || backups.restore.isPending} onClick={() => { void openConfirm(row); }}>
                 Restore…
               </button>
@@ -79,6 +81,7 @@ export function BackupPanel() {
         </ul>
       )}
       {previewError !== null && <p className="mt-2 font-sans text-sm text-terra">{previewError}</p>}
+      {actionError !== null && <p className="mt-2 font-sans text-sm text-terra">{actionError.message}</p>}
       {confirming !== null && (
         <div className="mt-3 rounded-md border border-outline-variant/50 bg-surface-container-low p-3">
           <p className="font-sans text-sm text-on-surface">
@@ -91,7 +94,7 @@ export function BackupPanel() {
           {confirming.preview.foreignLineage && (
             <label className="mt-2 flex items-center gap-2 font-sans text-sm text-ochre">
               <input type="checkbox" checked={adopt} onChange={(e) => setAdopt(e.target.checked)} />
-              This backup names another deployment. Restore it here anyway.
+              This backup names another deployment. Restoring it makes that deployment's members — and their sign-in credentials — live here.
             </label>
           )}
           <div className="mt-3 flex gap-2">

@@ -14,6 +14,7 @@ import {
   handleBackupArtifact, handleCreateBackup, handleListBackups, handlePinBackup,
   handleRestoreBackup, handleRestorePreview, handleRestoreUpload,
 } from './api/backups.js';
+import { MAX_UPLOAD_BODY_BYTES } from './core/backup.js';
 import { handleBlobRead } from './api/blobs.js';
 import { handleGetSpore, handleListSpores, handleResolveSpore, handleSaveSpore } from './api/spores.js';
 import {
@@ -67,7 +68,7 @@ export type Route =
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; quotaPrecheck?: boolean; maxBodyBytes: number; handler: StreamHandler }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
   | { method: string; path: string; auth: 'enroll'; handler: EnrollHandler }
-  | { method: string; path: string; pattern?: RegExp; auth: 'owner'; membership?: never; handler: OwnerHandler }
+  | { method: string; path: string; pattern?: RegExp; auth: 'owner'; membership?: never; maxBodyBytes?: number; handler: OwnerHandler }
   | { method: string; path: string; pattern?: RegExp; auth: 'owner'; membership: 'optional'; handler: SessionHandler };
 
 async function health(): Promise<Response> {
@@ -152,7 +153,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/api/backups/{backupId}/restore', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/restore$/, auth: 'owner', handler: handleRestoreBackup },
   { method: 'POST', path: '/api/backups/{backupId}/pin', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/pin$/, auth: 'owner', handler: handlePinBackup },
   { method: 'GET', path: '/api/backups/{backupId}/artifact', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/artifact$/, auth: 'owner', handler: handleBackupArtifact },
-  { method: 'POST', path: '/api/backups/restore-upload', auth: 'owner', handler: handleRestoreUpload },
+  { method: 'POST', path: '/api/backups/restore-upload', auth: 'owner', maxBodyBytes: MAX_UPLOAD_BODY_BYTES, handler: handleRestoreUpload },
   { method: 'GET', path: '/api/settings', auth: 'owner', handler: handleSettings },
   { method: 'PUT', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'owner', handler: handleSetSetting },
   { method: 'GET', path: '/api/secrets', auth: 'owner', handler: handleSecrets },

@@ -35,6 +35,16 @@ describe('table dispositions', () => {
   });
 });
 
+describe('artifact keys', () => {
+  it('keys every artifact by its own id, so same-instant creates never share an object', async () => {
+    const { db, bucket, now } = seeded();
+    const first = await createBackup(db, bucket, { producer: 'test', now });
+    const second = await createBackup(db, bucket, { producer: 'test', now });
+    expect(first.key === second.key).toBe(false);
+    expect(bucket.objects.has(first.key) && bucket.objects.has(second.key)).toBe(true);
+  });
+});
+
 describe('create, list, preview', () => {
   it('writes the artifact and its index row, lists it verified, and previews from the header without executing', async () => {
     const { db, bucket, now } = seeded();
@@ -109,8 +119,11 @@ describe('restore', () => {
 
 describe('retention', () => {
   const DAY = 24 * 60 * 60 * 1000;
+  // A PINNED clock: epoch weeks roll at a fixed weekday, so a wall-clock "now"
+  // makes the bucket layout depend on the day the suite runs.
+  const NOW = 1000 * 7 * DAY + 5 * DAY + DAY / 2;
   const row = (id: string, ageDays: number, pinned = 0): BackupIndexRow => ({
-    id, key: `backups/${id}.jsonl`, created_at: Date.now() - ageDays * DAY, size_bytes: 1,
+    id, key: `backups/${id}.jsonl`, created_at: NOW - ageDays * DAY, size_bytes: 1,
     counts_json: '{}', schema_version: 13, producer: 'test', pinned,
   });
 
@@ -144,5 +157,19 @@ describe('retention', () => {
     expect((await pruneBackups(db, bucket, { keepDaily: 1, keepWeekly: 1 })).pruned).toBe(0);
     expect(await setBackupPinned(db, old.id, false)).toBe(true);
     expect((await pruneBackups(db, bucket, { keepDaily: 1, keepWeekly: 1 })).pruned).toBe(1);
+  });
+});
+
+describe('apply refusals', () => {
+  it('names the table when an artifact row cannot be applied, and refuses a column name outside the grammar', async () => {
+    const { db, bucket, now } = seeded();
+    const header = JSON.stringify({ format: 'myco-backup/1', deploymentId: await deploymentId(db), schemaVersion: 13, createdAt: now, producer: 'test', counts: {} });
+    const orphanReport = JSON.stringify({ t: 'agent_reports', r: { project_id: 'proj_bk', run_id: 'run_ghost', agent_id: 'agent_bk', action: 'a', summary: 's', created_at: now } });
+    const { restoreArtifact, BackupApplyError } = await import('@myco-server-worker/core/backup.js');
+    await expect(restoreArtifact(db, { text: `${header}\n${orphanReport}\n` })).rejects.toThrow(BackupApplyError);
+    await expect(restoreArtifact(db, { text: `${header}\n${orphanReport}\n` })).rejects.toThrow(/agent_reports/);
+
+    const crafted = JSON.stringify({ t: 'projects', r: { 'project_id, name) VALUES (1,2); --': 'x' } });
+    await expect(restoreArtifact(db, { text: `${header}\n${crafted}\n` })).rejects.toThrow(/column name outside the store grammar/);
   });
 });

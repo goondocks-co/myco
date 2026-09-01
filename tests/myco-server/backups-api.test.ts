@@ -64,7 +64,7 @@ describe('the backup routes', () => {
     const artifact = await worker.fetch(await asOwner(`/api/backups/${id}/artifact`), env);
     const text = await artifact.text();
     expect({ status: artifact.status, jsonl: artifact.headers.get('content-type') }).toEqual({ status: 200, jsonl: 'application/jsonl' });
-    expect(text.split('\\n')[0]).toContain('"format":"myco-backup/1"');
+    expect(text.slice(0, text.indexOf('\n'))).toContain('"format":"myco-backup/1"');
 
     const other = setup();
     const refused = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact: text }), other.env);
@@ -75,5 +75,12 @@ describe('the backup routes', () => {
 
     const garbage = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact: 'not a backup' }), other.env);
     expect(garbage.status).toBe(400);
+  });
+
+  it('admits an upload past the default owner body bound, refusing it only by what it is', async () => {
+    const { env } = setup();
+    const oversized = 'x'.repeat(400 * 1024);
+    const res = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact: oversized }), env);
+    expect({ status: res.status, reason: ((await res.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'the artifact is not a backup this server can read' });
   });
 });

@@ -8,7 +8,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import {
-  backupArtifact, BackupLineageError, BackupSchemaError, BackupTooLargeError,
+  BackupApplyError, backupArtifact, BackupLineageError, BackupSchemaError, BackupTooLargeError,
   createBackup, listBackups, MAX_BACKUP_BYTES, previewRestore, pruneBackups,
   restoreArtifact, restoreBackup, setBackupPinned,
 } from '../core/backup.js';
@@ -50,7 +50,7 @@ export async function handleListBackups(env: ServerEnv, ctx: OwnerContext): Prom
 /** What a restore would touch, from the artifact's header alone. */
 export async function handleRestorePreview(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const preview = await previewRestore(env.db, env.blobs, ctx.params.backupId);
-  if (preview === null) return notFound('no backup holds that id, or its artifact is gone from the store');
+  if (preview === null) return notFound();
   return ok(preview);
 }
 
@@ -63,7 +63,7 @@ export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Pr
       id: ctx.params.backupId,
       allowForeignLineage: body.allowForeignLineage === true,
     });
-    if (outcome === null) return notFound('no backup holds that id, or its artifact is gone from the store');
+    if (outcome === null) return notFound();
     return ok({ applied: true, ...outcome });
   } catch (err) {
     if (err instanceof BackupLineageError) {
@@ -72,6 +72,7 @@ export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Pr
     if (err instanceof BackupSchemaError) {
       return Response.json({ error: 'newer_schema', message: err.message }, { status: 409 });
     }
+    if (err instanceof BackupApplyError || err instanceof SyntaxError) return badRequest(err.message);
     throw err;
   }
 }
@@ -79,7 +80,7 @@ export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Pr
 /** The artifact itself, for an operator taking a copy off the Deployment. */
 export async function handleBackupArtifact(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const artifact = await backupArtifact(env.db, env.blobs, ctx.params.backupId);
-  if (artifact === null) return notFound('no backup holds that id, or its artifact is gone from the store');
+  if (artifact === null) return notFound();
   return new Response(artifact.text, {
     headers: {
       'content-type': 'application/jsonl',
@@ -101,6 +102,7 @@ export async function handleRestoreUpload(env: ServerEnv, ctx: OwnerContext): Pr
   } catch (err) {
     if (err instanceof BackupLineageError) return Response.json({ error: 'foreign_lineage', message: err.message }, { status: 409 });
     if (err instanceof BackupSchemaError) return Response.json({ error: 'newer_schema', message: err.message }, { status: 409 });
+    if (err instanceof BackupApplyError) return badRequest(err.message);
     if (err instanceof SyntaxError) return badRequest('the artifact is not a backup this server can read');
     throw err;
   }
@@ -111,6 +113,6 @@ export async function handlePinBackup(env: ServerEnv, ctx: OwnerContext): Promis
   const body = await readJsonObject(ctx.request);
   if (body === null || typeof body.pinned !== 'boolean') return badRequest('body must carry pinned: true or false');
   const changed = await setBackupPinned(env.db, ctx.params.backupId, body.pinned);
-  if (!changed) return notFound('no backup holds that id');
+  if (!changed) return notFound();
   return ok({ pinned: body.pinned });
 }

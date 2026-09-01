@@ -15,6 +15,10 @@ export const BACKUP_FORMAT = 'myco-backup/1';
 export const BACKUP_KEY_PREFIX = 'backups/';
 /** The largest artifact the create path assembles; past this, a backup is refused loudly, never truncated. */
 export const MAX_BACKUP_BYTES = 64 * 1024 * 1024;
+/** The largest request body the upload-restore route admits; sized past the artifact bound so a JSON-escaped artifact still fits. */
+export const MAX_UPLOAD_BODY_BYTES = 80 * 1024 * 1024;
+/** The only shape a restored column name may take; anything else in an artifact is refused before it reaches a statement. */
+const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Rows per applied batch on restore; one statement per row keeps every statement under the bind-count bound. */
 const RESTORE_CHUNK_ROWS = 50;
 
@@ -82,6 +86,12 @@ export interface BackupIndexRow {
   pinned: number;
 }
 
+export class BackupApplyError extends Error {
+  constructor(readonly table: string, detail: string) {
+    super(`the artifact could not be applied at ${table}: ${detail}; applied tables stand, and a re-run converges`);
+    this.name = 'BackupApplyError';
+  }
+}
 export class BackupTooLargeError extends Error {
   constructor(bytes: number) {
     super(`the assembled backup is ${bytes} bytes, past the ${MAX_BACKUP_BYTES}-byte bound this path serves`);
@@ -153,7 +163,7 @@ export async function createBackup(
   }
 
   const id = `bk_${crypto.randomUUID()}`;
-  const key = `${BACKUP_KEY_PREFIX}${lineage}__${opts.now}.jsonl`;
+  const key = `${BACKUP_KEY_PREFIX}${lineage}__${opts.now}__${id}.jsonl`;
   const text = lines.join('\n') + '\n';
   const stored = await blobs.put(key, new Response(text).body, { httpMetadata: { contentType: 'application/jsonl' } });
   const row: BackupIndexRow = {
@@ -200,7 +210,9 @@ export async function previewRestore(
 ): Promise<{ header: BackupHeader; foreignLineage: boolean } | null> {
   const artifact = await readArtifact(db, blobs, id);
   if (artifact === null) return null;
-  const header = JSON.parse(artifact.text.slice(0, artifact.text.indexOf('\n'))) as BackupHeader;
+  const newline = artifact.text.indexOf('\n');
+  if (newline === -1) return null;
+  const header = JSON.parse(artifact.text.slice(0, newline)) as BackupHeader;
   return { header, foreignLineage: header.deploymentId !== (await deploymentId(db)) };
 }
 
@@ -261,10 +273,16 @@ export async function restoreArtifact(
       const chunk = rows.slice(at, at + RESTORE_CHUNK_ROWS);
       const statements = chunk.map((row) => {
         const columns = Object.keys(row);
+        if (!columns.every((c) => IDENTIFIER.test(c))) throw new BackupApplyError(table, 'a row carries a column name outside the store grammar');
         return db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`)
           .bind(...columns.map((c) => row[c] ?? null));
       });
-      const applied = await db.batch(statements);
+      let applied;
+      try {
+        applied = await db.batch(statements);
+      } catch (err) {
+        throw new BackupApplyError(table, err instanceof Error ? err.message : String(err));
+      }
       for (const result of applied) inserted += result.meta.changes;
     }
     outcome.tables[table] = { rows: rows.length, inserted };
@@ -307,6 +325,8 @@ export function retentionVictims(rows: readonly BackupIndexRow[], keepDaily: num
 export async function pruneBackups(
   db: RelationalStore, blobs: BlobStore, keep: { keepDaily: number; keepWeekly: number },
 ): Promise<{ pruned: number }> {
+  if (keep.keepDaily < 1) return { pruned: 0 };
+  let pruned = 0;
   try {
     const { results } = await db
       .prepare(`SELECT id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned FROM backups ORDER BY created_at DESC`)
@@ -315,10 +335,11 @@ export async function pruneBackups(
     for (const victim of victims) {
       await blobs.delete(victim.key);
       await db.prepare(`DELETE FROM backups WHERE id = ?`).bind(victim.id).run();
+      pruned += 1;
     }
-    return { pruned: victims.length };
+    return { pruned };
   } catch {
-    return { pruned: 0 };
+    return { pruned };
   }
 }
 
