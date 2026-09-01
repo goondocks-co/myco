@@ -10,5 +10,6 @@ ENV PATH="/root/.local/bin:${PATH}"
 WORKDIR /app
 COPY entry.js .
 COPY definitions ./definitions
+COPY prompts ./prompts
 EXPOSE 8080
 CMD ["bun", "run", "entry.js"]
