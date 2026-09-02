@@ -152,8 +152,8 @@ export function useRuns(projectId: string, status: string | null) {
   return usePaged<RunListRow>(['runs', projectId, status ?? 'all'], `${project(projectId)}/runs?limit=50${status === null ? '' : `&status=${seg(status)}`}`);
 }
 
-/** One run in full. A watcher passes `enabled`, `retry` and `refetchInterval` to follow a run that may not have claimed yet. */
-export function useRun(projectId: string, runId: string, options: Pick<UseQueryOptions<RunDetailResponse>, 'enabled' | 'retry' | 'refetchInterval'> = {}) {
+/** One run in full. A watcher passes `enabled` and `retry` to follow a run that may not have claimed yet. */
+export function useRun(projectId: string, runId: string, options: Pick<UseQueryOptions<RunDetailResponse>, 'enabled' | 'retry'> = {}) {
   return useQuery({ queryKey: ['run', projectId, runId], queryFn: ({ signal }) => fetchJson<RunDetailResponse>(`${project(projectId)}/runs/${seg(runId)}`, signal), ...options });
 }
 
