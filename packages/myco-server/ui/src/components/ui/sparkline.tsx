@@ -99,7 +99,7 @@ function normalizeActivityBuckets(data: number[] | null | undefined): number[] {
 }
 
 function activityUnit(kind: ActivitySparklineProps['kind'], count: number): string {
-  if (kind === 'session') return count === 1 ? 'prompt batch' : 'prompt batches';
+  if (kind === 'session') return count === 1 ? 'prompt' : 'prompts';
   return count === 1 ? 'agent turn' : 'agent turns';
 }
 

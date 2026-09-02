@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 
@@ -13,8 +14,9 @@ export function usePaged<T>(key: readonly unknown[], path: string, opts: { enabl
       fetchJson<Page<T>>(pageParam === null ? path : `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(pageParam)}`, signal),
     getNextPageParam: (last) => last.cursor ?? undefined,
   });
+  const rows = useMemo(() => query.data?.pages.flatMap((p) => p.rows) ?? [], [query.data]);
   return {
-    rows: query.data?.pages.flatMap((p) => p.rows) ?? [],
+    rows,
     isPending: query.isPending,
     error: query.error,
     hasMore: query.hasNextPage,

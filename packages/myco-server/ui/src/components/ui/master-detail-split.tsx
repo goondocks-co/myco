@@ -3,7 +3,8 @@ import { ChevronLeft } from 'lucide-react';
 import { useMediaQuery } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
 
-const DESKTOP_BREAKPOINT = '(min-width: 768px)';
+/** Where the split becomes two panes; a rail that decides by width reads the same line. */
+export const DESKTOP_BREAKPOINT = '(min-width: 768px)';
 const DEFAULT_RAIL_MIN = 240;
 const DEFAULT_RAIL_MAX = 360;
 
