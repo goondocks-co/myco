@@ -94,6 +94,8 @@ export interface PlanRow {
 
 export interface AttachmentRow {
   attachmentId: string;
+  /** The prompt the attachment accompanies, when the capture named one. */
+  promptId: string | null;
   blobKey: string;
   mediaType: string;
   byteSize: number;
@@ -138,6 +140,58 @@ export interface ProjectStats {
 
 export type SessionChild = 'prompts' | 'tool-calls' | 'responses' | 'plans' | 'attachments';
 
+/** A session row as the list serves it: the row plus its counts and its activity spread over eight lifetime buckets, oldest first. */
+export interface SessionSummaryRow extends SessionRow {
+  promptCount: number;
+  toolCallCount: number;
+  activityBuckets: number[];
+}
+
+/** The origins a prompt can carry on the wire. A person's own prompts are `user`; the rest are what a runtime injected around them. */
+export const PROMPT_ORIGINS = ['user', 'system', 'agent_dispatch', 'hook_injected', 'unknown'] as const;
+export type PromptOrigin = (typeof PROMPT_ORIGINS)[number];
+
+/** One top-level prompt of a session and counts of what followed it; the list the timeline renders collapsed. */
+export interface TurnRow {
+  promptId: string;
+  origin: string;
+  promptKind: string | null;
+  threadLabel: string | null;
+  /** The opening of the inline text; null when the text spilled to a blob. */
+  preview: string | null;
+  textChars: number | null;
+  blobKey: string | null;
+  createdAt: number;
+  toolCallCount: number;
+  responseCount: number;
+  childCount: number;
+}
+
+export interface TurnPrompt {
+  promptId: string;
+  origin: string;
+  promptKind: string | null;
+  parentPromptId: string | null;
+  threadLabel: string | null;
+  text: string | null;
+  blobKey: string | null;
+  createdAt: number;
+}
+
+export interface TurnChild {
+  prompt: TurnPrompt;
+  responses: ResponseRow[];
+  toolCallCount: number;
+}
+
+/** One turn's body; its tool calls are read on their own when opened. */
+export interface TurnDetail {
+  prompt: TurnPrompt;
+  responses: ResponseRow[];
+  attachments: AttachmentRow[];
+  children: TurnChild[];
+}
+
 /** The image types the blob route serves with their stored type; anything else is served as a download and cannot render inline. */
 export const RENDERABLE_IMAGE_TYPES: readonly string[] = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 
@@ -151,7 +205,27 @@ export const runtimeName = (s: SessionRow): string | null => s.runtimeLabel ?? s
 export const blobUrl = (projectId: string, key: string) => `${project(projectId)}/blobs/${seg(key)}`;
 
 export function useSessions(projectId: string) {
-  return usePaged<SessionRow>(['sessions', projectId], `${project(projectId)}/sessions?limit=50`);
+  return usePaged<SessionSummaryRow>(['sessions', projectId], `${project(projectId)}/sessions?limit=50`);
+}
+
+/** A session's turns of the named origins, oldest first. One page holds every turn a person typed in any session seen so far; the origins sit in the key so a toggle never shows the other list's pages. */
+export function useTurns(projectId: string, sessionId: string, origins: readonly PromptOrigin[]) {
+  const named = [...origins].sort().join(',');
+  return usePaged<TurnRow>(['turns', projectId, sessionId, named], `${project(projectId)}/sessions/${seg(sessionId)}/turns?origins=${encodeURIComponent(named)}&limit=200`);
+}
+
+/** One turn's body, read when its card opens. */
+export function useTurnDetail(projectId: string, sessionId: string, promptId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['turn', projectId, sessionId, promptId],
+    enabled,
+    queryFn: ({ signal }) => fetchJson<TurnDetail>(`${project(projectId)}/sessions/${seg(sessionId)}/turns/${seg(promptId)}`, signal),
+  });
+}
+
+/** One turn's tool calls, read when the reader opens them. */
+export function useTurnToolCalls(projectId: string, sessionId: string, promptId: string, enabled: boolean) {
+  return usePaged<ToolCallRow>(['turn-tool-calls', projectId, sessionId, promptId], `${project(projectId)}/sessions/${seg(sessionId)}/turns/${seg(promptId)}/tool-calls?limit=200`, { enabled });
 }
 
 export function useSession(projectId: string, sessionId: string) {

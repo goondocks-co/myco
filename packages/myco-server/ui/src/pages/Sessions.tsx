@@ -52,15 +52,15 @@ export function Sessions() {
           className="rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 font-sans text-sm text-on-surface"
         />
       </div>
-      <PageLoading isLoading={sessions.isPending} error={sessions.error}>
-        <div className="min-h-[60vh] rounded-lg border border-outline-variant/20">
-          <MasterDetailSplit
-            hasSelection={sessionId !== undefined}
-            onCloseMobileDetail={() => navigate(base)}
-            masterAriaLabel="Sessions"
-            detailAriaLabel="Session"
-            master={
-              sessions.rows.length === 0 ? (
+      <div className="min-h-[60vh] rounded-lg border border-outline-variant/20">
+        <MasterDetailSplit
+          hasSelection={sessionId !== undefined}
+          onCloseMobileDetail={() => navigate(base)}
+          masterAriaLabel="Sessions"
+          detailAriaLabel="Session"
+          master={
+            <PageLoading isLoading={sessions.isPending} error={sessions.error} loadingText="Loading sessions…">
+              {sessions.rows.length === 0 ? (
                 <p className="p-4 font-sans text-sm text-on-surface-variant">No sessions yet. Sessions appear here as your runtimes capture them.</p>
               ) : (
                 <div>
@@ -79,12 +79,12 @@ export function Sessions() {
                     </div>
                   )}
                 </div>
-              )
-            }
-            detail={sessionId === undefined ? <p className="font-sans text-sm text-on-surface-variant">Select a session to read it.</p> : <SessionDetail projectId={projectId} sessionId={sessionId} />}
-          />
-        </div>
-      </PageLoading>
+              )}
+            </PageLoading>
+          }
+          detail={sessionId === undefined ? <p className="font-sans text-sm text-on-surface-variant">Select a session to read it.</p> : <SessionDetail projectId={projectId} sessionId={sessionId} />}
+        />
+      </div>
     </PageContainer>
   );
 }
