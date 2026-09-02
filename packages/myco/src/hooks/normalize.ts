@@ -22,7 +22,7 @@ const DEFAULT_HOOK_FIELDS = {
   prompt: 'prompt',
   toolName: 'tool_name',
   toolInput: 'tool_input',
-  toolOutput: 'tool_output',
+  toolOutput: ['tool_output', 'tool_response'],
 } as const;
 
 /** Canonical hook input with normalized field names. */

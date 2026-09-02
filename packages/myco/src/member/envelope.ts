@@ -13,7 +13,7 @@
 import crypto from 'node:crypto';
 import { resolveHomeDir } from '../paths/home.js';
 import { getPluginVersion } from '../version.js';
-import { TOOL_OUTPUT_PREVIEW_CHARS } from '../constants.js';
+import { TOOL_OUTPUT_CAPTURE_CHARS } from '../constants.js';
 import type { NormalizedHookInput } from '../hooks/normalize.js';
 import type { PromptOrigin } from '../hooks/capture-rules.js';
 import { MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES } from './constants.js';
@@ -209,10 +209,21 @@ function filesAffected(toolInput: unknown): string[] | undefined {
   return files.length > 0 ? files.slice(0, MAX_FILES_AFFECTED) : undefined;
 }
 
+/** A tool's output as text: a string as it is, a structured result as compact JSON, nothing for an absent one. */
+export function toolOutputText(output: unknown): string | undefined {
+  if (output === undefined || output === null) return undefined;
+  if (typeof output === 'string') return output;
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return String(output);
+  }
+}
+
 function toolCallPayload(ctx: EnvelopeContext, input: NormalizedHookInput, opts: { promptId?: string; toolCallId?: string; success: boolean }) {
   const toolName = trunc(input.toolName, BOUNDS.toolName) ?? 'unknown';
   const spilled = inlineJsonOrBlob(ctx, 'input', input.toolInput);
-  const output = typeof input.toolOutput === 'string' ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined;
+  const output = toolOutputText(input.toolOutput)?.slice(0, TOOL_OUTPUT_CAPTURE_CHARS);
   return {
     payload: {
       toolCallId: opts.toolCallId ?? mintId(),

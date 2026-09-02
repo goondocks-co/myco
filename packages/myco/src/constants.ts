@@ -48,6 +48,8 @@ export const COMMAND_PREVIEW_CHARS = 80;
 export const CONTENT_SNIPPET_CHARS = 120;
 /** Max chars for a tool output preview in hooks. */
 export const TOOL_OUTPUT_PREVIEW_CHARS = 200;
+/** Max chars of a tool's output a member sends in a tool event — what the server's `output` field admits. */
+export const TOOL_OUTPUT_CAPTURE_CHARS = 4096;
 /** Max chars for a session summary preview in MCP tools. */
 export const SESSION_SUMMARY_PREVIEW_CHARS = 300;
 /** Max chars for a recall summary preview. */
