@@ -197,7 +197,7 @@ describe('every Deployment leaf, the way the dashboard writes it', () => {
     const e = env();
     const token = (await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now())).token;
     e.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_s', 'a', 'built-in', 1, ?)`).run(Date.now());
-    const claim = async (id: string) => json(await worker.fetch(memberPost(token, { id, agentId: 'agent_s', task: `digest_${id}`, maxAgeSeconds: 3600, capability: 'cortex' }, '/runs/claim'), e.all));
+    const claim = async (id: string) => json(await worker.fetch(memberPost(token, { id, agentId: 'agent_s', task: `digest_${id}`, capability: 'cortex' }, '/runs/claim'), e.all));
     expect(await claim('run_off')).toMatchObject({ persisted: true, claimed: false, notAdmitted: 'cortex' });
     expect(await json(await worker.fetch(await put('/api/projects/proj_1/capabilities/cortex', { enabled: true }), e.all))).toEqual({ applied: true });
     expect(await claim('run_on')).toMatchObject({ persisted: true, claimed: true });

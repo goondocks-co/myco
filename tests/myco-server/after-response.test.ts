@@ -65,29 +65,24 @@ describe('afterResponse', () => {
     const { token } = await issueMemberToken(sqliteRelationalStore(sqlite), { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     sqlite.close();
 
-    const originalFetch = globalThis.fetch;
-    const answered = later();
-    globalThis.fetch = (async () => { await answered.promise; return Response.json({ choices: [{ message: { content: '{"title": "Landed before close", "summary": "It did."}' } }] }); }) as unknown as typeof fetch;
+    // The work a session's end leaves behind is a titling dispatch; the self-hosted target binds no runtime, so it is answered by name and nothing is stamped — and close() still lands it before the store closes.
+    const logged: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
     try {
       const handler = await createBunHandler({ databasePath, blobDir: join(root, 'blobs'), header: 'x-forwarded-for' } as never);
       const post = (over: Record<string, unknown>) => handler.fetch(memberPost(token, envelope(over), '/events', { 'x-forwarded-for': '1.2.3.4' }));
       expect((await post({ eventId: uuid(1), kind: 'session.start', payload: { agent: 'a', startedAt: 1_000 } })).status).toBe(200);
       expect((await post({ eventId: uuid(2), payload: { promptId: uuid(20), text: 'hello there', origin: 'user' } })).status).toBe(200);
       expect((await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_000 } })).status).toBe(200);
-      const closing = handler.close();
-      let closed = false;
-      void closing.then(() => { closed = true; });
-      await Promise.resolve();
-      expect(closed).toBe(false);
-      answered.done();
-      await closing;
+      await handler.close();
     } finally {
-      globalThis.fetch = originalFetch;
+      console.log = originalLog;
     }
-    const after = new Database(databasePath, { readonly: true });
-    try {
-      expect(after.query(`SELECT title FROM sessions WHERE session_id = 'sess_1'`).get()).toEqual({ title: 'Landed before close' });
-    } finally { after.close(); }
+    expect(logged.some((l) => l.includes('session_title_skipped') && l.includes('harness_unavailable'))).toBe(true);
+    const reopened = new Database(databasePath, { readonly: true });
+    expect(reopened.query(`SELECT title, titled_at FROM sessions WHERE session_id = 'sess_1'`).get()).toEqual({ title: null, titled_at: null });
+    reopened.close();
   });
 });
 
