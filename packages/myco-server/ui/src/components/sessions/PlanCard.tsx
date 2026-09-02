@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Copy, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { Badge } from '../ui/badge';
-import { type PlanRow } from '../../hooks/use-sessions';
+import { useMembers } from '../../hooks/use-access';
+import { PLAN_STATUSES, useSetPlanStatus, type PlanRow, type PlanStatus } from '../../hooks/use-sessions';
+import { cn } from '../../lib/cn';
 import { formatDateTime, formatRelative } from '../../lib/format';
 import { TextOrBlob } from './stored-text';
 
@@ -12,11 +15,12 @@ const STATUS_VARIANT: Record<string, 'default' | 'secondary' | 'warning' | 'dest
   abandoned: 'destructive',
 };
 
-/** Checklist progress parsed from `- [x]` and `- [ ]` items in the plan's markdown. */
-export function parseChecklist(content: string): { total: number; checked: number } {
-  const checked = (content.match(/- \[x\]/gi) ?? []).length;
-  const unchecked = (content.match(/- \[ \]/g) ?? []).length;
-  return { total: checked + unchecked, checked };
+const STATUS_LABEL: Record<PlanStatus, string> = { active: 'Active', in_progress: 'In progress', completed: 'Completed', abandoned: 'Abandoned' };
+
+/** The checked and total items behind a `checked/total` progress, or null for a plan with no task list. */
+export function progressParts(progress: string): { checked: number; total: number } | null {
+  const match = /^(\d+)\/(\d+)$/.exec(progress);
+  return match === null ? null : { checked: Number(match[1]), total: Number(match[2]) };
 }
 
 /** The plan's key, shown and copied: the handle a runtime passes to `myco_plans` to read it. */
@@ -44,12 +48,51 @@ function CopyKey({ planKey }: { planKey: string }) {
   );
 }
 
-/** A captured plan: its status, title, key, timing and checklist progress; open, its markdown. Only the title row toggles, so the copy control never sits inside the toggle. */
-export function PlanCard({ projectId, plan, defaultOpen = false }: { projectId: string; plan: PlanRow; defaultOpen?: boolean }) {
+/** Who last set the plan's status, in the words the reader knows: the member's label, else the id. */
+function StatusSetBy({ memberId }: { memberId: string }) {
+  const members = useMembers();
+  const label = members.data?.members.find((m) => m.id === memberId)?.label ?? memberId;
+  return <span>Status set by {label}</span>;
+}
+
+/** The status control: writes the plan's status as the signed-in member. A change while one is saving is ignored rather than the control being disabled, so focus stays put. */
+function StatusControl({ projectId, sessionId, plan }: { projectId: string; sessionId: string; plan: PlanRow }) {
+  const set = useSetPlanStatus(projectId, sessionId);
+  // While the write is in flight the control shows the choice just made, not the row's old value.
+  const shown = set.isPending && set.variables !== undefined ? set.variables.status : plan.status;
+  const known = (PLAN_STATUSES as readonly string[]).includes(shown);
+  return (
+    <span className="inline-flex items-center gap-2">
+      <select
+        aria-label={`Status of ${plan.title ?? plan.planKey}`}
+        aria-busy={set.isPending}
+        aria-disabled={set.isPending}
+        value={shown}
+        onChange={(e) => { if (!set.isPending) set.mutate({ planKey: plan.planKey, status: e.target.value as PlanStatus }); }}
+        className={cn('h-6 rounded-md border border-[var(--ghost-border)] bg-surface-container-low px-1.5 font-sans text-[11px] text-on-surface', set.isPending && 'opacity-60')}
+      >
+        {PLAN_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABEL[status]}</option>)}
+        {!known && <option value={shown}>{shown}</option>}
+      </select>
+      {set.error && <span className="text-tertiary" role="status">The status could not be saved</span>}
+    </span>
+  );
+}
+
+export interface PlanCardProps {
+  projectId: string;
+  sessionId: string;
+  plan: PlanRow;
+  defaultOpen?: boolean;
+  /** Rendered under the turn that produced it: the link back to that turn is left out. */
+  inTurn?: boolean;
+}
+
+/** A captured plan: its status, title, key, timing, who last set its status, the turn it came from, and its task-list progress; open, its markdown. Only the title row toggles, so the controls never sit inside the toggle. */
+export function PlanCard({ projectId, sessionId, plan, defaultOpen = false, inTurn = false }: PlanCardProps) {
   const [open, setOpen] = useState(defaultOpen);
-  const checklist = plan.content !== null ? parseChecklist(plan.content) : null;
-  const hasChecklist = checklist !== null && checklist.total > 0;
-  const pct = hasChecklist ? Math.round((checklist.checked / checklist.total) * 100) : 0;
+  const checklist = progressParts(plan.progress);
+  const pct = checklist !== null && checklist.total > 0 ? Math.round((checklist.checked / checklist.total) * 100) : 0;
   return (
     <div className="overflow-hidden rounded-lg border border-[var(--ghost-border)] bg-surface-container-low" data-testid={`plan-${plan.planKey}`}>
       <div className="space-y-1.5 p-4">
@@ -61,10 +104,16 @@ export function PlanCard({ projectId, plan, defaultOpen = false }: { projectId: 
         <div className="flex flex-wrap items-center gap-3 pl-5 font-sans text-xs text-on-surface-variant">
           <code className="rounded-xs bg-surface-container-high px-1.5 py-0.5 font-mono text-[11px] text-on-surface">{plan.planKey}</code>
           <CopyKey planKey={plan.planKey} />
+          {plan.originPath !== null && <code className="min-w-0 truncate font-mono text-[11px] text-on-surface-variant" title={plan.originPath}>{plan.originPath}</code>}
+          <StatusControl projectId={projectId} sessionId={sessionId} plan={plan} />
+          {plan.updatedBy !== null && <StatusSetBy memberId={plan.updatedBy} />}
           <span title={formatDateTime(plan.createdAt)}>Created {formatRelative(plan.createdAt)}</span>
           {plan.updatedAt !== plan.createdAt && <span title={formatDateTime(plan.updatedAt)}>Updated {formatRelative(plan.updatedAt)}</span>}
+          {!inTurn && plan.promptId !== null && (
+            <Link to={`?turn=${encodeURIComponent(plan.promptId)}`} className="text-primary underline">From its turn</Link>
+          )}
         </div>
-        {hasChecklist && (
+        {checklist !== null && checklist.total > 0 && (
           <div className="space-y-1 pl-5 pt-0.5">
             <div className="flex items-center justify-between font-sans text-xs text-on-surface-variant">
               <span>{checklist.checked}/{checklist.total} items</span>
