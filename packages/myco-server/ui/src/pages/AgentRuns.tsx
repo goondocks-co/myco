@@ -6,7 +6,7 @@ import { PageHeader } from '../components/ui/page-header';
 import { PageLoading } from '../components/ui/page-loading';
 import { Panel } from '../components/ui/panel';
 import { Row } from '../components/ui/row';
-import { StatCard } from '../components/ui/stat-card';
+import { MetricCard } from '../components/ui/metric-card';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
 import { SubtabPill } from '../components/ui/subtab-pill';
 import { useAgents, useRun, useRuns, type PhaseRow, type ReportRow, type RunDetailRow, type RunListRow } from '../hooks/use-intelligence';
@@ -139,10 +139,10 @@ function RunBody({ run, phases, reports, agentName }: { run: RunDetailRow; phase
       )}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Status" value={run.status} accent={run.status === 'failed' ? 'terracotta' : run.status === 'completed' ? 'sage' : 'ochre'} />
-        <StatCard label="Started" value={formatRelative(run.startedAt)} sublabel={formatDateTime(run.startedAt)} accent="outline" />
-        <StatCard label="Duration" value={formatDuration(run.startedAt, run.completedAt)} accent="outline" />
-        <StatCard label="Tokens" value={formatTokens(run.tokensUsed)} sublabel={formatCost(run.costUsd, run.costSource)} accent="ochre" />
+        <MetricCard label="Status" value={run.status} tone={run.status === 'failed' ? 'terra' : run.status === 'completed' ? 'sage' : 'ochre'} />
+        <MetricCard label="Started" value={formatRelative(run.startedAt)} sub={formatDateTime(run.startedAt)} />
+        <MetricCard label="Duration" value={formatDuration(run.startedAt, run.completedAt)} />
+        <MetricCard label="Tokens" value={formatTokens(run.tokensUsed)} sub={formatCost(run.costUsd, run.costSource)} tone="ochre" />
       </div>
 
       <Panel title="Facts">

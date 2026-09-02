@@ -1,11 +1,10 @@
 import { Activity, Bell, Bot, Brain, FolderTree, KeyRound, LayoutDashboard, MessageSquare, Settings2, Sparkles, Users, Wrench } from 'lucide-react';
-import { NavLink, Outlet, useNavigate, useParams } from 'react-router-dom';
+import { NavLink, Outlet, useParams } from 'react-router-dom';
+import { ProjectSwitcher } from '../components/ProjectSwitcher';
 import { PageLoading } from '../components/ui/page-loading';
 import { useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
-import { isArchived } from '../lib/api';
 import { cn } from '../lib/cn';
-import { rememberProject } from '../lib/project-memory';
 import { NotAMember } from '../pages/NotAMember';
 import { AppearanceSection } from './AppearanceSection';
 import { Topbar } from './Topbar';
@@ -47,38 +46,20 @@ export function Layout() {
   // Projects are read only for a member; a signed-in non-member sees the link instructions instead.
   const projects = useProjects({ enabled: me.data?.member != null });
   const params = useParams();
-  const navigate = useNavigate();
 
   if (me.data && me.data.member === null) return <NotAMember login={me.data.login} />;
 
   const all = projects.data?.projects ?? [];
   const current = params.projectId ? all.find((p) => p.projectId === params.projectId) : undefined;
-  // Live projects, plus the archived one the page is on, so it stays navigable.
-  const list = all.filter((p) => !isArchived(p) || p.projectId === current?.projectId);
 
   return (
     <div className="flex min-h-screen bg-background text-foreground">
       <aside className="flex w-60 shrink-0 flex-col border-r border-outline-variant/20 bg-surface-container-low">
         <div className="flex h-12 items-center px-4 font-serif text-lg text-on-surface">Myco</div>
 
-        <div className="px-3 pb-2">
-          <label className="block font-sans text-[10px] uppercase tracking-wide text-on-surface-variant">Project</label>
-          <select
-            aria-label="Project"
-            value={current?.projectId ?? ''}
-            onChange={(e) => {
-              const id = e.target.value;
-              if (id === '') { navigate('/projects'); return; }
-              rememberProject(id);
-              navigate(`/p/${encodeURIComponent(id)}`);
-            }}
-            className="mt-1 w-full rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1.5 font-sans text-sm text-on-surface"
-          >
-            <option value="">All projects…</option>
-            {list.map((p) => (
-              <option key={p.projectId} value={p.projectId}>{p.name}</option>
-            ))}
-          </select>
+        <div className="px-2 pb-2">
+          <div className="px-2 pb-1 font-sans text-[10px] uppercase tracking-wide text-on-surface-variant">Project</div>
+          <ProjectSwitcher projects={all} current={current} />
         </div>
 
         {current && (
