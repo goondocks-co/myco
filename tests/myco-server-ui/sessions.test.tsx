@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
+import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/components/sessions/TurnCard';
+import { parseChecklist } from '../../packages/myco-server/ui/src/components/sessions/PlanCard';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
 const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 2, lastActivityAt: null }] };
@@ -14,15 +16,24 @@ const KEY_IMG = 'b'.repeat(64);
 const KEY_SVG = 'c'.repeat(64);
 const KEY_SEG = 'd'.repeat(64);
 const BLOB = (key: string) => `/api/projects/x/blobs/${key}`;
+const P1 = '00000000-0000-7000-8000-000000000001';
+const P2 = '00000000-0000-7000-8000-000000000002';
+const P3 = '00000000-0000-7000-8000-000000000003';
 
 const session = (over: Record<string, unknown> = {}) => ({
   sessionId: 's1', machineId: 'mac-1', createdByTokenId: 'tok_1', firstReceivedAt: NOW - 3_600_000, lastReceivedAt: NOW - 60_000,
   agent: 'claude-code', branch: 'main', startedAt: NOW - 3_600_000, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null,
   memberId: 'mem_1', memberLabel: 'chris', runtimeLabel: 'laptop', runtimeKind: 'host',
-  title: null, summary: null, titledAt: null, label: (over.title as string | undefined) ?? (over.label as string | undefined) ?? (over.agent as string | undefined) ?? 'claude-code', ...over,
+  title: null, summary: null, titledAt: null, label: (over.title as string | undefined) ?? (over.label as string | undefined) ?? (over.agent as string | undefined) ?? 'claude-code',
+  promptCount: 2, toolCallCount: 3, activityBuckets: [1, 0, 0, 1, 0, 0, 0, 0], ...over,
 });
 const page = (rows: unknown[]) => Response.json({ rows, cursor: null });
-const counts = { prompts: 1, toolCalls: 1, responses: 1, plans: 0, attachments: 2 };
+const counts = { prompts: 2, toolCalls: 3, responses: 1, plans: 0, attachments: 2 };
+
+const turn = (over: Record<string, unknown> = {}) => ({
+  promptId: P1, origin: 'user', promptKind: null, threadLabel: null, preview: 'Please rename the project card', textChars: 30, blobKey: null,
+  createdAt: NOW - 3000, toolCallCount: 1, responseCount: 1, childCount: 0, ...over,
+});
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
@@ -31,9 +42,9 @@ function server(routes: Record<string, () => Response>): { requested: string[] }
   const requested: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    const pathname = new URL(href, 'https://s').pathname;
-    requested.push(pathname);
-    return routes[pathname]?.() ?? new Response(null, { status: 404 });
+    const url = new URL(href, 'https://s');
+    requested.push(url.pathname + url.search);
+    return routes[url.pathname + url.search]?.() ?? routes[url.pathname]?.() ?? new Response(null, { status: 404 });
   }) as typeof fetch;
   return { requested };
 }
@@ -86,13 +97,34 @@ describe('Session detail', () => {
   const detailRoutes = (over: Record<string, () => Response> = {}) => base({
     '/api/projects/x/sessions': () => page([session()]),
     '/api/projects/x/sessions/s1': () => Response.json({ session: session(), counts, projectId: 'x' }),
-    '/api/projects/x/sessions/s1/prompts': () => page([{ promptId: 'p1', text: null, blobKey: KEY_TEXT, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, createdAt: NOW - 3000, orderedAt: NOW - 3000 }]),
-    '/api/projects/x/sessions/s1/tool-calls': () => page([{ toolCallId: 't1', promptId: 'p1', toolName: 'Write', mycoTool: null, mycoOp: null, inputPreview: 'x'.repeat(20), inputBytes: 190_000, inputBlobKey: null, outputPreview: 'wrote it', outputBlobKey: null, success: false, errorMessage: 'disk full', durationMs: 42, filesAffected: null, createdAt: NOW - 2000, orderedAt: NOW - 2000 }]),
-    '/api/projects/x/sessions/s1/responses': () => page([{ responseId: 'r1', promptId: 'p1', text: 'done', blobKey: null, createdAt: NOW - 1000, orderedAt: NOW - 1000 }]),
+    '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([
+      turn({ promptId: P1, preview: 'Please rename the project card', toolCallCount: 1, responseCount: 1 }),
+      turn({ promptId: P3, preview: null, textChars: null, blobKey: KEY_TEXT, toolCallCount: 2, responseCount: 0, childCount: 1, createdAt: NOW - 1000 }),
+    ]),
+    '/api/projects/x/sessions/s1/turns?origins=agent_dispatch%2Chook_injected%2Csystem%2Cunknown%2Cuser&limit=200': () => page([
+      turn({ promptId: P1, preview: 'Please rename the project card', toolCallCount: 1, responseCount: 1 }),
+      turn({ promptId: P2, origin: 'system', preview: '<system-reminder>injected</system-reminder>', textChars: 40, toolCallCount: 0, responseCount: 0, createdAt: NOW - 2000 }),
+      turn({ promptId: P3, preview: null, textChars: null, blobKey: KEY_TEXT, toolCallCount: 2, responseCount: 0, childCount: 1, createdAt: NOW - 1000 }),
+    ]),
+    [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+      prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: 'Please rename the project card', blobKey: null, createdAt: NOW - 3000 },
+      responses: [{ responseId: 'r1', promptId: P1, text: 'done', blobKey: null, createdAt: NOW - 1000, orderedAt: NOW - 1000 }],
+      attachments: [{ attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW }],
+      children: [],
+    }),
+    [`/api/projects/x/sessions/s1/turns/${P3}`]: () => Response.json({
+      prompt: { promptId: P3, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: null, blobKey: KEY_TEXT, createdAt: NOW - 1000 },
+      responses: [],
+      attachments: [],
+      children: [{ prompt: { promptId: P2, origin: 'user', promptKind: null, parentPromptId: P3, threadLabel: 'reviewer', text: 'steer it left', blobKey: null, createdAt: NOW - 900 }, responses: [{ responseId: 'r2', promptId: P2, text: 'steered', blobKey: null, createdAt: NOW - 800, orderedAt: NOW - 800 }], toolCallCount: 0 }],
+    }),
+    [`/api/projects/x/sessions/s1/turns/${P1}/tool-calls?limit=200`]: () => page([
+      { toolCallId: 't1', promptId: P1, toolName: 'Write', mycoTool: null, mycoOp: null, inputPreview: 'x'.repeat(20), inputBytes: 190_000, inputBlobKey: null, outputPreview: 'wrote it', outputBlobKey: null, success: false, errorMessage: 'disk full', durationMs: 42, filesAffected: '["/repo/a.ts"]', createdAt: NOW - 2000, orderedAt: NOW - 2000 },
+    ]),
     '/api/projects/x/sessions/s1/plans': () => page([]),
     '/api/projects/x/sessions/s1/attachments': () => page([
-      { attachmentId: 'a1', blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW },
-      { attachmentId: 'a2', blobKey: KEY_SVG, mediaType: 'image/svg+xml', byteSize: 99, description: 'a diagram', createdAt: NOW, orderedAt: NOW },
+      { attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW },
+      { attachmentId: 'a2', promptId: null, blobKey: KEY_SVG, mediaType: 'image/svg+xml', byteSize: 99, description: 'a diagram', createdAt: NOW, orderedAt: NOW },
     ]),
     '/api/projects/x/sessions/s1/transcript': () => Response.json({
       transcript: { transcriptId: 'tx1', sessionId: 's1', machineId: 'mac-1', agent: 'claude-code', originPath: '/repo', size: 7_340_032, segmentCount: 2, firstReceivedAt: NOW - 3000, lastReceivedAt: NOW },
@@ -102,18 +134,59 @@ describe('Session detail', () => {
     ...over,
   });
 
-  it('renders spilled prompt text from its blob verbatim — never a blank bubble — and the conversation in order', async () => {
+  it('renders the turns a person typed, collapsed but the last, and reads a turn\'s body — and its stored text — only when it opens', async () => {
     const { requested } = server(detailRoutes());
     mount('/p/x/sessions/s1');
-    expect(await screen.findByText('{"a":1}')).toBeTruthy();
-    expect(screen.getByText('disk full')).toBeTruthy();
-    expect(screen.getByText('done')).toBeTruthy();
-    expect(screen.getByText(/Input · 186 KB/)).toBeTruthy();
-    const bubbles = screen.getAllByTestId(/^bubble-/).map((b) => b.getAttribute('data-testid'));
-    expect(bubbles).toEqual(['bubble-prompt', 'bubble-tool', 'bubble-response']);
+    const first = await screen.findByTestId(`turn-${P1}`);
+    expect(first.textContent).toContain('Please rename the project card');
+    expect(first.textContent).toContain('1 tool call');
+    expect(screen.queryByTestId(`turn-${P2}`)).toBeNull();
+    // The last turn opens on its own; its stored text is fetched then, not for the collapsed one.
+    const last = screen.getByTestId(`turn-${P3}`);
+    expect(await within(last).findByText('{"a":1}')).toBeTruthy();
+    expect(within(last).getByTestId('turn-child').textContent).toContain('steer it left');
+    expect(within(last).getByTestId('turn-child').textContent).toContain('reviewer');
+    expect(within(last).getByTestId('turn-child').textContent).toContain('steered');
+    expect(within(first).queryByTestId('turn-body')).toBeNull();
+    expect(requested.filter((p) => p.includes('/turns/'))).toEqual([`/api/projects/x/sessions/s1/turns/${P3}`]);
     expect(requested.filter((p) => p.startsWith('/api/projects/x/blobs/'))).toEqual([BLOB(KEY_TEXT)]);
-    expect(screen.getByText('chris')).toBeTruthy();
+    // Opening the first turn reads its body: the prompt in full, its response, and its screenshot under it.
+    fireEvent.click(within(first).getByRole('button', { expanded: false }));
+    expect(await within(first).findByTestId('turn-body')).toBeTruthy();
+    expect(within(first).getByTestId('turn-response').textContent).toContain('done');
+    const img = within(first).getByRole('img', { name: 'a screenshot' });
+    expect(img.getAttribute('src')).toBe(BLOB(KEY_IMG));
+    expect(screen.getAllByText('chris').length).toBeGreaterThan(0);
     expect(screen.getByText('laptop · mac-1')).toBeTruthy();
+  });
+
+  it('reads a turn\'s tool calls only when their toggle opens, then shows how each went', async () => {
+    const { requested } = server(detailRoutes());
+    mount('/p/x/sessions/s1');
+    const first = await screen.findByTestId(`turn-${P1}`);
+    fireEvent.click(within(first).getByRole('button', { expanded: false }));
+    const toggle = await within(first).findByTestId('tool-calls-toggle');
+    expect(requested.some((p) => p.includes('/tool-calls'))).toBe(false);
+    fireEvent.click(toggle);
+    const row = await within(first).findByTestId('tool-call-t1');
+    expect(row.textContent).toContain('Write');
+    expect(row.textContent).toContain('/repo/a.ts');
+    expect(row.textContent).toContain('42ms');
+    expect(within(row).queryByText('disk full')).toBeNull();
+    fireEvent.click(within(row).getByRole('button', { expanded: false }));
+    expect(within(row).getByText('disk full')).toBeTruthy();
+    expect(within(row).getByText('wrote it')).toBeTruthy();
+    expect(within(row).getByText(/Input · 186 KB/)).toBeTruthy();
+  });
+
+  it('shows every injected prompt on request, in its own list', async () => {
+    const { requested } = server(detailRoutes());
+    mount('/p/x/sessions/s1');
+    await screen.findByTestId(`turn-${P1}`);
+    fireEvent.click(screen.getByLabelText(/Show system/));
+    expect(await screen.findByTestId(`turn-${P2}`)).toBeTruthy();
+    expect(screen.getByTestId(`turn-${P2}`).getAttribute('data-origin')).toBe('system');
+    expect(requested.filter((p) => p.includes('/turns?')).length).toBe(2);
   });
 
   it('heads the detail with the label and shows a summary only once one is stored', async () => {
@@ -127,17 +200,28 @@ describe('Session detail', () => {
     expect((await screen.findByRole('heading', { level: 2 })).textContent).toBe('Wave-based executor');
     expect(screen.getByText('Summary')).toBeTruthy();
     expect(screen.getByText(/Built the executor\./).textContent).toBe('Built the executor.\nTests pass.');
-    expect(screen.getByText(/claude-code/).textContent).toContain('claude-code on main');
   });
 
   it('renders an image attachment inline only for the renderable types, and links the rest', async () => {
     server(detailRoutes());
-    mount('/p/x/sessions/s1');
-    fireEvent.click(await screen.findByRole('tab', { name: 'Attachments' }));
+    mount('/p/x/sessions/s1?tab=attachments');
     const img = await screen.findByRole('img', { name: 'a screenshot' });
     expect(img.getAttribute('src')).toBe(BLOB(KEY_IMG));
     expect(screen.queryByRole('img', { name: 'a diagram' })).toBeNull();
     expect(screen.getByText('Download a diagram').getAttribute('href')).toBe(BLOB(KEY_SVG));
+  });
+
+  it('lists captured plans as cards with their status, key and checklist progress', async () => {
+    server(detailRoutes({ '/api/projects/x/sessions/s1/plans': () => page([
+      { planKey: 'plan-1', title: 'Ship the thing', status: 'in_progress', content: '# Plan\n- [x] one\n- [ ] two', blobKey: null, createdAt: NOW - 5000, updatedAt: NOW - 1000, orderedAt: NOW - 1000 },
+    ]) }));
+    mount('/p/x/sessions/s1?tab=plans');
+    const card = await screen.findByTestId('plan-plan-1');
+    expect(card.textContent).toContain('in progress');
+    expect(card.textContent).toContain('Ship the thing');
+    expect(card.textContent).toContain('1/2 items');
+    expect(within(card).getByRole('heading', { level: 1 }).textContent).toBe('Plan');
+    expect(parseChecklist('- [x] a\n- [ ] b\n- [X] c')).toEqual({ total: 3, checked: 2 });
   });
 
   it('links the transcript by segment and never fetches its bytes', async () => {
@@ -155,6 +239,14 @@ describe('Session detail', () => {
     mount('/p/x/sessions/gone');
     expect(await screen.findByText(/not found/i)).toBeTruthy();
     expect(screen.queryByText(/forbidden/i)).toBeNull();
+  });
+
+  it('cuts a collapsed preview at the preview length and names stored text by its size', () => {
+    expect(promptPreview({ preview: 'short', textChars: 5, blobKey: null })).toBe('short');
+    expect(promptPreview({ preview: 'x'.repeat(160), textChars: 400, blobKey: null })).toBe(`${'x'.repeat(PROMPT_PREVIEW_CHARS)}…`);
+    expect(promptPreview({ preview: 'line one\n\nline   two', textChars: 19, blobKey: null })).toBe('line one line two');
+    expect(promptPreview({ preview: null, textChars: null, blobKey: KEY_TEXT })).toBe('Stored text');
+    expect(promptPreview({ preview: null, textChars: null, blobKey: null })).toBe('(no prompt)');
   });
 });
 

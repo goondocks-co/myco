@@ -36,6 +36,14 @@ export function formatDuration(startMs: number | null, endMs: number | null, now
   return minutes < 60 ? `${minutes}m ${seconds}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+/** A duration already measured in milliseconds, as a tool call reports one. */
+export function formatMillis(ms: number | null): string {
+  if (ms === null) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`;
+}
+
 export function formatTokens(n: number | null): string {
   if (n === null) return '—';
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
