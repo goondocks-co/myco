@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { MessageSquare } from 'lucide-react';
 import { PageLoading } from '../ui/page-loading';
 import { SkeletonList } from '../ui/skeleton';
@@ -17,7 +18,10 @@ export function defaultOpenTurn(rows: readonly TurnRow[]): string | null {
 export function TurnTimeline({ projectId, sessionId, promptCount = 0 }: { projectId: string; sessionId: string; promptCount?: number }) {
   const [showAll, setShowAll] = useState(false);
   const turns = useTurns(projectId, sessionId, showAll ? PROMPT_ORIGINS : PERSON_ONLY);
-  const openId = turns.hasMore ? null : defaultOpenTurn(turns.rows);
+  // A link that names a turn (`?turn=`) opens that one; otherwise the last typed turn opens once the list is whole.
+  const [params] = useSearchParams();
+  const wanted = params.get('turn');
+  const openId = wanted !== null && turns.rows.some((t) => t.promptId === wanted) ? wanted : turns.hasMore ? null : defaultOpenTurn(turns.rows);
   const toggle = (
     <label className="inline-flex cursor-pointer select-none items-center gap-2">
       <input type="checkbox" className="h-3 w-3 cursor-pointer accent-primary" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />

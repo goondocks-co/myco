@@ -6,6 +6,7 @@ import { Surface } from '../ui/surface';
 import { blobUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnRow } from '../../hooks/use-sessions';
 import { formatDateTime, formatRelative } from '../../lib/format';
 import { cn } from '../../lib/cn';
+import { PlanCard } from './PlanCard';
 import { TextOrBlob } from './stored-text';
 import { ToolCallList } from './ToolCallList';
 
@@ -40,7 +41,7 @@ function Attachments({ projectId, attachments }: { projectId: string; attachment
     <div className="mt-3 flex flex-wrap items-start gap-3" data-testid="turn-attachments">
       {images.map((a, i) => (
         <button key={a.attachmentId} type="button" onClick={() => setLightbox(i)} className="overflow-hidden rounded-md transition-all hover:ring-2 hover:ring-primary/40" aria-label={`Open ${a.description ?? 'image'}`}>
-          <img src={blobUrl(projectId, a.blobKey)} alt={a.description ?? a.attachmentId} loading="lazy" className="max-h-[140px] max-w-[200px] rounded-md object-cover" />
+          <img src={blobUrl(projectId, a.blobKey)} alt={a.description ?? a.attachmentId} loading="eager" className="max-h-[140px] max-w-[200px] rounded-md object-cover" />
         </button>
       ))}
       {files.map((a) => (
@@ -106,6 +107,11 @@ function TurnBody({ projectId, sessionId, turn }: { projectId: string; sessionId
           <Attachments projectId={projectId} attachments={body.attachments} />
         </div>
       )}
+      {body.plans.length > 0 && (
+        <div className="flex flex-col gap-2 px-4 pb-3" data-testid="turn-plans">
+          {body.plans.map((plan) => <PlanCard key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} inTurn />)}
+        </div>
+      )}
       <ToolCallList projectId={projectId} sessionId={sessionId} promptId={turn.promptId} count={turn.toolCallCount} />
       {body.children.map((child) => <SteeringChild key={child.prompt.promptId} projectId={projectId} sessionId={sessionId} child={child} />)}
       <Responses projectId={projectId} responses={body.responses} />
@@ -147,6 +153,8 @@ export function TurnCard({ projectId, sessionId, turn, index, isLast, defaultOpe
             <span className="mb-0.5 flex items-baseline justify-between gap-2">
               <span className={cn(eyebrow, 'shrink-0')}>{ORIGIN_LABEL[turn.origin] ?? 'Prompt'}</span>
               {turn.toolCallCount > 0 && <span className="shrink-0 font-mono text-[10px] text-on-surface-variant/70">{turn.toolCallCount.toLocaleString()} tool call{turn.toolCallCount !== 1 ? 's' : ''}</span>}
+              {turn.planCount > 0 && <span className="inline-flex shrink-0 items-center rounded-full border border-secondary/30 bg-secondary/10 px-2 py-0.5 font-mono text-[10px] text-secondary">{turn.planCount} plan{turn.planCount !== 1 ? 's' : ''}</span>}
+              {turn.attachmentCount > 0 && <span className="inline-flex shrink-0 items-center rounded-full border border-outline-variant/40 bg-surface-container-high px-2 py-0.5 font-mono text-[10px] text-on-surface-variant">{turn.attachmentCount} attachment{turn.attachmentCount !== 1 ? 's' : ''}</span>}
               {turn.threadLabel !== null && <span className="inline-flex shrink-0 items-center rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 font-mono text-[10px] text-primary">{turn.threadLabel}</span>}
               <span className="shrink-0 font-mono text-xs text-on-surface-variant" title={formatDateTime(turn.createdAt)}>{formatRelative(turn.createdAt)}</span>
             </span>
