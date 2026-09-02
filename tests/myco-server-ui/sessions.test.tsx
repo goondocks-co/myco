@@ -364,7 +364,7 @@ describe('Session detail', () => {
     server(detailRoutes({ '/api/projects/x/sessions/s1/title': () => Response.json({ outcome: 'harness_unavailable' }) }));
     mount('/p/x/sessions/s1');
     fireEvent.click(await screen.findByRole('button', { name: 'Generate summary' }));
-    expect(await screen.findByText('This Deployment has no runtime to write summaries yet')).toBeTruthy();
+    expect(await screen.findByText('This Deployment has no way to write summaries yet')).toBeTruthy();
   });
 
   it('heads the detail with the label and shows a summary only once one is stored', async () => {

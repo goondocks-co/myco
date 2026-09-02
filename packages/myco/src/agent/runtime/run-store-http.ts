@@ -190,15 +190,10 @@ export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
       return (answered.run as RunRow | null) ?? null;
     },
 
-    async getRunningRunForTask(task, maxAgeSeconds) {
-      // Asked as a claim that cannot win: the server answers with the live run
-      // when one holds the task, which is the same question without a second
-      // read path that could disagree with the claim's.
-      const answered = await post('/runs/claim', {
-        id: '', agentId, task, maxAgeSeconds: maxAgeSeconds ?? 0, ...admissionForTask(task),
-      });
-      const running = answered.running as { id: string; startedAt: number | null } | null;
-      return running ? { id: running.id, started_at: running.startedAt ?? null, stale: false } : null;
+    async getRunningRunForTask(task) {
+      // The server's claim guards the run id alone and answers no task-level
+      // read; a dispatcher's overlap policy is decided server-side at dispatch.
+      throw new RunControlError('/runs/claim', `no running-run read is served over the run-control surface (asked for ${task})`);
     },
 
     async updateRunStatus(runId, status, completion) {

@@ -13,7 +13,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { HARNESS_MEMBER_ID } from '../core/harness.js';
 import { getRun, type RunRow } from '../core/runs.js';
-import { cleanSummary, cleanTitle, sessionMaterial, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, TITLING_TASK, titlingParamsOf, type TitlingParams } from '../core/titling.js';
+import { cleanSummary, cleanTitle, OWNER_TITLING_WINDOW_MS, sessionMaterial, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, TITLING_TASK, titlingParamsOf, type TitlingParams } from '../core/titling.js';
 import { getSession, overwriteTitle, sessionCounts, writeTitle } from '../read/sessions.js';
 import { refused } from '../ingest/events.js';
 import { emit, refusal, type Refusal } from '../telemetry.js';
@@ -34,17 +34,24 @@ function parseBody(body: string): Record<string, unknown> | null {
 }
 
 /**
- * The titling run the caller holds for the session, or null. Every condition
- * collapses to one answer, `held: false`: which one failed tells a caller
- * nothing it may act on, and naming it would tell a stranger which run ids
- * exist. It is a settled answer inside `persisted: true` — the request was
- * well-formed and acted on — not a refusal of the request's shape.
+ * The titling run the caller holds for the session, or null. The row is the
+ * server's record of the dispatch (`recordDispatch`), so its task, context and
+ * attribution are the dispatcher's word, never the runtime's. A run is live
+ * only inside its own bound: a container that died leaves its row `running`,
+ * and its credential must not keep serving past the window everything else
+ * reasons about. Every condition collapses to one answer, `held: false`:
+ * which one failed tells a caller nothing it may act on, and naming it would
+ * tell a stranger which run ids exist. It is a settled answer inside
+ * `persisted: true` — the request is well-formed and acted on — not a refusal
+ * of the request's shape.
  */
 async function heldTitlingRun(env: ServerEnv, ctx: RouteContext, runId: string, sessionId: string): Promise<{ run: RunRow; params: TitlingParams } | null> {
   if (ctx.memberId !== HARNESS_MEMBER_ID) return null;
   const run = await getRun(env.db, { projectId: ctx.projectId }, runId);
   if (run === null || run.dispatchedBy !== ctx.tokenId) return null;
   if (run.task !== TITLING_TASK || run.status !== 'running') return null;
+  const attemptAt = run.resumedAt ?? run.startedAt;
+  if (attemptAt === null || attemptAt + OWNER_TITLING_WINDOW_MS <= ctx.now) return null;
   const params = titlingParamsOf(run.runContext);
   if (params === null || params.session_id !== sessionId) return null;
   return { run, params };
@@ -110,7 +117,7 @@ export async function handleSessionTitle(env: ServerEnv, ctx: RouteContext): Pro
   }
 
   const written = held.params.mode === 'owner'
-    ? await overwriteTitle(env.db, ctx.projectId, sessionId, title, summary)
+    ? await overwriteTitle(env.db, ctx.projectId, sessionId, title, summary, held.params.by ?? null)
     : await writeTitle(env.db, ctx.projectId, sessionId, title, summary);
   if (written) emit({ kind: 'session_titled', projectId: ctx.projectId, sessionId, mode: held.params.mode, runId });
   return Response.json({ persisted: true, held: true, written });

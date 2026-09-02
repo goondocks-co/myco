@@ -57,6 +57,11 @@ describe('HTTP RunStore — claim', () => {
     expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(2);
   });
 
+  it('serves no running-run read: the claim guards the id alone, and the port method throws by name', async () => {
+    const { store } = await harness();
+    await expect(store.getRunningRunForTask('digest', 60)).rejects.toBeInstanceOf(RunControlError);
+  });
+
   it('claims a capture-driven task on the provider gate alone, carrying the run context, and throws by name when no provider is configured', async () => {
     const provided = await harness({ admit: false, admission: { captureDriven: true }, provider: 'anthropic' });
     const context = JSON.stringify({ session_id: 'sess_1', mode: 'claim' });

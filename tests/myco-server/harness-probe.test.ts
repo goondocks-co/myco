@@ -110,14 +110,23 @@ describe('POST /api/harness/dispatch', () => {
       .toEqual({ url: 'https://s', project: 'proj_1', task: 'container-smoke', run: spec.runId, oat: 'sk-ant-oat-test-token', apiKey: undefined, model: 'claude-opus-5', admission: 'cortex', params: undefined });
     expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic', model: 'claude-opus-5' });
 
-    // The minted credential is real: it claims a run over the member surface.
+    // The dispatch wrote the run's row before the launch; the minted credential is real and claims exactly that row over the member surface.
+    expect(sqlite.query(`SELECT status, task, agent_id FROM agent_runs WHERE id = ?`).get(spec.runId)).toEqual({ status: 'pending', task: 'container-smoke', agent_id: 'myco-agent' });
+    sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, 1, 'test')`).run();
     const claim = await worker.fetch(new Request('https://s/runs/claim', {
       method: 'POST',
       headers: memberHeaders(vars.MYCO_MEMBER_TOKEN!),
-      body: JSON.stringify({ id: spec.runId, agentId: 'user', task: 'container-smoke', maxAgeSeconds: 3600, capability: 'cortex' }),
+      body: JSON.stringify({ id: spec.runId, agentId: 'user', task: 'container-smoke', capability: 'cortex' }),
     }), bound);
-    const claimed = await claim.json() as Record<string, unknown>;
-    expect({ persisted: claimed.persisted, refusedOrClaimed: claimed.claimed !== undefined || claimed.notAdmitted !== undefined }).toEqual({ persisted: true, refusedOrClaimed: true });
+    expect(await claim.json()).toEqual({ persisted: true, claimed: true, runId: spec.runId });
+    expect(sqlite.query(`SELECT status, agent_id FROM agent_runs WHERE id = ?`).get(spec.runId)).toEqual({ status: 'running', agent_id: 'myco-agent' });
+    // A run the server never dispatched cannot be minted by that credential.
+    const foreign = await worker.fetch(new Request('https://s/runs/claim', {
+      method: 'POST',
+      headers: memberHeaders(vars.MYCO_MEMBER_TOKEN!),
+      body: JSON.stringify({ id: 'run_self_minted', agentId: 'user', task: 'container-smoke', capability: 'cortex' }),
+    }), bound);
+    expect(await foreign.json()).toEqual({ persisted: true, claimed: false, running: null });
   });
 
   it('ensures the runtime agent row on dispatch, and never edits one an owner registered', async () => {

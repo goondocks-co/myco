@@ -42,10 +42,11 @@ function harness(opts: { bound?: boolean; refuse?: boolean } = {}) {
     e.sqlite.run(`INSERT INTO responses (project_id, session_id, response_id, prompt_id, event_id, text, content_hash, created_at, token_id, received_at)
                   VALUES ('proj_1', ?, ?, ?, ?, ?, ?, ?, 'tok_1', ?)`, [session, id, promptId, `e_${id}`, text, `h_${id}`, at, at]);
   const row = (id: string) => e.sqlite.query(`SELECT title, summary, titled_at, titled_by FROM sessions WHERE session_id = ?`).get(id) as { title: string | null; summary: string | null; titled_at: number | null; titled_by: string | null };
+  const runRow = (id: string) => e.sqlite.query(`SELECT status, task, run_context, dispatched_by, agent_id, error FROM agent_runs WHERE id = ?`).get(id) as { status: string; task: string; run_context: string | null; dispatched_by: string | null; agent_id: string; error: string | null } | null;
   const secrets = deploymentSecretStore(env.db, env.wrappingKey);
   const title = (id: string, now = NOW) => titleSession(env, { projectId: 'proj_1', sessionId: id, now, origin: ORIGIN });
   const ask = (id: string, now = NOW) => titleSession(env, { projectId: 'proj_1', sessionId: id, now, origin: ORIGIN }, { mode: 'owner', by: 'mem_asker' });
-  return { ...e, env, launches, setting, session, prompt, response, row, secrets, title, ask };
+  return { ...e, env, launches, setting, session, prompt, response, row, runRow, secrets, title, ask };
 }
 
 const logged: string[] = [];
@@ -80,6 +81,10 @@ describe('titleSession', () => {
     expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic' });
     expect(vars.MYCO_MEMBER_TOKEN.length).toBeGreaterThan(20);
     expect(h.row('s1')).toEqual({ ...untouched, titled_at: NOW });
+    // The run's row is the server's record of the dispatch, written before the launch: pending, with the parameters as its context, attributed to the minted credential.
+    const run = h.runRow(first.runId!);
+    expect({ status: run?.status, task: run?.task, agent: run?.agent_id, context: JSON.parse(run?.run_context ?? 'null') }).toEqual({ status: 'pending', task: 'title-summary', agent: 'myco-agent', context: { session_id: 's1', mode: 'claim' } });
+    expect(h.sqlite.query(`SELECT member_id FROM member_credentials WHERE id = ?`).get(run!.dispatched_by!)).toEqual({ member_id: 'mem_harness' });
     expect(logged.some((l) => l.includes('session_title_dispatched'))).toBe(true);
     expect(logged.some((l) => l.includes('harness_dispatch'))).toBe(true);
 
@@ -187,6 +192,9 @@ describe('titleSession', () => {
     h.prompt('s1', 'p1', 'hello', NOW - 9000);
     expect((await h.title('s1')).outcome).toBe('error');
     expect(h.row('s1')).toEqual(untouched);
+    // The dispatch's row records the refusal rather than sitting pending forever.
+    const failedRows = h.sqlite.query(`SELECT status, error FROM agent_runs`).all() as Array<{ status: string; error: string | null }>;
+    expect(failedRows).toEqual([{ status: 'failed', error: 'the runtime refused to start' }]);
     // The session's own attempt is still open, and an owner may ask at once.
     expect((await h.ask('s1')).outcome).toBe('error');
     expect(h.row('s1')).toEqual(untouched);
@@ -251,14 +259,17 @@ describe('titleSession', () => {
 });
 
 describe('titleSession on an owner\'s ask', () => {
-  it('dispatches for an open session, for a titled one, stamps who asked, and leaves the end-of-session claim spent', async () => {
+  it('dispatches for an open session, for a titled one, names who asked in the run\'s context, and leaves the end-of-session claim spent', async () => {
     const h = harness();
     await seedAnthropic(h);
     h.session('open', { endedAt: null });
     h.prompt('open', 'p1', 'hello', NOW - 9000);
-    expect((await h.ask('open')).outcome).toBe('dispatched');
-    expect(h.row('open')).toEqual({ ...untouched, titled_at: NOW, titled_by: 'mem_asker' });
-    expect(JSON.parse(h.launches[0]!.envVars.MYCO_TASK_PARAMS!)).toEqual({ session_id: 'open', mode: 'owner' });
+    const asked = await h.ask('open');
+    expect(asked.outcome).toBe('dispatched');
+    // The stamp is the claim; who wrote the title is stamped by the write, from the context the server recorded.
+    expect(h.row('open')).toEqual({ ...untouched, titled_at: NOW });
+    expect(JSON.parse(h.launches[0]!.envVars.MYCO_TASK_PARAMS!)).toEqual({ session_id: 'open', mode: 'owner', by: 'mem_asker' });
+    expect(JSON.parse(h.runRow(asked.runId!)!.run_context!)).toEqual({ session_id: 'open', mode: 'owner', by: 'mem_asker' });
     expect(logged.join('\n')).not.toContain(KEY);
     h.sqlite.run(`UPDATE sessions SET title = 'Old', summary = 'old' WHERE session_id = 'open'`);
     expect((await h.ask('open', NOW + OWNER_TITLING_WINDOW_MS + 1)).outcome).toBe('dispatched');

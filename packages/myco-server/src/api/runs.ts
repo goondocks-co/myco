@@ -75,6 +75,8 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
   const id = str(body.id);
   const agentId = str(body.agentId);
   const task = str(body.task);
+  // The claim guards the run id alone; a field that once named an age floor is refused rather than ignored.
+  if (body.maxAgeSeconds !== undefined) return Response.json(refused(ctx, refusal('claim takes no maxAgeSeconds', 'parse')));
   // A claim names the capability its task needs, or declares the task
   // capture-driven and gated on a provider instead. Neither may be omitted:
   // a claim that named nothing would run under no admission at all.
@@ -100,7 +102,8 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
     id, agentId, task, instruction, harness, provider, model,
     dryRun: body.dryRun === true, startedAt, runContext, dispatchedBy: ctx.tokenId,
   };
-  const outcome = await claimRun(env.db, { projectId: ctx.projectId }, row, { taskName: task, admission }, ctx.now);
+  // The runtime member claims only a run the server dispatched under this credential.
+  const outcome = await claimRun(env.db, { projectId: ctx.projectId }, row, { taskName: task, admission, dispatchedOnly: ctx.memberId === HARNESS_MEMBER_ID }, ctx.now);
   if (outcome.claimed) return Response.json({ persisted: true, claimed: true, runId: id });
   // A Project not admitted to the capability is a settled answer, not contention:
   // it names the capability so a caller reports what to enable rather than retrying.

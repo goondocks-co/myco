@@ -17,7 +17,7 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
-  applyRunUpdate, claimRun, getRun, getRunningRunForTask, getState, mutateState, MUTATE_ATTEMPTS,
+  applyRunUpdate, claimRun, getRun, getRunningRunForTask, getState, mutateState, MUTATE_ATTEMPTS, recordDispatch,
   RUN_IMMUTABLE_COLUMNS, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns,
   upsertCortexInstructions, type RunInsert,
 } from '@myco-server-worker/core/runs.js';
@@ -141,6 +141,33 @@ describe('claimRun', () => {
     sqlite.query(`UPDATE agent_runs SET started_at = ?, resumed_at = ? WHERE id = 'r1'`).run(NOW - 7_200_000, NOW - 3_600_000);
     expect(await getRunningRunForTask(db, SCOPE, 'digest', 60, NOW)).toBeNull();
     expect(await getRunningRunForTask(db, SCOPE, 'extract', 60, NOW)).toBeNull();
+  });
+
+  it('moves a dispatched row to running for the credential the dispatch minted, keeping the dispatch\'s context, and refuses every other claim of it', async () => {
+    const { db, sqlite } = store();
+    for (const [id, member] of [['cred_1', 'mem_1'], ['cred_2', 'mem_1']]) {
+      sqlite.query(`INSERT OR IGNORE INTO members (id, label, created_at) VALUES (?, ?, ?)`).run(member, member, NOW);
+      sqlite.query(`INSERT INTO member_credentials (id, member_id, machine_id, runtime_kind, runtime_label, token_hash, issued_at, expires_at, lineage_root, lineage_started_at)
+        VALUES (?, ?, 'harness', 'container', 'harness', ?, ?, ?, ?, ?)`).run(id, member, `hash_${id}`, NOW, NOW + 3_600_000, id, NOW);
+    }
+    const context = JSON.stringify({ session_id: 'sess_1', mode: 'claim' });
+    expect(await recordDispatch(db, SCOPE, { id: 'r1', agentId: AGENT, task: 'digest', provider: 'anthropic', model: null, runContext: context, dispatchedBy: 'cred_1', startedAt: NOW })).toBe(true);
+    expect(await recordDispatch(db, SCOPE, { id: 'r1', agentId: AGENT, task: 'digest', provider: null, model: null, runContext: null, dispatchedBy: 'cred_2', startedAt: NOW })).toBe(false);
+    expect((await getRun(db, SCOPE, 'r1'))?.status).toBe('pending');
+
+    // Another credential cannot claim it, and the runtime member's word cannot mint a run the server never dispatched.
+    const foreign = await claimRun(db, SCOPE, { ...run('r1', 'digest'), dispatchedBy: 'cred_2', runContext: '{"session_id":"sess_9"}' }, { ...guardFor('digest'), dispatchedOnly: true }, NOW);
+    expect(foreign.claimed === false && foreign.running?.id).toBe('r1');
+    expect(await claimRun(db, SCOPE, { ...run('r_unknown', 'digest'), dispatchedBy: 'cred_1' }, { ...guardFor('digest'), dispatchedOnly: true }, NOW)).toEqual({ claimed: false, running: null });
+    expect((await getRun(db, SCOPE, 'r1'))?.status).toBe('pending');
+    expect(runCount(sqlite)).toBe(1);
+
+    // The dispatched credential claims it once; the runtime's own context and agent are not written over the dispatch's.
+    expect(await claimRun(db, SCOPE, { ...run('r1', 'digest'), agentId: 'someone-else', harness: 'claude-sdk', runContext: '{"session_id":"sess_9"}', dispatchedBy: 'cred_1' }, { ...guardFor('digest'), dispatchedOnly: true }, NOW)).toEqual({ claimed: true });
+    expect(sqlite.query(`SELECT status, agent_id, harness, run_context, dispatched_by FROM agent_runs WHERE id = 'r1'`).get())
+      .toEqual({ status: 'running', agent_id: AGENT, harness: 'claude-sdk', run_context: context, dispatched_by: 'cred_1' });
+    const again = await claimRun(db, SCOPE, { ...run('r1', 'digest'), dispatchedBy: 'cred_1' }, { ...guardFor('digest'), dispatchedOnly: true }, NOW);
+    expect(again.claimed === false && again.running?.id).toBe('r1');
   });
 
   it('claims per task and per project, so neither another task nor another project blocks', async () => {

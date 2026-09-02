@@ -18,7 +18,7 @@ import { MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS } from
 import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { sessionMaterialRows, sessionMaterialTailRows, type MaterialRow } from '../read/children.js';
-import { claimOwnerTitling, claimTitling, restoreTitlingStamp, type TitlingStamp } from '../read/sessions.js';
+import { claimOwnerTitling, claimTitling, restoreTitlingStamp } from '../read/sessions.js';
 import { launchDispatch, prepareDispatch, type DispatchRefusal } from './harness.js';
 
 export const TITLING_TASK = 'title-summary';
@@ -99,10 +99,12 @@ export function cleanSummary(summary: string): string | null {
   return cleaned.length === 0 || cleaned.length > SUMMARY_MAX_CHARS ? null : cleaned;
 }
 
-/** The parameters a titling run is dispatched with, as the runtime and the run routes read them back from the run's context. */
+/** The parameters a titling run is dispatched with, as the runtime and the run routes read them back from the run's context the server wrote. */
 export interface TitlingParams {
   session_id: string;
   mode: TitlingMode;
+  /** The member whose ask this is, on an owner's ask; the write names them as `titled_by`. */
+  by?: string;
 }
 
 /** The parameters a run's stored context names, or null when the context is not a titling dispatch. */
@@ -111,11 +113,14 @@ export function titlingParamsOf(runContext: string | null): TitlingParams | null
   let parsed: unknown;
   try { parsed = JSON.parse(runContext); } catch { return null; }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const { session_id: sessionId, mode } = parsed as Record<string, unknown>;
+  const { session_id: sessionId, mode, by } = parsed as Record<string, unknown>;
   if (typeof sessionId !== 'string' || sessionId.length === 0) return null;
   if (!TITLING_MODES.includes(mode as TitlingMode)) return null;
-  return { session_id: sessionId, mode: mode as TitlingMode };
+  return { session_id: sessionId, mode: mode as TitlingMode, ...(typeof by === 'string' && by.length > 0 ? { by } : {}) };
 }
+
+/** Who an automatic titling is attributed to: the Deployment itself, acting on a capture. */
+const DEPLOYMENT_ACTOR = 'deployment';
 
 export interface TitlingTarget {
   projectId: string;
@@ -161,21 +166,20 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     if (material.length === 0) return skipped('no_material');
 
     // The claim is the last thing before the launch, so a refusal decided above costs nothing.
-    let previous: TitlingStamp;
+    let previous: number | null = null;
     if (mode === 'owner') {
-      const claim = await claimOwnerTitling(env.db, projectId, sessionId, now, OWNER_TITLING_WINDOW_MS, opts.by ?? null);
+      const claim = await claimOwnerTitling(env.db, projectId, sessionId, now, OWNER_TITLING_WINDOW_MS);
       if (!claim.claimed) return skipped('already');
       previous = claim.previous;
-    } else {
-      if (!(await claimTitling(env.db, projectId, sessionId, now))) return skipped('already');
-      previous = { titledAt: null, titledBy: null };
+    } else if (!(await claimTitling(env.db, projectId, sessionId, now))) {
+      return skipped('already');
     }
 
-    const params: TitlingParams = { session_id: sessionId, mode };
+    const params: TitlingParams = { session_id: sessionId, mode, ...(mode === 'owner' && opts.by !== undefined ? { by: opts.by } : {}) };
     try {
       const launched = await launchDispatch(env, prepared.prepared, {
         serverUrl: target.origin,
-        actor: opts.by ?? HARNESS_ACTOR,
+        actor: opts.by ?? DEPLOYMENT_ACTOR,
         timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS,
         params: { ...params },
       }, now);
@@ -190,6 +194,3 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     return failed('error');
   }
 }
-
-/** Who an automatic titling is attributed to: the Deployment itself, acting on a capture. */
-const HARNESS_ACTOR = 'deployment';

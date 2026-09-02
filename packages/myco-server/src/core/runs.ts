@@ -88,6 +88,22 @@ const CLAIM_SQL = `INSERT INTO agent_runs
   SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`;
 
+/**
+ * The claim of a run the server dispatched: the row the dispatcher wrote moves
+ * to `running`, and only for the credential the dispatch minted. Everything
+ * the dispatch decided — agent, task, context, attribution — stays as written;
+ * the runtime adds only what it knows: its harness, and a provider or model it
+ * inferred where the dispatch named none.
+ */
+const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
+   SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?), dry_run = ?
+ WHERE project_id = ? AND id = ? AND status = 'pending' AND dispatched_by = ?`;
+
+const RECORD_DISPATCH_SQL = `INSERT INTO agent_runs
+    (project_id, id, agent_id, task, provider, model, status, dry_run, started_at, run_context, dispatched_by)
+  SELECT ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?
+   WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`;
+
 const RUN_REF_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
    WHERE project_id = ? AND id = ?`;
 
@@ -95,6 +111,34 @@ const RUNNING_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS res
    WHERE project_id = ? AND task = ? AND status = 'running'
      AND COALESCE(resumed_at, started_at) > ?
    ORDER BY COALESCE(resumed_at, started_at) DESC LIMIT 1`;
+
+export interface DispatchRecord {
+  id: string;
+  agentId: string;
+  task: string;
+  provider: string | null;
+  model: string | null;
+  /** The dispatch's parameters, which the run routes that serve one task read back; written here, by the server, and never by the runtime. */
+  runContext: string | null;
+  /** The credential the dispatch minted for this run. */
+  dispatchedBy: string;
+  startedAt: number;
+}
+
+/**
+ * Record a dispatch: the run's row, `pending`, written by the dispatcher
+ * before the runtime starts. What the row says about the run — its task, its
+ * context, who dispatched it — is the server's word from here on; the
+ * runtime's claim moves it to `running` and can change none of that. Answers
+ * false when the id is already taken.
+ */
+export async function recordDispatch(db: RelationalStore, scope: ReadScope, record: DispatchRecord): Promise<boolean> {
+  const result = await db.prepare(RECORD_DISPATCH_SQL).bind(
+    scope.projectId, record.id, record.agentId, record.task, record.provider, record.model, record.startedAt, record.runContext, record.dispatchedBy,
+    scope.projectId, record.id,
+  ).run();
+  return result.meta.changes === 1;
+}
 
 /**
  * Claim a run: one row per run id, exactly once.
@@ -105,6 +149,14 @@ const RUNNING_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS res
  * claims twice is refused the second time, and two sessions' titling runs
  * coexist. A limit on how many run at once is a dispatcher's policy, decided at
  * dispatch (#1091), never an admission rule applied here.
+ *
+ * A run the server dispatched already has its row (`recordDispatch`); its
+ * claim moves that row to `running`, and only for the credential the dispatch
+ * minted. With `dispatchedOnly` — the runtime member's claims — an id with no
+ * such row is refused outright: a dispatched credential names its own run and
+ * no other, so the context and attribution the run routes read are always the
+ * server's. Without it, a claim under a fresh id inserts the row, which is what
+ * a scheduled or local run does.
  *
  * Admission is checked HERE rather than by the caller. A separate call is one a
  * caller can forget and claim anyway; folding it in makes a claim without
@@ -123,7 +175,7 @@ export async function claimRun(
   db: RelationalStore,
   scope: ReadScope,
   row: RunInsert,
-  guard: { taskName: string; admission: RunAdmissionGate },
+  guard: { taskName: string; admission: RunAdmissionGate; dispatchedOnly?: boolean },
   _now: number,
 ): Promise<ClaimOutcome> {
   if (guard.admission.kind === 'capability') {
@@ -132,6 +184,17 @@ export async function claimRun(
     }
   } else if (!(await providerConfiguredFor(db, guard.taskName))) {
     return { claimed: false, noProvider: true };
+  }
+  if (row.dispatchedBy !== null) {
+    const dispatched = await db.prepare(CLAIM_DISPATCHED_SQL).bind(
+      row.harness, row.instruction, row.provider, row.model, row.dryRun ? 1 : 0,
+      scope.projectId, row.id, row.dispatchedBy,
+    ).run();
+    if (dispatched.meta.changes === 1) return { claimed: true };
+  }
+  if (guard.dispatchedOnly === true) {
+    const held = await db.prepare(RUN_REF_SQL).bind(scope.projectId, row.id).first<RunningRunRef>();
+    return { claimed: false, running: held ?? null };
   }
   const result = await db.prepare(CLAIM_SQL).bind(
     scope.projectId, row.id, row.agentId, row.task, row.instruction, row.harness, row.provider, row.model,

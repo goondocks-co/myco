@@ -21,7 +21,7 @@ import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
-import { ensureAgent } from './runs.js';
+import { applyRunUpdate, ensureAgent, recordDispatch } from './runs.js';
 import { deploymentSecretStore } from './secrets.js';
 import { leafValues } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
@@ -145,9 +145,12 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
 
 /**
  * Launch a prepared dispatch: the runtime's member and agent rows, a credential
- * minted for this run alone, and the held container started with the whole
- * dispatch as its environment. Rejects when the runtime refuses to start; the
- * caller decides what its own state does then.
+ * minted for this run alone, the run's row written `pending` with the
+ * dispatch's parameters as its context, and the held container started with
+ * the whole dispatch as its environment. The row is the server's record of
+ * the dispatch — the runtime's claim moves it to `running` and changes none
+ * of it. Rejects when the runtime refuses to start, after marking the row
+ * failed; the caller decides what its own state does then.
  */
 export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number): Promise<Launched> {
   if (env.harnessLaunch === undefined) throw new Error('harness runtime unbound after preparation');
@@ -157,7 +160,13 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   const minted = await issueMemberToken(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, now);
 
   const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
-  await env.harnessLaunch({
+  const runContext = spec.params === undefined ? null : JSON.stringify(spec.params);
+  const scope = { projectId: prepared.projectId };
+  if (!(await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }))) {
+    throw new Error('run id already taken');
+  }
+  try {
+    await env.harnessLaunch({
     runId,
     timeoutSeconds,
     envVars: {
@@ -170,10 +179,14 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
       MYCO_TIMEOUT_SECONDS: String(timeoutSeconds),
       MYCO_PROVIDER_JSON: JSON.stringify(prepared.provider),
       ...(prepared.model === null ? {} : { MYCO_MODEL: prepared.model }),
-      ...(spec.params === undefined ? {} : { MYCO_TASK_PARAMS: JSON.stringify(spec.params) }),
+      ...(runContext === null ? {} : { MYCO_TASK_PARAMS: runContext }),
       ...prepared.credentialEnv,
     },
   });
+  } catch (error) {
+    await applyRunUpdate(env.db, scope, runId, { status: 'failed', completed_at: now, error: 'the runtime refused to start' });
+    throw error;
+  }
   emit({ kind: 'harness_dispatch', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor });
   return { runId, task: prepared.task, projectId: prepared.projectId, timeoutSeconds, provider: prepared.providerType };
 }

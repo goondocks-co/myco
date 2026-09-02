@@ -263,7 +263,7 @@ export const TITLING_OUTCOME_TEXT: Record<TitlingOutcome, string> = {
   dispatched: 'A summary is being written — it lands within a few minutes',
   already: 'A summary was asked for a moment ago — try again shortly',
   no_material: 'Nothing typed in this session to summarize yet',
-  harness_unavailable: 'This Deployment has no runtime to write summaries yet',
+  harness_unavailable: 'This Deployment has no way to write summaries yet',
   no_provider: 'No provider is configured for summaries — set one in Settings',
   no_credential: 'The provider has no credential — add one in Settings',
   no_endpoint: 'The provider has no endpoint — set one in Settings',

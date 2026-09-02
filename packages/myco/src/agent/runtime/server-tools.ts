@@ -13,7 +13,7 @@ import { z } from 'zod/v4';
 import type { RequestBudget } from '@myco/member/budget.js';
 import type { ServerClient } from '@myco/member/transport.js';
 import type { MycoToolDefinition } from '../tools/types.js';
-import { postRunControl, postRunReport } from './run-store-http.js';
+import { postRunControl, postRunReport, RunControlError } from './run-store-http.js';
 
 /** The task whose runs read and write one session's title over the run routes. */
 export const TITLE_SUMMARY_TASK = 'title-summary';
@@ -84,9 +84,16 @@ export function materializedUpdateSessionTool(ctx: ServerToolContext, counter: {
       if (args.title === undefined || args.summary === undefined) {
         return text({ error: 'both title and summary are required; call again with both' });
       }
-      const answered = await postRunControl(ctx.client, ctx.budget, '/runs/session-title', {
-        runId: ctx.runId, sessionId: args.session_id, title: args.title, summary: args.summary,
-      });
+      let answered: Record<string, unknown>;
+      try {
+        answered = await postRunControl(ctx.client, ctx.budget, '/runs/session-title', {
+          runId: ctx.runId, sessionId: args.session_id, title: args.title, summary: args.summary,
+        });
+      } catch (error) {
+        // A title outside its bound is the model's to fix: answered as a tool result on every harness, never a failed run.
+        if (error instanceof RunControlError) return text({ error: error.message });
+        throw error;
+      }
       if (answered.held !== true) return text({ error: `Session not found: ${args.session_id}` });
       if (answered.written !== true) return text({ error: 'the session already carries a title written by another hand; nothing changed' });
       counter.writes += 1;
