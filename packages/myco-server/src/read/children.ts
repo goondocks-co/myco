@@ -49,7 +49,7 @@ export interface ToolCallRow {
 export const INPUT_PREVIEW_CHARS = 2048;
 export interface ResponseRow { responseId: string; promptId: string | null; text: string | null; blobKey: string | null; createdAt: number; orderedAt: number }
 /** `planKey` is the plan's identity in this table (its primary key), not a session-scoped id. `createdAt` is the plan's first capture; `orderedAt` carries the `updated_at` this listing pages over. */
-export interface PlanRow { planKey: string; promptId: string | null; title: string | null; status: string; content: string | null; blobKey: string | null; progress: string; updatedBy: string | null; createdAt: number; updatedAt: number; orderedAt: number }
+export interface PlanRow { planKey: string; promptId: string | null; title: string | null; status: string; content: string | null; blobKey: string | null; originPath: string | null; progress: string; updatedBy: string | null; createdAt: number; updatedAt: number; orderedAt: number }
 /** `promptId` names the prompt an attachment accompanies, when the capture named one; the session page shows the image under that prompt. */
 export interface AttachmentRow { attachmentId: string; promptId: string | null; blobKey: string; mediaType: string; byteSize: number; description: string | null; createdAt: number; orderedAt: number }
 
@@ -89,7 +89,7 @@ export const RESPONSE_QUERY: ChildQuery<Omit<ResponseRow, 'orderedAt'>> = {
 
 /** Plans order by `updated_at` — the column `idx_plans_session` indexes — and are keyed by `plan_key`. */
 export const PLAN_QUERY: ChildQuery<Omit<PlanRow, 'orderedAt'>> = {
-  table: 'plans', columns: 'plan_key, prompt_id, title, status, content, blob_key, updated_by, created_at, updated_at', idColumn: 'plan_key', orderColumn: 'updated_at',
+  table: 'plans', columns: 'plan_key, prompt_id, title, status, content, blob_key, origin_path, updated_by, created_at, updated_at', idColumn: 'plan_key', orderColumn: 'updated_at',
   map: (r) => ({
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
@@ -99,6 +99,7 @@ export const PLAN_QUERY: ChildQuery<Omit<PlanRow, 'orderedAt'>> = {
     status: r.status as string,
     content: (r.content as string | null) ?? null,
     blobKey: (r.blob_key as string | null) ?? null,
+    originPath: (r.origin_path as string | null) ?? null,
     progress: progressOf((r.content as string | null) ?? null),
     updatedBy: (r.updated_by as string | null) ?? null,
   }),

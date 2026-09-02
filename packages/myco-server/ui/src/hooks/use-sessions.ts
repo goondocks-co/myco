@@ -89,6 +89,8 @@ export interface PlanRow {
   status: string;
   content: string | null;
   blobKey: string | null;
+  /** The file or the tag the plan came from, as the capture named it. */
+  originPath: string | null;
   progress: string;
   updatedBy: string | null;
   createdAt: number;

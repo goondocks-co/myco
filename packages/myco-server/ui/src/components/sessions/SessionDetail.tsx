@@ -198,16 +198,22 @@ function Plans({ projectId, sessionId, wanted }: { projectId: string; sessionId:
   );
 }
 
-/** The attachments a turn carries, grouped under the turn; those the capture tied to no prompt sit last. */
-function attachmentGroups(rows: readonly AttachmentRow[], turns: readonly TurnRow[]): Array<{ promptId: string | null; label: string; rows: AttachmentRow[] }> {
+interface AttachmentGroup { key: string; label: string; rows: AttachmentRow[]; /** The top-level turn the group opens, when it has one. */ turn: string | null }
+
+/** The attachments a turn carries, grouped under the turn in turn order; those on prompts the timeline does not list on its own (steering prompts, later pages) share one group, and those the capture tied to no prompt sit last. */
+export function attachmentGroups(rows: readonly AttachmentRow[], turns: readonly TurnRow[]): AttachmentGroup[] {
   const byPrompt = new Map<string | null, AttachmentRow[]>();
   for (const row of rows) byPrompt.set(row.promptId, [...(byPrompt.get(row.promptId) ?? []), row]);
-  const groups: Array<{ promptId: string | null; label: string; rows: AttachmentRow[] }> = [];
+  const groups: AttachmentGroup[] = [];
   for (const turn of turns) {
     const mine = byPrompt.get(turn.promptId);
-    if (mine !== undefined) { groups.push({ promptId: turn.promptId, label: promptPreview(turn), rows: mine }); byPrompt.delete(turn.promptId); }
+    if (mine !== undefined) { groups.push({ key: turn.promptId, label: promptPreview(turn), rows: mine, turn: turn.promptId }); byPrompt.delete(turn.promptId); }
   }
-  for (const [promptId, mine] of byPrompt) groups.push({ promptId, label: promptId === null ? 'Not tied to a prompt' : 'A prompt not shown here', rows: mine });
+  const untied = byPrompt.get(null) ?? [];
+  byPrompt.delete(null);
+  const other = [...byPrompt.values()].flat();
+  if (other.length > 0) groups.push({ key: 'other', label: 'Other prompts in this session', rows: other, turn: null });
+  if (untied.length > 0) groups.push({ key: 'none', label: 'Not tied to a prompt', rows: untied, turn: null });
   return groups;
 }
 
@@ -221,10 +227,10 @@ function Attachments({ projectId, sessionId }: { projectId: string; sessionId: s
       ) : (
         <div className="flex flex-col gap-5">
           {attachmentGroups(attachments.rows, turns.rows).map((group) => (
-            <section key={group.promptId ?? 'none'} aria-label={group.label} className="flex flex-col gap-2">
+            <section key={group.key} aria-label={group.label} className="flex flex-col gap-2">
               <div className="flex items-baseline justify-between gap-3">
                 <h3 className="min-w-0 truncate font-sans text-xs font-medium uppercase tracking-widest text-on-surface-variant">{group.label}</h3>
-                {group.promptId !== null && <Link to={`?turn=${encodeURIComponent(group.promptId)}`} className={cn(link, 'shrink-0')}>Open the turn</Link>}
+                {group.turn !== null && <Link to={`?turn=${encodeURIComponent(group.turn)}`} className={cn(link, 'shrink-0')}>Open the turn</Link>}
               </div>
               <ul className="grid gap-3 sm:grid-cols-2" aria-label={`Attachments of ${group.label}`}>
                 {group.rows.map((a) => (

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Bot, ChevronDown, ChevronRight } from 'lucide-react';
 import { Lightbox } from '../ui/lightbox';
 import { Skeleton } from '../ui/skeleton';
@@ -126,14 +126,20 @@ export interface TurnCardProps {
   index: number;
   isLast: boolean;
   defaultOpen?: boolean;
+  /** A link named this turn: bring it into view once it mounts. */
+  scrollTo?: boolean;
 }
 
 /** One turn on the timeline spine: a numbered node, a collapsible header with the prompt's first line, and — open — the prompt in full with what followed it. */
-export function TurnCard({ projectId, sessionId, turn, index, isLast, defaultOpen = false }: TurnCardProps) {
+export function TurnCard({ projectId, sessionId, turn, index, isLast, defaultOpen = false, scrollTo = false }: TurnCardProps) {
   const [open, setOpen] = useState(defaultOpen);
   const injected = turn.origin !== 'user';
+  const el = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (scrollTo && typeof el.current?.scrollIntoView === 'function') el.current.scrollIntoView({ block: 'start' });
+  }, [scrollTo]);
   return (
-    <div className="relative flex gap-2" data-testid={`turn-${turn.promptId}`} data-origin={turn.origin} style={open ? undefined : { contentVisibility: 'auto', containIntrinsicSize: 'auto 72px' }}>
+    <div ref={el} className="relative flex gap-2" data-testid={`turn-${turn.promptId}`} data-origin={turn.origin} style={open ? undefined : { contentVisibility: 'auto', containIntrinsicSize: 'auto 72px' }}>
       <div className="relative flex shrink-0 flex-col items-center" style={{ width: 28 }}>
         {index > 0 && <div className="absolute top-0 w-px bg-outline-variant/40" style={{ height: 14 }} />}
         <div className={cn('z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-bold transition-colors', open ? 'bg-primary text-on-primary' : 'border border-outline-variant/40 bg-surface-container-high text-on-surface-variant')}>
