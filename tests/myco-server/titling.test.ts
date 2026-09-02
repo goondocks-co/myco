@@ -312,7 +312,7 @@ describe('titleSession on an owner\'s ask', () => {
     expect(await ask(h, 'open')).toBe('titled');
     expect(h.row('open')).toMatchObject({ title: 'Wave-based executor and per-task provider config', titled_at: NOW });
     h.sqlite.run(`UPDATE sessions SET title = 'Old', summary = 'old' WHERE session_id = 'open'`);
-    expect(await ask(h, 'open', NOW + TITLING_TIMEOUT_MS + 1)).toBe('titled');
+    expect(await ask(h, 'open', NOW + 1)).toBe('titled');
     expect(h.row('open').title).toBe('Wave-based executor and per-task provider config');
     expect(h.sent).toHaveLength(2);
     // The session's own end finds the claim spent and asks nothing.
@@ -321,14 +321,18 @@ describe('titleSession on an owner\'s ask', () => {
     expect(h.sent).toHaveLength(2);
   });
 
-  it('refuses a second ask while the first may still be running, and admits one after the timeout', async () => {
+  it('refuses a second ask while an earlier one has not yet written a title, admits one after the timeout, and asks again at once for a session already titled', async () => {
     const h = harness();
     await seedAnthropic(h);
     h.session('s1');
     h.prompt('s1', 'p1', 'hello', NOW - 9000);
-    expect(await ask(h, 's1')).toBe('titled');
-    expect(await ask(h, 's1', NOW + 1000)).toBe('already');
-    expect(await ask(h, 's1', NOW + TITLING_TIMEOUT_MS + 1)).toBe('titled');
+    // An attempt claimed a moment ago and still without a title may be running.
+    h.sqlite.run(`UPDATE sessions SET titled_at = ? WHERE session_id = 's1'`, [NOW - 1000]);
+    expect(await ask(h, 's1')).toBe('already');
+    expect(h.sent).toHaveLength(0);
+    expect(await ask(h, 's1', NOW - 1000 + TITLING_TIMEOUT_MS + 1)).toBe('titled');
+    // With a title in place, the next ask is not waiting on anything.
+    expect(await ask(h, 's1', NOW + TITLING_TIMEOUT_MS + 2)).toBe('titled');
     expect(h.sent).toHaveLength(2);
   });
 

@@ -375,11 +375,11 @@ export async function claimTitling(db: RelationalStore, projectId: string, sessi
 }
 
 /**
- * Claims a titling attempt an owner asked for: any session, ended or not, titled or not — refused only while an attempt begun within `inFlightMs` may still be running, so two clicks make one call. Stamps `titled_at`, which is what the hourly ceiling meters.
+ * Claims a titling attempt an owner asked for: any session, ended or not, titled or not. Refused only while an attempt begun within `inFlightMs` has not yet written a title — that one may still be running, and two asks would make two calls. A session that already carries a title is asked again at once; the answer replaces it. Stamps `titled_at`, which is what the hourly ceiling meters.
  */
 export async function claimOwnerTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, inFlightMs: number): Promise<boolean> {
   const result = await db
-    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND (titled_at IS NULL OR titled_at < ?)`)
+    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND (titled_at IS NULL OR titled_at < ? OR title IS NOT NULL)`)
     .bind(nowMs, projectId, sessionId, nowMs - inFlightMs)
     .run();
   return result.meta.changes === 1;
