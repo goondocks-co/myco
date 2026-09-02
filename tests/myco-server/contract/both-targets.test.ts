@@ -344,14 +344,13 @@ describe('agent runs read the same on both stores', () => {
 });
 
 describe('archival refuses capture the same on both stores', () => {
-  it('titles an ended session through the route on each target — once, through the configured endpoint, without a credential — labels it before that from its first prompt, and renames its project', async () => {
+  it('answers an ended session\'s titling the same on each target with no runtime bound — nothing stamped, no outbound call, the label from its first prompt — and renames its project', async () => {
     const outcomes: unknown[] = [];
     for (const make of [cloudflareTarget, selfHostedTarget]) {
       const sent: string[] = [];
-      const answer = { title: 'Retry added to the runner', summary: 'Added a retry to runner.ts and covered it with a test.' };
       const outbound = (async (input: string | URL | Request, init?: RequestInit) => {
         sent.push(`${String(input)} ${(init?.headers as Record<string, string> | undefined)?.authorization ?? 'no-credential'}`);
-        return Response.json({ choices: [{ message: { content: JSON.stringify(answer) } }] });
+        return new Response('unexpected', { status: 500 });
       }) as unknown as typeof fetch;
       const t = make(outbound);
       const token = await t.token();
@@ -367,7 +366,7 @@ describe('archival refuses capture the same on both stores', () => {
       expect((await post({ eventId: uuid(300), sessionId: 'sess_t', kind: 'session.start', payload: { agent: 'claude-code', branch: 'main', startedAt: 1_000 } })).persisted).toBe(true);
       expect((await post({ eventId: uuid(301), sessionId: 'sess_t', payload: { promptId: uuid(310), text: 'Add a retry to the runner\nplease', origin: 'user' } })).persisted).toBe(true);
       const labelBefore = (await row('sess_t'))?.label;
-      const beforeEnd = await titleSession(t.env, { projectId: 'proj_1', sessionId: 'sess_t', now: 5_000 });
+      const beforeEnd = (await titleSession(t.env, { projectId: 'proj_1', sessionId: 'sess_t', now: 5_000, origin: 'https://s' })).outcome;
       expect(await post({ eventId: uuid(302), sessionId: 'sess_t', kind: 'session.end', createdAt: 6_000, payload: { endedAt: 6_000 } })).toEqual({ persisted: true, projected: true });
       await t.settle();
       const titled = await row('sess_t');
@@ -390,9 +389,9 @@ describe('archival refuses capture the same on both stores', () => {
       });
     }
     const expected = {
-      labelBefore: 'Add a retry to the runner', beforeEnd: 'already', title: 'Retry added to the runner', summary: 'Added a retry to runner.ts and covered it with a test.', label: 'Retry added to the runner', attempted: true,
-      sent: ['http://titles.internal/v1/chat/completions no-credential'], sentAfterSecondEnd: 1,
-      unprovided: { attempted: true, title: null, label: 'No provider here' }, renamed: 'renamed', absent: 'absent',
+      labelBefore: 'Add a retry to the runner', beforeEnd: 'harness_unavailable', title: null, summary: null, label: 'Add a retry to the runner', attempted: false,
+      sent: [], sentAfterSecondEnd: 0,
+      unprovided: { attempted: false, title: null, label: 'No provider here' }, renamed: 'renamed', absent: 'absent',
     };
     expect({ cloudflare: outcomes[0], selfHosted: outcomes[1] }).toEqual({ cloudflare: expected, selfHosted: expected });
   });

@@ -142,8 +142,9 @@ describe('session turns', () => {
     seed(e);
     const res = await worker.fetch(await asOwnerPost('/api/projects/proj_1/sessions/s1/title'), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
-    // No provider is configured in the fixture: the ask is claimed and answered, not thrown.
-    expect(await res.json()).toEqual({ outcome: 'no_provider' });
+    // No runtime is bound in the fixture: the ask is answered by name, not thrown, and nothing is stamped.
+    expect(await res.json()).toEqual({ outcome: 'harness_unavailable' });
+    expect(e.sqlite.query(`SELECT titled_at FROM sessions WHERE project_id = 'proj_1' AND session_id = 's1'`).get()).toEqual({ titled_at: null });
     expect((await worker.fetch(await asOwnerPost('/api/projects/proj_2/sessions/s2/title'), { ...e.env, ...OWNER_ENV })).status).toBe(404);
     expect((await worker.fetch(await asOwnerPost('/api/projects/proj_1/sessions/absent/title'), { ...e.env, ...OWNER_ENV })).status).toBe(404);
   });

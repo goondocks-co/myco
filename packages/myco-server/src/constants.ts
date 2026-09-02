@@ -1,9 +1,5 @@
 export const SERVER_SCHEMA_VERSION = 15;
 
-/** Titling: one provider call per ended session, at most this many per Project per hour. */
-export const MAX_TITLES_PER_PROJECT_PER_HOUR = 120;
-/** Titling: the provider call is abandoned after this long. */
-export const TITLING_TIMEOUT_MS = 20_000;
 /** Titling: how many of a session's earliest user prompts (with their first response) reach the model. */
 export const MAX_MATERIAL_PROMPTS = 12;
 /** Titling: the material's total character budget. */

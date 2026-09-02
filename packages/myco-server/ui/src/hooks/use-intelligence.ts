@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import { usePaged } from './use-paged';
 
@@ -152,8 +152,9 @@ export function useRuns(projectId: string, status: string | null) {
   return usePaged<RunListRow>(['runs', projectId, status ?? 'all'], `${project(projectId)}/runs?limit=50${status === null ? '' : `&status=${seg(status)}`}`);
 }
 
-export function useRun(projectId: string, runId: string) {
-  return useQuery({ queryKey: ['run', projectId, runId], queryFn: ({ signal }) => fetchJson<RunDetailResponse>(`${project(projectId)}/runs/${seg(runId)}`, signal) });
+/** One run in full. A watcher passes `enabled`, `retry` and `refetchInterval` to follow a run that may not have claimed yet. */
+export function useRun(projectId: string, runId: string, options: Pick<UseQueryOptions<RunDetailResponse>, 'enabled' | 'retry' | 'refetchInterval'> = {}) {
+  return useQuery({ queryKey: ['run', projectId, runId], queryFn: ({ signal }) => fetchJson<RunDetailResponse>(`${project(projectId)}/runs/${seg(runId)}`, signal), ...options });
 }
 
 export function useAgents() {

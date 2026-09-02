@@ -435,7 +435,7 @@ export function createServer(deps: ServerDeps) {
       return await route.handler(env, {
         projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
-        body: body.text, bodyBytes: body.bytes, now,
+        body: body.text, bodyBytes: body.bytes, now, origin: url.origin,
       });
     } catch (err) {
       return failed(env, auth, route, err, bodyBytes);
