@@ -35,8 +35,8 @@ export interface SessionState {
   /** sha256(content) → planKey for every plan this session has emitted. */
   planHashes: Record<string, string>;
   planTagCount: number;
-  /** normalized path → planKey for every plan file this session has shipped; Stop re-reads them. */
-  planPaths: Record<string, string>;
+  /** normalized path → the key and the content hash last shipped for every plan file this session has captured; Stop re-reads them. */
+  planPaths: Record<string, { planKey: string; hash: string }>;
   /** Blob keys of attachments already emitted. */
   attachmentKeys: string[];
   /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */

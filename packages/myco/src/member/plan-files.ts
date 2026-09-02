@@ -5,9 +5,12 @@
  * re-reads every path the session has shipped and sends what changed since.
  */
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
+import { resolveHomeDir } from '../paths/home.js';
+import { resolveWorktreeRoot } from '../project-root.js';
+import { remainingMs, type HookBudget } from './budget.js';
+import { resolveMemberProjectRoot } from './credential.js';
 import { planEvent, planKeyForPath, type EnvelopeContext, type OutboundEvent } from './envelope.js';
 import type { SessionState } from './session-state.js';
 import { firstHeading, sha256Text } from './text.js';
@@ -19,15 +22,20 @@ export const PLAN_FILE_EXTENSIONS: readonly string[] = ['.md'];
 /** The largest plan file read into an event; a larger one is left alone. */
 export const MAX_PLAN_FILE_BYTES = 1_048_576;
 
+/** The root a hook's plan paths resolve against: the git worktree the call ran in, so a worktree's own `.claude/plans/` counts; else the credential's root; else the worktree-aware root of the cwd. */
+export function planRootFor(credentialRoot: string | undefined, cwd: string | undefined): string {
+  return resolveWorktreeRoot(cwd) ?? credentialRoot ?? resolveMemberProjectRoot(cwd);
+}
+
 /** A plan directory as the manifest names it, resolved: `~/` against home, a relative one against the project root. */
 export function resolvePlanDir(dir: string, projectRoot: string): string {
-  const expanded = dir.startsWith('~/') ? path.join(os.homedir(), dir.slice(2)) : dir;
+  const expanded = dir.startsWith('~/') ? path.join(resolveHomeDir(), dir.slice(2)) : dir;
   return path.isAbsolute(expanded) ? expanded : path.resolve(projectRoot, expanded);
 }
 
 /** True when the file sits inside one of the directories — on a directory boundary, never a sibling with the same prefix. */
 export function isInPlanDirectory(filePath: string, dirs: readonly string[], projectRoot: string): boolean {
-  const abs = path.isAbsolute(filePath) ? filePath : path.resolve(projectRoot, filePath);
+  const abs = path.resolve(projectRoot, filePath);
   return dirs.some((dir) => {
     const absDir = resolvePlanDir(dir, projectRoot);
     const prefix = absDir.endsWith(path.sep) ? absDir : absDir + path.sep;
@@ -45,13 +53,13 @@ export function planWritePath(agent: string, toolName: string | undefined, toolI
   if (dirs.length === 0) return null;
   if (!PLAN_FILE_EXTENSIONS.includes(path.extname(filePath).toLowerCase())) return null;
   if (!isInPlanDirectory(filePath, dirs, projectRoot)) return null;
-  return path.isAbsolute(filePath) ? filePath : path.resolve(projectRoot, filePath);
+  return path.resolve(projectRoot, filePath);
 }
 
 /** The path a plan is keyed by: project-relative inside the root, `~/`-prefixed under home, else absolute; forward slashes throughout. The Deployment's tool takes the same form. */
 export function normalizePlanPath(projectRoot: string, absPath: string): string {
   const root = projectRoot.endsWith(path.sep) ? projectRoot : projectRoot + path.sep;
-  const home = os.homedir();
+  const home = resolveHomeDir();
   const out = absPath.startsWith(root)
     ? absPath.slice(root.length)
     : absPath.startsWith(home + path.sep) ? `~/${absPath.slice(home.length + 1)}` : absPath;
@@ -81,32 +89,34 @@ export interface PlanFileCapture {
   record: (state: SessionState) => void;
 }
 
-/** The plan event for a file just written, or none when the session already shipped this content. */
+/** The plan event for a file just written, or none when this path last shipped the same content. The prompt is named on the file's first capture only: a plan belongs to the turn that produced it. */
 export function planFileCapture(ctx: EnvelopeContext, state: SessionState, projectId: string, projectRoot: string, absPath: string): PlanFileCapture {
   const none: PlanFileCapture = { events: [], record: () => {} };
   const content = readPlanFile(absPath);
   if (content === null) return none;
   const hash = sha256Text(content);
-  if (state.planHashes[hash]) return none;
   const normalized = normalizePlanPath(projectRoot, absPath);
-  const planKey = planKeyForPath(projectId, normalized);
+  const shipped = state.planPaths[normalized];
+  if (shipped?.hash === hash) return none;
+  const planKey = shipped?.planKey ?? planKeyForPath(projectId, normalized);
   return {
-    events: [planEvent(ctx, { planKey, content, title: planTitle(content, absPath), originPath: normalized, promptId: state.promptId })],
-    record: (next) => { next.planHashes[hash] = planKey; next.planPaths[normalized] = planKey; },
+    events: [planEvent(ctx, { planKey, content, title: planTitle(content, absPath), originPath: normalized, promptId: shipped === undefined ? state.promptId : undefined })],
+    record: (next) => { next.planPaths[normalized] = { planKey, hash }; },
   };
 }
 
-/** Every plan file this session has shipped, re-read: the ones whose content changed since are sent again under their key. */
-export function planBackstop(ctx: EnvelopeContext, state: SessionState, projectRoot: string): PlanFileCapture {
+/** Every plan file this session has shipped, re-read inside the hook's budget: the ones whose content changed since are sent again under their key. */
+export function planBackstop(ctx: EnvelopeContext, state: SessionState, projectRoot: string, budget?: HookBudget, now: () => number = Date.now): PlanFileCapture {
   const events: OutboundEvent[] = [];
-  const receipts: Array<[string, string]> = [];
-  for (const [normalized, planKey] of Object.entries(state.planPaths)) {
+  const receipts: Array<[string, string, string]> = [];
+  for (const [normalized, shipped] of Object.entries(state.planPaths)) {
+    if (budget !== undefined && remainingMs(budget, now()) < budget.requestTimeoutMs) break;
     const content = readPlanFile(planFilePath(projectRoot, normalized));
     if (content === null) continue;
     const hash = sha256Text(content);
-    if (state.planHashes[hash] || receipts.some(([h]) => h === hash)) continue;
-    receipts.push([hash, planKey]);
-    events.push(planEvent(ctx, { planKey, content, title: planTitle(content, normalized), originPath: normalized, promptId: state.promptId }));
+    if (hash === shipped.hash) continue;
+    receipts.push([normalized, shipped.planKey, hash]);
+    events.push(planEvent(ctx, { planKey: shipped.planKey, content, title: planTitle(content, normalized), originPath: normalized }));
   }
-  return { events, record: (next) => { for (const [hash, planKey] of receipts) next.planHashes[hash] = planKey; } };
+  return { events, record: (next) => { for (const [normalized, planKey, hash] of receipts) next.planPaths[normalized] = { planKey, hash }; } };
 }

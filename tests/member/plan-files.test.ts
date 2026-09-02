@@ -51,8 +51,13 @@ describe('plan file capture', () => {
     const payload = first.events[0]!.envelope.payload as Record<string, unknown>;
     expect([payload.planKey, payload.title, payload.originPath, payload.promptId, payload.status, payload.content]).toEqual([planKeyForPath('proj_1', '.claude/plans/p.md'), 'The plan', '.claude/plans/p.md', 'prompt-1', undefined, '# The plan\n\n- [ ] one\n']);
     first.record(state);
-    expect(state.planPaths).toEqual({ '.claude/plans/p.md': payload.planKey });
+    expect(state.planPaths).toEqual({ '.claude/plans/p.md': { planKey: payload.planKey, hash: sha256Text('# The plan\n\n- [ ] one\n') } });
     expect(planFileCapture(ctx(), state, 'proj_1', root, file).events).toEqual([]);
+    // New content under a captured path keeps the key and names no prompt: the plan belongs to the turn that produced it.
+    fs.writeFileSync(file, '# The plan\n\n- [x] one\n');
+    const again = planFileCapture(ctx(), { ...state, promptId: 'prompt-9' }, 'proj_1', root, file);
+    const againPayload = again.events[0]!.envelope.payload as Record<string, unknown>;
+    expect([againPayload.planKey, againPayload.promptId]).toEqual([payload.planKey, undefined]);
     expect(readPlanFile(path.join(root, 'missing.md'))).toBeNull();
     expect(readPlanFile(root)).toBeNull();
   });
@@ -69,10 +74,16 @@ describe('plan file capture', () => {
 
   it('re-sends a shipped file whose content changed, once, and nothing for one unchanged or gone', () => {
     fs.writeFileSync(file, '# The plan\n\n- [x] one\n');
-    const state = { ...emptySessionState(), promptId: 'prompt-2', planPaths: { '.claude/plans/p.md': planKeyForPath('proj_1', '.claude/plans/p.md'), '.claude/plans/gone.md': 'k-gone' }, planHashes: { [sha256Text('# The plan\n\n- [ ] one\n')]: planKeyForPath('proj_1', '.claude/plans/p.md') } };
+    const key = planKeyForPath('proj_1', '.claude/plans/p.md');
+    const state = { ...emptySessionState(), promptId: 'prompt-2', planPaths: { '.claude/plans/p.md': { planKey: key, hash: sha256Text('# The plan\n\n- [ ] one\n') }, '.claude/plans/gone.md': { planKey: 'k-gone', hash: 'h' } } };
     const backstop = planBackstop(ctx(), state, root);
-    expect(backstop.events.map((e) => [(e.envelope.payload as { planKey: string }).planKey, (e.envelope.payload as { content: string }).content, (e.envelope.payload as { promptId?: string }).promptId])).toEqual([[planKeyForPath('proj_1', '.claude/plans/p.md'), '# The plan\n\n- [x] one\n', 'prompt-2']]);
+    expect(backstop.events.map((e) => [(e.envelope.payload as { planKey: string }).planKey, (e.envelope.payload as { content: string }).content, (e.envelope.payload as { promptId?: string }).promptId])).toEqual([[key, '# The plan\n\n- [x] one\n', undefined]]);
     backstop.record(state);
+    expect(state.planPaths['.claude/plans/p.md']).toEqual({ planKey: key, hash: sha256Text('# The plan\n\n- [x] one\n') });
     expect(planBackstop(ctx(), state, root).events).toEqual([]);
+    // A budget with no room left sends nothing.
+    fs.writeFileSync(file, '# The plan\n\n- [x] one\n- [x] two\n');
+    const spent: NonNullable<Parameters<typeof planBackstop>[3]> = { symbiont: 'claude-code', hookName: 'stop', declaredTimeoutMs: 5_000, hookBudgetMs: 5_000, deadline: 5_000, drains: true, connectTimeoutMs: 1_000, requestTimeoutMs: 2_000 };
+    expect(planBackstop(ctx(), state, root, spent, () => 10_000).events).toEqual([]);
   });
 });

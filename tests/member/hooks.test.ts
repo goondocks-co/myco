@@ -16,6 +16,7 @@ import { evaluateUserPromptRules, resolveSubagentThread } from '@myco/hooks/capt
 import { deriveId, mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
+import { resolveWorktreeRoot } from '@myco/project-root.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { registerTestMember, recordingFetch, runHook } from './helpers/hooks.js';
@@ -120,6 +121,8 @@ describe('member hooks through the worker', () => {
       { type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:01Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Here is a plan <ultraplan>\n# Plan A\n\nstep one\n</ultraplan> done' }], stop_reason: 'end_turn' } },
       { type: 'attachment', uuid: 'q1', timestamp: '2026-01-01T00:00:02Z', attachment: { type: 'queued_command', prompt: 'queued steer' } },
       { type: 'assistant', uuid: 'a2', timestamp: '2026-01-01T00:00:03Z', message: { role: 'assistant', content: [{ type: 'text', text: 'final words' }], stop_reason: 'end_turn' } },
+      // A tag inside a user turn the transcript holds is never a plan: only assistant text is scanned here.
+      { type: 'user', uuid: 'u2', timestamp: '2026-01-01T00:00:04Z', message: { role: 'user', content: [{ type: 'text', text: 'quoting <ultraplan>\n# Not a plan\n</ultraplan>' }] } },
     ]);
     await run('session-start', { transcript_path: tx, cwd: '/work/repo' });
     await run('user-prompt-submit', { transcript_path: tx, prompt: 'typed prompt' });
@@ -194,7 +197,7 @@ describe('member hooks through the worker', () => {
 
   it('captures a plan file on the write that lands it, keyed by its path and named after the prompt, keeps its status on a re-write, and re-sends an edit at Stop', async () => {
     // The hook resolves its credential for the process's own project root, so the plan file sits in this checkout's plan directory for the test's duration.
-    const root = resolveMemberProjectRoot(process.cwd());
+    const root = resolveWorktreeRoot(process.cwd()) ?? resolveMemberProjectRoot(process.cwd());
     const file = path.join(root, '.claude/plans', `feature-${session}-${process.pid}.md`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const cleanup = () => { try { fs.unlinkSync(file); } catch {} };

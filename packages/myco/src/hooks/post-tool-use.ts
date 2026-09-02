@@ -1,7 +1,6 @@
 import { runMemberHook, type HookMainOptions } from '../member/capture.js';
-import { resolveMemberProjectRoot } from '../member/credential.js';
 import { toolUseEvent, type OutboundEvent } from '../member/envelope.js';
-import { planFileCapture, planWritePath } from '../member/plan-files.js';
+import { planFileCapture, planRootFor, planWritePath } from '../member/plan-files.js';
 import { readSessionState } from '../member/session-state.js';
 
 export async function main(opts: HookMainOptions = {}) {
@@ -15,7 +14,7 @@ export async function main(opts: HookMainOptions = {}) {
     const state = readSessionState(spool.dir, sessionId);
     const events: OutboundEvent[] = [toolUseEvent(ctx, input, { promptId: state.promptId })];
     // A write into a plan directory is the plan itself: read now, keyed by its path, named after the prompt that wrote it.
-    const root = credential.root ?? resolveMemberProjectRoot(typeof input.raw.cwd === 'string' ? input.raw.cwd : undefined);
+    const root = planRootFor(credential.root, typeof input.raw.cwd === 'string' ? input.raw.cwd : undefined);
     const planPath = planWritePath(agent, input.toolName, input.toolInput, root);
     if (planPath === null) return { events };
     const plan = planFileCapture(ctx, state, credential.projectId, root, planPath);

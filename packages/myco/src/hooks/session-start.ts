@@ -6,7 +6,8 @@ import { runGit } from '../utils/git.js';
 import { runMemberHook, type HookMainOptions } from '../member/capture.js';
 import { deriveId, promptEvent, sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
 import { readSessionState } from '../member/session-state.js';
-import { sessionLineage, sha256Text } from '../member/transcript.js';
+import { sessionLineage } from '../member/transcript.js';
+import { sha256Text } from '../member/text.js';
 
 const antigravityParser = new AntigravityJsonlParser();
 

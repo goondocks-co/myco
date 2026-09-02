@@ -31,7 +31,6 @@ import type { ServerClient } from './transport.js';
 let registry: SymbiontRegistry | undefined;
 const adapters = (): SymbiontRegistry => (registry ??= new SymbiontRegistry());
 
-export { sha256Text } from './text.js';
 
 /** The parsed JSON object of every line that is one. */
 export function parseTranscriptLines(content: string): Array<Record<string, unknown>> {
