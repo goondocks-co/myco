@@ -1,4 +1,4 @@
-export const SERVER_SCHEMA_VERSION = 14;
+export const SERVER_SCHEMA_VERSION = 15;
 
 /** Titling: one provider call per ended session, at most this many per Project per hour. */
 export const MAX_TITLES_PER_PROJECT_PER_HOUR = 120;

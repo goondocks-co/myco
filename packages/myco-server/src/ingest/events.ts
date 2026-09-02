@@ -102,14 +102,17 @@ export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body:
 
   const admitted = db.prepare(`SELECT ${quotaAdmission.sql} AS within_quota`).bind(...quotaAdmission.params);
   const shared = checks.map((c) => db.prepare(c.read.sql).bind(...c.read.params));
-  const statements: PreparedStatement[] = [raw, quota, receipt, ...plan.projections, stored, admitted, ...shared, ...plan.reads];
+  const priors = plan.priors ?? [];
+  const statements: PreparedStatement[] = [raw, quota, receipt, ...priors, ...plan.projections, stored, admitted, ...shared, ...plan.reads];
   const results = await db.batch(statements);
   if (results.length !== statements.length) throw new StorageContractError(`batch answered ${results.length} results for ${statements.length} statements`);
 
-  const projectionResults = results.slice(3, 3 + plan.projections.length);
-  const storedRow = results[3 + plan.projections.length].results[0] as { envelope_hash?: string } | undefined;
-  const withinQuotaRow = results[4 + plan.projections.length].results[0] as { within_quota: number } | undefined;
-  const allReads: ReadRows = results.slice(5 + plan.projections.length).map((r) => r.results as Record<string, unknown>[]);
+  const base = 3 + priors.length;
+  const priorRows: ReadRows = results.slice(3, base).map((r) => r.results as Record<string, unknown>[]);
+  const projectionResults = results.slice(base, base + plan.projections.length);
+  const storedRow = results[base + plan.projections.length].results[0] as { envelope_hash?: string } | undefined;
+  const withinQuotaRow = results[base + 1 + plan.projections.length].results[0] as { within_quota: number } | undefined;
+  const allReads: ReadRows = results.slice(base + 2 + plan.projections.length).map((r) => r.results as Record<string, unknown>[]);
   const sharedRows = allReads.slice(0, checks.length);
   const reads = allReads.slice(checks.length);
   const extra = plan.extra ? plan.extra(reads) : {};
@@ -120,6 +123,7 @@ export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body:
       emit({ kind: 'projection_conflict', projectId: ctx.projectId, tokenId: ctx.tokenId, eventKind: e.kind });
       return { persisted: true, projected: false, code: 'projection_conflict', reason, ...extra };
     }
+    plan.landed?.(priorRows);
     emit({ kind: 'ingest_ok', projectId: ctx.projectId, tokenId: ctx.tokenId, eventKind: e.kind });
     return plan.projections.length > 0 ? { persisted: true, projected: true, ...extra } : { persisted: true, ...extra };
   }

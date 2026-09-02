@@ -225,7 +225,7 @@ export function providerRequest(provider: TitlingProvider, prompt: string): { ur
 export interface TitlingTarget { projectId: string; sessionId: string; now: number }
 
 /** Titles one session: at its end (`claim`, the default) or on an owner's ask (`owner`). Resolves with the outcome it emitted; never rejects. */
-export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode } = {}): Promise<TitlingOutcome> {
+export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode; by?: string } = {}): Promise<TitlingOutcome> {
   const { projectId, sessionId, now } = target;
   const mode = opts.mode ?? 'claim';
   const skipped = (outcome: TitlingOutcome): TitlingOutcome => { emit({ kind: 'session_title_skipped', projectId, sessionId, outcome, mode }); return outcome; };
@@ -269,7 +269,7 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     if (answer === null) return failed('malformed');
 
     const written = mode === 'owner'
-      ? await overwriteTitle(env.db, projectId, sessionId, answer.title, answer.summary)
+      ? await overwriteTitle(env.db, projectId, sessionId, answer.title, answer.summary, opts.by ?? null)
       : await writeTitle(env.db, projectId, sessionId, answer.title, answer.summary);
     if (!written) return failed('superseded');
     emit({ kind: 'session_titled', projectId, sessionId, mode, provider: resolved.provider.kind === 'anthropic' ? 'anthropic' : resolved.provider.provider });

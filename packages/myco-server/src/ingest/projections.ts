@@ -1,7 +1,7 @@
 import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
 import type { CaptureEnvelope } from './envelope.js';
 import { blobFields, promptReferenceFields, type KindSpec, type Payload } from './kinds.js';
-import { refusal, type Refusal } from '../telemetry.js';
+import { emit, refusal, type Refusal } from '../telemetry.js';
 import { PROJECT_ARCHIVED } from './projects.js';
 
 /** The identity of the write in flight: project, token, machine, the server clock, and the nonce that names this request's raw row. */
@@ -37,8 +37,12 @@ export interface KindPlan {
   admission: Fragment[];
   /** Projection statements, every one gated on the raw row this request wrote (a kind's own precondition is conjoined with that gate, never substituted for it); each reports its own row change. */
   projections: PreparedStatement[];
+  /** Same-batch reads placed ahead of the projections, so a kind sees the row it is about to move. */
+  priors?: PreparedStatement[];
   /** Same-batch reads that decide the response. */
   reads: PreparedStatement[];
+  /** Runs once the event landed and its projections applied, with the prior reads' rows. */
+  landed?(priors: ReadRows): void;
   /** The refusal for a request that stored no row and had no stored row, once the shared refusals have been ruled out. */
   refusal(rows: ReadRows): Refusal;
   /** True when a request that stored no row is a replay of a held segment (transcripts only). */
@@ -278,32 +282,40 @@ const response = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
 const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
   const planKey = p.planKey as string;
   const tags = JSON.stringify((p.tags as string[] | undefined) ?? []);
+  const statusGiven = p.status === undefined ? 0 : 1;
+  const originPath = opt(p.originPath) ?? null;
   const applied = 'EXISTS (SELECT 1 FROM plans WHERE project_id = ? AND plan_key = ? AND event_id = ?)';
   const newer = '(excluded.updated_at > plans.updated_at OR (excluded.updated_at = plans.updated_at AND excluded.event_id < plans.event_id))';
+  // The content, title and status the row already holds: nothing moves, and the row keeps its stamp and its administrator.
+  const identical = '(excluded.content_hash = plans.content_hash AND excluded.title IS plans.title AND (? = 0 OR excluded.status = plans.status))';
+  const moves = `${newer} AND NOT ${identical}`;
+  const moving = ['event_id', 'title', 'content', 'blob_key', 'content_hash', 'origin_path', 'token_id', 'received_at', 'updated_at'];
+  const set = [
+    ...moving.map((column) => `${column} = CASE WHEN ${moves} THEN excluded.${column} ELSE plans.${column} END`),
+    // An event that names no status leaves the row's alone: a file written again does not reopen a completed plan.
+    `status = CASE WHEN ${newer} AND ? = 1 THEN excluded.status ELSE plans.status END`,
+    `prompt_id = CASE WHEN ${newer} THEN COALESCE(excluded.prompt_id, plans.prompt_id) ELSE plans.prompt_id END`,
+    `updated_by = CASE WHEN ${moves} THEN NULL ELSE plans.updated_by END`,
+    `created_at = MIN(plans.created_at, excluded.created_at)`,
+  ];
+  const setParams = set.flatMap((clause) => Array.from({ length: (clause.match(/\?/g) ?? []).length }, () => statusGiven));
   return {
     // A plan is a Project-shared editorial row: any member may update one, the
     // credential that did is recorded on it, and the creating session and machine
     // stay. The session the event names is still owned by the writing machine.
     identities: [],
     admission: [],
+    priors: [
+      db.prepare(`SELECT content_hash, origin_path FROM plans WHERE project_id = ? AND plan_key = ?`).bind(ctx.projectId, planKey),
+    ],
     projections: [
-      db.prepare(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, origin_path, created_at, updated_at, token_id, received_at)
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      db.prepare(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, origin_path, prompt_id, updated_by, created_at, updated_at, token_id, received_at)
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?
            WHERE ${RAW_ROW_GATE}
           ON CONFLICT (project_id, plan_key) DO UPDATE SET
-            event_id = CASE WHEN ${newer} THEN excluded.event_id ELSE plans.event_id END,
-            title = CASE WHEN ${newer} THEN excluded.title ELSE plans.title END,
-            content = CASE WHEN ${newer} THEN excluded.content ELSE plans.content END,
-            blob_key = CASE WHEN ${newer} THEN excluded.blob_key ELSE plans.blob_key END,
-            content_hash = CASE WHEN ${newer} THEN excluded.content_hash ELSE plans.content_hash END,
-            status = CASE WHEN ${newer} THEN excluded.status ELSE plans.status END,
-            origin_path = CASE WHEN ${newer} THEN excluded.origin_path ELSE plans.origin_path END,
-            token_id = CASE WHEN ${newer} THEN excluded.token_id ELSE plans.token_id END,
-            received_at = CASE WHEN ${newer} THEN excluded.received_at ELSE plans.received_at END,
-            created_at = MIN(plans.created_at, excluded.created_at),
-            updated_at = MAX(plans.updated_at, excluded.updated_at)`)
-        .bind(ctx.projectId, planKey, e.sessionId, e.eventId, ctx.machineId, opt(p.title), opt(p.content), opt(p.blob), contentHash, opt(p.status) ?? 'active', opt(p.originPath),
-              e.createdAt, e.createdAt, ctx.tokenId, ctx.now, ...rawGateParams(ctx, e)),
+            ${set.join(',\n            ')}`)
+        .bind(ctx.projectId, planKey, e.sessionId, e.eventId, ctx.machineId, opt(p.title), opt(p.content), opt(p.blob), contentHash, opt(p.status) ?? 'active', originPath, opt(p.promptId),
+              e.createdAt, e.createdAt, ctx.tokenId, ctx.now, ...rawGateParams(ctx, e), ...setParams),
       db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id = ? AND ${applied} AND ${RAW_ROW_GATE}`)
         .bind(ctx.projectId, planKey, ctx.projectId, planKey, e.eventId, ...rawGateParams(ctx, e)),
       db.prepare(`INSERT OR IGNORE INTO tags (project_id, entity_kind, entity_id, tag)
@@ -313,6 +325,12 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
     reads: [],
     refusal: () => NOT_STORED,
     conflict: () => 'plan did not apply',
+    // New content arriving from another source than the row's: the signal an operator reads when two channels write one plan.
+    landed: (priors) => {
+      const prior = priors[0]?.[0] as { content_hash: string; origin_path: string | null } | undefined;
+      if (prior === undefined) return;
+      if (prior.content_hash !== contentHash && (prior.origin_path ?? null) !== originPath) emit({ kind: 'plan_overwritten', projectId: ctx.projectId, sessionId: e.sessionId, planKey });
+    },
   };
 };
 

@@ -395,11 +395,11 @@ export async function restoreTitlingStamp(db: RelationalStore, projectId: string
     .run();
 }
 
-/** Stores a session's title and summary over whatever is there; false when no such session sits in the project. */
-export async function overwriteTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string): Promise<boolean> {
+/** Stores a session's title and summary over whatever is there, naming the member who asked; false when no such session sits in the project. */
+export async function overwriteTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, titledBy: string | null): Promise<boolean> {
   const result = await db
-    .prepare(`UPDATE sessions SET title = ?, summary = ? WHERE project_id = ? AND session_id = ?`)
-    .bind(title, summary, projectId, sessionId)
+    .prepare(`UPDATE sessions SET title = ?, summary = ?, titled_by = ? WHERE project_id = ? AND session_id = ?`)
+    .bind(title, summary, titledBy, projectId, sessionId)
     .run();
   return result.meta.changes === 1;
 }

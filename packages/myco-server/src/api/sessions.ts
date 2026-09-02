@@ -8,6 +8,8 @@ import { listAttachments, listPlans, listPrompts, listResponses, listToolCalls }
 import { listTurns, parseOrigins, promptInSession, turnDetail } from '../read/turns.js';
 import { getTranscript, listSegments } from '../read/transcript.js';
 import { titleSession } from '../core/titling.js';
+import { changePlanStatus } from '../core/plans.js';
+import { planInSession, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
 
 /** The five child collections, by URL segment. One handler serves all of them: they differ only in which query runs. */
 const CHILDREN = {
@@ -133,8 +135,24 @@ export async function handleTitleSession(env: ServerEnv, ctx: OwnerContext): Pro
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
-  const outcome = await titleSession(env, { projectId: scope.projectId, sessionId, now: ctx.now }, { mode: 'owner' });
+  const outcome = await titleSession(env, { projectId: scope.projectId, sessionId, now: ctx.now }, { mode: 'owner', by: ctx.member.id });
   return ok({ outcome });
+}
+
+/** Sets a plan's status as an administrative edit by the signed-in member; 404 unless the plan sits in the session, 400 for a status outside the writable set. Answers the row as it stands afterwards. */
+export async function handleSetPlanStatus(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  const planKey = ctx.params.planKey;
+  if (!(await planInSession(env.db, scope, sessionId, planKey))) return notFound();
+  let body: unknown;
+  try { body = await ctx.request.json(); } catch { return badRequest('status is required'); }
+  const status = typeof body === 'object' && body !== null ? (body as { status?: unknown }).status : undefined;
+  if (typeof status !== 'string' || !WRITABLE_PLAN_STATUSES.has(status)) return badRequest('status must be one of: active, in_progress, completed, abandoned');
+  const row = await changePlanStatus(env.db, scope, planKey, status, ctx.member.id, ctx.now);
+  return row === null ? notFound() : ok({ plan: row });
 }
 
 /** The project's home: what it holds, and what happened most recently. */
