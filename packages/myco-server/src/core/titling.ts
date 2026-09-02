@@ -26,6 +26,8 @@ export const ANTHROPIC_VERSION = '2023-06-01';
 export const ANTHROPIC_OAUTH_BETA = 'oauth-2025-04-20';
 /** The shape a subscription sign-in credential carries; an API key starts `sk-ant-api…` and travels as `x-api-key`. */
 export const ANTHROPIC_OAUTH_PREFIX = 'sk-ant-oat';
+/** The system text a subscription sign-in token is admitted with: the provider serves such a token only to a request that presents itself as the CLI the token belongs to. */
+export const CLAUDE_CODE_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5';
 export const ANSWER_MAX_TOKENS = 4096;
 export const TITLE_MAX_CHARS = 80;
@@ -197,7 +199,12 @@ export function providerRequest(provider: TitlingProvider, prompt: string): { ur
             ? { authorization: `Bearer ${provider.key}`, 'anthropic-beta': ANTHROPIC_OAUTH_BETA }
             : { 'x-api-key': provider.key }),
         },
-        body: JSON.stringify({ model: provider.model, max_tokens: ANSWER_MAX_TOKENS, messages: [{ role: 'user', content: prompt }] }),
+        body: JSON.stringify({
+          model: provider.model,
+          max_tokens: ANSWER_MAX_TOKENS,
+          ...(oauth ? { system: [{ type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT }] } : {}),
+          messages: [{ role: 'user', content: prompt }],
+        }),
       },
       text: (body) => {
         const content = (body as { content?: unknown })?.content;

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import {
-  ANSWER_MAX_TOKENS, ANTHROPIC_MESSAGES_URL, ANTHROPIC_VERSION, DEFAULT_ANTHROPIC_MODEL, localBackendEndpoint, parseTitleAnswer, resolveTitlingProvider, sessionMaterial, titleSession, titlingPrompt,
+  ANSWER_MAX_TOKENS, ANTHROPIC_MESSAGES_URL, ANTHROPIC_OAUTH_BETA, ANTHROPIC_VERSION, CLAUDE_CODE_SYSTEM_PROMPT, DEFAULT_ANTHROPIC_MODEL, localBackendEndpoint, parseTitleAnswer, providerRequest, resolveTitlingProvider, sessionMaterial, titleSession, titlingPrompt,
 } from '@myco-server-worker/core/titling.js';
 import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MAX_TITLES_PER_PROJECT_PER_HOUR, MATERIAL_EXCERPT_CHARS, TITLING_TIMEOUT_MS } from '@myco-server-worker/constants.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
@@ -298,6 +298,21 @@ describe('titleSession', () => {
     expect(parseTitleAnswer(`{"title": "ok", "summary": "${'s'.repeat(1201)}"}`)).toBeNull();
     expect(parseTitleAnswer('{"title": 5, "summary": "x"}')).toBeNull();
     expect(parseTitleAnswer('nothing')).toBeNull();
+  });
+});
+
+describe('providerRequest', () => {
+  it('presents a subscription sign-in token as the CLI it was minted for, and sends an API key plain', () => {
+    const oat = providerRequest({ kind: 'anthropic', model: 'm', key: 'sk-ant-oat01-token' }, 'title this');
+    const oatHeaders = oat.init.headers as Record<string, string>;
+    expect([oatHeaders.authorization, oatHeaders['anthropic-beta'], oatHeaders['x-api-key']]).toEqual(['Bearer sk-ant-oat01-token', ANTHROPIC_OAUTH_BETA, undefined]);
+    const oatBody = JSON.parse(String(oat.init.body)) as { system?: unknown; messages: unknown[] };
+    expect(oatBody.system).toEqual([{ type: 'text', text: CLAUDE_CODE_SYSTEM_PROMPT }]);
+    expect(oatBody.messages).toEqual([{ role: 'user', content: 'title this' }]);
+    const api = providerRequest({ kind: 'anthropic', model: 'm', key: 'sk-ant-api03-key' }, 'title this');
+    const apiHeaders = api.init.headers as Record<string, string>;
+    expect([apiHeaders['x-api-key'], apiHeaders.authorization]).toEqual(['sk-ant-api03-key', undefined]);
+    expect((JSON.parse(String(api.init.body)) as { system?: unknown }).system).toBeUndefined();
   });
 });
 
