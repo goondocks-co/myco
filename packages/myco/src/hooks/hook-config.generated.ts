@@ -59,7 +59,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "prompt": "prompt",
       "toolName": "toolCall.name",
       "toolInput": "toolCall.args",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "hookEvents": {
       "PostToolUse": {
@@ -108,7 +111,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "prompt": "prompt",
       "toolName": "tool_name",
       "toolInput": "tool_input",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "hookEvents": {
       "PostCompact": {
@@ -471,7 +477,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "prompt": "prompt",
       "toolName": "tool_name",
       "toolInput": "tool_input",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "hookEvents": {
       "PostToolUse": {
@@ -778,7 +787,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "prompt": "prompt",
       "toolName": "tool_name",
       "toolInput": "tool_input",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "hookEvents": {
       "beforeSubmitPrompt": {
@@ -875,7 +887,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "prompt": "prompt",
       "toolName": "tool_name",
       "toolInput": "tool_input",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "hookEvents": {},
     "planDirs": [
@@ -898,7 +913,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "prompt": "prompt",
       "toolName": "tool_name",
       "toolInput": "tool_input",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "hookEvents": {},
     "planDirs": [
@@ -921,7 +939,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "prompt": "tool_info.user_prompt",
       "toolName": "agent_action_name",
       "toolInput": "tool_info",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "hookEvents": {
       "post_cascade_response": {

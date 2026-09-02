@@ -685,9 +685,10 @@ export const SymbiontManifestSchema = z.object({
     prompt: HookFieldPathSchema.default('prompt'),
     toolName: HookFieldPathSchema.default('tool_name'),
     toolInput: HookFieldPathSchema.default('tool_input'),
-    /** Symbiont's hook payload key for tool output. Defaults to `tool_output`.
+    /** Symbiont's hook payload key for tool output. Defaults to `tool_output`,
+     * then `tool_response` — the two keys runtimes deliver a tool's result under.
      * Same transcript-only caveat applies as `lastResponse`. */
-    toolOutput: HookFieldPathSchema.default('tool_output'),
+    toolOutput: HookFieldPathSchema.default(['tool_output', 'tool_response']),
     /** Env var fallback for session ID (e.g., GEMINI_SESSION_ID). */
     sessionIdEnv: z.string().optional(),
   }),

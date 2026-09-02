@@ -23,7 +23,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "prompt": "prompt",
       "toolName": "toolCall.name",
       "toolInput": "toolCall.args",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "capture": {
       "planDirs": [
@@ -138,7 +141,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "prompt": "prompt",
       "toolName": "tool_name",
       "toolInput": "tool_input",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "resumeCommand": "claude --resume {sessionId}",
     "capture": {
@@ -616,7 +622,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "prompt": "prompt",
       "toolName": "tool_name",
       "toolInput": "tool_input",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "resumeCommand": "codex --resume {sessionId}",
     "capture": {
@@ -1188,7 +1197,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "prompt": "prompt",
       "toolName": "tool_name",
       "toolInput": "tool_input",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "capture": {
       "planDirs": [
@@ -1341,7 +1353,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "prompt": "prompt",
       "toolName": "tool_name",
       "toolInput": "tool_input",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "resumeCommand": "opencode --session {sessionId}",
     "capture": {
@@ -1443,7 +1458,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "prompt": "prompt",
       "toolName": "tool_name",
       "toolInput": "tool_input",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "capture": {
       "planDirs": [
@@ -1532,7 +1550,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "prompt": "tool_info.user_prompt",
       "toolName": "agent_action_name",
       "toolInput": "tool_info",
-      "toolOutput": "tool_output"
+      "toolOutput": [
+        "tool_output",
+        "tool_response"
+      ]
     },
     "capture": {
       "planDirs": [
