@@ -46,7 +46,7 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
       {detail.data && (
         <div className="flex flex-col gap-5">
           <Header projectId={projectId} session={detail.data.session} />
-          <div className="grid grid-cols-3 gap-3 md:grid-cols-5">
+          <div className="grid grid-cols-3 gap-3 xl:grid-cols-5">
             <MetricCard label="Prompts" value={detail.data.counts.prompts.toLocaleString()} tone="sage" />
             <MetricCard label="Tool calls" value={detail.data.counts.toolCalls.toLocaleString()} tone="ochre" />
             <MetricCard label="Responses" value={detail.data.counts.responses.toLocaleString()} tone="sage" />
@@ -146,9 +146,9 @@ function CopyValue({ value, label }: { value: string; label: string }) {
 
 function MetaItem({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-baseline gap-3 border-b border-[var(--ghost-border)] py-1.5 last:border-0">
+    <div className="flex min-w-0 items-baseline gap-3 border-b border-[var(--ghost-border)] py-1.5 last:border-0">
       <dt className="w-20 shrink-0 font-sans text-xs font-medium text-on-surface-variant">{label}</dt>
-      <dd className="min-w-0 flex-1 font-mono text-xs text-on-surface">{children}</dd>
+      <dd className="min-w-0 flex-1 truncate font-mono text-xs text-on-surface">{children}</dd>
     </div>
   );
 }
