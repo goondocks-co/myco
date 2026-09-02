@@ -181,6 +181,7 @@ describe('read/children', () => {
 import { listTurns, parseOrigins, turnDetail, DEFAULT_ORIGINS, TURN_PREVIEW_CHARS } from '@myco-server-worker/read/turns.js';
 import { listAttachments } from '@myco-server-worker/read/children.js';
 import { bucketActivity, containsPattern, listSessionSummaries, ACTIVITY_BUCKETS } from '@myco-server-worker/read/sessions.js';
+import { inListChunks, MAX_IN_LIST } from '@myco-server-worker/read/scope.js';
 
 const UUID = (n: number): string => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 
@@ -210,8 +211,8 @@ describe('read/turns', () => {
     expect(rows.map((r) => r.promptId)).toEqual([UUID(1), UUID(4)]);
     expect(rows[0]).toMatchObject({ origin: 'user', threadLabel: null, blobKey: null, createdAt: 10, toolCallCount: 2, responseCount: 1, childCount: 1 });
     expect(rows[0].preview).toHaveLength(TURN_PREVIEW_CHARS);
-    expect(rows[0].textBytes).toBe(`${'first prompt '.repeat(20)}tail`.length);
-    expect(rows[1]).toMatchObject({ preview: null, textBytes: null, blobKey: 'a'.repeat(64), toolCallCount: 0, responseCount: 0, childCount: 0 });
+    expect(rows[0].textChars).toBe(`${'first prompt '.repeat(20)}tail`.length);
+    expect(rows[1]).toMatchObject({ preview: null, textChars: null, blobKey: 'a'.repeat(64), toolCallCount: 0, responseCount: 0, childCount: 0 });
   });
 
   it('shows every origin when asked, pages by the turn key, and refuses an origin the wire does not admit', async () => {
@@ -290,6 +291,26 @@ describe('read/sessions summaries', () => {
     expect(await find('nothing here')).toEqual([]);
     expect(await find('  ')).toEqual(['s3', 's2', 's1']);
     expect(containsPattern('a%b_c\\d')).toBe('%a\\%b\\_c\\\\d%');
+  });
+
+  it('names ids in runs under the bound-parameter ceiling, so a full page of summaries reads on every store', async () => {
+    expect(MAX_IN_LIST).toBeLessThan(100);
+    expect(inListChunks([])).toEqual([]);
+    expect(inListChunks(['a']).length).toBe(1);
+    const many = Array.from({ length: MAX_IN_LIST * 2 + 1 }, (_, i) => `s${i}`);
+    const chunks = inListChunks(many);
+    expect(chunks.map((c) => c.length)).toEqual([MAX_IN_LIST, MAX_IN_LIST, 1]);
+    expect(chunks.flat()).toEqual(many);
+
+    const { db, sqlite } = sqliteEnv();
+    sqlite.run(`INSERT OR REPLACE INTO projects (project_id, name, created_at) VALUES ('proj_1','One',1)`);
+    for (let i = 0; i < MAX_PAGE; i++) {
+      sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at) VALUES ('proj_1', 'many-${i}', 'm1', 'tok_1', ${1000 + i}, ${2000 + i}, ${1000 + i})`);
+      sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 'many-${i}', 'p-${i}', 'e-${i}', 'hi', 'user', 'h-${i}', ${1500 + i}, ${1500 + i}, 't1', ${1500 + i})`);
+    }
+    const { rows } = await listSessionSummaries(db, { projectId: 'proj_1' }, { limit: MAX_PAGE }, 5000);
+    expect(rows.length).toBe(MAX_PAGE);
+    expect(rows.every((r) => r.promptCount === 1 && r.activityBuckets.reduce((a, b) => a + b, 0) === 1)).toBe(true);
   });
 });
 

@@ -39,7 +39,9 @@ function importSpecifiers(source: string): string[] {
 /** The modules the core is made of. A named floor, not a count: a count sails through a silent collapse. */
 const CORE_MODULES = ['activity.ts', 'blobs.ts', 'children.ts', 'cortex.ts', 'meta.ts', 'plans.ts', 'runs.ts', 'scope.ts', 'credentials.ts', 'sessions.ts', 'transcript.ts', 'turns.ts'] as const;
 
-const FORBIDDEN_IMPORT = [/\/auth\//, /cookie/i, /\/pipeline\.js/, /\/routes\.js/, /\/context\.js/, /\/api\//];
+const FORBIDDEN_IMPORT = [/\/auth\//, /cookie/i, /\/pipeline\.js/, /\/routes\.js/, /\/context\.js/, /\/api\//, /\/ingest\//];
+/** The one ingest module a read may name: the wire's kind catalogue, pure data — never the write path beside it. */
+const ADMITTED_IMPORT = [/\/ingest\/kinds\.js$/];
 
 describe('read layer', () => {
   it('is made of exactly the named core modules, and says so when that changes', () => {
@@ -54,7 +56,7 @@ describe('read layer', () => {
     const offenders: string[] = [];
     for (const file of tsFiles(READ_DIR)) {
       for (const spec of importSpecifiers(readFileSync(file, 'utf8'))) {
-        if (FORBIDDEN_IMPORT.some((p) => p.test(spec))) offenders.push(`${file.slice(READ_DIR.length + 1)} -> ${spec}`);
+        if (FORBIDDEN_IMPORT.some((p) => p.test(spec)) && !ADMITTED_IMPORT.some((p) => p.test(spec))) offenders.push(`${file.slice(READ_DIR.length + 1)} -> ${spec}`);
       }
     }
     expect(offenders).toEqual([]);

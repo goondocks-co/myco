@@ -5,7 +5,7 @@ import { activityFeed } from '../read/activity.js';
 import { badRequest, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listPlans, listPrompts, listResponses, listToolCalls } from '../read/children.js';
-import { listTurns, parseOrigins, turnDetail } from '../read/turns.js';
+import { listTurns, parseOrigins, promptInSession, turnDetail } from '../read/turns.js';
 import { getTranscript, listSegments } from '../read/transcript.js';
 
 /** The five child collections, by URL segment. One handler serves all of them: they differ only in which query runs. */
@@ -119,7 +119,7 @@ export async function handleSessionTurnToolCalls(env: ServerEnv, ctx: OwnerConte
   if (sessionId === null) return notFound();
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
+  if (!(await promptInSession(env.db, scope, sessionId, ctx.params.promptId))) return notFound();
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
   return ok(await listToolCalls(env.db, scope, sessionId, { ...page, promptId: ctx.params.promptId }));

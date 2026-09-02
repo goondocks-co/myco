@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import type { ParityScenario, ParityTarget } from '../harness.ts';
+import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 const UUID = (n: number): string => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 
@@ -8,8 +8,8 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** A one-pixel PNG, enough to be stored under an image type. */
-const PNG = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 255, 255, 63, 0, 5, 254, 2, 254, 167, 53, 129, 132, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]);
+/** A valid one-pixel transparent PNG (IHDR, one zlib-deflated RGBA row, IEND; CRCs checked). */
+const PNG = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 96, 96, 96, 96, 0, 0, 0, 5, 0, 1, 165, 246, 69, 64, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]);
 
 /**
  * The session page's reads on both targets: a session captured through /events
@@ -26,7 +26,7 @@ export const sessionTurns: ParityScenario = {
         headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
         body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId, kind, createdAt: Date.now(), channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload }),
       });
-      expect(`${kind} ${res.status}`).toBe(`${kind} 200`);
+      await expectPersisted(res, kind);
     };
     const owner = async <T,>(path: string): Promise<{ status: number; body: T }> => {
       const res = await fetch(`${target.url}${path}`, { headers: target.ownerHeaders() });
@@ -39,7 +39,7 @@ export const sessionTurns: ParityScenario = {
       headers: { ...target.memberHeaders(), 'content-type': 'image/png', 'content-length': String(PNG.byteLength) },
       body: PNG,
     });
-    expect(`blob ${blob.status}`).toMatch(/^blob 20[01]$/);
+    await expectPersisted(blob, 'blob');
 
     const stamp = Date.now();
     const session = `parity-turns-${stamp}`;

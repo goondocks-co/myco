@@ -24,7 +24,8 @@ export interface TurnRow {
   threadLabel: string | null;
   /** The opening of the inline text; null when the text spilled to a blob. */
   preview: string | null;
-  textBytes: number | null;
+  /** The inline text's length in characters; null when it spilled. */
+  textChars: number | null;
   blobKey: string | null;
   createdAt: number;
   toolCallCount: number;
@@ -95,7 +96,7 @@ export async function listTurns(db: RelationalStore, scope: ReadScope, sessionId
   const params: unknown[] = [scope.projectId, sessionId, ...origins];
   if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
   const { results } = await db
-    .prepare(`SELECT pb.prompt_id, pb.origin, pb.prompt_kind, pb.thread_label, substr(pb.text, 1, ${TURN_PREVIEW_CHARS}) AS preview, length(pb.text) AS text_bytes, pb.blob_key, pb.created_at,
+    .prepare(`SELECT pb.prompt_id, pb.origin, pb.prompt_kind, pb.thread_label, substr(pb.text, 1, ${TURN_PREVIEW_CHARS}) AS preview, length(pb.text) AS text_chars, pb.blob_key, pb.created_at,
                      ${TOOL_CALL_COUNT} AS tool_call_count, ${RESPONSE_COUNT} AS response_count, ${CHILD_COUNT} AS child_count
                 FROM prompt_batches pb
                WHERE ${conditions.join(' AND ')}
@@ -108,7 +109,7 @@ export async function listTurns(db: RelationalStore, scope: ReadScope, sessionId
     promptKind: (r.prompt_kind as string | null) ?? null,
     threadLabel: (r.thread_label as string | null) ?? null,
     preview: (r.preview as string | null) ?? null,
-    textBytes: (r.text_bytes as number | null) ?? null,
+    textChars: (r.text_chars as number | null) ?? null,
     blobKey: (r.blob_key as string | null) ?? null,
     createdAt: r.created_at as number,
     toolCallCount: r.tool_call_count as number,
@@ -116,6 +117,15 @@ export async function listTurns(db: RelationalStore, scope: ReadScope, sessionId
     childCount: r.child_count as number,
   }));
   return page(rows, k.limit, (r) => ({ createdAt: r.createdAt, id: r.promptId }));
+}
+
+/** True when a prompt of that id sits in the session. */
+export async function promptInSession(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT 1 AS present FROM prompt_batches WHERE project_id = ? AND session_id = ? AND prompt_id = ?`)
+    .bind(scope.projectId, sessionId, promptId)
+    .first<{ present: number }>();
+  return row !== null;
 }
 
 /** One turn's body, or null when no prompt of that id sits in the session. Tool calls are not here: they are read on their own, page by page, when the reader opens them. */

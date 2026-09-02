@@ -124,6 +124,7 @@ describe('session turns', () => {
     expect((await get(e, '/api/projects/proj_1/sessions/s1/turns?cursor=garbage')).status).toBe(400);
     expect((await get(e, '/api/projects/proj_2/sessions/s1/turns')).status).toBe(404);
     expect((await get(e, `/api/projects/proj_1/sessions/s2/turns/${P1}`)).status).toBe(404);
+    expect((await get(e, `/api/projects/proj_1/sessions/s2/turns/${P1}/tool-calls`)).status).toBe(404);
   });
 
   it('serves one turn\'s body and its tool calls on their own', async () => {

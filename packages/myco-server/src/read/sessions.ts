@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
-import { keyset, page, type Page, type ReadScope } from './scope.js';
+import { inListChunks, keyset, page, type Page, type ReadScope } from './scope.js';
 
 export interface ProjectRow {
   projectId: string;
@@ -243,16 +243,17 @@ export async function sessionCounts(db: RelationalStore, scope: ReadScope, sessi
   return counts as unknown as SessionCounts;
 }
 
-/** The child counts of every named session, one statement per table for the whole set; a session with no rows in a table counts zero. */
+/** The child counts of every named session, one statement per table per run of ids; a session with no rows in a table counts zero. */
 export async function sessionCountsFor(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[]): Promise<Map<string, SessionCounts>> {
   const out = new Map<string, SessionCounts>(sessionIds.map((id) => [id, { prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 }]));
   if (sessionIds.length === 0) return out;
   const tables = [['prompts', 'prompt_batches'], ['toolCalls', 'tool_calls'], ['responses', 'responses'], ['plans', 'plans'], ['attachments', 'attachments']] as const;
-  const placeholders = sessionIds.map(() => '?').join(', ');
-  const results = await db.batch(tables.map(([, table]) =>
-    db.prepare(`SELECT session_id, COUNT(*) AS n FROM ${table} WHERE project_id = ? AND session_id IN (${placeholders}) GROUP BY session_id`).bind(scope.projectId, ...sessionIds)));
-  tables.forEach(([key], i) => {
-    for (const row of results[i].results as { session_id: string; n: number }[]) {
+  const chunks = inListChunks(sessionIds);
+  const results = await db.batch(chunks.flatMap((ids) => tables.map(([, table]) =>
+    db.prepare(`SELECT session_id, COUNT(*) AS n FROM ${table} WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')}) GROUP BY session_id`).bind(scope.projectId, ...ids))));
+  results.forEach((result, i) => {
+    const [key] = tables[i % tables.length];
+    for (const row of result.results as { session_id: string; n: number }[]) {
       const counts = out.get(row.session_id);
       if (counts) counts[key] = row.n;
     }
@@ -301,15 +302,20 @@ export function bucketActivity(sessions: readonly Pick<SessionRow, 'sessionId' |
   return out;
 }
 
-/** The session list with its rail facts: one statement for the counts of every child table and one for the prompt instants, over the page's ids only. The dashboard and the MCP tool both read the list through this. */
-export async function listSessionSummaries(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters, nowMs: number): Promise<Page<SessionSummaryRow>> {
+/** Every prompt instant of the named sessions, one statement per run of ids. */
+async function promptInstants(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[]): Promise<{ sessionId: string; at: number }[]> {
+  if (sessionIds.length === 0) return [];
+  const results = await db.batch(inListChunks(sessionIds).map((ids) =>
+    db.prepare(`SELECT session_id, created_at FROM prompt_batches WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')})`).bind(scope.projectId, ...ids)));
+  return results.flatMap((r) => (r.results as { session_id: string; created_at: number }[]).map((row) => ({ sessionId: row.session_id, at: row.created_at })));
+}
+
+/** The session list with its rail facts: the counts of every child table and, unless the caller has no use for it, the activity buckets, over the page's ids only. The dashboard and the MCP tool both read the list through this. */
+export async function listSessionSummaries(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters, nowMs: number, facts: { activity?: boolean } = {}): Promise<Page<SessionSummaryRow>> {
   const listed = await listSessions(db, scope, opts);
   const ids = listed.rows.map((r) => r.sessionId);
   const counts = await sessionCountsFor(db, scope, ids);
-  const instants = ids.length === 0 ? [] : (await db
-    .prepare(`SELECT session_id, created_at FROM prompt_batches WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')})`)
-    .bind(scope.projectId, ...ids)
-    .all<{ session_id: string; created_at: number }>()).results.map((r) => ({ sessionId: r.session_id, at: r.created_at }));
+  const instants = facts.activity === false ? [] : await promptInstants(db, scope, ids);
   const buckets = bucketActivity(listed.rows, instants, nowMs);
   return {
     cursor: listed.cursor,

@@ -113,10 +113,13 @@ export const ATTACHMENT_QUERY: ChildQuery<Omit<AttachmentRow, 'orderedAt'>> = {
   }),
 };
 
-export const listPrompts = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, PROMPT_QUERY, scope, sessionId, opts);
+/** Paging alone, for a table with no prompt column to narrow by. */
+export type PagingOptions = Pick<ChildOptions, 'limit' | 'cursor'>;
+
+export const listPrompts = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: PagingOptions) => listChildren(db, PROMPT_QUERY, scope, sessionId, opts);
 export const listToolCalls = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, TOOL_CALL_QUERY, scope, sessionId, opts);
 export const listResponses = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, RESPONSE_QUERY, scope, sessionId, opts);
-export const listPlans = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, PLAN_QUERY, scope, sessionId, opts);
+export const listPlans = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: PagingOptions) => listChildren(db, PLAN_QUERY, scope, sessionId, opts);
 export const listAttachments = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, ATTACHMENT_QUERY, scope, sessionId, opts);
 
 export interface MaterialRow { prompt: string; response: string | null }
