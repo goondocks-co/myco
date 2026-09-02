@@ -89,19 +89,20 @@ function GenerateSummary({ projectId, sessionId, session }: { projectId: string;
   const [asked, setAsked] = useState<{ runId: string; title: string | null; summary: string | null; at: number } | null>(null);
   const landed = asked !== null && (session.title !== asked.title || session.summary !== asked.summary);
   const expired = asked !== null && Date.now() - asked.at > TITLING_WATCH_MS;
-  const run = useRun(projectId, asked?.runId ?? '', {
-    enabled: asked !== null && !landed && !expired,
-    // 404 until the container claims: keep asking rather than giving up on the first miss.
-    retry: false,
-    refetchInterval: (query) => (query.state.data !== undefined && isTerminal(query.state.data.run.status) ? false : TITLING_POLL_MS),
-  });
+  // A miss before the container claims is kept, not retried; the timer below asks again.
+  const run = useRun(projectId, asked?.runId ?? '', { enabled: asked !== null && !landed && !expired, retry: false });
   const runStatus = run.data?.run.status ?? null;
   const watching = asked !== null && !landed && !expired && (runStatus === null || !isTerminal(runStatus));
+  const runId = asked?.runId ?? null;
+  // One timer re-reads both the session and the run: a query's own interval pauses while the window is not focused, and a summary lands whether or not the reader is looking.
   useEffect(() => {
-    if (!watching) return;
-    const timer = setInterval(() => { void client.invalidateQueries({ queryKey: ['session', projectId, sessionId] }); }, TITLING_POLL_MS);
+    if (!watching || runId === null) return;
+    const timer = setInterval(() => {
+      void client.invalidateQueries({ queryKey: ['session', projectId, sessionId] });
+      void client.invalidateQueries({ queryKey: ['run', projectId, runId] });
+    }, TITLING_POLL_MS);
     return () => clearInterval(timer);
-  }, [watching, client, projectId, sessionId]);
+  }, [watching, client, projectId, sessionId, runId]);
 
   const outcome = titling.data?.outcome;
   const note = titling.error ? 'The session could not be summarized right now'
