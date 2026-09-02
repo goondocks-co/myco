@@ -17,7 +17,7 @@ import {
   type EnvelopeContext, type OutboundEvent,
 } from '@myco/member/envelope.js';
 import { MEMBER_INLINE_TEXT_MAX_BYTES } from '@myco/member/constants.js';
-import { TOOL_OUTPUT_PREVIEW_CHARS } from '@myco/constants.js';
+import { TOOL_OUTPUT_CAPTURE_CHARS } from '@myco/constants.js';
 import { memberRig, tempMycoHome, tempStager, type MemberRig } from './helpers/server.js';
 
 const ORIGINAL_ENV = { MYCO_HOME: process.env.MYCO_HOME, HOME: process.env.HOME };
@@ -116,11 +116,20 @@ describe('member envelope — every kind through the worker', () => {
 });
 
 describe('member envelope — field rules', () => {
-  it('previews tool output at TOOL_OUTPUT_PREVIEW_CHARS and names myco tools by op', () => {
-    const out = toolUseEvent(ctx(), input({ tool_name: 'mcp__myco__myco_cortex', tool_input: { op: 'canopy_map', path: '/x' }, tool_output: 'y'.repeat(1000) }));
+  it('carries tool output up to TOOL_OUTPUT_CAPTURE_CHARS and names myco tools by op', () => {
+    const out = toolUseEvent(ctx(), input({ tool_name: 'mcp__myco__myco_cortex', tool_input: { op: 'canopy_map', path: '/x' }, tool_output: 'y'.repeat(5000) }));
     expect(out.envelope.payload).toMatchObject({ toolName: 'mcp__myco__myco_cortex', mycoTool: 'myco_cortex', mycoOp: 'canopy_map', success: true, filesAffected: ['/x'] });
-    expect((out.envelope.payload.output as string).length).toBe(TOOL_OUTPUT_PREVIEW_CHARS);
-    expect(TOOL_OUTPUT_PREVIEW_CHARS).toBe(200);
+    expect((out.envelope.payload.output as string).length).toBe(TOOL_OUTPUT_CAPTURE_CHARS);
+    expect(TOOL_OUTPUT_CAPTURE_CHARS).toBe(4096);
+  });
+
+  it('carries a structured tool result as compact JSON, reading the tool_response key a runtime delivers it under', () => {
+    const structured = toolUseEvent(ctx(), input({ tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: { stdout: 'a.ts\n', stderr: '', interrupted: false } }));
+    expect(structured.envelope.payload.output).toBe('{"stdout":"a.ts\\n","stderr":"","interrupted":false}');
+    const absent = toolUseEvent(ctx(), input({ tool_name: 'Bash', tool_input: { command: 'ls' } }));
+    expect(absent.envelope.payload).not.toHaveProperty('output');
+    const failed = toolFailureEvent(ctx(), input({ tool_name: 'Bash', tool_input: { command: 'false' }, tool_response: ['exit', 1], error: 'exit 1' }));
+    expect(failed.envelope.payload).toMatchObject({ output: '["exit",1]', errorMessage: 'exit 1', success: false });
   });
 
   it('spills text over the inline ceiling to a staged blob and keeps it inline otherwise', async () => {

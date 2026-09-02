@@ -116,7 +116,7 @@ export function createPerProjectAdapter(
     name: name ?? `custom:${path.basename(baseDir)}`,
     displayName: `Custom (${baseDir})`,
     pluginRootEnvVar: '',
-    hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', prompt: 'prompt', toolName: 'tool_name', toolInput: 'tool_input', toolOutput: 'tool_output' },
+    hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', prompt: 'prompt', toolName: 'tool_name', toolInput: 'tool_input', toolOutput: ['tool_output', 'tool_response'] },
     findTranscript: (sessionId) => findJsonlInSubdirs(baseDir, sessionId),
     parseTurns,
   };

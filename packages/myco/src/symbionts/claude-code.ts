@@ -13,7 +13,7 @@ export const claudeCodeAdapter: SymbiontAdapter = {
     prompt: 'prompt',
     toolName: 'tool_name',
     toolInput: 'tool_input',
-    toolOutput: 'tool_output',
+    toolOutput: ['tool_output', 'tool_response'],
   },
 
   findTranscript: (sessionId) => findTranscriptFor('claude-code', sessionId),

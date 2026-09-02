@@ -80,6 +80,12 @@ describe('normalizeHookInput', () => {
       expect(result.toolOutput).toBe('file.txt');
     });
 
+    it('reads a structured tool result delivered under tool_response', () => {
+      setHookConfig([]);
+      const result = normalizeHookInput({ session_id: 's1', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: { stdout: 'a.ts\n', stderr: '' } });
+      expect(result.toolOutput).toEqual({ stdout: 'a.ts\n', stderr: '' });
+    });
+
     it('preserves raw input', () => {
       setHookConfig([]);
       const raw = { session_id: 's1', custom_field: 'value' };
