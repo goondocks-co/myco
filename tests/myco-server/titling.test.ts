@@ -9,7 +9,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import {
   ANSWER_MAX_TOKENS, ANTHROPIC_MESSAGES_URL, ANTHROPIC_VERSION, DEFAULT_ANTHROPIC_MODEL, localBackendEndpoint, parseTitleAnswer, resolveTitlingProvider, sessionMaterial, titleSession, titlingPrompt,
 } from '@myco-server-worker/core/titling.js';
-import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MAX_TITLES_PER_PROJECT_PER_HOUR, MATERIAL_EXCERPT_CHARS } from '@myco-server-worker/constants.js';
+import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MAX_TITLES_PER_PROJECT_PER_HOUR, MATERIAL_EXCERPT_CHARS, TITLING_TIMEOUT_MS } from '@myco-server-worker/constants.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
@@ -300,3 +300,53 @@ describe('titleSession', () => {
     expect(parseTitleAnswer('nothing')).toBeNull();
   });
 });
+
+describe('titleSession on an owner\'s ask', () => {
+  const ask = (h: ReturnType<typeof harness>, id: string, now = NOW) => titleSession(h.env, { projectId: 'proj_1', sessionId: id, now }, { mode: 'owner' });
+
+  it('titles an open session, writes over a title already there, and leaves the end-of-session claim spent', async () => {
+    const h = harness();
+    await seedAnthropic(h);
+    h.session('open', { endedAt: null });
+    h.prompt('open', 'p1', 'hello', NOW - 9000);
+    expect(await ask(h, 'open')).toBe('titled');
+    expect(h.row('open')).toMatchObject({ title: 'Wave-based executor and per-task provider config', titled_at: NOW });
+    h.sqlite.run(`UPDATE sessions SET title = 'Old', summary = 'old' WHERE session_id = 'open'`);
+    expect(await ask(h, 'open', NOW + TITLING_TIMEOUT_MS + 1)).toBe('titled');
+    expect(h.row('open').title).toBe('Wave-based executor and per-task provider config');
+    expect(h.sent).toHaveLength(2);
+    // The session's own end finds the claim spent and asks nothing.
+    h.sqlite.run(`UPDATE sessions SET ended_at = ? WHERE session_id = 'open'`, [NOW + 20_000]);
+    expect(await h.title('open')).toBe('already');
+    expect(h.sent).toHaveLength(2);
+  });
+
+  it('refuses a second ask while the first may still be running, and admits one after the timeout', async () => {
+    const h = harness();
+    await seedAnthropic(h);
+    h.session('s1');
+    h.prompt('s1', 'p1', 'hello', NOW - 9000);
+    expect(await ask(h, 's1')).toBe('titled');
+    expect(await ask(h, 's1', NOW + 1000)).toBe('already');
+    expect(await ask(h, 's1', NOW + TITLING_TIMEOUT_MS + 1)).toBe('titled');
+    expect(h.sent).toHaveLength(2);
+  });
+
+  it('reads the opening and the closing prompts, so the arc\'s end reaches the model', async () => {
+    const h = harness();
+    h.session('s1');
+    for (let i = 0; i < MAX_MATERIAL_PROMPTS + 6; i += 1) h.prompt('s1', `p${String(i).padStart(2, '0')}`, `prompt ${i}`, NOW - 20_000 + i);
+    const owner = await sessionMaterial(h.env.db, 'proj_1', 's1', 'owner');
+    const claim = await sessionMaterial(h.env.db, 'proj_1', 's1', 'claim');
+    expect(owner.length).toBe(MAX_MATERIAL_PROMPTS);
+    expect(owner[0].prompt).toBe('prompt 0');
+    expect(owner[owner.length - 1].prompt).toBe(`prompt ${MAX_MATERIAL_PROMPTS + 5}`);
+    expect(claim[claim.length - 1].prompt).toBe(`prompt ${MAX_MATERIAL_PROMPTS - 1}`);
+    // A short session reads each prompt once.
+    h.session('s2');
+    h.prompt('s2', 'q1', 'one', NOW - 9000);
+    h.prompt('s2', 'q2', 'two', NOW - 8000);
+    expect((await sessionMaterial(h.env.db, 'proj_1', 's2', 'owner')).map((m) => m.prompt)).toEqual(['one', 'two']);
+  });
+});
+

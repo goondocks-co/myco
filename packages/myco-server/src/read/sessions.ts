@@ -374,6 +374,26 @@ export async function claimTitling(db: RelationalStore, projectId: string, sessi
   return result.meta.changes === 1;
 }
 
+/**
+ * Claims a titling attempt an owner asked for: any session, ended or not, titled or not — refused only while an attempt begun within `inFlightMs` may still be running, so two clicks make one call. Stamps `titled_at`, which is what the hourly ceiling meters.
+ */
+export async function claimOwnerTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, inFlightMs: number): Promise<boolean> {
+  const result = await db
+    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND (titled_at IS NULL OR titled_at < ?)`)
+    .bind(nowMs, projectId, sessionId, nowMs - inFlightMs)
+    .run();
+  return result.meta.changes === 1;
+}
+
+/** Stores a session's title and summary over whatever is there; false when no such session sits in the project. */
+export async function overwriteTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string): Promise<boolean> {
+  const result = await db
+    .prepare(`UPDATE sessions SET title = ?, summary = ? WHERE project_id = ? AND session_id = ?`)
+    .bind(title, summary, projectId, sessionId)
+    .run();
+  return result.meta.changes === 1;
+}
+
 /** How many titling attempts the project has made after an instant. */
 export async function titlingsSince(db: RelationalStore, projectId: string, sinceMs: number): Promise<number> {
   const row = await db.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE project_id = ? AND titled_at > ?`).bind(projectId, sinceMs).first<{ n: number }>();

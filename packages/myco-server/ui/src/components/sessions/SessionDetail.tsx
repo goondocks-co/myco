@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Check, Copy, X } from 'lucide-react';
+import { Check, Copy, Loader2, Sparkles, X } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { MetricCard } from '../ui/metric-card';
 import { PageLoading } from '../ui/page-loading';
@@ -9,10 +9,11 @@ import { StatusDot } from '../ui/status-dot';
 import { SubtabPill } from '../ui/subtab-pill';
 import { Surface } from '../ui/surface';
 import {
-  blobUrl, memberName, RENDERABLE_IMAGE_TYPES, runtimeName, useSession, useSessionChildren, useTranscript,
+  blobUrl, memberName, RENDERABLE_IMAGE_TYPES, runtimeName, TITLING_OUTCOME_TEXT, useSession, useSessionChildren, useTitleSession, useTranscript,
   type AttachmentRow, type PlanRow, type SessionRow,
 } from '../../hooks/use-sessions';
 import { ApiError } from '../../lib/api';
+import { cn } from '../../lib/cn';
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatRelative } from '../../lib/format';
 import { NotFound } from '../../pages/NotFound';
 import { PlanCard } from './PlanCard';
@@ -71,8 +72,29 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
   );
 }
 
+/** Asks for the session's title and summary now, and says how it went. */
+function GenerateSummary({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+  const titling = useTitleSession(projectId, sessionId);
+  const outcome = titling.data?.outcome;
+  const note = titling.error ? 'The server could not be reached' : outcome !== undefined ? TITLING_OUTCOME_TEXT[outcome] : null;
+  return (
+    <div className="ml-auto flex flex-col items-end gap-1">
+      <button
+        type="button"
+        disabled={titling.isPending}
+        onClick={() => titling.mutate()}
+        className="inline-flex h-8 items-center gap-2 rounded-md border border-outline-variant/20 px-3 font-sans text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+      >
+        {titling.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+        {titling.isPending ? 'Writing summary…' : 'Generate summary'}
+      </button>
+      {note !== null && <span className={cn('font-sans text-xs', outcome === 'titled' ? 'text-primary' : 'text-tertiary')} role="status">{note}</span>}
+    </div>
+  );
+}
+
 /** The session's name, state and the facts that identify the run, in one glance. */
-function Header({ session }: { projectId: string; session: SessionRow }) {
+function Header({ projectId, session }: { projectId: string; session: SessionRow }) {
   const open = session.endedAt === null;
   return (
     <div className="space-y-2">
@@ -84,6 +106,7 @@ function Header({ session }: { projectId: string; session: SessionRow }) {
         <h2 className="myco-display-lg m-0 min-w-0 text-on-surface">{session.label}</h2>
         {session.agent !== null && <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">{session.agent}</Badge>}
         {session.branch !== null && <Badge variant="secondary" className="font-mono text-[10px] px-1.5 py-0">{session.branch}</Badge>}
+        <GenerateSummary projectId={projectId} sessionId={session.sessionId} />
       </div>
       <div className="flex flex-wrap gap-4 font-sans text-sm text-on-surface-variant">
         <span>{memberName(session)}</span>

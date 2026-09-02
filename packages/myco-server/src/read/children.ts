@@ -122,19 +122,27 @@ export const listResponses = (db: RelationalStore, scope: ReadScope, sessionId: 
 export const listPlans = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: PagingOptions) => listChildren(db, PLAN_QUERY, scope, sessionId, opts);
 export const listAttachments = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, ATTACHMENT_QUERY, scope, sessionId, opts);
 
-export interface MaterialRow { prompt: string; response: string | null }
+export interface MaterialRow { prompt: string; response: string | null; promptId: string }
 
-/** A session's earliest inline user prompts, each cut to `excerptChars`, with the start of its first inline response; `limit` prompts at most, oldest first. */
-export async function sessionMaterialRows(db: RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }): Promise<MaterialRow[]> {
-  const { results } = await db
-    .prepare(`SELECT substr(pb.text, 1, ?) AS prompt,
+const MATERIAL_SQL = `SELECT pb.prompt_id, substr(pb.text, 1, ?) AS prompt,
                      (SELECT substr(r.text, 1, ?) FROM responses r
                        WHERE r.project_id = pb.project_id AND r.session_id = pb.session_id AND r.prompt_id = pb.prompt_id AND r.text IS NOT NULL
                        ORDER BY r.created_at, r.response_id LIMIT 1) AS response
                 FROM prompt_batches pb
-               WHERE pb.project_id = ? AND pb.session_id = ? AND pb.origin = 'user' AND pb.text IS NOT NULL
-               ORDER BY pb.created_at, pb.prompt_id LIMIT ?`)
+               WHERE pb.project_id = ? AND pb.session_id = ? AND pb.origin = 'user' AND pb.text IS NOT NULL`;
+
+async function materialRows(db: RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }, order: 'ASC' | 'DESC'): Promise<MaterialRow[]> {
+  const { results } = await db
+    .prepare(`${MATERIAL_SQL} ORDER BY pb.created_at ${order}, pb.prompt_id ${order} LIMIT ?`)
     .bind(opts.excerptChars, opts.excerptChars, projectId, sessionId, opts.limit)
-    .all<{ prompt: string; response: string | null }>();
-  return results.map((r) => ({ prompt: r.prompt, response: r.response ?? null }));
+    .all<{ prompt_id: string; prompt: string; response: string | null }>();
+  return results.map((r) => ({ promptId: r.prompt_id, prompt: r.prompt, response: r.response ?? null }));
 }
+
+/** A session's earliest inline user prompts, each cut to `excerptChars`, with the start of its first inline response; `limit` prompts at most, oldest first. */
+export const sessionMaterialRows = (db: RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }): Promise<MaterialRow[]> =>
+  materialRows(db, projectId, sessionId, opts, 'ASC');
+
+/** The same for the session's latest inline user prompts, answered oldest first so the two halves read in order. */
+export const sessionMaterialTailRows = async (db: RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }): Promise<MaterialRow[]> =>
+  (await materialRows(db, projectId, sessionId, opts, 'DESC')).reverse();

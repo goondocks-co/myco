@@ -14,8 +14,8 @@
 import { MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MAX_TITLES_PER_PROJECT_PER_HOUR, TITLING_TIMEOUT_MS } from '../constants.js';
 import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
-import { sessionMaterialRows, type MaterialRow } from '../read/children.js';
-import { claimTitling, sessionFacts, titlingsSince, writeTitle } from '../read/sessions.js';
+import { sessionMaterialRows, sessionMaterialTailRows, type MaterialRow } from '../read/children.js';
+import { claimOwnerTitling, claimTitling, overwriteTitle, sessionFacts, titlingsSince, writeTitle } from '../read/sessions.js';
 import { deploymentSecretStore, type SecretStore } from './secrets.js';
 import { leafValues, providerConfiguredFor } from './settings.js';
 
@@ -98,11 +98,29 @@ export async function resolveTitlingProvider(db: RelationalStore, secrets: Secre
   return { ok: false, outcome: 'no_provider' };
 }
 
-export type MaterialLine = MaterialRow;
+export type MaterialLine = Pick<MaterialRow, 'prompt' | 'response'>;
 
-/** The session's earliest inline user prompts, each with the start of its first inline response, inside the character budget. */
-export async function sessionMaterial(db: RelationalStore, projectId: string, sessionId: string): Promise<MaterialLine[]> {
-  const rows = await sessionMaterialRows(db, projectId, sessionId, { limit: MAX_MATERIAL_PROMPTS, excerptChars: MATERIAL_EXCERPT_CHARS });
+/**
+ * How a title is asked for. `claim` is the end of a session: one attempt ever,
+ * writing only where no title exists, over the session's opening prompts. `owner`
+ * is a person asking from the dashboard: any session, ended or not, over the
+ * opening and closing prompts, writing over whatever title is there.
+ */
+export type TitlingMode = 'claim' | 'owner';
+
+/** The session's inline user prompts, each with the start of its first inline response, inside the character budget: the earliest ones, or for an owner's ask the earliest and the latest halves, so the arc's end reaches the model too. */
+export async function sessionMaterial(db: RelationalStore, projectId: string, sessionId: string, mode: TitlingMode = 'claim'): Promise<MaterialLine[]> {
+  const excerpt = { excerptChars: MATERIAL_EXCERPT_CHARS };
+  let rows: MaterialRow[];
+  if (mode === 'owner') {
+    const half = Math.ceil(MAX_MATERIAL_PROMPTS / 2);
+    const head = await sessionMaterialRows(db, projectId, sessionId, { limit: half, ...excerpt });
+    const tail = await sessionMaterialTailRows(db, projectId, sessionId, { limit: MAX_MATERIAL_PROMPTS - half, ...excerpt });
+    const seen = new Set(head.map((r) => r.promptId));
+    rows = [...head, ...tail.filter((r) => !seen.has(r.promptId))];
+  } else {
+    rows = await sessionMaterialRows(db, projectId, sessionId, { limit: MAX_MATERIAL_PROMPTS, ...excerpt });
+  }
   const lines: MaterialLine[] = [];
   let used = 0;
   for (const row of rows) {
@@ -192,16 +210,20 @@ export function providerRequest(provider: TitlingProvider, prompt: string): { ur
 
 export interface TitlingTarget { projectId: string; sessionId: string; now: number }
 
-/** Titles one ended session. Resolves with the outcome it emitted; never rejects. */
-export async function titleSession(env: ServerEnv, target: TitlingTarget): Promise<TitlingOutcome> {
+/** Titles one session: at its end (`claim`, the default) or on an owner's ask (`owner`). Resolves with the outcome it emitted; never rejects. */
+export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode } = {}): Promise<TitlingOutcome> {
   const { projectId, sessionId, now } = target;
-  const skipped = (outcome: TitlingOutcome): TitlingOutcome => { emit({ kind: 'session_title_skipped', projectId, sessionId, outcome }); return outcome; };
-  const failed = (outcome: TitlingOutcome, extra: Record<string, unknown> = {}): TitlingOutcome => { emit({ kind: 'session_title_failed', projectId, sessionId, outcome, ...extra }); return outcome; };
+  const mode = opts.mode ?? 'claim';
+  const skipped = (outcome: TitlingOutcome): TitlingOutcome => { emit({ kind: 'session_title_skipped', projectId, sessionId, outcome, mode }); return outcome; };
+  const failed = (outcome: TitlingOutcome, extra: Record<string, unknown> = {}): TitlingOutcome => { emit({ kind: 'session_title_failed', projectId, sessionId, outcome, mode, ...extra }); return outcome; };
   try {
-    if (!(await claimTitling(env.db, projectId, sessionId, now))) return skipped('already');
+    const claimed = mode === 'owner'
+      ? await claimOwnerTitling(env.db, projectId, sessionId, now, TITLING_TIMEOUT_MS)
+      : await claimTitling(env.db, projectId, sessionId, now);
+    if (!claimed) return skipped('already');
     if ((await titlingsSince(env.db, projectId, now - HOUR_MS)) > MAX_TITLES_PER_PROJECT_PER_HOUR) return skipped('budget');
 
-    const material = await sessionMaterial(env.db, projectId, sessionId);
+    const material = await sessionMaterial(env.db, projectId, sessionId, mode);
     if (material.length === 0) return skipped('no_material');
 
     if (!(await providerConfiguredFor(env.db, TITLING_TASK))) return skipped('no_provider');
@@ -223,8 +245,11 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget): Promi
     const answer = text === null ? null : parseTitleAnswer(text);
     if (answer === null) return failed('malformed');
 
-    if (!(await writeTitle(env.db, projectId, sessionId, answer.title, answer.summary))) return failed('superseded');
-    emit({ kind: 'session_titled', projectId, sessionId, provider: resolved.provider.kind === 'anthropic' ? 'anthropic' : resolved.provider.provider });
+    const written = mode === 'owner'
+      ? await overwriteTitle(env.db, projectId, sessionId, answer.title, answer.summary)
+      : await writeTitle(env.db, projectId, sessionId, answer.title, answer.summary);
+    if (!written) return failed('superseded');
+    emit({ kind: 'session_titled', projectId, sessionId, mode, provider: resolved.provider.kind === 'anthropic' ? 'anthropic' : resolved.provider.provider });
     return 'titled';
   } catch {
     return failed('error');

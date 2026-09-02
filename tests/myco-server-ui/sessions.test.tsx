@@ -331,6 +331,24 @@ describe('Session detail', () => {
     expect(await screen.findByText(/No prompts typed by a person/)).toBeTruthy();
   });
 
+  it('asks for a summary on demand, says how it went, and reads the session again once it lands', async () => {
+    let titled = false;
+    const { requested } = server(detailRoutes({
+      '/api/projects/x/sessions/s1': () => Response.json({ session: session(titled ? { title: 'Renamed the card', summary: 'Renamed it.', titledAt: NOW } : {}), counts, projectId: 'x' }),
+      '/api/projects/x/sessions/s1/title': () => { titled = true; return Response.json({ outcome: 'titled' }); },
+    }));
+    mount('/p/x/sessions/s1');
+    fireEvent.click(await screen.findByRole('button', { name: 'Generate summary' }));
+    expect(await screen.findByText('Summary updated')).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('Renamed the card'));
+    expect(requested.filter((p) => p.endsWith('/title'))).toEqual(['/api/projects/x/sessions/s1/title']);
+    cleanup();
+    server(detailRoutes({ '/api/projects/x/sessions/s1/title': () => Response.json({ outcome: 'no_provider' }) }));
+    mount('/p/x/sessions/s1');
+    fireEvent.click(await screen.findByRole('button', { name: 'Generate summary' }));
+    expect(await screen.findByText('No provider is configured for summaries — set one in Settings')).toBeTruthy();
+  });
+
   it('heads the detail with the label and shows a summary only once one is stored', async () => {
     server(detailRoutes());
     mount('/p/x/sessions/s1');
