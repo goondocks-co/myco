@@ -107,8 +107,8 @@ function GenerateSummary({ projectId, sessionId, session }: { projectId: string;
   const outcome = titling.data?.outcome;
   const note = titling.error ? 'The session could not be summarized right now'
     : landed ? 'Summary updated'
-    : asked !== null && runStatus === 'failed' ? 'The summary run failed — see the run'
-    : asked !== null && (expired || (runStatus !== null && isTerminal(runStatus))) ? 'The summary run ended without writing one — see the run'
+    : asked !== null && runStatus === 'failed' ? 'The summary run failed'
+    : asked !== null && (expired || (runStatus !== null && isTerminal(runStatus))) ? 'The summary run ended without writing one'
     : outcome !== undefined ? TITLING_OUTCOME_TEXT[outcome] : null;
   const tone = landed ? 'text-primary' : 'text-tertiary';
   const busy = titling.isPending || watching;
