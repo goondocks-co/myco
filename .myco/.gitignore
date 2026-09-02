@@ -12,6 +12,10 @@ buffer/
 logs/
 machine_id
 
+# One-shot flag from the provisioner; the daemon's notice sweep consumes
+# and deletes it. Per-machine, transient.
+.capture-only-notice-pending
+
 # Per-project migration state — global-install sentinel and any future
 # migration markers. Sentinel is per-machine because migration is a
 # per-machine operation; teammates cloning the repo run their own.
