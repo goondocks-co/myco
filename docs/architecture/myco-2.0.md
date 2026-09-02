@@ -91,7 +91,7 @@ Cloudflare and self-hosted Compose implement **one common server contract and sh
 | Vector store | Vectorize | Local SQLite vector adapter |
 | Wake / schedule | Durable Object alarm + cron | In-process scheduler |
 | Secret wrapping key | Secrets Store binding | Env or file (`secrets.env` idiom) |
-| Harness | Cloudflare container infrastructure (**pending #908**) | Same harness image |
+| Harness | One container per run (#914, live) | Same harness image beside the server (**#913**) |
 | Durable storage | Platform-managed | Mounted volume under Compose |
 
 Shared behavior belongs in the common core; target-specific infrastructure, storage, wake, TLS/proxy, backup, and observability behavior belongs in adapters. **Neither target may silently lose a feature because the other implemented it first.** A ledger row naming a capability without its per-target mechanism is how one target never gets it.
@@ -138,6 +138,31 @@ The installed 1.4 binary owns its existing `myco remove --yes` behavior (**Legac
 Source data is never automatically deleted. Historical vectors and derived assets are rebuilt under the 2.0 schema. Already-archived 1.4 Projects, legacy topology/config/credentials, old vectors, and retired Canopy entries do not migrate.
 
 The current both-mode dogfood (1.4 user-level hooks plus the 2.0 member project-local on this repo) is preserved until **#924** performs the cutover.
+
+### 3.6 Agent task execution — how 1.4 drives tasks today, and the 2.0 mechanism on both targets
+
+Recorded 2026-09-02 after #1045 S4 found the server titling a session with a direct model call. The account below is the ground every dispatch, scheduling and cost decision in 2.0 starts from; the principles at the end are Chris's, closed, and not re-opened by a slice.
+
+**1.4 today — one daemon, on metal, driven by activity.** One scheduler job (`scheduled:tasks`) ticks on the PowerManager's clock and walks every project; each task filters itself on its own `runIn` states, its interval (divided by backlog tier), its accelerator, its `preCondition`, its `maxRunsPerDay`, `requiresTaskProvider` and `runWhenCold` (`packages/myco/src/daemon/task-scheduler.ts:168-360`, `task-scheduling.ts:843-914`). A kick is a one-shot bypass consumed on the next tick. Activity is the throttle: the global PowerManager resolves `active`/`idle`/`sleep`/`deep_sleep` from inactivity (5 m / 30 m / 90 m, `constants.ts:521-529`; `daemon/power.ts:236-308`), deep sleep stops the timer outright (`power.ts:335-340`), a per-project tracker applies the same thresholds (`project-power-state.ts:95-120`), a sleeping project simply fails every task's `runIn`, and a cold project (14 days) runs nothing but `runWhenCold`. Session-driven tasks are event-fired, not scheduled: the Stop hook dispatches `title-summary` fire-and-forget (`stop-processing.ts:641`, `trigger-title-summary.ts:65-116`), the prompt boundary fires it every `summary_batch_interval` human batches, `cortex-prompt-builder`/`cortex-instructions` fire behind `agent.event_tasks_enabled`, and `review-session` is manual. Concurrency is what one process tolerates: the JobRunner holds three slots in two fair lanes (`job-runner.ts:98-140`), the tick keeps an in-memory per-(grove, project, task) running set (`task-scheduler.ts:267,340-350`), the executor refuses a duplicate of the same task until its `timeoutSeconds + 300 s` (`executor.ts:87-124`), runs are detached, and there is no global run limit and no queue — work not admitted this tick is retried next tick. The provider resolves task-first then Deployment default (`config-resolver.ts:323-326`), and a missing key refuses the dispatch (`task-scheduling.ts:645-658`). This is sound on metal, where one person's presence bounds the cost.
+
+**2.0 destination — a cloud Deployment serving many members, always on.** A Deployment is not one person's machine: members and partners work at all hours, work arrives from capture, from the dashboard and from the clock at once, and the harness runs each task in its own container precisely so that tasks are independent of one another. Cloud architecture manages that with a scheduler, a queue and constraints, and 2.0 does too. The mechanism, on both targets:
+
+1. **Triggers.** Capture (a session's end → `title-summary`, `review-session`; a prompt boundary → the Cortex tasks), a member's or owner's ask (a dashboard control, a route, an MCP tool), and the wake tick (scheduled tasks, carrying the YAML's `runIn`, interval, accelerator, `preCondition`, `maxRunsPerDay`).
+2. **The dispatcher** (`packages/myco-server/src/core/harness.ts`, the `HarnessDispatcher` of `core/deferred-adapters.ts`, owner #1045 S4 for its first consumer): one implementation for every trigger. It takes admission from the catalogue (`core/task-catalogue.ts`; today `TASK_ADMISSION` has no production caller and the container claims `cortex` for every task — a defect S4 closes), resolves the provider task-first as 1.4 does, mints the run's credential, records the run with its parameters as `run_context`, and hands the run to the queue.
+3. **The queue** (#1091): a durable table both targets hold. Limits are Settings leaves with declared defaults — Deployment-wide concurrent runs, per-task concurrent runs, per-task runs per hour — unset meaning unbounded up to the fleet. A dispatch past a limit waits; it is never refused. The drain runs on the wake tick and on every run's terminal status, oldest first, and queued runs are visible on the Agent runs page with the limit that holds them. The fleet size is an operator setting written by `myco server config`, not a hand edit.
+4. **The launch adapter**, the only per-target part: on **W** one Durable Object and one container per run (`platform/cloudflare/harness-container.ts`, hold renewal in `run-hold.ts`, `wrangler.toml` `max_instances`); on **C** a harness runner beside the server (#913 — today the Bun target has no `harnessLaunch` and every dispatch answers `harness_unavailable`, `platform/bun/env.ts:74-97`).
+5. **The wake tick**, per §7.5: a Durable Object alarm with a cron floor on **W**, an in-process timer on **C**, both feeding one idempotent tick that resolves the power state (`core/power.ts`), runs the due jobs (`core/jobs.ts`) and drains the queue. Today neither target delivers a wake and nothing consumes `power.ts`/`jobs.ts` outside tests; that engine is #1091's with the queue.
+6. **The claim** (`core/runs.ts`): idempotent per run id, nothing more. The per-(project, task) single-flight carried from the 1.4 executor leaves the claim; overlap policy for a scheduled sweep that must not overlap itself is a per-task setting the dispatcher reads.
+7. **Power policy stays**: nothing *scheduled* runs while a Deployment sleeps, and no alarm costs nothing; *requested* work (a session ending, a person asking) enqueues and runs regardless, and wakes the Deployment.
+
+**Principles (Chris, 2026-09-02, closed):**
+- Every agent task runs through the agent harness with the configured provider and credentials. Title and summary are no exception. There is no interim direct model call, on either target.
+- The run is the unit of work: one run id, one container, any number at once across triggers, schedules, sessions and Projects.
+- A constraint is configurable, never hard-coded. A limit means a queue, never a refusal.
+- One core, two launch adapters; neither target loses the feature because the other landed it first (§3.3).
+- Decisions about dispatch start from how 1.4 drives tasks today, and are recorded here before a slice builds on them.
+
+**What 2.0 has and lacks against 1.4 (2026-09-02):** has — the catalogue and admission gates, the run rows with claim/resume/hold, one container per run on W, `afterResponse` for work past a request, a pure power policy and job registry; lacks — a scheduler and wake delivery on either target, a queue and any configurable limit (the only limiter is `max_instances = 12`), a session-end path for any task but titling, admission wired to the catalogue, per-task provider routing into the container, run retention and cancellation, and a self-hosted launch. Owners: #1091 (queue, limits, wake tick, retention), #1045 S4 (the dispatcher and its first consumer), #913 (self-hosted launch), #915 (scheduling leaves).
 
 ## 4. Owning-surface vocabulary
 
@@ -342,7 +367,7 @@ Task YAML, the phased executor, turn budgets, model routing, and the `agent_runs
 | `skill-generate` | KEEP | Core | Blk | Skill lifecycle | #919 |
 | `skill-evolve` | KEEP | Core | Blk | Skill lifecycle | #919 |
 | `extract-only` | KEEP | Core | Blk | Spore extraction | #919 |
-| `title-summary` | KEEP | Core | Blk | The title and summary are written on the Deployment after the answer to a session's end, through the configured API-key provider (#1033); the harness task re-titles and backfills | #919, #1033 |
+| `title-summary` | KEEP | Core | Blk | Dispatched to the harness on a session's end and on an owner's ask, through the one dispatcher (§3.6); no direct provider call on the server — #1033's after-response call was a deviation, removed by #1045 S4 | #1045, #1091 |
 | `review-session` | KEEP | Core | Blk | | #919 |
 | `vault-evolve` | KEEP | Core | Blk | | #919 |
 | `supersession-sweep` | KEEP | Core | Blk | | #919 |
