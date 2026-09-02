@@ -47,8 +47,42 @@ export interface SecretDescription {
   updatedBy: string | null;
 }
 
+/**
+ * A pasted credential as it may be stored, or why it may not.
+ *
+ * Horizontal whitespace is stripped EVERYWHERE, not just at the ends: no
+ * credential this store holds (API keys, subscription tokens, PATs)
+ * legitimately contains a space, and a token copied from a soft-wrapped
+ * terminal arrives with spaces at the wrap columns. Stored as pasted, every
+ * harness run then fails to authenticate while Settings shows the slot
+ * configured — seen on the 1.4 machine store (#774) and again on the first
+ * Deployment (#1045 S4 smoke, 2026-09-02). Repairing at this boundary, the
+ * one write path for Deployment secrets, makes that paste shape impossible to
+ * store broken.
+ *
+ * Line-structure and control characters are refused, never repaired: an
+ * input shaped like an injection gets an error, not a silent rewrite.
+ */
+export type SecretValueCheck = { ok: true; value: string } | { ok: false; reason: string };
+
+export function normalizeSecretValue(raw: string): SecretValueCheck {
+  const value = raw.replace(/[ \t]+/g, '');
+  if (value.length === 0) return { ok: false, reason: 'value is empty' };
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(value)) return { ok: false, reason: 'value carries a line break or control character' };
+  return { ok: true, value };
+}
+
+/** A value the store refuses to seal, with text safe to show to the person who pasted it. */
+export class SecretValueError extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = 'SecretValueError';
+  }
+}
+
 export interface SecretStore {
-  /** Seal `value` under the deployment's wrapping key and record who stored it. */
+  /** Seal `value` under the deployment's wrapping key and record who stored it, as `normalizeSecretValue` shapes it; throws `SecretValueError` for a value it refuses. */
   put(name: string, value: string, actor: string, nowMs: number): Promise<void>;
   /**
    * The plaintext, or null when nothing is stored.
@@ -155,8 +189,10 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
   };
 
   return {
-    async put(name, value, actor, nowMs) {
-      const { ciphertext, iv } = await seal(await key(), name, value);
+    async put(name, raw, actor, nowMs) {
+      const checked = normalizeSecretValue(raw);
+      if (!checked.ok) throw new SecretValueError(checked.reason);
+      const { ciphertext, iv } = await seal(await key(), name, checked.value);
       await db
         .prepare(`INSERT INTO deployment_secrets (name, ciphertext, iv, key_version, updated_at, updated_by)
                   VALUES (?, ?, ?, ?, ?, ?)

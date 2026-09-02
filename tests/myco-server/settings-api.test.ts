@@ -77,6 +77,15 @@ describe('settings API', () => {
     expect(res.status).toBe(400);
   });
 
+  it('strips the whitespace a soft-wrapped paste carries before sealing, and refuses a line break rather than repairing it', async () => {
+    const e = env();
+    const wrapped = await worker.fetch(await put('/api/secrets/anthropic', { value: `  sk-ant-oat01-${'A'.repeat(24)} ${'B'.repeat(24)}\t${'C'.repeat(24)}-DDDD  ` }), e.all);
+    const stored = await wrapped.json() as Record<string, unknown>;
+    expect({ status: wrapped.status, configured: stored.configured, mask: stored.maskedValue }).toEqual({ status: 200, configured: true, mask: 'sk-ant-o…DDDD' });
+    const broken = await worker.fetch(await put('/api/secrets/anthropic', { value: 'sk-ant-oat01-AAAA\n' }), e.all);
+    expect({ status: broken.status, body: await broken.json() }).toEqual({ status: 400, body: { applied: false, reason: 'value carries a line break or control character', leaf: 'secret.anthropic' } });
+  });
+
   it('applies an endpoint change on the member session alone, and records the actor', async () => {
     const e = env();
     const allowed = await worker.fetch(await put('/api/settings/agent.provider.base_url', { value: 'https://ok.example' }), e.all);

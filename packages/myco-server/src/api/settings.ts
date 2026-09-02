@@ -1,7 +1,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
-import { deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
+import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import {
   DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsWriter,
   type ProjectCapability, type SettingsRefusal,
@@ -124,7 +124,12 @@ export async function handleSetSecret(env: ServerEnv, ctx: OwnerContext): Promis
   if (body === null || typeof body.value !== 'string' || body.value.length === 0) return malformed(slot, 'body must carry a non-empty string `value`');
   if (body.value.length > MAX_SECRET_CHARS) return malformed(slot, `value must be at most ${MAX_SECRET_CHARS} characters`);
 
-  await deploymentSecretStore(env.db, env.wrappingKey).put(ctx.params.name, body.value, ctx.member.id, ctx.now);
+  try {
+    await deploymentSecretStore(env.db, env.wrappingKey).put(ctx.params.name, body.value, ctx.member.id, ctx.now);
+  } catch (error) {
+    if (error instanceof SecretValueError) return malformed(slot, error.reason);
+    throw error;
+  }
   // The answer is the description, so a caller that just wrote a value learns only
   // what every other reader may learn about it.
   const description: SecretDescription = await deploymentSecretStore(env.db, env.wrappingKey).describe(ctx.params.name);
