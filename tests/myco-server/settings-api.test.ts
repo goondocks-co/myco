@@ -83,7 +83,7 @@ describe('settings API', () => {
     const stored = await wrapped.json() as Record<string, unknown>;
     expect({ status: wrapped.status, configured: stored.configured, mask: stored.maskedValue }).toEqual({ status: 200, configured: true, mask: 'sk-ant-o…DDDD' });
     const broken = await worker.fetch(await put('/api/secrets/anthropic', { value: 'sk-ant-oat01-AAAA\n' }), e.all);
-    expect({ status: broken.status, body: await broken.json() }).toEqual({ status: 400, body: { applied: false, reason: 'value carries a line break or control character', leaf: 'secret.anthropic' } });
+    expect({ status: broken.status, body: await broken.json() }).toEqual({ status: 400, body: { applied: false, reason: 'malformed', detail: 'value carries a line break or control character', leaf: 'secret.anthropic' } });
   });
 
   it('applies an endpoint change on the member session alone, and records the actor', async () => {
