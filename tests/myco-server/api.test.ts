@@ -137,6 +137,17 @@ describe('session turns', () => {
     expect(calls.rows.map((t) => t.toolCallId)).toEqual(['tc1']);
   });
 
+  it('titles a session on an owner\'s ask, answering the outcome, and finds nothing outside the scope', async () => {
+    const e = sqliteEnv();
+    seed(e);
+    const res = await worker.fetch(await asOwnerPost('/api/projects/proj_1/sessions/s1/title'), { ...e.env, ...OWNER_ENV });
+    expect(res.status).toBe(200);
+    // No provider is configured in the fixture: the ask is claimed and answered, not thrown.
+    expect(await res.json()).toEqual({ outcome: 'no_provider' });
+    expect((await worker.fetch(await asOwnerPost('/api/projects/proj_2/sessions/s2/title'), { ...e.env, ...OWNER_ENV })).status).toBe(404);
+    expect((await worker.fetch(await asOwnerPost('/api/projects/proj_1/sessions/absent/title'), { ...e.env, ...OWNER_ENV })).status).toBe(404);
+  });
+
   it('lists sessions with their rail facts and honours the state, branch and text filters', async () => {
     const e = sqliteEnv();
     seed(e);

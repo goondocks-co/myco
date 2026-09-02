@@ -9,7 +9,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import {
   ANSWER_MAX_TOKENS, ANTHROPIC_MESSAGES_URL, ANTHROPIC_VERSION, DEFAULT_ANTHROPIC_MODEL, localBackendEndpoint, parseTitleAnswer, resolveTitlingProvider, sessionMaterial, titleSession, titlingPrompt,
 } from '@myco-server-worker/core/titling.js';
-import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MAX_TITLES_PER_PROJECT_PER_HOUR, MATERIAL_EXCERPT_CHARS } from '@myco-server-worker/constants.js';
+import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MAX_TITLES_PER_PROJECT_PER_HOUR, MATERIAL_EXCERPT_CHARS, TITLING_TIMEOUT_MS } from '@myco-server-worker/constants.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
@@ -298,5 +298,83 @@ describe('titleSession', () => {
     expect(parseTitleAnswer(`{"title": "ok", "summary": "${'s'.repeat(1201)}"}`)).toBeNull();
     expect(parseTitleAnswer('{"title": 5, "summary": "x"}')).toBeNull();
     expect(parseTitleAnswer('nothing')).toBeNull();
+  });
+});
+
+describe('titleSession on an owner\'s ask', () => {
+  const ask = (h: ReturnType<typeof harness>, id: string, now = NOW) => titleSession(h.env, { projectId: 'proj_1', sessionId: id, now }, { mode: 'owner' });
+
+  it('titles an open session, writes over a title already there, and leaves the end-of-session claim spent', async () => {
+    const h = harness();
+    await seedAnthropic(h);
+    h.session('open', { endedAt: null });
+    h.prompt('open', 'p1', 'hello', NOW - 9000);
+    expect(await ask(h, 'open')).toBe('titled');
+    expect(h.row('open')).toMatchObject({ title: 'Wave-based executor and per-task provider config', titled_at: NOW });
+    expect(logged.join('\n')).not.toContain(KEY);
+    h.sqlite.run(`UPDATE sessions SET title = 'Old', summary = 'old' WHERE session_id = 'open'`);
+    expect(await ask(h, 'open', NOW + TITLING_TIMEOUT_MS + 1)).toBe('titled');
+    expect(h.row('open').title).toBe('Wave-based executor and per-task provider config');
+    expect(h.sent).toHaveLength(2);
+    // The session's own end finds the claim spent and asks nothing.
+    h.sqlite.run(`UPDATE sessions SET ended_at = ? WHERE session_id = 'open'`, [NOW + 40_000]);
+    expect(await h.title('open')).toBe('already');
+    expect(h.sent).toHaveLength(2);
+  });
+
+  it('refuses a second ask while the first may still be running, and admits one after the timeout', async () => {
+    const h = harness();
+    await seedAnthropic(h);
+    h.session('s1');
+    h.prompt('s1', 'p1', 'hello', NOW - 9000);
+    expect(await ask(h, 's1')).toBe('titled');
+    expect(await ask(h, 's1', NOW + 1000)).toBe('already');
+    expect(await ask(h, 's1', NOW + TITLING_TIMEOUT_MS + 1)).toBe('titled');
+    expect(h.sent).toHaveLength(2);
+  });
+
+  it('gives the stamp back when the ask is decided before the provider is asked, so the session keeps its own attempt', async () => {
+    const h = harness();
+    h.session('s1');
+    h.prompt('s1', 'p1', 'hello', NOW - 9000);
+    expect(await ask(h, 's1')).toBe('no_provider');
+    expect(h.row('s1').titled_at).toBeNull();
+    await seedAnthropic(h);
+    // Its own end still gets the one automatic attempt.
+    expect(await h.title('s1')).toBe('titled');
+    expect(h.sent).toHaveLength(1);
+    // An older stamp comes back unchanged.
+    h.session('s2');
+    h.sqlite.run(`UPDATE sessions SET titled_at = ? WHERE session_id = 's2'`, [NOW - 60_000]);
+    expect(await ask(h, 's2')).toBe('no_material');
+    expect(h.row('s2').titled_at).toBe(NOW - 60_000);
+  });
+
+  it('reads the opening and the closing prompts inside the budget, so the arc\'s end reaches the model and the model is told so', async () => {
+    const h = harness();
+    await seedAnthropic(h);
+    h.session('s1');
+    const n = MAX_MATERIAL_PROMPTS + 6;
+    for (let i = 0; i < n; i += 1) {
+      const id = `p${String(i).padStart(2, '0')}`;
+      h.prompt('s1', id, `prompt ${i} ${'x'.repeat(MATERIAL_EXCERPT_CHARS)}`, NOW - 20_000 + i);
+      h.response('s1', id, `r${i}`, `response ${i} ${'y'.repeat(MATERIAL_EXCERPT_CHARS)}`, NOW - 20_000 + i);
+    }
+    const owner = await sessionMaterial(h.env.db, 'proj_1', 's1', 'owner');
+    const claim = await sessionMaterial(h.env.db, 'proj_1', 's1', 'claim');
+    expect(owner.reduce((c, m) => c + m.prompt.length + (m.response?.length ?? 0), 0)).toBeLessThanOrEqual(MAX_MATERIAL_CHARS);
+    expect(owner[0].prompt.startsWith('prompt 0 ')).toBe(true);
+    expect(owner[owner.length - 1].prompt.startsWith(`prompt ${n - 1} `)).toBe(true);
+    expect(owner.filter((m) => m.prompt.startsWith('prompt 0 ') || /^prompt \d+ /.test(m.prompt)).length).toBe(owner.length);
+    expect(claim[claim.length - 1].prompt.startsWith(`prompt ${n - 1} `)).toBe(false);
+    expect(await ask(h, 's1')).toBe('titled');
+    const body = JSON.parse(String(h.sent[0]!.init.body)) as { messages: { content: string }[] };
+    expect(body.messages[0]!.content).toContain('earliest and latest user prompts');
+    expect(body.messages[0]!.content).toContain(`prompt ${n - 1} `);
+    // A short session reads each prompt once.
+    h.session('s2');
+    h.prompt('s2', 'q1', 'one', NOW - 9000);
+    h.prompt('s2', 'q2', 'two', NOW - 8000);
+    expect((await sessionMaterial(h.env.db, 'proj_1', 's2', 'owner')).map((m) => m.prompt)).toEqual(['one', 'two']);
   });
 });

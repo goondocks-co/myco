@@ -7,6 +7,7 @@ import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listPlans, listPrompts, listResponses, listToolCalls } from '../read/children.js';
 import { listTurns, parseOrigins, promptInSession, turnDetail } from '../read/turns.js';
 import { getTranscript, listSegments } from '../read/transcript.js';
+import { titleSession } from '../core/titling.js';
 
 /** The five child collections, by URL segment. One handler serves all of them: they differ only in which query runs. */
 const CHILDREN = {
@@ -123,6 +124,17 @@ export async function handleSessionTurnToolCalls(env: ServerEnv, ctx: OwnerConte
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
   return ok(await listToolCalls(env.db, scope, sessionId, { ...page, promptId: ctx.params.promptId }));
+}
+
+/** `POST …/sessions/{sessionId}/title`: a person asks for the session's title and summary now, over its opening and closing prompts, replacing what is there. Answers the outcome once the provider has, inside the titling timeout. */
+export async function handleTitleSession(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
+  const outcome = await titleSession(env, { projectId: scope.projectId, sessionId, now: ctx.now }, { mode: 'owner' });
+  return ok({ outcome });
 }
 
 /** The project's home: what it holds, and what happened most recently. */

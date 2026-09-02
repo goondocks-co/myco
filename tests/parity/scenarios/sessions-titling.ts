@@ -73,6 +73,23 @@ export const sessionsTitling: ParityScenario = {
       expect(claimed?.title).toBeNull();
       expect((await ownerRows()).find((row) => row.sessionId === s2)?.label).toBe('Rename the project from the card');
       expect(stub.requests.filter((r) => r.material.includes('retry')).length).toBe(1);
+
+      // On an owner's ask the provider is asked again, for an ended session with a title and for one still open. The end-of-session attempt was moments ago, so its stamp is aged past the in-flight window first.
+      stub.up = true;
+      await target.sql(`UPDATE sessions SET titled_at = titled_at - 60000 WHERE session_id=${lit(s1)}`);
+      const askTitle = async (id: string) => {
+        const res = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${id}/title`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
+        expect(res.status).toBe(200);
+        return ((await res.json()) as { outcome: string }).outcome;
+      };
+      expect(await askTitle(s1)).toBe('titled');
+      expect(stub.requests.filter((r) => r.material.includes('retry')).length).toBe(2);
+      const s3 = `parity-${Date.now()}-3`;
+      await post(s3, 'session.start', { agent: 'claude-code', startedAt: Date.now() });
+      await post(s3, 'prompt', { promptId: crypto.randomUUID(), text: 'Add a retry to the open session too', origin: 'user' });
+      expect(await askTitle(s3)).toBe('titled');
+      expect((await sessionRow(s3))?.title).toBe('Retry added to the runner');
+      expect((await ownerRows()).find((row) => row.sessionId === s3)?.label).toBe('Retry added to the runner');
     } finally {
       stub.stop();
     }

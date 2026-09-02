@@ -39,7 +39,7 @@ export const MetricCard = forwardRef<HTMLDivElement, MetricCardProps>(
     <div ref={ref} className={cn(metricCardVariants({ tone }), className)} {...props}>
       <Eyebrow size="sm">{label}</Eyebrow>
       <div className="flex min-w-0 items-end justify-between gap-2">
-        <div className={cn('min-w-0 max-w-full [overflow-wrap:anywhere]', mono ? 'font-mono text-base leading-tight text-on-surface' : 'myco-display-md text-on-surface')}>
+        <div className={cn('min-w-0 max-w-full truncate whitespace-nowrap tabular-nums', mono ? 'font-mono text-base leading-tight text-on-surface' : 'myco-display-md text-on-surface')} title={typeof value === 'string' ? value : undefined}>
           {value}
         </div>
         {sparklineData && sparklineData.length >= 2 && (
