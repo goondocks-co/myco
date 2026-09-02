@@ -208,13 +208,17 @@ export const blobUrl = (projectId: string, key: string) => `${project(projectId)
 export interface SessionListFilters {
   state?: 'open' | 'ended';
   q?: string;
+  branch?: string;
+  member?: string;
 }
 
 export function useSessions(projectId: string, filters: SessionListFilters = {}) {
   const params = new URLSearchParams({ limit: '50' });
   if (filters.state !== undefined) params.set('state', filters.state);
   if (filters.q !== undefined && filters.q.trim() !== '') params.set('q', filters.q.trim());
-  return usePaged<SessionSummaryRow>(['sessions', projectId, filters.state ?? 'all', filters.q?.trim() ?? ''], `${project(projectId)}/sessions?${params.toString()}`);
+  if (filters.branch !== undefined && filters.branch !== '') params.set('branch', filters.branch);
+  if (filters.member !== undefined && filters.member !== '') params.set('member', filters.member);
+  return usePaged<SessionSummaryRow>(['sessions', projectId, params.toString()], `${project(projectId)}/sessions?${params.toString()}`);
 }
 
 /** A session's turns of the named origins, oldest first. One page holds every turn a person typed in any session seen so far; the origins sit in the key so a toggle never shows the other list's pages. */

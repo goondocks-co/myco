@@ -30,10 +30,13 @@ export function Sessions() {
   const status = params.get('state') === 'open' || params.get('state') === 'ended' ? params.get('state')! : 'all';
   const q = params.get('q') ?? '';
   const [text, setText] = useState(q);
+  // The last `q` this page wrote. A `q` that arrives from elsewhere — Back, Forward, a link — is adopted into the box rather than overwritten by the box's own debounce.
+  const wroteQ = useRef(q);
   const filterInputRef = useRef<HTMLInputElement>(null);
   const base = `/p/${encodeURIComponent(projectId)}/sessions`;
 
   const setParam = useCallback((key: string, value: string) => {
+    if (key === 'q') wroteQ.current = value;
     setParams((prev) => {
       const next = new URLSearchParams(prev);
       if (value === '' || value === 'all') next.delete(key); else next.set(key, value);
@@ -42,18 +45,27 @@ export function Sessions() {
   }, [setParams]);
 
   useEffect(() => {
-    if (text.trim() === q) return;
+    if (q === wroteQ.current) return;
+    wroteQ.current = q;
+    setText(q);
+  }, [q]);
+
+  useEffect(() => {
+    if (text.trim() === wroteQ.current) return;
     const handle = setTimeout(() => setParam('q', text.trim()), FILTER_DEBOUNCE_MS);
     return () => clearTimeout(handle);
-  }, [text, q, setParam]);
+  }, [text, setParam]);
 
   const select = useCallback((id: string, options?: { replace?: boolean }) => {
     const search = params.toString();
     navigate(`${base}/${encodeURIComponent(id)}${search === '' ? '' : `?${search}`}`, options);
   }, [base, navigate, params]);
 
-  const filters: SessionListFilters = { state: stateOf(status), q };
-  const filtered = status !== 'all' || q !== '';
+  // `branch` and `member` ride the URL for a link to carry; the rail has no control for them yet.
+  const branch = params.get('branch') ?? undefined;
+  const member = params.get('member') ?? undefined;
+  const filters: SessionListFilters = { state: stateOf(status), q, branch, member };
+  const filtered = status !== 'all' || q !== '' || branch !== undefined || member !== undefined;
 
   return (
     <PageContainer>

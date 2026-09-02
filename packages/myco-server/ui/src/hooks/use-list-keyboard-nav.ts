@@ -49,9 +49,13 @@ export function useListKeyboardNav<T>({ items, getId, selectedId, onActivate, fi
     if (rowRefs.current.length > items.length) rowRefs.current.length = items.length;
   }, [items.length, cursorIndex]);
 
+  // Focus follows the cursor once the reader is moving it, so the row that opens on Enter is the row the ring is on.
+  const moved = useRef(false);
   useEffect(() => {
     const el = rowRefs.current[cursorIndex];
-    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
+    if (!el) return;
+    if (moved.current && typeof el.focus === 'function') el.focus();
+    if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
   }, [cursorIndex]);
 
   const setRowRef = useCallback((idx: number) => (el: HTMLElement | null) => { rowRefs.current[idx] = el; }, []);
@@ -66,15 +70,18 @@ export function useListKeyboardNav<T>({ items, getId, selectedId, onActivate, fi
     if (!hasNoModifier(e)) return;
     if (e.key === 'j' || e.key === 'ArrowDown') {
       e.preventDefault();
+      moved.current = true;
       setCursorIndex((c) => Math.min(items.length - 1, c + 1));
       return;
     }
     if (e.key === 'k' || e.key === 'ArrowUp') {
       e.preventDefault();
+      moved.current = true;
       setCursorIndex((c) => Math.max(0, c - 1));
       return;
     }
-    if (e.key === 'Enter') {
+    // A focused row opens itself on Enter; the container opens the cursor row only when the keystroke reached it directly.
+    if (e.key === 'Enter' && e.target === e.currentTarget) {
       e.preventDefault();
       const it = items[cursorIndex];
       if (it) onActivate(getId(it));

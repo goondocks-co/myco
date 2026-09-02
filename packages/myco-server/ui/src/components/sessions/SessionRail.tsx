@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useMemo, useRef, type RefObject } from 'react';
 import { AlertCircle, GitBranch, MessageSquare } from 'lucide-react';
+import { DESKTOP_BREAKPOINT } from '../ui/master-detail-split';
 import { Row } from '../ui/row';
 import { Skeleton } from '../ui/skeleton';
 import { ActivitySparkline } from '../ui/sparkline';
@@ -8,16 +9,16 @@ import { Surface } from '../ui/surface';
 import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
 import { useMediaQuery } from '../../hooks/use-media-query';
 import { useActivity, useSessions, type SessionListFilters, type SessionSummaryRow } from '../../hooks/use-sessions';
-import { formatRelative } from '../../lib/format';
+import { formatDateTime, formatRelative } from '../../lib/format';
 import { sectionRowsWithOrder } from '../../lib/section-rows';
 
 /** Rows that stand in for the rail while the list is still on its way. */
 const SKELETON_ROWS = 5;
-const DESKTOP = '(min-width: 768px)';
 
 const SessionCard = forwardRef<HTMLDivElement, { session: SessionSummaryRow; isSelected: boolean; isCursor: boolean; onOpen: () => void }>(
   function SessionCard({ session, isSelected, isCursor, onOpen }, ref) {
     const open = session.endedAt === null;
+    const moved = open ? session.lastReceivedAt : session.endedAt;
     return (
       <Row ref={ref} isActive={isSelected} isCursor={isCursor} accent="sage" onClick={onOpen} aria-label={`Session: ${session.label}`} data-selected={isSelected || undefined}>
         <div className="flex items-start justify-between gap-3">
@@ -25,10 +26,12 @@ const SessionCard = forwardRef<HTMLDivElement, { session: SessionSummaryRow; isS
             <StatusDot tone={open ? 'sage' : 'outline'} pulse={open} className="mt-1.5 shrink-0" />
             <h3 className="m-0 min-w-0 truncate font-serif text-sm italic leading-snug text-on-surface">{session.label}</h3>
           </div>
-          <span className="shrink-0 whitespace-nowrap font-mono text-[10px] text-on-surface-variant">{open ? formatRelative(session.lastReceivedAt) : formatRelative(session.endedAt)}</span>
+          <span className="shrink-0 whitespace-nowrap font-mono text-[10px] text-on-surface-variant" title={`${open ? 'last activity' : 'ended'} ${formatDateTime(moved)}`}>
+            {open ? 'last' : 'ended'} {formatRelative(moved)}
+          </span>
         </div>
         <div className="ml-5 mt-1.5 flex items-center justify-between gap-3">
-          <div className="min-w-0 truncate font-mono text-[11px] text-on-surface-variant">
+          <div className="min-w-0 truncate font-mono text-[11px] text-on-surface-variant" title={`${session.agent ?? 'unknown agent'} · ${session.promptCount.toLocaleString()} prompts · ${session.toolCallCount.toLocaleString()} tool calls`}>
             {session.agent ?? 'unknown agent'} · {session.promptCount}p · {session.toolCallCount}t
           </div>
           <ActivitySparkline data={session.activityBuckets} kind="session" widthPx={48} heightPx={14} className="shrink-0" />
@@ -73,7 +76,7 @@ export interface SessionRailProps {
 export function SessionRail({ projectId, selectedId, filters, filtered, filterInputRef, onSelect }: SessionRailProps) {
   const sessions = useSessions(projectId, filters);
   const activity = useActivity(projectId);
-  const desktop = useMediaQuery(DESKTOP);
+  const desktop = useMediaQuery(DESKTOP_BREAKPOINT);
   const { sections, orderedRows } = useMemo(
     () => sectionRowsWithOrder(sessions.rows, { isOpen: (s) => s.endedAt === null, startedAtMs: (s) => s.startedAt ?? s.firstReceivedAt }),
     [sessions.rows],
@@ -92,19 +95,28 @@ export function SessionRail({ projectId, selectedId, filters, filtered, filterIn
   const nav = useListKeyboardNav({ items: orderedRows, getId: (s) => s.sessionId, selectedId, onActivate: (id) => onSelect(id), filterInputRef });
   const stats = activity.data?.stats;
 
+  // Unfiltered, the list is the project, so the project's counts are honest; under a filter, only what the list itself holds is.
+  const counts = filtered
+    ? <span><strong className="font-semibold text-on-surface">{sessions.rows.length.toLocaleString()}{sessions.hasMore ? '+' : ''}</strong> SHOWN</span>
+    : stats === undefined
+      ? <span>—</span>
+      : (
+        <>
+          <span><strong className="font-semibold text-on-surface">{stats.sessions.toLocaleString()}</strong> TOTAL</span>
+          <span aria-hidden>·</span>
+          <span><strong className="font-semibold text-on-surface">{stats.openSessions.toLocaleString()}</strong> OPEN</span>
+          <span aria-hidden>·</span>
+          <span><strong className="font-semibold text-on-surface">{stats.prompts.toLocaleString()}</strong> PROMPTS</span>
+        </>
+      );
+
   const header = (
     <div className="border-b border-[var(--ghost-border)] px-4 py-3">
       <div className="mb-2 flex items-baseline justify-between gap-2">
         <span className="myco-eyebrow-sm">Sessions</span>
-        <span className="myco-display-sm text-on-surface">Archive</span>
+        <span className="myco-display-sm text-on-surface">History</span>
       </div>
-      <div className="inline-flex items-center gap-1.5 font-mono text-[11px] text-on-surface-variant" data-testid="rail-counts">
-        <span><strong className="font-semibold text-on-surface">{(stats?.sessions ?? 0).toLocaleString()}</strong> TOTAL</span>
-        <span aria-hidden>·</span>
-        <span><strong className="font-semibold text-on-surface">{(stats?.openSessions ?? 0).toLocaleString()}</strong> OPEN</span>
-        <span aria-hidden>·</span>
-        <span><strong className="font-semibold text-on-surface">{(stats?.prompts ?? 0).toLocaleString()}</strong> PROMPTS</span>
-      </div>
+      <div className="inline-flex items-center gap-1.5 font-mono text-[11px] text-on-surface-variant" data-testid="rail-counts">{counts}</div>
     </div>
   );
 
