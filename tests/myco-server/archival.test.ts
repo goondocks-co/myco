@@ -50,7 +50,7 @@ describe('an archived project', () => {
     await r.ownerPost('/api/projects/proj_1/archive');
     const refreshed = await json(await r.fetch(memberPost(r.windowed, {}, '/tokens/refresh')));
     expect(refreshed.refreshed).toBe(true);
-    const claim = await json(await r.fetch(memberPost(r.token, { id: 'run_arch', agentId: 'agent_arch', task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' }, '/runs/claim')));
+    const claim = await json(await r.fetch(memberPost(r.token, { id: 'run_arch', agentId: 'agent_arch', task: 'digest', capability: 'cortex' }, '/runs/claim')));
     expect(claim.persisted).toBe(true);
   });
 

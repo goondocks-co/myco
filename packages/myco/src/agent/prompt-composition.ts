@@ -28,6 +28,8 @@ export interface TaskPromptInput {
   taskDisplayName: string;
   taskPrompt: string;
   instruction?: string;
+  /** Parameters a dispatch named; each is a `{{name}}` the task prompt may carry, and `session_id` here wins over one found in the instruction. */
+  params?: Record<string, string>;
 }
 
 /**
@@ -35,14 +37,16 @@ export interface TaskPromptInput {
  * optional user instruction.
  *
  * Task prompts support:
- * - `{{session_id}}` — replaced with the session ID from instruction (if present)
+ * - `{{session_id}}` — the dispatch's `session_id` parameter, else the session ID found in the instruction (if present)
  * - `{{instruction}}` — the raw user instruction text
+ * - `{{<param>}}` — any other parameter the dispatch named
  */
 export function composeTaskPrompt(input: TaskPromptInput): string {
-  const { vaultContext, taskDisplayName, taskPrompt, instruction } = input;
+  const { vaultContext, taskDisplayName, taskPrompt, instruction, params } = input;
 
-  const sessionId = instruction?.match(UUID_PATTERN)?.[1] ?? '';
+  const sessionId = params?.session_id ?? instruction?.match(UUID_PATTERN)?.[1] ?? '';
   const resolvedPrompt = interpolate(taskPrompt, {
+    ...(params ?? {}),
     session_id: sessionId,
     instruction: instruction ?? '',
   });

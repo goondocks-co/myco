@@ -33,7 +33,7 @@ import { admitResume, classifyFailure, type FailureObservation } from '../core/r
 /** The failure classes a harness may report; anything else is refused rather than mapped to a default. */
 const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
 import { revokeCredentialAsMember } from '../auth/tokens.js';
-import { HARNESS_MEMBER_ID } from './harness.js';
+import { HARNESS_MEMBER_ID } from '../core/harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
@@ -62,7 +62,7 @@ function parseBody(body: string): Record<string, unknown> | null {
 }
 
 /**
- * Claim a run of a task, single-flighted.
+ * Claim a run of a task: one row per run id, exactly once.
  *
  * `dispatchedBy` is taken from the authenticated credential and never from the
  * body: a caller that could name its own dispatcher could attribute its work to
@@ -75,7 +75,8 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
   const id = str(body.id);
   const agentId = str(body.agentId);
   const task = str(body.task);
-  const maxAgeSeconds = int(body.maxAgeSeconds);
+  // The claim guards the run id alone; a field that once named an age floor is refused rather than ignored.
+  if (body.maxAgeSeconds !== undefined) return Response.json(refused(ctx, refusal('claim takes no maxAgeSeconds', 'parse')));
   // A claim names the capability its task needs, or declares the task
   // capture-driven and gated on a provider instead. Neither may be omitted:
   // a claim that named nothing would run under no admission at all.
@@ -92,17 +93,17 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
   const model = strOrNull(body.model);
   const runContext = strOrNull(body.runContext, MAX_STATE_BYTES);
   if (id === null || agentId === null || task === null || admission === null
-    || maxAgeSeconds === null || maxAgeSeconds < 0
     || instruction === undefined || harness === undefined || provider === undefined
     || model === undefined || runContext === undefined) {
-    return Response.json(refused(ctx, refusal('claim requires id, agentId, task, a non-negative maxAgeSeconds, and either a known capability or captureDriven', 'parse')));
+    return Response.json(refused(ctx, refusal('claim requires id, agentId, task, and either a known capability or captureDriven', 'parse')));
   }
 
   const row: RunInsert = {
     id, agentId, task, instruction, harness, provider, model,
     dryRun: body.dryRun === true, startedAt, runContext, dispatchedBy: ctx.tokenId,
   };
-  const outcome = await claimRun(env.db, { projectId: ctx.projectId }, row, { taskName: task, maxAgeSeconds, admission }, ctx.now);
+  // The runtime member claims only a run the server dispatched under this credential.
+  const outcome = await claimRun(env.db, { projectId: ctx.projectId }, row, { taskName: task, admission, dispatchedOnly: ctx.memberId === HARNESS_MEMBER_ID }, ctx.now);
   if (outcome.claimed) return Response.json({ persisted: true, claimed: true, runId: id });
   // A Project not admitted to the capability is a settled answer, not contention:
   // it names the capability so a caller reports what to enable rather than retrying.

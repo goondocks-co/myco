@@ -70,42 +70,6 @@ export async function waitFor<T>(read: () => Promise<T>, pred: (value: T) => boo
   return last;
 }
 
-export interface TitlingStub {
-  url: string;
-  requests: Array<{ path: string; model: string; material: string }>;
-  up: boolean;
-  stop(): void;
-}
-
-/**
- * A deterministic openai-compatible completions endpoint on the loopback. The
- * titling call for `agent.provider.type = 'openai-compatible'` goes verbatim to
- * `<base_url>/chat/completions` with no credential, and both targets must reach
- * the same loopback port — which is why the Cloudflare parity config strips
- * `global_fetch_strictly_public`.
- */
-export function titlingStub(): TitlingStub {
-  const stub: TitlingStub = { url: '', requests: [], up: true, stop: () => server.stop(true) };
-  const server = Bun.serve({
-    port: 0,
-    hostname: '127.0.0.1',
-    fetch: async (req) => {
-      const path = new URL(req.url).pathname;
-      if (!path.endsWith('/chat/completions')) return new Response('not found', { status: 404 });
-      const body = await req.json() as { model: string; messages: Array<{ content: string }> };
-      const material = body.messages[0]?.content ?? '';
-      // Recorded whether up or down: an assertion about call COUNTS must see the
-      // attempt a downed stub refuses, or a late duplicate hides behind the 503.
-      stub.requests.push({ path, model: body.model, material });
-      if (!stub.up) return new Response('down', { status: 503 });
-      const title = material.includes('retry') ? 'Retry added to the runner' : 'Another session';
-      return Response.json({ choices: [{ message: { content: JSON.stringify({ title, summary: 'Added a retry to runner.ts and covered it with a test.' }) } }] });
-    },
-  });
-  stub.url = `http://127.0.0.1:${server.port}`;
-  return stub;
-}
-
 /** Opens a read/write connection on a self-hosted volume; WAL keeps it safe beside the serving process. */
 export function volumeSql(databasePath: string) {
   return async (command: string): Promise<Record<string, unknown>[]> => {

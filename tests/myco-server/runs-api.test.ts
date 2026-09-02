@@ -11,6 +11,7 @@ import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import worker from '@myco-server-worker/index.js';
+import { recordDispatch } from '@myco-server-worker/core/runs.js';
 
 const AGENT = 'agent_1';
 
@@ -28,27 +29,30 @@ async function harness() {
 }
 
 describe('POST /runs/claim', () => {
-  it('claims once and reports the live run to the loser, both answered as persisted', async () => {
+  it('claims each id once and reports the row to a repeat, both answered as persisted; a second run of the task claims too', async () => {
     const { post } = await harness();
-    const first = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    const first = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(first).toEqual({ persisted: true, claimed: true, runId: 'r1' });
+    expect(await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'digest', capability: 'cortex' })).toEqual({ persisted: true, claimed: true, runId: 'r2' });
 
-    const second = await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
-    expect(second.persisted).toBe(true);
-    expect(second.claimed).toBe(false);
-    expect((second.running as { id: string }).id).toBe('r1');
+    const repeat = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
+    expect(repeat.persisted).toBe(true);
+    expect(repeat.claimed).toBe(false);
+    expect((repeat.running as { id: string }).id).toBe('r1');
+    // The field that once named an age floor is refused, never ignored.
+    expect(await post('/runs/claim', { id: 'r3', agentId: AGENT, task: 'digest', capability: 'cortex', maxAgeSeconds: 3600 })).toMatchObject({ persisted: false, code: 'parse' });
   });
 
   it('attributes the run to the presented credential and never to a body field', async () => {
     const { post, sqlite, token } = await harness();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex', dispatchedBy: 'someone_else' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex', dispatchedBy: 'someone_else' });
     expect((sqlite.query(`SELECT dispatched_by d FROM agent_runs WHERE id = 'r1'`).get() as { d: string }).d).toBe(token.tokenId);
   });
 
   it('answers a Project not admitted to the capability distinctly from one whose task is running', async () => {
     const { post, sqlite } = await harness();
     sqlite.query(`DELETE FROM project_capabilities WHERE project_id = 'proj_1'`).run();
-    const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(res).toEqual({ persisted: true, claimed: false, notAdmitted: 'cortex' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(0);
   });
@@ -58,20 +62,20 @@ describe('POST /runs/claim', () => {
     sqlite.query(`DELETE FROM project_capabilities`).run();
     sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by)
       VALUES ('agent.provider.type', '"anthropic"', ?, 'test')`).run(Date.now());
-    expect(await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'title-summary', maxAgeSeconds: 3600, captureDriven: true }))
+    expect(await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'title-summary', captureDriven: true }))
       .toEqual({ persisted: true, claimed: true, runId: 'r1' });
   });
 
   it('answers a capture-driven claim with no provider distinctly, so a caller reports what to configure', async () => {
     const { post, sqlite } = await harness();
-    const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'title-summary', maxAgeSeconds: 3600, captureDriven: true });
+    const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'title-summary', captureDriven: true });
     expect(res).toEqual({ persisted: true, claimed: false, noProvider: true });
     expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(0);
   });
 
   it('refuses a claim naming no capability, so admission cannot be skipped by omission', async () => {
     const { post, sqlite } = await harness();
-    const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600 });
+    const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest' });
     expect({ persisted: res.persisted, coded: typeof res.code === 'string' }).toEqual({ persisted: false, coded: true });
     expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(0);
   });
@@ -87,9 +91,9 @@ describe('POST /runs/claim', () => {
     const { post, sqlite, env, token } = await harness();
     sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_2', 'proj_2', ?)`).run(Date.now());
     sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_2', 'cortex', 1, ?, 'test')`).run(Date.now());
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     const other = await (await worker.fetch(
-      memberPost(token.token, { id: 'r2', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' }, '/runs/claim', { 'x-myco-project': 'proj_2' }),
+      memberPost(token.token, { id: 'r2', agentId: AGENT, task: 'digest', capability: 'cortex' }, '/runs/claim', { 'x-myco-project': 'proj_2' }),
       env)).json() as Record<string, unknown>;
     expect(other).toEqual({ persisted: true, claimed: true, runId: 'r2' });
   });
@@ -142,7 +146,7 @@ describe('agent registration', () => {
 describe('run lifecycle over HTTP', () => {
   it('refuses an update naming a column it may not set, rather than ignoring it', async () => {
     const { post, sqlite } = await harness();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     const res = await post('/runs/update', { runId: 'r1', update: { status: 'failed', project_id: 'proj_2', dispatched_by: 'someone' } });
     expect({ persisted: res.persisted, coded: typeof res.code === 'string' }).toEqual({ persisted: false, coded: true });
     expect(String(res.reason)).toContain('dispatched_by');
@@ -154,7 +158,7 @@ describe('run lifecycle over HTTP', () => {
 
   it('applies an update of settable columns and reports rows moved', async () => {
     const { post } = await harness();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } })).toEqual({ persisted: true, changed: 1 });
     const got = await post('/runs/get', { runId: 'r1' });
     expect((got.run as { status: string; completedAt: number }).status).toBe('completed');
@@ -163,7 +167,7 @@ describe('run lifecycle over HTTP', () => {
   it('reads a run in another Project as absent rather than refusing, so existence is not confirmed', async () => {
     const { post, sqlite, env, token } = await harness();
     sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_2', 'proj_2', ?)`).run(Date.now());
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     const other = await (await worker.fetch(memberPost(token.token, { runId: 'r1' }, '/runs/get', { 'x-myco-project': 'proj_2' }), env)).json() as Record<string, unknown>;
     expect(other).toEqual({ persisted: true, run: null });
   });
@@ -179,7 +183,7 @@ describe('run lifecycle over HTTP', () => {
 
 describe('failure and resume admission over HTTP', () => {
   const claim = (id: string, task = 'digest') =>
-    ({ id, agentId: AGENT, task, maxAgeSeconds: 3600, capability: 'cortex' });
+    ({ id, agentId: AGENT, task, capability: 'cortex' });
 
   it('classifies an ordinary failure as resumable and keeps its checkpoint', async () => {
     const { post, sqlite } = await harness();
@@ -251,7 +255,7 @@ describe('failure and resume admission over HTTP', () => {
 describe('POST /runs/report and /runs/events', () => {
   it('writes a report against a claimed run and reads it back; a run this Project does not hold is refused', async () => {
     const { post } = await harness();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     const written = await post('/runs/report', { runId: 'r1', agentId: AGENT, action: 'summary', summary: 'the finding', details: '{"n":1}' });
     expect(written).toEqual({ persisted: true, recorded: true });
     const read = await post('/runs/reports', { runId: 'r1' });
@@ -266,7 +270,7 @@ describe('POST /runs/report and /runs/events', () => {
 
   it('records an event burst with tenancy anchored on the run, refuses an unknown eventType, and bounds the burst', async () => {
     const { post, sqlite } = await harness();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     const burst = await post('/runs/events', { events: [
       { runId: 'r1', eventType: 'phase_start', phaseName: 'p1' },
       { runId: 'r1', eventType: 'post_tool_use', toolName: 'vault_report', outcome: 'success', durationMs: 12, payload: '{}' },
@@ -285,7 +289,7 @@ describe('POST /runs/report and /runs/events', () => {
 
   it('truncates an oversized payload rather than dropping the event, and takes a full 32-event burst', async () => {
     const { post, sqlite } = await harness();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     const big = await post('/runs/events', { events: [{ runId: 'r1', eventType: 'post_tool_use', payload: 'x'.repeat(20_000) }] });
     expect(big).toEqual({ persisted: true, recorded: 1 });
     const row = sqlite.query(`SELECT LENGTH(payload) l FROM agent_run_events WHERE run_id = 'r1'`).get() as { l: number };
@@ -313,12 +317,16 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     const post = async (token: string, path: string, body: unknown): Promise<Record<string, unknown>> =>
       await (await worker.fetch(memberPost(token, body, path), env)).json() as Record<string, unknown>;
     const credRevokedAt = (tokenId: string): unknown => (fixture.sqlite.query(`SELECT revoked_at r FROM member_credentials WHERE id = ?`).get(tokenId) as { r: unknown }).r;
-    return { ...fixture, env, minted, ended, post, credRevokedAt };
+    // The runtime member claims only a run the server dispatched under its credential: the dispatch record comes first.
+    const dispatch = (runId: string, credential: { tokenId: string }) =>
+      recordDispatch(fixture.db, { projectId: 'proj_1' }, { id: runId, agentId: AGENT, task: 'digest', provider: null, model: null, runContext: null, dispatchedBy: credential.tokenId, startedAt: now });
+    return { ...fixture, env, minted, ended, post, credRevokedAt, dispatch };
   }
 
   it('releases the container hold, revokes its own credential, and admits no further write on it', async () => {
-    const { env, minted, ended, post, credRevokedAt } = await dispatchedRun();
-    const claim = await post(minted.token, '/runs/claim', { id: 'run_t1', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    const { env, minted, ended, post, credRevokedAt, dispatch } = await dispatchedRun();
+    await dispatch('run_t1', minted);
+    const claim = await post(minted.token, '/runs/claim', { id: 'run_t1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(claim.claimed).toBe(true);
 
     const progress = await post(minted.token, '/runs/update', { runId: 'run_t1', update: { tokens_used: 5 } });
@@ -333,8 +341,9 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
   });
 
   it('still revokes the credential when the runtime release itself fails, at the skipped status too', async () => {
-    const { minted, post, credRevokedAt } = await dispatchedRun({ endRunThrows: true });
-    const claim = await post(minted.token, '/runs/claim', { id: 'run_t2', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    const { minted, post, credRevokedAt, dispatch } = await dispatchedRun({ endRunThrows: true });
+    await dispatch('run_t2', minted);
+    const claim = await post(minted.token, '/runs/claim', { id: 'run_t2', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(claim.claimed).toBe(true);
     const terminal = await post(minted.token, '/runs/update', { runId: 'run_t2', update: { status: 'skipped', completed_at: Date.now() } });
     expect({ persisted: terminal.persisted, changed: terminal.changed }).toEqual({ persisted: true, changed: 1 });
@@ -342,9 +351,10 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
   });
 
   it("keys the release on the run's own dispatched_by: a sibling run's terminal write releases nothing", async () => {
-    const { db, minted, ended, post, credRevokedAt } = await dispatchedRun();
+    const { db, minted, ended, post, credRevokedAt, dispatch } = await dispatchedRun();
     const sibling = await issueMemberToken(db, { memberId: 'mem_harness', machineId: 'harness' }, Date.now());
-    const claim = await post(sibling.token, '/runs/claim', { id: 'run_t3', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    await dispatch('run_t3', sibling);
+    const claim = await post(sibling.token, '/runs/claim', { id: 'run_t3', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(claim.claimed).toBe(true);
     const terminal = await post(minted.token, '/runs/update', { runId: 'run_t3', update: { status: 'completed', completed_at: Date.now() } });
     expect({ persisted: terminal.persisted, changed: terminal.changed, ended: ended.length }).toEqual({ persisted: true, changed: 1, ended: 0 });
@@ -354,7 +364,7 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
   it('leaves any other member credential untouched at its terminal writes', async () => {
     const { db, ended, post, credRevokedAt } = await dispatchedRun();
     const member = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-    const claim = await post(member.token, '/runs/claim', { id: 'run_t4', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    const claim = await post(member.token, '/runs/claim', { id: 'run_t4', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(claim.claimed).toBe(true);
     const terminal = await post(member.token, '/runs/update', { runId: 'run_t4', update: { status: 'failed', completed_at: Date.now() } });
     expect({ persisted: terminal.persisted, changed: terminal.changed, ended }).toEqual({ persisted: true, changed: 1, ended: [] });
@@ -362,8 +372,9 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
   });
 
   it('releases through /runs/failed by the same rule: the classified failure is a terminal write too', async () => {
-    const { minted, ended, post, credRevokedAt } = await dispatchedRun();
-    const claim = await post(minted.token, '/runs/claim', { id: 'run_t5', agentId: AGENT, task: 'digest', maxAgeSeconds: 3600, capability: 'cortex' });
+    const { minted, ended, post, credRevokedAt, dispatch } = await dispatchedRun();
+    await dispatch('run_t5', minted);
+    const claim = await post(minted.token, '/runs/claim', { id: 'run_t5', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(claim.claimed).toBe(true);
     const failed = await post(minted.token, '/runs/failed', { runId: 'run_t5', error: 'provider unreachable', errorClass: 'other' });
     expect({ persisted: failed.persisted, changed: failed.changed, ended }).toEqual({ persisted: true, changed: 1, ended: ['run_t5'] });

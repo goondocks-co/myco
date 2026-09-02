@@ -214,11 +214,10 @@ export interface ServerEnv {
   /**
    * Prove the harness runtime: start a held runtime for `runId`, exchange one
    * request with it, and answer what it reported. Present only where a target
-   * has one; a caller refuses rather than pretending. The `HarnessDispatcher`
-   * proposal in `deferred-adapters.ts` subsumes this seam when dispatch lands.
+   * has one; a caller refuses rather than pretending.
    */
   harnessProbe?: (runId: string, timeoutSeconds: number) => Promise<Record<string, unknown>>;
-  /** Launch a held harness runtime for one run, its dispatch handed as environment. Present only where a target has one. */
+  /** Launch a held harness runtime for one run, its dispatch handed as environment. Present only where a target has one; `core/harness.ts` is its one caller. */
   harnessLaunch?: (spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }) => Promise<void>;
   /** Release the held harness runtime of one run, letting its container stop. Present only where a target has one. */
   harnessEnd?: (runId: string) => Promise<void>;

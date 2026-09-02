@@ -38,6 +38,7 @@ import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
 import { handleBlob } from './ingest/blobs.js';
 import { handleHarnessDispatch, handleHarnessProbe } from './api/harness.js';
+import { handleSessionMaterial, handleSessionTitle } from './api/session-tasks.js';
 import { handleEvents } from './ingest/events.js';
 import { handleGrantMcp, handleMcp } from './mcp/http.js';
 
@@ -97,6 +98,9 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/runs/report', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteReport },
   { method: 'POST', path: '/runs/events', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRecordRunEvents },
   { method: 'POST', path: '/runs/cortex-instructions', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleUpsertCortexInstructions },
+  // What a titling run reads and writes: admitted only to the harness credential that dispatched a live `title-summary` run bound to the named session.
+  { method: 'POST', path: '/runs/session-material', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionMaterial },
+  { method: 'POST', path: '/runs/session-title', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionTitle },
   { method: 'POST', path: '/spores/save', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSaveSpore },
   { method: 'POST', path: '/spores/list', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleListSpores },
   { method: 'POST', path: '/spores/get', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleGetSpore },

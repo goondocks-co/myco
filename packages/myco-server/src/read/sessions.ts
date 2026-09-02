@@ -375,7 +375,7 @@ export async function claimTitling(db: RelationalStore, projectId: string, sessi
 }
 
 /**
- * Claims a titling attempt an owner asked for: any session, ended or not, titled or not. Refused while an attempt begun within `inFlightMs` may still be running, so two asks make one call. Stamps `titled_at`, which is what the hourly ceiling meters, and answers the stamp it replaced so an attempt that never reaches the provider can put it back.
+ * Claims a titling attempt an owner asked for: any session, ended or not, titled or not. Refused while an attempt begun within `inFlightMs` may still be running, so two asks make one run. Stamps `titled_at`, and answers the stamp it replaced so an attempt that never launches can put it back.
  */
 export async function claimOwnerTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, inFlightMs: number): Promise<{ claimed: boolean; previous: number | null }> {
   const row = await db.prepare(`SELECT titled_at FROM sessions WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ titled_at: number | null }>();
@@ -387,7 +387,7 @@ export async function claimOwnerTitling(db: RelationalStore, projectId: string, 
   return { claimed: result.meta.changes === 1, previous: row.titled_at ?? null };
 }
 
-/** Puts back the stamp an owner's claim replaced, for an attempt decided before the provider is asked — the session keeps its own end-of-session attempt and the ceiling is not charged for nothing. */
+/** Puts back the stamp a claim replaced, for an attempt whose launch the runtime refused — the session keeps its own end-of-session attempt, and an owner may ask again at once. */
 export async function restoreTitlingStamp(db: RelationalStore, projectId: string, sessionId: string, stamp: number, previous: number | null): Promise<void> {
   await db
     .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND titled_at = ?`)
@@ -395,25 +395,13 @@ export async function restoreTitlingStamp(db: RelationalStore, projectId: string
     .run();
 }
 
-/** Stores a session's title and summary over whatever is there, naming the member who asked; false when no such session sits in the project. */
+/** Stores a session's title and summary over whatever is there, naming the member whose ask produced them; false when no such session sits in the project. */
 export async function overwriteTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, titledBy: string | null): Promise<boolean> {
   const result = await db
     .prepare(`UPDATE sessions SET title = ?, summary = ?, titled_by = ? WHERE project_id = ? AND session_id = ?`)
     .bind(title, summary, titledBy, projectId, sessionId)
     .run();
   return result.meta.changes === 1;
-}
-
-/** How many titling attempts the project has made after an instant. */
-export async function titlingsSince(db: RelationalStore, projectId: string, sinceMs: number): Promise<number> {
-  const row = await db.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE project_id = ? AND titled_at > ?`).bind(projectId, sinceMs).first<{ n: number }>();
-  return row?.n ?? 0;
-}
-
-/** The agent and branch a session recorded, for the material a title is written from. */
-export async function sessionFacts(db: RelationalStore, projectId: string, sessionId: string): Promise<{ agent: string | null; branch: string | null }> {
-  const row = await db.prepare(`SELECT agent, branch FROM sessions WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ agent: string | null; branch: string | null }>();
-  return { agent: row?.agent ?? null, branch: row?.branch ?? null };
 }
 
 /** Stores a session's title and summary where none exists yet; false when one already does. */

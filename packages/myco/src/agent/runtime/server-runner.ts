@@ -6,10 +6,9 @@
  * read the local vault ambiently, which a container does not have. This runner
  * reuses the pieces that are pure (task definitions, prompt composition, the
  * harness adapters) and reaches storage exclusively through the run-control
- * routes: the claim, the status updates, and a materialized tool surface whose
- * only tool records reports over `POST /runs/report`.
+ * routes: the claim, the status updates, and a tool surface materialized per
+ * task (`server-tools.ts`).
  */
-import { z } from 'zod/v4';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import type { RequestBudget } from '@myco/member/budget.js';
 import type { ServerClient } from '@myco/member/transport.js';
@@ -21,8 +20,13 @@ import { loadAllTasks } from '../registry.js';
 import { composeTaskPrompt } from '../prompt-composition.js';
 import type { AgentHarness } from '../harness/types.js';
 import type { ProviderConfig } from '../types.js';
-import type { MycoToolDefinition } from '../tools/types.js';
-import { createHttpRunStore, postRunReport } from './run-store-http.js';
+import { createHttpRunStore, type RunClaimAdmission } from './run-store-http.js';
+import { materializedToolsForTask } from './server-tools.js';
+
+export { materializedReportTool } from './server-tools.js';
+
+/** The admission a dispatch names: a capability the Project must hold, or `captureDriven` for a task gated on a provider alone. */
+export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 
 /** What a server task run needs; everything arrives in the dispatch, nothing is read ambiently. */
 export interface ServerTaskOptions {
@@ -35,6 +39,10 @@ export interface ServerTaskOptions {
   provider?: ProviderConfig;
   model?: string;
   instruction?: string;
+  /** The task's parameters, as the dispatcher handed them; interpolated into the prompt and recorded on the run as its context. */
+  params?: Record<string, string>;
+  /** The admission the claim carries, as the dispatcher decided it from the catalogue; the runtime never decides admission itself. */
+  admission?: string;
   /** Test seam: the harness to execute with; resolved from the task's configuration when absent. */
   harness?: AgentHarness;
 }
@@ -46,34 +54,9 @@ export interface ServerTaskResult {
   reportCount: number;
 }
 
-/** The one tool a server run holds in this slice: reports over the run-control surface. */
-export function materializedReportTool(
-  client: ServerClient,
-  budget: RequestBudget,
-  ids: { runId: string; agentId: string },
-  counter: { reports: number },
-): MycoToolDefinition {
-  return {
-    name: 'vault_report',
-    description: 'Record an observability report for the current run. Use action "skip" when skipping expected operations, with reasoning in the summary field.',
-    inputSchema: {
-      action: z.string().describe('Action name (e.g., extract, digest, container-smoke, skip)'),
-      summary: z.string().describe('Human-readable summary of what was done'),
-      details: z.record(z.string(), z.unknown()).optional().describe('Structured details as key-value pairs'),
-    },
-    annotations: { readOnlyHint: true },
-    handler: async (args: { action: string; summary: string; details?: Record<string, unknown> }) => {
-      await postRunReport(client, budget, {
-        runId: ids.runId,
-        agentId: ids.agentId,
-        action: args.action,
-        summary: args.summary,
-        details: args.details === undefined ? null : JSON.stringify(args.details),
-      });
-      counter.reports += 1;
-      return { content: [{ type: 'text', text: `report recorded: ${args.action}` }] };
-    },
-  };
+/** The claim's admission from the dispatch's word: the capture-driven marker, or a capability name. */
+export function claimAdmission(admission: string | undefined): RunClaimAdmission {
+  return admission === CAPTURE_DRIVEN_ADMISSION ? { captureDriven: true } : { capability: admission ?? 'cortex' };
 }
 
 /**
@@ -85,12 +68,13 @@ export function materializedReportTool(
 export async function runServerTask(options: ServerTaskOptions): Promise<ServerTaskResult> {
   const agentId = options.agentId ?? DEFAULT_AGENT_ID;
   const { client, budget, runId, taskName } = options;
+  const admission = claimAdmission(options.admission);
   const store = createHttpRunStore({
     client,
     agentId,
-    // The claim's admission is decided server-side from the task; this
-    // surface never asks admission separately.
-    capabilityForTask: () => 'cortex',
+    // The claim's admission is decided server-side from the task and handed to
+    // this runtime in its dispatch; this surface never asks admission separately.
+    admissionForTask: () => admission,
     budget,
   });
 
@@ -107,8 +91,8 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     // it; a local-provider dispatch under the wrong harness would spawn the
     // wrong runtime.
     const harnessId = (options.provider?.type === undefined ? HARNESS_CLAUDE_SDK : inferHarnessFromProviderType(options.provider.type)) ?? HARNESS_CLAUDE_SDK;
-    // No started_at: the server stamps its own clock, the only clock the
-    // single-flight guard compares against.
+    // No started_at: the server stamps its own clock. The run's context is the
+    // dispatch's parameters, which the run routes that serve one task read back.
     const claim = await store.claimRun(
       {
         id: runId,
@@ -118,21 +102,23 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
         harness: harnessId,
         provider: options.provider?.type ?? null,
         model: options.model ?? null,
+        run_context: options.params === undefined ? null : JSON.stringify(options.params),
       },
-      { taskName, maxAgeSeconds: (options.timeoutSeconds ?? task.timeoutSeconds ?? 300) + 300 },
+      { taskName, maxAgeSeconds: 0 },
     );
     if ((claim as { claimed?: boolean } | undefined)?.claimed === false) {
       return { runId, status: 'skipped', reportCount: 0 };
     }
 
-    const counter = { reports: 0 };
-    const reportTool = materializedReportTool(client, budget, { runId, agentId }, counter);
+    const counter = { reports: 0, writes: 0 };
+    const tools = materializedToolsForTask(taskName, { client, budget, runId, agentId }, counter);
     const harness = options.harness ?? getAgentHarness(harnessId);
     const prompt = composeTaskPrompt({
       vaultContext: '',
       taskDisplayName: task.displayName ?? taskName,
       taskPrompt: task.prompt ?? '',
       instruction: options.instruction,
+      params: options.params,
     });
 
     const abort = new AbortController();
@@ -145,7 +131,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
         maxTurns: task.maxTurns,
         systemPrompt,
         provider: options.provider,
-        toolSurface: { agentId, runId, tools: [reportTool] },
+        toolSurface: { agentId, runId, tools },
         abortController: abort,
         reasoningLevel: task.reasoningLevel,
       });

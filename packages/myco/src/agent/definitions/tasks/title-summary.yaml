@@ -1,7 +1,8 @@
 # =============================================================================
 # Built-in Task: Title & Summary
 # =============================================================================
-# Lightweight task triggered by batch threshold or session stop.
+# Lightweight task triggered by batch threshold or session stop, or dispatched
+# for one named session (a Deployment names the target on every dispatch).
 # Only generates titles and summaries — no extraction or graph work.
 # =============================================================================
 
@@ -32,7 +33,8 @@ prompt: |
   to get the current title/summary plus the compact ordered prompt-batch arc.
   Do NOT skip even if there are no new unprocessed batches.
 
-  **If no target session specified (automatic run):**
+  **If no target session specified (a local automatic run; a dispatched run
+  always names its target):**
   Call `vault_unprocessed` with `include_active: true, grouping_only: true` —
   titles are needed mid-flight, not just after a session completes, and the
   content-free listing means this step never mixes two sessions' content
@@ -78,7 +80,7 @@ prompt: |
 
   Always call `vault_report` with action "summary" — even when there was
   nothing to do. Set `details` to a structured object:
-  - `run_id`: leave empty string, the daemon stamps the current run's id
+  - `run_id`: leave empty string; the report is recorded against the current run
   - `updated`: number of sessions you called `vault_update_session` for
   - `skipped`: number of sessions left as-is (already current)
 
