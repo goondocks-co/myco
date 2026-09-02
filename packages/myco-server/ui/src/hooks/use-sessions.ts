@@ -204,8 +204,17 @@ export const runtimeName = (s: SessionRow): string | null => s.runtimeLabel ?? s
 
 export const blobUrl = (projectId: string, key: string) => `${project(projectId)}/blobs/${seg(key)}`;
 
-export function useSessions(projectId: string) {
-  return usePaged<SessionSummaryRow>(['sessions', projectId], `${project(projectId)}/sessions?limit=50`);
+/** What the rail asks the list for. `state` narrows to open or ended sessions; `q` is the text the filter box holds, matched by the server over title, first prompt, agent, branch and id. */
+export interface SessionListFilters {
+  state?: 'open' | 'ended';
+  q?: string;
+}
+
+export function useSessions(projectId: string, filters: SessionListFilters = {}) {
+  const params = new URLSearchParams({ limit: '50' });
+  if (filters.state !== undefined) params.set('state', filters.state);
+  if (filters.q !== undefined && filters.q.trim() !== '') params.set('q', filters.q.trim());
+  return usePaged<SessionSummaryRow>(['sessions', projectId, filters.state ?? 'all', filters.q?.trim() ?? ''], `${project(projectId)}/sessions?${params.toString()}`);
 }
 
 /** A session's turns of the named origins, oldest first. One page holds every turn a person typed in any session seen so far; the origins sit in the key so a toggle never shows the other list's pages. */

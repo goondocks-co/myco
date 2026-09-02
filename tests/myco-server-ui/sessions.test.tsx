@@ -60,34 +60,106 @@ function mount(path: string) {
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
 }
 
+const ACTIVITY = { items: [], stats: { sessions: 12, openSessions: 1, sessionsLast7d: 4, prompts: 340, toolCalls: 900, plans: 0, attachments: 3, lastActivityAt: NOW } };
+
 describe('Sessions list', () => {
-  it('shows each session with its agent, branch, member and runtime, open or ended, and filters client-side', async () => {
-    server(base({ '/api/projects/x/sessions': () => page([session({ title: 'Wave-based executor', label: 'Wave-based executor' }), session({ sessionId: 's2', agent: 'codex', branch: 'fix', endedAt: NOW - 1000, memberLabel: null, memberId: null, runtimeLabel: null, label: 'Fix the flaky test…' })]) }));
+  const ROWS = [
+    session({ title: 'Wave-based executor', label: 'Wave-based executor', promptCount: 12, toolCallCount: 40, activityBuckets: [3, 0, 0, 2, 0, 0, 4, 3] }),
+    session({ sessionId: 's2', agent: 'codex', branch: 'fix', startedAt: NOW - 2 * 3_600_000, endedAt: NOW - 1000, memberLabel: null, memberId: null, runtimeLabel: null, label: 'Fix the flaky test…', promptCount: 3, toolCallCount: 7 }),
+    session({ sessionId: 's3', agent: 'codex', branch: null, startedAt: NOW - 3 * 24 * 3_600_000, endedAt: NOW - 2 * 24 * 3_600_000, label: 'An older one', promptCount: 1, toolCallCount: 0 }),
+  ];
+
+  it('sections the rail — open first, then today and earlier — with the project\'s counts on top, each card carrying its agent, counts, activity and branch', async () => {
+    server(base({ '/api/projects/x/sessions?limit=50': () => page(ROWS), '/api/projects/x/activity': () => Response.json(ACTIVITY) }));
     mount('/p/x/sessions');
     const rows = await screen.findAllByRole('row');
     expect(rows.map((r) => r.textContent)).toEqual([
       expect.stringContaining('Wave-based executor'),
       expect.stringContaining('Fix the flaky test…'),
+      expect.stringContaining('An older one'),
     ]);
-    expect(rows[0]!.textContent).toContain('claude-code');
-    expect(rows[1]!.textContent).toContain('codex');
-    expect(rows[0]!.textContent).toContain('chris');
-    expect(rows[0]!.textContent).toContain('laptop · mac-1');
-    expect(rows[0]!.textContent).toContain('last ');
-    expect(rows[1]!.textContent).toContain('tok_1');
-    expect(rows[1]!.textContent).toContain('host · mac-1');
-    expect(rows[1]!.textContent).toContain('ended ');
+    expect(screen.getAllByRole('separator').map((s) => s.textContent)).toEqual(['OPEN1', 'TODAY1', 'EARLIER1']);
+    expect(rows[0]!.textContent).toContain('claude-code · 12p · 40t');
+    expect(rows[1]!.textContent).toContain('codex · 3p · 7t');
+    expect(rows[1]!.textContent).toContain('fix');
+    expect(within(rows[0]!).getByRole('img', { name: /12 prompt batches across this session/ })).toBeTruthy();
+    expect((await screen.findByTestId('rail-counts')).textContent).toBe('12 TOTAL·1 OPEN·340 PROMPTS');
+  });
+
+  it('asks the server to filter, by state from the tabs and by text from the box, and says so when nothing matches', async () => {
+    const { requested } = server(base({
+      '/api/projects/x/sessions?limit=50': () => page(ROWS),
+      '/api/projects/x/sessions?limit=50&state=ended': () => page(ROWS.slice(1)),
+      '/api/projects/x/sessions?limit=50&q=fix': () => page([ROWS[1]]),
+      '/api/projects/x/sessions?limit=50&q=nothing-here': () => page([]),
+      '/api/projects/x/activity': () => Response.json(ACTIVITY),
+    }));
+    mount('/p/x/sessions');
+    await screen.findAllByRole('row');
     fireEvent.click(screen.getByRole('tab', { name: 'Ended' }));
-    expect(screen.getAllByRole('row')).toHaveLength(1);
+    await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(2));
     fireEvent.click(screen.getByRole('tab', { name: 'All' }));
     fireEvent.change(screen.getByLabelText('Filter sessions'), { target: { value: 'fix' } });
-    expect(screen.getAllByRole('row').map((r) => r.textContent)).toEqual([expect.stringContaining('codex')]);
+    await waitFor(() => expect(screen.getAllByRole('row').map((r) => r.textContent)).toEqual([expect.stringContaining('codex')]));
     fireEvent.change(screen.getByLabelText('Filter sessions'), { target: { value: 'nothing-here' } });
-    expect(screen.getByText('No sessions match.')).toBeTruthy();
+    expect(await screen.findByText('No sessions match.')).toBeTruthy();
+    expect(requested.filter((p) => p.startsWith('/api/projects/x/sessions?'))).toEqual([
+      '/api/projects/x/sessions?limit=50',
+      '/api/projects/x/sessions?limit=50&state=ended',
+      '/api/projects/x/sessions?limit=50',
+      '/api/projects/x/sessions?limit=50&q=fix',
+      '/api/projects/x/sessions?limit=50&q=nothing-here',
+    ]);
+  });
+
+  it('opens the first row on its own on a wide screen when nothing is selected, and keeps the filter in the link', async () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: query.includes('min-width'), media: query, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false })) as typeof window.matchMedia;
+    try {
+      server(base({
+        '/api/projects/x/sessions?limit=50&state=ended': () => page(ROWS.slice(1)),
+        '/api/projects/x/sessions/s2': () => Response.json({ session: ROWS[1], counts, projectId: 'x' }),
+        '/api/projects/x/sessions/s2/turns?origins=user&limit=200': () => page([]),
+        '/api/projects/x/activity': () => Response.json(ACTIVITY),
+      }));
+      mount('/p/x/sessions?state=ended');
+      await screen.findAllByRole('row');
+      expect(screen.queryByTestId('rail-counts')).toBeTruthy();
+      // A narrowed list is never auto-opened.
+      expect(screen.getByText('Select a session to read it.')).toBeTruthy();
+      cleanup();
+      server(base({
+        '/api/projects/x/sessions?limit=50': () => page(ROWS),
+        '/api/projects/x/sessions/s1': () => Response.json({ session: ROWS[0], counts, projectId: 'x' }),
+        '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([]),
+        '/api/projects/x/activity': () => Response.json(ACTIVITY),
+      }));
+      mount('/p/x/sessions');
+      expect((await screen.findByRole('heading', { level: 2 })).textContent).toBe('Wave-based executor');
+      expect(screen.getAllByRole('row')[0]!.getAttribute('data-selected')).toBe('true');
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
+  it('moves a cursor with the keyboard and opens the row under it', async () => {
+    server(base({
+      '/api/projects/x/sessions?limit=50': () => page(ROWS),
+      '/api/projects/x/sessions/s2': () => Response.json({ session: ROWS[1], counts, projectId: 'x' }),
+      '/api/projects/x/sessions/s2/turns?origins=user&limit=200': () => page([]),
+      '/api/projects/x/activity': () => Response.json(ACTIVITY),
+    }));
+    mount('/p/x/sessions');
+    await screen.findAllByRole('row');
+    const table = screen.getByRole('table', { name: 'Sessions' });
+    fireEvent.keyDown(table, { key: 'j' });
+    expect(screen.getAllByRole('row')[1]!.getAttribute('data-cursor')).toBe('true');
+    fireEvent.keyDown(table, { key: 'Enter' });
+    expect((await screen.findByRole('heading', { level: 2 })).textContent).toBe('Fix the flaky test…');
   });
 
   it('shows a project with no sessions as empty, not missing', async () => {
-    server(base({ '/api/projects/x/sessions': () => page([]) }));
+    server(base({ '/api/projects/x/sessions?limit=50': () => page([]), '/api/projects/x/activity': () => Response.json(ACTIVITY) }));
     mount('/p/x/sessions');
     expect(await screen.findByText(/No sessions yet/)).toBeTruthy();
   });
