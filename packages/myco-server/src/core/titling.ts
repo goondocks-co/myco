@@ -1,102 +1,44 @@
 /**
- * A session's title and summary, written on the Deployment once the session has
- * ended.
+ * A session's title and summary, written on the Deployment by a run of the
+ * `title-summary` task on the agent harness.
  *
- * The request that ends a session schedules this past its answer. The work claims
- * the session first — `titled_at` is written before anything is called, so two
- * ends of one session make one attempt — then keeps within a per-Project hourly
- * ceiling, reads bounded material, asks the configured provider once, and writes
- * the answer only where no title exists. Every outcome is emitted; none is thrown.
+ * The request that ends a session schedules this past its answer; a person asks
+ * for it from the dashboard. Either way the gate is here and the model call is
+ * not: this module decides whether a run should start — a bound runtime, a
+ * provider and credential, material to read, the session's claim — and then
+ * dispatches through the one dispatcher (`core/harness.ts`). The run reads its
+ * material and writes its answer over the run routes; nothing here calls a
+ * provider, so a title costs the Deployment exactly what any other task does and
+ * uses whatever credential the harness holds.
  *
- * Only `anthropic`, `openai` and `openrouter` carry a credential, each at its own
- * fixed endpoint; an endpoint the operator names receives no credential at all.
+ * Every step before the launch writes nothing but the claim, and a launch the
+ * runtime refuses gives the claim back. Every outcome is emitted; none is thrown.
  */
-import { MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MAX_TITLES_PER_PROJECT_PER_HOUR, TITLING_TIMEOUT_MS } from '../constants.js';
+import { MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS } from '../constants.js';
 import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { sessionMaterialRows, sessionMaterialTailRows, type MaterialRow } from '../read/children.js';
-import { claimOwnerTitling, claimTitling, overwriteTitle, restoreTitlingStamp, sessionFacts, titlingsSince, writeTitle } from '../read/sessions.js';
-import { deploymentSecretStore, type SecretStore } from './secrets.js';
-import { leafValues, providerConfiguredFor } from './settings.js';
+import { claimOwnerTitling, claimTitling, restoreTitlingStamp, type TitlingStamp } from '../read/sessions.js';
+import { launchDispatch, prepareDispatch, type DispatchRefusal } from './harness.js';
 
 export const TITLING_TASK = 'title-summary';
-export const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
-export const ANTHROPIC_VERSION = '2023-06-01';
-/** A stored Anthropic credential that is a subscription sign-in rather than an API key travels as a bearer with this capability named. */
-export const ANTHROPIC_OAUTH_BETA = 'oauth-2025-04-20';
-/** The shape a subscription sign-in credential carries; an API key starts `sk-ant-api…` and travels as `x-api-key`. */
-export const ANTHROPIC_OAUTH_PREFIX = 'sk-ant-oat';
-export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5';
-export const ANSWER_MAX_TOKENS = 4096;
 export const TITLE_MAX_CHARS = 80;
 export const SUMMARY_MAX_CHARS = 1200;
-const HOUR_MS = 60 * 60 * 1000;
+/** How long a titling run may take. The task definition says the same (`title-summary.yaml`); this is the bound the claim's in-flight window is computed from. */
+export const TITLING_RUN_TIMEOUT_SECONDS = 300;
+/** How long a run's container may outlive the run's own bound before its hold is released; the same margin the hosted runtime applies (`HOLD_OVERRUN_MARGIN_MS`, pinned equal by test). */
+export const RUN_OVERRUN_MARGIN_MS = 120_000;
+/** How long after an owner's ask a second ask is refused: the run's own bound plus the overrun margin, so a run still writing is never raced by a second one. */
+export const OWNER_TITLING_WINDOW_MS = TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_OVERRUN_MARGIN_MS;
 
-/** Providers whose credential travels only to their own endpoint. */
-const FIXED_ENDPOINTS: Readonly<Record<string, string>> = {
-  openai: 'https://api.openai.com/v1',
-  openrouter: 'https://openrouter.ai/api/v1',
-};
-/** Providers reached only at an endpoint the operator names, with no credential. */
-const NAMED_ENDPOINT_PROVIDERS = new Set(['openai-compatible', 'ollama', 'lmstudio']);
-
+/**
+ * How an ask ended. `dispatched` is the one that started a run; `already` is
+ * a claim another attempt holds; the rest are settled refusals an operator
+ * clears — in Settings, or by binding a runtime to the Deployment.
+ */
 export type TitlingOutcome =
-  | 'already' | 'budget' | 'no_material' | 'no_provider' | 'no_credential' | 'local_provider' | 'no_endpoint' | 'no_model'
-  | 'malformed' | 'provider' | 'unreachable' | 'superseded' | 'error' | 'titled';
-
-/** The path an OpenAI-shaped endpoint serves its API under; a local backend's endpoint names the server root and gains it. */
-const OPENAI_API_PATH = '/v1';
-
-/** A local backend's endpoint with the API path in place: the operator names the server root (`http://ollama.internal:11434`), and an endpoint already carrying `/v1` is kept. */
-export function localBackendEndpoint(baseUrl: string): string {
-  let url: URL;
-  try { url = new URL(baseUrl); } catch { return baseUrl.replace(/\/+$/, ''); }
-  if (url.pathname !== OPENAI_API_PATH && !url.pathname.startsWith(`${OPENAI_API_PATH}/`)) url.pathname = `${url.pathname.replace(/\/+$/, '')}${OPENAI_API_PATH}`;
-  return url.toString().replace(/\/+$/, '');
-}
-
-export type TitlingProvider =
-  | { kind: 'anthropic'; model: string; key: string }
-  | { kind: 'openai'; provider: string; url: string; model: string; bearer: string | null };
-
-export type ProviderResolution = { ok: true; provider: TitlingProvider } | { ok: false; outcome: TitlingOutcome };
-
-const parseLeaf = (value: string | undefined): unknown => {
-  if (value === undefined) return undefined;
-  try { return JSON.parse(value); } catch { return undefined; }
-};
-const str = (value: unknown): string | null => (typeof value === 'string' && value.trim() !== '' ? value.trim() : null);
-
-/** The provider, endpoint, model and credential the titling call uses, from the Deployment's settings and secrets. */
-export async function resolveTitlingProvider(db: RelationalStore, secrets: SecretStore): Promise<ProviderResolution> {
-  const byLeaf = await leafValues(db, ['agent.tasks', 'agent.provider.type', 'agent.provider.model', 'agent.model', 'agent.provider.base_url']);
-  const tasks = parseLeaf(byLeaf.get('agent.tasks'));
-  const task = tasks !== null && typeof tasks === 'object' && !Array.isArray(tasks) ? (tasks as Record<string, unknown>)[TITLING_TASK] : undefined;
-  const override = task !== null && typeof task === 'object' && !Array.isArray(task) ? (task as Record<string, unknown>) : {};
-  const type = str(override.provider) ?? str(parseLeaf(byLeaf.get('agent.provider.type')));
-  if (type === null) return { ok: false, outcome: 'no_provider' };
-  const configuredModel = str(override.model) ?? str(parseLeaf(byLeaf.get('agent.provider.model'))) ?? str(parseLeaf(byLeaf.get('agent.model')));
-  const baseUrl = str(parseLeaf(byLeaf.get('agent.provider.base_url')));
-
-  if (type === 'anthropic') {
-    const key = await secrets.get('anthropic');
-    if (key === null) return { ok: false, outcome: 'no_credential' };
-    return { ok: true, provider: { kind: 'anthropic', model: configuredModel ?? DEFAULT_ANTHROPIC_MODEL, key } };
-  }
-  if (configuredModel === null) return { ok: false, outcome: 'no_model' };
-  const fixed = Object.hasOwn(FIXED_ENDPOINTS, type) ? FIXED_ENDPOINTS[type] : undefined;
-  if (fixed !== undefined) {
-    const bearer = await secrets.get(type);
-    if (bearer === null) return { ok: false, outcome: 'no_credential' };
-    return { ok: true, provider: { kind: 'openai', provider: type, url: fixed, model: configuredModel, bearer } };
-  }
-  if (NAMED_ENDPOINT_PROVIDERS.has(type)) {
-    if (baseUrl === null) return { ok: false, outcome: type === 'openai-compatible' ? 'no_endpoint' : 'local_provider' };
-    const url = type === 'openai-compatible' ? baseUrl.replace(/\/+$/, '') : localBackendEndpoint(baseUrl);
-    return { ok: true, provider: { kind: 'openai', provider: type, url, model: configuredModel, bearer: null } };
-  }
-  return { ok: false, outcome: 'no_provider' };
-}
+  | 'already' | 'no_material' | 'harness_unavailable' | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider'
+  | 'error' | 'dispatched';
 
 export type MaterialLine = Pick<MaterialRow, 'prompt' | 'response'>;
 
@@ -107,6 +49,7 @@ export type MaterialLine = Pick<MaterialRow, 'prompt' | 'response'>;
  * opening and closing prompts, writing over whatever title is there.
  */
 export type TitlingMode = 'claim' | 'owner';
+export const TITLING_MODES: readonly TitlingMode[] = ['claim', 'owner'];
 
 const lineCost = (row: MaterialRow): number => row.prompt.length + (row.response?.length ?? 0);
 
@@ -144,137 +87,109 @@ export async function sessionMaterial(db: RelationalStore, projectId: string, se
   return [...head.rows, ...tail.rows.reverse()].map(toLine);
 }
 
-/** The one message the provider receives: the 1.4 title and summary rules, the session's facts, and its material — described as what it is, the opening alone or the opening and the close. */
-export function titlingPrompt(facts: { agent: string | null; branch: string | null }, material: MaterialLine[], mode: TitlingMode = 'claim'): string {
-  const lines = material.map((m, i) => `Prompt ${i + 1}: ${m.prompt}${m.response === null ? '' : `\nResponse: ${m.response}`}`).join('\n\n');
-  return [
-    'You title and summarize a coding session for its dashboard.',
-    `Session facts: agent ${facts.agent ?? 'unknown'}; branch ${facts.branch ?? 'unknown'}.`,
-    mode === 'owner'
-      ? 'The material is the session\'s earliest and latest user prompts in order, each with the start of the assistant\'s response; the middle of the session is omitted.'
-      : 'The material is the session\'s earliest user prompts, each with the start of the assistant\'s response.',
-    '',
-    'Title rules: under 80 characters, sentence case. The title describes WHAT WAS ACCOMPLISHED, not what was asked; synthesize the full arc, not the first prompt. Never a file path, directory or working directory; never the user\'s first message; never a truncated prompt ending in "...".',
-    'Good: "Wave-based parallel executor and per-task provider config". Good: "SQLite migration with FTS5 search and vector embeddings". Bad: "/git-worktree". Bad: "Help me fix the bug in...". Bad: "Working on code".',
-    'Summary rules: 2-4 sentences, rich in detail — what was built or fixed, key files touched, tools used, outcomes — covering the full arc.',
-    '',
-    'Answer with exactly one JSON object and nothing else: {"title": "...", "summary": "..."}',
-    '',
-    'Material:',
-    lines,
-  ].join('\n');
+/** A title as the run offered it, made fit to store: one line, no trailing period, inside the bound; null when nothing usable remains. */
+export function cleanTitle(title: string): string | null {
+  const cleaned = title.replace(/\s+/g, ' ').trim().replace(/[.…]+$/, '').trim();
+  return cleaned.length === 0 || cleaned.length > TITLE_MAX_CHARS ? null : cleaned;
 }
 
-/** The title and summary inside an answer, or null when the answer does not carry a usable pair. */
-export function parseTitleAnswer(text: string): { title: string; summary: string } | null {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
+/** A summary as the run offered it, trimmed and inside the bound; null when nothing usable remains. */
+export function cleanSummary(summary: string): string | null {
+  const cleaned = summary.trim();
+  return cleaned.length === 0 || cleaned.length > SUMMARY_MAX_CHARS ? null : cleaned;
+}
+
+/** The parameters a titling run is dispatched with, as the runtime and the run routes read them back from the run's context. */
+export interface TitlingParams {
+  session_id: string;
+  mode: TitlingMode;
+}
+
+/** The parameters a run's stored context names, or null when the context is not a titling dispatch. */
+export function titlingParamsOf(runContext: string | null): TitlingParams | null {
+  if (runContext === null) return null;
   let parsed: unknown;
-  try { parsed = JSON.parse(text.slice(start, end + 1)); } catch { return null; }
+  try { parsed = JSON.parse(runContext); } catch { return null; }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const { title, summary } = parsed as Record<string, unknown>;
-  if (typeof title !== 'string' || typeof summary !== 'string') return null;
-  const cleanTitle = title.replace(/\s+/g, ' ').trim().replace(/[.…]+$/, '').trim();
-  const cleanSummary = summary.trim();
-  if (cleanTitle.length === 0 || cleanTitle.length > TITLE_MAX_CHARS) return null;
-  if (cleanSummary.length === 0 || cleanSummary.length > SUMMARY_MAX_CHARS) return null;
-  return { title: cleanTitle, summary: cleanSummary };
+  const { session_id: sessionId, mode } = parsed as Record<string, unknown>;
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return null;
+  if (!TITLING_MODES.includes(mode as TitlingMode)) return null;
+  return { session_id: sessionId, mode: mode as TitlingMode };
 }
 
-/** The request for the provider, and how its answer's text is read back. */
-export function providerRequest(provider: TitlingProvider, prompt: string): { url: string; init: RequestInit; text: (body: unknown) => string | null } {
-  if (provider.kind === 'anthropic') {
-    const oauth = provider.key.startsWith(ANTHROPIC_OAUTH_PREFIX);
-    return {
-      url: ANTHROPIC_MESSAGES_URL,
-      init: {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'anthropic-version': ANTHROPIC_VERSION,
-          ...(oauth
-            ? { authorization: `Bearer ${provider.key}`, 'anthropic-beta': ANTHROPIC_OAUTH_BETA }
-            : { 'x-api-key': provider.key }),
-        },
-        body: JSON.stringify({ model: provider.model, max_tokens: ANSWER_MAX_TOKENS, messages: [{ role: 'user', content: prompt }] }),
-      },
-      text: (body) => {
-        const content = (body as { content?: unknown })?.content;
-        if (!Array.isArray(content)) return null;
-        const parts = content.filter((b): b is { type: string; text: string } => typeof b?.text === 'string' && b.type === 'text').map((b) => b.text);
-        return parts.length === 0 ? null : parts.join('');
-      },
-    };
-  }
-  return {
-    url: `${provider.url}/chat/completions`,
-    init: {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...(provider.bearer === null ? {} : { authorization: `Bearer ${provider.bearer}` }) },
-      // OpenAI's own endpoint takes the answer budget as `max_completion_tokens`; the compatible endpoints take `max_tokens`.
-      body: JSON.stringify({ model: provider.model, [provider.provider === 'openai' ? 'max_completion_tokens' : 'max_tokens']: ANSWER_MAX_TOKENS, messages: [{ role: 'user', content: prompt }] }),
-    },
-    text: (body) => {
-      const content = (body as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content;
-      return typeof content === 'string' ? content : null;
-    },
-  };
+export interface TitlingTarget {
+  projectId: string;
+  sessionId: string;
+  now: number;
+  /** The origin of the request that asked: where the run calls back to. */
+  origin: string;
 }
 
-export interface TitlingTarget { projectId: string; sessionId: string; now: number }
+export interface TitlingResult {
+  outcome: TitlingOutcome;
+  /** The run that will write the title, on `dispatched`. */
+  runId?: string;
+}
 
-/** Titles one session: at its end (`claim`, the default) or on an owner's ask (`owner`). Resolves with the outcome it emitted; never rejects. */
-export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode; by?: string } = {}): Promise<TitlingOutcome> {
+const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
+  harness_unavailable: 'harness_unavailable',
+  no_provider: 'no_provider',
+  no_credential: 'no_credential',
+  no_endpoint: 'no_endpoint',
+  unsupported_provider: 'unsupported_provider',
+  // A titling dispatch names a catalogued task and a session the scope already resolved; neither refusal has a path here.
+  unknown_task: 'error',
+  unknown_project: 'error',
+};
+
+/**
+ * Titles one session: at its end (`claim`, the default) or on an owner's ask
+ * (`owner`). Decides in this order, and writes nothing before the claim:
+ * a bound runtime, a provider and its credential, material to read, the claim,
+ * the launch. Resolves with the outcome it emitted; never rejects.
+ */
+export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode; by?: string } = {}): Promise<TitlingResult> {
   const { projectId, sessionId, now } = target;
   const mode = opts.mode ?? 'claim';
-  const skipped = (outcome: TitlingOutcome): TitlingOutcome => { emit({ kind: 'session_title_skipped', projectId, sessionId, outcome, mode }); return outcome; };
-  const failed = (outcome: TitlingOutcome, extra: Record<string, unknown> = {}): TitlingOutcome => { emit({ kind: 'session_title_failed', projectId, sessionId, outcome, mode, ...extra }); return outcome; };
+  const skipped = (outcome: TitlingOutcome): TitlingResult => { emit({ kind: 'session_title_skipped', projectId, sessionId, outcome, mode }); return { outcome }; };
+  const failed = (outcome: TitlingOutcome): TitlingResult => { emit({ kind: 'session_title_failed', projectId, sessionId, outcome, mode }); return { outcome }; };
   try {
-    // An owner's ask that never reaches the provider gives the stamp back: the session keeps its own end-of-session attempt and the ceiling is not charged.
-    let previous: number | null = null;
-    const unstamp = async (outcome: TitlingOutcome): Promise<TitlingOutcome> => {
-      if (mode === 'owner') await restoreTitlingStamp(env.db, projectId, sessionId, now, previous);
-      return skipped(outcome);
-    };
-    if (mode === 'owner') {
-      const claim = await claimOwnerTitling(env.db, projectId, sessionId, now, TITLING_TIMEOUT_MS);
-      if (!claim.claimed) return skipped('already');
-      previous = claim.previous;
-    } else if (!(await claimTitling(env.db, projectId, sessionId, now))) {
-      return skipped('already');
-    }
-    if ((await titlingsSince(env.db, projectId, now - HOUR_MS)) > MAX_TITLES_PER_PROJECT_PER_HOUR) return unstamp('budget');
+    const prepared = await prepareDispatch(env, TITLING_TASK, projectId);
+    if (!prepared.ok) return skipped(REFUSAL_OUTCOME[prepared.refusal]);
 
     const material = await sessionMaterial(env.db, projectId, sessionId, mode);
-    if (material.length === 0) return unstamp('no_material');
+    if (material.length === 0) return skipped('no_material');
 
-    if (!(await providerConfiguredFor(env.db, TITLING_TASK))) return unstamp('no_provider');
-    const resolved = await resolveTitlingProvider(env.db, deploymentSecretStore(env.db, env.wrappingKey));
-    if (!resolved.ok) return unstamp(resolved.outcome);
-
-    const request = providerRequest(resolved.provider, titlingPrompt(await sessionFacts(env.db, projectId, sessionId), material, mode));
-
-    let response: Response;
-    try {
-      response = await env.outbound(request.url, { ...request.init, signal: AbortSignal.timeout(TITLING_TIMEOUT_MS) });
-    } catch {
-      return failed('unreachable');
+    // The claim is the last thing before the launch, so a refusal decided above costs nothing.
+    let previous: TitlingStamp;
+    if (mode === 'owner') {
+      const claim = await claimOwnerTitling(env.db, projectId, sessionId, now, OWNER_TITLING_WINDOW_MS, opts.by ?? null);
+      if (!claim.claimed) return skipped('already');
+      previous = claim.previous;
+    } else {
+      if (!(await claimTitling(env.db, projectId, sessionId, now))) return skipped('already');
+      previous = { titledAt: null, titledBy: null };
     }
-    if (!response.ok) return failed('provider', { status: response.status });
-    let body: unknown;
-    try { body = await response.json(); } catch { return failed('malformed'); }
-    const text = request.text(body);
-    const answer = text === null ? null : parseTitleAnswer(text);
-    if (answer === null) return failed('malformed');
 
-    const written = mode === 'owner'
-      ? await overwriteTitle(env.db, projectId, sessionId, answer.title, answer.summary, opts.by ?? null)
-      : await writeTitle(env.db, projectId, sessionId, answer.title, answer.summary);
-    if (!written) return failed('superseded');
-    emit({ kind: 'session_titled', projectId, sessionId, mode, provider: resolved.provider.kind === 'anthropic' ? 'anthropic' : resolved.provider.provider });
-    return 'titled';
+    const params: TitlingParams = { session_id: sessionId, mode };
+    try {
+      const launched = await launchDispatch(env, prepared.prepared, {
+        serverUrl: target.origin,
+        actor: opts.by ?? HARNESS_ACTOR,
+        timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS,
+        params: { ...params },
+      }, now);
+      emit({ kind: 'session_title_dispatched', projectId, sessionId, mode, runId: launched.runId });
+      return { outcome: 'dispatched', runId: launched.runId };
+    } catch {
+      // A launch the runtime refused: the session keeps its own attempt, and an owner may ask again at once.
+      await restoreTitlingStamp(env.db, projectId, sessionId, now, previous);
+      return failed('error');
+    }
   } catch {
     return failed('error');
   }
 }
+
+/** Who an automatic titling is attributed to: the Deployment itself, acting on a capture. */
+const HARNESS_ACTOR = 'deployment';

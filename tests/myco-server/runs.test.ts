@@ -17,7 +17,7 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
-  applyRunUpdate, claimRun, getRun, getState, mutateState, MUTATE_ATTEMPTS,
+  applyRunUpdate, claimRun, getRun, getRunningRunForTask, getState, mutateState, MUTATE_ATTEMPTS,
   RUN_IMMUTABLE_COLUMNS, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns,
   upsertCortexInstructions, type RunInsert,
 } from '@myco-server-worker/core/runs.js';
@@ -32,8 +32,8 @@ const AGENT = 'agent_1';
 const NOW = 1_700_000_000_000;
 
 const CAPABILITY = 'cortex' as const;
-/** The guard every claim carries: a task, an age floor, and the capability the task needs. */
-const guardFor = (taskName: string, maxAgeSeconds = 3600) => ({ taskName, maxAgeSeconds, admission: { kind: 'capability', capability: CAPABILITY } as const });
+/** The guard every claim carries: a task and the capability the task needs. */
+const guardFor = (taskName: string, _maxAgeSeconds = 3600) => ({ taskName, admission: { kind: 'capability', capability: CAPABILITY } as const });
 
 function store(): { db: RelationalStore; sqlite: Database } {
   const sqlite = new Database(':memory:');
@@ -83,72 +83,64 @@ describe('claimRun', () => {
     expect(runCount(sqlite)).toBe(1);
   });
 
-  it('single-flights two concurrent claims of one task', async () => {
+  it('admits any number of runs of one task at once: the run is the unit, and two ids both claim', async () => {
     const { db, sqlite } = store();
     const y = yielding(db);
-    const guard = guardFor('digest', 3600);
+    const guard = guardFor('digest');
     const [a, b] = await Promise.all([
       claimRun(y, SCOPE, run('r1', 'digest'), guard, NOW),
       claimRun(y, SCOPE, run('r2', 'digest'), guard, NOW),
     ]);
-    expect([a.claimed, b.claimed].filter(Boolean)).toHaveLength(1);
-    expect(runCount(sqlite)).toBe(1);
+    expect([a, b]).toEqual([{ claimed: true }, { claimed: true }]);
+    expect(runCount(sqlite)).toBe(2);
   });
 
-  it('CONTROL: a separate check and a separate insert admit both claims', async () => {
+  it('refuses the same run id claimed twice, naming the row that holds it, even when the two claims interleave', async () => {
+    const { db, sqlite } = store();
+    const y = yielding(db);
+    const guard = guardFor('digest');
+    const [a, b] = await Promise.all([
+      claimRun(y, SCOPE, run('r1', 'digest'), guard, NOW),
+      claimRun(y, SCOPE, run('r1', 'digest'), guard, NOW),
+    ]);
+    expect([a.claimed, b.claimed].filter(Boolean)).toHaveLength(1);
+    const refusedClaim = [a, b].find((o) => !o.claimed)!;
+    expect(refusedClaim.claimed === false && refusedClaim.running?.id).toBe('r1');
+    expect(runCount(sqlite)).toBe(1);
+    // A finished run keeps its id: a later claim under it is still refused.
+    sqlite.query(`UPDATE agent_runs SET status = 'completed' WHERE id = 'r1'`).run();
+    const again = await claimRun(db, SCOPE, run('r1', 'digest'), guard, NOW + 3_600_000);
+    expect(again.claimed === false && again.running?.id).toBe('r1');
+  });
+
+  it('CONTROL: a separate check and a separate insert admit one id twice', async () => {
     const { db, sqlite } = store();
     const y = yielding(db);
     const unsafe = async (id: string) => {
-      const live = await y.prepare(`SELECT id FROM agent_runs WHERE project_id = ? AND task = ? AND status = 'running'`)
-        .bind(SCOPE.projectId, 'digest').first();
+      const live = await y.prepare(`SELECT id FROM agent_runs WHERE project_id = ? AND id = ?`)
+        .bind(SCOPE.projectId, id).first();
       if (live) return false;
       await y.prepare(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at)
         VALUES (?, ?, ?, 'digest', 'running', 0, ?)`).bind(SCOPE.projectId, id, AGENT, NOW).run();
       return true;
     };
-    const [a, b] = await Promise.all([unsafe('r1'), unsafe('r2')]);
-    // Both saw no live run and both inserted — the defect the atomic form removes.
-    expect([a, b]).toEqual([true, true]);
-    expect(runCount(sqlite)).toBe(2);
+    // Both saw no row and both inserted — the defect the atomic form removes.
+    const [a, b] = await Promise.allSettled([unsafe('r1'), unsafe('r1')]);
+    expect([a.status, b.status].includes('rejected') || runCount(sqlite) === 2).toBe(true);
   });
 
-  it('lets a fresh claim past a run older than the age floor, and reports the live one otherwise', async () => {
-    const { db } = store();
-    const guard = guardFor('digest', 60);
-    await claimRun(db, SCOPE, run('r1', 'digest'), guard, NOW);
-
-    const blocked = await claimRun(db, SCOPE, run('r2', 'digest'), guard, NOW);
-    expect(blocked.claimed).toBe(false);
-    expect(blocked.claimed === false && blocked.running?.id).toBe('r1');
-
+  it('reads the most recent live run of a task inside the age floor, for a dispatcher\'s own policy', async () => {
+    const { db, sqlite } = store();
+    await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);
+    expect((await getRunningRunForTask(db, SCOPE, 'digest', 60, NOW))?.id).toBe('r1');
     // Far enough past r1's start that the floor has moved beyond it.
-    expect(await claimRun(db, SCOPE, run('r3', 'digest'), guard, NOW + 3_600_000)).toEqual({ claimed: true });
-  });
-
-  /**
-   * A resumed run keeps its original dispatch time, so an age floor read off
-   * `started_at` alone would treat it as stale and admit a second run of the
-   * same task. The current attempt's clock is `resumed_at`.
-   */
-  it('blocks on a run resumed inside the window, however old its original dispatch', async () => {
-    const { db, sqlite } = store();
-    const guard = guardFor('digest', 60);
-    await claimRun(db, SCOPE, run('r1', 'digest'), guard, NOW);
-    // Dispatched an hour ago, resumed a moment ago: the current attempt is fresh.
+    expect(await getRunningRunForTask(db, SCOPE, 'digest', 60, NOW + 3_600_000)).toBeNull();
+    // A resumed run keeps its original dispatch time; the current attempt's clock is `resumed_at`.
     sqlite.query(`UPDATE agent_runs SET started_at = ?, resumed_at = ? WHERE id = 'r1'`).run(NOW - 3_600_000, NOW - 5_000);
-
-    const blocked = await claimRun(db, SCOPE, run('r2', 'digest'), guard, NOW);
-    expect(blocked.claimed).toBe(false);
-    expect(blocked.claimed === false && blocked.running?.id).toBe('r1');
-    expect(runCount(sqlite)).toBe(1);
-  });
-
-  it('lets a claim past a run whose resumed attempt is itself older than the floor', async () => {
-    const { db, sqlite } = store();
-    const guard = guardFor('digest', 60);
-    await claimRun(db, SCOPE, run('r1', 'digest'), guard, NOW);
+    expect((await getRunningRunForTask(db, SCOPE, 'digest', 60, NOW))?.id).toBe('r1');
     sqlite.query(`UPDATE agent_runs SET started_at = ?, resumed_at = ? WHERE id = 'r1'`).run(NOW - 7_200_000, NOW - 3_600_000);
-    expect(await claimRun(db, SCOPE, run('r2', 'digest'), guard, NOW)).toEqual({ claimed: true });
+    expect(await getRunningRunForTask(db, SCOPE, 'digest', 60, NOW)).toBeNull();
+    expect(await getRunningRunForTask(db, SCOPE, 'extract', 60, NOW)).toBeNull();
   });
 
   it('claims per task and per project, so neither another task nor another project blocks', async () => {
@@ -184,20 +176,20 @@ describe('capability admission', () => {
     sqlite.query(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, 'skills', 1, ?, 'test')`).run(SCOPE.projectId, NOW);
     sqlite.query(`UPDATE project_capabilities SET enabled = 0 WHERE project_id = ? AND capability = ?`).run(SCOPE.projectId, CAPABILITY);
     expect(await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW)).toEqual({ claimed: false, notAdmitted: CAPABILITY });
-    expect(await claimRun(db, SCOPE, run('r2', 'survey'), { taskName: 'survey', maxAgeSeconds: 3600, admission: { kind: 'capability', capability: 'skills' } as const }, NOW)).toEqual({ claimed: true });
+    expect(await claimRun(db, SCOPE, run('r2', 'survey'), { taskName: 'survey', admission: { kind: 'capability', capability: 'skills' } as const }, NOW)).toEqual({ claimed: true });
   });
 
-  it('distinguishes a refused admission from a task already running: they are different answers', async () => {
+  it('distinguishes a refused admission from an id already claimed: they are different answers', async () => {
     const { db } = store();
     await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);
-    const contended = await claimRun(db, SCOPE, run('r2', 'digest'), guardFor('digest'), NOW);
+    const contended = await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);
     expect(contended.claimed === false && contended.notAdmitted).toBeUndefined();
     expect(contended.claimed === false && contended.running?.id).toBe('r1');
   });
 });
 
 describe('provider admission', () => {
-  const captureGuard = { taskName: 'title-summary', maxAgeSeconds: 3600, admission: { kind: 'provider' } as const };
+  const captureGuard = { taskName: 'title-summary', admission: { kind: 'provider' } as const };
 
   const setLeaf = (sqlite: Database, leaf: string, value: unknown) =>
     sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'test')`)

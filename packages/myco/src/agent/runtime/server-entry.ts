@@ -44,6 +44,15 @@ async function executeFromEnv(): Promise<void> {
   } catch {
     provider = undefined;
   }
+  let params: Record<string, string> | undefined;
+  try {
+    const parsed: unknown = env('MYCO_TASK_PARAMS') === undefined ? undefined : JSON.parse(env('MYCO_TASK_PARAMS')!);
+    params = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? Object.fromEntries(Object.entries(parsed as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
+      : undefined;
+  } catch {
+    params = undefined;
+  }
   const client = new ServerClient({ serverUrl, token, projectId });
   result = await runServerTask({
     client,
@@ -54,6 +63,8 @@ async function executeFromEnv(): Promise<void> {
     provider,
     model: env('MYCO_MODEL'),
     instruction: env('MYCO_INSTRUCTION'),
+    params,
+    admission: env('MYCO_TASK_ADMISSION'),
   });
   running = false;
   console.log(JSON.stringify({ kind: 'server_run_finished', ...result }));

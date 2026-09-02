@@ -8,7 +8,7 @@
  * exists to make impossible.
  */
 import { describe, expect, it } from 'bun:test';
-import { createHttpRunStore, ProjectNotAdmittedError, RunControlError, HTTP_MUTATE_ATTEMPTS } from '@myco/agent/runtime/run-store-http.js';
+import { createHttpRunStore, NoProviderConfiguredError, ProjectNotAdmittedError, RunControlError, HTTP_MUTATE_ATTEMPTS, type RunClaimAdmission } from '@myco/agent/runtime/run-store-http.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -18,13 +18,16 @@ const PROJECT = 'proj_1';
 const AGENT = 'agent_1';
 const BUDGET = { connectTimeoutMs: 2000, requestTimeoutMs: 4000 };
 
-async function harness(opts: { admit?: boolean } = {}) {
+async function harness(opts: { admit?: boolean; admission?: RunClaimAdmission; provider?: string } = {}) {
   const { env, db, sqlite } = sqliteEnv();
   const now = Date.now();
   sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(PROJECT, PROJECT, now);
   sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`).run(AGENT, now);
   if (opts.admit !== false) {
     sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, 'cortex', 1, ?, 'test')`).run(PROJECT, now);
+  }
+  if (opts.provider !== undefined) {
+    sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.provider.type', ?, ?, 'test')`).run(JSON.stringify(opts.provider), now);
   }
   const token = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
 
@@ -36,7 +39,7 @@ async function harness(opts: { admit?: boolean } = {}) {
     return worker.fetch(new Request(req.url, { method: req.method, headers, body: req.body ? await req.text() : undefined }), env);
   };
   const client = new ServerClient({ serverUrl: 'https://s', token: token.token, projectId: PROJECT }, fetchImpl as never);
-  const store = createHttpRunStore({ client, agentId: AGENT, capabilityForTask: () => 'cortex', budget: BUDGET });
+  const store = createHttpRunStore({ client, agentId: AGENT, admissionForTask: () => opts.admission ?? { capability: 'cortex' }, budget: BUDGET });
   return { store, sqlite, token };
 }
 
@@ -44,29 +47,25 @@ async function harness(opts: { admit?: boolean } = {}) {
 const insert = (id: string, task: string) => ({ id, agent_id: AGENT, task });
 
 describe('HTTP RunStore — claim', () => {
-  it('claims through the real routes and single-flights the second', async () => {
+  it('claims through the real routes: a second run of the task claims too, and the same id claimed twice is refused', async () => {
     const { store, sqlite } = await harness();
     expect(await store.claimRun(insert('r1', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 })).toEqual({ claimed: true });
-    const second = await store.claimRun(insert('r2', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 });
-    expect(second.claimed).toBe(false);
-    expect(second.claimed === false && second.running.id).toBe('r1');
-    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(1);
+    expect(await store.claimRun(insert('r2', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 })).toEqual({ claimed: true });
+    const again = await store.claimRun(insert('r1', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 });
+    expect(again.claimed).toBe(false);
+    expect(again.claimed === false && again.running.id).toBe('r1');
+    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(2);
   });
 
-  /**
-   * The guard is expressed in seconds and every server timestamp is milliseconds.
-   * Two claims a millisecond apart cannot tell those apart — an unconverted
-   * window is still wide enough — so this backdates the run to a minute, which
-   * an hour-long window must hold and a 3.6-second one cannot.
-   */
-  it('holds a run started a minute ago inside an hour-long window', async () => {
-    const { store, sqlite } = await harness();
-    await store.claimRun(insert('r1', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 });
-    sqlite.query(`UPDATE agent_runs SET started_at = ? WHERE id = 'r1'`).run(Date.now() - 60_000);
+  it('claims a capture-driven task on the provider gate alone, carrying the run context, and throws by name when no provider is configured', async () => {
+    const provided = await harness({ admit: false, admission: { captureDriven: true }, provider: 'anthropic' });
+    const context = JSON.stringify({ session_id: 'sess_1', mode: 'claim' });
+    expect(await provided.store.claimRun({ ...insert('r1', 'title-summary'), run_context: context }, { taskName: 'title-summary', maxAgeSeconds: 0 })).toEqual({ claimed: true });
+    expect(provided.sqlite.query(`SELECT run_context c FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ c: context });
 
-    const second = await store.claimRun(insert('r2', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 });
-    expect(second.claimed).toBe(false);
-    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(1);
+    const unprovided = await harness({ admit: false, admission: { captureDriven: true } });
+    await expect(unprovided.store.claimRun(insert('r1', 'title-summary'), { taskName: 'title-summary', maxAgeSeconds: 0 }))
+      .rejects.toBeInstanceOf(NoProviderConfiguredError);
   });
 
   it('throws on a Project the Deployment has not admitted, rather than reporting contention', async () => {

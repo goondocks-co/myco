@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Check, Copy, Loader2, Sparkles, X } from 'lucide-react';
 import { Badge } from '../ui/badge';
@@ -9,9 +9,11 @@ import { StatusDot } from '../ui/status-dot';
 import { SubtabPill } from '../ui/subtab-pill';
 import { Surface } from '../ui/surface';
 import {
-  blobUrl, memberName, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, runtimeName, TITLING_OUTCOME_TEXT, useSession, useSessionChildren, useTitleSession, useTranscript, useTurns,
+  blobUrl, memberName, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, runtimeName, TITLING_OUTCOME_TEXT, TITLING_WATCH_MS, useSession, useSessionChildren, useTitleSession, useTranscript, useTurns,
   type AttachmentRow, type PlanRow, type SessionRow, type TurnRow,
 } from '../../hooks/use-sessions';
+import { useQueryClient } from '@tanstack/react-query';
+import { useRun } from '../../hooks/use-intelligence';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatRelative } from '../../lib/format';
@@ -73,27 +75,75 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
   );
 }
 
-/** Asks for the session's title and summary now, and says how it went. The button stays focusable while it works, so a keyboard user is never dropped to the page. */
-function GenerateSummary({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+/**
+ * Asks for the session's title and summary now, and says how it went. A run
+ * writes them, so after a `dispatched` answer the page watches: the session is
+ * read again every few seconds until its title or summary moves or the run
+ * ends, bounded by the run's own timeout. The button stays focusable while it
+ * works, so a keyboard user is never dropped to the page.
+ */
+function GenerateSummary({ projectId, sessionId, session }: { projectId: string; sessionId: string; session: SessionRow }) {
+  const client = useQueryClient();
   const titling = useTitleSession(projectId, sessionId);
+  // What the session carried when the ask was made; a change since is the summary landing.
+  const [asked, setAsked] = useState<{ runId: string; title: string | null; summary: string | null; at: number } | null>(null);
+  const landed = asked !== null && (session.title !== asked.title || session.summary !== asked.summary);
+  const expired = asked !== null && Date.now() - asked.at > TITLING_WATCH_MS;
+  const run = useRun(projectId, asked?.runId ?? '', {
+    enabled: asked !== null && !landed && !expired,
+    // 404 until the container claims: keep asking rather than giving up on the first miss.
+    retry: false,
+    refetchInterval: (query) => (query.state.data !== undefined && isTerminal(query.state.data.run.status) ? false : TITLING_POLL_MS),
+  });
+  const runStatus = run.data?.run.status ?? null;
+  const watching = asked !== null && !landed && !expired && (runStatus === null || !isTerminal(runStatus));
+  useEffect(() => {
+    if (!watching) return;
+    const timer = setInterval(() => { void client.invalidateQueries({ queryKey: ['session', projectId, sessionId] }); }, TITLING_POLL_MS);
+    return () => clearInterval(timer);
+  }, [watching, client, projectId, sessionId]);
+
   const outcome = titling.data?.outcome;
-  const note = titling.error ? 'The session could not be summarized right now' : outcome !== undefined ? TITLING_OUTCOME_TEXT[outcome] : null;
+  const note = titling.error ? 'The session could not be summarized right now'
+    : landed ? 'Summary updated'
+    : asked !== null && runStatus === 'failed' ? 'The summary run failed — see the run'
+    : asked !== null && (expired || (runStatus !== null && isTerminal(runStatus))) ? 'The summary run ended without writing one — see the run'
+    : outcome !== undefined ? TITLING_OUTCOME_TEXT[outcome] : null;
+  const tone = landed ? 'text-primary' : 'text-tertiary';
+  const busy = titling.isPending || watching;
   return (
     <div className="ml-auto flex flex-col items-end gap-1 self-start">
       <button
         type="button"
-        aria-disabled={titling.isPending}
-        aria-busy={titling.isPending}
-        onClick={() => { if (!titling.isPending) titling.mutate(); }}
-        className={cn(button, 'inline-flex h-8 items-center gap-2 font-medium', titling.isPending && 'opacity-60')}
+        aria-disabled={busy}
+        aria-busy={busy}
+        onClick={() => {
+          if (busy) return;
+          setAsked(null);
+          titling.mutate(undefined, {
+            onSuccess: (answer) => {
+              if (answer.outcome === 'dispatched' && answer.runId !== undefined) setAsked({ runId: answer.runId, title: session.title, summary: session.summary, at: Date.now() });
+            },
+          });
+        }}
+        className={cn(button, 'inline-flex h-8 items-center gap-2 font-medium', busy && 'opacity-60')}
       >
-        {titling.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-        {titling.isPending ? 'Writing summary…' : 'Generate summary'}
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+        {busy ? 'Writing summary…' : 'Generate summary'}
       </button>
-      {note !== null && <span className={cn('font-sans text-xs', outcome === 'titled' ? 'text-primary' : 'text-tertiary')} role="status">{note}</span>}
+      {note !== null && (
+        <span className={cn('font-sans text-xs', tone)} role="status">
+          {note}
+          {asked !== null && !landed && <> · <Link to={`/p/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(asked.runId)}`} className="underline">see the run</Link></>}
+        </span>
+      )}
     </div>
   );
 }
+
+/** How often the page asks again while a summary is being written. */
+const TITLING_POLL_MS = 5_000;
+const isTerminal = (status: string): boolean => status === 'completed' || status === 'failed' || status === 'skipped';
 
 /** The session's name, state and the facts that identify the run, in one glance. */
 function Header({ projectId, session }: { projectId: string; session: SessionRow }) {
@@ -108,7 +158,7 @@ function Header({ projectId, session }: { projectId: string; session: SessionRow
         <h2 className="myco-display-lg m-0 min-w-0 text-on-surface">{session.label}</h2>
         {session.agent !== null && <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">{session.agent}</Badge>}
         {session.branch !== null && <Badge variant="secondary" className="font-mono text-[10px] px-1.5 py-0">{session.branch}</Badge>}
-        <GenerateSummary projectId={projectId} sessionId={session.sessionId} />
+        <GenerateSummary projectId={projectId} sessionId={session.sessionId} session={session} />
       </div>
       <div className="flex flex-wrap gap-4 font-sans text-sm text-on-surface-variant">
         <span>{memberName(session)}</span>

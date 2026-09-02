@@ -48,7 +48,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 53;
+const EMIT_CALLS = 54;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -599,6 +599,16 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/cortex-instructions', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/cortex-instructions', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ agentId: 'agent_gate', content: 'c', inputHash: 'h' }) }),
       },
+      'POST /runs/session-material': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/session-material', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/session-material', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', sessionId: 's_gate' }) }),
+      },
+      'POST /runs/session-title': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/session-title', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/session-title', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', sessionId: 's_gate', title: 'T', summary: 'S' }) }),
+      },
       'POST /spores/save': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -747,11 +757,10 @@ describe('gates', () => {
       .filter((f) => /deploymentSecretStore\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1));
     // The settings surface, which only ever calls `describe`/`list`/`put`/`delete`;
-    // the titler, which opens a provider credential to call the provider and
-    // hands it to nothing else; and the dispatcher, which opens one to hand it
-    // to the launched runtime's environment and nothing else. A new file here
-    // is the thing to look at.
-    expect(callers.sort()).toEqual([join('api', 'harness.ts'), join('api', 'settings.ts'), join('core', 'titling.ts')]);
+    // and the one dispatcher, which opens a provider credential to hand it to
+    // the launched runtime's environment and nothing else. A new file here is
+    // the thing to look at.
+    expect(callers.sort()).toEqual([join('api', 'settings.ts'), join('core', 'harness.ts')]);
     const surface = stripComments(readFileSync(join(SRC, 'api', 'settings.ts'), 'utf8'));
     expect(surface).not.toMatch(/\.get\(\s*ctx\.params\.name/);
   });
@@ -1014,6 +1023,8 @@ describe('gates', () => {
       'member POST /runs/report',
       'member POST /runs/reports',
       'member POST /runs/resume-admission',
+      'member POST /runs/session-material',
+      'member POST /runs/session-title',
       'member POST /runs/state/read',
       'member POST /runs/state/write',
       'member POST /runs/supersede',

@@ -84,6 +84,9 @@ describe('POST /api/harness/dispatch', () => {
     seedProvider(sqlite, { 'agent.provider.type': 'ollama' });
     const unsupported = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);
     expect(((await unsupported.json()) as { reason: string }).reason).toContain('ollama');
+    seedProvider(sqlite, { 'agent.provider.type': 'anthropic' });
+    const unknown = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'no-such-task', projectId: 'proj_1' }), bound);
+    expect({ status: unknown.status, reason: ((await unknown.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'the task is not one this deployment serves' });
     expect(launch).toEqual([]);
   });
 
@@ -103,8 +106,8 @@ describe('POST /api/harness/dispatch', () => {
     expect(spec.runId).toBe(String(body.runId));
     expect(spec.timeoutSeconds).toBe(240);
     const vars = spec.envVars;
-    expect({ url: vars.MYCO_SERVER_URL, project: vars.MYCO_PROJECT, task: vars.MYCO_TASK, run: vars.MYCO_RUN_ID, oat: vars.CLAUDE_CODE_OAUTH_TOKEN, apiKey: vars.ANTHROPIC_API_KEY, model: vars.MYCO_MODEL })
-      .toEqual({ url: 'https://s', project: 'proj_1', task: 'container-smoke', run: spec.runId, oat: 'sk-ant-oat-test-token', apiKey: undefined, model: 'claude-opus-5' });
+    expect({ url: vars.MYCO_SERVER_URL, project: vars.MYCO_PROJECT, task: vars.MYCO_TASK, run: vars.MYCO_RUN_ID, oat: vars.CLAUDE_CODE_OAUTH_TOKEN, apiKey: vars.ANTHROPIC_API_KEY, model: vars.MYCO_MODEL, admission: vars.MYCO_TASK_ADMISSION, params: vars.MYCO_TASK_PARAMS })
+      .toEqual({ url: 'https://s', project: 'proj_1', task: 'container-smoke', run: spec.runId, oat: 'sk-ant-oat-test-token', apiKey: undefined, model: 'claude-opus-5', admission: 'cortex', params: undefined });
     expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic', model: 'claude-opus-5' });
 
     // The minted credential is real: it claims a run over the member surface.

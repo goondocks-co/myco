@@ -13,8 +13,7 @@
  * two concurrent phases interleave.
  *
  * - `claimRun` is one `INSERT ... SELECT ... WHERE NOT EXISTS`. A separate check
- *   followed by a separate insert admits two dispatches that both saw no live
- *   run.
+ *   followed by a separate insert admits a run twice under one id.
  * - `mutateState` is compare-and-swap. The caller's callback is arbitrary code
  *   and cannot move into SQL, so the prior value becomes the guard and a refused
  *   update is retried FROM THE READ. Retrying from anywhere else re-applies a
@@ -52,13 +51,6 @@ export interface RunningRunRef {
 }
 
 /**
- * Why a claim did not take.
- *
- * `running` names the live run that holds the task. `notAdmitted` names a Project
- * that does not hold the capability the task needs — a different answer, and one
- * a caller must not retry into.
- */
-/**
  * What must hold before a task may run.
  *
  * Two kinds, so a claim names one or the other and neither can be omitted.
@@ -71,6 +63,13 @@ export type RunAdmissionGate =
   | { kind: 'capability'; capability: ProjectCapability }
   | { kind: 'provider' };
 
+/**
+ * Why a claim did not take.
+ *
+ * `running` names the run already recorded under this id. `notAdmitted` names a
+ * Project that does not hold the capability the task needs, and `noProvider` a
+ * Deployment with no model to call — settled answers a caller must not retry into.
+ */
 export type ClaimOutcome =
   | { claimed: true }
   | { claimed: false; running: RunningRunRef | null; notAdmitted?: undefined; noProvider?: undefined }
@@ -87,10 +86,10 @@ export interface StateRow {
 const CLAIM_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, instruction, harness, provider, model, status, dry_run, started_at, run_context, dispatched_by)
   SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?
-   WHERE NOT EXISTS (
-     SELECT 1 FROM agent_runs
-      WHERE project_id = ? AND task = ? AND status = 'running'
-        AND COALESCE(resumed_at, started_at) > ?)`;
+   WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`;
+
+const RUN_REF_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
+   WHERE project_id = ? AND id = ?`;
 
 const RUNNING_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
    WHERE project_id = ? AND task = ? AND status = 'running'
@@ -98,24 +97,14 @@ const RUNNING_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS res
    ORDER BY COALESCE(resumed_at, started_at) DESC LIMIT 1`;
 
 /**
- * Single-flight claim.
+ * Claim a run: one row per run id, exactly once.
  *
- * `maxAgeSeconds` is what makes a stale run stop blocking: a run whose process
- * died leaves its row `running` forever, and the floor is how a later dispatch
- * gets past it.
- *
- * Every timestamp this server stores is epoch MILLISECONDS — `now` is
- * `Date.now()` — while the guard is expressed in SECONDS, matching the caller's
- * vocabulary. The conversion is explicit here rather than pushed onto callers:
- * subtracting seconds from milliseconds turns an hour-long window into a
- * 3.6-second one, and single-flighting then fails for every run older than a
- * few seconds while every test that supplies both numbers itself still passes.
- *
- * The clock is `COALESCE(resumed_at, started_at)` — the CURRENT attempt — never
- * `started_at` alone. A resumed run keeps its original dispatch time, so an
- * age floor read off `started_at` treats a run resumed seconds ago as stale and
- * admits a second run of the same task: the exact defect single-flighting
- * exists to prevent.
+ * The run is the unit of work — one minted id, one container — and any number
+ * of runs of one task may be live at once, whatever the trigger, session or
+ * Project. The claim therefore guards the ID and nothing else: a container that
+ * claims twice is refused the second time, and two sessions' titling runs
+ * coexist. A limit on how many run at once is a dispatcher's policy, decided at
+ * dispatch (#1091), never an admission rule applied here.
  *
  * Admission is checked HERE rather than by the caller. A separate call is one a
  * caller can forget and claim anyway; folding it in makes a claim without
@@ -123,21 +112,19 @@ const RUNNING_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS res
  * a Project that appeared from a member's first write is admitted to nothing
  * until an operator says so.
  *
- * A refused admission and a task already running are different answers. Both
+ * A refused admission and an id already claimed are different answers. Both
  * report `claimed: false`, so a caller reading one as the other would retry a
  * condition only an operator can clear.
  *
- * On a refused claim the live run is read back. That read is on the refusal path
- * only, after the outcome is already settled, so it cannot change the decision —
- * it can return a run that finished in between, which reports contention that
- * has just cleared rather than admitting a second run.
+ * On a refused claim the row holding the id is read back. That read is on the
+ * refusal path only, after the outcome is already settled.
  */
 export async function claimRun(
   db: RelationalStore,
   scope: ReadScope,
   row: RunInsert,
-  guard: { taskName: string; maxAgeSeconds: number; admission: RunAdmissionGate },
-  now: number,
+  guard: { taskName: string; admission: RunAdmissionGate },
+  _now: number,
 ): Promise<ClaimOutcome> {
   if (guard.admission.kind === 'capability') {
     if (!(await settingsWriter(db).capabilityEnabled(scope.projectId, guard.admission.capability))) {
@@ -146,16 +133,32 @@ export async function claimRun(
   } else if (!(await providerConfiguredFor(db, guard.taskName))) {
     return { claimed: false, noProvider: true };
   }
-  const floor = now - guard.maxAgeSeconds * 1000;
   const result = await db.prepare(CLAIM_SQL).bind(
     scope.projectId, row.id, row.agentId, row.task, row.instruction, row.harness, row.provider, row.model,
     row.dryRun ? 1 : 0, row.startedAt, row.runContext, row.dispatchedBy,
-    scope.projectId, guard.taskName, floor,
+    scope.projectId, row.id,
   ).run();
 
   if (result.meta.changes === 1) return { claimed: true };
-  const running = await db.prepare(RUNNING_SQL).bind(scope.projectId, guard.taskName, floor).first<RunningRunRef>();
+  const running = await db.prepare(RUN_REF_SQL).bind(scope.projectId, row.id).first<RunningRunRef>();
   return { claimed: false, running: running ?? null };
+}
+
+/**
+ * The most recent live run of a task inside a Project, or null: a read for a
+ * dispatcher's own policy — a scheduled sweep that should not overlap itself
+ * decides that at dispatch — never an admission rule.
+ *
+ * `maxAgeSeconds` is what makes a stale run stop counting: a run whose process
+ * died leaves its row `running` forever. Every timestamp this server stores is
+ * epoch MILLISECONDS while the floor is expressed in SECONDS, matching the
+ * caller's vocabulary; the conversion is explicit here. The clock is
+ * `COALESCE(resumed_at, started_at)` — the CURRENT attempt — so a run resumed
+ * seconds ago is live however old its original dispatch.
+ */
+export async function getRunningRunForTask(db: RelationalStore, scope: ReadScope, taskName: string, maxAgeSeconds: number, now: number): Promise<RunningRunRef | null> {
+  const floor = now - maxAgeSeconds * 1000;
+  return db.prepare(RUNNING_SQL).bind(scope.projectId, taskName, floor).first<RunningRunRef>();
 }
 
 const STATE_READ_SQL = `SELECT key, value, updated_at AS updatedAt FROM agent_state
@@ -290,6 +293,8 @@ export interface RunRow {
   agentId: string;
   task: string | null;
   status: string;
+  /** The parameters the run's dispatch named, as the runtime's claim recorded them; the run routes that serve one task read the session it names from here. */
+  runContext: string | null;
   startedAt: number | null;
   resumedAt: number | null;
   completedAt: number | null;
@@ -302,7 +307,7 @@ export interface RunRow {
   dispatchedBy: string | null;
 }
 
-const RUN_SELECT = `SELECT id, agent_id AS agentId, task, status, started_at AS startedAt,
+const RUN_SELECT = `SELECT id, agent_id AS agentId, task, status, run_context AS runContext, started_at AS startedAt,
     resumed_at AS resumedAt, completed_at AS completedAt, error, checkpoints,
     resumable, resume_status AS resumeStatus, resume_attempts AS resumeAttempts,
     dry_run AS dryRun, dispatched_by AS dispatchedBy

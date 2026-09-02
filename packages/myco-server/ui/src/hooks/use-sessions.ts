@@ -255,33 +255,36 @@ export function useTurnToolCalls(projectId: string, sessionId: string, promptId:
   return usePaged<ToolCallRow>(['turn-tool-calls', projectId, sessionId, promptId], `${project(projectId)}/sessions/${seg(sessionId)}/turns/${seg(promptId)}/tool-calls?limit=200`, { enabled });
 }
 
-/** What the server answers when asked to title a session now; each names an outcome in the reader's words. */
+/** What the server answers when asked to title a session now: a run was started, or why none was; each names an outcome in the reader's words. */
 export type TitlingOutcome =
-  | 'already' | 'budget' | 'no_material' | 'no_provider' | 'no_credential' | 'local_provider' | 'no_endpoint' | 'no_model'
-  | 'malformed' | 'provider' | 'unreachable' | 'superseded' | 'error' | 'titled';
+  | 'dispatched' | 'already' | 'no_material' | 'harness_unavailable' | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider' | 'error';
 
 export const TITLING_OUTCOME_TEXT: Record<TitlingOutcome, string> = {
-  titled: 'Summary updated',
+  dispatched: 'A summary is being written — it lands within a few minutes',
   already: 'A summary was asked for a moment ago — try again shortly',
-  budget: 'This project has hit its hourly limit for summaries — try again later',
   no_material: 'Nothing typed in this session to summarize yet',
+  harness_unavailable: 'This Deployment has no runtime to write summaries yet',
   no_provider: 'No provider is configured for summaries — set one in Settings',
   no_credential: 'The provider has no credential — add one in Settings',
-  local_provider: 'The local provider has no endpoint — set one in Settings',
   no_endpoint: 'The provider has no endpoint — set one in Settings',
-  no_model: 'The provider has no model — set one in Settings',
-  malformed: 'The provider answered with something that was not a summary',
-  provider: 'The provider refused the request',
-  unreachable: 'The provider could not be reached',
-  superseded: 'This session is no longer here',
-  error: 'Something went wrong writing the summary',
+  unsupported_provider: 'Summaries need an Anthropic or OpenAI-compatible provider — set one in Settings',
+  error: 'Something went wrong starting the summary',
 };
+
+/** How long the page keeps watching for a dispatched summary to land: the run's own bound plus the margin its container is held for. */
+export const TITLING_WATCH_MS = (300 + 120) * 1000;
+
+export interface TitlingAnswer {
+  outcome: TitlingOutcome;
+  /** The run that will write the title, on `dispatched`. */
+  runId?: string;
+}
 
 /** Asks the server to title the session now; on an answer, the session's facts are read again. */
 export function useTitleSession(projectId: string, sessionId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: () => postJson<{ outcome: TitlingOutcome }>(`${project(projectId)}/sessions/${seg(sessionId)}/title`),
+    mutationFn: () => postJson<TitlingAnswer>(`${project(projectId)}/sessions/${seg(sessionId)}/title`),
     onSuccess: () => Promise.all([
       client.invalidateQueries({ queryKey: ['session', projectId, sessionId] }),
       client.invalidateQueries({ queryKey: ['sessions', projectId] }),

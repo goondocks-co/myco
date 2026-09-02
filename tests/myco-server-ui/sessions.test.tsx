@@ -333,22 +333,38 @@ describe('Session detail', () => {
     expect(await screen.findByText(/No prompts typed by a person/)).toBeTruthy();
   });
 
-  it('asks for a summary on demand, says how it went, and reads the session again once it lands', async () => {
+  it('asks for a summary on demand, watches the run it started, and says so once the summary lands or the run fails', async () => {
     let titled = false;
+    const runRow = (status: string) => ({ id: 'run_t1', agentId: 'myco-agent', task: 'title-summary', status, provider: 'anthropic', model: null, startedAt: NOW, resumedAt: null, completedAt: null, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: false, resumeStatus: null, failed: status === 'failed', instruction: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: null, reasoningLevel: null, resumeMode: null, resumeAttempts: 0, error: null, dispatchedBy: null, usageData: null, actionsTaken: null });
     const { requested } = server(detailRoutes({
       '/api/projects/x/sessions/s1': () => Response.json({ session: session(titled ? { title: 'Renamed the card', summary: 'Renamed it.', titledAt: NOW } : {}), counts, projectId: 'x' }),
-      '/api/projects/x/sessions/s1/title': () => { titled = true; return Response.json({ outcome: 'titled' }); },
+      '/api/projects/x/sessions/s1/title': () => { titled = true; return Response.json({ outcome: 'dispatched', runId: 'run_t1' }); },
+      '/api/projects/x/runs/run_t1': () => Response.json({ run: runRow('running'), phases: [], reports: [], projectId: 'x' }),
     }));
     mount('/p/x/sessions/s1');
     fireEvent.click(await screen.findByRole('button', { name: 'Generate summary' }));
+    // The answer names a run; the session is read again and the title lands.
     expect(await screen.findByText('Summary updated')).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('Renamed the card'));
     expect(requested.filter((p) => p.endsWith('/title'))).toEqual(['/api/projects/x/sessions/s1/title']);
     cleanup();
-    server(detailRoutes({ '/api/projects/x/sessions/s1/title': () => Response.json({ outcome: 'no_provider' }) }));
+
+    // A run that fails before writing is said so, with the run to look at; the button is free again.
+    server(detailRoutes({
+      '/api/projects/x/sessions/s1/title': () => Response.json({ outcome: 'dispatched', runId: 'run_t1' }),
+      '/api/projects/x/runs/run_t1': () => Response.json({ run: runRow('failed'), phases: [], reports: [], projectId: 'x' }),
+    }));
     mount('/p/x/sessions/s1');
     fireEvent.click(await screen.findByRole('button', { name: 'Generate summary' }));
-    expect(await screen.findByText('No provider is configured for summaries — set one in Settings')).toBeTruthy();
+    expect(await screen.findByText(/The summary run failed/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'see the run' }).getAttribute('href')).toBe('/p/x/runs/run_t1');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Generate summary' }).getAttribute('aria-busy')).toBe('false'));
+    cleanup();
+
+    server(detailRoutes({ '/api/projects/x/sessions/s1/title': () => Response.json({ outcome: 'harness_unavailable' }) }));
+    mount('/p/x/sessions/s1');
+    fireEvent.click(await screen.findByRole('button', { name: 'Generate summary' }));
+    expect(await screen.findByText('This Deployment has no runtime to write summaries yet')).toBeTruthy();
   });
 
   it('heads the detail with the label and shows a summary only once one is stored', async () => {

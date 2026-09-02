@@ -2,9 +2,9 @@
  * `myco_sessions` over the Deployment's session facts.
  *
  * The shape is the member-side tool's: a summary per session with the field
- * names skills key on. `title` and `summary` are the Deployment's own
- * titling write, made after the session ends; they answer null and empty
- * until it lands. Timestamps are the Deployment's, in milliseconds.
+ * names skills key on. `title` and `summary` are written by a titling run
+ * the Deployment dispatches after the session ends; they answer null and
+ * empty until it lands. Timestamps are the Deployment's, in milliseconds.
  */
 import { getPlan } from '../../read/plans.js';
 import { getSession, listSessionSummaries, sessionCounts, type SessionRow } from '../../read/sessions.js';

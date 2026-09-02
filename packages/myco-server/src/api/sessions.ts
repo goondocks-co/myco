@@ -128,15 +128,14 @@ export async function handleSessionTurnToolCalls(env: ServerEnv, ctx: OwnerConte
   return ok(await listToolCalls(env.db, scope, sessionId, { ...page, promptId: ctx.params.promptId }));
 }
 
-/** `POST …/sessions/{sessionId}/title`: a person asks for the session's title and summary now, over its opening and closing prompts, replacing what is there. Answers the outcome once the provider has, inside the titling timeout. */
+/** `POST …/sessions/{sessionId}/title`: a person asks for the session's title and summary now, over its opening and closing prompts, replacing what is there. Answers the outcome of the ask — `dispatched` with the run that will write them, or the refusal — never the title itself. */
 export async function handleTitleSession(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
-  const outcome = await titleSession(env, { projectId: scope.projectId, sessionId, now: ctx.now }, { mode: 'owner', by: ctx.member.id });
-  return ok({ outcome });
+  return ok(await titleSession(env, { projectId: scope.projectId, sessionId, now: ctx.now, origin: ctx.url.origin }, { mode: 'owner', by: ctx.member.id }));
 }
 
 /** Sets a plan's status as an administrative edit by the signed-in member; 404 unless the plan sits in the session, 400 for a status outside the writable set. Answers the row as it stands afterwards. */

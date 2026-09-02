@@ -7,7 +7,7 @@ import { describe, expect, it } from 'bun:test';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import worker from '@myco-server-worker/index.js';
 import { ServerClient } from '@myco/member/transport.js';
-import { runServerTask } from '@myco/agent/runtime/server-runner.js';
+import { CAPTURE_DRIVEN_ADMISSION, runServerTask } from '@myco/agent/runtime/server-runner.js';
 import type { AgentHarness, HarnessExecuteInput } from '@myco/agent/harness/types.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
@@ -69,6 +69,34 @@ describe('runServerTask', () => {
     // run_smoke_3 completed; a fresh claim within the window is refused → skipped
     const rows = sqlite.query(`SELECT id, status FROM agent_runs ORDER BY id`).all() as Array<{ id: string; status: string }>;
     expect(rows.map((r) => r.id)).toContain('run_smoke_3');
+  });
+
+  it('runs title-summary with the session tools, claiming on the provider gate with the dispatch\'s parameters as its context, and the prompt naming the session', async () => {
+    const { client, sqlite } = await harness();
+    sqlite.query(`DELETE FROM project_capabilities`).run();
+    sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.provider.type', '"anthropic"', 1, 'test')`).run();
+    sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES ('proj_1', 'sess_1', 'machine_1', 'tok_1', 1, 2, 'claude-code')`).run();
+    let seen: { names: string[]; prompt: string } | null = null;
+    const observing: AgentHarness = {
+      async execute(input: HarnessExecuteInput) {
+        seen = { names: (input.toolSurface.tools ?? []).map((t) => t.name), prompt: input.prompt };
+        return { finalText: 'done', turnsUsed: 1, usage: { totalTokens: 7 } as never };
+      },
+      supports: () => false,
+    } as unknown as AgentHarness;
+    const params = { session_id: 'sess_1', mode: 'claim' };
+    const result = await runServerTask({ client, budget, runId: 'run_title_1', taskName: 'title-summary', harness: observing, params, admission: CAPTURE_DRIVEN_ADMISSION });
+    expect(result.status).toBe('completed');
+    expect(seen!.names).toEqual(['vault_report', 'vault_session_summary_material', 'vault_update_session']);
+    expect(seen!.prompt).toContain('Target session: sess_1');
+    const run = sqlite.query(`SELECT status, task, run_context c FROM agent_runs WHERE id = 'run_title_1'`).get() as { status: string; task: string; c: string };
+    expect(run).toEqual({ status: 'completed', task: 'title-summary', c: JSON.stringify(params) });
+    // Every other task holds the report tool alone.
+    let smokeNames: string[] = [];
+    const smoke: AgentHarness = { async execute(input: HarnessExecuteInput) { smokeNames = (input.toolSurface.tools ?? []).map((t) => t.name); return { finalText: 'done', turnsUsed: 1 } as never; }, supports: () => false } as unknown as AgentHarness;
+    sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, 1, 'test')`).run();
+    await runServerTask({ client, budget, runId: 'run_smoke_5', taskName: 'container-smoke', harness: smoke, admission: 'cortex' });
+    expect(smokeNames).toEqual(['vault_report']);
   });
 
   it('fails an unknown task by name without claiming anything', async () => {

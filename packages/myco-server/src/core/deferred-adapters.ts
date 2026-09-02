@@ -8,8 +8,6 @@
  *
  *   VectorStore       #913 / #914 implement, #921 recall states the query it needs
  *   WakeScheduler     #913 / #914 implement, #919 states what must run and when
- *   HarnessDispatcher #913 / #914 implement, gated on the #908 container spike;
- *                     #919 requires resumability, cancellation, and failure records
  *   TelemetrySink     #913 / #914; `emit()` writing to the console is correct on
  *                     both targets today
  *
@@ -57,11 +55,6 @@ export interface VectorStore {
 export interface WakeScheduler {
   scheduleAt(key: string, epochMs: number): Promise<void>;
   cancel(key: string): Promise<void>;
-}
-
-/** Dispatch of an intelligence run to the harness container, implemented per target in #913 and #914, one of which is gated on the #908 spike. */
-export interface HarnessDispatcher {
-  dispatch(job: { projectId: string; task: string; payload: Record<string, unknown> }): Promise<{ runId: string }>;
 }
 
 /**

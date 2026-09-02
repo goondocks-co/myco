@@ -42,19 +42,22 @@ import type { RunAdmission, RunStore } from './run-store.js';
 /** How many times a refused compare-and-swap is recomputed before the write is reported as contended. */
 export const HTTP_MUTATE_ATTEMPTS = 5;
 
+/** What a claim carries as its admission: the capability the task needs, or the capture-driven marker for a task gated on a provider alone. */
+export type RunClaimAdmission = { capability: string } | { captureDriven: true };
+
 /**
- * The capability a task needs, supplied by the task catalogue.
+ * The admission a task's claim carries, supplied by the dispatch.
  *
- * Taken rather than held: the catalogue lives with the tasks, and a second copy
- * inside the transport is the one that goes stale without saying so when a task
- * is added.
+ * Taken rather than held: the catalogue that decides admission lives with the
+ * server, and a second copy inside the transport is the one that goes stale
+ * without saying so when a task is added.
  */
-export type CapabilityForTask = (task: string) => string;
+export type AdmissionForTask = (task: string) => RunClaimAdmission;
 
 export interface HttpRunStoreOptions {
   client: ServerClient;
   agentId: string;
-  capabilityForTask: CapabilityForTask;
+  admissionForTask: AdmissionForTask;
   budget: RequestBudget;
 }
 
@@ -69,6 +72,20 @@ export class ProjectNotAdmittedError extends Error {
   constructor(readonly capability: string, readonly task: string) {
     super(`project is not admitted to ${capability}, which ${task} requires`);
     this.name = 'ProjectNotAdmittedError';
+  }
+}
+
+/**
+ * A Deployment with no model to call for a capture-driven task.
+ *
+ * Thrown rather than returned as a refused claim, for the same reason as an
+ * unadmitted Project: an operator supplies a provider, or the task does not run,
+ * and a caller retrying would never see it clear.
+ */
+export class NoProviderConfiguredError extends Error {
+  constructor(readonly task: string) {
+    super(`no provider is configured for ${task}`);
+    this.name = 'NoProviderConfiguredError';
   }
 }
 
@@ -92,6 +109,15 @@ function body(answer: RawAnswer, path: string): Record<string, unknown> {
   return answer.json;
 }
 
+/** One call over a run-control route, answered as the route's body; a refusal or a transport failure throws. */
+export async function postRunControl(client: ServerClient, budget: RequestBudget, path: string, payload: unknown): Promise<Record<string, unknown>> {
+  return body(await client.request('POST', path, {
+    body: JSON.stringify(payload),
+    headers: { 'content-type': 'application/json' },
+    budget,
+  }), path);
+}
+
 /** Record one report over the run-control surface; the server refuses a run this Project does not hold. */
 export async function postRunReport(
   client: ServerClient,
@@ -107,14 +133,13 @@ export async function postRunReport(
 }
 
 export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
-  const { client, agentId, capabilityForTask, budget } = opts;
+  const { client, agentId, admissionForTask, budget } = opts;
 
-  const post = async (path: string, payload: unknown): Promise<Record<string, unknown>> =>
-    body(await client.request('POST', path, {
-      body: JSON.stringify(payload),
-      headers: { 'content-type': 'application/json' },
-      budget,
-    }), path);
+  const post = (path: string, payload: unknown): Promise<Record<string, unknown>> => postRunControl(client, budget, path, payload);
+  const capabilityOf = (task: string): string | undefined => {
+    const admission = admissionForTask(task);
+    return 'capability' in admission ? admission.capability : undefined;
+  };
 
   const readState = async (key: string): Promise<{ value: string | null; updatedAt: number | null }> => {
     const answered = await post('/runs/state/read', { agentId, key });
@@ -124,12 +149,13 @@ export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
   return {
     async insertRun(row) {
       // Every insert on this surface is a claim: an unguarded insert would admit
-      // the second dispatch the claim exists to refuse.
+      // the same run twice under one id.
       await this.claimRun(row, { taskName: row.task ?? '', maxAgeSeconds: 0 });
     },
 
     async claimRun(row: RunInsert, guard) {
-      const capability = capabilityForTask(guard.taskName);
+      // The server's claim guards the run id, never a task-level single-flight;
+      // the guard's age floor is the port's vocabulary and has no reading there.
       const answered = await post('/runs/claim', {
         id: row.id,
         agentId: row.agent_id,
@@ -141,19 +167,19 @@ export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
         runContext: row.run_context ?? null,
         dryRun: row.dryRun === true,
         startedAt: row.started_at ?? null,
-        maxAgeSeconds: guard.maxAgeSeconds,
-        capability,
+        ...admissionForTask(guard.taskName),
       });
       if (answered.claimed === true) return { claimed: true };
       if (answered.notAdmitted !== undefined) throw new ProjectNotAdmittedError(String(answered.notAdmitted), guard.taskName);
+      if (answered.noProvider === true) throw new NoProviderConfiguredError(guard.taskName);
       const running = answered.running as { id: string; startedAt: number | null; resumedAt: number | null } | null;
       return {
         claimed: false,
         running: {
           id: running?.id ?? '',
           started_at: running?.startedAt ?? null,
-          // The server refuses a claim only while the run is INSIDE the window,
-          // so anything it reports back is by construction not stale.
+          // The server refuses a claim only for an id already recorded; what it
+          // reports back is that row, never a stale one.
           stale: false,
         } satisfies RunningRunRef,
       };
@@ -169,7 +195,7 @@ export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
       // when one holds the task, which is the same question without a second
       // read path that could disagree with the claim's.
       const answered = await post('/runs/claim', {
-        id: '', agentId, task, maxAgeSeconds: maxAgeSeconds ?? 0, capability: capabilityForTask(task),
+        id: '', agentId, task, maxAgeSeconds: maxAgeSeconds ?? 0, ...admissionForTask(task),
       });
       const running = answered.running as { id: string; startedAt: number | null } | null;
       return running ? { id: running.id, started_at: running.startedAt ?? null, stale: false } : null;
@@ -242,7 +268,7 @@ export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
     async admitProject(): Promise<RunAdmission> {
       // Asked per capability; the caller's task decides which. The claim carries
       // the enforcing check, so this answers only so a caller can say why.
-      const answered = await post('/runs/admission', { capability: capabilityForTask('') });
+      const answered = await post('/runs/admission', { capability: capabilityOf('') ?? null });
       return answered.admitted === true
         ? { admitted: true }
         : { admitted: false, reason: `project is not admitted to ${String(answered.capability)}` };
