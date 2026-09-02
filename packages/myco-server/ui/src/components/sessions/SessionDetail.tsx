@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Check, Copy, X } from 'lucide-react';
+import { Check, Copy, Loader2, Sparkles, X } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { MetricCard } from '../ui/metric-card';
 import { PageLoading } from '../ui/page-loading';
@@ -9,10 +9,11 @@ import { StatusDot } from '../ui/status-dot';
 import { SubtabPill } from '../ui/subtab-pill';
 import { Surface } from '../ui/surface';
 import {
-  blobUrl, memberName, RENDERABLE_IMAGE_TYPES, runtimeName, useSession, useSessionChildren, useTranscript,
+  blobUrl, memberName, RENDERABLE_IMAGE_TYPES, runtimeName, TITLING_OUTCOME_TEXT, useSession, useSessionChildren, useTitleSession, useTranscript,
   type AttachmentRow, type PlanRow, type SessionRow,
 } from '../../hooks/use-sessions';
 import { ApiError } from '../../lib/api';
+import { cn } from '../../lib/cn';
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatRelative } from '../../lib/format';
 import { NotFound } from '../../pages/NotFound';
 import { PlanCard } from './PlanCard';
@@ -45,7 +46,7 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
       {detail.data && (
         <div className="flex flex-col gap-5">
           <Header projectId={projectId} session={detail.data.session} />
-          <div className="grid grid-cols-3 gap-3 md:grid-cols-5">
+          <div className="grid grid-cols-3 gap-3 xl:grid-cols-5">
             <MetricCard label="Prompts" value={detail.data.counts.prompts.toLocaleString()} tone="sage" />
             <MetricCard label="Tool calls" value={detail.data.counts.toolCalls.toLocaleString()} tone="ochre" />
             <MetricCard label="Responses" value={detail.data.counts.responses.toLocaleString()} tone="sage" />
@@ -71,8 +72,30 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
   );
 }
 
+/** Asks for the session's title and summary now, and says how it went. The button stays focusable while it works, so a keyboard user is never dropped to the page. */
+function GenerateSummary({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+  const titling = useTitleSession(projectId, sessionId);
+  const outcome = titling.data?.outcome;
+  const note = titling.error ? 'The session could not be summarized right now' : outcome !== undefined ? TITLING_OUTCOME_TEXT[outcome] : null;
+  return (
+    <div className="ml-auto flex flex-col items-end gap-1 self-start">
+      <button
+        type="button"
+        aria-disabled={titling.isPending}
+        aria-busy={titling.isPending}
+        onClick={() => { if (!titling.isPending) titling.mutate(); }}
+        className={cn(button, 'inline-flex h-8 items-center gap-2 font-medium', titling.isPending && 'opacity-60')}
+      >
+        {titling.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+        {titling.isPending ? 'Writing summary…' : 'Generate summary'}
+      </button>
+      {note !== null && <span className={cn('font-sans text-xs', outcome === 'titled' ? 'text-primary' : 'text-tertiary')} role="status">{note}</span>}
+    </div>
+  );
+}
+
 /** The session's name, state and the facts that identify the run, in one glance. */
-function Header({ session }: { projectId: string; session: SessionRow }) {
+function Header({ projectId, session }: { projectId: string; session: SessionRow }) {
   const open = session.endedAt === null;
   return (
     <div className="space-y-2">
@@ -84,6 +107,7 @@ function Header({ session }: { projectId: string; session: SessionRow }) {
         <h2 className="myco-display-lg m-0 min-w-0 text-on-surface">{session.label}</h2>
         {session.agent !== null && <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">{session.agent}</Badge>}
         {session.branch !== null && <Badge variant="secondary" className="font-mono text-[10px] px-1.5 py-0">{session.branch}</Badge>}
+        <GenerateSummary projectId={projectId} sessionId={session.sessionId} />
       </div>
       <div className="flex flex-wrap gap-4 font-sans text-sm text-on-surface-variant">
         <span>{memberName(session)}</span>
@@ -123,9 +147,9 @@ function CopyValue({ value, label }: { value: string; label: string }) {
 
 function MetaItem({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-baseline gap-3 border-b border-[var(--ghost-border)] py-1.5 last:border-0">
+    <div className="flex min-w-0 items-baseline gap-3 border-b border-[var(--ghost-border)] py-1.5 last:border-0">
       <dt className="w-20 shrink-0 font-sans text-xs font-medium text-on-surface-variant">{label}</dt>
-      <dd className="min-w-0 flex-1 font-mono text-xs text-on-surface">{children}</dd>
+      <dd className="min-w-0 flex-1 truncate font-mono text-xs text-on-surface">{children}</dd>
     </div>
   );
 }

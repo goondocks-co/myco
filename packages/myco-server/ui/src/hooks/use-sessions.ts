@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
-import { ApiError, fetchJson, SignedOutError } from '../lib/api';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ApiError, fetchJson, postJson, SignedOutError } from '../lib/api';
 import { usePaged } from './use-paged';
 
 export interface SessionRow {
@@ -239,6 +239,40 @@ export function useTurnDetail(projectId: string, sessionId: string, promptId: st
 /** One turn's tool calls, read when the reader opens them. */
 export function useTurnToolCalls(projectId: string, sessionId: string, promptId: string, enabled: boolean) {
   return usePaged<ToolCallRow>(['turn-tool-calls', projectId, sessionId, promptId], `${project(projectId)}/sessions/${seg(sessionId)}/turns/${seg(promptId)}/tool-calls?limit=200`, { enabled });
+}
+
+/** What the server answers when asked to title a session now; each names an outcome in the reader's words. */
+export type TitlingOutcome =
+  | 'already' | 'budget' | 'no_material' | 'no_provider' | 'no_credential' | 'local_provider' | 'no_endpoint' | 'no_model'
+  | 'malformed' | 'provider' | 'unreachable' | 'superseded' | 'error' | 'titled';
+
+export const TITLING_OUTCOME_TEXT: Record<TitlingOutcome, string> = {
+  titled: 'Summary updated',
+  already: 'A summary was asked for a moment ago — try again shortly',
+  budget: 'This project has hit its hourly limit for summaries — try again later',
+  no_material: 'Nothing typed in this session to summarize yet',
+  no_provider: 'No provider is configured for summaries — set one in Settings',
+  no_credential: 'The provider has no credential — add one in Settings',
+  local_provider: 'The local provider has no endpoint — set one in Settings',
+  no_endpoint: 'The provider has no endpoint — set one in Settings',
+  no_model: 'The provider has no model — set one in Settings',
+  malformed: 'The provider answered with something that was not a summary',
+  provider: 'The provider refused the request',
+  unreachable: 'The provider could not be reached',
+  superseded: 'This session is no longer here',
+  error: 'Something went wrong writing the summary',
+};
+
+/** Asks the server to title the session now; on an answer, the session's facts are read again. */
+export function useTitleSession(projectId: string, sessionId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => postJson<{ outcome: TitlingOutcome }>(`${project(projectId)}/sessions/${seg(sessionId)}/title`),
+    onSuccess: () => Promise.all([
+      client.invalidateQueries({ queryKey: ['session', projectId, sessionId] }),
+      client.invalidateQueries({ queryKey: ['sessions', projectId] }),
+    ]),
+  });
 }
 
 export function useSession(projectId: string, sessionId: string) {
