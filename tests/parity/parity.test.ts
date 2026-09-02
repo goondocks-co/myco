@@ -4,8 +4,9 @@ import { bootSelfhosted } from './targets/selfhosted.ts';
 import { bootCloudflare } from './targets/cloudflare.ts';
 import { backupRestore } from './scenarios/backup-restore.ts';
 import { sessionsTitling } from './scenarios/sessions-titling.ts';
+import { sessionTurns } from './scenarios/session-turns.ts';
 
-const scenarios = [sessionsTitling, backupRestore];
+const scenarios = [sessionsTitling, sessionTurns, backupRestore];
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

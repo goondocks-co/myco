@@ -958,7 +958,7 @@ describe('gates', () => {
     const { OWNER_ENV, ownerCookie } = await import('./helpers/owner.js');
     const cookie = await ownerCookie();
     for (const r of owner) {
-      const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{runId}', 'r1').replace('{memberId}', 'mem_machine_2').replace('{grantId}', 'eg_x').replace('{id}', 'x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64));
+      const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{promptId}', '00000000-0000-7000-8000-000000000001').replace('{runId}', 'r1').replace('{memberId}', 'mem_machine_2').replace('{grantId}', 'eg_x').replace('{id}', 'x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64));
       const e = sqliteEnv();
       const res = await worker.fetch(
         new Request(`https://s${path}`, { method: r.method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' }, body: r.method === 'POST' ? '{}' : undefined }),
@@ -1045,6 +1045,9 @@ describe('gates', () => {
       'owner GET /api/projects/{projectId}/sessions',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}/transcript',
+      'owner GET /api/projects/{projectId}/sessions/{sessionId}/turns',
+      'owner GET /api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}',
+      'owner GET /api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}/tool-calls',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}/{child}',
       'owner GET /api/projects/{projectId}/skills',
       'owner GET /api/projects/{projectId}/skills/{skillId}',

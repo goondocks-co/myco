@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite';
+import { expect } from 'bun:test';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 
 /**
@@ -46,6 +47,13 @@ export function memberHeadersFor(token: string, projectId: string, extra: Record
     'cf-connecting-ip': '1.2.3.4',
     ...extra,
   };
+}
+
+/** A write's answer as the server persisted it. Ingest answers a refusal as a 200 with `persisted: false`, so the status alone proves nothing; a scenario's writes go through this. */
+export async function expectPersisted(res: Response, label: string): Promise<void> {
+  const body = (await res.json()) as { persisted?: boolean; stored?: boolean; code?: string; reason?: string };
+  const landed = body.persisted === true || body.stored === true;
+  expect(`${label}: ${res.status} ${landed ? 'persisted' : `refused ${body.code ?? ''} ${body.reason ?? ''}`.trim()}`).toBe(`${label}: 200 persisted`);
 }
 
 /** A single-quoted SQL literal; scenario values MUST pass through this on their way into `target.sql`. */

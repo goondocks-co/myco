@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { MEMBER_ID, lit, titlingStub, waitFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { MEMBER_ID, expectPersisted, lit, titlingStub, waitFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
  * The proof scenario for #1042: capture through /events, the after-response
@@ -26,7 +26,7 @@ export const sessionsTitling: ParityScenario = {
           headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
           body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId, kind, createdAt: Date.now(), channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload }),
         });
-        expect(`${kind} ${res.status}`).toBe(`${kind} 200`);
+        await expectPersisted(res, kind);
       };
       const runSession = async (sessionId: string, prompt: string) => {
         await post(sessionId, 'session.start', { agent: 'claude-code', startedAt: Date.now() });

@@ -53,6 +53,16 @@ export function keyset(opts: { limit?: number; cursor?: string }, spec: KeysetSp
   };
 }
 
+/** The most ids one statement names in an `IN (…)` list. The hosted store admits 100 bound parameters per statement; the scope's own binding takes one, and a margin keeps a statement that binds a few more still under the ceiling. */
+export const MAX_IN_LIST = 90;
+
+/** `ids` in runs no longer than `MAX_IN_LIST`, so every statement over one run stays under the store's parameter ceiling. */
+export function inListChunks<T>(ids: readonly T[]): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < ids.length; i += MAX_IN_LIST) out.push(ids.slice(i, i + MAX_IN_LIST));
+  return out;
+}
+
 /** Trims an over-fetched row set to the page and emits a cursor only when the extra row proved another page exists. */
 export function page<T>(rows: readonly T[], limit: number, key: (row: T) => { createdAt: number; id: string }): Page<T> {
   const more = rows.length > limit;

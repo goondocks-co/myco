@@ -178,6 +178,142 @@ describe('read/children', () => {
   });
 });
 
+import { listTurns, parseOrigins, turnDetail, DEFAULT_ORIGINS, TURN_PREVIEW_CHARS } from '@myco-server-worker/read/turns.js';
+import { listAttachments } from '@myco-server-worker/read/children.js';
+import { bucketActivity, containsPattern, listSessionSummaries, ACTIVITY_BUCKETS } from '@myco-server-worker/read/sessions.js';
+import { inListChunks, MAX_IN_LIST } from '@myco-server-worker/read/scope.js';
+
+const UUID = (n: number): string => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
+
+describe('read/turns', () => {
+  function seedTurns(sqlite: import('bun:sqlite').Database) {
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at) VALUES ('proj_1','s1','m1','tok_1',1,100,1)`);
+    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, parent_prompt_id, thread_label, text, blob_key, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES
+      ('proj_1','s1',?,'e1',NULL,NULL,?,NULL,'user','h1',10,10,'t1',10),
+      ('proj_1','s1',?,'e2',NULL,NULL,'<task-notification>ignored by default</task-notification>',NULL,'system','h2',20,20,'t1',20),
+      ('proj_1','s1',?,'e3',?,'reviewer','steer it left',NULL,'user','h3',25,25,'t1',25),
+      ('proj_1','s1',?,'e4',NULL,NULL,NULL,?,'user','h4',30,30,'t1',30),
+      ('proj_2','s1',?,'e5',NULL,NULL,'other project',NULL,'user','h5',15,15,'t1',15)`,
+      [UUID(1), `${'first prompt '.repeat(20)}tail`, UUID(2), UUID(3), UUID(1), UUID(4), 'a'.repeat(64), UUID(9)]);
+    sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, prompt_id, tool_name, success, created_at, token_id, received_at) VALUES
+      ('proj_1','s1','tc1','ev1',?,'Read',1,11,'t1',11), ('proj_1','s1','tc2','ev2',?,'Edit',1,12,'t1',12), ('proj_1','s1','tc3','ev3',?,'Bash',0,26,'t1',26)`, [UUID(1), UUID(1), UUID(3)]);
+    sqlite.run(`INSERT INTO responses (project_id, session_id, response_id, event_id, prompt_id, text, content_hash, created_at, token_id, received_at) VALUES
+      ('proj_1','s1','r1','er1',?,'done the first','hr1',13,'t1',13), ('proj_1','s1','r2','er2',?,'steered','hr2',27,'t1',27)`, [UUID(1), UUID(3)]);
+    sqlite.run(`INSERT INTO attachments (project_id, session_id, attachment_id, event_id, prompt_id, blob_key, media_type, byte_size, created_at, token_id, received_at) VALUES
+      ('proj_1','s1','a1','ea1',?,?,'image/png',1234,14,'t1',14)`, [UUID(1), 'b'.repeat(64)]);
+  }
+
+  it('lists top-level prompts of the default origin oldest first, with a preview, the spilled key, and counts of what followed each', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedTurns(sqlite);
+    const { rows, cursor } = await listTurns(db, { projectId: 'proj_1' }, 's1');
+    expect(cursor).toBeNull();
+    expect(rows.map((r) => r.promptId)).toEqual([UUID(1), UUID(4)]);
+    expect(rows[0]).toMatchObject({ origin: 'user', threadLabel: null, blobKey: null, createdAt: 10, toolCallCount: 2, responseCount: 1, childCount: 1 });
+    expect(rows[0].preview).toHaveLength(TURN_PREVIEW_CHARS);
+    expect(rows[0].textChars).toBe(`${'first prompt '.repeat(20)}tail`.length);
+    expect(rows[1]).toMatchObject({ preview: null, textChars: null, blobKey: 'a'.repeat(64), toolCallCount: 0, responseCount: 0, childCount: 0 });
+  });
+
+  it('shows every origin when asked, pages by the turn key, and refuses an origin the wire does not admit', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedTurns(sqlite);
+    const all = await listTurns(db, { projectId: 'proj_1' }, 's1', { origins: ['user', 'system'], limit: 2 });
+    expect(all.rows.map((r) => [r.promptId, r.origin])).toEqual([[UUID(1), 'user'], [UUID(2), 'system']]);
+    const rest = await listTurns(db, { projectId: 'proj_1' }, 's1', { origins: ['user', 'system'], limit: 2, cursor: all.cursor! });
+    expect(rest.rows.map((r) => r.promptId)).toEqual([UUID(4)]);
+    expect(rest.cursor).toBeNull();
+    expect(parseOrigins(null)).toEqual(DEFAULT_ORIGINS);
+    expect(parseOrigins('system, user,user')).toEqual(['system', 'user']);
+    expect(parseOrigins('human')).toBeNull();
+    expect(parseOrigins(',')).toBeNull();
+    expect((await listTurns(db, { projectId: 'proj_1' }, 's1', { origins: [] })).rows).toEqual([]);
+    expect((await listTurns(db, { projectId: 'proj_1' }, 's1', { cursor: 'garbage' })).rows).toEqual([]);
+  });
+
+  it('reads one turn with its responses, its attachments and its steering children, and nothing of another project', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedTurns(sqlite);
+    const detail = await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(1));
+    expect(detail?.prompt).toMatchObject({ promptId: UUID(1), origin: 'user', parentPromptId: null, blobKey: null });
+    expect(detail?.prompt.text?.endsWith('tail')).toBe(true);
+    expect(detail?.responses.map((r) => r.text)).toEqual(['done the first']);
+    expect(detail?.attachments.map((a) => [a.attachmentId, a.promptId, a.mediaType])).toEqual([['a1', UUID(1), 'image/png']]);
+    expect(detail?.children.map((c) => [c.prompt.promptId, c.prompt.threadLabel, c.prompt.text, c.toolCallCount, c.responses.map((r) => r.text)])).toEqual([[UUID(3), 'reviewer', 'steer it left', 1, ['steered']]]);
+    expect(await turnDetail(db, { projectId: 'proj_2' }, 's1', UUID(1))).toBeNull();
+    expect(await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(9))).toBeNull();
+  });
+
+  it('narrows a child read to one prompt, and carries the prompt an attachment accompanies', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedTurns(sqlite);
+    const { listToolCalls } = await import('@myco-server-worker/read/children.js');
+    expect((await listToolCalls(db, { projectId: 'proj_1' }, 's1', { promptId: UUID(1) })).rows.map((t) => t.toolCallId)).toEqual(['tc1', 'tc2']);
+    expect((await listToolCalls(db, { projectId: 'proj_1' }, 's1', { promptId: UUID(3), limit: 1 })).rows.map((t) => t.toolName)).toEqual(['Bash']);
+    expect((await listAttachments(db, { projectId: 'proj_1' }, 's1')).rows.map((a) => a.promptId)).toEqual([UUID(1)]);
+  });
+});
+
+describe('read/sessions summaries', () => {
+  it('spreads prompt instants over a session\'s lifetime, widening a stored range by what it observes', () => {
+    const open = { sessionId: 'open', startedAt: 1_000, firstReceivedAt: 1_000, endedAt: null, lastReceivedAt: 5_000 };
+    const ended = { sessionId: 'ended', startedAt: 1_000, firstReceivedAt: 1_000, endedAt: 9_000, lastReceivedAt: 9_000 };
+    const unstarted = { sessionId: 'unstarted', startedAt: null, firstReceivedAt: 2_000, endedAt: null, lastReceivedAt: 6_000 };
+    const buckets = bucketActivity([open, ended, unstarted], [
+      { sessionId: 'open', at: 1_000 }, { sessionId: 'open', at: 9_000 },
+      { sessionId: 'ended', at: 1_000 }, { sessionId: 'ended', at: 5_000 }, { sessionId: 'ended', at: 9_000 },
+      { sessionId: 'unstarted', at: 500 }, { sessionId: 'unstarted', at: 6_000 },
+    ], 17_000);
+    expect(buckets.get('ended')).toEqual([1, 0, 0, 0, 1, 0, 0, 1]);
+    expect(buckets.get('open')).toEqual([1, 0, 0, 0, 1, 0, 0, 0]);
+    expect(buckets.get('unstarted')).toEqual([1, 0, 0, 0, 0, 0, 0, 1]);
+    expect(buckets.get('open')).toHaveLength(ACTIVITY_BUCKETS);
+  });
+
+  it('lists sessions with their counts and buckets, and filters by the text the rail types', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedSessions(sqlite);
+    sqlite.run(`UPDATE sessions SET title = 'Wave-based executor' WHERE session_id = 's3'`);
+    sqlite.run(`UPDATE sessions SET branch = 'fix/50%_case' WHERE session_id = 's2'`);
+    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+                VALUES ('proj_1','s1','p1','e1','rename the project card','user','h1',5,5,'t1',5), ('proj_1','s1','p2','e2','again','user','h2',9,9,'t1',9)`);
+    sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, tool_name, success, created_at, token_id, received_at) VALUES ('proj_1','s1','tc1','ev1','Read',1,6,'t1',6)`);
+    const { rows } = await listSessionSummaries(db, { projectId: 'proj_1' }, {}, 100);
+    const byId = Object.fromEntries(rows.map((r) => [r.sessionId, r]));
+    expect([byId.s1.promptCount, byId.s1.toolCallCount, byId.s1.label]).toEqual([2, 1, 'rename the project card']);
+    expect(byId.s1.activityBuckets.reduce((a, b) => a + b, 0)).toBe(2);
+    expect([byId.s2.promptCount, byId.s2.toolCallCount, byId.s2.activityBuckets]).toEqual([0, 0, [0, 0, 0, 0, 0, 0, 0, 0]]);
+    const find = async (q: string) => (await listSessionSummaries(db, { projectId: 'proj_1' }, { q }, 100)).rows.map((r) => r.sessionId);
+    expect(await find('wave')).toEqual(['s3']);
+    expect(await find('rename the')).toEqual(['s1']);
+    expect(await find('50%_c')).toEqual(['s2']);
+    expect(await find('%')).toEqual(['s2']);
+    expect(await find('nothing here')).toEqual([]);
+    expect(await find('  ')).toEqual(['s3', 's2', 's1']);
+    expect(containsPattern('a%b_c\\d')).toBe('%a\\%b\\_c\\\\d%');
+  });
+
+  it('names ids in runs under the bound-parameter ceiling, so a full page of summaries reads on every store', async () => {
+    expect(MAX_IN_LIST).toBeLessThan(100);
+    expect(inListChunks([])).toEqual([]);
+    expect(inListChunks(['a']).length).toBe(1);
+    const many = Array.from({ length: MAX_IN_LIST * 2 + 1 }, (_, i) => `s${i}`);
+    const chunks = inListChunks(many);
+    expect(chunks.map((c) => c.length)).toEqual([MAX_IN_LIST, MAX_IN_LIST, 1]);
+    expect(chunks.flat()).toEqual(many);
+
+    const { db, sqlite } = sqliteEnv();
+    sqlite.run(`INSERT OR REPLACE INTO projects (project_id, name, created_at) VALUES ('proj_1','One',1)`);
+    for (let i = 0; i < MAX_PAGE; i++) {
+      sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at) VALUES ('proj_1', 'many-${i}', 'm1', 'tok_1', ${1000 + i}, ${2000 + i}, ${1000 + i})`);
+      sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 'many-${i}', 'p-${i}', 'e-${i}', 'hi', 'user', 'h-${i}', ${1500 + i}, ${1500 + i}, 't1', ${1500 + i})`);
+    }
+    const { rows } = await listSessionSummaries(db, { projectId: 'proj_1' }, { limit: MAX_PAGE }, 5000);
+    expect(rows.length).toBe(MAX_PAGE);
+    expect(rows.every((r) => r.promptCount === 1 && r.activityBuckets.reduce((a, b) => a + b, 0) === 1)).toBe(true);
+  });
+});
+
 import { credentialActivity, listCredentials } from '@myco-server-worker/read/credentials.js';
 
 describe('read/credentials', () => {
@@ -242,7 +378,7 @@ describe('D1 adapter', () => {
 
 describe('schema v4', () => {
   it('adds a recency index on sessions and stamps the build version', () => {
-    expect(SERVER_SCHEMA_VERSION).toBe(13);
+    expect(SERVER_SCHEMA_VERSION).toBe(14);
     const v4 = SCHEMA_STEPS.find((s) => s.version === 4);
     expect(v4?.statements.some((s) => s.includes('idx_sessions_recent'))).toBe(true);
   });
@@ -262,7 +398,7 @@ describe('read/meta', () => {
   it('reports the schema version the database carries', async () => {
     const { db } = sqliteEnv();
     const { schemaVersion } = await import('@myco-server-worker/read/meta.js');
-    expect(await schemaVersion(db)).toBe(13);
+    expect(await schemaVersion(db)).toBe(14);
   });
 });
 
