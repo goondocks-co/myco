@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 
 interface LightboxProps {
@@ -10,16 +10,23 @@ interface LightboxProps {
   onNavigate: (index: number) => void;
 }
 
-/** A full-screen view of one image in a gallery, with keyboard and button navigation. */
+/** A full-screen view of one image in a gallery: focus moves in on open, stays among its controls, and returns to where it came from on close. */
 export function Lightbox({ images, index, onClose, onNavigate }: LightboxProps) {
   const current = images[index];
   const hasPrev = index > 0;
   const hasNext = index < images.length - 1;
+  const dialog = useRef<HTMLDivElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    const prev = document.body.style.overflow;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    return () => { document.body.style.overflow = prev; };
+    closeButton.current?.focus();
+    return () => {
+      document.body.style.overflow = overflow;
+      previous?.focus();
+    };
   }, []);
 
   const handleKeyDown = useCallback(
@@ -27,6 +34,14 @@ export function Lightbox({ images, index, onClose, onNavigate }: LightboxProps) 
       if (e.key === 'Escape') onClose();
       if (e.key === 'ArrowLeft' && hasPrev) onNavigate(index - 1);
       if (e.key === 'ArrowRight' && hasNext) onNavigate(index + 1);
+      if (e.key === 'Tab' && dialog.current) {
+        const focusable = [...dialog.current.querySelectorAll<HTMLElement>('button')];
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (first === undefined || last === undefined) return;
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
     },
     [onClose, onNavigate, index, hasPrev, hasNext],
   );
@@ -41,8 +56,8 @@ export function Lightbox({ images, index, onClose, onNavigate }: LightboxProps) 
   const control = 'absolute rounded-full bg-surface-container-high/80 p-2 text-on-surface transition-colors hover:bg-surface-container-highest z-10';
 
   return (
-    <div role="dialog" aria-label="Image" className="fixed inset-0 z-50 flex items-center justify-center bg-surface-dim/90 backdrop-blur-xs" onClick={onClose}>
-      <button type="button" aria-label="Close" onClick={onClose} className={`${control} top-4 right-4`}>
+    <div ref={dialog} role="dialog" aria-modal="true" aria-label="Image" className="fixed inset-0 z-50 flex items-center justify-center bg-surface-dim/90 backdrop-blur-xs" onClick={onClose}>
+      <button ref={closeButton} type="button" aria-label="Close" onClick={onClose} className={`${control} top-4 right-4`}>
         <X className="h-5 w-5" />
       </button>
       {images.length > 1 && (

@@ -98,7 +98,7 @@ describe('Session detail', () => {
     '/api/projects/x/sessions': () => page([session()]),
     '/api/projects/x/sessions/s1': () => Response.json({ session: session(), counts, projectId: 'x' }),
     '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([
-      turn({ promptId: P1, preview: 'Please rename the project card', toolCallCount: 1, responseCount: 1 }),
+      turn({ promptId: P1, preview: `Please rename the project card ${'x'.repeat(130)}`, textChars: 30_000, toolCallCount: 1, responseCount: 1 }),
       turn({ promptId: P3, preview: null, textChars: null, blobKey: KEY_TEXT, toolCallCount: 2, responseCount: 0, childCount: 1, createdAt: NOW - 1000 }),
     ]),
     '/api/projects/x/sessions/s1/turns?origins=agent_dispatch%2Chook_injected%2Csystem%2Cunknown%2Cuser&limit=200': () => page([
@@ -107,7 +107,7 @@ describe('Session detail', () => {
       turn({ promptId: P3, preview: null, textChars: null, blobKey: KEY_TEXT, toolCallCount: 2, responseCount: 0, childCount: 1, createdAt: NOW - 1000 }),
     ]),
     [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
-      prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: 'Please rename the project card', blobKey: null, createdAt: NOW - 3000 },
+      prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: `Please rename the project card ${'x'.repeat(130)}\n\nAnd the rest of a long prompt.`, blobKey: null, createdAt: NOW - 3000 },
       responses: [{ responseId: 'r1', promptId: P1, text: 'done', blobKey: null, createdAt: NOW - 1000, orderedAt: NOW - 1000 }],
       attachments: [{ attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW }],
       children: [],
@@ -138,8 +138,13 @@ describe('Session detail', () => {
     const { requested } = server(detailRoutes());
     mount('/p/x/sessions/s1');
     const first = await screen.findByTestId(`turn-${P1}`);
-    expect(first.textContent).toContain('Please rename the project card');
+    // A collapsed card carries the preview cut at the preview length and nothing of the 30 K-char prompt.
+    const collapsed = within(first).getByRole('button', { expanded: false }).textContent ?? '';
+    expect(collapsed).toContain(`Please rename the project card ${'x'.repeat(120 - 'Please rename the project card '.length)}…`);
+    expect(collapsed).not.toContain('x'.repeat(100));
+    expect(collapsed).not.toContain('And the rest');
     expect(first.textContent).toContain('1 tool call');
+    expect(screen.getAllByTestId(/^turn-0000/).map((el) => el.getAttribute('data-testid'))).toEqual([`turn-${P1}`, `turn-${P3}`]);
     expect(screen.queryByTestId(`turn-${P2}`)).toBeNull();
     // The last turn opens on its own; its stored text is fetched then, not for the collapsed one.
     const last = screen.getByTestId(`turn-${P3}`);
@@ -153,6 +158,7 @@ describe('Session detail', () => {
     // Opening the first turn reads its body: the prompt in full, its response, and its screenshot under it.
     fireEvent.click(within(first).getByRole('button', { expanded: false }));
     expect(await within(first).findByTestId('turn-body')).toBeTruthy();
+    expect(within(first).getByTestId('turn-body').textContent).toContain('And the rest of a long prompt.');
     expect(within(first).getByTestId('turn-response').textContent).toContain('done');
     const img = within(first).getByRole('img', { name: 'a screenshot' });
     expect(img.getAttribute('src')).toBe(BLOB(KEY_IMG));
@@ -179,14 +185,23 @@ describe('Session detail', () => {
     expect(within(row).getByText(/Input · 186 KB/)).toBeTruthy();
   });
 
-  it('shows every injected prompt on request, in its own list', async () => {
+  it('shows every injected prompt on request, in its own list, and still opens the last turn a person typed', async () => {
     const { requested } = server(detailRoutes());
     mount('/p/x/sessions/s1');
     await screen.findByTestId(`turn-${P1}`);
     fireEvent.click(screen.getByLabelText(/Show system/));
-    expect(await screen.findByTestId(`turn-${P2}`)).toBeTruthy();
-    expect(screen.getByTestId(`turn-${P2}`).getAttribute('data-origin')).toBe('system');
+    const injected = await screen.findByTestId(`turn-${P2}`);
+    expect(injected.getAttribute('data-origin')).toBe('system');
+    expect(injected.textContent).toContain('System');
+    expect(within(injected).getByRole('button', { expanded: false })).toBeTruthy();
+    expect(within(screen.getByTestId(`turn-${P3}`)).getByRole('button', { expanded: true })).toBeTruthy();
     expect(requested.filter((p) => p.includes('/turns?')).length).toBe(2);
+  });
+
+  it('says what an empty person-typed list means when the session holds only injected prompts', async () => {
+    server(detailRoutes({ '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([]) }));
+    mount('/p/x/sessions/s1');
+    expect(await screen.findByText(/No prompts typed by a person/)).toBeTruthy();
   });
 
   it('heads the detail with the label and shows a summary only once one is stored', async () => {
@@ -220,7 +235,8 @@ describe('Session detail', () => {
     expect(card.textContent).toContain('in progress');
     expect(card.textContent).toContain('Ship the thing');
     expect(card.textContent).toContain('1/2 items');
-    expect(within(card).getByRole('heading', { level: 1 }).textContent).toBe('Plan');
+    expect(within(card).getByRole('heading', { level: 3 }).textContent).toBe('Plan');
+    expect(within(card).queryByRole('heading', { level: 1 })).toBeNull();
     expect(parseChecklist('- [x] a\n- [ ] b\n- [X] c')).toEqual({ total: 3, checked: 2 });
   });
 

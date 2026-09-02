@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Check, Copy } from 'lucide-react';
+import { Check, Copy, X } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { MetricCard } from '../ui/metric-card';
 import { PageLoading } from '../ui/page-loading';
@@ -45,7 +45,7 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
       {detail.data && (
         <div className="flex flex-col gap-5">
           <Header projectId={projectId} session={detail.data.session} />
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+          <div className="grid grid-cols-3 gap-3 md:grid-cols-5">
             <MetricCard label="Prompts" value={detail.data.counts.prompts.toLocaleString()} tone="sage" />
             <MetricCard label="Tool calls" value={detail.data.counts.toolCalls.toLocaleString()} tone="ochre" />
             <MetricCard label="Responses" value={detail.data.counts.responses.toLocaleString()} tone="sage" />
@@ -60,8 +60,8 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
           )}
           <div className="min-w-0">
             <SubtabPill tabs={TABS} activeTab={tab} onTabChange={setTab} className="mb-4" />
-            {tab === 'conversation' && <TurnTimeline projectId={projectId} sessionId={sessionId} />}
-            {tab === 'plans' && <Plans projectId={projectId} sessionId={sessionId} />}
+            {tab === 'conversation' && <TurnTimeline projectId={projectId} sessionId={sessionId} promptCount={detail.data.counts.prompts} />}
+            {tab === 'plans' && <Plans projectId={projectId} sessionId={sessionId} wanted={params.get('plan')} />}
             {tab === 'attachments' && <Attachments projectId={projectId} sessionId={sessionId} />}
             {tab === 'transcript' && <Transcript projectId={projectId} sessionId={sessionId} />}
           </div>
@@ -98,17 +98,25 @@ function Header({ session }: { projectId: string; session: SessionRow }) {
 }
 
 function CopyValue({ value, label }: { value: string; label: string }) {
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const copy = () => {
+    const done = (next: 'copied' | 'failed') => { setState(next); setTimeout(() => setState('idle'), 1500); };
+    if (!navigator.clipboard?.writeText) { done('failed'); return; }
+    navigator.clipboard.writeText(value).then(() => done('copied'), () => done('failed'));
+  };
   return (
     <button
       type="button"
-      onClick={() => { void navigator.clipboard?.writeText(value).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); }}
-      title="Click to copy"
+      onClick={copy}
+      title={state === 'failed' ? 'Copy failed — check clipboard permissions' : 'Click to copy'}
       aria-label={`Copy ${label}`}
+      aria-live="polite"
       className="flex min-w-0 items-center gap-1.5 text-left transition-colors hover:text-primary"
     >
       <span className="min-w-0 truncate font-mono text-xs text-on-surface">{value}</span>
-      {copied ? <Check className="h-3 w-3 shrink-0 text-primary" /> : <Copy className="h-3 w-3 shrink-0 text-on-surface-variant/60" />}
+      {state === 'copied' && <Check className="h-3 w-3 shrink-0 text-primary" />}
+      {state === 'failed' && <X className="h-3 w-3 shrink-0 text-tertiary" />}
+      {state === 'idle' && <Copy className="h-3 w-3 shrink-0 text-on-surface-variant/60" />}
     </button>
   );
 }
@@ -146,7 +154,8 @@ function Metadata({ projectId, session }: { projectId: string; session: SessionR
   );
 }
 
-function Plans({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+/** The session's plans as cards; a plan in progress, or the one a link names with `?plan=`, opens on arrival. */
+function Plans({ projectId, sessionId, wanted }: { projectId: string; sessionId: string; wanted: string | null }) {
   const plans = useSessionChildren<PlanRow>(projectId, sessionId, 'plans');
   return (
     <PageLoading isLoading={plans.isPending} error={plans.error}>
@@ -156,7 +165,7 @@ function Plans({ projectId, sessionId }: { projectId: string; sessionId: string 
         </div>
       ) : (
         <div className="flex flex-col gap-3">
-          {plans.rows.map((plan) => <PlanCard key={plan.planKey} projectId={projectId} plan={plan} defaultOpen={plan.status === 'in_progress'} />)}
+          {plans.rows.map((plan) => <PlanCard key={plan.planKey} projectId={projectId} plan={plan} defaultOpen={plan.status === 'in_progress' || plan.planKey === wanted} />)}
           {plans.hasMore && <button type="button" className={button} onClick={plans.more}>Load more</button>}
         </div>
       )}
