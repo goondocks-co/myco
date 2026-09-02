@@ -1,9 +1,11 @@
 import { evaluateUserPromptRules, resolveSubagentThread } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { runMemberHook, type HookMainOptions } from '../member/capture.js';
-import { deriveId, mintId, promptEvent } from '../member/envelope.js';
+import { deriveId, mintId, planEvent, planKeyForTag, promptEvent, type OutboundEvent } from '../member/envelope.js';
 import { readSessionState } from '../member/session-state.js';
-import { sha256Text } from '../member/transcript.js';
+import { firstHeading, sha256Text } from '../member/text.js';
+import { planTagEnvelopeRegex } from '../plans/tag-envelopes.js';
+import { HOOK_CONFIG } from './hook-config.generated.js';
 
 export async function main(opts: HookMainOptions = {}) {
   await runMemberHook('user-prompt-submit', opts, (run) => {
@@ -33,13 +35,38 @@ export async function main(opts: HookMainOptions = {}) {
 
     const promptId = mintId();
     const hash = sha256Text(text);
+    const events: OutboundEvent[] = [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
+    // A plan a person pasted inside a tag envelope is captured with the prompt.
+    // Text a runtime injected around a person's prompt is never scanned: a
+    // system reminder that quotes a plan is not a plan.
+    const plans: Array<[string, string]> = [];
+    if (decision.origin === undefined || decision.origin === 'human') {
+      const state = readSessionState(spool.dir, sessionId);
+      let position = state.planTagCount;
+      for (const tag of HOOK_CONFIG[agent]?.planTags ?? []) {
+        const regex = planTagEnvelopeRegex(tag);
+        let match: RegExpExecArray | null;
+        while ((match = regex.exec(text)) !== null) {
+          const planContent = match[1].trim();
+          if (!planContent) continue;
+          const planHash = sha256Text(planContent);
+          if (state.planHashes[planHash] || plans.some(([h]) => h === planHash)) continue;
+          const planKey = planKeyForTag(sessionId, tag, position);
+          position += 1;
+          plans.push([planHash, planKey]);
+          events.push(planEvent(ctx, { planKey, content: planContent, title: firstHeading(planContent), status: 'active', originPath: `transcript:${tag}`, tags: [tag], promptId }));
+        }
+      }
+    }
     return {
-      events: [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })],
+      events,
       // The receipt lands with the event: recorded first, a crash in between
       // would leave the transcript pass skipping this prompt by hash forever.
       record: (state) => {
         state.promptId = promptId;
         state.prompts[hash] = promptId;
+        for (const [planHash, planKey] of plans) state.planHashes[planHash] = planKey;
+        state.planTagCount += plans.length;
       },
       response,
     };

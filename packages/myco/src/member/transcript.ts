@@ -15,6 +15,7 @@ import { deriveTranscriptId } from '../capture/transcript-id.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { readTranscriptMeta } from '../hooks/transcript-meta.js';
 import { planTagEnvelopeRegex } from '../plans/tag-envelopes.js';
+import { firstHeading, sha256Text } from './text.js';
 import { SymbiontRegistry } from '../symbionts/registry.js';
 import type { TranscriptTurn } from '../symbionts/adapter.js';
 import { canStartRequest, clippedRequestBudget, type HookBudget } from './budget.js';
@@ -30,7 +31,7 @@ import type { ServerClient } from './transport.js';
 let registry: SymbiontRegistry | undefined;
 const adapters = (): SymbiontRegistry => (registry ??= new SymbiontRegistry());
 
-export const sha256Text = (text: string): string => crypto.createHash('sha256').update(text, 'utf-8').digest('hex');
+export { sha256Text } from './text.js';
 
 /** The parsed JSON object of every line that is one. */
 export function parseTranscriptLines(content: string): Array<Record<string, unknown>> {
@@ -86,7 +87,6 @@ export interface DerivedCapture {
   record: (state: SessionState) => void;
 }
 
-const firstHeading = (content: string): string | undefined => /^#\s+(.+)$/m.exec(content)?.[1]?.trim();
 
 /**
  * The events the transcript holds that hooks never delivered: prompts not yet
@@ -136,6 +136,8 @@ export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: st
   const planTags = HOOK_CONFIG[agent]?.planTags ?? [];
   let lastAssistantText: string | undefined;
   for (const turn of turns) {
+    const promptHash = sha256Text(turn.prompt);
+    const promptId = state.prompts[promptHash] ?? capturedPrompts.find(([hash]) => hash === promptHash)?.[1];
     if (turn.aiResponse) {
       lastAssistantText = turn.aiResponse;
       for (const tag of planTags) {
@@ -149,7 +151,7 @@ export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: st
           const planKey = planKeyForTag(sessionId, tag, planTagCount);
           planTagCount += 1;
           capturedPlans.push([hash, planKey]);
-          events.push(planEvent(ctx, { planKey, content: planContent, title: firstHeading(planContent), status: 'active', tags: [tag] }));
+          events.push(planEvent(ctx, { planKey, content: planContent, title: firstHeading(planContent), status: 'active', originPath: `transcript:${tag}`, tags: [tag], promptId }));
         }
       }
     }
@@ -160,11 +162,11 @@ export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: st
       const source = ctx.stage(bytes, image.mediaType);
       if (state.attachmentKeys.includes(source.sha256) || capturedAttachments.includes(source.sha256)) continue;
       capturedAttachments.push(source.sha256);
-      const promptHash = sha256Text(turn.prompt);
       events.push(attachmentEvent(ctx, {
         blobSource: source,
         attachmentId: deriveId('attachment', sessionId, source.sha256),
-        promptId: state.prompts[promptHash] ?? capturedPrompts.find(([hash]) => hash === promptHash)?.[1],
+        promptId,
+        originPath: transcriptPath,
       }));
     }
   }
