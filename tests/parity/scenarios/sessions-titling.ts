@@ -74,8 +74,9 @@ export const sessionsTitling: ParityScenario = {
       expect((await ownerRows()).find((row) => row.sessionId === s2)?.label).toBe('Rename the project from the card');
       expect(stub.requests.filter((r) => r.material.includes('retry')).length).toBe(1);
 
-      // On an owner's ask the provider is asked again, for an ended session with a title and for one still open.
+      // On an owner's ask the provider is asked again, for an ended session with a title and for one still open. The end-of-session attempt was moments ago, so its stamp is aged past the in-flight window first.
       stub.up = true;
+      await target.sql(`UPDATE sessions SET titled_at = titled_at - 60000 WHERE session_id=${lit(s1)}`);
       const askTitle = async (id: string) => {
         const res = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${id}/title`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
         expect(res.status).toBe(200);

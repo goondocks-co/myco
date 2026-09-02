@@ -248,7 +248,7 @@ export type TitlingOutcome =
 
 export const TITLING_OUTCOME_TEXT: Record<TitlingOutcome, string> = {
   titled: 'Summary updated',
-  already: 'A summary is already being written — try again in a moment',
+  already: 'A summary was asked for a moment ago — try again shortly',
   budget: 'This project has hit its hourly limit for summaries — try again later',
   no_material: 'Nothing typed in this session to summarize yet',
   no_provider: 'No provider is configured for summaries — set one in Settings',
@@ -259,7 +259,7 @@ export const TITLING_OUTCOME_TEXT: Record<TitlingOutcome, string> = {
   malformed: 'The provider answered with something that was not a summary',
   provider: 'The provider refused the request',
   unreachable: 'The provider could not be reached',
-  superseded: 'A summary landed from elsewhere first',
+  superseded: 'This session is no longer here',
   error: 'Something went wrong writing the summary',
 };
 

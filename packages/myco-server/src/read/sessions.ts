@@ -375,14 +375,24 @@ export async function claimTitling(db: RelationalStore, projectId: string, sessi
 }
 
 /**
- * Claims a titling attempt an owner asked for: any session, ended or not, titled or not. Refused only while an attempt begun within `inFlightMs` has not yet written a title — that one may still be running, and two asks would make two calls. A session that already carries a title is asked again at once; the answer replaces it. Stamps `titled_at`, which is what the hourly ceiling meters.
+ * Claims a titling attempt an owner asked for: any session, ended or not, titled or not. Refused while an attempt begun within `inFlightMs` may still be running, so two asks make one call. Stamps `titled_at`, which is what the hourly ceiling meters, and answers the stamp it replaced so an attempt that never reaches the provider can put it back.
  */
-export async function claimOwnerTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, inFlightMs: number): Promise<boolean> {
+export async function claimOwnerTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, inFlightMs: number): Promise<{ claimed: boolean; previous: number | null }> {
+  const row = await db.prepare(`SELECT titled_at FROM sessions WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ titled_at: number | null }>();
+  if (row === null) return { claimed: false, previous: null };
   const result = await db
-    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND (titled_at IS NULL OR titled_at < ? OR title IS NOT NULL)`)
+    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND (titled_at IS NULL OR titled_at < ?)`)
     .bind(nowMs, projectId, sessionId, nowMs - inFlightMs)
     .run();
-  return result.meta.changes === 1;
+  return { claimed: result.meta.changes === 1, previous: row.titled_at ?? null };
+}
+
+/** Puts back the stamp an owner's claim replaced, for an attempt decided before the provider is asked — the session keeps its own end-of-session attempt and the ceiling is not charged for nothing. */
+export async function restoreTitlingStamp(db: RelationalStore, projectId: string, sessionId: string, stamp: number, previous: number | null): Promise<void> {
+  await db
+    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND titled_at = ?`)
+    .bind(previous, projectId, sessionId, stamp)
+    .run();
 }
 
 /** Stores a session's title and summary over whatever is there; false when no such session sits in the project. */

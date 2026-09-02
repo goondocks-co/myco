@@ -72,18 +72,19 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
   );
 }
 
-/** Asks for the session's title and summary now, and says how it went. */
+/** Asks for the session's title and summary now, and says how it went. The button stays focusable while it works, so a keyboard user is never dropped to the page. */
 function GenerateSummary({ projectId, sessionId }: { projectId: string; sessionId: string }) {
   const titling = useTitleSession(projectId, sessionId);
   const outcome = titling.data?.outcome;
-  const note = titling.error ? 'The server could not be reached' : outcome !== undefined ? TITLING_OUTCOME_TEXT[outcome] : null;
+  const note = titling.error ? 'The session could not be summarized right now' : outcome !== undefined ? TITLING_OUTCOME_TEXT[outcome] : null;
   return (
-    <div className="ml-auto flex flex-col items-end gap-1">
+    <div className="ml-auto flex flex-col items-end gap-1 self-start">
       <button
         type="button"
-        disabled={titling.isPending}
-        onClick={() => titling.mutate()}
-        className="inline-flex h-8 items-center gap-2 rounded-md border border-outline-variant/20 px-3 font-sans text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+        aria-disabled={titling.isPending}
+        aria-busy={titling.isPending}
+        onClick={() => { if (!titling.isPending) titling.mutate(); }}
+        className={cn(button, 'inline-flex h-8 items-center gap-2 font-medium', titling.isPending && 'opacity-60')}
       >
         {titling.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
         {titling.isPending ? 'Writing summary…' : 'Generate summary'}
