@@ -133,6 +133,7 @@ export const KINDS: readonly KindSpec[] = [
     name: 'plan',
     fields: {
       planKey: id('key', 'plan_key', true),
+      promptId: promptRef('prompt_id'),
       title: str(256, 'title'),
       content: str(262_144, 'content'),
       blob: blob('blob_key'),

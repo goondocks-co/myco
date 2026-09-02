@@ -201,6 +201,8 @@ describe('read/turns', () => {
       ('proj_1','s1','r1','er1',?,'done the first','hr1',13,'t1',13), ('proj_1','s1','r2','er2',?,'steered','hr2',27,'t1',27)`, [UUID(1), UUID(3)]);
     sqlite.run(`INSERT INTO attachments (project_id, session_id, attachment_id, event_id, prompt_id, blob_key, media_type, byte_size, created_at, token_id, received_at) VALUES
       ('proj_1','s1','a1','ea1',?,?,'image/png',1234,14,'t1',14)`, [UUID(1), 'b'.repeat(64)]);
+    sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, prompt_id, updated_by, created_at, updated_at, token_id, received_at) VALUES
+      ('proj_1',?,'s1','ep1','m1','Plan','- [x] a\n- [ ] b','hp1','in_progress',?,'mem_x',15,16,'t1',16)`, [UUID(5), UUID(1)]);
   }
 
   it('lists top-level prompts of the default origin oldest first, with a preview, the spilled key, and counts of what followed each', async () => {
@@ -209,10 +211,10 @@ describe('read/turns', () => {
     const { rows, cursor } = await listTurns(db, { projectId: 'proj_1' }, 's1');
     expect(cursor).toBeNull();
     expect(rows.map((r) => r.promptId)).toEqual([UUID(1), UUID(4)]);
-    expect(rows[0]).toMatchObject({ origin: 'user', threadLabel: null, blobKey: null, createdAt: 10, toolCallCount: 2, responseCount: 1, childCount: 1 });
+    expect(rows[0]).toMatchObject({ origin: 'user', threadLabel: null, blobKey: null, createdAt: 10, toolCallCount: 2, responseCount: 1, childCount: 1, planCount: 1, attachmentCount: 1 });
     expect(rows[0].preview).toHaveLength(TURN_PREVIEW_CHARS);
     expect(rows[0].textChars).toBe(`${'first prompt '.repeat(20)}tail`.length);
-    expect(rows[1]).toMatchObject({ preview: null, textChars: null, blobKey: 'a'.repeat(64), toolCallCount: 0, responseCount: 0, childCount: 0 });
+    expect(rows[1]).toMatchObject({ preview: null, textChars: null, blobKey: 'a'.repeat(64), toolCallCount: 0, responseCount: 0, childCount: 0, planCount: 0, attachmentCount: 0 });
   });
 
   it('shows every origin when asked, pages by the turn key, and refuses an origin the wire does not admit', async () => {
@@ -239,6 +241,8 @@ describe('read/turns', () => {
     expect(detail?.prompt.text?.endsWith('tail')).toBe(true);
     expect(detail?.responses.map((r) => r.text)).toEqual(['done the first']);
     expect(detail?.attachments.map((a) => [a.attachmentId, a.promptId, a.mediaType])).toEqual([['a1', UUID(1), 'image/png']]);
+    expect(detail?.plans.map((p) => [p.planKey, p.promptId, p.status, p.progress, p.updatedBy])).toEqual([[UUID(5), UUID(1), 'in_progress', '1/2', 'mem_x']]);
+    expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(4)))?.plans).toEqual([]);
     expect(detail?.children.map((c) => [c.prompt.promptId, c.prompt.threadLabel, c.prompt.text, c.toolCallCount, c.responses.map((r) => r.text)])).toEqual([[UUID(3), 'reviewer', 'steer it left', 1, ['steered']]]);
     expect(await turnDetail(db, { projectId: 'proj_2' }, 's1', UUID(1))).toBeNull();
     expect(await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(9))).toBeNull();
@@ -378,7 +382,7 @@ describe('D1 adapter', () => {
 
 describe('schema v4', () => {
   it('adds a recency index on sessions and stamps the build version', () => {
-    expect(SERVER_SCHEMA_VERSION).toBe(14);
+    expect(SERVER_SCHEMA_VERSION).toBe(15);
     const v4 = SCHEMA_STEPS.find((s) => s.version === 4);
     expect(v4?.statements.some((s) => s.includes('idx_sessions_recent'))).toBe(true);
   });
@@ -398,7 +402,7 @@ describe('read/meta', () => {
   it('reports the schema version the database carries', async () => {
     const { db } = sqliteEnv();
     const { schemaVersion } = await import('@myco-server-worker/read/meta.js');
-    expect(await schemaVersion(db)).toBe(14);
+    expect(await schemaVersion(db)).toBe(15);
   });
 });
 

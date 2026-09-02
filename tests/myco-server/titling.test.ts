@@ -302,7 +302,7 @@ describe('titleSession', () => {
 });
 
 describe('titleSession on an owner\'s ask', () => {
-  const ask = (h: ReturnType<typeof harness>, id: string, now = NOW) => titleSession(h.env, { projectId: 'proj_1', sessionId: id, now }, { mode: 'owner' });
+  const ask = (h: ReturnType<typeof harness>, id: string, now = NOW) => titleSession(h.env, { projectId: 'proj_1', sessionId: id, now }, { mode: 'owner', by: 'mem_asker' });
 
   it('titles an open session, writes over a title already there, and leaves the end-of-session claim spent', async () => {
     const h = harness();
@@ -311,6 +311,7 @@ describe('titleSession on an owner\'s ask', () => {
     h.prompt('open', 'p1', 'hello', NOW - 9000);
     expect(await ask(h, 'open')).toBe('titled');
     expect(h.row('open')).toMatchObject({ title: 'Wave-based executor and per-task provider config', titled_at: NOW });
+    expect(h.sqlite.query(`SELECT titled_by FROM sessions WHERE session_id = 'open'`).get()).toEqual({ titled_by: 'mem_asker' });
     expect(logged.join('\n')).not.toContain(KEY);
     h.sqlite.run(`UPDATE sessions SET title = 'Old', summary = 'old' WHERE session_id = 'open'`);
     expect(await ask(h, 'open', NOW + TITLING_TIMEOUT_MS + 1)).toBe('titled');
