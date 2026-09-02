@@ -370,11 +370,12 @@ export function errorEvent(ctx: EnvelopeContext, input: NormalizedHookInput): Ou
 }
 
 export function planEvent(ctx: EnvelopeContext, facts: {
-  planKey: string; content: string; title?: string; status?: 'active' | 'in_progress' | 'completed' | 'abandoned'; originPath?: string; tags?: string[];
+  planKey: string; content: string; title?: string; status?: 'active' | 'in_progress' | 'completed' | 'abandoned'; originPath?: string; tags?: string[]; promptId?: string;
 }): OutboundEvent {
   const spilled = inlineOrBlob(ctx, 'content', facts.content);
   return envelope(ctx, 'plan', {
     planKey: facts.planKey,
+    promptId: facts.promptId,
     title: trunc(facts.title, BOUNDS.title),
     ...spilled.fields,
     status: facts.status,

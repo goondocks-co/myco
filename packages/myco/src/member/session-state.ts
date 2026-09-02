@@ -35,6 +35,8 @@ export interface SessionState {
   /** sha256(content) → planKey for every plan this session has emitted. */
   planHashes: Record<string, string>;
   planTagCount: number;
+  /** normalized path → the key and the content hash last shipped for every plan file this session has captured; Stop re-reads them. */
+  planPaths: Record<string, { planKey: string; hash: string }>;
   /** Blob keys of attachments already emitted. */
   attachmentKeys: string[];
   /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */
@@ -45,7 +47,7 @@ export interface SessionState {
 }
 
 export function emptySessionState(now: number = Date.now()): SessionState {
-  return { version: SESSION_STATE_VERSION, highWater: 0, prompts: {}, planHashes: {}, planTagCount: 0, attachmentKeys: [], updatedAt: now };
+  return { version: SESSION_STATE_VERSION, highWater: 0, prompts: {}, planHashes: {}, planTagCount: 0, planPaths: {}, attachmentKeys: [], updatedAt: now };
 }
 
 export function sessionStatePath(spoolDir: string, sessionId: string): string {
@@ -86,6 +88,10 @@ function trimTracked(state: SessionState): void {
   const planKeys = Object.keys(state.planHashes);
   if (planKeys.length > MAX_TRACKED) {
     for (const key of planKeys.slice(0, planKeys.length - MAX_TRACKED)) delete state.planHashes[key];
+  }
+  const pathKeys = Object.keys(state.planPaths);
+  if (pathKeys.length > MAX_TRACKED) {
+    for (const key of pathKeys.slice(0, pathKeys.length - MAX_TRACKED)) delete state.planPaths[key];
   }
   if (state.attachmentKeys.length > MAX_TRACKED) state.attachmentKeys = state.attachmentKeys.slice(-MAX_TRACKED);
 }

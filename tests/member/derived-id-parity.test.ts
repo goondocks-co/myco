@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { deriveId, planKeyForPath } from '@myco/member/envelope.js';
+import { normalizePlanPath } from '@myco/member/plan-files.js';
+import { normalizePlanPath as serverNormalizePlanPath, planKeyFor } from '@myco-server-worker/core/plans.js';
 import { MEMBER_ID_NAMESPACE } from '@myco/member/constants.js';
 import { DERIVED_ID_NAMESPACE, uuidv5 } from '@myco-server-worker/hash.js';
 
@@ -27,6 +29,13 @@ describe('derived id parity', () => {
       expect({ parts, id: await uuidv5(...parts) }).toEqual({ parts, id: deriveId(...parts) });
     }
     expect(await uuidv5('plan', 'proj_1', 'docs/plans/x.md')).toBe(planKeyForPath('proj_1', 'docs/plans/x.md'));
+  });
+
+  it('keys a plan file the same way on both sides: the member sends the normalized path, the server keys it as given', async () => {
+    const memberPath = normalizePlanPath('/work/repo', '/work/repo/.claude/plans/x.md');
+    expect(memberPath).toBe('.claude/plans/x.md');
+    expect(await planKeyFor('proj_1', { sourcePath: memberPath })).toBe(planKeyForPath('proj_1', memberPath));
+    expect(serverNormalizePlanPath('.claude\\plans\\x.md')).toBe('.claude/plans/x.md');
   });
 
   it('answers a v5 UUID in the id grammar', async () => {

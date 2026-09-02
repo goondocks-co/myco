@@ -17,6 +17,8 @@ import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { readSessionState } from '@myco/member/session-state.js';
+import { resolveMemberProjectRoot } from '@myco/member/credential.js';
+import { resolveWorktreeRoot } from '@myco/project-root.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';
 
@@ -61,6 +63,36 @@ function crashAtCommit<T>(body: () => Promise<T>): Promise<T> {
 }
 
 describe('capture is never lost permanently at the commit point', () => {
+  it('a plan file write and a pasted plan tag killed at the commit point leave no receipt, and the rerun lands each once', async () => {
+    const root = resolveWorktreeRoot(process.cwd()) ?? resolveMemberProjectRoot(process.cwd());
+    const file = path.join(root, '.claude/plans', `durable-${session}-${process.pid}.md`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    try {
+      const tx = transcript();
+      await run('session-start', { hook_event_name: 'SessionStart', transcript_path: tx, cwd: root });
+      await run('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', transcript_path: tx, prompt: 'write it', cwd: root });
+      fs.writeFileSync(file, '# Durable\n\n- [ ] one\n');
+      const spool = new MemberSpool('proj_1', { mycoHome });
+      const crashedWrite = await crashAtCommit(() => run('post-tool-use', { hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: file }, tool_response: 'ok', cwd: root }));
+      expect(crashedWrite.stderr).toContain('ENOSPC');
+      expect(readSessionState(spool.dir, session).planPaths).toEqual({});
+      expect(rig.rows('plans')).toBe(0);
+      await run('post-tool-use', { hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: file }, tool_response: 'ok', cwd: root });
+      expect(rig.rows('plans')).toBe(1);
+      expect(Object.keys(readSessionState(spool.dir, session).planPaths)).toEqual([`.claude/plans/${path.basename(file)}`]);
+
+      const crashedTag = await crashAtCommit(() => run('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', transcript_path: tx, prompt: 'Approved:\n<ultraplan>\n# Pasted\n</ultraplan>', cwd: root }));
+      expect(crashedTag.stderr).toContain('ENOSPC');
+      const state = readSessionState(spool.dir, session);
+      expect([Object.keys(state.planHashes), state.planTagCount]).toEqual([[], 0]);
+      await run('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', transcript_path: tx, prompt: 'Approved:\n<ultraplan>\n# Pasted\n</ultraplan>', cwd: root });
+      expect(rig.rows('plans')).toBe(2);
+      expect(readSessionState(spool.dir, session).planTagCount).toBe(1);
+    } finally {
+      try { fs.unlinkSync(file); } catch {}
+    }
+  });
+
   it('a Stop killed after deriving and before appending loses nothing: the rerun derives the same events', async () => {
     const tx = transcript();
     await run('session-start', { hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' });
