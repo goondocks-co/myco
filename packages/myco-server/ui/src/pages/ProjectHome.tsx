@@ -7,9 +7,10 @@ import { MetricCard } from '../components/ui/metric-card';
 import { PageContainer } from '../components/ui/page-container';
 import { PageLoading } from '../components/ui/page-loading';
 import { Panel } from '../components/ui/panel';
+import { Skeleton } from '../components/ui/skeleton';
 import { ActivitySparkline } from '../components/ui/sparkline';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
-import { useRuns, useSkills, type RunListRow, type SkillRecord } from '../hooks/use-intelligence';
+import { useAgents, useRuns, useSkills, type RunListRow, type SkillRecord } from '../hooks/use-intelligence';
 import { useProjectActions, useProjects } from '../hooks/use-projects';
 import { refusalText } from '../hooks/use-access';
 import { useActivity, useSessions, type FeedItem, type ProjectStats, type SessionSummaryRow } from '../hooks/use-sessions';
@@ -55,7 +56,10 @@ export function describeActivity(openSessions: number, runningRuns: number): str
   return parts.length === 0 ? 'Quiet right now — nothing running.' : parts.join(' · ');
 }
 
-/** The capture-health pill: capturing now, captured recently, gone quiet, or nothing yet. */
+/**
+ * The capture-health pill: capturing now, captured recently, gone quiet, or nothing yet.
+ * "Open" is a session with no end recorded — what the data says, not a liveness claim — so a runtime that died mid-session reads as capturing until its end lands.
+ */
 export function captureHealth(stats: ProjectStats, nowMs: number): { tone: StatusTone; label: string } {
   if (stats.openSessions > 0) return { tone: 'sage', label: 'Capturing now' };
   if (stats.sessions === 0 || stats.lastActivityAt === null) return { tone: 'outline', label: 'No sessions captured yet' };
@@ -65,38 +69,48 @@ export function captureHealth(stats: ProjectStats, nowMs: number): { tone: Statu
     : { tone: 'ochre', label: `No capture in 7 days · last ${formatRelative(stats.lastActivityAt, nowMs)}` };
 }
 
+/** Runs and skills come from the Deployment's own agents; with none enabled behind a provider, an empty panel says why. */
+function noProviderYet(agents: { provider: string | null; enabled: boolean }[] | undefined): boolean {
+  return agents !== undefined && !agents.some((a) => a.enabled && a.provider !== null);
+}
+
 function Home({ project }: { project: ProjectSummary }) {
   const activity = useActivity(project.projectId);
   const open = useSessions(project.projectId, { state: 'open' });
   const runs = useRuns(project.projectId, null);
   const skills = useSkills(project.projectId);
+  const agents = useAgents();
   const base = `/p/${encodeURIComponent(project.projectId)}`;
   const runningRuns = runs.rows.filter((r) => r.status === 'running').length;
+  const stats = activity.data?.stats;
+  const unconfigured = noProviderYet(agents.data?.agents);
   return (
-    <PageLoading isLoading={activity.isPending} error={activity.error} loadingText="Loading project…">
-      {activity.data && (
-        <>
-          <header className="flex flex-wrap items-start justify-between gap-4">
-            <div className="flex min-w-0 flex-col gap-1">
-              <Eyebrow>Project</Eyebrow>
-              <h1 className="myco-display-lg m-0 text-on-surface">{project.name}</h1>
-              <p className="m-0 font-sans text-sm text-on-surface-variant" data-testid="activity-line">{describeActivity(activity.data.stats.openSessions, runningRuns)}</p>
+    <>
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex min-w-0 flex-col gap-1">
+          <Eyebrow>Project</Eyebrow>
+          <h1 className="myco-display-lg m-0 text-on-surface">{project.name}</h1>
+          <p className="m-0 font-sans text-sm text-on-surface-variant" data-testid="activity-line">{stats === undefined ? '…' : describeActivity(stats.openSessions, runningRuns)}</p>
+        </div>
+        {stats !== undefined && <CaptureHealthPill stats={stats} />}
+      </header>
+      {isArchived(project) && <ArchivedBanner projectId={project.projectId} archivedAt={project.archivedAt} archivedBy={project.archivedBy} />}
+      <PageLoading isLoading={activity.isPending} error={activity.error} loadingText="Loading project…">
+        {activity.data && (
+          <>
+            <ScopeRow stats={activity.data.stats} base={base} />
+            <OpenSessionsHero base={base} sessions={open.rows.slice(0, OPEN_SESSIONS_SHOWN)} total={activity.data.stats.openSessions} pending={open.isPending} error={open.error} />
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <AgentRunsPanel base={base} runs={runs.rows} pending={runs.isPending} error={runs.error} unconfigured={unconfigured} />
+              <div className="flex flex-col gap-6">
+                <SkillsPanel base={base} skills={skills.data?.skills ?? []} pending={skills.isPending} error={skills.error} unconfigured={unconfigured} />
+                <ActivityFeed base={base} items={activity.data.items} />
+              </div>
             </div>
-            <CaptureHealthPill stats={activity.data.stats} />
-          </header>
-          {isArchived(project) && <ArchivedBanner projectId={project.projectId} archivedAt={project.archivedAt} archivedBy={project.archivedBy} />}
-          <ScopeRow stats={activity.data.stats} base={base} />
-          <OpenSessionsHero base={base} sessions={open.rows.slice(0, OPEN_SESSIONS_SHOWN)} total={activity.data.stats.openSessions} pending={open.isPending} />
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-            <AgentRunsPanel base={base} runs={runs.rows} pending={runs.isPending} />
-            <div className="flex flex-col gap-6">
-              <SkillsPanel base={base} skills={skills.data?.skills ?? []} pending={skills.isPending} />
-              <ActivityFeed base={base} items={activity.data.items} />
-            </div>
-          </div>
-        </>
-      )}
-    </PageLoading>
+          </>
+        )}
+      </PageLoading>
+    </>
   );
 }
 
@@ -124,6 +138,11 @@ function ArchivedBanner({ projectId, archivedAt, archivedBy }: { projectId: stri
   );
 }
 
+/** One line in place of a panel's rows when its read failed: the page stays, the panel says so. */
+function PanelError({ what }: { what: string }) {
+  return <p className="m-0 font-sans text-sm text-tertiary">Could not load {what}.</p>;
+}
+
 /** What the project holds, and what this week did. */
 function ScopeRow({ stats, base }: { stats: ProjectStats; base: string }) {
   return (
@@ -131,7 +150,9 @@ function ScopeRow({ stats, base }: { stats: ProjectStats; base: string }) {
       <AccentSurface accent="sage" className="flex flex-col gap-3 p-5">
         <Eyebrow tone="sage">What it holds</Eyebrow>
         <div className="grid grid-cols-2 gap-2">
-          <Link to={`${base}/sessions`} className="contents"><MetricCard label="Sessions" value={stats.sessions.toLocaleString()} sub={`${stats.openSessions.toLocaleString()} open`} tone="sage" /></Link>
+          <Link to={`${base}/sessions`} className="block rounded-md no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage/40">
+            <MetricCard label="Sessions" value={stats.sessions.toLocaleString()} sub={`${stats.openSessions.toLocaleString()} open`} tone="sage" className="h-full transition-colors hover:bg-surface-container" />
+          </Link>
           <MetricCard label="Prompts" value={stats.prompts.toLocaleString()} />
           <MetricCard label="Tool calls" value={stats.toolCalls.toLocaleString()} />
           <MetricCard label="Plans" value={stats.plans.toLocaleString()} sub={formatCount(stats.attachments, 'attachment')} />
@@ -148,13 +169,15 @@ function ScopeRow({ stats, base }: { stats: ProjectStats; base: string }) {
   );
 }
 
-function OpenSessionsHero({ base, sessions, total, pending }: { base: string; sessions: SessionSummaryRow[]; total: number; pending: boolean }) {
+function OpenSessionsHero({ base, sessions, total, pending, error }: { base: string; sessions: SessionSummaryRow[]; total: number; pending: boolean; error: Error | null }) {
   const navigate = useNavigate();
   const headline = total === 0 ? 'No open sessions' : `${total.toLocaleString()} open ${total === 1 ? 'session' : 'sessions'}`;
   return (
     <Panel tone="sage" eyebrow={`Open sessions · ${total.toLocaleString()}`} title={headline}>
       {pending ? (
-        <div className="h-16 animate-pulse rounded-md bg-surface-container-high" aria-label="Loading open sessions" />
+        <Skeleton className="h-16 w-full rounded-md" />
+      ) : error ? (
+        <PanelError what="the open sessions" />
       ) : sessions.length === 0 ? (
         <p className="m-0 font-sans text-sm text-on-surface-variant">Sessions appear here while a runtime is capturing one.</p>
       ) : (
@@ -170,7 +193,7 @@ function OpenSessionsHero({ base, sessions, total, pending }: { base: string; se
                 <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-[11px] text-on-surface-variant">
                   <span>{s.agent ?? 'unknown agent'}</span>
                   {s.branch !== null && <span>· {s.branch}</span>}
-                  <span>· {s.promptCount}p · {s.toolCallCount}t</span>
+                  <span title={`${s.promptCount.toLocaleString()} prompts · ${s.toolCallCount.toLocaleString()} tool calls`}>· {s.promptCount}p · {s.toolCallCount}t</span>
                   <span className="ml-auto"><ActivitySparkline data={s.activityBuckets} kind="session" widthPx={64} heightPx={14} /></span>
                 </div>
               </button>
@@ -179,21 +202,37 @@ function OpenSessionsHero({ base, sessions, total, pending }: { base: string; se
         </ul>
       )}
       <div className="mt-4 flex items-center justify-end border-t border-[var(--ghost-border)] pt-3 font-mono text-xs text-outline">
-        <Link to={`${base}/sessions`} className="inline-flex items-center gap-1 rounded text-sage hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage/40">View session archive <ArrowRight className="h-3 w-3" /></Link>
+        <Link to={`${base}/sessions`} className="inline-flex items-center gap-1 rounded text-sage hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage/40">All sessions <ArrowRight className="h-3 w-3" /></Link>
       </div>
     </Panel>
   );
 }
 
-function AgentRunsPanel({ base, runs, pending }: { base: string; runs: RunListRow[]; pending: boolean }) {
+/** Running runs first, then the most recently started. */
+export function orderRuns(runs: readonly RunListRow[]): RunListRow[] {
+  return [...runs].sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running') || (b.startedAt ?? 0) - (a.startedAt ?? 0));
+}
+
+function NoProviderNote({ what }: { what: string }) {
+  return (
+    <p className="m-0 font-sans text-sm text-on-surface-variant">
+      No {what} yet — no provider is configured for this Deployment.{' '}
+      <Link to="/settings" className="text-primary underline underline-offset-2 hover:text-primary/80">Configure one in Settings</Link> to turn the intelligence on.
+    </p>
+  );
+}
+
+function AgentRunsPanel({ base, runs, pending, error, unconfigured }: { base: string; runs: RunListRow[]; pending: boolean; error: Error | null; unconfigured: boolean }) {
   const navigate = useNavigate();
-  const sorted = [...runs].sort((a, b) => (a.status === 'running' ? -1 : b.status === 'running' ? 1 : (b.startedAt ?? 0) - (a.startedAt ?? 0))).slice(0, RUNS_SHOWN);
+  const sorted = orderRuns(runs).slice(0, RUNS_SHOWN);
   return (
     <Panel tone="terra" eyebrow="Agent runs" title="Recent" actions={<Link to={`${base}/runs`} className="inline-flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface">All runs <ArrowRight className="h-3 w-3" /></Link>}>
       {pending ? (
-        <div className="h-16 animate-pulse rounded-md bg-surface-container-high" aria-label="Loading runs" />
+        <Skeleton className="h-16 w-full rounded-md" />
+      ) : error ? (
+        <PanelError what="the runs" />
       ) : sorted.length === 0 ? (
-        <p className="m-0 font-sans text-sm text-on-surface-variant">No runs yet. Runs appear here when this project's intelligence tasks execute.</p>
+        unconfigured ? <NoProviderNote what="runs" /> : <p className="m-0 font-sans text-sm text-on-surface-variant">No runs yet. Runs appear here as this project's tasks execute.</p>
       ) : (
         <ul className="m-0 flex list-none flex-col gap-2 p-0" aria-label="Recent runs">
           {sorted.map((run) => (
@@ -220,14 +259,16 @@ function AgentRunsPanel({ base, runs, pending }: { base: string; runs: RunListRo
   );
 }
 
-function SkillsPanel({ base, skills, pending }: { base: string; skills: SkillRecord[]; pending: boolean }) {
+function SkillsPanel({ base, skills, pending, error, unconfigured }: { base: string; skills: SkillRecord[]; pending: boolean; error: Error | null; unconfigured: boolean }) {
   const sorted = [...skills].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, SKILLS_SHOWN);
   return (
     <Panel tone="sage" eyebrow="Skills" title="Recently evolved" actions={<Link to={`${base}/skills`} className="inline-flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface">All skills <ArrowRight className="h-3 w-3" /></Link>}>
       {pending ? (
-        <div className="h-12 animate-pulse rounded-md bg-surface-container-high" aria-label="Loading skills" />
+        <Skeleton className="h-12 w-full rounded-md" />
+      ) : error ? (
+        <PanelError what="the skills" />
       ) : sorted.length === 0 ? (
-        <p className="m-0 font-sans text-sm text-on-surface-variant">No skills yet. Skills appear here once the skill tasks have run.</p>
+        unconfigured ? <NoProviderNote what="skills" /> : <p className="m-0 font-sans text-sm text-on-surface-variant">No skills yet. Skills appear here as this project's memory produces them.</p>
       ) : (
         <ul className="m-0 grid list-none grid-cols-1 gap-2 p-0 sm:grid-cols-2" aria-label="Recent skills">
           {sorted.map((skill) => (

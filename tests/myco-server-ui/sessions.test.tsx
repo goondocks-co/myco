@@ -422,9 +422,10 @@ describe('Project home', () => {
       '/api/projects/x/activity': () => Response.json({ items: [], stats: { sessions: 3, openSessions: 1, sessionsLast7d: 3, prompts: 9, toolCalls: 40, plans: 0, attachments: 0, lastActivityAt: NOW - 1000 } }),
       '/api/projects/x/sessions?limit=50&state=open': () => page([session({ label: 'Wave-based executor', promptCount: 12, toolCallCount: 40, activityBuckets: [1, 2, 0, 0, 3, 0, 0, 1] })]),
       '/api/projects/x/runs?limit=50': () => page([
-        { id: 'run-older-completed', agentId: 'a', task: 'digest', status: 'completed', provider: null, model: 'm1', startedAt: NOW - 9000, resumedAt: null, completedAt: NOW - 8000, tokensUsed: 12_000, costUsd: null, costSource: null, dryRun: false, resumable: false, resumeStatus: null, failed: false },
-        { id: 'run-running-now', agentId: 'a', task: 'title-summary', status: 'running', provider: null, model: null, startedAt: NOW - 2000, resumedAt: null, completedAt: null, tokensUsed: null, costUsd: null, costSource: null, dryRun: true, resumable: false, resumeStatus: null, failed: false },
+        { id: 'run-newer-completed', agentId: 'a', task: 'digest', status: 'completed', provider: null, model: 'm1', startedAt: NOW - 2000, resumedAt: null, completedAt: NOW - 1000, tokensUsed: 12_000, costUsd: null, costSource: null, dryRun: false, resumable: false, resumeStatus: null, failed: false },
+        { id: 'run-older-running', agentId: 'a', task: 'title-summary', status: 'running', provider: null, model: null, startedAt: NOW - 20_000, resumedAt: null, completedAt: null, tokensUsed: null, costUsd: null, costSource: null, dryRun: true, resumable: false, resumeStatus: null, failed: false },
       ]),
+      '/api/agents': () => Response.json({ agents: [{ id: 'a', name: 'Default', provider: 'anthropic', model: 'm', enabled: true }] }),
       '/api/projects/x/skills?limit=200': () => Response.json({ skills: [
         { id: 'sk1', agentId: 'a', name: 'ship-it', displayName: 'Ship it', description: 'd', status: 'active', generation: 3, sourceIds: '[]', usageCount: 2, lastUsedAt: null, createdAt: NOW - 5000, updatedAt: NOW - 1000 },
       ] }),
@@ -434,7 +435,7 @@ describe('Project home', () => {
     expect(hero.textContent).toContain('Wave-based executor');
     expect(hero.textContent).toContain('claude-code');
     expect(hero.textContent).toContain('12p · 40t');
-    expect(within(hero).getByRole('img', { name: /7 prompt batches/ })).toBeTruthy();
+    expect(within(hero).getByRole('img', { name: /7 prompts across this session/ })).toBeTruthy();
     expect(screen.getByTestId('activity-line').textContent).toBe('1 open session · 1 run running');
     const runs = within(screen.getByRole('list', { name: 'Recent runs' })).getAllByRole('listitem');
     expect(runs.map((r) => r.textContent)).toEqual([expect.stringContaining('title-summary'), expect.stringContaining('digest')]);
@@ -444,7 +445,23 @@ describe('Project home', () => {
     expect(skills[0]!.textContent).toContain('Ship it');
     expect(skills[0]!.textContent).toContain('gen 3');
     expect(within(skills[0]!).getByRole('link').getAttribute('href')).toBe('/p/x/skills/sk1');
-    expect(screen.getByRole('link', { name: /View session archive/ }).getAttribute('href')).toBe('/p/x/sessions');
+    expect(screen.getByRole('link', { name: /All sessions/ }).getAttribute('href')).toBe('/p/x/sessions');
+  });
+
+  it('keeps the name and the archived banner above the activity read, says why runs and skills are empty without a provider, and says when a panel could not load', async () => {
+    server(base({
+      '/api/projects': () => Response.json({ projects: [{ ...PROJECTS.projects[0], archivedAt: NOW - 500, archivedBy: 'mem_1' }] }),
+      '/api/projects/x/activity': () => Response.json({ items: [], stats: { sessions: 1, openSessions: 0, sessionsLast7d: 0, prompts: 0, toolCalls: 0, plans: 0, attachments: 0, lastActivityAt: NOW - 1000 } }),
+      '/api/projects/x/sessions?limit=50&state=open': () => page([]),
+      '/api/projects/x/runs?limit=50': () => page([]),
+      '/api/projects/x/skills?limit=200': () => new Response(null, { status: 500 }),
+      '/api/agents': () => Response.json({ agents: [{ id: 'a', name: 'Default', provider: null, model: null, enabled: false }] }),
+    }));
+    mount('/p/x');
+    expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Project X');
+    expect(await screen.findByTestId('archived-banner')).toBeTruthy();
+    expect((await screen.findByText(/No runs yet — no provider is configured/)).textContent).toContain('Configure one in Settings');
+    expect(await screen.findByText('Could not load the skills.')).toBeTruthy();
   });
 
   it('says the capture has gone quiet when the last session landed over a week ago', async () => {

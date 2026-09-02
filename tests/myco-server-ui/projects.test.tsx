@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -90,14 +90,22 @@ describe('an archived project\'s home and navigation', () => {
     expect(options[1]!.getAttribute('aria-selected')).toBe('true');
   });
 
-  it('keeps an archived project out of the switcher on a live project\'s pages, and switching keeps the page', async () => {
-    server(base([LIVE, ARCH]));
+  it('keeps an archived project out of the switcher on a live project\'s pages, and switching to another project keeps the page and remembers the pick', async () => {
+    const OTHER = { projectId: 'other', name: 'Other', createdAt: 0, sessionCount: 0, lastActivityAt: NOW - 5000, archivedAt: null, archivedBy: null };
+    server(base([LIVE, ARCH, OTHER], {
+      '/api/projects/other/sessions': () => Response.json({ rows: [], cursor: null }),
+      '/api/projects/other/activity': () => Response.json({ items: [], stats: { sessions: 0, openSessions: 0, sessionsLast7d: 0, prompts: 0, toolCalls: 0, plans: 0, attachments: 0, lastActivityAt: null } }),
+    }));
     mount('/p/live/sessions');
     fireEvent.click(await screen.findByRole('button', { name: 'Project' }));
     const options = within(screen.getByRole('listbox', { name: 'Projects' })).getAllByRole('option');
-    expect(options.map((o) => o.textContent)).toEqual([expect.stringContaining('Live')]);
+    expect(options.map((o) => o.textContent)).toEqual([expect.stringContaining('Live'), expect.stringContaining('Other')]);
     expect(screen.queryByTestId('archived-banner')).toBeNull();
+    fireEvent.click(options[1]!);
+    await waitFor(() => expect(screen.getByRole('navigation', { name: 'Breadcrumb' }).textContent).toContain('Other'));
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' }).textContent).toContain('Sessions');
+    expect(localStorage.getItem('myco-last-project')).toBe('other');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Project' }));
   });
 
   it('renames a project from its card, sending the typed name, and shows the new name once the list refreshes', async () => {
