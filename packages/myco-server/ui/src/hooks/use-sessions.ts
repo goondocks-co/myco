@@ -81,16 +81,26 @@ export interface ResponseRow {
   orderedAt: number;
 }
 
+/** A captured plan. `promptId` names the turn that produced it; `progress` is `checked/total` over its task list or `N/A`; `updatedBy` is the member behind its last status change, null when a capture wrote last. */
 export interface PlanRow {
   planKey: string;
+  promptId: string | null;
   title: string | null;
   status: string;
   content: string | null;
   blobKey: string | null;
+  /** The file or the tag the plan came from, as the capture named it. */
+  originPath: string | null;
+  progress: string;
+  updatedBy: string | null;
   createdAt: number;
   updatedAt: number;
   orderedAt: number;
 }
+
+/** The statuses a person may set on a plan, in the order the control lists them. */
+export const PLAN_STATUSES = ['active', 'in_progress', 'completed', 'abandoned'] as const;
+export type PlanStatus = (typeof PLAN_STATUSES)[number];
 
 export interface AttachmentRow {
   attachmentId: string;
@@ -165,6 +175,8 @@ export interface TurnRow {
   toolCallCount: number;
   responseCount: number;
   childCount: number;
+  planCount: number;
+  attachmentCount: number;
 }
 
 export interface TurnPrompt {
@@ -189,6 +201,8 @@ export interface TurnDetail {
   prompt: TurnPrompt;
   responses: ResponseRow[];
   attachments: AttachmentRow[];
+  /** The plans this turn produced. */
+  plans: PlanRow[];
   children: TurnChild[];
 }
 
@@ -271,6 +285,20 @@ export function useTitleSession(projectId: string, sessionId: string) {
     onSuccess: () => Promise.all([
       client.invalidateQueries({ queryKey: ['session', projectId, sessionId] }),
       client.invalidateQueries({ queryKey: ['sessions', projectId] }),
+    ]),
+  });
+}
+
+/** Sets a plan's status as the signed-in member; on an answer, the session's plans, the turn that produced it, and the session's counts are read again. */
+export function useSetPlanStatus(projectId: string, sessionId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ planKey, status }: { planKey: string; status: PlanStatus }) =>
+      postJson<{ plan: PlanRow }>(`${project(projectId)}/sessions/${seg(sessionId)}/plans/${seg(planKey)}/status`, { status }),
+    onSuccess: () => Promise.all([
+      client.invalidateQueries({ queryKey: ['session-children', projectId, sessionId, 'plans'] }),
+      client.invalidateQueries({ queryKey: ['turn', projectId, sessionId] }),
+      client.invalidateQueries({ queryKey: ['session', projectId, sessionId] }),
     ]),
   });
 }

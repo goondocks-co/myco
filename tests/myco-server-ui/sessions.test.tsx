@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/components/sessions/TurnCard';
-import { parseChecklist } from '../../packages/myco-server/ui/src/components/sessions/PlanCard';
+import { progressParts } from '../../packages/myco-server/ui/src/components/sessions/PlanCard';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
 const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 2, lastActivityAt: null }] };
@@ -32,7 +32,7 @@ const counts = { prompts: 2, toolCalls: 3, responses: 1, plans: 0, attachments: 
 
 const turn = (over: Record<string, unknown> = {}) => ({
   promptId: P1, origin: 'user', promptKind: null, threadLabel: null, preview: 'Please rename the project card', textChars: 30, blobKey: null,
-  createdAt: NOW - 3000, toolCallCount: 1, responseCount: 1, childCount: 0, ...over,
+  createdAt: NOW - 3000, toolCallCount: 1, responseCount: 1, childCount: 0, planCount: 0, attachmentCount: 0, ...over,
 });
 
 const originalFetch = globalThis.fetch;
@@ -237,12 +237,14 @@ describe('Session detail', () => {
       prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: `Please rename the project card ${'x'.repeat(130)}\n\nAnd the rest of a long prompt.`, blobKey: null, createdAt: NOW - 3000 },
       responses: [{ responseId: 'r1', promptId: P1, text: 'done', blobKey: null, createdAt: NOW - 1000, orderedAt: NOW - 1000 }],
       attachments: [{ attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW }],
+      plans: [],
       children: [],
     }),
     [`/api/projects/x/sessions/s1/turns/${P3}`]: () => Response.json({
       prompt: { promptId: P3, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: null, blobKey: KEY_TEXT, createdAt: NOW - 1000 },
       responses: [],
       attachments: [],
+      plans: [],
       children: [{ prompt: { promptId: P2, origin: 'user', promptKind: null, parentPromptId: P3, threadLabel: 'reviewer', text: 'steer it left', blobKey: null, createdAt: NOW - 900 }, responses: [{ responseId: 'r2', promptId: P2, text: 'steered', blobKey: null, createdAt: NOW - 800, orderedAt: NOW - 800 }], toolCallCount: 0 }],
     }),
     [`/api/projects/x/sessions/s1/turns/${P1}/tool-calls?limit=200`]: () => page([
@@ -369,12 +371,44 @@ describe('Session detail', () => {
     expect(img.getAttribute('src')).toBe(BLOB(KEY_IMG));
     expect(screen.queryByRole('img', { name: 'a diagram' })).toBeNull();
     expect(screen.getByText('Download a diagram').getAttribute('href')).toBe(BLOB(KEY_SVG));
+    // Grouped under the turn that carried each; one the capture tied to no prompt sits last, without a turn link.
+    const groups = screen.getAllByRole('region').filter((g) => g.getAttribute('aria-label') !== 'Session');
+    expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Please rename the project card', 'Not tied to a prompt']);
+    expect(within(groups[0]!).getByRole('link', { name: 'Open the turn' }).getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P1}`);
+    expect(within(groups[1]!).queryByRole('link', { name: 'Open the turn' })).toBeNull();
+  });
+
+  it('shows a plan under the turn that produced it, counts plans and attachments on the collapsed card, loads an open card\'s image eagerly, and sets a plan\'s status as the signed-in member', async () => {
+    let status = 'in_progress';
+    const plan = () => ({ planKey: 'plan-1', promptId: P1, title: 'Ship the thing', status, content: '- [x] one\n- [ ] two', blobKey: null, originPath: 'transcript:ultraplan', progress: '1/2', updatedBy: status === 'in_progress' ? null : 'mem_1', createdAt: NOW - 5000, updatedAt: NOW - 1000, orderedAt: NOW - 1000 });
+    const { requested } = server(detailRoutes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([turn({ promptId: P1, preview: 'Please rename the project card', toolCallCount: 1, responseCount: 1, planCount: 1, attachmentCount: 1 })]),
+      [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+        prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: 'Please rename the project card', blobKey: null, createdAt: NOW - 3000 },
+        responses: [], attachments: [{ attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW }], plans: [plan()], children: [],
+      }),
+      '/api/projects/x/sessions/s1/plans/plan-1/status': () => { status = 'completed'; return Response.json({ plan: plan() }); },
+      '/api/members': () => Response.json({ members: [{ id: 'mem_1', label: 'chris', linked: true, createdAt: 0, revokedAt: null, revokedBy: null }] }),
+    }));
+    mount('/p/x/sessions/s1');
+    const first = await screen.findByTestId(`turn-${P1}`);
+    // The only typed turn opens on its own; its header counts what it produced.
+    expect(within(first).getByRole('button', { expanded: true }).textContent).toContain('1 plan');
+    expect(within(first).getByRole('button', { expanded: true }).textContent).toContain('1 attachment');
+    const card = await within(first).findByTestId('plan-plan-1');
+    expect(card.textContent).toContain('Ship the thing');
+    expect(within(card).queryByRole('link', { name: 'From its turn' })).toBeNull();
+    expect(within(first).getByRole('img', { name: 'a screenshot' }).getAttribute('loading')).toBe('eager');
+    fireEvent.change(within(card).getByRole('combobox', { name: 'Status of Ship the thing' }), { target: { value: 'completed' } });
+    await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/plans/plan-1/status'));
+    await within(first).findByText('Status set by chris');
+    expect((await within(first).findByTestId('plan-plan-1')).textContent).toContain('completed');
   });
 
   it('lists captured plans as cards with their status, key and checklist progress', async () => {
     server(detailRoutes({ '/api/projects/x/sessions/s1/plans': () => page([
-      { planKey: 'plan-1', title: 'Ship the thing', status: 'in_progress', content: '# Plan\n- [x] one\n- [ ] two', blobKey: null, createdAt: NOW - 5000, updatedAt: NOW - 1000, orderedAt: NOW - 1000 },
-    ]) }));
+      { planKey: 'plan-1', promptId: P1, title: 'Ship the thing', status: 'in_progress', content: '# Plan\n- [x] one\n- [ ] two', blobKey: null, originPath: '.claude/plans/ship.md', progress: '1/2', updatedBy: 'mem_1', createdAt: NOW - 5000, updatedAt: NOW - 1000, orderedAt: NOW - 1000 },
+    ]), '/api/members': () => Response.json({ members: [{ id: 'mem_1', label: 'chris', linked: true, createdAt: 0, revokedAt: null, revokedBy: null }] }) }));
     mount('/p/x/sessions/s1?tab=plans');
     const card = await screen.findByTestId('plan-plan-1');
     expect(card.textContent).toContain('in progress');
@@ -382,7 +416,58 @@ describe('Session detail', () => {
     expect(card.textContent).toContain('1/2 items');
     expect(within(card).getByRole('heading', { level: 3 }).textContent).toBe('Plan');
     expect(within(card).queryByRole('heading', { level: 1 })).toBeNull();
-    expect(parseChecklist('- [x] a\n- [ ] b\n- [X] c')).toEqual({ total: 3, checked: 2 });
+    expect((await within(card).findByText('Status set by chris')).textContent).toBe('Status set by chris');
+    expect(within(card).getByRole('link', { name: 'From its turn' }).getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P1}`);
+    expect(within(card).getByRole('combobox', { name: 'Status of Ship the thing' })).toBeTruthy();
+    expect(card.textContent).toContain('.claude/plans/ship.md');
+    expect([progressParts('2/3'), progressParts('N/A')]).toEqual([{ checked: 2, total: 3 }, null]);
+  });
+
+  it('opens and scrolls to the turn a link names, reading every origin when the default filter hides it, and merges attachments on prompts the timeline does not list into one unlinked group', async () => {
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this.getAttribute('data-testid') ?? ''); };
+    try {
+      const { requested } = server(detailRoutes({
+        '/api/projects/x/sessions/s1/attachments': () => page([
+          { attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW },
+          { attachmentId: 'a3', promptId: '00000000-0000-7000-8000-000000000009', blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 10, description: 'on a steering prompt', createdAt: NOW, orderedAt: NOW },
+          { attachmentId: 'a2', promptId: null, blobKey: KEY_SVG, mediaType: 'image/svg+xml', byteSize: 99, description: 'a diagram', createdAt: NOW, orderedAt: NOW },
+        ]),
+      }));
+      mount(`/p/x/sessions/s1?turn=${P1}`);
+      const first = await screen.findByTestId(`turn-${P1}`);
+      expect(within(first).getByRole('button', { expanded: true })).toBeTruthy();
+      expect(within(screen.getByTestId(`turn-${P3}`)).getByRole('button', { expanded: false })).toBeTruthy();
+      await waitFor(() => expect(scrolled).toEqual([`turn-${P1}`]));
+      cleanup();
+      // A turn the default filter hides: the timeline widens to every origin and opens it.
+      mount(`/p/x/sessions/s1?turn=${P2}`);
+      await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/turns?origins=agent_dispatch%2Chook_injected%2Csystem%2Cunknown%2Cuser&limit=200'));
+      await waitFor(() => expect((screen.getByRole('checkbox', { name: /Show system/ }) as HTMLInputElement).checked).toBe(true));
+      cleanup();
+      mount('/p/x/sessions/s1?tab=attachments');
+      await screen.findByRole('img', { name: 'a screenshot' });
+      const groups = screen.getAllByRole('region').filter((g) => g.getAttribute('aria-label') !== 'Session');
+      expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Please rename the project card', 'Other prompts in this session', 'Not tied to a prompt']);
+      expect(within(groups[1]!).queryByRole('link', { name: 'Open the turn' })).toBeNull();
+      expect(within(groups[1]!).getByRole('img', { name: 'on a steering prompt' })).toBeTruthy();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('says so when a status change is refused, and the control returns to the row\'s status', async () => {
+    server(detailRoutes({
+      '/api/projects/x/sessions/s1/plans': () => page([{ planKey: 'plan-2', promptId: null, title: 'Refused', status: 'active', content: 'x', blobKey: null, originPath: null, progress: 'N/A', updatedBy: null, createdAt: NOW - 5000, updatedAt: NOW - 5000, orderedAt: NOW - 5000 }]),
+      '/api/projects/x/sessions/s1/plans/plan-2/status': () => Response.json({ error: 'nope' }, { status: 400 }),
+    }));
+    mount('/p/x/sessions/s1?tab=plans');
+    const card = await screen.findByTestId('plan-plan-2');
+    const select = within(card).getByRole('combobox', { name: 'Status of Refused' }) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'abandoned' } });
+    expect((await within(card).findByRole('status')).textContent).toBe('The status could not be saved');
+    expect(select.value).toBe('active');
   });
 
   it('links the transcript by segment and never fetches its bytes', async () => {

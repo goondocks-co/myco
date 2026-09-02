@@ -9,14 +9,15 @@ import { StatusDot } from '../ui/status-dot';
 import { SubtabPill } from '../ui/subtab-pill';
 import { Surface } from '../ui/surface';
 import {
-  blobUrl, memberName, RENDERABLE_IMAGE_TYPES, runtimeName, TITLING_OUTCOME_TEXT, useSession, useSessionChildren, useTitleSession, useTranscript,
-  type AttachmentRow, type PlanRow, type SessionRow,
+  blobUrl, memberName, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, runtimeName, TITLING_OUTCOME_TEXT, useSession, useSessionChildren, useTitleSession, useTranscript, useTurns,
+  type AttachmentRow, type PlanRow, type SessionRow, type TurnRow,
 } from '../../hooks/use-sessions';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatRelative } from '../../lib/format';
 import { NotFound } from '../../pages/NotFound';
 import { PlanCard } from './PlanCard';
+import { promptPreview } from './TurnCard';
 import { TurnTimeline } from './TurnTimeline';
 
 const TABS = [
@@ -189,7 +190,7 @@ function Plans({ projectId, sessionId, wanted }: { projectId: string; sessionId:
         </div>
       ) : (
         <div className="flex flex-col gap-3">
-          {plans.rows.map((plan) => <PlanCard key={plan.planKey} projectId={projectId} plan={plan} defaultOpen={plan.status === 'in_progress' || plan.planKey === wanted} />)}
+          {plans.rows.map((plan) => <PlanCard key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} defaultOpen={plan.status === 'in_progress' || plan.planKey === wanted} />)}
           {plans.hasMore && <button type="button" className={button} onClick={plans.more}>Load more</button>}
         </div>
       )}
@@ -197,25 +198,56 @@ function Plans({ projectId, sessionId, wanted }: { projectId: string; sessionId:
   );
 }
 
+interface AttachmentGroup { key: string; label: string; rows: AttachmentRow[]; /** The top-level turn the group opens, when it has one. */ turn: string | null }
+
+/** The attachments a turn carries, grouped under the turn in turn order; those on prompts the timeline does not list on its own (steering prompts, later pages) share one group, and those the capture tied to no prompt sit last. */
+export function attachmentGroups(rows: readonly AttachmentRow[], turns: readonly TurnRow[]): AttachmentGroup[] {
+  const byPrompt = new Map<string | null, AttachmentRow[]>();
+  for (const row of rows) byPrompt.set(row.promptId, [...(byPrompt.get(row.promptId) ?? []), row]);
+  const groups: AttachmentGroup[] = [];
+  for (const turn of turns) {
+    const mine = byPrompt.get(turn.promptId);
+    if (mine !== undefined) { groups.push({ key: turn.promptId, label: promptPreview(turn), rows: mine, turn: turn.promptId }); byPrompt.delete(turn.promptId); }
+  }
+  const untied = byPrompt.get(null) ?? [];
+  byPrompt.delete(null);
+  const other = [...byPrompt.values()].flat();
+  if (other.length > 0) groups.push({ key: 'other', label: 'Other prompts in this session', rows: other, turn: null });
+  if (untied.length > 0) groups.push({ key: 'none', label: 'Not tied to a prompt', rows: untied, turn: null });
+  return groups;
+}
+
 function Attachments({ projectId, sessionId }: { projectId: string; sessionId: string }) {
   const attachments = useSessionChildren<AttachmentRow>(projectId, sessionId, 'attachments');
+  const turns = useTurns(projectId, sessionId, PROMPT_ORIGINS);
   return (
-    <PageLoading isLoading={attachments.isPending} error={attachments.error}>
+    <PageLoading isLoading={attachments.isPending || turns.isPending} error={attachments.error ?? turns.error}>
       {attachments.rows.length === 0 ? (
         <p className="font-sans text-sm text-on-surface-variant">No attachments in this session.</p>
       ) : (
-        <ul className="grid gap-3 sm:grid-cols-2" aria-label="Attachments">
-          {attachments.rows.map((a) => (
-            <li key={a.attachmentId} className="rounded-lg border border-outline-variant/20 p-3">
-              {RENDERABLE_IMAGE_TYPES.includes(a.mediaType) ? (
-                <img src={blobUrl(projectId, a.blobKey)} alt={a.description ?? a.attachmentId} className="max-h-64 w-auto rounded-md" />
-              ) : (
-                <a href={blobUrl(projectId, a.blobKey)} className={link}>Download {a.description ?? a.attachmentId}</a>
-              )}
-              <div className="mt-2 font-sans text-xs text-on-surface-variant">{a.mediaType} · {formatBytes(a.byteSize)} · {formatRelative(a.createdAt)}</div>
-            </li>
+        <div className="flex flex-col gap-5">
+          {attachmentGroups(attachments.rows, turns.rows).map((group) => (
+            <section key={group.key} aria-label={group.label} className="flex flex-col gap-2">
+              <div className="flex items-baseline justify-between gap-3">
+                <h3 className="min-w-0 truncate font-sans text-xs font-medium uppercase tracking-widest text-on-surface-variant">{group.label}</h3>
+                {group.turn !== null && <Link to={`?turn=${encodeURIComponent(group.turn)}`} className={cn(link, 'shrink-0')}>Open the turn</Link>}
+              </div>
+              <ul className="grid gap-3 sm:grid-cols-2" aria-label={`Attachments of ${group.label}`}>
+                {group.rows.map((a) => (
+                  <li key={a.attachmentId} className="rounded-lg border border-outline-variant/20 p-3">
+                    {RENDERABLE_IMAGE_TYPES.includes(a.mediaType) ? (
+                      <img src={blobUrl(projectId, a.blobKey)} alt={a.description ?? a.attachmentId} className="max-h-64 w-auto rounded-md" />
+                    ) : (
+                      <a href={blobUrl(projectId, a.blobKey)} className={link}>Download {a.description ?? a.attachmentId}</a>
+                    )}
+                    <div className="mt-2 font-sans text-xs text-on-surface-variant">{a.mediaType} · {formatBytes(a.byteSize)} · {formatRelative(a.createdAt)}</div>
+                  </li>
+                ))}
+              </ul>
+            </section>
           ))}
-        </ul>
+          {attachments.hasMore && <button type="button" className={button} onClick={attachments.more}>Load more</button>}
+        </div>
       )}
     </PageLoading>
   );
