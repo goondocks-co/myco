@@ -181,6 +181,13 @@ export interface SessionFilters {
   /** The label of the member whose credential captured the session. */
   memberLabel?: string;
   sessionId?: string;
+  /** A text the session's title, first prompt, agent, branch or id contains, matched case-insensitively. */
+  q?: string;
+}
+
+/** A LIKE pattern matching `text` anywhere, with the pattern's own metacharacters escaped. */
+export function containsPattern(text: string): string {
+  return `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
 
 export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters = {}): Promise<Page<SessionRow>> {
@@ -194,6 +201,11 @@ export async function listSessions(db: RelationalStore, scope: ReadScope, opts: 
   if (opts.state === 'ended') conditions.push('s.ended_at IS NOT NULL');
   if (opts.memberLabel !== undefined) { conditions.push('m.label = ?'); params.push(opts.memberLabel); }
   if (opts.sessionId !== undefined) { conditions.push('s.session_id = ?'); params.push(opts.sessionId); }
+  if (opts.q !== undefined && opts.q.trim() !== '') {
+    const pattern = containsPattern(opts.q.trim());
+    conditions.push(`(s.title LIKE ? ESCAPE '\\' OR s.agent LIKE ? ESCAPE '\\' OR s.branch LIKE ? ESCAPE '\\' OR s.session_id LIKE ? ESCAPE '\\' OR ${FIRST_PROMPT_SQL} LIKE ? ESCAPE '\\')`);
+    params.push(pattern, pattern, pattern, pattern, pattern);
+  }
   if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
   const { results } = await db
     .prepare(`SELECT ${SESSION_COLUMNS} ${SESSION_FROM} WHERE ${conditions.join(' AND ')} ORDER BY s.first_received_at DESC, s.session_id DESC LIMIT ?`)
@@ -246,6 +258,66 @@ export async function sessionCountsFor(db: RelationalStore, scope: ReadScope, se
     }
   });
   return out;
+}
+
+/** How many lifetime buckets a session's activity is spread over; the rail's sparkline width. */
+export const ACTIVITY_BUCKETS = 8;
+
+/** A session row with what the rail shows beside it: its counts and its activity spread over its lifetime, oldest bucket first. */
+export interface SessionSummaryRow extends SessionRow {
+  promptCount: number;
+  toolCallCount: number;
+  activityBuckets: number[];
+}
+
+/**
+ * Buckets each session's prompt instants over its lifetime. The stored range is
+ * a hint widened by the observed instants: a session with no recorded start, or
+ * whose prompts predate a re-registered start, still shows its activity.
+ */
+export function bucketActivity(sessions: readonly Pick<SessionRow, 'sessionId' | 'startedAt' | 'firstReceivedAt' | 'endedAt' | 'lastReceivedAt'>[], instants: readonly { sessionId: string; at: number }[], nowMs: number): Map<string, number[]> {
+  const out = new Map<string, number[]>(sessions.map((s) => [s.sessionId, new Array<number>(ACTIVITY_BUCKETS).fill(0)]));
+  const observed = new Map<string, { start: number; end: number }>();
+  for (const { sessionId, at } of instants) {
+    const range = observed.get(sessionId);
+    if (range === undefined) observed.set(sessionId, { start: at, end: at });
+    else { range.start = Math.min(range.start, at); range.end = Math.max(range.end, at); }
+  }
+  const ranges = new Map<string, { start: number; end: number }>();
+  for (const s of sessions) {
+    const seen = observed.get(s.sessionId);
+    const start = Math.min(s.startedAt ?? s.firstReceivedAt, seen?.start ?? Number.POSITIVE_INFINITY);
+    const end = Math.max(start + 1, s.endedAt ?? (s.startedAt === null ? s.lastReceivedAt : nowMs), seen?.end ?? Number.NEGATIVE_INFINITY);
+    ranges.set(s.sessionId, { start, end });
+  }
+  for (const { sessionId, at } of instants) {
+    const buckets = out.get(sessionId);
+    const range = ranges.get(sessionId);
+    if (buckets === undefined || range === undefined || at < range.start || at > range.end) continue;
+    const span = Math.max(1, range.end - range.start);
+    const idx = Math.min(ACTIVITY_BUCKETS - 1, Math.floor(((at - range.start) / span) * ACTIVITY_BUCKETS));
+    buckets[idx] += 1;
+  }
+  return out;
+}
+
+/** The session list with its rail facts: one statement for the counts of every child table and one for the prompt instants, over the page's ids only. The dashboard and the MCP tool both read the list through this. */
+export async function listSessionSummaries(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters, nowMs: number): Promise<Page<SessionSummaryRow>> {
+  const listed = await listSessions(db, scope, opts);
+  const ids = listed.rows.map((r) => r.sessionId);
+  const counts = await sessionCountsFor(db, scope, ids);
+  const instants = ids.length === 0 ? [] : (await db
+    .prepare(`SELECT session_id, created_at FROM prompt_batches WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')})`)
+    .bind(scope.projectId, ...ids)
+    .all<{ session_id: string; created_at: number }>()).results.map((r) => ({ sessionId: r.session_id, at: r.created_at }));
+  const buckets = bucketActivity(listed.rows, instants, nowMs);
+  return {
+    cursor: listed.cursor,
+    rows: listed.rows.map((row) => {
+      const c = counts.get(row.sessionId);
+      return { ...row, promptCount: c?.prompts ?? 0, toolCallCount: c?.toolCalls ?? 0, activityBuckets: buckets.get(row.sessionId) ?? new Array<number>(ACTIVITY_BUCKETS).fill(0) };
+    }),
+  };
 }
 
 /** What the project holds, one count per projection: they share no key, and a join would multiply rows. */

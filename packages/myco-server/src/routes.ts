@@ -31,7 +31,7 @@ import {
   handleRevokeCredential, handleRevokeInvitation, handleRevokeMember,
 } from './api/access.js';
 import { handleGrants, handleMintGrant, handleRevokeGrant, handleRotateGrant } from './api/grants.js';
-import { handleProjectActivity, handleProjectSessions, handleSession, handleSessionChildren, handleTranscript } from './api/sessions.js';
+import { handleProjectActivity, handleProjectSessions, handleSession, handleSessionChildren, handleSessionTurn, handleSessionTurnToolCalls, handleSessionTurns, handleTranscript } from './api/sessions.js';
 import { handleProjectRun, handleProjectRuns } from './api/agent-runs.js';
 import { MAX_BLOB_BYTES, MEMBER_ID_SEGMENT } from './constants.js';
 import { handleJoin } from './auth/join.js';
@@ -122,6 +122,10 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})$/, auth: 'owner', handler: handleSession },
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/{child}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/(?<child>prompts|tool-calls|responses|plans|attachments)$/, auth: 'owner', handler: handleSessionChildren },
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/transcript', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/transcript$/, auth: 'owner', handler: handleTranscript },
+  // A session as turns: the list, one turn's body, and one turn's tool calls. A prompt id is member-minted under the envelope's id grammar.
+  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/turns', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/turns$/, auth: 'owner', handler: handleSessionTurns },
+  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/turns\/(?<promptId>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/, auth: 'owner', handler: handleSessionTurn },
+  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}/tool-calls', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/turns\/(?<promptId>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/tool-calls$/, auth: 'owner', handler: handleSessionTurnToolCalls },
   { method: 'GET', path: '/api/projects/{projectId}/blobs/{key}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'owner', handler: handleBlobRead },
   { method: 'GET', path: '/api/members', auth: 'owner', handler: handleMembers },
   { method: 'POST', path: '/api/members/{memberId}/revoke', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/revoke$`), auth: 'owner', handler: handleRevokeMember },

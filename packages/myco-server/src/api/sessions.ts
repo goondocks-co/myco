@@ -1,10 +1,11 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { getSession, listSessions, projectStats, sessionCounts } from '../read/sessions.js';
+import { getSession, listSessionSummaries, projectStats, sessionCounts, type SessionFilters } from '../read/sessions.js';
 import { activityFeed } from '../read/activity.js';
 import { badRequest, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listPlans, listPrompts, listResponses, listToolCalls } from '../read/children.js';
+import { listTurns, parseOrigins, turnDetail } from '../read/turns.js';
 import { getTranscript, listSegments } from '../read/transcript.js';
 
 /** The five child collections, by URL segment. One handler serves all of them: they differ only in which query runs. */
@@ -18,7 +19,6 @@ const CHILDREN = {
 
 export const CHILD_SEGMENTS = Object.keys(CHILDREN);
 
-/** The caller's paging arguments, or a refusal. A malformed cursor is refused rather than ignored: silently serving page one to a client that asked for page nine loses rows without saying so. */
 /**
  * The session id a path segment names. Ingest admits any non-empty string within
  * `MAX_ID_CHARS` (`ingest/envelope.ts:95-98`), so an id reaches storage carrying spaces,
@@ -36,6 +36,7 @@ export function sessionIdParam(raw: string): string | null {
   return decoded.length > 0 && decoded.length <= 128 ? decoded : null;
 }
 
+/** The caller's paging arguments, or a refusal. A malformed cursor is refused rather than ignored: silently serving page one to a client that asked for page nine loses rows without saying so. */
 export function paging(url: URL): { limit?: number; cursor?: string } | Response {
   const rawLimit = url.searchParams.get('limit');
   const rawCursor = url.searchParams.get('cursor');
@@ -44,12 +45,25 @@ export function paging(url: URL): { limit?: number; cursor?: string } | Response
   return { limit: rawLimit === null ? undefined : Number(rawLimit), cursor: rawCursor ?? undefined };
 }
 
+/** The list's filters as the query names them: `state`, `branch`, `member`, `q`. An unknown state is refused. */
+export function sessionFilters(url: URL): SessionFilters | Response {
+  const state = url.searchParams.get('state');
+  if (state !== null && state !== 'open' && state !== 'ended') return badRequest('state must be open or ended');
+  const text = (name: string): string | undefined => {
+    const value = url.searchParams.get(name);
+    return value === null || value === '' ? undefined : value;
+  };
+  return { state: state ?? undefined, branch: text('branch'), memberLabel: text('member'), q: text('q') };
+}
+
 export async function handleProjectSessions(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
-  return ok(await listSessions(env.db, scope, page));
+  const filters = sessionFilters(ctx.url);
+  if (filters instanceof Response) return filters;
+  return ok(await listSessionSummaries(env.db, scope, { ...page, ...filters }, ctx.now));
 }
 
 export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
@@ -73,6 +87,42 @@ export async function handleSessionChildren(env: ServerEnv, ctx: OwnerContext): 
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
   return ok(await query(env.db, scope, sessionId, page));
+}
+
+/** A session's turns of the named origins (`origins=user,system,…`; `user` alone when unnamed), oldest first. An origin the wire does not admit is refused. */
+export async function handleSessionTurns(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
+  const page = paging(ctx.url);
+  if (page instanceof Response) return page;
+  const origins = parseOrigins(ctx.url.searchParams.get('origins'));
+  if (origins === null) return badRequest('origins must name prompt origins');
+  return ok(await listTurns(env.db, scope, sessionId, { ...page, origins }));
+}
+
+/** One turn's body: the prompt, its responses, attachments and steering children. */
+export async function handleSessionTurn(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  const detail = await turnDetail(env.db, scope, sessionId, ctx.params.promptId);
+  return detail === null ? notFound() : ok(detail);
+}
+
+/** One turn's tool calls, oldest first, paged; read when the reader opens them. */
+export async function handleSessionTurnToolCalls(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
+  const page = paging(ctx.url);
+  if (page instanceof Response) return page;
+  return ok(await listToolCalls(env.db, scope, sessionId, { ...page, promptId: ctx.params.promptId }));
 }
 
 /** The project's home: what it holds, and what happened most recently. */

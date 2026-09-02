@@ -92,6 +92,64 @@ describe('sessions', () => {
   });
 });
 
+describe('session turns', () => {
+  const P1 = '00000000-0000-7000-8000-000000000001';
+  const P2 = '00000000-0000-7000-8000-000000000002';
+  const seed = (e: ReturnType<typeof sqliteEnv>) => {
+    e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at)
+                  VALUES ('proj_1','s1','machine_1','tok_1',5,50,'claude-code','main',5), ('proj_1','s2','machine_1','tok_1',6,60,'codex','fix',6)`);
+    e.sqlite.run(`UPDATE sessions SET ended_at = 70 WHERE session_id = 's2'`);
+    e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, text, content_hash, created_at, updated_at, token_id, received_at)
+                  VALUES ('proj_1',?,'s1','e1','user','first','h1',10,10,'tok_1',10), ('proj_1',?,'s1','e2','system','<system-reminder/>','h2',20,20,'tok_1',20)`, [P1, P2]);
+    e.sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, prompt_id, tool_name, success, created_at, token_id, received_at)
+                  VALUES ('proj_1','s1','tc1','ev1',?,'Read',1,11,'tok_1',11), ('proj_1','s1','tc2','ev2',?,'Bash',1,21,'tok_1',21)`, [P1, P2]);
+  };
+  const get = async (e: ReturnType<typeof sqliteEnv>, path: string) => worker.fetch(await asOwner(path), { ...e.env, ...OWNER_ENV });
+
+  it('lists the session\'s turns with counts, defaulting to what a person typed, and every origin on request', async () => {
+    const e = sqliteEnv();
+    seed(e);
+    const res = await get(e, '/api/projects/proj_1/sessions/s1/turns');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { rows: { promptId: string; toolCallCount: number; preview: string }[]; cursor: string | null };
+    expect(body.rows.map((r) => [r.promptId, r.toolCallCount, r.preview])).toEqual([[P1, 1, 'first']]);
+    const all = await (await get(e, '/api/projects/proj_1/sessions/s1/turns?origins=user,system')).json() as { rows: { promptId: string }[] };
+    expect(all.rows.map((r) => r.promptId)).toEqual([P1, P2]);
+  });
+
+  it('refuses an unknown origin and a malformed cursor, and answers not found outside the scope', async () => {
+    const e = sqliteEnv();
+    seed(e);
+    expect((await get(e, '/api/projects/proj_1/sessions/s1/turns?origins=human')).status).toBe(400);
+    expect((await get(e, '/api/projects/proj_1/sessions/s1/turns?cursor=garbage')).status).toBe(400);
+    expect((await get(e, '/api/projects/proj_2/sessions/s1/turns')).status).toBe(404);
+    expect((await get(e, `/api/projects/proj_1/sessions/s2/turns/${P1}`)).status).toBe(404);
+  });
+
+  it('serves one turn\'s body and its tool calls on their own', async () => {
+    const e = sqliteEnv();
+    seed(e);
+    const detail = await (await get(e, `/api/projects/proj_1/sessions/s1/turns/${P1}`)).json() as { prompt: { text: string }; responses: unknown[]; attachments: unknown[]; children: unknown[] };
+    expect(detail.prompt.text).toBe('first');
+    expect([detail.responses, detail.attachments, detail.children]).toEqual([[], [], []]);
+    const calls = await (await get(e, `/api/projects/proj_1/sessions/s1/turns/${P1}/tool-calls`)).json() as { rows: { toolCallId: string }[] };
+    expect(calls.rows.map((t) => t.toolCallId)).toEqual(['tc1']);
+  });
+
+  it('lists sessions with their rail facts and honours the state, branch and text filters', async () => {
+    const e = sqliteEnv();
+    seed(e);
+    const rows = async (query: string) => ((await (await get(e, `/api/projects/proj_1/sessions${query}`)).json()) as { rows: { sessionId: string; promptCount: number; toolCallCount: number; activityBuckets: number[] }[] }).rows;
+    const all = await rows('');
+    expect(all.map((r) => [r.sessionId, r.promptCount, r.toolCallCount, r.activityBuckets.length])).toEqual([['s2', 0, 0, 8], ['s1', 2, 2, 8]]);
+    expect((await rows('?state=open')).map((r) => r.sessionId)).toEqual(['s1']);
+    expect((await rows('?state=ended')).map((r) => r.sessionId)).toEqual(['s2']);
+    expect((await rows('?branch=fix')).map((r) => r.sessionId)).toEqual(['s2']);
+    expect((await rows('?q=claude')).map((r) => r.sessionId)).toEqual(['s1']);
+    expect((await get(e, '/api/projects/proj_1/sessions?state=live')).status).toBe(400);
+  });
+});
+
 describe('credentials', () => {
   it('lists without the hash, pages newest lineage first, reports what a credential wrote across projects, and revokes naming who', async () => {
     const e = sqliteEnv();

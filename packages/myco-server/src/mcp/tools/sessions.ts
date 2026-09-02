@@ -7,7 +7,7 @@
  * until it lands. Timestamps are the Deployment's, in milliseconds.
  */
 import { getPlan } from '../../read/plans.js';
-import { getSession, listSessions, sessionCounts, sessionCountsFor, type SessionRow } from '../../read/sessions.js';
+import { getSession, listSessionSummaries, sessionCounts, type SessionRow } from '../../read/sessions.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
@@ -75,14 +75,13 @@ export async function handleSessions(input: ToolInput, ctx: ToolContext): Promis
   const state = status === 'active' ? 'open' : status === 'completed' ? 'ended' : undefined;
   if (status !== undefined && state === undefined) return failure('status must be active or completed');
 
-  const page = await listSessions(db, scope, {
+  const page = await listSessionSummaries(db, scope, {
     limit: typeof input.limit === 'number' ? input.limit : DEFAULT_LIMIT,
     branch: str(input.branch),
     since: sinceMs === undefined || Number.isNaN(sinceMs) ? undefined : sinceMs,
     state,
     memberLabel: str(input.user),
     sessionId,
-  });
-  const counts = await sessionCountsFor(db, scope, page.rows.map((row) => row.sessionId));
-  return page.rows.map((row) => summary(row, counts.get(row.sessionId)!));
+  }, ctx.now);
+  return page.rows.map((row) => summary(row, { prompts: row.promptCount, toolCalls: row.toolCallCount }));
 }
