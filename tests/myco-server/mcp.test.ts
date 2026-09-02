@@ -128,6 +128,24 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', content: 'c' })).result).toEqual({ ok: false, error: 'source_path or plan_key is required when creating a new plan' });
   });
 
+  it('names the prompt a plan came from — the caller\'s own, else the session\'s latest — refuses a prompt another machine captured, and lands a tags-only update on identical content', async () => {
+    const { call, sqlite, env, t1, t2 } = await setup();
+    const p1 = '00000000-0000-7000-8000-000000000101';
+    const p2 = '00000000-0000-7000-8000-000000000102';
+    await worker.fetch(new Request('https://s/events', { method: 'POST', headers: memberHeaders(t1.token), body: JSON.stringify(envelope({ sessionId: 'sess_a', createdAt: 100, payload: { promptId: p1, text: 'one', origin: 'user' } })) }), env);
+    await worker.fetch(new Request('https://s/events', { method: 'POST', headers: memberHeaders(t1.token), body: JSON.stringify(envelope({ eventId: '00000000-0000-7000-8000-000000000110', sessionId: 'sess_a', createdAt: 200, payload: { promptId: p2, text: 'two', origin: 'user' } })) }), env);
+    const latest = (await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'latest', content: 'c' })).result;
+    expect([latest.ok, latest.prompt_id]).toEqual([true, p2]);
+    const named = (await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'named', content: 'c', prompt_id: p1 })).result;
+    expect([named.ok, named.prompt_id]).toEqual([true, p1]);
+    const foreign = (await call(t2.token, 'myco_plans', { op: 'save', session_id: 'sess_b', plan_key: 'foreign', content: 'c', prompt_id: p1 })).result;
+    expect({ ok: foreign.ok, code: foreign.code }).toEqual({ ok: false, code: 'identity_mismatch' });
+    // An update keeps the prompt the row names; new tags land although nothing else moved.
+    const retagged = (await call(t1.token, 'myco_plans', { op: 'save', id: named.id, session_id: 'sess_a', tags: ['later'] })).result;
+    expect([retagged.ok, retagged.prompt_id, retagged.tags]).toEqual([true, p1, ['later']]);
+    expect((sqlite.query(`SELECT tag FROM tags WHERE entity_id = ?`).all(named.id) as any[]).map((r) => r.tag)).toEqual(['later']);
+  });
+
   it('lets another member update a plan, keeping the creating session and machine and recording the updating member, while a session another machine captured stays its own', async () => {
     const { call, sqlite, env, t1, t2 } = await setup();
     const created = (await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'shared', content: 'v1' })).result;

@@ -13,7 +13,7 @@
 import { SERVER_PROTOCOL } from '../constants.js';
 import { utf8, uuidv5 } from '../hash.js';
 import { ingestEvent } from '../ingest/events.js';
-import { getPlan, latestPromptId, setPlanStatus, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../read/plans.js';
+import { getPlan, latestPromptId, PLAN_STATUS_MESSAGE, setPlanStatus, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../read/plans.js';
 import type { ReadScope } from '../read/scope.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 
@@ -56,7 +56,7 @@ export interface SavingMember { machineId: string; tokenId: string }
  */
 export async function savePlan(env: ServerEnv, member: SavingMember, scope: ReadScope, input: SavePlanInput, nowMs: number): Promise<SavePlanOutcome> {
   if (input.content === undefined && input.id === undefined) return { ok: false, error: 'content is required when creating a new plan' };
-  if (input.status !== undefined && !WRITABLE_PLAN_STATUSES.has(input.status)) return { ok: false, error: 'status must be one of: active, in_progress, completed, abandoned' };
+  if (input.status !== undefined && !WRITABLE_PLAN_STATUSES.has(input.status)) return { ok: false, error: PLAN_STATUS_MESSAGE };
   if (input.sourcePath !== undefined && input.planKey !== undefined) return { ok: false, error: 'Pass either source_path or plan_key, not both' };
 
   const planKey = await planKeyFor(scope.projectId, input);

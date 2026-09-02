@@ -1,19 +1,18 @@
 /**
  * `myco_plans` over the Deployment's plans: the tool face of `core/plans.ts`.
- * Every save names the caller's own session — the one its hooks capture on
- * this machine — never the row's: a session belongs to the machine that
- * captured it, and an event naming another machine's session is refused as
- * capture into it would be. A status-only save is an administrative edit by
- * the caller's member, the same write the dashboard makes.
+ * A save that carries content, title or tags names the caller's own session —
+ * the one its hooks capture on this machine — never the row's: a session
+ * belongs to the machine that captured it, and an event naming another
+ * machine's session is refused as capture into it would be. A status-only
+ * save is an administrative edit by the caller's member, the same write the
+ * dashboard makes; it names the session for the record and writes the row.
  */
 import { changePlanStatus, savePlan } from '../../core/plans.js';
-import { getPlan, listProjectPlans, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../../read/plans.js';
+import { getPlan, listProjectPlans, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../../read/plans.js';
 import type { ReadScope } from '../../read/scope.js';
 import { failure, memberOf, scopeOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
-export { MCP_PRODUCER, planKeyFor } from '../../core/plans.js';
-export { progressOf } from '../../read/plans.js';
 
 export interface PlanSummary {
   id: string;
@@ -87,7 +86,7 @@ async function save(input: ToolInput, ctx: ToolContext, scope: ReadScope): Promi
   if (content === undefined && id === undefined) return failure('content is required when creating a new plan');
   if (sessionId === undefined) return failure('session_id is required for op: save');
   const status = str(input.status);
-  if (status !== undefined && !WRITABLE_PLAN_STATUSES.has(status)) return failure('status must be one of: active, in_progress, completed, abandoned');
+  if (status !== undefined && !WRITABLE_PLAN_STATUSES.has(status)) return failure(PLAN_STATUS_MESSAGE);
   const member = memberOf(ctx, 'myco_plans');
   const title = str(input.title);
   const tags = Array.isArray(input.tags) ? input.tags.map(String) : undefined;

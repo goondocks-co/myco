@@ -284,7 +284,8 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
   const tags = JSON.stringify((p.tags as string[] | undefined) ?? []);
   const statusGiven = p.status === undefined ? 0 : 1;
   const originPath = opt(p.originPath) ?? null;
-  const applied = 'EXISTS (SELECT 1 FROM plans WHERE project_id = ? AND plan_key = ? AND event_id = ?)';
+  // The event is newer than the row, or it is the event the row settled on: a tie on client time follows the row's tiebreak.
+  const current = 'EXISTS (SELECT 1 FROM plans WHERE project_id = ? AND plan_key = ? AND (updated_at < ? OR event_id = ?))';
   const newer = '(excluded.updated_at > plans.updated_at OR (excluded.updated_at = plans.updated_at AND excluded.event_id < plans.event_id))';
   // The content, title and status the row already holds: nothing moves, and the row keeps its stamp and its administrator.
   const identical = '(excluded.content_hash = plans.content_hash AND excluded.title IS plans.title AND (? = 0 OR excluded.status = plans.status))';
@@ -306,7 +307,7 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
     identities: [],
     admission: [],
     priors: [
-      db.prepare(`SELECT content_hash, origin_path FROM plans WHERE project_id = ? AND plan_key = ?`).bind(ctx.projectId, planKey),
+      db.prepare(`SELECT content_hash, origin_path, updated_at FROM plans WHERE project_id = ? AND plan_key = ?`).bind(ctx.projectId, planKey),
     ],
     projections: [
       db.prepare(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, origin_path, prompt_id, updated_by, created_at, updated_at, token_id, received_at)
@@ -316,19 +317,20 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
             ${set.join(',\n            ')}`)
         .bind(ctx.projectId, planKey, e.sessionId, e.eventId, ctx.machineId, opt(p.title), opt(p.content), opt(p.blob), contentHash, opt(p.status) ?? 'active', originPath, opt(p.promptId),
               e.createdAt, e.createdAt, ctx.tokenId, ctx.now, ...rawGateParams(ctx, e), ...setParams),
-      db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id = ? AND ${applied} AND ${RAW_ROW_GATE}`)
-        .bind(ctx.projectId, planKey, ctx.projectId, planKey, e.eventId, ...rawGateParams(ctx, e)),
+      // Tags follow every event at least as new as the row, identical content included: a tags-only save lands.
+      db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id = ? AND ${current} AND ${RAW_ROW_GATE}`)
+        .bind(ctx.projectId, planKey, ctx.projectId, planKey, e.createdAt, e.eventId, ...rawGateParams(ctx, e)),
       db.prepare(`INSERT OR IGNORE INTO tags (project_id, entity_kind, entity_id, tag)
-          SELECT ?, 'plan', ?, value FROM json_each(?) WHERE ${applied} AND ${RAW_ROW_GATE}`)
-        .bind(ctx.projectId, planKey, tags, ctx.projectId, planKey, e.eventId, ...rawGateParams(ctx, e)),
+          SELECT ?, 'plan', ?, value FROM json_each(?) WHERE ${current} AND ${RAW_ROW_GATE}`)
+        .bind(ctx.projectId, planKey, tags, ctx.projectId, planKey, e.createdAt, e.eventId, ...rawGateParams(ctx, e)),
     ],
     reads: [],
     refusal: () => NOT_STORED,
     conflict: () => 'plan did not apply',
     // New content arriving from another source than the row's: the signal an operator reads when two channels write one plan.
     landed: (priors) => {
-      const prior = priors[0]?.[0] as { content_hash: string; origin_path: string | null } | undefined;
-      if (prior === undefined) return;
+      const prior = priors[0]?.[0] as { content_hash: string; origin_path: string | null; updated_at: number } | undefined;
+      if (prior === undefined || e.createdAt <= prior.updated_at) return;
       if (prior.content_hash !== contentHash && (prior.origin_path ?? null) !== originPath) emit({ kind: 'plan_overwritten', projectId: ctx.projectId, sessionId: e.sessionId, planKey });
     },
   };

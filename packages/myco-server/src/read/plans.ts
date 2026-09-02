@@ -1,4 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
+import { PLAN_STATUSES } from '../ingest/kinds.js';
 import { clampLimit, type ReadScope } from './scope.js';
 
 /** A plan as the project holds it: the projected row plus the tags the same event carried. `promptId` names the prompt the plan came from; `updatedBy` the member behind its last administrative edit, null when a capture event wrote last. */
@@ -19,8 +20,9 @@ export interface ProjectPlanRow {
   tags: string[];
 }
 
-/** The statuses an administrative edit may write; the list filter alone admits 'all'. */
-export const WRITABLE_PLAN_STATUSES: ReadonlySet<string> = new Set(['active', 'in_progress', 'completed', 'abandoned']);
+/** The statuses an administrative edit may write — the catalogue's; the list filter alone admits 'all'. */
+export const WRITABLE_PLAN_STATUSES: ReadonlySet<string> = new Set(PLAN_STATUSES);
+export const PLAN_STATUS_MESSAGE = `status must be one of: ${PLAN_STATUSES.join(', ')}`;
 
 /** `checked/total` over the plan's task list, or `N/A` when it has none; a spilled plan reads as none. */
 export function progressOf(content: string | null): string {
