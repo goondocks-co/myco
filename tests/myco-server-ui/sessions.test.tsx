@@ -412,6 +412,46 @@ describe('Project home', () => {
     expect(screen.getByText('digest — completed').getAttribute('href')).toBe('/p/x/runs/r1');
     expect(screen.getByText('claude-code on main').getAttribute('href')).toBe('/p/x/sessions/s1');
     expect(screen.getByText('gotcha: a thing').getAttribute('href')).toBe('/p/x/sessions/s1');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Project X');
+    expect(screen.getByTestId('activity-line').textContent).toBe('1 open session');
+    expect(screen.getByTestId('capture-health').textContent).toBe('Capturing now');
+  });
+
+  it('composes the home in the 1.4 shape: the open sessions with their activity, recent runs running first, recently evolved skills', async () => {
+    server(base({
+      '/api/projects/x/activity': () => Response.json({ items: [], stats: { sessions: 3, openSessions: 1, sessionsLast7d: 3, prompts: 9, toolCalls: 40, plans: 0, attachments: 0, lastActivityAt: NOW - 1000 } }),
+      '/api/projects/x/sessions?limit=50&state=open': () => page([session({ label: 'Wave-based executor', promptCount: 12, toolCallCount: 40, activityBuckets: [1, 2, 0, 0, 3, 0, 0, 1] })]),
+      '/api/projects/x/runs?limit=50': () => page([
+        { id: 'run-older-completed', agentId: 'a', task: 'digest', status: 'completed', provider: null, model: 'm1', startedAt: NOW - 9000, resumedAt: null, completedAt: NOW - 8000, tokensUsed: 12_000, costUsd: null, costSource: null, dryRun: false, resumable: false, resumeStatus: null, failed: false },
+        { id: 'run-running-now', agentId: 'a', task: 'title-summary', status: 'running', provider: null, model: null, startedAt: NOW - 2000, resumedAt: null, completedAt: null, tokensUsed: null, costUsd: null, costSource: null, dryRun: true, resumable: false, resumeStatus: null, failed: false },
+      ]),
+      '/api/projects/x/skills?limit=200': () => Response.json({ skills: [
+        { id: 'sk1', agentId: 'a', name: 'ship-it', displayName: 'Ship it', description: 'd', status: 'active', generation: 3, sourceIds: '[]', usageCount: 2, lastUsedAt: null, createdAt: NOW - 5000, updatedAt: NOW - 1000 },
+      ] }),
+    }));
+    mount('/p/x');
+    const hero = await screen.findByRole('list', { name: 'Open sessions' });
+    expect(hero.textContent).toContain('Wave-based executor');
+    expect(hero.textContent).toContain('claude-code');
+    expect(hero.textContent).toContain('12p · 40t');
+    expect(within(hero).getByRole('img', { name: /7 prompt batches/ })).toBeTruthy();
+    expect(screen.getByTestId('activity-line').textContent).toBe('1 open session · 1 run running');
+    const runs = within(screen.getByRole('list', { name: 'Recent runs' })).getAllByRole('listitem');
+    expect(runs.map((r) => r.textContent)).toEqual([expect.stringContaining('title-summary'), expect.stringContaining('digest')]);
+    expect(runs[0]!.textContent).toContain('dry');
+    expect(runs[1]!.textContent).toContain('12.0k tok');
+    const skills = within(screen.getByRole('list', { name: 'Recent skills' })).getAllByRole('listitem');
+    expect(skills[0]!.textContent).toContain('Ship it');
+    expect(skills[0]!.textContent).toContain('gen 3');
+    expect(within(skills[0]!).getByRole('link').getAttribute('href')).toBe('/p/x/skills/sk1');
+    expect(screen.getByRole('link', { name: /View session archive/ }).getAttribute('href')).toBe('/p/x/sessions');
+  });
+
+  it('says the capture has gone quiet when the last session landed over a week ago', async () => {
+    server(base({ '/api/projects/x/activity': () => Response.json({ items: [], stats: { sessions: 2, openSessions: 0, sessionsLast7d: 0, prompts: 1, toolCalls: 1, plans: 0, attachments: 0, lastActivityAt: NOW - 9 * 24 * 3_600_000 } }) }));
+    mount('/p/x');
+    expect((await screen.findByTestId('capture-health')).textContent).toMatch(/^No capture in 7 days · last /);
+    expect(screen.getByTestId('activity-line').textContent).toBe('Quiet right now — nothing running.');
   });
 
   it('shows a project that has captured nothing as empty', async () => {

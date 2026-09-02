@@ -4,7 +4,24 @@ import { Badge } from '../components/ui/badge';
 import { postJson } from '../lib/api';
 import { cn } from '../lib/cn';
 
-const SERVER_PAGES: Record<string, string> = { '/projects': 'Projects', '/status': 'Status', '/access': 'Access' };
+const SERVER_PAGES: Record<string, string> = {
+  '/projects': 'Projects',
+  '/status': 'Status',
+  '/access': 'Access',
+  '/settings': 'Settings',
+  '/operations': 'Operations',
+  '/notifications': 'Notifications',
+};
+
+/** The pages under a project, by their first path segment after the id. */
+const PROJECT_PAGES: Record<string, string> = {
+  '': 'Overview',
+  sessions: 'Sessions',
+  cortex: 'Cortex',
+  skills: 'Skills',
+  runs: 'Agent runs',
+  access: 'Access',
+};
 
 /** Where this page's data lives: one Project, or the whole server. */
 export function scopeOf(pathname: string): 'project' | 'server' {
@@ -12,7 +29,8 @@ export function scopeOf(pathname: string): 'project' | 'server' {
 }
 
 export function titleOf(pathname: string): string {
-  if (pathname.startsWith('/p/')) return pathname.endsWith('/access') ? 'Access' : 'Overview';
+  const project = /^\/p\/[^/]+(?:\/([^/]+))?/.exec(pathname);
+  if (project !== null) return PROJECT_PAGES[project[1] ?? ''] ?? 'Not found';
   return SERVER_PAGES[pathname] ?? 'Not found';
 }
 

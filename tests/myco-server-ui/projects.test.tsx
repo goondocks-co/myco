@@ -82,18 +82,22 @@ describe('an archived project\'s home and navigation', () => {
     mount('/p/arch');
     expect(await screen.findByTestId('archived-banner')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Unarchive' })).toBeTruthy();
-    const select = screen.getByRole('combobox', { name: 'Project' }) as HTMLSelectElement;
-    expect(select.value).toBe('arch');
-    expect([...select.options].map((o) => o.value)).toEqual(['', 'live', 'arch']);
+    const switcher = screen.getByRole('button', { name: 'Project' });
+    expect(switcher.textContent).toContain('Archived');
+    fireEvent.click(switcher);
+    const options = within(screen.getByRole('listbox', { name: 'Projects' })).getAllByRole('option');
+    expect(options.map((o) => o.textContent)).toEqual([expect.stringContaining('Live'), expect.stringContaining('Archived')]);
+    expect(options[1]!.getAttribute('aria-selected')).toBe('true');
   });
 
-  it('keeps an archived project out of the selector on a live project\'s pages', async () => {
+  it('keeps an archived project out of the switcher on a live project\'s pages, and switching keeps the page', async () => {
     server(base([LIVE, ARCH]));
-    mount('/p/live');
-    await screen.findByRole('heading', { name: 'Live' });
-    const select = screen.getByRole('combobox', { name: 'Project' }) as HTMLSelectElement;
-    expect([...select.options].map((o) => o.value)).toEqual(['', 'live']);
+    mount('/p/live/sessions');
+    fireEvent.click(await screen.findByRole('button', { name: 'Project' }));
+    const options = within(screen.getByRole('listbox', { name: 'Projects' })).getAllByRole('option');
+    expect(options.map((o) => o.textContent)).toEqual([expect.stringContaining('Live')]);
     expect(screen.queryByTestId('archived-banner')).toBeNull();
+    expect(screen.getByRole('navigation', { name: 'Breadcrumb' }).textContent).toContain('Sessions');
   });
 
   it('renames a project from its card, sending the typed name, and shows the new name once the list refreshes', async () => {
