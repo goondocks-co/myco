@@ -148,6 +148,23 @@ describe('session turns', () => {
     expect((await worker.fetch(await asOwnerPost('/api/projects/proj_1/sessions/absent/title'), { ...e.env, ...OWNER_ENV })).status).toBe(404);
   });
 
+  it('sets a plan\'s status as the signed-in member, refuses a status outside the writable set, and finds nothing outside the session', async () => {
+    const e = sqliteEnv();
+    seed(e);
+    const key = '00000000-0000-5000-8000-000000000002';
+    e.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content, content_hash, status, created_at, updated_at, token_id, received_at)
+                  VALUES ('proj_1',?,'s1','ep1','machine_1','- [ ] a','h','active',10,10,'tok_1',10)`, [key]);
+    const post = async (path: string, body: unknown) => worker.fetch(await asOwnerPost(path, body), { ...e.env, ...OWNER_ENV });
+    const res = await post(`/api/projects/proj_1/sessions/s1/plans/${key}/status`, { status: 'completed' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { plan: { status: string; updatedBy: string | null; progress: string; updatedAt: number } };
+    expect([body.plan.status, body.plan.updatedBy, body.plan.progress, body.plan.updatedAt > 10]).toEqual(['completed', PRINCIPAL.id, '0/1', true]);
+    expect((await post(`/api/projects/proj_1/sessions/s1/plans/${key}/status`, { status: 'all' })).status).toBe(400);
+    expect((await post(`/api/projects/proj_1/sessions/s1/plans/${key}/status`, 'nope')).status).toBe(400);
+    expect((await post(`/api/projects/proj_1/sessions/s2/plans/${key}/status`, { status: 'active' })).status).toBe(404);
+    expect((await post(`/api/projects/proj_1/sessions/s1/plans/00000000-0000-5000-8000-000000000009/status`, { status: 'active' })).status).toBe(404);
+  });
+
   it('lists sessions with their rail facts and honours the state, branch and text filters', async () => {
     const e = sqliteEnv();
     seed(e);

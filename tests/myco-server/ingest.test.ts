@@ -122,6 +122,27 @@ describe('ingest', () => {
     expect((sqlite.query(`SELECT COUNT(*) c FROM events WHERE ingest_nonce = ''`).get() as any).c).toBe(0);
   });
 
+  it('signals a plan overwritten from another source, and stays quiet for an edit from the same source or identical content', async () => {
+    const { db } = realDb();
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+    try {
+      const key = uuid(31);
+      expect(await ingestEvent(db, at(8_000), envelope({ eventId: uuid(30), kind: 'plan', payload: { planKey: key, content: 'one', originPath: 'docs/plans/a.md' } }))).toEqual({ persisted: true, projected: true });
+      expect(await ingestEvent(db, at(8_001), envelope({ eventId: uuid(32), createdAt: 8_001, kind: 'plan', payload: { planKey: key, content: 'two', originPath: 'docs/plans/a.md' } }))).toEqual({ persisted: true, projected: true });
+      expect(await ingestEvent(db, at(8_002), envelope({ eventId: uuid(33), createdAt: 8_002, kind: 'plan', payload: { planKey: key, content: 'two', originPath: 'transcript:ultraplan' } }))).toEqual({ persisted: true, projected: true });
+      expect(lines.filter((l) => l.includes('plan_overwritten'))).toEqual([]);
+      expect(await ingestEvent(db, at(8_003), envelope({ eventId: uuid(34), createdAt: 8_003, kind: 'plan', payload: { planKey: key, content: 'three', originPath: 'transcript:ultraplan' } }))).toEqual({ persisted: true, projected: true });
+      const signal = lines.filter((l) => l.includes('plan_overwritten'));
+      expect(signal).toHaveLength(1);
+      expect(JSON.parse(signal[0]!)).toEqual({ kind: 'plan_overwritten', projectId: 'proj_1', sessionId: 'sess_1', planKey: key });
+      expect(signal[0]!.includes('docs/plans')).toBe(false);
+    } finally {
+      console.log = original;
+    }
+  });
+
   it('reports a replay by another token of the same machine as a duplicate, and answers another machine nothing about the stored event', async () => {
     const { db, sqlite } = realDb();
     seedCredential(sqlite, { id: 'mt_1b', machineId: 'machine_1', hash: 'h1b' });

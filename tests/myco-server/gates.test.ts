@@ -48,7 +48,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 52;
+const EMIT_CALLS = 53;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -958,7 +958,7 @@ describe('gates', () => {
     const { OWNER_ENV, ownerCookie } = await import('./helpers/owner.js');
     const cookie = await ownerCookie();
     for (const r of owner) {
-      const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{promptId}', '00000000-0000-7000-8000-000000000001').replace('{runId}', 'r1').replace('{memberId}', 'mem_machine_2').replace('{grantId}', 'eg_x').replace('{id}', 'x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64));
+      const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{promptId}', '00000000-0000-7000-8000-000000000001').replace('{planKey}', '00000000-0000-5000-8000-000000000002').replace('{runId}', 'r1').replace('{memberId}', 'mem_machine_2').replace('{grantId}', 'eg_x').replace('{id}', 'x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64));
       const e = sqliteEnv();
       const res = await worker.fetch(
         new Request(`https://s${path}`, { method: r.method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' }, body: r.method === 'POST' ? '{}' : undefined }),
@@ -1074,6 +1074,7 @@ describe('gates', () => {
       'owner POST /api/projects/{projectId}/grants',
       'owner POST /api/projects/{projectId}/grants/{grantId}/revoke',
       'owner POST /api/projects/{projectId}/grants/{grantId}/rotate',
+      'owner POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status',
       'owner POST /api/projects/{projectId}/sessions/{sessionId}/title',
       'owner POST /api/projects/{projectId}/unarchive',
       'owner POST /auth/link',

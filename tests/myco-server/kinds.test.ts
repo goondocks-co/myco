@@ -68,7 +68,7 @@ async function upload(env: ReturnType<typeof sqliteEnv>, token: string, bytes: U
 const FULL_PROJECTION_STATEMENTS = 14;
 const REQUIRED_ONLY_PROJECTION_STATEMENTS = 12;
 /** Every field carrying the prompt-reference marker across the catalogue. */
-const PROMPT_REFERENCE_MARKERS = 8;
+const PROMPT_REFERENCE_MARKERS = 9;
 /** Every blob-key field of the catalogue as `kind.field`, pinned by name; the absent-key admission gate drives each one. */
 const BLOB_KEY_FIELDS = [
   'attachment.blob', 'compaction.post.blob', 'compaction.pre.blob', 'plan.blob', 'prompt.blob',
@@ -76,10 +76,10 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 45;
+const PLANNED_STATEMENTS = 46;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
-const ID_ROLES = { key: 7, prompt: 8, group: 1 };
+const ID_ROLES = { key: 7, prompt: 9, group: 1 };
 /** Every field carrying the time bound across the catalogue: `session.start.startedAt` and `session.end.endedAt`. */
 const ORDERING_FIELDS = 2;
 /** The projection families whose identity row carries `machine_id` are owned by that row; every other keyed table routes ownership through its session. Pinned from the catalogue's projection family, independent of the plan's own `owner`, so a flipped owner is caught by name. */
@@ -319,8 +319,31 @@ describe('kind catalogue', () => {
     const key = await upload(e, t.token, spilled);
     const v3 = envelope({ eventId: uuid(73), createdAt: 3_000, kind: 'plan', payload: { planKey: uuid(71), blob: key } });
     expect(await json(await worker.fetch(memberPost(t.token, v3), e.env))).toEqual({ persisted: true, projected: true });
-    expect(e.sqlite.query(`SELECT content, blob_key, content_hash, status FROM plans`).get()).toEqual({ content: null, blob_key: key, content_hash: key, status: 'active' });
+    expect(e.sqlite.query(`SELECT content, blob_key, content_hash, status FROM plans`).get()).toEqual({ content: null, blob_key: key, content_hash: key, status: 'completed' });
     expect(count(e.sqlite, 'tags')).toBe(0);
+  });
+
+  it('keeps a plan\'s prompt and administrator: a create names its prompt, an update without one keeps it, identical content leaves the stamp, and a newer capture clears the administrator', async () => {
+    const e = sqliteEnv();
+    const t = await member(e);
+    await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(90), payload: { promptId: uuid(91), text: 'hi', origin: 'user' } })), e.env);
+    const create = envelope({ eventId: uuid(92), createdAt: 1_000, kind: 'plan', payload: { planKey: uuid(93), promptId: uuid(91), title: 'p', content: 'one', status: 'active' } });
+    expect(await json(await worker.fetch(memberPost(t.token, create), e.env))).toEqual({ persisted: true, projected: true });
+    const row = () => e.sqlite.query(`SELECT prompt_id, updated_by, status, content, event_id, updated_at FROM plans`).get() as Record<string, unknown>;
+    expect(row()).toEqual({ prompt_id: uuid(91), updated_by: null, status: 'active', content: 'one', event_id: uuid(92), updated_at: 1_000 });
+    // Identical content, title and status: the row keeps its stamp and its event.
+    const same = envelope({ eventId: uuid(94), createdAt: 2_000, kind: 'plan', payload: { planKey: uuid(93), title: 'p', content: 'one' } });
+    expect(await json(await worker.fetch(memberPost(t.token, same), e.env))).toEqual({ persisted: true, projected: true });
+    expect(row()).toMatchObject({ event_id: uuid(92), updated_at: 1_000 });
+    // An administrative edit names its member; a newer capture with new content clears it and keeps the prompt the row already names.
+    e.sqlite.run(`UPDATE plans SET status = 'completed', updated_by = 'mem_x', updated_at = 2_500 WHERE plan_key = ?`, [uuid(93)]);
+    const newer = envelope({ eventId: uuid(95), createdAt: 3_000, kind: 'plan', payload: { planKey: uuid(93), content: 'two' } });
+    expect(await json(await worker.fetch(memberPost(t.token, newer), e.env))).toEqual({ persisted: true, projected: true });
+    expect(row()).toEqual({ prompt_id: uuid(91), updated_by: null, status: 'completed', content: 'two', event_id: uuid(95), updated_at: 3_000 });
+    // A prompt another machine captured is refused as a plan's origin.
+    const t3 = await member(e, 'proj_1', 'machine_3');
+    const foreign = envelope({ eventId: uuid(96), sessionId: 'sess_3', createdAt: 4_000, kind: 'plan', payload: { planKey: uuid(93), promptId: uuid(91), content: 'three' } });
+    expect(await json(await worker.fetch(memberPost(t3.token, foreign), e.env))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
   });
 
   it('binds continued rows to the first inserter\'s machine: another machine\'s token is refused on the session and the transcript, storing nothing — and updates a plan, a Project-shared row, keeping the first machine and recording its own credential', async () => {

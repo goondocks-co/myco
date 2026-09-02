@@ -111,7 +111,7 @@ describe('POST /mcp', () => {
     expect({ ok: first.ok, id: first.id, logical_key: first.logical_key, status: first.status, tags: first.tags, session: first.session_id }).toEqual({ ok: true, id: await uuidv5('plan', 'proj_1', 'docs/plans/x.md'), logical_key: 'path:docs/plans/x.md', status: 'active', tags: ['t1'], session: 'sess_a' });
 
     const listed = (await call(t1.token, 'myco_plans', { op: 'list' })).result;
-    expect(listed).toEqual([{ id: first.id, title: 'X', status: 'active', progress: '1/2', tags: ['t1'], created_at: first.created_at }]);
+    expect(listed).toEqual([{ id: first.id, title: 'X', status: 'active', progress: '1/2', prompt_id: null, tags: ['t1'], created_at: first.created_at }]);
 
     expect((await call(t1.token, 'myco_plans', { op: 'save', id: first.id, status: 'in_progress' })).result).toEqual({ ok: false, error: 'session_id is required for op: save' });
     const updated = (await call(t1.token, 'myco_plans', { op: 'save', id: first.id, session_id: 'sess_a', status: 'in_progress' })).result;
@@ -128,13 +128,32 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', content: 'c' })).result).toEqual({ ok: false, error: 'source_path or plan_key is required when creating a new plan' });
   });
 
-  it('lets another member update a plan, keeping the creating session and machine and recording the updating credential, while a session another machine captured stays its own', async () => {
+  it('names the prompt a plan came from — the caller\'s own, else the session\'s latest — refuses a prompt another machine captured, and lands a tags-only update on identical content', async () => {
+    const { call, sqlite, env, t1, t2 } = await setup();
+    const p1 = '00000000-0000-7000-8000-000000000101';
+    const p2 = '00000000-0000-7000-8000-000000000102';
+    await worker.fetch(new Request('https://s/events', { method: 'POST', headers: memberHeaders(t1.token), body: JSON.stringify(envelope({ sessionId: 'sess_a', createdAt: 100, payload: { promptId: p1, text: 'one', origin: 'user' } })) }), env);
+    await worker.fetch(new Request('https://s/events', { method: 'POST', headers: memberHeaders(t1.token), body: JSON.stringify(envelope({ eventId: '00000000-0000-7000-8000-000000000110', sessionId: 'sess_a', createdAt: 200, payload: { promptId: p2, text: 'two', origin: 'user' } })) }), env);
+    const latest = (await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'latest', content: 'c' })).result;
+    expect([latest.ok, latest.prompt_id]).toEqual([true, p2]);
+    const named = (await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'named', content: 'c', prompt_id: p1 })).result;
+    expect([named.ok, named.prompt_id]).toEqual([true, p1]);
+    const foreign = (await call(t2.token, 'myco_plans', { op: 'save', session_id: 'sess_b', plan_key: 'foreign', content: 'c', prompt_id: p1 })).result;
+    expect({ ok: foreign.ok, code: foreign.code }).toEqual({ ok: false, code: 'identity_mismatch' });
+    // An update keeps the prompt the row names; new tags land although nothing else moved.
+    const retagged = (await call(t1.token, 'myco_plans', { op: 'save', id: named.id, session_id: 'sess_a', tags: ['later'] })).result;
+    expect([retagged.ok, retagged.prompt_id, retagged.tags]).toEqual([true, p1, ['later']]);
+    expect((sqlite.query(`SELECT tag FROM tags WHERE entity_id = ?`).all(named.id) as any[]).map((r) => r.tag)).toEqual(['later']);
+  });
+
+  it('lets another member update a plan, keeping the creating session and machine and recording the updating member, while a session another machine captured stays its own', async () => {
     const { call, sqlite, env, t1, t2 } = await setup();
     const created = (await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'shared', content: 'v1' })).result;
     const updated = (await call(t2.token, 'myco_plans', { op: 'save', id: created.id, session_id: 'sess_b', status: 'abandoned' })).result;
     expect({ ok: updated.ok, status: updated.status, session: updated.session_id }).toEqual({ ok: true, status: 'abandoned', session: 'sess_a' });
-    const row = sqlite.query(`SELECT machine_id, session_id, token_id, status FROM plans WHERE plan_key = ?`).get(created.id) as any;
-    expect(row).toEqual({ machine_id: 'machine_1', session_id: 'sess_a', token_id: t2.tokenId, status: 'abandoned' });
+    const row = sqlite.query(`SELECT machine_id, session_id, token_id, updated_by, status FROM plans WHERE plan_key = ?`).get(created.id) as any;
+    const t2Member = (sqlite.query(`SELECT member_id FROM member_credentials WHERE id = ?`).get(t2.tokenId) as any).member_id;
+    expect(row).toEqual({ machine_id: 'machine_1', session_id: 'sess_a', token_id: t1.tokenId, updated_by: t2Member, status: 'abandoned' });
 
     const foreign = await worker.fetch(new Request('https://s/events', { method: 'POST', headers: memberHeaders(t2.token), body: JSON.stringify(envelope({ sessionId: 'sess_a' })) }), env);
     expect(await foreign.json()).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });

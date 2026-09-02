@@ -22,6 +22,8 @@ import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js'
 /** The one property whose description the server words for a Deployment. */
 const EXCEPTED = 'project_id';
 const RETIRED = 'grove_id';
+/** Properties the Deployment serves beyond the member definition, by tool: each is a named difference, worded in the server definition. */
+const ADDED: Record<string, readonly string[]> = { myco_plans: ['prompt_id'] };
 
 const byName = <T extends { name: string }>(defs: readonly T[]): Map<string, T> => new Map(defs.map((d) => [d.name, d]));
 
@@ -30,6 +32,11 @@ function expected(member: (typeof MEMBER_DEFINITIONS)[number], server: (typeof T
   const { [RETIRED]: _retired, ...properties } = member.inputSchema.properties as Record<string, Record<string, unknown>>;
   if (properties[EXCEPTED] !== undefined) {
     properties[EXCEPTED] = { ...properties[EXCEPTED], description: (server.inputSchema.properties[EXCEPTED] as { description: string }).description };
+  }
+  for (const added of ADDED[member.name] ?? []) {
+    const served = (server.inputSchema.properties as Record<string, unknown>)[added];
+    expect({ tool: member.name, added, declared: served !== undefined }).toEqual({ tool: member.name, added, declared: true });
+    properties[added] = served as Record<string, unknown>;
   }
   return { ...member, inputSchema: { ...member.inputSchema, properties } };
 }

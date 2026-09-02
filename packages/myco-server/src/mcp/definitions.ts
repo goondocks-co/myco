@@ -261,6 +261,10 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           },
           "description": "Tags for discoverability — component names, technologies, concepts"
         },
+        "prompt_id": {
+          "type": "string",
+          "description": "For op: \"save\" creating a plan: the prompt it came from, captured by this machine; defaults to the session's latest prompt. Ignored on update — the plan keeps the prompt it names."
+        },
         "limit": {
           "type": "number",
           "description": "Max results for op: \"list\""
