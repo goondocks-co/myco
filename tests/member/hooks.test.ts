@@ -15,6 +15,8 @@ import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
 import { evaluateUserPromptRules, resolveSubagentThread } from '@myco/hooks/capture-rules.js';
 import { deriveId, mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { MemberSpool } from '@myco/member/spool.js';
+import { resolveMemberProjectRoot } from '@myco/member/credential.js';
+import { resolveWorktreeRoot } from '@myco/project-root.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { registerTestMember, recordingFetch, runHook } from './helpers/hooks.js';
@@ -119,6 +121,8 @@ describe('member hooks through the worker', () => {
       { type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:01Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Here is a plan <ultraplan>\n# Plan A\n\nstep one\n</ultraplan> done' }], stop_reason: 'end_turn' } },
       { type: 'attachment', uuid: 'q1', timestamp: '2026-01-01T00:00:02Z', attachment: { type: 'queued_command', prompt: 'queued steer' } },
       { type: 'assistant', uuid: 'a2', timestamp: '2026-01-01T00:00:03Z', message: { role: 'assistant', content: [{ type: 'text', text: 'final words' }], stop_reason: 'end_turn' } },
+      // A tag inside a user turn the transcript holds is never a plan: only assistant text is scanned here.
+      { type: 'user', uuid: 'u2', timestamp: '2026-01-01T00:00:04Z', message: { role: 'user', content: [{ type: 'text', text: 'quoting <ultraplan>\n# Not a plan\n</ultraplan>' }] } },
     ]);
     await run('session-start', { transcript_path: tx, cwd: '/work/repo' });
     await run('user-prompt-submit', { transcript_path: tx, prompt: 'typed prompt' });
@@ -189,6 +193,53 @@ describe('member hooks through the worker', () => {
       expect({ agent, thread: resolveSubagentThread(agent, meta)?.parentSessionId }).toEqual({ agent, thread: 'sess-parent-thread' });
       expect({ agent, action: evaluateUserPromptRules(agent, { prompt: 'child works', transcriptMeta: meta }).action }).toEqual({ agent, action: 'drop' });
     }
+  });
+
+  it('captures a plan file on the write that lands it, keyed by its path and named after the prompt, keeps its status on a re-write, and re-sends an edit at Stop', async () => {
+    // The hook resolves its credential for the process's own project root, so the plan file sits in this checkout's plan directory for the test's duration.
+    const root = resolveWorktreeRoot(process.cwd()) ?? resolveMemberProjectRoot(process.cwd());
+    const file = path.join(root, '.claude/plans', `feature-${session}-${process.pid}.md`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const cleanup = () => { try { fs.unlinkSync(file); } catch {} };
+    try {
+    const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
+    await run('session-start', { transcript_path: tx, cwd: root });
+    await run('user-prompt-submit', { transcript_path: tx, prompt: 'write the plan', cwd: root });
+    const promptId = readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, session).promptId;
+    fs.writeFileSync(file, '# Feature\n\n- [ ] step\n');
+    await run('post-tool-use', { tool_name: 'Write', tool_input: { file_path: file }, tool_response: 'ok', cwd: root });
+    const key = deriveId('plan', 'proj_1', `.claude/plans/${path.basename(file)}`);
+    const row = () => rig.env.sqlite.query('SELECT plan_key, title, content, status, origin_path, prompt_id FROM plans').get() as Record<string, unknown>;
+    expect(row()).toEqual({ plan_key: key, title: 'Feature', content: '# Feature\n\n- [ ] step\n', status: 'active', origin_path: `.claude/plans/${path.basename(file)}`, prompt_id: promptId });
+    // The same content again is not re-sent; a status set on the Deployment survives the next write.
+    await run('post-tool-use', { tool_name: 'Edit', tool_input: { file_path: file }, tool_response: 'ok', cwd: root });
+    expect(rig.rows('plans')).toBe(1);
+    rig.env.sqlite.run(`UPDATE plans SET status = 'completed' WHERE plan_key = ?`, [key]);
+    fs.writeFileSync(file, '# Feature\n\n- [x] step\n');
+    await run('post-tool-use', { tool_name: 'Edit', tool_input: { file_path: file }, tool_response: 'ok', cwd: root });
+    expect(row()).toMatchObject({ content: '# Feature\n\n- [x] step\n', status: 'completed' });
+    // An edit outside the hooks lands at Stop through the backstop; a write outside the plan dirs never becomes a plan.
+    fs.writeFileSync(file, '# Feature\n\n- [x] step\n- [ ] more\n');
+    await run('stop', { transcript_path: tx, last_assistant_message: 'done', cwd: root });
+    expect(row()).toMatchObject({ content: '# Feature\n\n- [x] step\n- [ ] more\n', status: 'completed', prompt_id: promptId });
+    const elsewhere = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-notes-')), 'notes.md');
+    fs.mkdirSync(path.dirname(elsewhere), { recursive: true });
+    fs.writeFileSync(elsewhere, '# Not a plan');
+    await run('post-tool-use', { tool_name: 'Write', tool_input: { file_path: elsewhere }, tool_response: 'ok', cwd: root });
+    expect(rig.rows('plans')).toBe(1);
+    } finally { cleanup(); }
+  });
+
+  it('captures a plan a person pasted in a tag envelope with the prompt that carried it, and never one a runtime injected', async () => {
+    const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
+    await run('session-start', { transcript_path: tx, cwd: '/work/repo' });
+    await run('user-prompt-submit', { transcript_path: tx, prompt: 'Approved:\n<ultraplan>\n# Pasted\n\n- [ ] do it\n</ultraplan>' });
+    const promptId = readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, session).promptId;
+    const row = rig.env.sqlite.query('SELECT title, content, status, origin_path, prompt_id FROM plans').get() as Record<string, unknown>;
+    expect(row).toEqual({ title: 'Pasted', content: '# Pasted\n\n- [ ] do it', status: 'active', origin_path: 'transcript:ultraplan', prompt_id: promptId });
+    await run('user-prompt-submit', { transcript_path: tx, prompt: '<system-reminder>quoting <ultraplan>\n# Quoted\n</ultraplan></system-reminder>' });
+    expect(rig.rows('plans')).toBe(1);
+    expect((rig.env.sqlite.query(`SELECT origin FROM prompt_batches ORDER BY created_at`).all() as { origin: string }[]).map((r) => r.origin)).toEqual(['user', 'system']);
   });
 
   it('windsurf --phases: the response phase emits only the response, the transcript phase only the transcript work', async () => {

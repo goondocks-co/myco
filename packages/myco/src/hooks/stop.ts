@@ -1,6 +1,7 @@
 import { getMachineId } from '../machine-id.js';
 import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { responseEvent, type OutboundEvent } from '../member/envelope.js';
+import { planBackstop, planRootFor } from '../member/plan-files.js';
 import { readSessionState, type SessionState } from '../member/session-state.js';
 import { deriveTranscriptCapture, shipTranscriptSegments, transcriptPointerFor } from '../member/transcript.js';
 
@@ -36,19 +37,22 @@ export interface TranscriptPhase {
  * permanent loss: the rerun skips by hash and by parsed size.
  */
 export function transcriptPhase(run: HookRun): TranscriptPhase {
-  const { input, sessionId, ctx, spool } = run;
+  const { input, sessionId, ctx, spool, credential } = run;
   const transcriptPath = input.transcriptPath;
   const noop: TranscriptPhase = { events: [], record: () => {}, afterDrain: async () => {} };
   if (!transcriptPath) return noop;
   const state = readSessionState(spool.dir, sessionId);
   const pointer = transcriptPointerFor(transcriptPath, getMachineId(), state.transcript);
   const derived = deriveTranscriptCapture(ctx, transcriptPath, pointer ? { ...state, transcript: pointer } : state);
+  // Every plan file this session captured is read again: an edit made outside the write hooks still lands.
+  const backstop = planBackstop(ctx, state, planRootFor(credential.root, typeof input.raw.cwd === 'string' ? input.raw.cwd : undefined), run.budget, run.now);
   return {
-    events: derived.events,
+    events: [...derived.events, ...backstop.events],
     lastAssistantText: derived.lastAssistantText,
     record: (next) => {
       if (pointer) next.transcript = next.transcript && next.transcript.path === pointer.path && next.transcript.inode === pointer.inode ? next.transcript : pointer;
       derived.record(next);
+      backstop.record(next);
     },
     afterDrain: async (r, until) => { await shipTranscriptSegments(r.ctx, r.spool, r.client, r.budget, { now: r.now, until }); },
   };
