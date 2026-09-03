@@ -139,14 +139,22 @@ async function seal(key: CryptoKey, name: string, value: string): Promise<{ ciph
   return { ciphertext: toBase64(new Uint8Array(sealed)), iv: toBase64(iv) };
 }
 
-/** Opens a row's ciphertext for its own slot. A row that fails to open throws rather than returning a wrong value. */
+/**
+ * Opens a row's ciphertext for its own slot, shaped as `normalizeSecretValue`
+ * shapes a paste. A row that fails to open, or that opens to a value the store
+ * would refuse today, throws rather than returning a wrong value: a row sealed
+ * before the store normalized on write still serves its credential clean, and
+ * nothing ever has to be pasted twice for the store to catch up.
+ */
 async function open(key: CryptoKey, row: SecretRow): Promise<string> {
   const opened = await crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: fromBase64(row.iv), additionalData: encoder.encode(row.name) },
     key,
     fromBase64(row.ciphertext),
   );
-  return decoder.decode(opened);
+  const checked = normalizeSecretValue(decoder.decode(opened));
+  if (!checked.ok) throw new SecretValueError(checked.reason);
+  return checked.value;
 }
 
 /** The store, over a relational store and the deployment's wrapping key. */

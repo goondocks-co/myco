@@ -39,6 +39,24 @@ describe('deployment secrets', () => {
     expect(normalizeSecretValue('a\nb').ok).toBe(false);
   });
 
+  it('serves a row sealed with paste whitespace clean, and treats one sealed with a line break as unreadable', async () => {
+    const r = rig();
+    const material = await wrappingKeyFromText(async () => KEY, 'TEST_KEY').material();
+    const cryptoKey = await crypto.subtle.importKey('raw', material, { name: 'AES-GCM' }, false, ['encrypt']);
+    const sealRaw = async (name: string, value: string) => {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const sealed = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(name) }, cryptoKey, new TextEncoder().encode(value));
+      r.sqlite.query(`INSERT OR REPLACE INTO deployment_secrets (name, ciphertext, iv, key_version, updated_at, updated_by) VALUES (?, ?, ?, 1, 1000, 'mem_1')`)
+        .run(name, btoa(String.fromCharCode(...new Uint8Array(sealed))), btoa(String.fromCharCode(...iv)));
+    };
+    await sealRaw('anthropic', `  sk-ant-oat01-${'A'.repeat(30)} ${'B'.repeat(30)}\t${'C'.repeat(30)}-DDDD  `);
+    expect(await r.store.get('anthropic')).toBe(`sk-ant-oat01-${'A'.repeat(30)}${'B'.repeat(30)}${'C'.repeat(30)}-DDDD`);
+    expect((await r.store.describe('anthropic')).maskedValue).toBe('sk-ant-o…DDDD');
+    await sealRaw('openai', 'sk-openai\nINJECTED=owned');
+    await expect(r.store.get('openai')).rejects.toBeInstanceOf(SecretValueError);
+    expect(await r.store.describe('openai')).toMatchObject({ configured: true, readable: false, maskedValue: null });
+  });
+
   it('round-trips a value, and the stored row does not contain it', async () => {
     const r = rig();
     await r.store.put('anthropic', ANTHROPIC, 'mem_1', 1_000);
