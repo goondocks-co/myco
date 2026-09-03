@@ -56,9 +56,9 @@ export const spores: ParityScenario = {
       .toEqual({ old_spore: oldId, new_spore: newId, status: 'superseded' });
 
     const older = await mcp({ op: 'get', id: oldId });
-    expect([older.status, older.successors, older.predecessors]).toEqual(['superseded', [newId], []]);
+    expect([older.status, older.superseded_by, older.predecessors]).toEqual(['superseded', [newId], []]);
     const newer = await mcp({ op: 'get', id: newId });
-    expect([newer.status, newer.successors, newer.predecessors]).toEqual(['active', [], [oldId]]);
+    expect([newer.status, newer.superseded_by, newer.predecessors]).toEqual(['active', [], [oldId]]);
 
     const detail = await owner<{ spore: { id: string; status: string }; supersededBy: string[]; supersedes: string[] }>(`/api/projects/${target.projectId}/spores/${oldId}`);
     expect(detail.status).toBe(200);
