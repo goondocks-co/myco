@@ -39,9 +39,11 @@ prompt: |
   2. A group of previews that look like the same topic is a candidate
      cluster. A preview with no neighbour is not a candidate — leave it.
   3. Only for a candidate cluster, call `vault_spore` with each member's id
-     to read the full body, its lineage, and its context. Budget these
-     reads: at most ~10 full reads this run, spent on the clusters most
-     likely to resolve. Prefer clusters of 3+ over pairs.
+     to read the full body, its lineage, and its context. The run holds 12
+     full reads; past that `vault_spore` answers that the budget is spent
+     and the rest must be judged by their previews. Spend the reads on the
+     clusters most likely to resolve, and prefer clusters of 3+ over pairs.
+     A body longer than 8000 characters arrives cut, flagged `truncated`.
 
   ## Phase 3 — Resolution and Wisdom Creation (budget: 10 turns)
 

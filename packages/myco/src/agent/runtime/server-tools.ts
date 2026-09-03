@@ -113,6 +113,22 @@ export function materializedUpdateSessionTool(ctx: ServerToolContext, counter: {
 /** A tool answer a run may act on: the route served no run for this caller. */
 const NO_RUN = { error: 'this run holds no spore surface' };
 
+/**
+ * One call over a run route, answered as a tool result whatever happens: a
+ * refusal and a lost connection are the model's to act on, never a failed run.
+ */
+async function askRunControl(ctx: ServerToolContext, path: string, payload: Record<string, unknown>): Promise<Record<string, unknown> | { error: string }> {
+  try {
+    const answered = await postRunControl(ctx.client, ctx.budget, path, payload);
+    return answered.held === true ? answered : NO_RUN;
+  } catch (error) {
+    if (error instanceof RunControlError) return { error: error.message };
+    throw error;
+  }
+}
+
+const errored = (answered: Record<string, unknown> | { error: string }): answered is { error: string } => typeof (answered as { error?: unknown }).error === 'string';
+
 /** The Project's spores as one bounded line each, with the total behind the page. */
 export function materializedSporesTool(ctx: ServerToolContext): MycoToolDefinition {
   return {
@@ -127,8 +143,8 @@ export function materializedSporesTool(ctx: ServerToolContext): MycoToolDefiniti
     },
     annotations: { readOnlyHint: true },
     handler: async (args: { status?: string; observation_type?: string; search?: string; limit?: number; offset?: number }) => {
-      const answered = await postRunControl(ctx.client, ctx.budget, '/runs/spores', { runId: ctx.runId, ...args });
-      if (answered.held !== true) return text(NO_RUN);
+      const answered = await askRunControl(ctx, '/runs/spores', { runId: ctx.runId, ...args });
+      if (errored(answered)) return text(answered);
       return text({ spores: answered.spores, total: answered.total });
     },
   };
@@ -140,14 +156,15 @@ export function materializedSporeTool(ctx: ServerToolContext): MycoToolDefinitio
     name: 'vault_spore',
     description: 'Read one spore in full — its whole body, context, tags and properties — with the ids that supersede it and the ids it replaced.',
     inputSchema: {
-      id: z.string().describe('ID of the spore to read'),
+      id: z.string().max(192).describe('ID of the spore to read'),
     },
     annotations: { readOnlyHint: true },
     handler: async (args: { id: string }) => {
-      const answered = await postRunControl(ctx.client, ctx.budget, '/runs/spore', { runId: ctx.runId, id: args.id });
-      if (answered.held !== true) return text(NO_RUN);
+      const answered = await askRunControl(ctx, '/runs/spore', { runId: ctx.runId, id: args.id });
+      if (errored(answered)) return text(answered);
+      if (answered.budget === 'spent') return text({ error: 'the full-read budget for this run is spent; judge the rest by their previews from vault_spores' });
       if (answered.spore === null) return text({ error: `Spore not found: ${args.id}` });
-      return text({ spore: answered.spore, superseded_by: answered.supersededBy, supersedes: answered.supersedes });
+      return text({ spore: answered.spore, truncated: answered.truncated, superseded_by: answered.supersededBy, supersedes: answered.supersedes });
     },
   };
 }
@@ -167,14 +184,8 @@ export function materializedCreateSporeTool(ctx: ServerToolContext, counter: { w
     },
     annotations: { openWorldHint: true },
     handler: async (args: { observation_type: string; content: string; importance?: number; tags?: string[]; context?: string; properties?: string }) => {
-      let answered: Record<string, unknown>;
-      try {
-        answered = await postRunControl(ctx.client, ctx.budget, '/runs/spore-create', { runId: ctx.runId, ...args });
-      } catch (error) {
-        if (error instanceof RunControlError) return text({ error: error.message });
-        throw error;
-      }
-      if (answered.held !== true) return text(NO_RUN);
+      const answered = await askRunControl(ctx, '/runs/spore-create', { runId: ctx.runId, ...args });
+      if (errored(answered)) return text(answered);
       counter.writes += 1;
       return text({ spore: answered.spore });
     },
@@ -185,30 +196,20 @@ export function materializedCreateSporeTool(ctx: ServerToolContext, counter: { w
 export function materializedResolveSporeTool(ctx: ServerToolContext, counter: { writes: number }): MycoToolDefinition {
   return {
     name: 'vault_resolve_spore',
-    description: 'Resolve a spore by updating its status and recording a resolution event. Action "consolidate" names every source in source_spore_ids and records the wisdom spore that replaces them in one call.',
+    description: 'Resolve a spore by updating its status and recording a resolution event.',
     inputSchema: {
-      spore_id: z.string().optional().describe('ID of the spore to resolve (required for supersede and obsolete)'),
+      spore_id: z.string().max(192).describe('ID of the spore to resolve'),
       action: z.enum(RESOLUTION_ACTIONS).describe('Resolution action: supersede (replaced by a newer spore), consolidate (merged into a wisdom note), or obsolete (no longer relevant, no replacement)'),
-      new_spore_id: z.string().optional().describe('ID of the replacement spore (required for supersede)'),
+      new_spore_id: z.string().max(192).optional().describe('ID of the replacement spore (required for supersede and consolidate)'),
       reason: z.string().optional().describe('Explanation for the resolution'),
-      source_spore_ids: z.array(z.string()).optional().describe('IDs of the spores merged into the wisdom spore (required for consolidate)'),
-      consolidated_content: z.string().optional().describe('The wisdom spore body, preserving every specific detail from the sources (required for consolidate)'),
-      observation_type: z.string().optional().describe('Kind the wisdom spore is recorded as, normally "wisdom" (required for consolidate)'),
-      tags: z.array(z.string()).optional().describe('Tags for the wisdom spore'),
     },
     annotations: { destructiveHint: true },
-    handler: async (args: Record<string, unknown>) => {
-      let answered: Record<string, unknown>;
-      try {
-        answered = await postRunControl(ctx.client, ctx.budget, '/runs/spore-resolve', { runId: ctx.runId, ...args });
-      } catch (error) {
-        if (error instanceof RunControlError) return text({ error: error.message });
-        throw error;
-      }
-      if (answered.held !== true) return text(NO_RUN);
-      if (answered.resolved !== true) return text({ error: `Spore not found: ${String(args.spore_id ?? '')}` });
+    handler: async (args: { spore_id: string; action: string; new_spore_id?: string; reason?: string }) => {
+      const answered = await askRunControl(ctx, '/runs/spore-resolve', { runId: ctx.runId, ...args });
+      if (errored(answered)) return text(answered);
+      if (answered.resolved !== true) return text({ error: `Spore not found: ${args.spore_id}` });
       counter.writes += 1;
-      return text({ action: answered.action, spore: answered.spore, ...(answered.consolidated === undefined ? {} : { sources_consolidated: answered.consolidated }) });
+      return text({ action: answered.action, spore: answered.spore });
     },
   };
 }

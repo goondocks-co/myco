@@ -10,7 +10,7 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
-import { insertSpore, SPORE_PREVIEW_CHARS } from '@myco-server-worker/core/spores.js';
+import { insertSpore, SPORE_BODY_CHARS, SPORE_FULL_READ_BUDGET, SPORE_PREVIEW_CHARS } from '@myco-server-worker/core/spores.js';
 import { OWNER_TITLING_WINDOW_MS } from '@myco-server-worker/core/titling.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 
@@ -79,6 +79,9 @@ describe('POST /runs/spores', () => {
     expect(all.total).toBe(3);
     const searched = await h.post(h.harnessToken, '/runs/spores', { runId: 'run_1', search: 'sp_2' });
     expect((searched.spores as Array<{ id: string }>).map((r) => r.id)).toEqual(['sp_2']);
+    // A limit below one asks for a page, not for the whole Project.
+    const clamped = await h.post(h.harnessToken, '/runs/spores', { runId: 'run_1', limit: -1 });
+    expect((clamped.spores as unknown[]).length).toBe(1);
     expect(await h.post(h.harnessToken, '/runs/spores', { runId: 'run_1', status: 'nonsense' })).toMatchObject({ persisted: false, code: 'parse' });
   });
 
@@ -125,6 +128,26 @@ describe('POST /runs/spore', () => {
     expect(await h.post(h.harnessToken, '/runs/spore', { runId: 'run_1', id: 'nope' })).toEqual({ persisted: true, held: true, spore: null, supersededBy: [], supersedes: [] });
     expect(await h.post(h.harnessToken, '/runs/spore', { runId: 'run_1' })).toMatchObject({ persisted: false, code: 'parse' });
   });
+
+  it('cuts a body past its bound and says so, and stops serving bodies once the run has spent its reads', async () => {
+    const h = await setup();
+    await h.spore('sp_big', { content: 'x'.repeat(SPORE_BODY_CHARS + 500) });
+    await h.spore('sp_small');
+    await h.claim(h.harness, 'run_1', SWEEP);
+    await h.claim(h.harness, 'run_2', SWEEP);
+
+    const big = await h.post(h.harnessToken, '/runs/spore', { runId: 'run_1', id: 'sp_big' });
+    expect({ truncated: big.truncated, length: (big.spore as { content: string }).content.length }).toEqual({ truncated: true, length: SPORE_BODY_CHARS });
+    expect(await h.post(h.harnessToken, '/runs/spore', { runId: 'run_1', id: 'sp_small' })).toMatchObject({ truncated: false });
+
+    for (let read = 2; read < SPORE_FULL_READ_BUDGET; read += 1) {
+      expect((await h.post(h.harnessToken, '/runs/spore', { runId: 'run_1', id: 'sp_small' })).spore).not.toBeNull();
+    }
+    expect(await h.post(h.harnessToken, '/runs/spore', { runId: 'run_1', id: 'sp_small' }))
+      .toEqual({ persisted: true, held: true, spore: null, budget: 'spent' });
+    // The budget is the run's own: another run of the same task still reads.
+    expect((await h.post(h.harnessToken, '/runs/spore', { runId: 'run_2', id: 'sp_small' })).spore).not.toBeNull();
+  });
 });
 
 describe('POST /runs/spore-create', () => {
@@ -150,6 +173,10 @@ describe('POST /runs/spore-create', () => {
 
     const free = await h.post(h.harnessToken, '/runs/spore-create', { runId: 'run_free', observation_type: 'gotcha', content: 'no session here' });
     expect(free.spore).toMatchObject({ sessionId: null, promptId: null, importance: 5, tags: null });
+    const over = await h.post(h.harnessToken, '/runs/spore-create', { runId: 'run_free', observation_type: 'gotcha', content: 'shouted', importance: 99 });
+    expect((over.spore as { importance: number }).importance).toBe(10);
+    const under = await h.post(h.harnessToken, '/runs/spore-create', { runId: 'run_free', observation_type: 'gotcha', content: 'whispered', importance: -4 });
+    expect((under.spore as { importance: number }).importance).toBe(1);
     expect(await h.post(h.harnessToken, '/runs/spore-create', { runId: 'run_free', content: 'no type' })).toMatchObject({ persisted: false, code: 'parse' });
     expect(await h.post(h.harnessToken, '/runs/spore-create', { runId: 'run_free', observation_type: 'gotcha', content: 'x'.repeat(300_000) })).toMatchObject({ persisted: false, code: 'parse' });
   });
@@ -174,8 +201,13 @@ describe('POST /runs/spore-resolve', () => {
     const merged = await h.post(h.harnessToken, '/runs/spore-resolve', { runId: 'run_1', action: 'consolidate', spore_id: 'sp_d', new_spore_id: wisdomId, reason: 'merged' });
     expect(merged).toEqual({ persisted: true, held: true, resolved: true, action: 'consolidate', spore: 'sp_d' });
 
-    const atOnce = await h.post(h.harnessToken, '/runs/spore-resolve', { runId: 'run_1', action: 'consolidate', source_spore_ids: ['sp_e', 'sp_f'], consolidated_content: 'both notes, whole', observation_type: 'wisdom', tags: ['merged'] });
-    expect(atOnce).toMatchObject({ persisted: true, held: true, resolved: true, action: 'consolidate', consolidated: 2 });
+    for (const id of ['sp_e', 'sp_f']) {
+      expect(await h.post(h.harnessToken, '/runs/spore-resolve', { runId: 'run_1', action: 'consolidate', spore_id: id, new_spore_id: wisdomId }))
+        .toEqual({ persisted: true, held: true, resolved: true, action: 'consolidate', spore: id });
+    }
+    // The surface takes one consolidate shape: the wisdom spore is recorded first, then each source moves under it.
+    expect(await h.post(h.harnessToken, '/runs/spore-resolve', { runId: 'run_1', action: 'consolidate', source_spore_ids: ['sp_b'], consolidated_content: 'merged', observation_type: 'wisdom' }))
+      .toMatchObject({ persisted: false, code: 'parse', reason: 'spore_id is required for op: consolidate' });
 
     expect(h.sqlite.query(`SELECT id, status FROM spores WHERE id IN ('sp_a','sp_b','sp_c','sp_d','sp_e','sp_f') ORDER BY id`).all())
       .toEqual([
@@ -183,7 +215,7 @@ describe('POST /runs/spore-resolve', () => {
         { id: 'sp_d', status: 'consolidated' }, { id: 'sp_e', status: 'consolidated' }, { id: 'sp_f', status: 'consolidated' },
       ]);
     expect(h.sqlite.query(`SELECT DISTINCT agent_id a, session_id s FROM resolution_events`).all()).toEqual([{ a: 'myco-agent', s: 's1' }]);
-    expect(h.sqlite.query(`SELECT session_id s, prompt_id p FROM spores WHERE id = ?`).get(atOnce.spore as string)).toEqual({ s: 's1', p: 'p1' });
+    expect(h.sqlite.query(`SELECT session_id s, prompt_id p FROM spores WHERE id = ?`).get(wisdomId)).toEqual({ s: 's1', p: 'p1' });
   });
 
   it('refuses a resolution in the same words the member\'s tool refuses it', async () => {
@@ -198,12 +230,10 @@ describe('POST /runs/spore-resolve', () => {
     expect(await refusalFor({ action: 'supersede', spore_id: 'sp_a', new_spore_id: 'nope' })).toBe('new_spore_id not found');
     expect(await refusalFor({ action: 'obsolete', spore_id: 'sp_a' })).toBe('reason is required for op: obsolete');
     expect(await refusalFor({ action: 'obsolete' })).toBe('id is required for op: obsolete');
-    expect(await refusalFor({ action: 'consolidate' })).toBe('source_spore_ids is required for op: consolidate');
+    expect(await refusalFor({ action: 'consolidate' })).toBe('spore_id is required for op: consolidate');
     expect(await refusalFor({ action: 'consolidate', spore_id: 'sp_a' })).toBe('new_spore_id is required for op: consolidate');
     expect(await refusalFor({ action: 'consolidate', spore_id: 'nope', new_spore_id: 'sp_a' })).toBe('spore_id not found');
-    expect(await refusalFor({ action: 'consolidate', source_spore_ids: ['sp_a'] })).toBe('consolidated_content is required for op: consolidate');
-    expect(await refusalFor({ action: 'consolidate', source_spore_ids: ['sp_a'], consolidated_content: 'c' })).toBe('observation_type is required for op: consolidate');
-    expect(await refusalFor({ action: 'consolidate', source_spore_ids: ['nope'], consolidated_content: 'c', observation_type: 'wisdom' })).toBe('source_spore_id not found: nope');
+    expect(await refusalFor({ action: 'consolidate', spore_id: 'sp_a', new_spore_id: 'nope' })).toBe('new_spore_id not found');
     expect(await refusalFor({ action: 'nonsense', spore_id: 'sp_a' })).toContain('a resolution requires runId');
     // A spore this Project does not hold moves nothing, which a caller must not read as a resolution.
     expect(await h.post(h.harnessToken, '/runs/spore-resolve', { runId: 'run_1', action: 'obsolete', spore_id: 'nope', reason: 'gone' }))

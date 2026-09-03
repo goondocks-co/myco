@@ -103,6 +103,14 @@ describe('the sweep run\'s tools', () => {
     expect(textOf(await resolve.handler({ spore_id: 'sp_c', action: 'obsolete' }, {})).error).toContain('reason is required for op: obsolete');
     expect(textOf(await resolve.handler({ spore_id: 'nope', action: 'obsolete', reason: 'gone' }, {})).error).toBe('Spore not found: nope');
     expect(counter.writes).toBe(3);
+
+    // The full reads are counted per run: past the budget the tool says so rather than serving another body.
+    let spent: Record<string, unknown> = {};
+    for (let read = 0; read < 20; read += 1) {
+      spent = textOf(await materializedSporeTool(ctx).handler({ id: 'sp_c' }, {}));
+      if (typeof spent.error === 'string') break;
+    }
+    expect(spent.error).toContain('full-read budget');
     expect(sqlite.query(`SELECT id, status FROM spores WHERE id IN ('sp_a','sp_b','sp_c') ORDER BY id`).all())
       .toEqual([{ id: 'sp_a', status: 'consolidated' }, { id: 'sp_b', status: 'superseded' }, { id: 'sp_c', status: 'active' }]);
   });

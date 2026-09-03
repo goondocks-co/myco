@@ -12,7 +12,7 @@
  * the caller nothing about whether the Deployment holds it.
  */
 import { consolidateSpores, countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore, type ResolutionAction, type SporeRow, type SporeStatus } from '../../core/spores.js';
-import { mintSporeId, overSporeCap, planSporeResolution, SPORE_CAP_REASON, sporeTags } from '../../core/spore-writes.js';
+import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags } from '../../core/spore-writes.js';
 import { latestPromptId, sessionHeldByMachine } from '../../read/sessions.js';
 import type { ReadScope } from '../../read/scope.js';
 import { failure, memberOf, scopeOf, type ToolContext, type ToolFailure } from '../context.js';
@@ -83,7 +83,7 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
       action: 'supersede', sporeId: str(input.old_spore_id), newSporeId: str(input.new_spore_id), reason: str(input.reason),
     });
     if (!planned.ok) return failure(planned.reason);
-    const plan = planned.plan as Extract<typeof planned.plan, { action: 'supersede' }>;
+    const plan = planned.plan;
     const session = await namedSession(ctx, scope, input);
     if (!session.ok) return session;
     if (!(await resolve(ctx, scope, plan.sporeId, plan.status, 'supersede', plan.newSporeId, plan.reason, session.sessionId))) return failure('old_spore_id not found');
@@ -93,7 +93,7 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
   if (op === 'obsolete') {
     const planned = await planSporeResolution(db, scope, { action: 'obsolete', sporeId: str(input.id), reason: str(input.reason) });
     if (!planned.ok) return failure(planned.reason);
-    const plan = planned.plan as Extract<typeof planned.plan, { action: 'obsolete' }>;
+    const plan = planned.plan;
     const session = await namedSession(ctx, scope, input);
     if (!session.ok) return session;
     if (!(await resolve(ctx, scope, plan.sporeId, plan.status, 'obsolete', null, plan.reason, session.sessionId))) return failure('spore_id not found');
@@ -101,8 +101,7 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
   }
 
   if (op === 'consolidate') {
-    const planned = await planSporeResolution(db, scope, {
-      action: 'consolidate',
+    const planned = await planSporeConsolidation(db, scope, {
       sources: Array.isArray(input.source_spore_ids) ? input.source_spore_ids.map(String) : [],
       content: str(input.consolidated_content),
       observationType: str(input.observation_type),
@@ -110,9 +109,6 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
     });
     if (!planned.ok) return failure(planned.reason);
     const plan = planned.plan;
-    // The tool names its sources and the body that replaces them; the plan that
-    // moves one spore into a wisdom spore already recorded is the run routes'.
-    if (!('sources' in plan)) return failure('source_spore_ids is required for op: consolidate');
     const session = await namedSession(ctx, scope, input);
     if (!session.ok) return session;
     const promptId = session.sessionId === null ? null : await latestPromptId(db, scope, session.sessionId);

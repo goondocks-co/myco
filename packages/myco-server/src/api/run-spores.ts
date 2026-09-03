@@ -10,7 +10,9 @@
  * The inventory carries previews rather than bodies. A sweep surveys every
  * active spore in a Project and reads in full only the handful it means to
  * resolve, so the size of a vault sets the cost of a pass over it, not the size
- * of its writing.
+ * of its writing. The full reads are counted and bounded per run, and one body
+ * arrives cut past its own bound: a prompt asking for restraint is a request,
+ * and the surface holds the run to it.
  *
  * A spore a run records carries the run's own agent and the session its dispatch
  * named; a resolution records the same. Every resolution is validated by the
@@ -20,11 +22,13 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { heldRun, sessionNamedByRun } from './run-admission.js';
 import {
-  consolidateSpores, countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds,
+  countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds,
   listSupersedingSporeIds, resolveSpore, MAX_SPORE_CONTENT_BYTES, RESOLUTION_ACTIONS,
-  SPORE_PREVIEW_CHARS, SPORE_STATUSES, SPORE_TOOL_TASKS, type ResolutionAction, type SporeRow,
+  SPORE_BODY_CHARS, SPORE_FULL_READ_BUDGET, SPORE_PREVIEW_CHARS, SPORE_STATUSES, SPORE_TOOL_TASKS,
+  type ResolutionAction, type SporeRow,
 } from '../core/spores.js';
 import { mintSporeId, overSporeCap, planSporeResolution, SPORE_CAP_REASON, sporeTags } from '../core/spore-writes.js';
+import { mutateState, type RunRow } from '../core/runs.js';
 import { latestPromptId } from '../read/sessions.js';
 import { refused } from '../ingest/events.js';
 import { refusal, type Refusal } from '../telemetry.js';
@@ -40,6 +44,11 @@ const str = (v: unknown, max = MAX_ID_CHARS): string | null => (typeof v === 'st
 const orNull = (v: unknown, max = MAX_ID_CHARS): string | null | undefined => (v === undefined || v === null ? null : str(v, max) ?? undefined);
 const int = (v: unknown): number | undefined => (typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined);
 const optional = (v: unknown, max = MAX_ID_CHARS): string | undefined => str(v, max) ?? undefined;
+/** The importance a caller names, held to the 1..10 the tool describes; unnamed is the middle. */
+const importanceOf = (v: unknown): number => {
+  const named = int(v);
+  return named === undefined ? 5 : Math.min(Math.max(named, 1), 10);
+};
 
 function parseBody(body: string): Record<string, unknown> | null {
   try {
@@ -48,6 +57,24 @@ function parseBody(body: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Count one full read against this run's budget and answer the running total.
+ *
+ * The count lives under the run's own key in agent state, moved by the same
+ * guarded write every other state value is moved by; a write that loses its
+ * guard leaves the count where the winner put it, which spends a read at most
+ * once per read served.
+ */
+async function spendFullRead(env: ServerEnv, ctx: RouteContext, run: RunRow): Promise<number> {
+  let spent = 0;
+  await mutateState(env.db, { projectId: ctx.projectId }, run.agentId, `spore_reads:${run.id}`, (current) => {
+    const held = Number(current ?? 0);
+    spent = (Number.isSafeInteger(held) && held > 0 ? held : 0) + 1;
+    return String(spent);
+  }, ctx.now);
+  return spent;
 }
 
 /** One line, bounded: what a spore says, enough to group it with its neighbours. */
@@ -99,6 +126,10 @@ export async function handleRunSpore(env: ServerEnv, ctx: RouteContext): Promise
   const run = await heldRun(env, ctx, runId, SPORE_TOOL_TASKS);
   if (run === null) return Response.json(UNHELD);
 
+  if ((await spendFullRead(env, ctx, run)) > SPORE_FULL_READ_BUDGET) {
+    return Response.json({ persisted: true, held: true, spore: null, budget: 'spent' });
+  }
+
   const scope = { projectId: ctx.projectId };
   const spore = await getSpore(env.db, scope, id);
   if (spore === null) return Response.json({ persisted: true, held: true, spore: null, supersededBy: [], supersedes: [] });
@@ -106,7 +137,12 @@ export async function handleRunSpore(env: ServerEnv, ctx: RouteContext): Promise
     listSupersedingSporeIds(env.db, scope, id),
     listSupersededSporeIds(env.db, scope, id),
   ]);
-  return Response.json({ persisted: true, held: true, spore, supersededBy, supersedes });
+  const truncated = spore.content.length > SPORE_BODY_CHARS;
+  return Response.json({
+    persisted: true, held: true,
+    spore: truncated ? { ...spore, content: spore.content.slice(0, SPORE_BODY_CHARS) } : spore,
+    truncated, supersededBy, supersedes,
+  });
 }
 
 /**
@@ -134,16 +170,16 @@ export async function handleRunSporeCreate(env: ServerEnv, ctx: RouteContext): P
   const promptId = sessionId === null ? null : await latestPromptId(env.db, scope, sessionId);
   const spore = await insertSpore(env.db, scope, {
     id: mintSporeId(observationType), agentId: run.agentId, sessionId, promptId, observationType,
-    content, context, importance: int(body.importance) ?? 5, filePath: null,
+    content, context, importance: importanceOf(body.importance), filePath: null,
     tags: sporeTags(body.tags), contentHash: null, properties, createdAt: ctx.now,
   });
   return Response.json({ persisted: true, held: true, spore });
 }
 
 /**
- * Move spores the run has judged: one superseded by a named successor, one
- * obsolete with what changed, or a set consolidated into a wisdom spore this
- * call records. `resolved: false` means nothing moved, which a caller must not
+ * Move one spore the run has judged: superseded by a named successor,
+ * consolidated into a wisdom spore the run recorded first, or obsolete with
+ * what changed. `resolved: false` means nothing moved, which a caller must not
  * read as a resolution it made.
  */
 export async function handleRunSporeResolve(env: ServerEnv, ctx: RouteContext): Promise<Response> {
@@ -163,30 +199,14 @@ export async function handleRunSporeResolve(env: ServerEnv, ctx: RouteContext): 
     sporeId: optional(body.spore_id),
     newSporeId: optional(body.new_spore_id),
     reason: optional(body.reason, MAX_SPORE_CONTENT_BYTES),
-    sources: Array.isArray(body.source_spore_ids) ? body.source_spore_ids.map(String) : undefined,
-    content: optional(body.consolidated_content, MAX_SPORE_CONTENT_BYTES),
-    observationType: optional(body.observation_type),
   });
   if (!planned.ok) return Response.json(refused(ctx, refusal(planned.reason, 'parse')));
 
   const plan = planned.plan;
   const sessionId = sessionNamedByRun(run);
-  const promptId = sessionId === null ? null : await latestPromptId(env.db, scope, sessionId);
-
-  if (plan.action === 'consolidate' && 'sources' in plan) {
-    const { wisdom, consolidated } = await consolidateSpores(env.db, scope, {
-      id: mintSporeId(plan.observationType), agentId: run.agentId, sessionId, promptId,
-      observationType: plan.observationType, content: plan.content, context: null, filePath: null,
-      tags: sporeTags(body.tags), contentHash: null, properties: null, createdAt: ctx.now,
-    }, plan.sources, { agentId: run.agentId, reason: plan.reason, sessionId, createdAt: ctx.now }, ctx.now);
-    if (wisdom === null) return Response.json({ persisted: true, held: true, resolved: false, action: plan.action });
-    return Response.json({ persisted: true, held: true, resolved: true, action: plan.action, spore: wisdom.id, consolidated });
-  }
-
   const resolved = await resolveSpore(env.db, scope, plan.status, {
     id: crypto.randomUUID(), agentId: run.agentId, sporeId: plan.sporeId, action: plan.action,
-    newSporeId: plan.action === 'obsolete' ? null : plan.newSporeId,
-    reason: plan.reason, sessionId, createdAt: ctx.now,
+    newSporeId: plan.newSporeId, reason: plan.reason, sessionId, createdAt: ctx.now,
   }, ctx.now);
   return Response.json({ persisted: true, held: true, resolved, action: plan.action, spore: plan.sporeId });
 }

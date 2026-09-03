@@ -12,6 +12,10 @@ import { validateTaskPostconditions } from '@myco/agent/task-postconditions.js';
  * Run-end validator coverage for the sweep's contract: the run closes with a
  * `supersession` report, and a report claiming zero resolutions while the
  * tool-call log shows one is the shape it rejects.
+ *
+ * This validator runs on the local executor, which holds the vault it reads.
+ * A run on the Deployment's harness is held to the same report by the server
+ * at run close (`core/run-postconditions.ts`), where the evidence lives.
  */
 describe('validateTaskPostconditions — supersession-sweep', () => {
   let db: Database;

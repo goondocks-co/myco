@@ -39,67 +39,86 @@ export interface SporeResolutionRequest {
   sporeId?: string;
   newSporeId?: string;
   reason?: string;
-  sources?: readonly string[];
-  content?: string;
-  observationType?: string;
 }
 
-/**
- * A resolution the store will accept, with the status the move lands on. A
- * consolidate comes in two shapes: one that names the sources and the body that
- * replaces them, recording the wisdom spore as part of the move, and one that
- * moves a single source into a wisdom spore already recorded.
- */
-export type SporeResolutionPlan =
-  | { action: 'supersede'; status: SporeStatus; sporeId: string; newSporeId: string; reason: string | null }
-  | { action: 'obsolete'; status: SporeStatus; sporeId: string; reason: string }
-  | { action: 'consolidate'; status: SporeStatus; sporeId: string; newSporeId: string; reason: string | null }
-  | { action: 'consolidate'; status: SporeStatus; sources: readonly string[]; content: string; observationType: string; reason: string | null };
+/** A resolution the store will accept: one spore moving, with the status it lands on and the spore it lands under. */
+export interface SporeResolutionPlan {
+  action: ResolutionAction;
+  status: SporeStatus;
+  sporeId: string;
+  newSporeId: string | null;
+  reason: string | null;
+}
 
 export type SporeResolutionOutcome = { ok: true; plan: SporeResolutionPlan } | { ok: false; reason: string };
 
 /**
  * The resolution this request describes, or the one thing wrong with it.
  *
- * A supersede names both ends and the store holds both; an obsolete says what
- * changed; a consolidate names its sources, the body that replaces them and the
- * kind that body is recorded as. An `obsolete` spore the store does not hold is
- * left to the write, which reports it moved nothing.
+ * Every action moves one named spore: a supersede and a consolidate name the
+ * spore that replaces it and the store holds both ends; an obsolete says what
+ * changed instead. A spore the store does not hold is left to the write for
+ * `obsolete`, which reports it moved nothing.
  */
 export async function planSporeResolution(
   db: RelationalStore,
   scope: ReadScope,
   request: SporeResolutionRequest,
 ): Promise<SporeResolutionOutcome> {
-  if (request.action === 'supersede') {
-    const sporeId = request.sporeId;
-    const newSporeId = request.newSporeId;
-    if (sporeId === undefined) return { ok: false, reason: 'old_spore_id is required for op: supersede' };
-    if (newSporeId === undefined) return { ok: false, reason: 'new_spore_id is required for op: supersede' };
-    if ((await getSpore(db, scope, sporeId)) === null) return { ok: false, reason: 'old_spore_id not found' };
-    if ((await getSpore(db, scope, newSporeId)) === null) return { ok: false, reason: 'new_spore_id not found' };
-    return { ok: true, plan: { action: 'supersede', status: 'superseded', sporeId, newSporeId, reason: request.reason ?? null } };
-  }
-
   if (request.action === 'obsolete') {
     const sporeId = request.sporeId;
     if (sporeId === undefined) return { ok: false, reason: 'id is required for op: obsolete' };
     if (request.reason === undefined) return { ok: false, reason: 'reason is required for op: obsolete' };
-    return { ok: true, plan: { action: 'obsolete', status: 'obsolete', sporeId, reason: request.reason } };
+    return { ok: true, plan: { action: 'obsolete', status: 'obsolete', sporeId, newSporeId: null, reason: request.reason } };
   }
 
+  const supersede = request.action === 'supersede';
+  const names = supersede ? { spore: 'old_spore_id', successor: 'new_spore_id' } : { spore: 'spore_id', successor: 'new_spore_id' };
+  const sporeId = request.sporeId;
+  const newSporeId = request.newSporeId;
+  if (sporeId === undefined) return { ok: false, reason: `${names.spore} is required for op: ${request.action}` };
+  if (newSporeId === undefined) return { ok: false, reason: `${names.successor} is required for op: ${request.action}` };
+  if ((await getSpore(db, scope, sporeId)) === null) return { ok: false, reason: `${names.spore} not found` };
+  if ((await getSpore(db, scope, newSporeId)) === null) return { ok: false, reason: `${names.successor} not found` };
+  return {
+    ok: true,
+    plan: { action: request.action, status: supersede ? 'superseded' : 'consolidated', sporeId, newSporeId, reason: request.reason ?? null },
+  };
+}
+
+/** A consolidation that records the wisdom spore as part of the move: the sources it merges, and the body and kind that replace them. */
+export interface SporeConsolidationRequest {
+  sources?: readonly string[];
+  content?: string;
+  observationType?: string;
+  reason?: string;
+}
+
+export interface SporeConsolidationPlan {
+  sources: readonly string[];
+  content: string;
+  observationType: string;
+  reason: string | null;
+}
+
+export type SporeConsolidationOutcome = { ok: true; plan: SporeConsolidationPlan } | { ok: false; reason: string };
+
+/**
+ * The consolidation this request describes, or the one thing wrong with it.
+ *
+ * The member's tool merges a set into a wisdom spore it records in the same
+ * write. A run's surface names one source and a wisdom spore already recorded
+ * instead, which is `planSporeResolution` above; the checks a body must pass
+ * are these.
+ */
+export async function planSporeConsolidation(
+  db: RelationalStore,
+  scope: ReadScope,
+  request: SporeConsolidationRequest,
+): Promise<SporeConsolidationOutcome> {
   const sources = request.sources ?? [];
   const content = request.content;
   const observationType = request.observationType;
-  if (sources.length === 0 && (request.sporeId !== undefined || request.newSporeId !== undefined)) {
-    const sporeId = request.sporeId;
-    const newSporeId = request.newSporeId;
-    if (sporeId === undefined) return { ok: false, reason: 'spore_id is required for op: consolidate' };
-    if (newSporeId === undefined) return { ok: false, reason: 'new_spore_id is required for op: consolidate' };
-    if ((await getSpore(db, scope, sporeId)) === null) return { ok: false, reason: 'spore_id not found' };
-    if ((await getSpore(db, scope, newSporeId)) === null) return { ok: false, reason: 'new_spore_id not found' };
-    return { ok: true, plan: { action: 'consolidate', status: 'consolidated', sporeId, newSporeId, reason: request.reason ?? null } };
-  }
   if (sources.length === 0) return { ok: false, reason: 'source_spore_ids is required for op: consolidate' };
   if (content === undefined) return { ok: false, reason: 'consolidated_content is required for op: consolidate' };
   if (observationType === undefined) return { ok: false, reason: 'observation_type is required for op: consolidate' };
@@ -107,5 +126,5 @@ export async function planSporeResolution(
   for (const id of sources) {
     if ((await getSpore(db, scope, id)) === null) return { ok: false, reason: `source_spore_id not found: ${id}` };
   }
-  return { ok: true, plan: { action: 'consolidate', status: 'consolidated', sources, content, observationType, reason: request.reason ?? null } };
+  return { ok: true, plan: { sources, content, observationType, reason: request.reason ?? null } };
 }
