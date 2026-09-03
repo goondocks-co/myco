@@ -5,6 +5,7 @@
  * with one bound it launches a `title-summary` run for the ended session,
  * calling back to the request's own origin.
  */
+import { TITLING_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/titling.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -51,9 +52,9 @@ describe('the events route', () => {
     expect(launches).toHaveLength(1);
     const vars = launches[0]!.envVars;
     expect({ task: vars.MYCO_TASK, url: vars.MYCO_SERVER_URL, admission: vars.MYCO_TASK_ADMISSION, params: JSON.parse(vars.MYCO_TASK_PARAMS!) })
-      .toEqual({ task: 'title-summary', url: 'https://s', admission: 'captureDriven', params: { session_id: 'sess_1', mode: 'claim' } });
+      .toEqual({ task: 'title-summary', url: 'https://s', admission: 'captureDriven', params: { session_id: 'sess_1', mode: 'claim', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS } });
     expect((e.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = 'sess_1'`).get() as { titled_at: number | null }).titled_at).not.toBeNull();
-    expect(e.sqlite.query(`SELECT status, task, run_context FROM agent_runs WHERE id = ?`).get(launches[0]!.runId)).toEqual({ status: 'pending', task: 'title-summary', run_context: JSON.stringify({ session_id: 'sess_1', mode: 'claim' }) });
+    expect(e.sqlite.query(`SELECT status, task, run_context FROM agent_runs WHERE id = ?`).get(launches[0]!.runId)).toEqual({ status: 'pending', task: 'title-summary', run_context: JSON.stringify({ session_id: 'sess_1', mode: 'claim', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS }) });
     // A second end of the same session finds the claim spent and launches nothing.
     expect((await post({ eventId: uuid(4), kind: 'session.end', createdAt: 6_000, payload: { endedAt: 6_000 } })).projected).toBe(true);
     await e.deferred.settle();

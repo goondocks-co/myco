@@ -20,7 +20,7 @@
  *   decision taken against a value that is no longer there.
  */
 import type { RelationalStore } from './adapters.js';
-import type { ReadScope } from '../read/scope.js';
+import { inListChunks, type ReadScope } from '../read/scope.js';
 import { providerConfiguredFor, settingsWriter, type ProjectCapability } from './settings.js';
 
 /** How many times a refused compare-and-swap is recomputed before the write is reported as contended. */
@@ -536,4 +536,85 @@ export async function projectAdmission(
   capability: ProjectCapability,
 ): Promise<{ admitted: boolean; capability: ProjectCapability }> {
   return { admitted: await settingsWriter(db).capabilityEnabled(scope.projectId, capability), capability };
+}
+
+// ---------------------------------------------------------------------------
+// Deployment-scoped reads and writes for the tick's jobs
+// ---------------------------------------------------------------------------
+
+/**
+ * A live run anywhere on the Deployment. The sweep and the drain read across
+ * Projects — the first reads here without a scope: the runtime that went
+ * away, and the capacity that came back, are the Deployment's, not one
+ * Project's.
+ */
+export interface LiveRunRef {
+  projectId: string;
+  id: string;
+  task: string | null;
+  status: string;
+  startedAt: number | null;
+  runContext: string | null;
+  dispatchedBy: string | null;
+}
+
+const LIVE_RUNS_SQL = `SELECT project_id AS projectId, id, task, status, started_at AS startedAt,
+    run_context AS runContext, dispatched_by AS dispatchedBy
+  FROM agent_runs WHERE status IN ('pending', 'running')
+  ORDER BY started_at ASC, id ASC LIMIT ?`;
+
+export async function listLiveRunsAcrossProjects(db: RelationalStore, limit: number): Promise<LiveRunRef[]> {
+  const { results } = await db.prepare(LIVE_RUNS_SQL).bind(limit).all<LiveRunRef>();
+  return results;
+}
+
+/** A live run whose runtime went away is failed exactly once; a run that landed terminal on its own in the meantime is left as it landed. */
+const FAIL_STALE_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?
+  WHERE project_id = ? AND id = ? AND status IN ('pending', 'running')`;
+
+export async function failStaleRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string): Promise<boolean> {
+  const result = await db.prepare(FAIL_STALE_SQL).bind(now, error, scope.projectId, runId).run();
+  return result.meta.changes === 1;
+}
+
+const RETENTION_CANDIDATES_SQL = `SELECT project_id AS projectId, id FROM agent_runs
+  WHERE status IN ('completed', 'failed', 'skipped') AND resumable = 0 AND COALESCE(completed_at, started_at) < ?
+  ORDER BY COALESCE(completed_at, started_at) ASC, id ASC LIMIT ?`;
+
+/**
+ * Remove terminal, non-resumable runs older than the cutoff, up to `limit`
+ * of them, each with its turns and reports. Those two tables reference a run
+ * without a cascade, so they are deleted in the same batch ahead of the run;
+ * events and write intents cascade, and a digest revision keeps its row with
+ * the run reference cleared. Answers how many runs went.
+ */
+export async function pruneTerminalRuns(db: RelationalStore, cutoffMs: number, limit: number): Promise<number> {
+  const { results } = await db.prepare(RETENTION_CANDIDATES_SQL).bind(cutoffMs, limit).all<{ projectId: string; id: string }>();
+  if (results.length === 0) return 0;
+  const byProject = new Map<string, string[]>();
+  for (const row of results) byProject.set(row.projectId, [...(byProject.get(row.projectId) ?? []), row.id]);
+  let removed = 0;
+  for (const [projectId, ids] of byProject) {
+    for (const chunk of inListChunks(ids)) {
+      const marks = chunk.map(() => '?').join(', ');
+      const statements = [
+        db.prepare(`DELETE FROM agent_turns WHERE project_id = ? AND run_id IN (${marks})`).bind(projectId, ...chunk),
+        db.prepare(`DELETE FROM agent_reports WHERE project_id = ? AND run_id IN (${marks})`).bind(projectId, ...chunk),
+        db.prepare(`DELETE FROM agent_runs WHERE project_id = ? AND id IN (${marks})`).bind(projectId, ...chunk),
+      ];
+      const outcomes = await db.batch(statements);
+      removed += outcomes[2]?.meta.changes ?? 0;
+    }
+  }
+  return removed;
+}
+
+/** A run inside its bound, anywhere on the Deployment: one exists or none does. The bound is the run's own, from its context, or the dispatcher's default. */
+const RUN_INSIDE_BOUND_SQL = `SELECT 1 AS one FROM agent_runs
+  WHERE status IN ('pending', 'running') AND started_at IS NOT NULL
+    AND ? < started_at + COALESCE(json_extract(run_context, '$.timeoutSeconds'), ?) * 1000 + ?
+  LIMIT 1`;
+
+export async function hasRunInsideBound(db: RelationalStore, now: number, defaultTimeoutSeconds: number, marginMs: number): Promise<boolean> {
+  return (await db.prepare(RUN_INSIDE_BOUND_SQL).bind(now, defaultTimeoutSeconds, marginMs).first<{ one: number }>()) !== null;
 }

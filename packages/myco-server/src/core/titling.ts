@@ -19,7 +19,7 @@ import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { sessionMaterialRows, sessionMaterialTailRows, type MaterialRow } from '../read/children.js';
 import { claimOwnerTitling, claimTitling, restoreTitlingStamp } from '../read/sessions.js';
-import { launchDispatch, prepareDispatch, type DispatchRefusal } from './harness.js';
+import { launchDispatch, prepareDispatch, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 
 export const TITLING_TASK = 'title-summary';
 export const TITLE_MAX_CHARS = 80;
@@ -27,7 +27,7 @@ export const SUMMARY_MAX_CHARS = 1200;
 /** How long a titling run may take. The task definition says the same (`title-summary.yaml`); this is the bound the claim's in-flight window is computed from. */
 export const TITLING_RUN_TIMEOUT_SECONDS = 300;
 /** How long a run's container may outlive the run's own bound before its hold is released; the same margin the hosted runtime applies (`HOLD_OVERRUN_MARGIN_MS`, pinned equal by test). */
-export const RUN_OVERRUN_MARGIN_MS = 120_000;
+export { RUN_OVERRUN_MARGIN_MS };
 /** How long after an owner's ask a second ask is refused: the run's own bound plus the overrun margin, so a run still writing is never raced by a second one. */
 export const OWNER_TITLING_WINDOW_MS = TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_OVERRUN_MARGIN_MS;
 

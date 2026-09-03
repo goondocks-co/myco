@@ -32,6 +32,7 @@ export async function bootSelfhosted(): Promise<ParityTarget> {
     bind: 'loopback',
     transport: 'loopback',
     sourceFrom: 'socket',
+    wakeLoop: false,
     SESSION_SECRET,
     SECRET_WRAP_KEY: wrapKey,
     GITHUB_CLIENT_ID: 'parity-client',

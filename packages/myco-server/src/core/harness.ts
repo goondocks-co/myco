@@ -35,6 +35,8 @@ const HARNESS_MACHINE_ID = 'harness';
 const SUBSCRIPTION_TOKEN_PREFIX = 'sk-ant-oat';
 /** How long a run may take when its caller names no bound. */
 export const DEFAULT_DISPATCH_TIMEOUT_SECONDS = 300;
+/** How long a run may outlive its own bound before the Deployment treats its runtime as gone: the hosted hold releases the container at this margin, and the sweep fails the run at the same one. */
+export const RUN_OVERRUN_MARGIN_MS = 120_000;
 /** The admission a capture-driven task carries into its container, in place of a capability name. */
 export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 
@@ -160,7 +162,10 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   const minted = await issueMemberToken(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, now);
 
   const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
-  const runContext = spec.params === undefined ? null : JSON.stringify(spec.params);
+  // The run's bound rides its context with the task's parameters, so the sweep
+  // that fails a run whose runtime went away reads the same bound the runtime
+  // received. A parameter reader ignores the key it does not name.
+  const runContext = JSON.stringify({ ...(spec.params ?? {}), timeoutSeconds });
   const scope = { projectId: prepared.projectId };
   if (!(await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }))) {
     throw new Error('run id already taken');
@@ -188,6 +193,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     throw error;
   }
   emit({ kind: 'harness_dispatch', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor });
+  try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
   return { runId, task: prepared.task, projectId: prepared.projectId, timeoutSeconds, provider: prepared.providerType };
 }
 

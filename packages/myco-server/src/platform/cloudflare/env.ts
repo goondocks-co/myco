@@ -13,6 +13,7 @@ import type {
 } from '../../core/adapters.js';
 import { cloudflareSourceOf } from './source.js';
 import type { HarnessContainer } from './harness-container.js';
+import { CLOCK_NAME, type DeploymentClock } from './deployment-clock.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
 
 /** The bindings `wrangler.toml` declares, exactly as the Worker receives them. */
@@ -31,6 +32,8 @@ export interface CloudflareBindings extends OwnerBindings {
   SECRET_WRAP_KEY?: { get(): Promise<string> };
   /** The harness container namespace; absent in local dev and the parity harness, where the probe answers a refusal. */
   HARNESS?: DurableObjectNamespace<HarnessContainer>;
+  /** The Deployment's clock: one Durable Object holding the next wake. Absent under a configuration that declares none. */
+  CLOCK?: DurableObjectNamespace<DeploymentClock>;
 }
 
 // Compile-time proof that the platform's own types satisfy the adapter interfaces.
@@ -114,6 +117,12 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
       harnessEnd: async (runId: string): Promise<void> => {
         const namespace = bindings.HARNESS!;
         await namespace.get(namespace.idFromName(runId)).endRun();
+      },
+    }),
+    ...(bindings.CLOCK === undefined ? {} : {
+      wake: async (): Promise<void> => {
+        const clock = bindings.CLOCK!;
+        await clock.get(clock.idFromName(CLOCK_NAME)).ensure();
       },
     }),
     afterResponse: deferred === undefined ? () => {} : (work) => deferred.waitUntil(work()),

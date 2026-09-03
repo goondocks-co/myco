@@ -7,7 +7,6 @@
  * Each will be designed WITH the issue that needs it, against a real query:
  *
  *   VectorStore       #913 / #914 implement, #921 recall states the query it needs
- *   WakeScheduler     #913 / #914 implement, #919 states what must run and when
  *   TelemetrySink     #913 / #914; `emit()` writing to the console is correct on
  *                     both targets today
  *
@@ -37,25 +36,12 @@ export interface VectorStore {
 }
 
 /**
- * Deferred wake, implemented per target in #913 and #914.
- *
- * The shape is still a proposal — #919 states what must run and when — but the
- * division it serves is settled: the power manager owns every scheduling decision,
- * resolving a state from registered assertions and computing an interval from it,
- * and a target supplies only "wake me at this instant". Nothing about which states
- * exist, when to run, or how often belongs behind this port.
- *
- * Whatever signature #919 settles on, a wake may arrive more than once on some
- * targets, so acting on one must be idempotent. The power manager already is — it
- * re-probes its sources and recomputes rather than accumulating — and that
- * property has to stay gated rather than assumed.
- *
- * `docs/architecture/myco-2.0.md` §7.5 carries the per-target mechanisms.
+ * The wake port is settled and lives on `ServerEnv.wake` (#1091): requested
+ * work asks for a wake soon, and the tick (`core/tick.ts`) names its own next
+ * instant, which each target's clock arms — a hosted alarm with a cron floor,
+ * or a process timer. A per-key scheduler taking absolute instants is
+ * not needed by that consumer, so none is declared here.
  */
-export interface WakeScheduler {
-  scheduleAt(key: string, epochMs: number): Promise<void>;
-  cancel(key: string): Promise<void>;
-}
 
 /**
  * A stand-in for an adapter a deployment has not configured. It throws by name on

@@ -19,6 +19,8 @@
  * mechanism and nothing else.
  */
 
+import { RUN_OVERRUN_MARGIN_MS } from '../../core/harness.js';
+
 /** How much of `sleepAfter` may elapse between renewals. */
 const RENEW_FRACTION = 0.25;
 /** Never renew less often than this, whatever the fraction works out to. */
@@ -33,7 +35,7 @@ export const MIN_RENEW_INTERVAL_MS = 5_000;
  * past that keeps a container alive for work that has stopped. The margin
  * covers the abort path itself rather than trusting two clocks to agree.
  */
-export const HOLD_OVERRUN_MARGIN_MS = 120_000;
+export const HOLD_OVERRUN_MARGIN_MS = RUN_OVERRUN_MARGIN_MS;
 
 export interface HoldState {
   runId: string;

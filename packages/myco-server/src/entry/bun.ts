@@ -14,6 +14,7 @@ import { createServer } from '../pipeline.js';
 import { assertSchemaCurrent, openDatabase } from '../platform/bun/database.js';
 import { sweepPartialObjects } from '../platform/bun/blobs.js';
 import { serverEnvFromBunConfig, type BunServerConfig } from '../platform/bun/env.js';
+import { startBunWake } from '../platform/bun/wake.js';
 import { withStaticAssets } from '../platform/bun/static.js';
 import { socketSourceOf, trustedProxySourceOf, type AddressableServer, type TrustedProxyConfig } from '../platform/bun/source.js';
 import {
@@ -61,6 +62,8 @@ export interface BunServerOptions extends Omit<BunServerConfig, 'sqlite'>, Trust
   bind?: 'loopback' | 'all';
   /** Directory holding the dashboard's static build. Absent, the deployment serves no dashboard and answers every unowned path as the server does. */
   uiDir?: string;
+  /** Whether the process runs the wake loop. A test or a parity target that drives the tick by route passes false. */
+  wakeLoop?: boolean;
 }
 
 export interface BunHandler {
@@ -82,6 +85,7 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
   }
   await sweepPartialObjects(options.blobDir);
   const env = serverEnvFromBunConfig({ ...options, sqlite });
+  const loop = options.wakeLoop === false ? null : startBunWake(env);
   let bound: AddressableServer | null = null;
   const sourceOf = options.sourceFrom === 'socket' ? socketSourceOf(() => bound) : trustedProxySourceOf(options);
   const server = createServer({ now: () => Date.now(), sourceOf, fetchImpl: fetch });
@@ -89,7 +93,7 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
   return {
     fetch: options.uiDir === undefined ? core : withStaticAssets(options.uiDir, core),
     bind: (listening: AddressableServer) => { bound = listening; },
-    close: async () => { await env.settle(); sqlite.close(); },
+    close: async () => { loop?.stop(); await env.settle(); sqlite.close(); },
   };
 }
 

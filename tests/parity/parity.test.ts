@@ -6,8 +6,9 @@ import { backupRestore } from './scenarios/backup-restore.ts';
 import { sessionsTitling } from './scenarios/sessions-titling.ts';
 import { sessionTurns } from './scenarios/session-turns.ts';
 import { plans } from './scenarios/plans.ts';
+import { tick } from './scenarios/tick.ts';
 
-const scenarios = [sessionsTitling, sessionTurns, plans, backupRestore];
+const scenarios = [sessionsTitling, sessionTurns, plans, backupRestore, tick];
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

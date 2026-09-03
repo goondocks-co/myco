@@ -107,7 +107,7 @@ describe('POST /api/harness/dispatch', () => {
     expect(spec.timeoutSeconds).toBe(240);
     const vars = spec.envVars;
     expect({ url: vars.MYCO_SERVER_URL, project: vars.MYCO_PROJECT, task: vars.MYCO_TASK, run: vars.MYCO_RUN_ID, oat: vars.CLAUDE_CODE_OAUTH_TOKEN, apiKey: vars.ANTHROPIC_API_KEY, model: vars.MYCO_MODEL, admission: vars.MYCO_TASK_ADMISSION, params: vars.MYCO_TASK_PARAMS })
-      .toEqual({ url: 'https://s', project: 'proj_1', task: 'container-smoke', run: spec.runId, oat: 'sk-ant-oat-test-token', apiKey: undefined, model: 'claude-opus-5', admission: 'cortex', params: undefined });
+      .toEqual({ url: 'https://s', project: 'proj_1', task: 'container-smoke', run: spec.runId, oat: 'sk-ant-oat-test-token', apiKey: undefined, model: 'claude-opus-5', admission: 'cortex', params: JSON.stringify({ timeoutSeconds: 240 }) });
     expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic', model: 'claude-opus-5' });
 
     // The dispatch wrote the run's row before the launch; the minted credential is real and claims exactly that row over the member surface.

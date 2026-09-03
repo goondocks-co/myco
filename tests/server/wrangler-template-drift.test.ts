@@ -79,13 +79,20 @@ describe('parityWranglerConfig', () => {
     }
   });
 
-  it('drops the container tables a local boot cannot serve, which the committed file carries', () => {
+  it('drops the container tables a local boot cannot serve, which the committed file carries, and keeps the clock', () => {
     expect(WRANGLER_TEMPLATE).toContain('[[containers]]');
     expect(WRANGLER_TEMPLATE).toContain('class_name = "HarnessContainer"');
+    expect(WRANGLER_TEMPLATE).toContain('class_name = "DeploymentClock"');
     const config = parityWranglerConfig();
-    for (const dropped of ['[[containers]]', '[[durable_objects.bindings]]', '[[migrations]]', 'HARNESS']) {
+    for (const dropped of ['[[containers]]', 'HARNESS', 'HarnessContainer', 'v1-harness']) {
       expect(config).not.toContain(dropped);
     }
+    for (const kept of ['[[durable_objects.bindings]]', 'name = "CLOCK"', 'class_name = "DeploymentClock"', '[[migrations]]', 'tag = "v2-clock"', '[triggers]']) {
+      expect(config).toContain(kept);
+    }
+    // One binding table and one migration table survive: the clock's.
+    expect(config.match(/^\[\[durable_objects\.bindings\]\]$/gm)).toHaveLength(1);
+    expect(config.match(/^\[\[migrations\]\]$/gm)).toHaveLength(1);
   });
 });
 
