@@ -50,14 +50,22 @@ describe('what holds a dispatch', () => {
     expect(heldBy({ liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 5 }, { ...none, task_runs_per_hour: 5 })).toBe('task_runs_per_hour');
   });
 
-  it('reads each limit from its leaf, unset or malformed meaning none', async () => {
+  it('reads each owner limit from its leaf, unset or malformed meaning none, and the fleet from what the operator deployed', async () => {
     const f = fixture();
-    expect(await readDispatchLimits(f.env.db)).toEqual({ concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null });
+    expect(await readDispatchLimits(f.env)).toEqual({ concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null });
     f.setting('agent.limits.concurrent_runs', 3);
     f.setting('agent.limits.task_runs_per_hour', 0);
-    f.setting('agent.limits.fleet', 'twelve');
     f.setting('agent.limits.task_concurrent_runs', 2.9);
-    expect(await readDispatchLimits(f.env.db)).toEqual({ concurrent_runs: 3, task_concurrent_runs: 2, task_runs_per_hour: null, fleet: null });
+    expect(await readDispatchLimits(f.env)).toEqual({ concurrent_runs: 3, task_concurrent_runs: 2, task_runs_per_hour: null, fleet: null });
+    expect(await readDispatchLimits({ ...f.env, fleet: 12 })).toMatchObject({ fleet: 12 });
+    expect(await readDispatchLimits({ ...f.env, fleet: 0 })).toMatchObject({ fleet: null });
+  });
+
+  it('holds a dispatch at the fleet the operator deployed, by name', async () => {
+    const f = fixture();
+    const env: ServerEnv = { ...f.env, fleet: 1 };
+    expect(await dispatchTask(env, 'container-smoke', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW)).toMatchObject({ dispatched: true, queued: false });
+    expect(await dispatchTask(env, 'digest-only', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW + 1)).toMatchObject({ dispatched: true, queued: true, heldBy: 'fleet' });
   });
 });
 

@@ -32,7 +32,6 @@ export const DEPLOYMENT_LEAVES: readonly string[] = [
   'agent.event_tasks_enabled',
   'agent.harness',
   'agent.limits.concurrent_runs',
-  'agent.limits.fleet',
   'agent.limits.task_concurrent_runs',
   'agent.limits.task_runs_per_hour',
   'agent.model',
