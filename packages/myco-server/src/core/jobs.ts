@@ -26,30 +26,37 @@ export interface ServerJob {
   converges: string;
 }
 
-/** The four jobs #919 owns. Retention, backup and reconciliation jobs belong to #922, #923 and #917. */
+/** The jobs the tick runs today; each has an implementation in `jobs-run.ts`, which a gate holds. */
 export const SERVER_JOBS: readonly ServerJob[] = [
+  {
+    name: 'agent-run-retention',
+    runsThrough: 'sleep',
+    converges: 'no terminal, non-resumable agent run outlives the retention window, and its turns and reports go with it; a live or resumable run is never pruned',
+  },
+  {
+    name: 'run-stale-sweep',
+    runsThrough: 'sleep',
+    converges: 'no run whose runtime went away stays live past its bound: each is failed by name and released as a finished run is',
+  },
+];
+
+/** A job declared for a state, awaiting the child that gives it work. Nothing runs it; naming the owner keeps the table honest. */
+export interface DeferredJob extends ServerJob {
+  owner: string;
+}
+
+/** Declared with #919's engine, not yet given an implementation; a tick never sees these. */
+export const DEFERRED_JOBS: readonly DeferredJob[] = [
   {
     name: 'embedding-reconcile',
     // Embedding calls a model and costs money per row; a Deployment nobody is
     // using does not need its backlog cleared this minute.
     runsThrough: 'idle',
     converges: 'every embeddable row has a current embedding',
+    owner: '#919',
   },
-  {
-    name: 'session-maintenance',
-    runsThrough: 'sleep',
-    converges: 'no session is left open past its last receipt',
-  },
-  {
-    name: 'agent-run-retention',
-    runsThrough: 'sleep',
-    converges: 'no terminal agent run outlives the retention window; a running or lease-held run is never pruned',
-  },
-  {
-    name: 'release-provenance-reconcile',
-    runsThrough: 'sleep',
-    converges: 'every release-state row reflects the git state it was checked against',
-  },
+  { name: 'session-maintenance', runsThrough: 'sleep', converges: 'no session is left open past its last receipt', owner: '#919' },
+  { name: 'release-provenance-reconcile', runsThrough: 'sleep', converges: 'every release-state row reflects the git state it was checked against', owner: '#919' },
 ];
 
 const JOB_BY_NAME = new Map(SERVER_JOBS.map((j) => [j.name, j]));

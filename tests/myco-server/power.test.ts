@@ -5,7 +5,8 @@ import { describe, expect, it } from 'bun:test';
 import {
   naturalState, nextWakeDelayMs, resolvePowerState, type PowerAssertion,
 } from '@myco-server-worker/core/power.js';
-import { jobRunsAt, jobsDueAt, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
+import { jobRunsAt, jobsDueAt, SERVER_JOBS, DEFERRED_JOBS } from '@myco-server-worker/core/jobs.js';
+import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 
 const THRESHOLDS = { idleMs: 60_000, sleepMs: 300_000, deepSleepMs: 3_600_000 };
 const INTERVALS = { activeMs: 30_000, sleepMs: 300_000 };
@@ -105,14 +106,22 @@ describe('what runs at each depth', () => {
     expect(SERVER_JOBS.filter((j) => j.runsThrough === 'deep_sleep')).toEqual([]);
   });
 
-  it('holds the model-calling job back to a Deployment in use', () => {
-    expect(jobRunsAt('embedding-reconcile', 'idle')).toBe(true);
-    expect(jobRunsAt('embedding-reconcile', 'sleep')).toBe(false);
+  it('holds the model-calling job back to a Deployment in use, once its owner gives it work', () => {
+    const embedding = DEFERRED_JOBS.find((j) => j.name === 'embedding-reconcile');
+    expect(embedding?.runsThrough).toBe('idle');
+    expect(embedding?.owner).toBe('#919');
+    // Deferred means no tick sees it: the registry answers as for a job it does not run.
+    expect(jobRunsAt('embedding-reconcile', 'idle')).toBe(false);
   });
 
   it('still runs query-only housekeeping while sleeping', () => {
-    expect(jobsDueAt('sleep').map((j) => j.name))
-      .toEqual(['session-maintenance', 'agent-run-retention', 'release-provenance-reconcile']);
+    expect(jobsDueAt('sleep').map((j) => j.name)).toEqual(['agent-run-retention', 'run-stale-sweep']);
+  });
+
+  it('gives every job the tick runs an implementation, and names no deferred job twice', () => {
+    for (const job of SERVER_JOBS) expect({ job: job.name, implemented: typeof JOB_IMPLEMENTATIONS[job.name] }).toEqual({ job: job.name, implemented: 'function' });
+    const declared = new Set(SERVER_JOBS.map((j) => j.name));
+    for (const job of DEFERRED_JOBS) expect(declared.has(job.name)).toBe(false);
   });
 
   it('answers false for a job this Deployment does not run', () => {
@@ -122,6 +131,6 @@ describe('what runs at each depth', () => {
 
   it('states what every job converges toward, so its idempotence is checkable', () => {
     expect(SERVER_JOBS.filter((j) => j.converges.trim().length === 0)).toEqual([]);
-    expect(SERVER_JOBS).toHaveLength(4);
+    expect(SERVER_JOBS).toHaveLength(2);
   });
 });

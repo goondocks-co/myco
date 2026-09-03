@@ -48,7 +48,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 54;
+const EMIT_CALLS = 58;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -123,15 +123,20 @@ const normalize = (source: string) => stripComments(source).replace(/\s+/g, ' ')
 const CANONICAL_ENTRY = `
 import { createServer } from '../pipeline.js';
 import { cloudflareSourceOf, serverEnvFromBindings, type CloudflareBindings, type DeferredWork } from '../platform/cloudflare/env.js';
+import { wakeClock } from '../platform/cloudflare/deployment-clock.js';
 const server = createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf, fetchImpl: (input, init) => fetch(input, init) });
 export async function handleRequest(request: Request, bindings: CloudflareBindings, deferred?: DeferredWork): Promise<Response> {
   return server.handleRequest(request, serverEnvFromBindings(bindings, deferred));
 }
-export default { fetch: handleRequest };
+export async function scheduled(_event: unknown, bindings: CloudflareBindings): Promise<void> {
+  return wakeClock(bindings);
+}
+export default { fetch: handleRequest, scheduled };
 `;
 
 const CANONICAL_INDEX = `export { default, handleRequest } from './entry/cloudflare.js';
-export { HarnessContainer } from './platform/cloudflare/harness-container.js';`;
+export { HarnessContainer } from './platform/cloudflare/harness-container.js';
+export { DeploymentClock } from './platform/cloudflare/deployment-clock.js';`;
 
 const env = () => ({
   MYCO_DB: { prepare: () => ({ bind: () => ({ first: async () => null, run: async () => ({}) }) }) },
@@ -824,7 +829,7 @@ describe('gates', () => {
     // The schema's backfill is the one other writer. It is bounded here rather than
     // waved through: every row it lands carries a revoked_at, so the exemption cannot
     // become a path that mints a live credential outside the live-token predicate.
-    expect(inserting).toEqual([join(SRC, 'auth', 'tokens.ts'), join(SRC, 'db', 'schema.ts')]);
+    expect([...inserting].sort()).toEqual([join(SRC, 'auth', 'tokens.ts'), join(SRC, 'db', 'schema.ts')].sort());
     const backfill = readFileSync(join(SRC, 'db', 'schema.ts'), 'utf8').match(/INSERT (OR IGNORE )?INTO member_credentials[\s\S]*?`/)![0];
     expect(backfill.match(/INTO member_credentials\b/g)).toHaveLength(1);
     expect(backfill).toMatch(/COALESCE\(t\.revoked_at, t\.expires_at\)/);
@@ -909,9 +914,10 @@ describe('gates', () => {
     const keys = [...block![1].matchAll(/^\s*(\w+):/gm)].map((m) => m[1]).sort();
     expect(keys.length).toBeGreaterThan(0);
     const toml = readFileSync(join(WORKER, 'wrangler.toml'), 'utf8');
-    // HARNESS is optional in Env — absent in local dev and the parity harness —
-    // so it sits outside the required-binding equality, like SECRET_WRAP_KEY.
-    const bound = [...toml.matchAll(/^(?:binding|name) = "(\w+)"$/gm)].map((m) => m[1]).filter((name) => name !== 'myco-server' && name !== 'HARNESS').sort();
+    // HARNESS and CLOCK are optional in Env — the harness is absent in local dev
+    // and the parity harness, and a test env binds no clock — so they sit outside
+    // the required-binding equality, like SECRET_WRAP_KEY.
+    const bound = [...toml.matchAll(/^(?:binding|name) = "(\w+)"$/gm)].map((m) => m[1]).filter((name) => name !== 'myco-server' && name !== 'HARNESS' && name !== 'CLOCK').sort();
     expect(bound).toEqual(keys);
     expect(/^migrations_dir = "([^"]*)"$/m.exec(toml)?.[1]).toBe(MIGRATIONS_DIR);
   });
@@ -1088,6 +1094,7 @@ describe('gates', () => {
       'owner POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status',
       'owner POST /api/projects/{projectId}/sessions/{sessionId}/title',
       'owner POST /api/projects/{projectId}/unarchive',
+      'owner POST /api/wake',
       'owner POST /auth/link',
       'owner POST /auth/logout',
       'owner PUT /api/agents/{agentId}',

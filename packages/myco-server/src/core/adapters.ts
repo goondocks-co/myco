@@ -221,6 +221,13 @@ export interface ServerEnv {
   harnessLaunch?: (spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }) => Promise<void>;
   /** Release the held harness runtime of one run, letting its container stop. Present only where a target has one. */
   harnessEnd?: (runId: string) => Promise<void>;
+  /**
+   * Wake the Deployment soon. Requested work — a dispatch, a queued run — calls
+   * this so the tick that sweeps and drains follows without waiting for the
+   * clock. The tick names its own next instant; a target only delivers it.
+   * Absent on an env with no clock, and a wake that fails never fails the work.
+   */
+  wake?: () => Promise<void>;
   /** Starts `work` to finish after the answer has been sent. The work settles its own failures; nothing in the request awaits it. */
   afterResponse(work: () => Promise<void>): void;
   /** The Deployment's outbound HTTP, for a call the core makes on its own behalf. */

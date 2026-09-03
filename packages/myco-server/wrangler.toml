@@ -85,3 +85,14 @@ max_instances = 12
 # and a run under the default is killed by memory mid-execution with no
 # JS-level evidence — the process dies, the entry's guards never fire.
 instance_type = "standard"
+
+[triggers]
+crons = [ "*/15 * * * *" ]
+
+[[durable_objects.bindings]]
+name = "CLOCK"
+class_name = "DeploymentClock"
+
+[[migrations]]
+tag = "v2-clock"
+new_sqlite_classes = [ "DeploymentClock" ]

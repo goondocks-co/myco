@@ -149,6 +149,23 @@ export async function revokeCredentialAsMember(
   return { revoked, revokedBy };
 }
 
+/**
+ * Revoke a credential only when it belongs to the named member. The dispatch
+ * path mints a credential for the harness member per run and releases it when
+ * the run ends; a run claimed under a person's own credential carries that
+ * credential in the same column, and a release must never end it.
+ */
+export async function revokeCredentialOfMember(
+  db: RelationalStore, memberId: string, tokenId: string, nowMs: number,
+): Promise<boolean> {
+  const result = await db
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND member_id = ? AND revoked_at IS NULL`)
+    .bind(nowMs, memberId, tokenId, memberId).run();
+  const revoked = result.meta.changes === 1;
+  emit({ kind: 'credential_revoked', tokenId, revokedBy: memberId, revoked });
+  return revoked;
+}
+
 /** Every live credential of a member, revoked and attributed in one statement — effective only once the member row itself carries this revocation, so a batch whose first statement changed nothing changes nothing here either. */
 export function revokeCredentialsOfMember(db: RelationalStore, memberId: string, revokedBy: string, nowMs: number): PreparedStatement {
   return db
