@@ -284,6 +284,9 @@ const NO_ISOLATE_NODE_TARGETS = [
 // retries). Each runs as its own plain single-file bun process instead —
 // process-level isolation at ordinary startup cost.
 const SOLO_NODE_FILES = [
+  // Reads the machine config it writes through the process-wide tier cache;
+  // a neighbour's read of another home leaves the cache answering for it.
+  'tests/daemon/managed-files-reconcile-job.test.ts',
   'tests/agent/phase-loop.test.ts',
   'tests/agent/tools-dry-run.test.ts',
   'tests/agent/tools-skills.test.ts',
