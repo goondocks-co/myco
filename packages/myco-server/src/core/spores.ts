@@ -147,6 +147,20 @@ export async function listSpores(db: RelationalStore, scope: ReadScope, o: ListS
   return results;
 }
 
+/**
+ * The named spores of this Project, in the store's own order. Ids the Project
+ * does not hold are absent from the answer rather than an error: a reader
+ * hydrating a record kept past a spore is told what is still there.
+ */
+export async function listSporesByIds(db: RelationalStore, scope: ReadScope, ids: readonly string[]): Promise<SporeRow[]> {
+  const wanted = [...new Set(ids)].slice(0, MAX_SPORE_LIMIT);
+  if (wanted.length === 0) return [];
+  const { results } = await db
+    .prepare(`SELECT ${COLUMNS} FROM spores WHERE project_id = ? AND id IN (${wanted.map(() => '?').join(', ')})`)
+    .bind(scope.projectId, ...wanted).all<SporeRow>();
+  return results;
+}
+
 export async function countSpores(db: RelationalStore, scope: ReadScope, o: ListSporesOptions = {}): Promise<number> {
   const { where, params } = filters(scope, o);
   const row = await db.prepare(`SELECT COUNT(*) AS c FROM spores ${where}`).bind(...params).first<{ c: number }>();
