@@ -365,6 +365,30 @@ export async function sessionInScope(db: RelationalStore, scope: ReadScope, sess
   return row !== null;
 }
 
+/**
+ * True when the session sits inside the scope and the named machine holds it.
+ *
+ * One question, one answer: a session another machine captured reads the same
+ * as one the Project never held, so a caller naming an id it does not own
+ * learns nothing about whether that id exists.
+ */
+export async function sessionHeldByMachine(db: RelationalStore, scope: ReadScope, sessionId: string, machineId: string): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ? AND machine_id = ?`)
+    .bind(scope.projectId, sessionId, machineId)
+    .first<{ present: number }>();
+  return row !== null;
+}
+
+/** The session's latest prompt — the one a write that names the session records as its origin — or null when the session holds none. */
+export async function latestPromptId(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<string | null> {
+  const row = await db
+    .prepare(`SELECT prompt_id FROM prompt_batches WHERE project_id = ? AND session_id = ? ORDER BY created_at DESC, prompt_id DESC LIMIT 1`)
+    .bind(scope.projectId, sessionId)
+    .first<{ prompt_id: string }>();
+  return row?.prompt_id ?? null;
+}
+
 /** Claims one titling attempt for an ended session: true once, false for a session not ended or already claimed. */
 export async function claimTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number): Promise<boolean> {
   const result = await db

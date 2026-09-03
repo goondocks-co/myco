@@ -8,7 +8,7 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
-  countSpores, getSpore, insertSpore, listSpores, listSupersedingSporeIds, resolveSpore,
+  countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore,
   type SporeInsert,
 } from '@myco-server-worker/core/spores.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -21,6 +21,9 @@ const NOW = 1_700_000_000_000;
 
 function store(): { db: RelationalStore; sqlite: Database } {
   const sqlite = new Database(':memory:');
+  // Bun enforces foreign keys only when the pragma is issued, so a spore that
+  // names a session no table holds has to be refused here as it is on D1.
+  sqlite.exec('PRAGMA foreign_keys = ON');
   for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
   for (const p of [SCOPE.projectId, OTHER.projectId]) {
     sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(p, p, NOW);
@@ -47,6 +50,19 @@ describe('spores', () => {
     const written = await insertSpore(db, SCOPE, spore('sp1'));
     expect({ id: written?.id, status: written?.status, importance: written?.importance, embedded: written?.embedded })
       .toEqual({ id: 'sp1', status: 'active', importance: 5, embedded: 0 });
+  });
+
+  it('refuses a spore naming a session no table holds, which is what the pragma buys', async () => {
+    const { db } = store();
+    await expect(insertSpore(db, SCOPE, spore('sp1', { sessionId: 'sess_nowhere' }))).rejects.toThrow();
+  });
+
+  it('holds one order over a page boundary when two spores share an instant', async () => {
+    const { db } = store();
+    for (const id of ['sp_a', 'sp_b', 'sp_c']) await insertSpore(db, SCOPE, spore(id, { createdAt: NOW }));
+    const first = await listSpores(db, SCOPE, { limit: 2 });
+    const second = await listSpores(db, SCOPE, { limit: 2, offset: 2 });
+    expect([...first, ...second].map((s) => s.id)).toEqual(['sp_c', 'sp_b', 'sp_a']);
   });
 
   it('keeps spores within their Project', async () => {
@@ -147,5 +163,24 @@ describe('resolution', () => {
     await insertSpore(db, SCOPE, spore('sp1'));
     await resolveSpore(db, SCOPE, 'consolidated', event('re1', 'sp1', { action: 'consolidate', newSporeId: 'wisdom' }), NOW);
     expect(await listSupersedingSporeIds(db, SCOPE, 'sp1')).toEqual([]);
+  });
+
+  it('reads the same events backwards: what a replacement grew out of, by supersede and by consolidate alike', async () => {
+    const { db } = store();
+    for (const id of ['old', 'merged', 'new']) await insertSpore(db, SCOPE, spore(id));
+    await resolveSpore(db, SCOPE, 'superseded', event('re1', 'old', { newSporeId: 'new', createdAt: NOW }), NOW);
+    await resolveSpore(db, SCOPE, 'consolidated', event('re2', 'merged', { action: 'consolidate', newSporeId: 'new', createdAt: NOW + 10 }), NOW + 10);
+    expect(await listSupersededSporeIds(db, SCOPE, 'new')).toEqual(['merged', 'old']);
+  });
+
+  it('names no predecessor from another Project, and none for a retirement that replaced nothing', async () => {
+    const { db } = store();
+    await insertSpore(db, SCOPE, spore('old'));
+    await insertSpore(db, SCOPE, spore('new'));
+    await resolveSpore(db, SCOPE, 'superseded', event('re1', 'old', { newSporeId: 'new' }), NOW);
+    expect(await listSupersededSporeIds(db, OTHER, 'new')).toEqual([]);
+    await insertSpore(db, SCOPE, spore('gone'));
+    await resolveSpore(db, SCOPE, 'obsolete', event('re2', 'gone', { action: 'obsolete', newSporeId: null }), NOW);
+    expect(await listSupersededSporeIds(db, SCOPE, 'gone')).toEqual([]);
   });
 });

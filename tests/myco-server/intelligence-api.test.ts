@@ -82,6 +82,22 @@ describe('spores through the product surface', () => {
 
     const { body } = await get('/api/projects/proj_1/spores/old');
     expect(body.supersededBy).toEqual(['new']);
+    expect((await get('/api/projects/proj_1/spores/new')).body).toMatchObject({ supersededBy: [], supersedes: ['old'] });
+  });
+
+  it('narrows the list to one session and pages through it', async () => {
+    const { get, db, sqlite, scope } = await harness();
+    sqlite.query(`INSERT INTO sessions (project_id, session_id, created_by_token_id, first_received_at, last_received_at)
+      VALUES ('proj_1', 'sess_a', 'tok', ?, ?)`).run(NOW, NOW);
+    // s1 and s2 share an instant, so a page boundary between them lands on the
+    // id tiebreaker rather than on whatever order the storage happens to return.
+    for (const [id, sessionId] of [['s1', 'sess_a'], ['s2', 'sess_a'], ['s3', null]] as const) {
+      await insertSpore(db, scope, spore(id, { sessionId, createdAt: NOW }));
+    }
+    const filtered = await get('/api/projects/proj_1/spores?session=sess_a');
+    expect({ ids: (filtered.body.spores as { id: string }[]).map((s) => s.id), total: filtered.body.total }).toEqual({ ids: ['s2', 's1'], total: 2 });
+    const paged = await get('/api/projects/proj_1/spores?session=sess_a&offset=1');
+    expect({ ids: (paged.body.spores as { id: string }[]).map((s) => s.id), total: paged.body.total }).toEqual({ ids: ['s1'], total: 2 });
   });
 
   /**

@@ -29,6 +29,7 @@ export interface SporesInput {
   consolidated_content?: string;
   tags?: string[];
   reason?: string;
+  session_id?: string;
 }
 
 export async function handleMycoSpores(
@@ -51,7 +52,7 @@ export async function handleMycoSpores(
   if (op === 'save') {
     if (!input.content) return { ok: false, error: 'content is required for op: save' };
     if (!input.type) return { ok: false, error: 'type is required for op: save' };
-    return saveSpore({ content: input.content, type: input.type, tags: input.tags, requestContext });
+    return saveSpore({ content: input.content, type: input.type, tags: input.tags, session_id: input.session_id, requestContext });
   }
 
   if (op === 'supersede') {
@@ -61,6 +62,7 @@ export async function handleMycoSpores(
       old_spore_id: input.old_spore_id,
       new_spore_id: input.new_spore_id,
       reason: input.reason,
+      session_id: input.session_id,
       requestContext,
     });
   }
@@ -68,7 +70,7 @@ export async function handleMycoSpores(
   if (op === 'obsolete') {
     if (!input.id) return { ok: false, error: 'id is required for op: obsolete' };
     if (!input.reason) return { ok: false, error: 'reason is required for op: obsolete' };
-    return obsoleteSpore({ spore_id: input.id, reason: input.reason, requestContext });
+    return obsoleteSpore({ spore_id: input.id, reason: input.reason, session_id: input.session_id, requestContext });
   }
 
   if (op === 'consolidate') {
@@ -81,6 +83,7 @@ export async function handleMycoSpores(
       observation_type: input.observation_type,
       tags: input.tags,
       reason: input.reason,
+      session_id: input.session_id,
       requestContext,
     });
   }

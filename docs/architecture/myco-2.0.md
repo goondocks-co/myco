@@ -350,7 +350,7 @@ The member's MCP bridge talks to the Deployment. External agents get a project-s
 | `myco_cortex` | REPLACE | MCP, Core | Blk | Digest, instructions, Canopy map/entry, notifications, maintenance summary, projects activity — all server-side; `canopy_entry` returns mechanical fields only once entry embeddings retire (#920) | #921 |
 | `myco_sessions` | KEEP | MCP, Core | Blk | The query core already serves this shape | #921 |
 | `myco_plans` | KEEP | MCP, Core | Blk | **Closes the one §8.4 parity miss** — MCP-written plans reach the server only here | #921 |
-| `myco_spores` | KEEP | MCP, Core | Blk | Needs the server-side spores tables | #919 |
+| `myco_spores` | KEEP | MCP, Core | Blk | Needs the server-side spores tables; `session_id` names the session a member's spore belongs to, or the session that retired one | #919 |
 | `myco_skills` | KEEP | MCP, Core | Blk | Needs the server-side skills tables | #919 |
 | `myco_agent` | KEEP | MCP, Core | Blk | Needs server-side `agent_runs` | #919 |
 

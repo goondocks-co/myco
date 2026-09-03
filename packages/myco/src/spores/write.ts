@@ -13,6 +13,7 @@ import { epochSeconds, USER_AGENT_ID, USER_AGENT_NAME } from '@myco/constants.js
 import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { getSpore, insertSpore, updateSporeStatus, type SporeRow } from '@myco/db/queries/spores.js';
+import { getSession } from '@myco/db/queries/sessions.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { type ProjectScope } from '@myco/db/queries/project-scope.js';
@@ -32,6 +33,15 @@ const SPORE_ID_RANDOM_BYTES = 4;
 const RESOLUTION_ID_RANDOM_BYTES = 8;
 const DEFAULT_OBSERVATION_TYPE = 'discovery';
 
+/** The one refusal for a `session_id` no session in scope carries. */
+export const SESSION_NOT_FOUND = 'session_id not found';
+
+/** A session the vault holds in this scope, or the refusal. `spores.session_id` carries a foreign key, so an id nothing backs is answered rather than thrown. The scope is resolved only for a call that names a session, leaving a context-free write as it is. */
+function sessionRefusal(sessionId: string | undefined, scopeOf: () => ProjectScope): SporeWriteFailure | null {
+  if (sessionId === undefined) return null;
+  return getSession(sessionId, scopeOf()) === null ? { ok: false, error: SESSION_NOT_FOUND } : null;
+}
+
 function registerMcpUserAgent(createdAt: number): void {
   registerAgent({
     id: USER_AGENT_ID,
@@ -44,6 +54,7 @@ export interface SaveSporeInput {
   content: string;
   type?: string;
   tags?: string[];
+  session_id?: string;
   requestContext?: MycoRequestContext;
 }
 
@@ -54,11 +65,13 @@ export interface SaveSporeResult {
   created_at: number;
 }
 
-export function saveSpore(input: SaveSporeInput): SaveSporeResult {
+export function saveSpore(input: SaveSporeInput): SaveSporeResult | SporeWriteFailure {
   const observationType = input.type ?? DEFAULT_OBSERVATION_TYPE;
   const id = `${observationType}-${randomBytes(SPORE_ID_RANDOM_BYTES).toString('hex')}`;
   const now = epochSeconds();
   const projectId = rowProjectIdFromRequestContext(input.requestContext);
+  const refusal = sessionRefusal(input.session_id, () => projectScopeFromRequestContext(input.requestContext));
+  if (refusal) return refusal;
 
   registerMcpUserAgent(now);
 
@@ -66,6 +79,7 @@ export function saveSpore(input: SaveSporeInput): SaveSporeResult {
     id,
     project_id: projectId,
     agent_id: USER_AGENT_ID,
+    session_id: input.session_id ?? null,
     observation_type: observationType,
     content: input.content,
     tags: input.tags ? input.tags.join(', ') : null,
@@ -84,6 +98,7 @@ export interface SupersedeSporeInput {
   old_spore_id: string;
   new_spore_id: string;
   reason?: string;
+  session_id?: string;
   requestContext?: MycoRequestContext;
 }
 
@@ -188,6 +203,8 @@ export function supersedeSpore(input: SupersedeSporeInput): SupersedeSporeResult
   if (!getSpore(input.new_spore_id, scope)) {
     return { ok: false, error: 'new_spore_id not found' };
   }
+  const refusal = sessionRefusal(input.session_id, () => scope);
+  if (refusal) return refusal;
 
   registerMcpUserAgent(now);
 
@@ -196,6 +213,7 @@ export function supersedeSpore(input: SupersedeSporeInput): SupersedeSporeResult
     action: RESOLUTION_ACTION.SUPERSEDE,
     new_spore_id: input.new_spore_id,
     reason: input.reason,
+    session_id: input.session_id,
     scope,
     project_id: projectId,
     agent_id: USER_AGENT_ID,
@@ -213,6 +231,7 @@ export function supersedeSpore(input: SupersedeSporeInput): SupersedeSporeResult
 export interface ObsoleteSporeInput {
   spore_id: string;
   reason: string;
+  session_id?: string;
   requestContext?: MycoRequestContext;
 }
 
@@ -234,6 +253,8 @@ export function obsoleteSpore(input: ObsoleteSporeInput): ObsoleteSporeResult | 
   if (!getSpore(input.spore_id, scope)) {
     return { ok: false, error: 'spore_id not found' };
   }
+  const refusal = sessionRefusal(input.session_id, () => scope);
+  if (refusal) return refusal;
 
   registerMcpUserAgent(now);
 
@@ -241,6 +262,7 @@ export function obsoleteSpore(input: ObsoleteSporeInput): ObsoleteSporeResult | 
     spore_id: input.spore_id,
     action: RESOLUTION_ACTION.OBSOLETE,
     reason: input.reason,
+    session_id: input.session_id,
     scope,
     project_id: projectId,
     agent_id: USER_AGENT_ID,
@@ -257,6 +279,7 @@ export interface ConsolidateSporesInput {
   observation_type: string;
   tags?: string[];
   reason?: string;
+  session_id?: string;
   requestContext?: MycoRequestContext;
 }
 
@@ -277,6 +300,8 @@ export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSpo
   if (missingSource) {
     return { ok: false, error: `source_spore_id not found: ${missingSource}` };
   }
+  const refusal = sessionRefusal(input.session_id, () => scope);
+  if (refusal) return refusal;
 
   registerMcpUserAgent(now);
 
@@ -286,6 +311,7 @@ export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSpo
       id: newSporeId,
       project_id: projectId,
       agent_id: USER_AGENT_ID,
+      session_id: input.session_id ?? null,
       observation_type: input.observation_type,
       content: input.consolidated_content,
       tags: input.tags ? input.tags.join(', ') : null,
@@ -299,6 +325,7 @@ export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSpo
         action: RESOLUTION_ACTION.CONSOLIDATE,
         new_spore_id: newSporeId,
         reason: input.reason,
+        session_id: input.session_id,
         scope,
         project_id: projectId,
         agent_id: USER_AGENT_ID,
