@@ -78,7 +78,8 @@ const ACTIVITY = { items: [], stats: { sessions: 12, openSessions: 1, sessionsLa
 describe('Sessions list', () => {
   const ROWS = [
     session({ title: 'Wave-based executor', label: 'Wave-based executor', promptCount: 12, toolCallCount: 40, activityBuckets: [3, 0, 0, 2, 0, 0, 4, 3] }),
-    session({ sessionId: 's2', agent: 'codex', branch: 'fix', startedAt: NOW - 2 * 3_600_000, endedAt: NOW - 1000, memberLabel: null, memberId: null, runtimeLabel: null, label: 'Fix the flaky test…', promptCount: 3, toolCallCount: 7 }),
+    // Started earlier TODAY, whatever the clock says: an offset from now crosses midnight for the first hours of a day and lands the row under YESTERDAY.
+    session({ sessionId: 's2', agent: 'codex', branch: 'fix', startedAt: Math.max(NOW - 2 * 3_600_000, new Date(NOW).setHours(0, 0, 0, 0) + 60_000), endedAt: NOW - 1000, memberLabel: null, memberId: null, runtimeLabel: null, label: 'Fix the flaky test…', promptCount: 3, toolCallCount: 7 }),
     session({ sessionId: 's3', agent: 'codex', branch: null, startedAt: NOW - 3 * 24 * 3_600_000, endedAt: NOW - 2 * 24 * 3_600_000, label: 'An older one', promptCount: 1, toolCallCount: 0 }),
   ];
 
