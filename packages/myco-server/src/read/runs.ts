@@ -178,8 +178,8 @@ export function phasesOf(raw: string | null): PhaseRow[] | null {
 
 /** A project's runs, newest first, one page at a time; `status` and `task` narrow the set before the cursor applies. */
 export async function listRuns(db: RelationalStore, scope: ReadScope, opts: RunFilters = {}): Promise<Page<RunListRow>> {
-  // A queued run has no start yet; it takes its place in the list from the instant it queued.
-  const k = keyset(opts, { order: 'COALESCE(started_at, queued_at)', id: 'id', direction: 'DESC' });
+  // A run that waited keeps the place it took when it queued, launched or not: the instant it entered the list never moves under a reader paging through it.
+  const k = keyset(opts, { order: 'COALESCE(queued_at, started_at)', id: 'id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
   const conditions = ['project_id = ?'];
   const params: (string | number)[] = [scope.projectId];
@@ -188,10 +188,10 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, opts: RunF
   if (opts.agentId !== undefined) { conditions.push('agent_id = ?'); params.push(opts.agentId); }
   if (k.where !== '') conditions.push(k.where);
   const { results } = await db
-    .prepare(`SELECT ${LIST_COLUMNS} FROM agent_runs WHERE ${conditions.join(' AND ')} ORDER BY COALESCE(started_at, queued_at) DESC, id DESC LIMIT ?`)
+    .prepare(`SELECT ${LIST_COLUMNS} FROM agent_runs WHERE ${conditions.join(' AND ')} ORDER BY COALESCE(queued_at, started_at) DESC, id DESC LIMIT ?`)
     .bind(...params, ...k.params, k.limit + 1)
     .all<Record<string, unknown>>();
-  return page(results.map(toListRow), k.limit, (r) => ({ createdAt: r.startedAt ?? r.queuedAt ?? 0, id: r.id }));
+  return page(results.map(toListRow), k.limit, (r) => ({ createdAt: r.queuedAt ?? r.startedAt ?? 0, id: r.id }));
 }
 
 /** One run inside the scope with its phases, or null — including when the run exists under another project. */

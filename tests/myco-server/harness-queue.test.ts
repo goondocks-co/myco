@@ -6,11 +6,12 @@
 import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
-import { dispatchTask, drainQueue, DRAIN_BATCH, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, HARNESS_MEMBER_ID, launchDispatch, LimitReached, prepareDispatch } from '@myco-server-worker/core/harness.js';
 import { heldBy, readDispatchLimits } from '@myco-server-worker/core/limits.js';
-import { claimRun, dispatchLoad } from '@myco-server-worker/core/runs.js';
+import { claimRun, dispatchLoad, launchQueued, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
+import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
@@ -182,5 +183,57 @@ describe('a titling past a limit', () => {
     f.clear('agent.limits.concurrent_runs');
     expect(await drainQueue(f.env, NOW + 2)).toBe(1);
     expect(JSON.parse(f.launches.at(-1)!.envVars.MYCO_TASK_PARAMS!)).toEqual({ session_id: 's1', mode: 'claim', timeoutSeconds: expect.any(Number) });
+  });
+});
+
+describe('the write is the admission', () => {
+  const none = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
+  const record = (id: string) => ({ id, agentId: 'myco-agent', task: 'container-smoke', provider: null, model: null, runContext: null, dispatchedBy: null, startedAt: NOW });
+
+  it('refuses a launch write at a limit in the same statement that would have written it, and admits under it', async () => {
+    const f = fixture();
+    f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
+    const scope = { projectId: 'proj_1' };
+    expect(await recordDispatch(f.env.db, scope, record('a'), { limits: { ...none, concurrent_runs: 1 }, now: NOW })).toBe(true);
+    expect(await recordDispatch(f.env.db, scope, record('b'), { limits: { ...none, concurrent_runs: 1 }, now: NOW })).toBe(false);
+    expect(f.run('b')).toBeNull();
+    expect(await recordDispatch(f.env.db, scope, record('b'), { limits: { ...none, concurrent_runs: 2 }, now: NOW })).toBe(true);
+    expect(await recordDispatch(f.env.db, scope, record('c'), { limits: { ...none, task_runs_per_hour: 2 }, now: NOW })).toBe(false);
+    expect(await recordDispatch(f.env.db, scope, record('c'), { limits: { ...none, task_runs_per_hour: 2 }, now: NOW + 3_600_001 })).toBe(true);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec) VALUES ('proj_1', 'q', 'myco-agent', 'container-smoke', 'queued', ?, 'fleet', '{}')`, [NOW]);
+    const launch = { task: 'container-smoke', dispatchedBy: 'cred_q', startedAt: NOW, runContext: null, provider: null, model: null };
+    seedCredential(f.sqlite, { id: 'cred_q', memberId: 'mem_harness', machineId: 'harness' });
+    expect(await launchQueued(f.env.db, scope, 'q', launch, { limits: { ...none, fleet: 3 }, now: NOW })).toBe(false);
+    expect(f.run('q')?.status).toBe('queued');
+    expect(await launchQueued(f.env.db, scope, 'q', launch, { limits: { ...none, fleet: 4 }, now: NOW })).toBe(true);
+    expect(f.run('q')?.status).toBe('pending');
+  });
+
+  it('revokes the credential a refused launch minted, and the dispatch lands in the queue instead', async () => {
+    const f = fixture();
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    expect(prepared.ok).toBe(true);
+    f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'live', 'myco-agent', 'digest-only', 'running', ?)`, [NOW]);
+    const spec = { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 };
+    await expect(launchDispatch(f.env, (prepared as { prepared: never }).prepared, spec, NOW, { limits: { ...none, concurrent_runs: 1 } })).rejects.toBeInstanceOf(LimitReached);
+    const credentials = f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE member_id = 'mem_harness'`).all() as Array<{ revoked_at: number | null }>;
+    expect(credentials).toHaveLength(1);
+    expect(credentials[0]!.revoked_at).toBe(NOW);
+    expect(f.launches).toHaveLength(0);
+    // The one dispatch path reads the load as free, loses the write to a run that lands between the read and the write, and queues.
+    f.setting('agent.limits.concurrent_runs', 2);
+    let raced = false;
+    const racing: ServerEnv = { ...f.env, db: { ...f.env.db, prepare: (sql: string) => {
+      if (!raced && sql.includes(`SELECT ?, ?, ?, ?, ?, ?, 'pending'`)) {
+        raced = true;
+        f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'live-2', 'myco-agent', 'digest-only', 'running', ?)`, [NOW]);
+      }
+      return f.env.db.prepare(sql);
+    } } };
+    const outcome = await dispatchPrepared(racing, (prepared as { prepared: never }).prepared, spec, NOW + 1);
+    expect(outcome).toMatchObject({ queued: true, heldBy: 'concurrent_runs' });
+    expect(f.run((outcome as { runId: string }).runId)?.status).toBe('queued');
+    expect(f.launches).toHaveLength(0);
   });
 });

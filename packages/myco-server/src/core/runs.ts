@@ -19,6 +19,7 @@
  *   update is retried FROM THE READ. Retrying from anywhere else re-applies a
  *   decision taken against a value that is no longer there.
  */
+import type { DispatchLimits } from './limits.js';
 import type { RelationalStore } from './adapters.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
 import { providerConfiguredFor, settingsWriter, type ProjectCapability } from './settings.js';
@@ -99,10 +100,37 @@ const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
    SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?), dry_run = ?
  WHERE project_id = ? AND id = ? AND status = 'pending' AND dispatched_by = ?`;
 
+/**
+ * The limit check, as part of the write that launches: each limit is either
+ * unset (its parameter NULL) or compared against the count the same statement
+ * reads, so two launches deciding at once cannot both pass a limit of one.
+ * Bound as: fleet, fleet, concurrent, concurrent, task-concurrent, task,
+ * task-concurrent, per-hour, task, hour-start, per-hour.
+ */
+const ADMISSION_WHERE = `
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND task = ?) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND started_at IS NOT NULL AND started_at >= ?) < ?)`;
+
+/** The limits a write is admitted against, or none: an unguarded write is a claim the dispatcher already decided elsewhere. */
+export interface WriteAdmission {
+  limits: DispatchLimits;
+  now: number;
+}
+
+const NO_LIMITS: DispatchLimits = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
+
+function admissionParams(task: string | null, admission: WriteAdmission | undefined): (string | number | null)[] {
+  const l = admission?.limits ?? NO_LIMITS;
+  const hourStart = (admission?.now ?? 0) - 3_600_000;
+  return [l.fleet, l.fleet, l.concurrent_runs, l.concurrent_runs, l.task_concurrent_runs, task, l.task_concurrent_runs, l.task_runs_per_hour, task, hourStart, l.task_runs_per_hour];
+}
+
 const RECORD_DISPATCH_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, provider, model, status, dry_run, started_at, run_context, dispatched_by)
   SELECT ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?
-   WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`;
+   WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)${ADMISSION_WHERE}`;
 
 const RUN_REF_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
    WHERE project_id = ? AND id = ?`;
@@ -132,10 +160,11 @@ export interface DispatchRecord {
  * runtime's claim moves it to `running` and can change none of that. Answers
  * false when the id is already taken.
  */
-export async function recordDispatch(db: RelationalStore, scope: ReadScope, record: DispatchRecord): Promise<boolean> {
+export async function recordDispatch(db: RelationalStore, scope: ReadScope, record: DispatchRecord, admission?: WriteAdmission): Promise<boolean> {
   const result = await db.prepare(RECORD_DISPATCH_SQL).bind(
     scope.projectId, record.id, record.agentId, record.task, record.provider, record.model, record.startedAt, record.runContext, record.dispatchedBy,
     scope.projectId, record.id,
+    ...admissionParams(record.task, admission),
   ).run();
   return result.meta.changes === 1;
 }
@@ -653,10 +682,13 @@ export async function recordQueued(db: RelationalStore, scope: ReadScope, record
 /** A queued run moves to `pending` for the credential its launch minted — once, and only from `queued`. */
 const LAUNCH_QUEUED_SQL = `UPDATE agent_runs
    SET status = 'pending', dispatched_by = ?, started_at = ?, run_context = ?, provider = COALESCE(?, provider), model = COALESCE(?, model), held_by = NULL
- WHERE project_id = ? AND id = ? AND status = 'queued'`;
+ WHERE project_id = ? AND id = ? AND status = 'queued'${ADMISSION_WHERE}`;
 
-export async function launchQueued(db: RelationalStore, scope: ReadScope, runId: string, launch: { dispatchedBy: string; startedAt: number; runContext: string | null; provider: string | null; model: string | null }): Promise<boolean> {
-  const result = await db.prepare(LAUNCH_QUEUED_SQL).bind(launch.dispatchedBy, launch.startedAt, launch.runContext, launch.provider, launch.model, scope.projectId, runId).run();
+export async function launchQueued(db: RelationalStore, scope: ReadScope, runId: string, launch: { task: string; dispatchedBy: string; startedAt: number; runContext: string | null; provider: string | null; model: string | null }, admission?: WriteAdmission): Promise<boolean> {
+  const result = await db.prepare(LAUNCH_QUEUED_SQL).bind(
+    launch.dispatchedBy, launch.startedAt, launch.runContext, launch.provider, launch.model, scope.projectId, runId,
+    ...admissionParams(launch.task, admission),
+  ).run();
   return result.meta.changes === 1;
 }
 

@@ -75,5 +75,8 @@ export const dispatchQueue: ParityScenario = {
     expect((await wake()).drained).toBe(1);
     expect(await rows([third.runId])).toEqual([{ id: third.runId, status: 'pending', heldBy: null, harness: 'record', credentialed: 1 }]);
     expect(await listed('queued')).toEqual([]);
+
+    // Nothing this scenario launched stays live for the next one to count.
+    await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id IN (${ids.map(lit).join(', ')})`);
   },
 };

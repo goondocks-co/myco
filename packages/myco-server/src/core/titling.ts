@@ -19,7 +19,7 @@ import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { sessionMaterialRows, sessionMaterialTailRows, type MaterialRow } from '../read/children.js';
 import { claimOwnerTitling, claimTitling, restoreTitlingStamp } from '../read/sessions.js';
-import { launchDispatch, prepareDispatch, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS, admitDispatch, enqueueDispatch } from './harness.js';
+import { dispatchPrepared, prepareDispatch, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 
 export const TITLING_TASK = 'title-summary';
 export const TITLE_MAX_CHARS = 80;
@@ -184,15 +184,13 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     };
     try {
       // A limit holds the run in the queue; the claim stands, and the run's own window opens when it launches.
-      const held = await admitDispatch(env, TITLING_TASK, now);
-      if (held !== null) {
-        const queued = await enqueueDispatch(env, prepared.prepared, spec, held, now);
-        emit({ kind: 'session_title_queued', projectId, sessionId, mode, runId: queued.runId, heldBy: held });
-        return { outcome: 'queued', runId: queued.runId };
+      const dispatched = await dispatchPrepared(env, prepared.prepared, spec, now);
+      if (dispatched.queued) {
+        emit({ kind: 'session_title_queued', projectId, sessionId, mode, runId: dispatched.runId, heldBy: dispatched.heldBy });
+        return { outcome: 'queued', runId: dispatched.runId };
       }
-      const launched = await launchDispatch(env, prepared.prepared, spec, now);
-      emit({ kind: 'session_title_dispatched', projectId, sessionId, mode, runId: launched.runId });
-      return { outcome: 'dispatched', runId: launched.runId };
+      emit({ kind: 'session_title_dispatched', projectId, sessionId, mode, runId: dispatched.runId });
+      return { outcome: 'dispatched', runId: dispatched.runId };
     } catch {
       // A launch the runtime refused: the session keeps its own attempt, and an owner may ask again at once.
       await restoreTitlingStamp(env.db, projectId, sessionId, now, previous);
