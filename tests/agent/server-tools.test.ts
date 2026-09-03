@@ -1,7 +1,8 @@
 /**
- * The title run's tools against the real routes: a refused write is a tool
+ * The materialized tools against the real routes: a refused write is a tool
  * answer the model can act on, never a failed run; a caller holding no run is
- * told the session is not found.
+ * told the session is not found. The sweep's tools survey by previews and pull
+ * a body only when asked for one.
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
@@ -9,8 +10,12 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
+import { insertSpore } from '@myco-server-worker/core/spores.js';
 import { ServerClient } from '@myco/member/transport.js';
-import { materializedSessionMaterialTool, materializedUpdateSessionTool } from '@myco/agent/runtime/server-tools.js';
+import {
+  materializedCreateSporeTool, materializedResolveSporeTool, materializedSessionMaterialTool,
+  materializedSporeTool, materializedSporesTool, materializedUpdateSessionTool,
+} from '@myco/agent/runtime/server-tools.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
 const budget = { connectTimeoutMs: 5_000, requestTimeoutMs: 10_000 };
@@ -34,8 +39,10 @@ async function setup() {
     }) as typeof fetch,
   );
   await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_1', agentId: 'myco-agent', task: 'title-summary', provider: 'anthropic', model: null, runContext: JSON.stringify({ session_id: 's1', mode: 'claim' }), dispatchedBy: minted.tokenId, startedAt: now });
-  e.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE id = 'run_1'`);
-  return { ...e, client: clientFor(minted.token) };
+  await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_sweep', agentId: 'myco-agent', task: 'supersession-sweep', provider: 'anthropic', model: null, runContext: JSON.stringify({ session_id: 's1' }), dispatchedBy: minted.tokenId, startedAt: now });
+  await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_smoke', agentId: 'myco-agent', task: 'container-smoke', provider: 'anthropic', model: null, runContext: null, dispatchedBy: minted.tokenId, startedAt: now });
+  e.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE id IN ('run_1', 'run_sweep', 'run_smoke')`);
+  return { ...e, now, client: clientFor(minted.token) };
 }
 
 describe('the title run\'s tools', () => {
@@ -56,5 +63,62 @@ describe('the title run\'s tools', () => {
     expect(counter.writes).toBe(1);
     expect(sqlite.query(`SELECT title, summary FROM sessions WHERE session_id = 's1'`).get()).toEqual({ title: 'Retry added', summary: 'Added a retry.' });
     expect(textOf(await update.handler({ session_id: 's1', title: 'Again', summary: 'again' }, {})).error).toContain('already carries a title');
+  });
+});
+
+describe('the sweep run\'s tools', () => {
+  it('survey by preview, read one body in full, record a wisdom spore and resolve its sources', async () => {
+    const { client, sqlite, db, now } = await setup();
+    const ctx = { client, budget, runId: 'run_sweep', agentId: 'myco-agent' };
+    const counter = { writes: 0 };
+    const body = `${'z'.repeat(400)} tail`;
+    for (const id of ['sp_a', 'sp_b', 'sp_c']) {
+      await insertSpore(db, { projectId: 'proj_1' }, {
+        id, agentId: 'myco-agent', sessionId: null, promptId: null, observationType: 'gotcha',
+        content: id === 'sp_a' ? body : `${id} body`, context: null, filePath: null, tags: null,
+        contentHash: null, properties: null, createdAt: now - 1_000,
+      });
+    }
+
+    const inventory = textOf(await materializedSporesTool(ctx).handler({ status: 'active' }, {}));
+    expect(inventory.total).toBe(3);
+    expect((inventory.spores as Array<{ preview: string }>).every((s) => s.preview.length <= 200)).toBe(true);
+    expect(JSON.stringify(inventory)).not.toContain('tail');
+
+    const one = textOf(await materializedSporeTool(ctx).handler({ id: 'sp_a' }, {}));
+    expect((one.spore as { content: string }).content).toBe(body);
+    expect(textOf(await materializedSporeTool(ctx).handler({ id: 'nope' }, {})).error).toBe('Spore not found: nope');
+
+    const create = materializedCreateSporeTool(ctx, counter);
+    const wisdom = textOf(await create.handler({ observation_type: 'wisdom', content: 'the merged note', tags: ['sweep'] }, {}));
+    const wisdomId = (wisdom.spore as { id: string }).id;
+    expect((wisdom.spore as { sessionId: string; agentId: string }).sessionId).toBe('s1');
+    expect(counter.writes).toBe(1);
+
+    const resolve = materializedResolveSporeTool(ctx, counter);
+    expect(textOf(await resolve.handler({ spore_id: 'sp_a', action: 'consolidate', new_spore_id: wisdomId }, {})))
+      .toEqual({ action: 'consolidate', spore: 'sp_a' });
+    expect(textOf(await resolve.handler({ spore_id: 'sp_b', action: 'supersede', new_spore_id: 'sp_c', reason: 'sp_c is complete' }, {})))
+      .toEqual({ action: 'supersede', spore: 'sp_b' });
+    expect(textOf(await resolve.handler({ spore_id: 'sp_c', action: 'obsolete' }, {})).error).toContain('reason is required for op: obsolete');
+    expect(textOf(await resolve.handler({ spore_id: 'nope', action: 'obsolete', reason: 'gone' }, {})).error).toBe('Spore not found: nope');
+    expect(counter.writes).toBe(3);
+    expect(sqlite.query(`SELECT id, status FROM spores WHERE id IN ('sp_a','sp_b','sp_c') ORDER BY id`).all())
+      .toEqual([{ id: 'sp_a', status: 'consolidated' }, { id: 'sp_b', status: 'superseded' }, { id: 'sp_c', status: 'active' }]);
+  });
+
+  it('answer a run that holds no spore surface as a tool error, writing nothing', async () => {
+    const { client, sqlite } = await setup();
+    const ctx = { client, budget, runId: 'run_smoke', agentId: 'myco-agent' };
+    const counter = { writes: 0 };
+    const answers = [
+      textOf(await materializedSporesTool(ctx).handler({}, {})),
+      textOf(await materializedSporeTool(ctx).handler({ id: 'sp_a' }, {})),
+      textOf(await materializedCreateSporeTool(ctx, counter).handler({ observation_type: 'gotcha', content: 'c' }, {})),
+      textOf(await materializedResolveSporeTool(ctx, counter).handler({ spore_id: 'sp_a', action: 'obsolete', reason: 'r' }, {})),
+    ];
+    expect(answers).toEqual(answers.map(() => ({ error: 'this run holds no spore surface' })));
+    expect(counter.writes).toBe(0);
+    expect(sqlite.query(`SELECT COUNT(*) c FROM spores`).get()).toEqual({ c: 0 });
   });
 });

@@ -35,6 +35,12 @@ export const MAX_SPORE_CONTENT_BYTES = 256 * 1024;
 export const DEFAULT_SPORE_LIMIT = 50;
 export const MAX_SPORE_LIMIT = 200;
 
+/** How much of a body an inventory listing carries, so a sweep can survey a whole vault without pulling it into a model's context. */
+export const SPORE_PREVIEW_CHARS = 200;
+
+/** The tasks whose runs hold the spore tools over the run routes. */
+export const SPORE_TOOL_TASKS: readonly string[] = ['supersession-sweep'];
+
 export interface SporeInsert {
   id: string;
   agentId: string;

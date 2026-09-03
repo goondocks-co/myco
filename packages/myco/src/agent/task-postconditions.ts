@@ -8,6 +8,13 @@ import { SKILL_EVOLVE_TASK_NAME } from './skill-evolve-output.js';
 /** Task name for vault-seed.yaml — matches the YAML's `name:` field. */
 const VAULT_SEED_TASK_NAME = 'vault-seed';
 
+/** Task name for supersession-sweep.yaml — matches the YAML's `name:` field. */
+const SUPERSESSION_SWEEP_TASK_NAME = 'supersession-sweep';
+
+/** The report action the sweep closes on, and the counts it carries. */
+const SUPERSESSION_REPORT_ACTION = 'supersession';
+const RESOLUTION_COUNT_KEYS = ['superseded', 'consolidated', 'obsoleted'] as const;
+
 interface PostconditionInput {
   runId: string;
   taskName?: string;
@@ -165,6 +172,40 @@ function validateVaultSeedRun({ runId }: PostconditionInput): string | null {
   return null;
 }
 
+/**
+ * supersession-sweep run-end validator.
+ *
+ * A sweep that resolves nothing is a normal outcome — most passes over a
+ * healthy vault find nothing to merge — so the contract is the report, not the
+ * resolutions: the run must close with a `supersession` report carrying its
+ * counts. The one shape rejected is a report that claims zero while the run's
+ * tool-call log shows a resolution landed; the log is authoritative, and a run
+ * whose report disagrees with it leaves an audit trail nobody can read.
+ */
+function validateSupersessionSweepRun({ runId }: PostconditionInput): string | null {
+  const reports = listReports(runId, { scope: ALL_PROJECTS_SCOPE });
+  const report = reports.find((r) => r.action === SUPERSESSION_REPORT_ACTION);
+  if (!report) {
+    return 'supersession-sweep completed without a vault_report with action "supersession"';
+  }
+
+  const toolCounts = countToolCallsByRun(runId, ['vault_resolve_spore']);
+  const resolveCount = toolCounts.vault_resolve_spore ?? 0;
+  if (resolveCount === 0) {
+    return null;
+  }
+
+  const details = asPlainRecord(report.details);
+  const reported = RESOLUTION_COUNT_KEYS
+    .map((key) => details?.[key])
+    .filter((value) => typeof value === 'number' || typeof value === 'string');
+  if (reported.length > 0 && reported.every((value) => isZeroUpdateValue(value))) {
+    return `supersession-sweep reported zero resolutions but ${resolveCount} vault_resolve_spore call(s) were made this run`;
+  }
+
+  return null;
+}
+
 const TASK_POSTCONDITION_RULES: Array<{
   taskNames: string[];
   validate: PostconditionValidator;
@@ -180,6 +221,10 @@ const TASK_POSTCONDITION_RULES: Array<{
   {
     taskNames: [VAULT_SEED_TASK_NAME],
     validate: validateVaultSeedRun,
+  },
+  {
+    taskNames: [SUPERSESSION_SWEEP_TASK_NAME],
+    validate: validateSupersessionSweepRun,
   },
 ];
 

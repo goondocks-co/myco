@@ -20,31 +20,35 @@ timeoutSeconds: 300
 prompt: |
   Review active spores for supersession opportunities. Budget: ~25 turns.
 
-  ## Phase 1 — Inventory (budget: 2 turns)
+  ## Phase 1 — Inventory (budget: 4 turns)
 
-  1. Call `vault_spores` with status "active" to see current observations
-  2. Group mentally by observation_type for systematic review
+  1. Call `vault_spores` with status "active" to list spores as previews —
+     id, observation type, importance, created time, and the first 200
+     characters of each body. Note the `total`: that is how many active
+     spores exist, and the page you were given may be smaller.
+  2. If `total` is larger than the page, call `vault_spores` again with
+     `offset` advanced by the page size until you have covered the total or
+     spent this phase's budget. Previews are the whole inventory — never try
+     to read every body.
 
-  ## Phase 2 — Semantic Duplicate Detection (budget: 10 turns)
+  ## Phase 2 — Candidate clusters (budget: 8 turns)
 
-  For each observation type (gotcha, decision, discovery, trade_off, bug_fix):
-  1. Pick the 2-3 MOST RECENT spores of that type (`vault_spores` returns
-     them in recency order). Use their content as `vault_search_semantic` queries.
-  2. Call `vault_search_semantic` with each representative's content to find
-     similar active spores
-  3. When you find duplicates or near-duplicates, note the cluster
-
-  If `vault_search_semantic` is unavailable (no embeddings), use `vault_spores`
-  filtered by observation_type and compare manually. Report the limitation.
+  1. Group the previews by observation_type (gotcha, decision, discovery,
+     trade_off, bug_fix, wisdom, pattern, architecture). Within a type, look
+     for previews naming the same component, file, error, or decision.
+  2. A group of previews that look like the same topic is a candidate
+     cluster. A preview with no neighbour is not a candidate — leave it.
+  3. Only for a candidate cluster, call `vault_spore` with each member's id
+     to read the full body, its lineage, and its context. Budget these
+     reads: at most ~10 full reads this run, spent on the clusters most
+     likely to resolve. Prefer clusters of 3+ over pairs.
 
   ## Phase 3 — Resolution and Wisdom Creation (budget: 10 turns)
 
-  Decision tree for each cluster:
+  Decision tree for each cluster, judged on the FULL bodies you read:
   - 3+ related active spores on same topic → create wisdom, consolidate all
   - Exactly 2 related spores → keep the better one, supersede the other
   - 1 spore (no duplicates) → no action
-
-  For each cluster:
 
   **If 3 or more related active spores cover the same topic:**
   1. Create a wisdom spore via `vault_create_spore`:
@@ -53,39 +57,44 @@ prompt: |
      - Content MUST preserve ALL specific details from the sources —
        file paths, error messages, concrete values. Wisdom is a
        comprehensive reference, not a vague summary.
-  2. Resolve EACH source via `vault_resolve_spore` action "consolidate"
-     so they are removed from search results and context injection.
+  2. Resolve EACH source via `vault_resolve_spore` with action
+     "consolidate", `spore_id` the source and `new_spore_id` the wisdom
+     spore you just created, so they are removed from search results and
+     context injection.
 
   **If 2 related spores cover the same topic (pair):**
   1. Determine which spore has the best content (most complete, most accurate)
   2. Call `vault_resolve_spore` with action "supersede" on the inferior spore:
+     - spore_id: the inferior spore's ID
      - new_spore_id: the kept spore's ID
      - reason: specific explanation (not just "duplicate")
 
   **For truly outdated spores (no longer relevant, with no replacement —
   e.g. a dropped feature):**
   - Call `vault_resolve_spore` with action "obsolete"
+  - spore_id: the outdated spore's ID
   - reason: explain what changed (required)
 
   Only supersede or consolidate when the new information genuinely replaces
-  the old. Release state is supporting evidence only: do not obsolete or
-  supersede solely because a spore is unreleased, unknown, or unreconciled.
-  When in doubt, keep both.
+  the old. When in doubt, keep both.
 
   ## Phase 4 — Report (budget: 2 turns)
 
-  Call `vault_report` with action "supersession":
-  - Spores reviewed: N
-  - Superseded: N (with reasons summary)
-  - Obsoleted: N (with reasons summary)
-  - Kept (no action): N
+  Call `vault_report` with action "supersession". Set `details` to a
+  structured object with the counts:
+  - `reviewed`: how many spores you inventoried in Phase 1
+  - `superseded`: how many spores you superseded
+  - `consolidated`: how many spores you consolidated
+  - `obsoleted`: how many spores you obsoleted
+
+  In the summary text, name each resolution and its reason. A run that
+  found nothing to resolve still reports, with
+  `reviewed: N, superseded: 0, consolidated: 0, obsoleted: 0` — that is a
+  normal, successful outcome, not a failure.
 
 toolOverrides:
   - vault_spores
-  - vault_search_semantic
-  - vault_release_state
-  - vault_state
+  - vault_spore
   - vault_create_spore
   - vault_resolve_spore
-  - vault_set_state
   - vault_report
