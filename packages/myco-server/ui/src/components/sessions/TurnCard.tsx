@@ -98,8 +98,9 @@ function SteeringChild({ projectId, sessionId, child }: { projectId: string; ses
 /** What Myco added to this prompt: a collapsed line, opening on the observations it served, each a link to the observation itself. */
 function Injection({ projectId, injection }: { projectId: string; injection: TurnInjection }) {
   const [open, setOpen] = useState(false);
-  const count = injection.sporeIds.length;
-  if (count === 0) return null;
+  const count = injection.spores.length;
+  const missing = injection.sporeIds.length - count;
+  if (injection.sporeIds.length === 0) return null;
   return (
     <div className="px-4 pb-3" data-testid="turn-injection">
       <button
@@ -126,6 +127,9 @@ function Injection({ projectId, injection }: { projectId: string; injection: Tur
               </Link>
             </li>
           ))}
+          {missing > 0 && (
+            <li className="px-2.5 py-1.5 font-sans text-xs text-on-surface-variant">{missing} no longer in the vault</li>
+          )}
         </ul>
       )}
     </div>

@@ -76,7 +76,23 @@ describe('the gates, in order', () => {
     expect(rows(sqlite)).toEqual([]);
   });
 
-  it('closes the capability gate ahead of every other, so a Project not admitted is told exactly that', async () => {
+  it('closes the earlier gate of every adjacent pair, so a swapped order is a failure rather than a silent re-labelling', async () => {
+    const { db } = store();
+    await insertSpore(db, SCOPE, spore('sp1'));
+    const short = 'x'.repeat(MIN_PROMPT_CHARS - 1);
+
+    // Capability off and the leaf off: the Project is told it is not admitted.
+    expect((await select(db, { capabilityOn: false, leaves: { enabled: false, maxPerPrompt: 3 } })).skipped).toBe('capability');
+    // The leaf off and the prompt short: the Deployment's switch answers.
+    expect((await select(db, { leaves: { enabled: false, maxPerPrompt: 3 }, prompt: short })).skipped).toBe('disabled');
+    // The prompt short and the cap zero: the prompt answers.
+    expect((await select(db, { leaves: { enabled: true, maxPerPrompt: 0 }, prompt: short })).skipped).toBe('short_prompt');
+    // The cap zero and no spore to serve: the cap answers, and the pool is never read.
+    const bare = store();
+    expect((await select(bare.db, { leaves: { enabled: true, maxPerPrompt: 0 } })).skipped).toBe('zero_max');
+  });
+
+  it('answers the shut gate with no spores and no rendered context', async () => {
     const { db } = store();
     const shut = await select(db, { capabilityOn: false, leaves: { enabled: false, maxPerPrompt: 0 }, prompt: 'hi' });
     expect([shut.skipped, shut.spores, shut.context]).toEqual(['capability', [], '']);
@@ -174,6 +190,12 @@ describe('the record', () => {
       spores: [{ id: 'a', observationType: 'decision', preview: 'the selector reads recency' }],
     });
     expect(await injectionForPrompt(db, SCOPE, SESSION, 'p9')).toBeNull();
+  });
+
+  it('is refused for a project no table holds', () => {
+    const { sqlite } = store();
+    expect(() => sqlite.query(`INSERT INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, created_at)
+      VALUES ('proj_absent', 'sess_1', 'p1', 'h1', '[]', 1)`).run()).toThrow(/FOREIGN KEY constraint failed/);
   });
 
   it('keeps every read inside its Project', async () => {

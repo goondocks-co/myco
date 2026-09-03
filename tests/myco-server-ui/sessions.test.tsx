@@ -452,7 +452,7 @@ describe('Session detail', () => {
         prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: 'Please rename the project card', blobKey: null, createdAt: NOW - 3000 },
         responses: [], attachments: [], plans: [],
         injection: {
-          sporeIds: ['sp1', 'sp2'], createdAt: NOW - 3100,
+          sporeIds: ['sp1', 'sp2', 'sp_gone'], createdAt: NOW - 3100,
           spores: [
             { id: 'sp1', observationType: 'decision', preview: 'the selector reads recency' },
             { id: 'sp2', observationType: 'bug_fix', preview: 'the hook answers before the event lands' },
@@ -465,12 +465,15 @@ describe('Session detail', () => {
     const first = await screen.findByTestId(`turn-${P1}`);
     const row = await within(first).findByTestId('turn-injection');
     expect(row.textContent).toContain('Myco added 2 observations');
+    expect(row.textContent).not.toContain('Myco added 3 observations');
     expect(within(row).queryByText('the selector reads recency')).toBeNull();
     fireEvent.click(within(row).getByRole('button'));
     expect((await within(row).findByText('the selector reads recency')).textContent).toBeTruthy();
     expect(within(row).getByText('Bug Fix')).toBeTruthy();
     const links = within(row).getAllByRole('link');
     expect(links.map((l) => l.getAttribute('href'))).toEqual(['/p/x/spores/sp1', '/p/x/spores/sp2']);
+    // The record names three; two are still there, and the line counts the third rather than the label overstating.
+    expect(within(row).getByText('1 no longer in the vault')).toBeTruthy();
   });
 
   it('shows no observation row on a turn Myco added nothing to', async () => {

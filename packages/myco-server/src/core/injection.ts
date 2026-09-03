@@ -2,16 +2,27 @@
  * What the prompt hook is served: the spores that go into one prompt, and the
  * record of having served them.
  *
- * This module OWNS `spore_injections`. The record's shape encodes two rules the
- * 1.4 daemon holds across a status allowlist, a session-wide exclusion set and a
- * UNIQUE content hash:
+ * This module OWNS `spore_injections`. Its consumer is the member route
+ * `POST /context/prompt` (#1026): the route calls the selector and hands the
+ * rendered context to the hook. The `INSERT OR IGNORE` and the `meta.changes`
+ * it answers from are the pattern `core/resume.ts` and `core/runs.ts` already
+ * prove on both targets — the store decides, and the caller reads the decision
+ * off the write.
  *
- * **One spore per session.** A spore already served in this session is out of
- * the pool, so an observation is not repeated prompt after prompt.
+ * The record carries what 1.4 spreads across a status allowlist, a session-wide
+ * exclusion set and a UNIQUE content hash, and the two rules hold to different
+ * strengths:
  *
- * **One prompt content per session.** The primary key is
- * `(project_id, session_id, prompt_hash)`, and the insert is `INSERT OR IGNORE`:
- * a prompt resubmitted with the same text serves nothing a second time.
+ * **A prompt's content is served once per session — structural.** The primary
+ * key is `(project_id, session_id, prompt_hash)` and the insert is
+ * `INSERT OR IGNORE`, so a prompt resubmitted with the same text serves nothing
+ * a second time whatever the caller does.
+ *
+ * **A spore already served is out of the pool as of the last committed
+ * record.** The exclusion set is a read, not a constraint: two prompts of one
+ * session that arrive together both read the set before either writes, and each
+ * may then serve the same spore. A repeated observation is the cost of leaving
+ * the prompt hook off a lock.
  *
  * The row names a session and a prompt and holds NO foreign key to either. The
  * prompt hook answers before the prompt event lands on the server, so a record
@@ -182,6 +193,9 @@ function parseIds(raw: string): string[] {
  * leaf, the prompt's length, the cap, then the pool — and each answers by name,
  * so a caller reports which gate closed rather than an empty answer that could
  * mean any of them.
+ *
+ * The record names every spore selected. The rendered context stops at the
+ * token budget, so a prompt may carry fewer lines than the record holds ids.
  */
 export async function selectSporesForPrompt(
   db: RelationalStore,
