@@ -37,6 +37,8 @@ export interface CloudflareBindings extends OwnerBindings {
   CLOCK?: DurableObjectNamespace<DeploymentClock>;
   /** `record`: a launch that records the run and starts nothing — the parity harness's runtime, never an operator's. Refused beside a real runtime. */
   HARNESS_LAUNCH_MODE?: string;
+  /** The origin this Deployment is reached at, rendered into the deploy config from the deployment record. */
+  MYCO_ORIGIN?: string;
 }
 
 // Compile-time proof that the platform's own types satisfy the adapter interfaces.
@@ -110,6 +112,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
   }
   return {
     ...(bindings.HARNESS_LAUNCH_MODE === 'record' && bindings.HARNESS === undefined ? { harnessLaunch: recordingLaunch(bindings) } : {}),
+    ...(bindings.MYCO_ORIGIN === undefined || bindings.MYCO_ORIGIN === '' ? {} : { origin: bindings.MYCO_ORIGIN }),
     // The runtime hands every request a deferral, and the work rides it past the
     // answer. A caller that supplies none has asked for the answer alone: nothing
     // starts, so no work of one request can outlive it unobserved.

@@ -27,6 +27,8 @@ export interface BunServerConfig extends OwnerBindings {
   now?: () => number;
   /** The harness launch this process is given — the self-hosted runner, or the parity harness's recording launch. Absent, every dispatch answers that no runtime is bound. */
   harnessLaunch?: (spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }) => Promise<void>;
+  /** The origin this Deployment is reached at (`MYCO_ORIGIN`): where the clock's runs call back to. */
+  origin?: string;
 }
 
 /** This store reports a digest rejection in its own words; nothing else does. */
@@ -91,6 +93,7 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
     },
     platform: bunPlatform(config),
     ...(config.harnessLaunch === undefined ? {} : { harnessLaunch: config.harnessLaunch }),
+    ...(config.origin === undefined || config.origin === '' ? {} : { origin: config.origin }),
     // Self-hosted holds the key the way this project already holds machine
     // secrets: an env value outside the store it protects.
     wrappingKey: wrappingKeyFromText(async () => config.SECRET_WRAP_KEY, 'SECRET_WRAP_KEY'),

@@ -26,7 +26,8 @@ export const dispatchQueue: ParityScenario = {
       const res = await fetch(`${target.url}/api/harness/dispatch`, {
         method: 'POST',
         headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-        body: JSON.stringify({ task: 'container-smoke', projectId: target.projectId, timeoutSeconds: 120 }),
+        // A task with no per-day ceiling: the queue is the thing under test, not the clock's cap.
+        body: JSON.stringify({ task: 'digest-only', projectId: target.projectId, timeoutSeconds: 120 }),
       });
       expect(res.status).toBe(200);
       return (await res.json()) as { runId: string; queued?: boolean; heldBy?: string };
@@ -55,17 +56,21 @@ export const dispatchQueue: ParityScenario = {
         ? { id, status: 'pending', heldBy: null, harness: 'record', credentialed: 1 }
         : { id, status: 'queued', heldBy: 'concurrent_runs', harness: null, credentialed: 0 }
     )));
-    const queued = await listed('queued');
-    expect(queued.map((r) => [r.id, r.position])).toEqual([[third.runId, 1], [second.runId, 0]]);
+    // Two asks in the same instant take their places by id; the queue's own positions say which is first.
+    const queued = (await listed('queued')).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    expect(queued.map((r) => r.id).sort()).toEqual([second.runId, third.runId].sort());
+    expect(queued.map((r) => r.position)).toEqual([0, 1]);
+    const front = queued[0]!.id;
+    const back = queued[1]!.id;
 
     // Nothing has changed, so a wake launches nothing.
     expect((await wake()).drained).toBe(0);
 
-    // The first run ends; the wake spends its place on the oldest queued run, and the other keeps waiting.
+    // The first run ends; the wake spends its place on the run at the front of the queue, and the other keeps waiting.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id = ${lit(first.runId)}`);
     expect((await wake()).drained).toBe(1);
-    expect(await rows([second.runId, third.runId].sort())).toEqual([second.runId, third.runId].sort().map((id) => (
-      id === second.runId
+    expect(await rows([front, back].sort())).toEqual([front, back].sort().map((id) => (
+      id === front
         ? { id, status: 'pending', heldBy: null, harness: 'record', credentialed: 1 }
         : { id, status: 'queued', heldBy: 'concurrent_runs', harness: null, credentialed: 0 }
     )));
@@ -73,7 +78,7 @@ export const dispatchQueue: ParityScenario = {
     // No limit: the wake launches what is left.
     await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.limits.concurrent_runs'`);
     expect((await wake()).drained).toBe(1);
-    expect(await rows([third.runId])).toEqual([{ id: third.runId, status: 'pending', heldBy: null, harness: 'record', credentialed: 1 }]);
+    expect(await rows([back])).toEqual([{ id: back, status: 'pending', heldBy: null, harness: 'record', credentialed: 1 }]);
     expect(await listed('queued')).toEqual([]);
 
     // Nothing this scenario launched stays live for the next one to count.
