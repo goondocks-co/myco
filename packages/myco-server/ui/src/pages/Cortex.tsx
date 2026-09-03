@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { Badge } from '../components/ui/badge';
+import { inlineLink } from '../components/ui/inline-link';
 import { MarkdownContent } from '../components/ui/markdown-content';
 import { PageContainer } from '../components/ui/page-container';
 import { PageHeader } from '../components/ui/page-header';
@@ -56,7 +57,7 @@ function Instructions({ projectId }: { projectId: string }) {
               <div className="flex flex-wrap gap-2">
                 <Badge variant="secondary" title={formatDateTime(row.generatedAt)}>generated {formatRelative(row.generatedAt)}</Badge>
                 {row.sourceRunId !== null && (
-                  <Link to={`${runBase}/${encodeURIComponent(row.sourceRunId)}`} className="font-sans text-xs text-primary underline">from run {row.sourceRunId}</Link>
+                  <Link to={`${runBase}/${encodeURIComponent(row.sourceRunId)}`} className={inlineLink}>from run {row.sourceRunId}</Link>
                 )}
               </div>
             }>

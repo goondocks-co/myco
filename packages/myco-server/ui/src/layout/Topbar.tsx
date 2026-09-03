@@ -18,6 +18,7 @@ const PROJECT_PAGES: Record<string, string> = {
   '': 'Overview',
   sessions: 'Sessions',
   cortex: 'Cortex',
+  spores: 'Spores',
   skills: 'Skills',
   runs: 'Agent runs',
   access: 'Access',

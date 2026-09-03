@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Bot, ChevronDown, ChevronRight } from 'lucide-react';
+import { inlineLink } from '../ui/inline-link';
 import { Lightbox } from '../ui/lightbox';
 import { Skeleton } from '../ui/skeleton';
 import { Surface } from '../ui/surface';
@@ -45,7 +46,7 @@ function Attachments({ projectId, attachments }: { projectId: string; attachment
         </button>
       ))}
       {files.map((a) => (
-        <a key={a.attachmentId} href={blobUrl(projectId, a.blobKey)} className="font-sans text-xs text-primary underline">Download {a.description ?? a.attachmentId}</a>
+        <a key={a.attachmentId} href={blobUrl(projectId, a.blobKey)} className={inlineLink}>Download {a.description ?? a.attachmentId}</a>
       ))}
       {lightbox !== null && (
         <Lightbox images={images.map((a) => ({ src: blobUrl(projectId, a.blobKey), alt: a.description ?? a.attachmentId }))} index={lightbox} onNavigate={setLightbox} onClose={() => setLightbox(null)} />

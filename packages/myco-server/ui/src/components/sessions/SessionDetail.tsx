@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Check, Copy, Loader2, Sparkles, X } from 'lucide-react';
 import { Badge } from '../ui/badge';
+import { inlineLink } from '../ui/inline-link';
 import { MetricCard } from '../ui/metric-card';
 import { PageLoading } from '../ui/page-loading';
 import { Panel } from '../ui/panel';
@@ -13,7 +14,8 @@ import {
   type AttachmentRow, type PlanRow, type SessionRow, type TurnRow,
 } from '../../hooks/use-sessions';
 import { useQueryClient } from '@tanstack/react-query';
-import { useRun } from '../../hooks/use-intelligence';
+import { useRun, useSpores } from '../../hooks/use-intelligence';
+import { formatLabel, sporePreview, statusVariant } from '../spores/labels';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatRelative } from '../../lib/format';
@@ -25,13 +27,16 @@ import { TurnTimeline } from './TurnTimeline';
 const TABS = [
   { id: 'conversation', label: 'Conversation' },
   { id: 'plans', label: 'Plans' },
+  { id: 'spores', label: 'Spores' },
   { id: 'attachments', label: 'Attachments' },
   { id: 'transcript', label: 'Transcript' },
 ];
 const TAB_IDS = new Set(TABS.map((t) => t.id));
 
+/** How many of a session's spores the tab lists; the count above the list says how many there are. */
+const SESSION_SPORE_LIMIT = 100;
+
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
-const link = 'font-sans text-xs text-primary underline';
 
 export function SessionDetail({ projectId, sessionId }: { projectId: string; sessionId: string }) {
   const detail = useSession(projectId, sessionId);
@@ -66,6 +71,7 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
             <SubtabPill tabs={TABS} activeTab={tab} onTabChange={setTab} className="mb-4" />
             {tab === 'conversation' && <TurnTimeline projectId={projectId} sessionId={sessionId} promptCount={detail.data.counts.prompts} />}
             {tab === 'plans' && <Plans projectId={projectId} sessionId={sessionId} wanted={params.get('plan')} />}
+            {tab === 'spores' && <Spores projectId={projectId} sessionId={sessionId} />}
             {tab === 'attachments' && <Attachments projectId={projectId} sessionId={sessionId} />}
             {tab === 'transcript' && <Transcript projectId={projectId} sessionId={sessionId} />}
           </div>
@@ -220,7 +226,7 @@ function Metadata({ projectId, session }: { projectId: string; session: SessionR
         <MetaItem label={session.endedAt === null ? 'Last received' : 'Ended'}>{formatDateTime(session.endedAt ?? session.lastReceivedAt)}</MetaItem>
         {session.parentSessionId !== null && (
           <MetaItem label="Parent">
-            <Link to={`/p/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(session.parentSessionId)}`} className={link}>
+            <Link to={`/p/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(session.parentSessionId)}`} className={inlineLink}>
               {session.parentSessionId}{session.parentReason ? ` (${session.parentReason})` : ''}
             </Link>
           </MetaItem>
@@ -244,6 +250,48 @@ function Plans({ projectId, sessionId, wanted }: { projectId: string; sessionId:
           {plans.rows.map((plan) => <PlanCard key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} defaultOpen={plan.status === 'in_progress' || plan.planKey === wanted} />)}
           {plans.hasMore && <button type="button" className={button} onClick={plans.more}>Load more</button>}
         </div>
+      )}
+    </PageLoading>
+  );
+}
+
+/** The spores this session produced, newest first, each opening on the Spores page. Every status is listed — a spore another session has already replaced still came out of this one. */
+function Spores({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+  const spores = useSpores(projectId, { session: sessionId, limit: SESSION_SPORE_LIMIT });
+  const rows = spores.data?.spores ?? [];
+  const total = spores.data?.total ?? 0;
+  return (
+    <PageLoading isLoading={spores.isPending} error={spores.error}>
+      {rows.length === 0 ? (
+        <div className="flex h-32 items-center justify-center rounded-lg border border-[var(--ghost-border)] bg-surface-container-low/50">
+          <span className="font-sans text-sm text-on-surface-variant">No observations were saved from this session yet.</span>
+        </div>
+      ) : (
+        <>
+        <div className="mb-2 flex items-baseline justify-between gap-3">
+          <span className="myco-eyebrow-sm">{formatCount(total, 'spore')}</span>
+          {total > rows.length && (
+            <span className="font-sans text-xs text-on-surface-variant">The {rows.length} most recent are listed here.</span>
+          )}
+        </div>
+        <ul className="flex flex-col gap-2" aria-label="Spores">
+          {rows.map((spore) => (
+            <li key={spore.id}>
+              <Link
+                to={`/p/${encodeURIComponent(projectId)}/spores/${encodeURIComponent(spore.id)}`}
+                className="block rounded-lg border border-[var(--ghost-border)] px-3 py-2 transition-colors hover:bg-surface-container"
+              >
+                <div className="flex items-center gap-1.5">
+                  <Badge variant="secondary" className="font-mono text-[10px]">{formatLabel(spore.observationType)}</Badge>
+                  {spore.status !== 'active' && <Badge variant={statusVariant(spore.status)} className="font-mono text-[10px]">{formatLabel(spore.status)}</Badge>}
+                  <span className="ml-auto font-mono text-[10px] text-on-surface-variant" title={formatDateTime(spore.createdAt)}>{formatRelative(spore.createdAt)}</span>
+                </div>
+                <p className="m-0 mt-1 truncate font-sans text-sm text-on-surface">{sporePreview(spore.content)}</p>
+              </Link>
+            </li>
+          ))}
+        </ul>
+        </>
       )}
     </PageLoading>
   );
@@ -281,7 +329,7 @@ function Attachments({ projectId, sessionId }: { projectId: string; sessionId: s
             <section key={group.key} aria-label={group.label} className="flex flex-col gap-2">
               <div className="flex items-baseline justify-between gap-3">
                 <h3 className="min-w-0 truncate font-sans text-xs font-medium uppercase tracking-widest text-on-surface-variant">{group.label}</h3>
-                {group.turn !== null && <Link to={`?turn=${encodeURIComponent(group.turn)}`} className={cn(link, 'shrink-0')}>Open the turn</Link>}
+                {group.turn !== null && <Link to={`?turn=${encodeURIComponent(group.turn)}`} className={cn(inlineLink, 'shrink-0')}>Open the turn</Link>}
               </div>
               <ul className="grid gap-3 sm:grid-cols-2" aria-label={`Attachments of ${group.label}`}>
                 {group.rows.map((a) => (
@@ -289,7 +337,7 @@ function Attachments({ projectId, sessionId }: { projectId: string; sessionId: s
                     {RENDERABLE_IMAGE_TYPES.includes(a.mediaType) ? (
                       <img src={blobUrl(projectId, a.blobKey)} alt={a.description ?? a.attachmentId} className="max-h-64 w-auto rounded-md" />
                     ) : (
-                      <a href={blobUrl(projectId, a.blobKey)} className={link}>Download {a.description ?? a.attachmentId}</a>
+                      <a href={blobUrl(projectId, a.blobKey)} className={inlineLink}>Download {a.description ?? a.attachmentId}</a>
                     )}
                     <div className="mt-2 font-sans text-xs text-on-surface-variant">{a.mediaType} · {formatBytes(a.byteSize)} · {formatRelative(a.createdAt)}</div>
                   </li>
@@ -331,7 +379,7 @@ function Transcript({ projectId, sessionId }: { projectId: string; sessionId: st
           <ul className="mt-3 flex flex-col gap-1" aria-label="Transcript segments">
             {transcript.data.segments.map((s) => (
               <li key={s.baseOffset} className="flex items-center gap-3 font-mono text-xs">
-                <a href={blobUrl(projectId, s.blobKey)} target="_blank" rel="noreferrer" className={link}>bytes {s.baseOffset.toLocaleString()}–{(s.baseOffset + s.length).toLocaleString()}</a>
+                <a href={blobUrl(projectId, s.blobKey)} target="_blank" rel="noreferrer" className={inlineLink}>bytes {s.baseOffset.toLocaleString()}–{(s.baseOffset + s.length).toLocaleString()}</a>
                 <span className="text-on-surface-variant">{formatBytes(s.length)} · {formatRelative(s.createdAt)}</span>
               </li>
             ))}

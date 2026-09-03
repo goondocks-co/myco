@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { CheckCircle2, ChevronDown, ChevronRight, XCircle } from 'lucide-react';
+import { inlineLink } from '../ui/inline-link';
 import { Skeleton } from '../ui/skeleton';
 import { blobUrl, useTurnToolCalls, type ToolCallRow } from '../../hooks/use-sessions';
 import { formatBytes, formatMillis } from '../../lib/format';
 import { cn } from '../../lib/cn';
 
-const link = 'font-sans text-xs text-primary underline';
 
 /** The first file a tool call named, for the row's one-line summary. */
 function firstFile(row: ToolCallRow): string | null {
@@ -51,7 +51,7 @@ function ToolCallItem({ projectId, row }: { projectId: string; row: ToolCallRow 
                   {row.inputPreview}{row.inputBytes !== null && row.inputBytes > row.inputPreview.length ? '…' : ''}
                 </pre>
               )}
-              {row.inputBlobKey !== null && <a href={blobUrl(projectId, row.inputBlobKey)} target="_blank" rel="noreferrer" className={link}>Full input</a>}
+              {row.inputBlobKey !== null && <a href={blobUrl(projectId, row.inputBlobKey)} target="_blank" rel="noreferrer" className={inlineLink}>Full input</a>}
             </div>
           )}
           {(row.outputPreview !== null || row.outputBlobKey !== null) && (
@@ -60,7 +60,7 @@ function ToolCallItem({ projectId, row }: { projectId: string; row: ToolCallRow 
               {row.outputPreview !== null && (
                 <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-container-lowest p-2 font-mono text-xs text-on-surface">{row.outputPreview}</pre>
               )}
-              {row.outputBlobKey !== null && <a href={blobUrl(projectId, row.outputBlobKey)} target="_blank" rel="noreferrer" className={link}>Full output</a>}
+              {row.outputBlobKey !== null && <a href={blobUrl(projectId, row.outputBlobKey)} target="_blank" rel="noreferrer" className={inlineLink}>Full output</a>}
             </div>
           )}
           {row.errorMessage !== null && (
