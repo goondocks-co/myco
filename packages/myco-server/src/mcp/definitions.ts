@@ -494,6 +494,10 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           "type": "string",
           "description": "Reason for op: \"supersede\", \"consolidate\", or \"obsolete\" (required for \"obsolete\")"
         },
+        "session_id": {
+          "type": "string",
+          "description": "Session id the spore belongs to for op: \"save\" and \"consolidate\", or the session acting for op: \"supersede\" and \"obsolete\"; from the Session:: line when known"
+        },
         "tags": {
           "type": "array",
           "items": {

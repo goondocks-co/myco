@@ -137,11 +137,12 @@ function filters(scope: ReadScope, o: ListSporesOptions): { where: string; param
   return { where: `WHERE ${conditions.join(' AND ')}`, params };
 }
 
+/** The id breaks a tie on the instant, so two spores written in the same millisecond hold one order across every page of an offset walk. */
 export async function listSpores(db: RelationalStore, scope: ReadScope, o: ListSporesOptions = {}): Promise<SporeRow[]> {
   const { where, params } = filters(scope, o);
   const limit = Math.min(o.limit ?? DEFAULT_SPORE_LIMIT, MAX_SPORE_LIMIT);
   const { results } = await db
-    .prepare(`SELECT ${COLUMNS} FROM spores ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .prepare(`SELECT ${COLUMNS} FROM spores ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
     .bind(...params, limit, o.offset ?? 0).all<SporeRow>();
   return results;
 }
@@ -205,6 +206,27 @@ export async function listSupersedingSporeIds(
   const { results } = await db
     .prepare(`SELECT DISTINCT new_spore_id AS id FROM resolution_events
        WHERE project_id = ? AND spore_id = ? AND action = 'supersede' AND new_spore_id IS NOT NULL
+       ORDER BY created_at DESC LIMIT ?`)
+    .bind(scope.projectId, sporeId, limit).all<{ id: string }>();
+  return results.map((r) => r.id);
+}
+
+/**
+ * Every spore this one replaced, newest first.
+ *
+ * The same events read from the other end: a supersede names one predecessor
+ * and a consolidate names every source it merged, so a reader arriving at a
+ * replacement sees what it grew out of rather than only where it leads.
+ */
+export async function listSupersededSporeIds(
+  db: RelationalStore,
+  scope: ReadScope,
+  sporeId: string,
+  limit = 10,
+): Promise<string[]> {
+  const { results } = await db
+    .prepare(`SELECT DISTINCT spore_id AS id FROM resolution_events
+       WHERE project_id = ? AND new_spore_id = ? AND action IN ('supersede', 'consolidate')
        ORDER BY created_at DESC LIMIT ?`)
     .bind(scope.projectId, sporeId, limit).all<{ id: string }>();
   return results.map((r) => r.id);

@@ -105,6 +105,58 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_spores', { op: 'obsolete', id: 'nope', reason: 'r' })).result).toEqual({ ok: false, error: 'spore_id not found' });
   });
 
+  it('files a spore under the session the caller names, with that session\'s latest prompt, and answers one refusal for every id the caller\'s machine does not hold', async () => {
+    const { call, sqlite, t1, t2 } = await setup();
+    sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+      VALUES ('proj_1', 'sess_mine', 'machine_1', ?, 1000, 1000)`).run(t1.tokenId);
+    sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+      VALUES ('proj_1', 'sess_theirs', 'machine_2', ?, 1000, 1000)`).run(t2.tokenId);
+    const prompt = sqlite.query(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at)
+      VALUES ('proj_1', ?, 'sess_mine', ?, 'user', 'h', ?, ?, ?, ?)`);
+    prompt.run('p_first', 'e1', 1_000, 1_000, t1.tokenId, 1_000);
+    prompt.run('p_last', 'e2', 2_000, 2_000, t1.tokenId, 2_000);
+
+    const saved = (await call(t1.token, 'myco_spores', { op: 'save', type: 'decision', content: 'named', session_id: 'sess_mine' })).result;
+    expect(sqlite.query(`SELECT session_id, prompt_id FROM spores WHERE id = ?`).get(saved.id)).toEqual({ session_id: 'sess_mine', prompt_id: 'p_last' });
+
+    const refusal = { ok: false, error: 'session_id not found' };
+    expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'decision', content: 'x', session_id: 'sess_nowhere' })).result).toEqual(refusal);
+    expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'decision', content: 'x', session_id: 'sess_theirs' })).result).toEqual(refusal);
+    expect((sqlite.query(`SELECT COUNT(*) c FROM spores WHERE content = 'x'`).get() as any).c).toBe(0);
+
+    const second = (await call(t1.token, 'myco_spores', { op: 'save', type: 'decision', content: 'replacement', session_id: 'sess_mine' })).result;
+    expect((await call(t1.token, 'myco_spores', { op: 'supersede', old_spore_id: saved.id, new_spore_id: second.id, session_id: 'sess_theirs' })).result).toEqual(refusal);
+    expect((sqlite.query(`SELECT COUNT(*) c FROM resolution_events`).get() as any).c).toBe(0);
+
+    expect((await call(t1.token, 'myco_spores', { op: 'supersede', old_spore_id: saved.id, new_spore_id: second.id, session_id: 'sess_mine' })).result.status).toBe('superseded');
+    expect(sqlite.query(`SELECT session_id FROM resolution_events WHERE spore_id = ?`).get(saved.id)).toEqual({ session_id: 'sess_mine' });
+
+    const got = (await call(t1.token, 'myco_spores', { op: 'get', id: second.id })).result;
+    expect({ predecessors: got.predecessors, superseded_by: got.superseded_by }).toEqual({ predecessors: [saved.id], superseded_by: [] });
+  });
+
+  it('carries the named session onto a consolidation, its wisdom row and every source event alike, and refuses to retire a spore in another machine\'s session', async () => {
+    const { call, sqlite, t1, t2 } = await setup();
+    sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+      VALUES ('proj_1', 'sess_mine', 'machine_1', ?, 1000, 1000)`).run(t1.tokenId);
+    sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+      VALUES ('proj_1', 'sess_theirs', 'machine_2', ?, 1000, 1000)`).run(t2.tokenId);
+    sqlite.query(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at)
+      VALUES ('proj_1', 'p_only', 'sess_mine', 'e1', 'user', 'h', 1000, 1000, ?, 1000)`).run(t1.tokenId);
+    const a = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'a' })).result;
+    const b = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'b' })).result;
+
+    const merged = (await call(t1.token, 'myco_spores', { op: 'consolidate', source_spore_ids: [a.id, b.id], consolidated_content: 'wisdom', observation_type: 'wisdom', session_id: 'sess_mine' })).result;
+    expect(merged.sources_consolidated).toBe(2);
+    expect(sqlite.query(`SELECT session_id, prompt_id FROM spores WHERE id = ?`).get(merged.new_spore_id)).toEqual({ session_id: 'sess_mine', prompt_id: 'p_only' });
+    expect(sqlite.query(`SELECT session_id, COUNT(*) c FROM resolution_events WHERE new_spore_id = ? GROUP BY session_id`).get(merged.new_spore_id)).toEqual({ session_id: 'sess_mine', c: 2 });
+
+    const third = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'c' })).result;
+    expect((await call(t1.token, 'myco_spores', { op: 'obsolete', id: third.id, reason: 'gone', session_id: 'sess_theirs' })).result).toEqual({ ok: false, error: 'session_id not found' });
+    expect(sqlite.query(`SELECT status FROM spores WHERE id = ?`).get(third.id)).toEqual({ status: 'active' });
+    expect((sqlite.query(`SELECT COUNT(*) c FROM resolution_events WHERE spore_id = ?`).get(third.id) as any).c).toBe(0);
+  });
+
   it('saves a plan by its file on the key a member hook derives, updates it on a second save, and reads it back with its content and tags', async () => {
     const { call, sqlite, t1 } = await setup();
     const first = (await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', source_path: 'docs/plans/x.md', content: '- [x] one\n- [ ] two', title: 'X', tags: ['t1'] })).result;

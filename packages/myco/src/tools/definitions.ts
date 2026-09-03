@@ -248,6 +248,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         source_spore_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of the spores to merge for op: "consolidate" (minimum 2)' },
         consolidated_content: { type: 'string', description: 'Merged content for op: "consolidate" — synthesize, do not just concatenate' },
         reason: { type: 'string', description: 'Reason for op: "supersede", "consolidate", or "obsolete" (required for "obsolete")' },
+        session_id: { type: 'string', description: 'Session id the spore belongs to for op: "save" and "consolidate", or the session acting for op: "supersede" and "obsolete"; from the Session:: line when known' },
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
         grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
         project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },

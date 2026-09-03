@@ -13,7 +13,8 @@
 import { SERVER_PROTOCOL } from '../constants.js';
 import { utf8, uuidv5 } from '../hash.js';
 import { ingestEvent } from '../ingest/events.js';
-import { getPlan, latestPromptId, PLAN_STATUS_MESSAGE, setPlanStatus, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../read/plans.js';
+import { getPlan, PLAN_STATUS_MESSAGE, setPlanStatus, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../read/plans.js';
+import { latestPromptId } from '../read/sessions.js';
 import type { ReadScope } from '../read/scope.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 
