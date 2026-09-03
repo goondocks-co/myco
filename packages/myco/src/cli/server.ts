@@ -21,7 +21,7 @@ import {
 import { CommandFailed } from '../server/runner.js';
 import { UpdateRolledBack } from '../server/deployment.js';
 import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
-import { WranglerAbsent, readDeploymentRecord } from '../server/cloudflare.js';
+import { WranglerAbsent, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
 import { cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { existsSync } from 'node:fs';
@@ -49,8 +49,10 @@ Commands (Compose is the default target; --target cloudflare selects the Worker)
   adopt                                   Write a bundle for a stack this machine did not provision.
   destroy [--data] [--yes]                Stop and remove the stack. --data also removes the volume.
                                           With --target cloudflare: removes the Worker only; data stands.
-  config [--out <path>]                   Render the Cloudflare deploy config from the committed
+  config [--out <path>] [--fleet <n>]     Render the Cloudflare deploy config from the committed
                                           configuration and this machine's deployment record.
+                                          --fleet sets how many runtimes the server may start at
+                                          once; the next update deploys it.
   github-app --url <https://…> [--org <name>] [--name <text>] [--target cloudflare|compose]
                                           Register the dashboard's sign-in app on GitHub (one click
                                           there) and install its credentials on the Deployment.
@@ -242,8 +244,16 @@ export async function run(args: string[]): Promise<void> {
     }
 
     if (command === 'config') {
-      const record = readDeploymentRecord();
+      let record = readDeploymentRecord();
       if (record === null) fail('no Cloudflare deployment record on this machine (~/.myco/server/cloudflare.json).');
+      const fleetFlag = flags.get('fleet');
+      if (fleetFlag !== undefined) {
+        const fleet = Number(fleetFlag);
+        if (fleetFlag === 'true' || !Number.isInteger(fleet) || fleet < 1) fail('--fleet needs a whole number of runtimes, 1 or more.');
+        record = { ...record, fleet };
+        writeDeploymentRecord(record);
+        console.log(`Fleet set to ${fleet} runtime${fleet === 1 ? '' : 's'}; the next \`server update\` deploys it.`);
+      }
       const rendered = renderDeployConfig(record);
       const out = flags.get('out');
       if (out === undefined || out === '' || out === 'true') {

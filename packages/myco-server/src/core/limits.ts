@@ -12,11 +12,11 @@ import { leafValues } from './settings.js';
 /** The name of the limit that holds a queued run, as the row records it and the dashboard reads it. */
 export type HeldBy = 'concurrent_runs' | 'task_concurrent_runs' | 'task_runs_per_hour' | 'fleet';
 
-export const LIMIT_LEAVES: Readonly<Record<HeldBy, string>> = {
+/** The three limits an owner sets in Settings. The fleet is not one: it is the size of what the operator deployed, and it reaches the server with the deploy config. */
+export const LIMIT_LEAVES: Readonly<Record<Exclude<HeldBy, 'fleet'>, string>> = {
   concurrent_runs: 'agent.limits.concurrent_runs',
   task_concurrent_runs: 'agent.limits.task_concurrent_runs',
   task_runs_per_hour: 'agent.limits.task_runs_per_hour',
-  fleet: 'agent.limits.fleet',
 };
 
 /** Each limit as set, or null where the Deployment sets none. */
@@ -39,13 +39,14 @@ const positiveInt = (value: string | undefined): number | null => {
   return typeof parsed === 'number' && Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : null;
 };
 
-export async function readDispatchLimits(db: RelationalStore): Promise<DispatchLimits> {
-  const byLeaf = await leafValues(db, Object.values(LIMIT_LEAVES));
+/** The limits as set: the owner's three from their leaves, the fleet from what the operator deployed. */
+export async function readDispatchLimits(env: { db: RelationalStore; fleet?: number }): Promise<DispatchLimits> {
+  const byLeaf = await leafValues(env.db, Object.values(LIMIT_LEAVES));
   return {
     concurrent_runs: positiveInt(byLeaf.get(LIMIT_LEAVES.concurrent_runs)),
     task_concurrent_runs: positiveInt(byLeaf.get(LIMIT_LEAVES.task_concurrent_runs)),
     task_runs_per_hour: positiveInt(byLeaf.get(LIMIT_LEAVES.task_runs_per_hour)),
-    fleet: positiveInt(byLeaf.get(LIMIT_LEAVES.fleet)),
+    fleet: env.fleet !== undefined && Number.isInteger(env.fleet) && env.fleet >= 1 ? env.fleet : null,
   };
 }
 

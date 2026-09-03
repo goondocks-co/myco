@@ -39,6 +39,8 @@ export interface CloudflareBindings extends OwnerBindings {
   HARNESS_LAUNCH_MODE?: string;
   /** The origin this Deployment is reached at, rendered into the deploy config from the deployment record. */
   MYCO_ORIGIN?: string;
+  /** The container fleet's size, rendered into the deploy config beside `max_instances` from the same record. */
+  MYCO_FLEET?: string;
 }
 
 // Compile-time proof that the platform's own types satisfy the adapter interfaces.
@@ -106,6 +108,13 @@ function recordingLaunch(bindings: CloudflareBindings): ServerEnv['harnessLaunch
   return async (spec) => { await markRecordedLaunch(bindings.MYCO_DB, spec.runId); };
 }
 
+/** The fleet as the config states it, or null for an absent or malformed value: a bound that cannot be read is no bound. */
+function fleetOf(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 1 ? n : null;
+}
+
 export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: DeferredWork): ServerEnv {
   if (bindings.HARNESS_LAUNCH_MODE === 'record' && bindings.HARNESS !== undefined) {
     throw new Error('HARNESS_LAUNCH_MODE=record is refused beside a bound HARNESS: a Deployment records launches or runs them, never both');
@@ -113,6 +122,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
   return {
     ...(bindings.HARNESS_LAUNCH_MODE === 'record' && bindings.HARNESS === undefined ? { harnessLaunch: recordingLaunch(bindings) } : {}),
     ...(bindings.MYCO_ORIGIN === undefined || bindings.MYCO_ORIGIN === '' ? {} : { origin: bindings.MYCO_ORIGIN }),
+    ...(fleetOf(bindings.MYCO_FLEET) === null ? {} : { fleet: fleetOf(bindings.MYCO_FLEET)! }),
     // The runtime hands every request a deferral, and the work rides it past the
     // answer. A caller that supplies none has asked for the answer alone: nothing
     // starts, so no work of one request can outlive it unobserved.

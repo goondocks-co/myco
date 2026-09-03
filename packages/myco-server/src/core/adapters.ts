@@ -235,6 +235,8 @@ export interface ServerEnv {
    * schedules nothing.
    */
   origin?: string;
+  /** How many harness runtimes this Deployment may start at once — the fleet the operator deployed (`MYCO_FLEET`). Absent means no such bound is known. */
+  fleet?: number;
   /** Starts `work` to finish after the answer has been sent. The work settles its own failures; nothing in the request awaits it. */
   afterResponse(work: () => Promise<void>): void;
   /** The Deployment's outbound HTTP, for a call the core makes on its own behalf. */

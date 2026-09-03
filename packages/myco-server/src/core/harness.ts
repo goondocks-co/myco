@@ -146,7 +146,7 @@ export class NotQueued extends Error {
  * Settings applies to the next dispatch and the next drain alike.
  */
 export async function admitDispatch(env: ServerEnv, task: string, now: number, limits?: DispatchLimits): Promise<HeldBy | null> {
-  const [read, load] = await Promise.all([limits === undefined ? readDispatchLimits(env.db) : Promise.resolve(limits), dispatchLoad(env.db, task, now)]);
+  const [read, load] = await Promise.all([limits === undefined ? readDispatchLimits(env) : Promise.resolve(limits), dispatchLoad(env.db, task, now)]);
   return heldBy(load, read);
 }
 
@@ -157,7 +157,7 @@ export async function admitDispatch(env: ServerEnv, task: string, now: number, l
  * queued rather than launched past the limit.
  */
 export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { singleFlight?: boolean } = {}): Promise<({ queued: false } & Launched) | ({ queued: true } & Queued)> {
-  const limits = await readDispatchLimits(env.db);
+  const limits = await readDispatchLimits(env);
   const held = await admitDispatch(env, prepared.task, now, limits);
   if (held !== null) return { queued: true, ...(await enqueueDispatch(env, prepared, spec, held, now, options)) };
   try {
@@ -196,7 +196,7 @@ export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch
  */
 export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
   let launched = 0;
-  const limits = await readDispatchLimits(env.db);
+  const limits = await readDispatchLimits(env);
   for (const queued of await listQueuedAcrossProjects(env.db, DRAIN_BATCH)) {
     const scope = { projectId: queued.projectId };
     if (queued.task === null || queued.dispatchSpec === null) {

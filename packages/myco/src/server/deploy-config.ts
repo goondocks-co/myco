@@ -13,6 +13,7 @@ import { WRANGLER_TEMPLATE } from './wrangler-template.js';
 
 const DATABASE_ID_PLACEHOLDER = '<YOUR_D1_DATABASE_ID>';
 const DOCKERFILE_IMAGE_LINE = 'image = "./harness/Dockerfile"';
+const FLEET_LINE_RE = /^max_instances = \d+$/m;
 const HARNESS_IMAGE_RE = /^registry\.cloudflare\.com\/[0-9a-f]{32}\/[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$/;
 
 /** Raised when the record cannot feed the renderer; names every missing fact. */
@@ -73,10 +74,18 @@ export function renderDeployConfig(record: DeploymentRecord): string {
       '',
     ].join('\n');
   }
-  if (record.url !== undefined) {
-    // The clock's runs call back here; the value is the record's, never a request's.
-    body += ['', '[vars]', `MYCO_ORIGIN = "${new URL(record.url).origin}"`, ''].join('\n');
+  if (record.fleet !== undefined) {
+    if (!Number.isInteger(record.fleet) || record.fleet < 1) {
+      throw new Error(`the deployment record's fleet is not a whole number of runtimes: ${JSON.stringify(record.fleet)} (~/.myco/server/cloudflare/record.json)`);
+    }
+    if (!FLEET_LINE_RE.test(body)) throw new Error('the template carries no max_instances line to set; renderDeployConfig and wrangler.toml have drifted');
+    body = body.replace(FLEET_LINE_RE, `max_instances = ${record.fleet}`);
   }
+  // What the Worker is told about itself: the origin the clock's runs call back to, and the fleet the dispatcher counts against. Both are the record's, never a request's.
+  const vars: string[] = [];
+  if (record.url !== undefined) vars.push(`MYCO_ORIGIN = "${new URL(record.url).origin}"`);
+  if (record.fleet !== undefined) vars.push(`MYCO_FLEET = "${record.fleet}"`);
+  if (vars.length > 0) body += ['', '[vars]', ...vars, ''].join('\n');
   return `${header.join('\n')}\n${body}`;
 }
 
