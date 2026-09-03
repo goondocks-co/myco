@@ -137,11 +137,12 @@ function filters(scope: ReadScope, o: ListSporesOptions): { where: string; param
   return { where: `WHERE ${conditions.join(' AND ')}`, params };
 }
 
+/** The id breaks a tie on the instant, so two spores written in the same millisecond hold one order across every page of an offset walk. */
 export async function listSpores(db: RelationalStore, scope: ReadScope, o: ListSporesOptions = {}): Promise<SporeRow[]> {
   const { where, params } = filters(scope, o);
   const limit = Math.min(o.limit ?? DEFAULT_SPORE_LIMIT, MAX_SPORE_LIMIT);
   const { results } = await db
-    .prepare(`SELECT ${COLUMNS} FROM spores ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .prepare(`SELECT ${COLUMNS} FROM spores ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
     .bind(...params, limit, o.offset ?? 0).all<SporeRow>();
   return results;
 }

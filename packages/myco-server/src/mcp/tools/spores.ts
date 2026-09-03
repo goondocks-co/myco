@@ -62,11 +62,11 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
     if (id === undefined) return failure('id is required for op: get');
     const spore = await getSpore(db, scope, id);
     if (spore === null) return failure('Spore not found');
-    const [successors, predecessors] = await Promise.all([
+    const [supersededBy, predecessors] = await Promise.all([
       listSupersedingSporeIds(db, scope, id),
       listSupersededSporeIds(db, scope, id),
     ]);
-    return { ...snake<Record<string, unknown>>(spore), superseded_by: successors, predecessors, successors };
+    return { ...snake<Record<string, unknown>>(spore), superseded_by: supersededBy, predecessors };
   }
 
   if (op === 'save') {

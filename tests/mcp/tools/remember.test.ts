@@ -12,6 +12,8 @@ import { handleMycoSpores } from '@myco/tools/spores.js';
 import { DaemonClient } from '@myco/daemon/client.js';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { upsertSession } from '@myco/db/queries/sessions.js';
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context.js';
 import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
@@ -101,6 +103,54 @@ describe('myco_spores op: save (in-process)', () => {
     const db = getDatabase();
     const row = db.prepare('SELECT project_id FROM spores WHERE id = ?').get(result.id) as { project_id: string };
     expect(row.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  });
+
+  it('files the spore under the session the caller names, and refuses one the vault does not hold', async () => {
+    upsertSession({ id: 'sess-1', agent: 'myco-agent', started_at: 1700000000, created_at: 1700000000 });
+
+    const result = await handleMycoSpores({
+      op: 'save',
+      content: 'the tool carries the session through',
+      type: 'decision',
+      session_id: 'sess-1',
+    }, mockClient(), TEST_REQUEST_CONTEXT) as SporeSaveResult;
+    const row = getDatabase().prepare('SELECT session_id FROM spores WHERE id = ?').get(result.id) as { session_id: string };
+    expect(row.session_id).toBe('sess-1');
+
+    expect(await handleMycoSpores({
+      op: 'save', content: 'x', type: 'decision', session_id: 'sess-nowhere',
+    }, mockClient(), TEST_REQUEST_CONTEXT)).toEqual({ ok: false, error: 'session_id not found' });
+    expect((getDatabase().prepare("SELECT COUNT(*) c FROM spores WHERE content = 'x'").get() as { c: number }).c).toBe(0);
+  });
+
+  it('names the session on the events every retirement writes, and refuses an id the vault does not hold', async () => {
+    upsertSession({ id: 'sess-1', agent: 'myco-agent', started_at: 1700000000, created_at: 1700000000 });
+    const save = async (content: string) => (await handleMycoSpores({ op: 'save', content, type: 'gotcha' }, mockClient(), TEST_REQUEST_CONTEXT) as SporeSaveResult).id;
+    const [a, b, c, d] = [await save('a'), await save('b'), await save('c'), await save('d')];
+    const db = getDatabase();
+    const sessionOf = (sporeId: string) => db.prepare('SELECT session_id FROM resolution_events WHERE spore_id = ?').get(sporeId) as { session_id: string } | undefined;
+
+    await handleMycoSpores({ op: 'supersede', old_spore_id: a, new_spore_id: b, session_id: 'sess-1' }, mockClient(), TEST_REQUEST_CONTEXT);
+    expect(sessionOf(a)?.session_id).toBe('sess-1');
+
+    await handleMycoSpores({ op: 'obsolete', id: c, reason: 'gone', session_id: 'sess-1' }, mockClient(), TEST_REQUEST_CONTEXT);
+    expect(sessionOf(c)?.session_id).toBe('sess-1');
+
+    const merged = await handleMycoSpores({
+      op: 'consolidate', source_spore_ids: [d], consolidated_content: 'wisdom', observation_type: 'wisdom', session_id: 'sess-1',
+    }, mockClient(), TEST_REQUEST_CONTEXT) as { new_spore_id: string };
+    expect(sessionOf(d)?.session_id).toBe('sess-1');
+    expect((db.prepare('SELECT session_id FROM spores WHERE id = ?').get(merged.new_spore_id) as { session_id: string }).session_id).toBe('sess-1');
+
+    for (const call of [
+      { op: 'supersede' as const, old_spore_id: b, new_spore_id: a, session_id: 'sess-nowhere' },
+      { op: 'obsolete' as const, id: b, reason: 'gone', session_id: 'sess-nowhere' },
+      { op: 'consolidate' as const, source_spore_ids: [b], consolidated_content: 'w', observation_type: 'wisdom', session_id: 'sess-nowhere' },
+    ]) {
+      expect(await handleMycoSpores(call, mockClient(), TEST_REQUEST_CONTEXT)).toEqual({ ok: false, error: 'session_id not found' });
+    }
+    expect((db.prepare('SELECT status FROM spores WHERE id = ?').get(b) as { status: string }).status).toBe('active');
+    expect(sessionOf(b) ?? null).toBeNull();
   });
 
   it('rejects op:save without content', async () => {

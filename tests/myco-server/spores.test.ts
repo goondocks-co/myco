@@ -52,6 +52,19 @@ describe('spores', () => {
       .toEqual({ id: 'sp1', status: 'active', importance: 5, embedded: 0 });
   });
 
+  it('refuses a spore naming a session no table holds, which is what the pragma buys', async () => {
+    const { db } = store();
+    await expect(insertSpore(db, SCOPE, spore('sp1', { sessionId: 'sess_nowhere' }))).rejects.toThrow();
+  });
+
+  it('holds one order over a page boundary when two spores share an instant', async () => {
+    const { db } = store();
+    for (const id of ['sp_a', 'sp_b', 'sp_c']) await insertSpore(db, SCOPE, spore(id, { createdAt: NOW }));
+    const first = await listSpores(db, SCOPE, { limit: 2 });
+    const second = await listSpores(db, SCOPE, { limit: 2, offset: 2 });
+    expect([...first, ...second].map((s) => s.id)).toEqual(['sp_c', 'sp_b', 'sp_a']);
+  });
+
   it('keeps spores within their Project', async () => {
     const { db } = store();
     await insertSpore(db, SCOPE, spore('sp1'));
