@@ -33,8 +33,8 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
       ? `${DISPATCH_REFUSAL_MESSAGE.unsupported_provider}, and the configured provider is ${outcome.providerType ?? 'another'}`
       : DISPATCH_REFUSAL_MESSAGE[outcome.refusal]);
   }
-  const { dispatched: _dispatched, ...launched } = outcome;
-  return ok(launched);
+  const { dispatched: _dispatched, ...answer } = outcome;
+  return ok(answer);
 }
 
 export async function handleHarnessProbe(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

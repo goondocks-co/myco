@@ -19,6 +19,9 @@ export interface RunListRow {
   resumable: boolean;
   resumeStatus: string | null;
   failed: boolean;
+  queuedAt: number | null;
+  heldBy: string | null;
+  position: number | null;
 }
 
 export interface RunDetailRow extends RunListRow {

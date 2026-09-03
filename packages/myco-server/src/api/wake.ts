@@ -13,5 +13,6 @@ import { ok } from './scope.js';
 export async function handleWake(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const report = await runTick(env, ctx.now);
   emit({ kind: 'wake_requested', actor: ctx.member.id, state: report.state });
+  try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
   return ok(report);
 }

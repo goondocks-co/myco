@@ -157,7 +157,7 @@ export interface SecretWrappingKey {
  * one. Reporting it as a missing binding on the target that does not use
  * bindings for it would be false.
  */
-export type CapabilityId = 'relational-store' | 'blob-store' | 'rate-limiting';
+export type CapabilityId = 'relational-store' | 'blob-store' | 'rate-limiting' | 'harness-runtime';
 
 export interface CapabilityStatus {
   capability: CapabilityId;

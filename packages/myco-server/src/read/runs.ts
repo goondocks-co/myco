@@ -19,6 +19,12 @@ export interface RunListRow {
   resumable: boolean;
   resumeStatus: string | null;
   failed: boolean;
+  /** When a queued run entered the queue; null for a run that launched at once. */
+  queuedAt: number | null;
+  /** The limit that holds a queued run, by name; null once it launches. */
+  heldBy: string | null;
+  /** How many queued runs are ahead of a queued run; null for any other. */
+  position: number | null;
 }
 
 /**
@@ -73,8 +79,13 @@ export interface RunFilters {
   cursor?: string;
 }
 
+/** A queued run's place in the Deployment's queue: how many queued runs are ahead of it, oldest first. */
+const POSITION_SQL = `(SELECT COUNT(*) FROM agent_runs q WHERE q.status = 'queued'
+  AND (q.queued_at < agent_runs.queued_at OR (q.queued_at = agent_runs.queued_at AND q.id < agent_runs.id)))`;
+
 const LIST_COLUMNS = `id, agent_id, task, status, provider, model, started_at, resumed_at, completed_at,
-  tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed`;
+  tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed,
+  queued_at, held_by, CASE WHEN status = 'queued' THEN ${POSITION_SQL} ELSE NULL END AS position`;
 
 const DETAIL_COLUMNS = `${LIST_COLUMNS}, instruction, session_ref, actual_cost_usd, estimated_cost_usd, reasoning_level,
   resume_mode, resume_attempts, error, dispatched_by, usage_data, actions_taken, checkpoints`;
@@ -101,6 +112,9 @@ function toListRow(row: Record<string, unknown>): RunListRow {
     resumable: flag(row.resumable),
     resumeStatus: text(row.resume_status),
     failed: flag(row.failed),
+    queuedAt: num(row.queued_at),
+    heldBy: text(row.held_by),
+    position: num(row.position),
   };
 }
 
@@ -164,7 +178,8 @@ export function phasesOf(raw: string | null): PhaseRow[] | null {
 
 /** A project's runs, newest first, one page at a time; `status` and `task` narrow the set before the cursor applies. */
 export async function listRuns(db: RelationalStore, scope: ReadScope, opts: RunFilters = {}): Promise<Page<RunListRow>> {
-  const k = keyset(opts, { order: 'started_at', id: 'id', direction: 'DESC' });
+  // A run that waited keeps the place it took when it queued, launched or not: the instant it entered the list never moves under a reader paging through it.
+  const k = keyset(opts, { order: 'COALESCE(queued_at, started_at)', id: 'id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
   const conditions = ['project_id = ?'];
   const params: (string | number)[] = [scope.projectId];
@@ -173,10 +188,10 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, opts: RunF
   if (opts.agentId !== undefined) { conditions.push('agent_id = ?'); params.push(opts.agentId); }
   if (k.where !== '') conditions.push(k.where);
   const { results } = await db
-    .prepare(`SELECT ${LIST_COLUMNS} FROM agent_runs WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC, id DESC LIMIT ?`)
+    .prepare(`SELECT ${LIST_COLUMNS} FROM agent_runs WHERE ${conditions.join(' AND ')} ORDER BY COALESCE(queued_at, started_at) DESC, id DESC LIMIT ?`)
     .bind(...params, ...k.params, k.limit + 1)
     .all<Record<string, unknown>>();
-  return page(results.map(toListRow), k.limit, (r) => ({ createdAt: r.startedAt ?? 0, id: r.id }));
+  return page(results.map(toListRow), k.limit, (r) => ({ createdAt: r.queuedAt ?? r.startedAt ?? 0, id: r.id }));
 }
 
 /** One run inside the scope with its phases, or null — including when the run exists under another project. */
