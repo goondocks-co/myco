@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { expandHome } from '../grove/paths.js';
+import { CANONICAL_PROJECT_SKILLS_DIR } from '../skills/names.js';
 
 export interface DetectedSymbiont {
   manifest: SymbiontManifest;
@@ -50,18 +51,51 @@ export function loadManifests(): SymbiontManifest[] {
       files = fs.readdirSync(dir).filter((f) => f.endsWith('.yaml'));
     } catch { /* bundled FS can throw — fall through */ }
     if (files.length === 0) continue;
-    manifestCache = files.map((f) => {
+    manifestCache = byName(files.map((f) => {
       const raw = YAML.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
       return SymbiontManifestSchema.parse(raw);
-    });
+    }));
     return manifestCache;
   }
 
   // Fallback: codegen-emitted bundled manifests. Always works in compiled
   // binaries and is fast enough to use as the primary source if dev-mode FS
   // reads stop working for some reason.
-  manifestCache = BUNDLED_MANIFESTS.map((m) => SymbiontManifestSchema.parse(m));
+  manifestCache = byName(BUNDLED_MANIFESTS.map((m) => SymbiontManifestSchema.parse(m)));
   return manifestCache;
+}
+
+/**
+ * One manifest order on every host. `fs.readdirSync` order is
+ * filesystem-defined — sorted on APFS, hash-ordered on ext4 — and the bundled
+ * fallback carries codegen's emission order. Sorting by name pins what a
+ * caller that indexes into the array sees to the same manifest on every
+ * machine and every checkout.
+ */
+function byName(manifests: SymbiontManifest[]): SymbiontManifest[] {
+  return [...manifests].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/**
+ * The manifest to drive a symbiont-AGNOSTIC project-file reconcile with.
+ *
+ * `SymbiontInstaller` is constructed around one manifest even for the managed
+ * project files that belong to no symbiont in particular (AGENTS.md guidance,
+ * the `.gitignore` block of canonical skill dirs + configured plan dirs +
+ * wrangler cache). Those writers still read `manifest.registration.skillsTarget`
+ * — `updateGitignore()` returns without writing when it is absent — so the
+ * manifest handed in must declare one. `antigravity` deliberately omits
+ * `skillsTarget`, so an arbitrary pick (`manifests[0]`) silently turns the
+ * whole managed-file reconcile into a no-op whenever it lands first.
+ *
+ * Prefer a manifest registered against the canonical cross-agent skills dir:
+ * that is the only path the managed `.gitignore` block names.
+ */
+export function manifestForManagedProjectFiles(
+  manifests: SymbiontManifest[] = loadManifests(),
+): SymbiontManifest | undefined {
+  return manifests.find((m) => m.registration?.skillsTarget === CANONICAL_PROJECT_SKILLS_DIR)
+    ?? manifests.find((m) => m.registration?.skillsTarget);
 }
 
 /** Find a loaded manifest by symbiont name, or undefined. */
