@@ -22,7 +22,7 @@ import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
-import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, launchQueued, listQueuedAcrossProjects, recordQueued, getRun } from './runs.js';
+import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, NO_LIMITS } from './runs.js';
 import { deploymentSecretStore } from './secrets.js';
 import { leafValues } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
@@ -30,7 +30,7 @@ import { admissionForTask } from './task-catalogue.js';
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';
 /** The agent identity a dispatched runtime claims under when its task names none; matches DEFAULT_AGENT_ID in the runner (packages/myco/src/constants.ts). */
-const HARNESS_AGENT_ID = 'myco-agent';
+export const HARNESS_AGENT_ID = 'myco-agent';
 const HARNESS_MACHINE_ID = 'harness';
 /** The shape a subscription sign-in credential carries; an API key starts `sk-ant-api…`. Each rides the variable its harness reads. */
 const SUBSCRIPTION_TOKEN_PREFIX = 'sk-ant-oat';
@@ -130,6 +130,11 @@ export class LimitReached extends Error {
   constructor() { super('a limit holds this dispatch'); this.name = 'LimitReached'; }
 }
 
+/** A single-flight task with another run of it live in the Project: the write refused, and the dispatch is skipped rather than queued. */
+export class AlreadyRunning extends Error {
+  constructor() { super('another run of this task is live'); this.name = 'AlreadyRunning'; }
+}
+
 /** A queued row the drain found no longer queued: another drain launched it, or it failed. */
 export class NotQueued extends Error {
   constructor() { super('the run is not queued'); this.name = 'NotQueued'; }
@@ -151,16 +156,16 @@ export async function admitDispatch(env: ServerEnv, task: string, now: number, l
  * dispatch that reads the load as free and then loses the race to another is
  * queued rather than launched past the limit.
  */
-export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number): Promise<({ queued: false } & Launched) | ({ queued: true } & Queued)> {
+export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { singleFlight?: boolean } = {}): Promise<({ queued: false } & Launched) | ({ queued: true } & Queued)> {
   const limits = await readDispatchLimits(env.db);
   const held = await admitDispatch(env, prepared.task, now, limits);
-  if (held !== null) return { queued: true, ...(await enqueueDispatch(env, prepared, spec, held, now)) };
+  if (held !== null) return { queued: true, ...(await enqueueDispatch(env, prepared, spec, held, now, options)) };
   try {
-    return { queued: false, ...(await launchDispatch(env, prepared, spec, now, { limits })) };
+    return { queued: false, ...(await launchDispatch(env, prepared, spec, now, { limits, singleFlight: options.singleFlight })) };
   } catch (err) {
     if (!(err instanceof LimitReached)) throw err;
     const holder = (await admitDispatch(env, prepared.task, now, limits)) ?? 'concurrent_runs';
-    return { queued: true, ...(await enqueueDispatch(env, prepared, spec, holder, now)) };
+    return { queued: true, ...(await enqueueDispatch(env, prepared, spec, holder, now, options)) };
   }
 }
 
@@ -169,11 +174,13 @@ export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatc
  * asked of it and the limit that holds it, with no credential until it
  * launches. Wakes the Deployment so the drain follows as capacity returns.
  */
-export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, held: HeldBy, now: number): Promise<Queued> {
+export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, held: HeldBy, now: number, options: { singleFlight?: boolean } = {}): Promise<Queued> {
   await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now);
   const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
   const stored: StoredSpec = { serverUrl: spec.serverUrl, actor: spec.actor, timeoutSeconds: spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS, ...(spec.params === undefined ? {} : { params: spec.params }) };
-  if (!(await recordQueued(env.db, { projectId: prepared.projectId }, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored) }))) {
+  const scope = { projectId: prepared.projectId };
+  if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored) }, options))) {
+    if (options.singleFlight === true && (await getRun(env.db, scope, runId)) === null) throw new AlreadyRunning();
     throw new Error('run id already taken');
   }
   emit({ kind: 'harness_queued', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor, heldBy: held });
@@ -280,7 +287,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
  * of it. Rejects when the runtime refuses to start, after marking the row
  * failed; the caller decides what its own state does then.
  */
-export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { limits?: DispatchLimits } = {}): Promise<Launched> {
+export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { limits?: DispatchLimits; singleFlight?: boolean } = {}): Promise<Launched> {
   if (env.harnessLaunch === undefined) throw new Error('harness runtime unbound after preparation');
   const timeoutSeconds = spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS;
   await ensureMember(env.db, HARNESS_MEMBER_ID, now, 'harness runtime');
@@ -296,7 +303,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   // A queued row moves to pending for this credential; any other id is recorded afresh. Either way the row exists before
   // the launch, and the write itself carries the limit check when limits are given. A write that changed nothing minted
   // a credential for no run: it is revoked here, and the caller learns whether a limit or the row's own state refused it.
-  const admission = options.limits === undefined ? undefined : { limits: options.limits, now };
+  const admission = options.limits === undefined && options.singleFlight !== true ? undefined : { limits: options.limits ?? NO_LIMITS, now, singleFlight: options.singleFlight === true };
   const recorded = spec.fromQueue === true
     ? await launchQueued(env.db, scope, runId, { task: prepared.task, dispatchedBy: minted.tokenId, startedAt: now, runContext, provider: prepared.providerType, model: prepared.model }, admission)
     : await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }, admission);
@@ -308,6 +315,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
       throw new LimitReached();
     }
     if (existing !== null) throw new Error('run id already taken');
+    if (options.singleFlight === true && (await hasLiveTaskRun(env.db, scope, prepared.task))) throw new AlreadyRunning();
     throw new LimitReached();
   }
   try {

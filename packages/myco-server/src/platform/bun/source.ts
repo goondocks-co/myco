@@ -29,6 +29,8 @@ import { canonicalAddress } from '../../core/address.js';
 /** A server able to report the socket address a request arrived on. */
 export interface AddressableServer {
   requestIP(request: Request): { address: string } | null;
+  /** The port the listener is bound on, once it is; a listener asked for port 0 learns it here. */
+  port?: number;
 }
 
 /**

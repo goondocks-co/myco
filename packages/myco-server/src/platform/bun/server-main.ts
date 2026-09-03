@@ -163,6 +163,7 @@ export async function main(): Promise<void> {
     transport,
     sourceFrom,
     header: process.env.MYCO_TRUSTED_HEADER,
+    origin: process.env.MYCO_ORIGIN,
     trustedHops: positiveInt('MYCO_TRUSTED_HOPS', 1),
     SECRET_WRAP_KEY: secretOf('SECRET_WRAP_KEY', false),
     SESSION_SECRET: secretOf('SESSION_SECRET', false),

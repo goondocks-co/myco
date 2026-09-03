@@ -64,6 +64,8 @@ export interface BunServerOptions extends Omit<BunServerConfig, 'sqlite'>, Trust
   uiDir?: string;
   /** Whether the process runs the wake loop. A test or a parity target that drives the tick by route passes false. */
   wakeLoop?: boolean;
+  /** The origin for a listener whose port is chosen at bind, resolved once the socket is bound; a test double for `origin`. */
+  originOf?: (port: number) => string;
 }
 
 export interface BunHandler {
@@ -92,7 +94,7 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
   const core = (request: Request) => server.handleRequest(request, env);
   return {
     fetch: options.uiDir === undefined ? core : withStaticAssets(options.uiDir, core),
-    bind: (listening: AddressableServer) => { bound = listening; },
+    bind: (listening: AddressableServer) => { bound = listening; if (options.originOf !== undefined && typeof listening.port === 'number') env.origin = options.originOf(listening.port); },
     close: async () => { loop?.stop(); await env.settle(); sqlite.close(); },
   };
 }

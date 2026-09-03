@@ -23,7 +23,7 @@ const STATUS_TABS = [
   { id: 'failed', label: 'Failed' },
 ];
 
-const STATUS_TONE: Record<string, StatusTone> = { queued: 'outline', running: 'ochre', completed: 'sage', failed: 'terracotta' };
+const STATUS_TONE: Record<string, StatusTone> = { queued: 'outline', skipped: 'outline', running: 'ochre', completed: 'sage', failed: 'terracotta' };
 
 /** Each limit that can hold a queued run, in the reader's words. */
 const HELD_BY_WORDS: Record<string, string> = {

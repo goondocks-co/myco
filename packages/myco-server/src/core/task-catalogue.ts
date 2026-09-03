@@ -42,6 +42,101 @@ export const TASK_ADMISSION: Readonly<Record<string, RunAdmissionGate>> = {
 
 export const RETAINED_TASKS = Object.keys(TASK_ADMISSION);
 
+/** The states a scheduled task may run in, in the words the 1.4 task files use. */
+export type ScheduleState = 'active' | 'idle' | 'sleep';
+
+/**
+ * When the clock runs a task. The shape is the 1.4 task file's `schedule`
+ * block, carried field for field: interval, the states it runs in, a named
+ * precondition, an accelerator that shortens the interval under backlog, a
+ * per-day ceiling, and whether a cold Project still gets it. `overlap` is
+ * the Deployment's own: a `skip` task never runs twice at once in a Project;
+ * a `queue` task is dispatched and the queue holds it.
+ */
+export interface TaskSchedule {
+  /** A schedule declared but switched off; absent means on. */
+  enabled?: boolean;
+  intervalSeconds: number;
+  runIn: readonly ScheduleState[];
+  preCondition?: string;
+  accelerator?: { name: string; thresholds: { steady: number; accelerated: number } };
+  maxRunsPerDay?: number;
+  runWhenCold?: boolean;
+  overlap: 'skip' | 'queue';
+}
+
+/**
+ * What the Deployment schedules, by task. A task is scheduled here only once
+ * the Deployment serves its tool surface; every other retained task is null
+ * until its child turns it on, and copies the task file's block when it does.
+ * `container-smoke` is the harness health probe the 1.4 daemon ran daily as
+ * `harness-health`: one call, one report, proof the runtime still works.
+ */
+export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
+  'container-smoke': { intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 },
+  'cortex-instructions': null,
+  'cortex-prompt-builder': null,
+  'digest-only': null,
+  'skill-survey': null,
+  'skill-generate': null,
+  'skill-evolve': null,
+  'vault-evolve': null,
+  'vault-seed': null,
+  'supersession-sweep': null,
+  'extract-only': null,
+  'review-session': null,
+  'title-summary': null,
+};
+
+/** Named preconditions a schedule may name; a task naming one absent here is refused by a gate, never skipped in silence. */
+export const PRE_CONDITIONS: Readonly<Record<string, (args: { projectId: string }) => Promise<boolean>>> = {};
+
+/** Named accelerators: a count of pending work that shortens a task's interval. None yet; the Canopy task brings the first. */
+export const ACCELERATORS: Readonly<Record<string, (args: { projectId: string; limit: number }) => Promise<number>>> = {};
+
+/** Every task the clock schedules, with its schedule. */
+export function scheduledTasks(): Array<{ task: string; schedule: TaskSchedule }> {
+  return Object.entries(TASK_SCHEDULE).flatMap(([task, schedule]) => (schedule === null ? [] : [{ task, schedule }]));
+}
+
+/**
+ * A Deployment's per-task override laid over the declared schedule, field by
+ * field. The accelerator is replaced whole: a name from one block paired with
+ * thresholds from another would shorten the wrong interval.
+ */
+export function resolveSchedule(declared: TaskSchedule, override: unknown): TaskSchedule {
+  if (override === null || typeof override !== 'object' || Array.isArray(override)) return declared;
+  const o = override as Record<string, unknown>;
+  const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+  const states = (v: unknown): readonly ScheduleState[] | undefined =>
+    (Array.isArray(v) && v.every((s) => s === 'active' || s === 'idle' || s === 'sleep') ? (v as ScheduleState[]) : undefined);
+  const accelerator = (v: unknown): TaskSchedule['accelerator'] | undefined => {
+    if (v === null || typeof v !== 'object') return undefined;
+    const a = v as Record<string, unknown>;
+    const t = a.thresholds as Record<string, unknown> | undefined;
+    if (typeof a.name !== 'string' || t === undefined || num(t.steady) === undefined || num(t.accelerated) === undefined) return undefined;
+    return { name: a.name, thresholds: { steady: num(t.steady)!, accelerated: num(t.accelerated)! } };
+  };
+  return {
+    ...(typeof o.enabled === 'boolean' ? { enabled: o.enabled } : declared.enabled === undefined ? {} : { enabled: declared.enabled }),
+    intervalSeconds: num(o.intervalSeconds) ?? declared.intervalSeconds,
+    runIn: states(o.runIn) ?? declared.runIn,
+    preCondition: typeof o.preCondition === 'string' ? o.preCondition : declared.preCondition,
+    accelerator: accelerator(o.accelerator) ?? declared.accelerator,
+    maxRunsPerDay: num(o.maxRunsPerDay) ?? declared.maxRunsPerDay,
+    runWhenCold: typeof o.runWhenCold === 'boolean' ? o.runWhenCold : declared.runWhenCold,
+    overlap: o.overlap === 'skip' || o.overlap === 'queue' ? o.overlap : declared.overlap,
+  };
+}
+
+/** Tier divisors on the interval under backlog: 1× up to the steady threshold, 4× up to the accelerated one, 12× past it. */
+export function effectiveIntervalSeconds(intervalSeconds: number, count: number | null, thresholds: { steady: number; accelerated: number } | undefined): number {
+  if (count === null || thresholds === undefined) return intervalSeconds;
+  if (count <= thresholds.steady) return intervalSeconds;
+  if (count <= thresholds.accelerated) return Math.floor(intervalSeconds / 4);
+  return Math.floor(intervalSeconds / 12);
+}
+
 /** The gate a task runs behind, or null for a name this Deployment does not serve. */
 export function admissionForTask(taskName: string): RunAdmissionGate | null {
   return TASK_ADMISSION[taskName] ?? null;

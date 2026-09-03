@@ -73,6 +73,10 @@ export function renderDeployConfig(record: DeploymentRecord): string {
       '',
     ].join('\n');
   }
+  if (record.url !== undefined) {
+    // The clock's runs call back here; the value is the record's, never a request's.
+    body += ['', '[vars]', `MYCO_ORIGIN = "${new URL(record.url).origin}"`, ''].join('\n');
+  }
   return `${header.join('\n')}\n${body}`;
 }
 

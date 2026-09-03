@@ -111,20 +111,28 @@ const ADMISSION_WHERE = `
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) < ?)
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) < ?)
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND task = ?) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND started_at IS NOT NULL AND started_at >= ?) < ?)`;
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND started_at IS NOT NULL AND started_at >= ?) < ?)
+   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND status IN ('pending', 'running', 'queued') AND id != ?))`;
 
-/** The limits a write is admitted against, or none: an unguarded write is a claim the dispatcher already decided elsewhere. */
+/**
+ * What a write is admitted against, or none: an unguarded write is a claim the
+ * dispatcher already decided elsewhere. `singleFlight` names a task that runs
+ * once at a time in a Project: the write refuses while another run of it is
+ * live, in the same statement, so two wakes deciding at once write one row.
+ */
 export interface WriteAdmission {
   limits: DispatchLimits;
   now: number;
+  singleFlight?: boolean;
 }
 
-const NO_LIMITS: DispatchLimits = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
+export const NO_LIMITS: DispatchLimits = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
 
-function admissionParams(task: string | null, admission: WriteAdmission | undefined): (string | number | null)[] {
+function admissionParams(scope: ReadScope, task: string | null, runId: string, admission: WriteAdmission | undefined): (string | number | null)[] {
   const l = admission?.limits ?? NO_LIMITS;
   const hourStart = (admission?.now ?? 0) - 3_600_000;
-  return [l.fleet, l.fleet, l.concurrent_runs, l.concurrent_runs, l.task_concurrent_runs, task, l.task_concurrent_runs, l.task_runs_per_hour, task, hourStart, l.task_runs_per_hour];
+  const single = admission?.singleFlight === true ? task : null;
+  return [l.fleet, l.fleet, l.concurrent_runs, l.concurrent_runs, l.task_concurrent_runs, task, l.task_concurrent_runs, l.task_runs_per_hour, task, hourStart, l.task_runs_per_hour, single, scope.projectId, task, runId];
 }
 
 const RECORD_DISPATCH_SQL = `INSERT INTO agent_runs
@@ -164,7 +172,7 @@ export async function recordDispatch(db: RelationalStore, scope: ReadScope, reco
   const result = await db.prepare(RECORD_DISPATCH_SQL).bind(
     scope.projectId, record.id, record.agentId, record.task, record.provider, record.model, record.startedAt, record.runContext, record.dispatchedBy,
     scope.projectId, record.id,
-    ...admissionParams(record.task, admission),
+    ...admissionParams(scope, record.task, record.id, admission),
   ).run();
   return result.meta.changes === 1;
 }
@@ -668,13 +676,15 @@ export interface QueuedRecord {
 const RECORD_QUEUED_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, provider, model, status, dry_run, queued_at, held_by, dispatch_spec)
   SELECT ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?
-   WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`;
+   WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
+   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND status IN ('pending', 'running', 'queued')))`;
 
-/** Record a dispatch the Deployment holds back: a run row in `queued`, with no credential until it launches. */
-export async function recordQueued(db: RelationalStore, scope: ReadScope, record: QueuedRecord): Promise<boolean> {
+/** Record a dispatch the Deployment holds back: a run row in `queued`, with no credential until it launches. A single-flight task is refused while another run of it is live. */
+export async function recordQueued(db: RelationalStore, scope: ReadScope, record: QueuedRecord, options: { singleFlight?: boolean } = {}): Promise<boolean> {
   const result = await db.prepare(RECORD_QUEUED_SQL).bind(
     scope.projectId, record.id, record.agentId, record.task, record.provider, record.model, record.queuedAt, record.heldBy, record.dispatchSpec,
     scope.projectId, record.id,
+    options.singleFlight === true ? record.task : null, scope.projectId, record.task,
   ).run();
   return result.meta.changes === 1;
 }
@@ -687,7 +697,7 @@ const LAUNCH_QUEUED_SQL = `UPDATE agent_runs
 export async function launchQueued(db: RelationalStore, scope: ReadScope, runId: string, launch: { task: string; dispatchedBy: string; startedAt: number; runContext: string | null; provider: string | null; model: string | null }, admission?: WriteAdmission): Promise<boolean> {
   const result = await db.prepare(LAUNCH_QUEUED_SQL).bind(
     launch.dispatchedBy, launch.startedAt, launch.runContext, launch.provider, launch.model, scope.projectId, runId,
-    ...admissionParams(launch.task, admission),
+    ...admissionParams(scope, launch.task, runId, admission),
   ).run();
   return result.meta.changes === 1;
 }
@@ -737,4 +747,43 @@ export async function dispatchLoad(db: RelationalStore, task: string, now: numbe
 /** A recording launch marks the run as launched by the recorder and starts nothing: the parity harness's runtime, never a Deployment's. */
 export async function markRecordedLaunch(db: RelationalStore, runId: string): Promise<void> {
   await db.prepare(`UPDATE agent_runs SET harness = 'record' WHERE id = ?`).bind(runId).run();
+}
+
+// ---------------------------------------------------------------------------
+// What the clock reads before it schedules a task, per Project
+// ---------------------------------------------------------------------------
+
+/** When this task last entered the Project's run list — launched or queued — or null when it never has. */
+export async function lastTaskEntryAt(db: RelationalStore, scope: ReadScope, task: string): Promise<number | null> {
+  const row = await db.prepare(
+    `SELECT MAX(COALESCE(queued_at, started_at)) AS at FROM agent_runs WHERE project_id = ? AND task = ? AND status != 'skipped'`,
+  ).bind(scope.projectId, task).first<{ at: number | null }>();
+  return row?.at ?? null;
+}
+
+/** Runs of this task the Project entered from the instant on, skips excluded. */
+export async function taskEntriesSince(db: RelationalStore, scope: ReadScope, task: string, sinceMs: number): Promise<number> {
+  const row = await db.prepare(
+    `SELECT COUNT(*) AS c FROM agent_runs WHERE project_id = ? AND task = ? AND status != 'skipped' AND COALESCE(queued_at, started_at) >= ?`,
+  ).bind(scope.projectId, task, sinceMs).first<{ c: number }>();
+  return row?.c ?? 0;
+}
+
+/** Whether a run of this task is live — pending, running or queued — in the Project. */
+export async function hasLiveTaskRun(db: RelationalStore, scope: ReadScope, task: string): Promise<boolean> {
+  return (await db.prepare(
+    `SELECT 1 AS one FROM agent_runs WHERE project_id = ? AND task = ? AND status IN ('pending', 'running', 'queued') LIMIT 1`,
+  ).bind(scope.projectId, task).first<{ one: number }>()) !== null;
+}
+
+/**
+ * A scheduled run the clock decided not to start, recorded as a run row in
+ * `skipped` naming why in its context, so a ceiling met is never silent.
+ */
+export async function recordSkipped(db: RelationalStore, scope: ReadScope, record: { id: string; agentId: string; task: string; reason: string; at: number }): Promise<void> {
+  await db.prepare(
+    `INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at, completed_at, run_context)
+       SELECT ?, ?, ?, ?, 'skipped', 0, ?, ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`,
+  ).bind(scope.projectId, record.id, record.agentId, record.task, record.at, record.at, JSON.stringify({ reason: record.reason }), scope.projectId, record.id).run();
 }

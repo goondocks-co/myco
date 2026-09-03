@@ -36,6 +36,7 @@ export async function bootSelfhosted(): Promise<ParityTarget> {
     transport: 'loopback',
     sourceFrom: 'socket',
     wakeLoop: false,
+    originOf: (port) => `http://127.0.0.1:${port}`,
     SESSION_SECRET,
     SECRET_WRAP_KEY: wrapKey,
     GITHUB_CLIENT_ID: 'parity-client',
