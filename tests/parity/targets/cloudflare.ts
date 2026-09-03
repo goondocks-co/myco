@@ -65,7 +65,7 @@ export async function bootCloudflare(): Promise<ParityTarget> {
     const logPath = path.join(SERVER_DIR, '.wrangler', `parity-dev-${tag}.log`);
     proc = Bun.spawn([
       'npx', '--no-install', 'wrangler', 'dev', '-c', configName, '--port', String(port), '--inspector-port', '0', '--persist-to', persistDir,
-      '--var', `SESSION_SECRET:${SESSION_SECRET}`, '--var', 'GITHUB_CLIENT_ID:parity-client', '--var', 'GITHUB_CLIENT_SECRET:parity-secret', '--var', 'HARNESS_LAUNCH_MODE:record',
+      '--var', `SESSION_SECRET:${SESSION_SECRET}`, '--var', 'GITHUB_CLIENT_ID:parity-client', '--var', 'GITHUB_CLIENT_SECRET:parity-secret', '--var', 'HARNESS_LAUNCH_MODE:record', '--var', `MYCO_ORIGIN:http://127.0.0.1:${port}`,
     ], { cwd: SERVER_DIR, stdout: 'pipe', stderr: 'pipe', env: { ...process.env } });
     SPAWNED.add(proc);
     // Drain both streams continuously: wrangler stalls on backpressure, and the

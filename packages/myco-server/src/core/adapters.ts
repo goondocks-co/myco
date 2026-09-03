@@ -228,6 +228,13 @@ export interface ServerEnv {
    * Absent on an env with no clock, and a wake that fails never fails the work.
    */
   wake?: () => Promise<void>;
+  /**
+   * The origin this Deployment is reached at, as the operator declared it —
+   * where a run the clock dispatches calls back to. Never learned from a
+   * request: a Host header is the caller's to write. Absent, the clock
+   * schedules nothing.
+   */
+  origin?: string;
   /** Starts `work` to finish after the answer has been sent. The work settles its own failures; nothing in the request awaits it. */
   afterResponse(work: () => Promise<void>): void;
   /** The Deployment's outbound HTTP, for a call the core makes on its own behalf. */

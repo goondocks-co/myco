@@ -18,6 +18,7 @@ import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS } from './harne
 import { nextWakeDelayMs, resolvePowerState, type PowerAssertion, type PowerState, type PowerThresholds, type WakeIntervals } from './power.js';
 import { hasQueuedRun, hasRunInsideBound } from './runs.js';
 import { drainQueue } from './harness.js';
+import { runScheduledTasks, type ScheduleReport } from './scheduled-tasks.js';
 import { lastActivityAt } from './activity.js';
 import { classify, emit } from '../telemetry.js';
 
@@ -38,6 +39,8 @@ export interface TickReport {
   heldBy: string | null;
   /** Queued runs the tick launched as capacity allowed. */
   drained: number;
+  /** What the clock dispatched and what it recorded as skipped this wake. */
+  scheduled: ScheduleReport;
   /** Milliseconds of inactivity at this wake; null when the Deployment never saw activity. */
   idleMs: number | null;
   jobs: JobReport[];
@@ -55,7 +58,7 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   return assertions;
 }
 
-export async function runTick(env: ServerEnv, now: number): Promise<TickReport> {
+export async function runTick(env: ServerEnv, now: number, options: { serverUrl?: string } = {}): Promise<TickReport> {
   const last = await lastActivityAt(env.db);
   const idleMs = last === null ? null : Math.max(0, now - last);
   const assertions = await engineAssertions(env, now);
@@ -79,6 +82,21 @@ export async function runTick(env: ServerEnv, now: number): Promise<TickReport> 
     }
   }
 
+  // The clock's own dispatches, then the drain: a scheduled task past a limit joins the queue this same wake.
+  let scheduled: ScheduleReport = { dispatched: 0, skipped: 0 };
+  if (resolved.state !== 'deep_sleep') {
+    // A clock has no request in hand; the origin the operator declared is where its runs call back to.
+    const serverUrl = options.serverUrl ?? env.origin ?? null;
+    if (serverUrl === null) emit({ kind: 'schedule_skipped', state: resolved.state, skip: 'no_origin' });
+    else {
+      try {
+        scheduled = await runScheduledTasks(env, resolved.state, now, serverUrl);
+      } catch (err) {
+        emit({ kind: 'schedule_failed', state: resolved.state, error_class: classify(err, env.platform?.classifyError) });
+      }
+    }
+  }
+
   // Capacity the jobs freed is spent at once; a queue that stays held waits for the next wake.
   let drained = 0;
   try {
@@ -87,5 +105,5 @@ export async function runTick(env: ServerEnv, now: number): Promise<TickReport> 
     emit({ kind: 'drain_failed', state: resolved.state, error_class: classify(err, env.platform?.classifyError) });
   }
 
-  return { state: resolved.state, heldBy: resolved.heldBy, drained, idleMs, jobs, nextWakeMs: nextWakeDelayMs(resolved.state, WAKE_INTERVALS) };
+  return { state: resolved.state, heldBy: resolved.heldBy, drained, scheduled, idleMs, jobs, nextWakeMs: nextWakeDelayMs(resolved.state, WAKE_INTERVALS) };
 }
