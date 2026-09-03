@@ -1,4 +1,4 @@
-import { Activity, Bell, Bot, Brain, FolderTree, KeyRound, LayoutDashboard, MessageSquare, Settings2, Sparkles, Users, Wrench } from 'lucide-react';
+import { Activity, Bell, Bot, Brain, FolderTree, KeyRound, LayoutDashboard, MessageSquare, Settings2, Sparkles, Sprout, Users, Wrench } from 'lucide-react';
 import { NavLink, Outlet, useParams } from 'react-router-dom';
 import { ProjectSwitcher } from '../components/ProjectSwitcher';
 import { PageLoading } from '../components/ui/page-loading';
@@ -21,6 +21,7 @@ const PROJECT_NAV: ProjectNavItem[] = [
   { label: 'Overview', icon: LayoutDashboard, suffix: '' },
   { label: 'Sessions', icon: MessageSquare, suffix: '/sessions' },
   { label: 'Cortex', icon: Brain, suffix: '/cortex' },
+  { label: 'Spores', icon: Sprout, suffix: '/spores' },
   { label: 'Skills', icon: Sparkles, suffix: '/skills' },
   { label: 'Agent runs', icon: Bot, suffix: '/runs' },
   { label: 'Access', icon: KeyRound, suffix: '/access' },

@@ -13,7 +13,8 @@ import {
   type AttachmentRow, type PlanRow, type SessionRow, type TurnRow,
 } from '../../hooks/use-sessions';
 import { useQueryClient } from '@tanstack/react-query';
-import { useRun } from '../../hooks/use-intelligence';
+import { useRun, useSpores } from '../../hooks/use-intelligence';
+import { formatLabel, sporePreview, statusVariant } from '../spores/labels';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatRelative } from '../../lib/format';
@@ -25,6 +26,7 @@ import { TurnTimeline } from './TurnTimeline';
 const TABS = [
   { id: 'conversation', label: 'Conversation' },
   { id: 'plans', label: 'Plans' },
+  { id: 'spores', label: 'Spores' },
   { id: 'attachments', label: 'Attachments' },
   { id: 'transcript', label: 'Transcript' },
 ];
@@ -66,6 +68,7 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
             <SubtabPill tabs={TABS} activeTab={tab} onTabChange={setTab} className="mb-4" />
             {tab === 'conversation' && <TurnTimeline projectId={projectId} sessionId={sessionId} promptCount={detail.data.counts.prompts} />}
             {tab === 'plans' && <Plans projectId={projectId} sessionId={sessionId} wanted={params.get('plan')} />}
+            {tab === 'spores' && <Spores projectId={projectId} sessionId={sessionId} />}
             {tab === 'attachments' && <Attachments projectId={projectId} sessionId={sessionId} />}
             {tab === 'transcript' && <Transcript projectId={projectId} sessionId={sessionId} />}
           </div>
@@ -244,6 +247,39 @@ function Plans({ projectId, sessionId, wanted }: { projectId: string; sessionId:
           {plans.rows.map((plan) => <PlanCard key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} defaultOpen={plan.status === 'in_progress' || plan.planKey === wanted} />)}
           {plans.hasMore && <button type="button" className={button} onClick={plans.more}>Load more</button>}
         </div>
+      )}
+    </PageLoading>
+  );
+}
+
+/** The spores this session produced, newest first, each opening on the Spores page. Every status is listed — a spore another session has already replaced still came out of this one. */
+function Spores({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+  const spores = useSpores(projectId, { session: sessionId, limit: 100 });
+  const rows = spores.data?.spores ?? [];
+  return (
+    <PageLoading isLoading={spores.isPending} error={spores.error}>
+      {rows.length === 0 ? (
+        <div className="flex h-32 items-center justify-center rounded-lg border border-[var(--ghost-border)] bg-surface-container-low/50">
+          <span className="font-sans text-sm text-on-surface-variant">No observations were saved from this session yet.</span>
+        </div>
+      ) : (
+        <ul className="flex flex-col gap-2" aria-label="Spores">
+          {rows.map((spore) => (
+            <li key={spore.id}>
+              <Link
+                to={`/p/${encodeURIComponent(projectId)}/spores/${encodeURIComponent(spore.id)}`}
+                className="block rounded-lg border border-[var(--ghost-border)] px-3 py-2 transition-colors hover:bg-surface-container"
+              >
+                <div className="flex items-center gap-1.5">
+                  <Badge variant="secondary" className="font-mono text-[10px]">{formatLabel(spore.observationType)}</Badge>
+                  {spore.status !== 'active' && <Badge variant={statusVariant(spore.status)} className="font-mono text-[10px]">{formatLabel(spore.status)}</Badge>}
+                  <span className="ml-auto font-mono text-[10px] text-on-surface-variant" title={formatDateTime(spore.createdAt)}>{formatRelative(spore.createdAt)}</span>
+                </div>
+                <p className="m-0 mt-1 truncate font-sans text-sm text-on-surface">{sporePreview(spore.content)}</p>
+              </Link>
+            </li>
+          ))}
+        </ul>
       )}
     </PageLoading>
   );

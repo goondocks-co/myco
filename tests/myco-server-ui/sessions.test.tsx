@@ -440,6 +440,27 @@ describe('Session detail', () => {
     expect([progressParts('2/3'), progressParts('N/A')]).toEqual([{ checked: 2, total: 3 }, null]);
   });
 
+  it('lists the spores this session produced, whatever their status, each opening on the Spores page', async () => {
+    const { requested } = server(detailRoutes({ '/api/projects/x/spores?limit=100&session=s1': () => Response.json({ spores: [
+      { id: 'sp1', agentId: 'agent_1', sessionId: 's1', promptId: null, observationType: 'gotcha', status: 'active', content: 'The cache lies after a rebase.', context: null, importance: 8, filePath: null, tags: null, contentHash: null, properties: null, createdAt: NOW - 60_000, updatedAt: null, embedded: 0 },
+      { id: 'sp2', agentId: 'agent_1', sessionId: 's1', promptId: null, observationType: 'trade_off', status: 'superseded', content: 'We page by offset.', context: null, importance: 5, filePath: null, tags: null, contentHash: null, properties: null, createdAt: NOW - 70_000, updatedAt: null, embedded: 0 },
+    ], total: 2, maxPage: 200 }) }));
+    mount('/p/x/sessions/s1?tab=spores');
+    const items = await within(await screen.findByRole('list', { name: 'Spores' })).findAllByRole('listitem');
+    expect(items).toHaveLength(2);
+    expect(items[0]!.textContent).toContain('Gotcha');
+    expect(items[0]!.textContent).toContain('The cache lies after a rebase.');
+    expect(items[1]!.textContent).toContain('Superseded');
+    expect(within(items[0]!).getByRole('link').getAttribute('href')).toBe('/p/x/spores/sp1');
+    expect(requested).toContain('/api/projects/x/spores?limit=100&session=s1');
+  });
+
+  it('says a session that saved no observations saved none', async () => {
+    server(detailRoutes({ '/api/projects/x/spores?limit=100&session=s1': () => Response.json({ spores: [], total: 0, maxPage: 200 }) }));
+    mount('/p/x/sessions/s1?tab=spores');
+    expect(await screen.findByText('No observations were saved from this session yet.')).toBeTruthy();
+  });
+
   it('opens and scrolls to the turn a link names, reading every origin when the default filter hides it, and merges attachments on prompts the timeline does not list into one unlinked group', async () => {
     const scrolled: string[] = [];
     const original = Element.prototype.scrollIntoView;
