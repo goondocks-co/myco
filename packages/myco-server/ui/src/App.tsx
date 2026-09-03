@@ -16,6 +16,7 @@ import { ProjectHome } from './pages/ProjectHome';
 import { Projects } from './pages/Projects';
 import { Sessions } from './pages/Sessions';
 import { Skills } from './pages/Skills';
+import { Spores } from './pages/Spores';
 import { Status } from './pages/Status';
 
 /** `/` is where sign-in lands: a pending link resumes first, then the last project, then Projects. */
@@ -39,6 +40,8 @@ export default function App() {
         <Route path="/p/:projectId/cortex" element={<Cortex />} />
         <Route path="/p/:projectId/skills" element={<Skills />} />
         <Route path="/p/:projectId/skills/:skillId" element={<Skills />} />
+        <Route path="/p/:projectId/spores" element={<Spores />} />
+        <Route path="/p/:projectId/spores/:sporeId" element={<Spores />} />
         <Route path="/p/:projectId/runs" element={<AgentRuns />} />
         <Route path="/p/:projectId/runs/:runId" element={<AgentRuns />} />
         <Route path="/p/:projectId/access" element={<ProjectAccess />} />
