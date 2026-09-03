@@ -10,8 +10,9 @@ import { Panel } from '../components/ui/panel';
 import { Skeleton } from '../components/ui/skeleton';
 import { ActivitySparkline } from '../components/ui/sparkline';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
-import { useAgents, useRuns, useSkills, type RunListRow, type SkillRecord } from '../hooks/use-intelligence';
+import { useRuns, useSkills, type RunListRow, type SkillRecord } from '../hooks/use-intelligence';
 import { useProjectActions, useProjects } from '../hooks/use-projects';
+import { useSettings, type LeafRow } from '../hooks/use-settings';
 import { refusalText } from '../hooks/use-access';
 import { useActivity, useSessions, type FeedItem, type ProjectStats, type SessionSummaryRow } from '../hooks/use-sessions';
 import { isArchived, type ProjectSummary } from '../lib/api';
@@ -69,9 +70,14 @@ export function captureHealth(stats: ProjectStats, nowMs: number): { tone: Statu
     : { tone: 'ochre', label: `No capture in 7 days · last ${formatRelative(stats.lastActivityAt, nowMs)}` };
 }
 
-/** Runs and skills come from the Deployment's own agents; with none enabled behind a provider, an empty panel says why. */
-function noProviderYet(agents: { provider: string | null; enabled: boolean }[] | undefined): boolean {
-  return agents !== undefined && !agents.some((a) => a.enabled && a.provider !== null);
+/** The Settings leaf the dispatcher resolves a provider from; the home reads the same leaf so its empty panels agree with what a dispatch would do. */
+const PROVIDER_LEAF = 'agent.provider.type';
+
+/** Runs and skills come from the Deployment's agent tasks; until Settings names a provider, an empty panel says why. Unknown until the leaves are read. */
+export function noProviderYet(leaves: readonly LeafRow[] | undefined): boolean {
+  if (leaves === undefined) return false;
+  const leaf = leaves.find((l) => l.leaf === PROVIDER_LEAF);
+  return leaf === undefined || !leaf.configured || typeof leaf.value !== 'string' || leaf.value.length === 0;
 }
 
 function Home({ project }: { project: ProjectSummary }) {
@@ -79,11 +85,11 @@ function Home({ project }: { project: ProjectSummary }) {
   const open = useSessions(project.projectId, { state: 'open' });
   const runs = useRuns(project.projectId, null);
   const skills = useSkills(project.projectId);
-  const agents = useAgents();
+  const settings = useSettings();
   const base = `/p/${encodeURIComponent(project.projectId)}`;
   const runningRuns = runs.rows.filter((r) => r.status === 'running').length;
   const stats = activity.data?.stats;
-  const unconfigured = noProviderYet(agents.data?.agents);
+  const unconfigured = noProviderYet(settings.data?.leaves);
   return (
     <>
       <header className="flex flex-wrap items-start justify-between gap-4">
