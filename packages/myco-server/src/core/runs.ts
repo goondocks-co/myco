@@ -121,7 +121,7 @@ export interface DispatchRecord {
   /** The dispatch's parameters, which the run routes that serve one task read back; written here, by the server, and never by the runtime. */
   runContext: string | null;
   /** The credential the dispatch minted for this run. */
-  dispatchedBy: string;
+  dispatchedBy: string | null;
   startedAt: number;
 }
 
@@ -617,4 +617,92 @@ const RUN_INSIDE_BOUND_SQL = `SELECT 1 AS one FROM agent_runs
 
 export async function hasRunInsideBound(db: RelationalStore, now: number, defaultTimeoutSeconds: number, marginMs: number): Promise<boolean> {
   return (await db.prepare(RUN_INSIDE_BOUND_SQL).bind(now, defaultTimeoutSeconds, marginMs).first<{ one: number }>()) !== null;
+}
+
+// ---------------------------------------------------------------------------
+// The queue: a run that waits is a run row
+// ---------------------------------------------------------------------------
+
+/** What a queued run keeps until it launches: everything a launch is told, so the drain launches it exactly as the dispatch asked. */
+export interface QueuedRecord {
+  id: string;
+  agentId: string;
+  task: string;
+  provider: string | null;
+  model: string | null;
+  heldBy: string;
+  queuedAt: number;
+  /** The launch spec as JSON: server URL, actor, bound and parameters. */
+  dispatchSpec: string;
+}
+
+const RECORD_QUEUED_SQL = `INSERT INTO agent_runs
+    (project_id, id, agent_id, task, provider, model, status, dry_run, queued_at, held_by, dispatch_spec)
+  SELECT ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?
+   WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`;
+
+/** Record a dispatch the Deployment holds back: a run row in `queued`, with no credential until it launches. */
+export async function recordQueued(db: RelationalStore, scope: ReadScope, record: QueuedRecord): Promise<boolean> {
+  const result = await db.prepare(RECORD_QUEUED_SQL).bind(
+    scope.projectId, record.id, record.agentId, record.task, record.provider, record.model, record.queuedAt, record.heldBy, record.dispatchSpec,
+    scope.projectId, record.id,
+  ).run();
+  return result.meta.changes === 1;
+}
+
+/** A queued run moves to `pending` for the credential its launch minted — once, and only from `queued`. */
+const LAUNCH_QUEUED_SQL = `UPDATE agent_runs
+   SET status = 'pending', dispatched_by = ?, started_at = ?, run_context = ?, provider = COALESCE(?, provider), model = COALESCE(?, model), held_by = NULL
+ WHERE project_id = ? AND id = ? AND status = 'queued'`;
+
+export async function launchQueued(db: RelationalStore, scope: ReadScope, runId: string, launch: { dispatchedBy: string; startedAt: number; runContext: string | null; provider: string | null; model: string | null }): Promise<boolean> {
+  const result = await db.prepare(LAUNCH_QUEUED_SQL).bind(launch.dispatchedBy, launch.startedAt, launch.runContext, launch.provider, launch.model, scope.projectId, runId).run();
+  return result.meta.changes === 1;
+}
+
+/** A queued run the Deployment can no longer launch is failed by name, from `queued` alone. */
+const FAIL_QUEUED_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, held_by = NULL
+  WHERE project_id = ? AND id = ? AND status = 'queued'`;
+
+export async function failQueuedRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string): Promise<boolean> {
+  const result = await db.prepare(FAIL_QUEUED_SQL).bind(now, error, scope.projectId, runId).run();
+  return result.meta.changes === 1;
+}
+
+export interface QueuedRunRef {
+  projectId: string;
+  id: string;
+  task: string | null;
+  queuedAt: number;
+  heldBy: string | null;
+  dispatchSpec: string | null;
+}
+
+const QUEUED_RUNS_SQL = `SELECT project_id AS projectId, id, task, queued_at AS queuedAt, held_by AS heldBy, dispatch_spec AS dispatchSpec
+  FROM agent_runs WHERE status = 'queued' ORDER BY queued_at ASC, id ASC LIMIT ?`;
+
+/** Every queued run on the Deployment, oldest first: the drain's read, across Projects like the sweep's. */
+export async function listQueuedAcrossProjects(db: RelationalStore, limit: number): Promise<QueuedRunRef[]> {
+  const { results } = await db.prepare(QUEUED_RUNS_SQL).bind(limit).all<QueuedRunRef>();
+  return results;
+}
+
+export async function hasQueuedRun(db: RelationalStore): Promise<boolean> {
+  return (await db.prepare(`SELECT 1 AS one FROM agent_runs WHERE status = 'queued' LIMIT 1`).first<{ one: number }>()) !== null;
+}
+
+/** What the Deployment is doing for one task: the counts admission compares against the limits. */
+export async function dispatchLoad(db: RelationalStore, task: string, now: number): Promise<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }> {
+  const row = await db.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) AS liveRuns,
+       (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND task = ?) AS liveTaskRuns,
+       (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND started_at IS NOT NULL AND started_at >= ?) AS taskRunsLastHour`,
+  ).bind(task, task, now - 3_600_000).first<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }>();
+  return row ?? { liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 };
+}
+
+/** A recording launch marks the run as launched by the recorder and starts nothing: the parity harness's runtime, never a Deployment's. */
+export async function markRecordedLaunch(db: RelationalStore, runId: string): Promise<void> {
+  await db.prepare(`UPDATE agent_runs SET harness = 'record' WHERE id = ?`).bind(runId).run();
 }

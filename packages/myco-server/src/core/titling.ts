@@ -19,7 +19,7 @@ import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { sessionMaterialRows, sessionMaterialTailRows, type MaterialRow } from '../read/children.js';
 import { claimOwnerTitling, claimTitling, restoreTitlingStamp } from '../read/sessions.js';
-import { launchDispatch, prepareDispatch, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS } from './harness.js';
+import { launchDispatch, prepareDispatch, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS, admitDispatch, enqueueDispatch } from './harness.js';
 
 export const TITLING_TASK = 'title-summary';
 export const TITLE_MAX_CHARS = 80;
@@ -38,7 +38,7 @@ export const OWNER_TITLING_WINDOW_MS = TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_
  */
 export type TitlingOutcome =
   | 'already' | 'no_material' | 'harness_unavailable' | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider'
-  | 'error' | 'dispatched';
+  | 'error' | 'dispatched' | 'queued';
 
 export type MaterialLine = Pick<MaterialRow, 'prompt' | 'response'>;
 
@@ -176,13 +176,21 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     }
 
     const params: TitlingParams = { session_id: sessionId, mode, ...(mode === 'owner' && opts.by !== undefined ? { by: opts.by } : {}) };
+    const spec = {
+      serverUrl: target.origin,
+      actor: opts.by ?? DEPLOYMENT_ACTOR,
+      timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS,
+      params: { ...params },
+    };
     try {
-      const launched = await launchDispatch(env, prepared.prepared, {
-        serverUrl: target.origin,
-        actor: opts.by ?? DEPLOYMENT_ACTOR,
-        timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS,
-        params: { ...params },
-      }, now);
+      // A limit holds the run in the queue; the claim stands, and the run's own window opens when it launches.
+      const held = await admitDispatch(env, TITLING_TASK, now);
+      if (held !== null) {
+        const queued = await enqueueDispatch(env, prepared.prepared, spec, held, now);
+        emit({ kind: 'session_title_queued', projectId, sessionId, mode, runId: queued.runId, heldBy: held });
+        return { outcome: 'queued', runId: queued.runId };
+      }
+      const launched = await launchDispatch(env, prepared.prepared, spec, now);
       emit({ kind: 'session_title_dispatched', projectId, sessionId, mode, runId: launched.runId });
       return { outcome: 'dispatched', runId: launched.runId };
     } catch {

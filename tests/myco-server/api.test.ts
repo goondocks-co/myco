@@ -244,9 +244,10 @@ describe('GET /api/status', () => {
       capabilities: { capability: string; label: string; present: boolean; operatorNames: string[] }[];
     };
     expect(body.schema.matches).toBe(true);
-    expect(body.capabilities.filter((c) => !c.present)).toEqual([]);
+    // A bare test env binds no harness runtime; that capability is reported absent, by the binding an operator adds.
+    expect(body.capabilities.filter((c) => !c.present).map((c) => [c.capability, c.operatorNames])).toEqual([['harness-runtime', ['HARNESS']]]);
     expect(body.capabilities.map((c) => c.capability).sort())
-      .toEqual(['blob-store', 'rate-limiting', 'relational-store']);
+      .toEqual(['blob-store', 'harness-runtime', 'rate-limiting', 'relational-store']);
   });
 
   it('reports the capability a dropped binding took with it, and which name to fix', async () => {
@@ -257,7 +258,7 @@ describe('GET /api/status', () => {
       capabilities: { capability: string; label: string; present: boolean; operatorNames: string[] }[];
     };
 
-    const absent = body.capabilities.filter((c) => !c.present);
+    const absent = body.capabilities.filter((c) => !c.present && c.capability !== 'harness-runtime');
     expect(absent.map((c) => c.capability)).toEqual(['blob-store']);
     // Product wording for the statement, operator wording for the fix.
     expect(absent[0]!.label).toBe('Blob storage');

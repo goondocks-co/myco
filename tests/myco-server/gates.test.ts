@@ -48,7 +48,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 58;
+const EMIT_CALLS = 61;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -1133,7 +1133,7 @@ describe('gates', () => {
       const ids = [...source.matchAll(/capability: '([a-z-]+)'/g)].map((m) => m[1]).sort();
       // Both targets answer for the same set, so a surface can say the same
       // sentence on either one.
-      expect({ target, ids }).toEqual({ target, ids: ['blob-store', 'rate-limiting', 'relational-store'] });
+      expect({ target, ids }).toEqual({ target, ids: ['blob-store', 'harness-runtime', 'rate-limiting', 'relational-store'] });
 
       const labels = [...source.matchAll(/label: '([^']+)'/g)].map((m) => m[1]);
       for (const label of labels) {

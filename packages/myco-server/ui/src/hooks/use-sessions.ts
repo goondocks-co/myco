@@ -257,10 +257,11 @@ export function useTurnToolCalls(projectId: string, sessionId: string, promptId:
 
 /** What the server answers when asked to title a session now: a run was started, or why none was; each names an outcome in the reader's words. */
 export type TitlingOutcome =
-  | 'dispatched' | 'already' | 'no_material' | 'harness_unavailable' | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider' | 'error';
+  | 'dispatched' | 'already' | 'no_material' | 'harness_unavailable' | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider' | 'error' | 'queued';
 
 export const TITLING_OUTCOME_TEXT: Record<TitlingOutcome, string> = {
   dispatched: 'A summary is being written — it lands within a few minutes',
+  queued: 'The summary is waiting for a runtime — it starts as one frees up',
   already: 'A summary was asked for a moment ago — try again shortly',
   no_material: 'Nothing typed in this session to summarize yet',
   harness_unavailable: 'This Deployment has no way to write summaries yet',

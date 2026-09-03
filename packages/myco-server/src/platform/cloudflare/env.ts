@@ -14,6 +14,7 @@ import type {
 import { cloudflareSourceOf } from './source.js';
 import type { HarnessContainer } from './harness-container.js';
 import { CLOCK_NAME, type DeploymentClock } from './deployment-clock.js';
+import { markRecordedLaunch } from '../../core/runs.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
 
 /** The bindings `wrangler.toml` declares, exactly as the Worker receives them. */
@@ -34,6 +35,8 @@ export interface CloudflareBindings extends OwnerBindings {
   HARNESS?: DurableObjectNamespace<HarnessContainer>;
   /** The Deployment's clock: one Durable Object holding the next wake. Absent under a configuration that declares none. */
   CLOCK?: DurableObjectNamespace<DeploymentClock>;
+  /** `record`: a launch that records the run and starts nothing — the parity harness's runtime, never an operator's. Refused beside a real runtime. */
+  HARNESS_LAUNCH_MODE?: string;
 }
 
 // Compile-time proof that the platform's own types satisfy the adapter interfaces.
@@ -72,6 +75,12 @@ export function cloudflarePlatform(bindings: CloudflareBindings): PlatformDescri
         present: !absent('SOURCE_LIMIT') && !absent('TOKEN_LIMIT'),
         operatorNames: ['SOURCE_LIMIT', 'TOKEN_LIMIT'],
       },
+      {
+        capability: 'harness-runtime',
+        label: bindings.HARNESS_LAUNCH_MODE === 'record' ? 'Harness runtime — recording, starts no container' : 'Harness runtime',
+        present: !absent('HARNESS') || bindings.HARNESS_LAUNCH_MODE === 'record',
+        operatorNames: ['HARNESS'],
+      },
     ],
     classifyError: classifyD1Error,
     classifyBlobFailure: classifyR2BlobFailure,
@@ -90,8 +99,17 @@ export interface DeferredWork {
   waitUntil(promise: Promise<unknown>): void;
 }
 
+/** The recording launch: the run row is stamped as launched by a recorder and nothing starts. A test double for the parity Worker, never a Deployment's runtime. */
+function recordingLaunch(bindings: CloudflareBindings): ServerEnv['harnessLaunch'] {
+  return async (spec) => { await markRecordedLaunch(bindings.MYCO_DB, spec.runId); };
+}
+
 export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: DeferredWork): ServerEnv {
+  if (bindings.HARNESS_LAUNCH_MODE === 'record' && bindings.HARNESS !== undefined) {
+    throw new Error('HARNESS_LAUNCH_MODE=record is refused beside a bound HARNESS: a Deployment records launches or runs them, never both');
+  }
   return {
+    ...(bindings.HARNESS_LAUNCH_MODE === 'record' && bindings.HARNESS === undefined ? { harnessLaunch: recordingLaunch(bindings) } : {}),
     // The runtime hands every request a deferral, and the work rides it past the
     // answer. A caller that supplies none has asked for the answer alone: nothing
     // starts, so no work of one request can outlive it unobserved.
