@@ -13,9 +13,10 @@
  */
 import type { ServerEnv } from './adapters.js';
 import { jobsDueAt } from './jobs.js';
-import { JOB_BATCH, JOB_IMPLEMENTATIONS, staleAfter } from './jobs-run.js';
+import { JOB_IMPLEMENTATIONS } from './jobs-run.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 import { nextWakeDelayMs, resolvePowerState, type PowerAssertion, type PowerState, type PowerThresholds, type WakeIntervals } from './power.js';
-import { listLiveRunsAcrossProjects } from './runs.js';
+import { hasRunInsideBound } from './runs.js';
 import { lastActivityAt } from './activity.js';
 import { classify, emit } from '../telemetry.js';
 
@@ -41,10 +42,9 @@ export interface TickReport {
   nextWakeMs: number | null;
 }
 
-/** What the engine itself asserts about the Deployment's depth: a run inside its bound keeps it no deeper than idle. A run past its bound holds nothing — its runtime is gone, and the sweep is what it needs. */
+/** What the engine itself asserts about the Deployment's depth: a run inside its bound keeps it no deeper than idle. A run past its bound holds nothing — its runtime is gone, and the sweep is what it needs. One existence read, whatever the count. */
 export async function engineAssertions(env: ServerEnv, now: number): Promise<PowerAssertion[]> {
-  const live = await listLiveRunsAcrossProjects(env.db, JOB_BATCH);
-  const inside = live.some((run) => run.startedAt !== null && now < staleAfter(run.startedAt, run.runContext));
+  const inside = await hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS);
   return inside ? [{ name: 'run:live', maxDepth: 'idle' }] : [];
 }
 

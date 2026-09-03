@@ -608,3 +608,13 @@ export async function pruneTerminalRuns(db: RelationalStore, cutoffMs: number, l
   }
   return removed;
 }
+
+/** A run inside its bound, anywhere on the Deployment: one exists or none does. The bound is the run's own, from its context, or the dispatcher's default. */
+const RUN_INSIDE_BOUND_SQL = `SELECT 1 AS one FROM agent_runs
+  WHERE status IN ('pending', 'running') AND started_at IS NOT NULL
+    AND ? < started_at + COALESCE(json_extract(run_context, '$.timeoutSeconds'), ?) * 1000 + ?
+  LIMIT 1`;
+
+export async function hasRunInsideBound(db: RelationalStore, now: number, defaultTimeoutSeconds: number, marginMs: number): Promise<boolean> {
+  return (await db.prepare(RUN_INSIDE_BOUND_SQL).bind(now, defaultTimeoutSeconds, marginMs).first<{ one: number }>()) !== null;
+}

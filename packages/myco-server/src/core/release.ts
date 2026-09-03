@@ -6,11 +6,13 @@
  * away without one. Both release the same two things — the container hold,
  * so the instance drains, and the dispatch-minted credential, which exists for
  * its run alone — through this one function, so a run released by the sweep
- * looks exactly like a run that finished.
+ * looks exactly like a run that finished. A run claimed under a person's own
+ * credential carries it in the same column; that credential is the person's,
+ * and a release leaves it alone.
  */
 import type { ServerEnv } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { revokeCredentialAsMember } from '../auth/tokens.js';
+import { revokeCredentialOfMember } from '../auth/tokens.js';
 import { HARNESS_MEMBER_ID } from './harness.js';
 
 export interface ReleasableRun {
@@ -25,5 +27,5 @@ export interface ReleasableRun {
  */
 export async function releaseRun(env: ServerEnv, _scope: ReadScope, run: ReleasableRun, now: number): Promise<void> {
   try { await env.harnessEnd?.(run.id); } catch { /* the hold's own deadline still ends the container */ }
-  if (run.dispatchedBy !== null) await revokeCredentialAsMember(env.db, HARNESS_MEMBER_ID, run.dispatchedBy, now);
+  if (run.dispatchedBy !== null) await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, run.dispatchedBy, now);
 }

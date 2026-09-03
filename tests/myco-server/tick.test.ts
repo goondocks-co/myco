@@ -168,6 +168,37 @@ describe('run-stale-sweep', () => {
     expect((await runTick(f.env, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null });
   });
 
+  it('never ends a credential that is a person\'s own: a run claimed under it is failed, the credential stays live', async () => {
+    const f = fixture();
+    const own = seedCredential(f.sqlite, { id: 'mt_person', memberId: 'mem_machine_2', machineId: 'machine_2' });
+    f.seedRun({ id: 'stale-own', status: 'running', startedAt: NOW - 10 * DAY, completedAt: null, dispatchedBy: own });
+    f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
+    expect((await runTick(f.env, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 1, failed: null });
+    expect(f.runRow('stale-own')?.status).toBe('failed');
+    expect((f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(own) as { revoked_at: number | null }).revoked_at).toBeNull();
+  });
+
+  it('leaves a run that landed terminal between its read and its write exactly as it landed', async () => {
+    const f = fixture();
+    f.seedRun({ id: 'racing', status: 'running', startedAt: NOW - 10 * DAY, completedAt: null });
+    f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
+    const racing: ServerEnv = { ...f.env, db: { ...f.env.db, prepare: (sql: string) => {
+      if (sql.includes(`SET status = 'failed'`)) f.sqlite.query(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = 'racing'`).run(NOW - 1);
+      return f.env.db.prepare(sql);
+    } } };
+    expect((await runTick(racing, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null });
+    expect(f.runRow('racing')).toEqual({ status: 'completed', error: null, completedAt: NOW - 1 });
+    expect(f.ended).toEqual([]);
+  });
+
+  it('holds the Deployment at idle for one run inside its bound however many stale runs sit ahead of it', async () => {
+    const f = fixture();
+    for (let i = 0; i < JOB_BATCH + 1; i++) f.seedRun({ id: `stale-${String(i).padStart(4, '0')}`, status: 'running', startedAt: NOW - 10 * DAY - i, completedAt: null });
+    f.seedRun({ id: 'inside', status: 'running', startedAt: NOW - POWER_THRESHOLDS.deepSleepMs, completedAt: null, runContext: JSON.stringify({ timeoutSeconds: 7_200 }) });
+    f.seedSession('s1', NOW - POWER_THRESHOLDS.deepSleepMs);
+    expect(await runTick(f.env, NOW)).toMatchObject({ state: 'idle', heldBy: 'run:live' });
+  });
+
   it('keeps sweeping when a container release throws: the row and the credential still land', async () => {
     const f = fixture();
     f.env.harnessEnd = async () => { throw new Error('gone'); };
