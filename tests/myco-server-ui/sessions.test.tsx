@@ -545,7 +545,7 @@ describe('Project home', () => {
         { id: 'run-newer-completed', agentId: 'a', task: 'digest', status: 'completed', provider: null, model: 'm1', startedAt: NOW - 2000, resumedAt: null, completedAt: NOW - 1000, tokensUsed: 12_000, costUsd: null, costSource: null, dryRun: false, resumable: false, resumeStatus: null, failed: false },
         { id: 'run-older-running', agentId: 'a', task: 'title-summary', status: 'running', provider: null, model: null, startedAt: NOW - 20_000, resumedAt: null, completedAt: null, tokensUsed: null, costUsd: null, costSource: null, dryRun: true, resumable: false, resumeStatus: null, failed: false },
       ]),
-      '/api/agents': () => Response.json({ agents: [{ id: 'a', name: 'Default', provider: 'anthropic', model: 'm', enabled: true }] }),
+      '/api/settings': () => Response.json({ leaves: [{ leaf: 'agent.provider.type', configured: true, value: 'anthropic', updatedAt: NOW, updatedBy: 'mem_1' }] }),
       '/api/projects/x/skills?limit=200': () => Response.json({ skills: [
         { id: 'sk1', agentId: 'a', name: 'ship-it', displayName: 'Ship it', description: 'd', status: 'active', generation: 3, sourceIds: '[]', usageCount: 2, lastUsedAt: null, createdAt: NOW - 5000, updatedAt: NOW - 1000 },
       ] }),
@@ -575,7 +575,7 @@ describe('Project home', () => {
       '/api/projects/x/sessions?limit=50&state=open': () => page([]),
       '/api/projects/x/runs?limit=50': () => page([]),
       '/api/projects/x/skills?limit=200': () => new Response(null, { status: 500 }),
-      '/api/agents': () => Response.json({ agents: [{ id: 'a', name: 'Default', provider: null, model: null, enabled: false }] }),
+      '/api/settings': () => Response.json({ leaves: [{ leaf: 'agent.provider.type', configured: false, value: null, updatedAt: null, updatedBy: null }] }),
     }));
     mount('/p/x');
     expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Project X');
