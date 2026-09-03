@@ -66,9 +66,9 @@ export function Spores() {
     return () => clearTimeout(handle);
   }, [text, setParam]);
 
-  const select = useCallback((id: string) => {
+  const select = useCallback((id: string, options?: { replace?: boolean }) => {
     const search = params.toString();
-    navigate(`${base}/${encodeURIComponent(id)}${search === '' ? '' : `?${search}`}`);
+    navigate(`${base}/${encodeURIComponent(id)}${search === '' ? '' : `?${search}`}`, options);
   }, [base, navigate, params]);
 
   const filters: SporeFilters = {
@@ -78,7 +78,6 @@ export function Spores() {
     limit: SPORE_PAGE_SIZE,
     offset,
   };
-  const filtered = status !== DEFAULT_STATUS || type !== 'all' || q !== '';
 
   return (
     <PageContainer>
@@ -110,7 +109,7 @@ export function Spores() {
           onCloseMobileDetail={() => navigate(`${base}${params.toString() === '' ? '' : `?${params.toString()}`}`)}
           masterAriaLabel="Spores"
           detailAriaLabel="Spore"
-          master={<SporeRail projectId={projectId} selectedId={sporeId} filters={filters} filtered={filtered} filterInputRef={filterInputRef} onSelect={select} onOffsetChange={(next) => setParam('offset', String(next), '0')} />}
+          master={<SporeRail projectId={projectId} selectedId={sporeId} filters={filters} filterInputRef={filterInputRef} onSelect={select} onOffsetChange={(next) => setParam('offset', String(next), '0')} />}
           detail={sporeId === undefined ? <p className="font-sans text-sm text-on-surface-variant">Select a spore to read it.</p> : <SporeDetail projectId={projectId} sporeId={sporeId} />}
         />
       </div>

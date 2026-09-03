@@ -239,12 +239,13 @@ function sporeQuery(filters: SporeFilters): string {
   return params.toString();
 }
 
-/** A project's spores, newest first, with the count the filters match. */
-export function useSpores(projectId: string, filters: SporeFilters = {}) {
+/** A project's spores, newest first, with the count the filters match. A read with `enabled: false` waits, pending, until it is wanted. */
+export function useSpores(projectId: string, filters: SporeFilters = {}, options: Pick<UseQueryOptions<SporesResponse>, 'enabled'> = {}) {
   const query = sporeQuery(filters);
   return useQuery({
     queryKey: ['spores', projectId, query],
     queryFn: ({ signal }) => fetchJson<SporesResponse>(`${project(projectId)}/spores?${query}`, signal),
+    ...options,
   });
 }
 

@@ -455,6 +455,22 @@ describe('Session detail', () => {
     expect(requested).toContain('/api/projects/x/spores?limit=100&session=s1');
   });
 
+  it('says how many spores the session produced and that the list is only the newest of them', async () => {
+    server(detailRoutes({ '/api/projects/x/spores?limit=100&session=s1': () => Response.json({ spores: [
+      { id: 'sp1', agentId: 'agent_1', sessionId: 's1', promptId: null, observationType: 'gotcha', status: 'active', content: 'The cache lies after a rebase.', context: null, importance: 8, filePath: null, tags: null, contentHash: null, properties: null, createdAt: NOW - 60_000, updatedAt: null, embedded: 0 },
+    ], total: 140, maxPage: 200 }) }));
+    mount('/p/x/sessions/s1?tab=spores');
+    expect(await screen.findByText('140 spores')).toBeTruthy();
+    expect(screen.getByText('The 1 most recent are listed here.')).toBeTruthy();
+  });
+
+  it('says the spores of a session could not be read when the server fails, never that it saved none', async () => {
+    server(detailRoutes({ '/api/projects/x/spores?limit=100&session=s1': () => new Response(null, { status: 500 }) }));
+    mount('/p/x/sessions/s1?tab=spores');
+    expect(await screen.findByText('Could not reach the server')).toBeTruthy();
+    expect(screen.queryByText('No observations were saved from this session yet.')).toBeNull();
+  });
+
   it('says a session that saved no observations saved none', async () => {
     server(detailRoutes({ '/api/projects/x/spores?limit=100&session=s1': () => Response.json({ spores: [], total: 0, maxPage: 200 }) }));
     mount('/p/x/sessions/s1?tab=spores');

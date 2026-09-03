@@ -16,6 +16,9 @@ export const OBSERVATION_TYPES = [
 /** The statuses a spore moves through; `active` is what a reader sees first. */
 export const SPORE_STATUSES = ['active', 'superseded', 'consolidated', 'obsolete'] as const;
 
+/** The top of the importance scale a writer assigns on. */
+export const MAX_IMPORTANCE = 10;
+
 /** A stored snake_case or kebab-case value as a reader's label. */
 export function formatLabel(value: string): string {
   return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());

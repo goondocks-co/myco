@@ -38,6 +38,13 @@ const base = (extra: Record<string, () => Response> = {}) => ({
   ...extra,
 });
 
+/** A wide screen for the duration of `fn`; the shim answers narrow otherwise. */
+async function onWideScreen(fn: () => Promise<void>): Promise<void> {
+  const original = window.matchMedia;
+  window.matchMedia = ((query: string) => ({ matches: query.includes('min-width'), media: query, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false })) as typeof window.matchMedia;
+  try { await fn(); } finally { window.matchMedia = original; }
+}
+
 function mount(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
@@ -61,7 +68,7 @@ describe('Spores list', () => {
     // The markdown heading reads as its text, not its marker.
     expect(rows[1]!.textContent).toContain('Ship it');
     expect(rows[0]!.textContent).not.toContain('Active');
-    expect(screen.getByTestId('spore-rail-counts').textContent).toBe('2 TOTAL');
+    expect(screen.getByTestId('spore-rail-counts').textContent).toBe('2 ACTIVE');
     expect(requested).toContain('/api/projects/x/spores?limit=25&status=active');
   });
 
@@ -89,6 +96,72 @@ describe('Spores list', () => {
     ]);
   });
 
+  it('carries a pasted link straight into the request — status, type, text and page', async () => {
+    const { requested } = server(base({ '/api/projects/x/spores?limit=25&status=obsolete&type=gotcha&q=cache&offset=25': () => list([ROWS[0]], 30) }));
+    mount('/p/x/spores?status=obsolete&type=gotcha&q=cache&offset=25');
+    await screen.findAllByRole('row');
+    expect(requested.filter((r) => r.startsWith('/api/projects/x/spores'))).toEqual([
+      '/api/projects/x/spores?limit=25&status=obsolete&type=gotcha&q=cache&offset=25',
+    ]);
+    // The pasted state is what the controls show.
+    expect(screen.getByRole('tab', { name: 'Obsolete' }).getAttribute('aria-selected')).toBe('true');
+    expect((screen.getByLabelText('Filter by type') as HTMLSelectElement).value).toBe('gotcha');
+    expect((screen.getByLabelText('Filter spores') as HTMLInputElement).value).toBe('cache');
+  });
+
+  it('pages the match, and a change of status starts the next match at its first page', async () => {
+    const { requested } = server(base({
+      '/api/projects/x/spores?limit=25&status=active': () => list(ROWS, 30),
+      '/api/projects/x/spores?limit=25&status=active&offset=25': () => list([ROWS[1]], 30),
+      '/api/projects/x/spores?limit=25&status=obsolete': () => list([], 0),
+    }));
+    mount('/p/x/spores');
+    await screen.findAllByRole('row');
+    fireEvent.click(screen.getByRole('button', { name: /Next/ }));
+    await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(1));
+    fireEvent.click(screen.getByRole('tab', { name: 'Obsolete' }));
+    await screen.findByText('No spores match.');
+    expect(requested.filter((r) => r.startsWith('/api/projects/x/spores'))).toEqual([
+      '/api/projects/x/spores?limit=25&status=active',
+      '/api/projects/x/spores?limit=25&status=active&offset=25',
+      '/api/projects/x/spores?limit=25&status=obsolete',
+    ]);
+  });
+
+  it('says the spores could not be read when the server fails, and never reads that as an empty project', async () => {
+    server(base({ '/api/projects/x/spores?limit=25&status=active': () => new Response(null, { status: 500 }) }));
+    mount('/p/x/spores');
+    expect(await screen.findByText('The spores could not be read')).toBeTruthy();
+    expect(screen.queryByText('No spores yet')).toBeNull();
+    expect(screen.queryByText('No active spores.')).toBeNull();
+  });
+
+  it('tells a project whose spores have all been retired from one that has none, and says where the retired ones are', async () => {
+    server(base({
+      '/api/projects/x/spores?limit=25&status=active': () => list([], 0),
+      '/api/projects/x/spores?limit=1': () => list([spore({ status: 'obsolete' })], 3),
+    }));
+    mount('/p/x/spores');
+    expect(await screen.findByText('No active spores.')).toBeTruthy();
+    expect(await screen.findByText('3 retired spores are under All.')).toBeTruthy();
+    expect(screen.queryByText('No spores yet')).toBeNull();
+    expect(screen.getByTestId('spore-rail-counts').textContent).toBe('0 ACTIVE');
+  });
+
+  it('opens the top spore on its own on a wide screen when nothing is selected, and never while a filter is hunting', async () => onWideScreen(async () => {
+    server(base({
+      '/api/projects/x/spores?limit=25&status=active': () => list(ROWS),
+      '/api/projects/x/spores?limit=25&status=active&type=gotcha': () => list([ROWS[0]]),
+      '/api/projects/x/spores/sp1': () => Response.json({ spore: ROWS[0], supersededBy: [], supersedes: [] }),
+    }));
+    const opened = mount('/p/x/spores');
+    expect(await screen.findByRole('heading', { name: 'Gotcha' })).toBeTruthy();
+    opened.unmount();
+    mount('/p/x/spores?type=gotcha');
+    await screen.findAllByRole('row');
+    expect(screen.getByText('Select a spore to read it.')).toBeTruthy();
+  }));
+
   it('opens a spore from the rail and keeps the section active in the project nav', async () => {
     server(base({
       '/api/projects/x/spores?limit=25&status=active': () => list(ROWS),
@@ -102,10 +175,11 @@ describe('Spores list', () => {
     expect([...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Spores']);
   });
 
-  it('shows a project with no spores as empty, not missing', async () => {
-    server(base({ '/api/projects/x/spores?limit=25&status=active': () => list([]) }));
-    mount('/p/x/spores');
+  it('shows a project with no spores at all as empty, not missing', async () => {
+    server(base({ '/api/projects/x/spores?limit=25': () => list([]) }));
+    mount('/p/x/spores?status=all');
     expect(await screen.findByText('No spores yet')).toBeTruthy();
+    expect(screen.getByTestId('spore-rail-counts').textContent).toBe('0 TOTAL');
     expect(screen.queryByText(/not found/i)).toBeNull();
   });
 });
@@ -121,7 +195,7 @@ describe('Spore detail', () => {
 
   const routes = (over: Record<string, () => Response> = {}) => base({
     '/api/projects/x/spores?limit=25&status=active': () => list([]),
-    '/api/projects/x/spores/sp9': () => Response.json({ spore: SP, supersededBy: ['sp10'], supersedes: ['sp8'] }),
+    '/api/projects/x/spores/sp9': () => Response.json({ spore: SP, supersededBy: ['sp10'], supersedes: ['01234567-89ab-cdef'] }),
     ...over,
   });
 
@@ -130,13 +204,15 @@ describe('Spore detail', () => {
     mount('/p/x/spores/sp9');
     expect(await screen.findByRole('heading', { name: 'Trade Off' })).toBeTruthy();
     expect(screen.getByTestId('spore-status').textContent).toBe('Superseded');
-    expect(screen.getByText('importance 7')).toBeTruthy();
+    expect(screen.getByText('Importance 7 of 10')).toBeTruthy();
     expect(screen.getByText('offset')).toBeTruthy();
     expect(screen.getByText('Found while reading the rail.')).toBeTruthy();
     const tags = screen.getByLabelText('Tags');
     expect(within(tags).getByText('paging')).toBeTruthy();
     expect(within(tags).getByText('rail')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'sp8' }).getAttribute('href')).toBe('/p/x/spores/sp8');
+    const predecessor = screen.getByRole('link', { name: '01234567' });
+    expect(predecessor.getAttribute('href')).toBe('/p/x/spores/01234567-89ab-cdef');
+    expect(predecessor.getAttribute('title')).toBe('01234567-89ab-cdef');
     expect(screen.getByRole('link', { name: 'sp10' }).getAttribute('href')).toBe('/p/x/spores/sp10');
     expect(screen.getByText('Replaces')).toBeTruthy();
     expect(screen.getByText('Replaced by')).toBeTruthy();
