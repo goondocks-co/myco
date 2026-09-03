@@ -6,6 +6,7 @@
  */
 import { createServer } from '../pipeline.js';
 import { cloudflareSourceOf, serverEnvFromBindings, type CloudflareBindings, type DeferredWork } from '../platform/cloudflare/env.js';
+import { wakeClock } from '../platform/cloudflare/deployment-clock.js';
 
 const server = createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf, fetchImpl: (input, init) => fetch(input, init) });
 
@@ -13,4 +14,8 @@ export async function handleRequest(request: Request, bindings: CloudflareBindin
   return server.handleRequest(request, serverEnvFromBindings(bindings, deferred));
 }
 
-export default { fetch: handleRequest };
+export async function scheduled(_event: unknown, bindings: CloudflareBindings): Promise<void> {
+  return wakeClock(bindings);
+}
+
+export default { fetch: handleRequest, scheduled };

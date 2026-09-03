@@ -1,4 +1,5 @@
 import type { ErrorClassifier, ServerEnv } from './core/adapters.js';
+import { stampOwnerRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
 import { authenticateGrant, GRANT_KEY_PATTERN, touchGrant } from './auth/grants.js';
@@ -260,6 +261,7 @@ export function createServer(deps: ServerDeps) {
           return await matched.route.handler(env, { ...context, member });
         }
         if (member === null) return anonymous();
+        await stampOwnerRequest(env.db, now);
         return await matched.route.handler(env, { ...context, member });
       } catch (err) {
         emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });

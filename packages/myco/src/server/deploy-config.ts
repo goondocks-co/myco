@@ -85,22 +85,39 @@ export function renderDeployConfig(record: DeploymentRecord): string {
  * refusal where the binding is absent). A multi-line flags array or a second
  * flag fails loudly rather than shipping a silently different runtime.
  */
-const PARITY_DROPPED_TABLES = ['[assets]', '[[durable_objects.bindings]]', '[[migrations]]', '[[containers]]'];
+const PARITY_DROPPED_HEADERS = ['[assets]', '[[containers]]'];
+
+/**
+ * Whether a table is dropped for parity: the assets and the container, and the
+ * Durable Object that fronts the container with its migration — a local
+ * container needs Docker. The clock is a Durable Object too, needs nothing,
+ * and rides into parity so the wake is proven on this target as on the other.
+ */
+function parityDrops(header: string, block: readonly string[]): boolean {
+  if (PARITY_DROPPED_HEADERS.includes(header)) return true;
+  if (header === '[[durable_objects.bindings]]' || header === '[[migrations]]') return block.some((line) => line.includes('"HarnessContainer"'));
+  return false;
+}
 
 export function parityWranglerConfig(): string {
   const kept: string[] = [];
-  let dropping = false;
+  let header: string | null = null;
+  let block: string[] = [];
+  const flush = (): void => {
+    if (header === null || !parityDrops(header, block)) kept.push(...block);
+    block = [];
+  };
   for (const line of WRANGLER_TEMPLATE.split('\n')) {
     if (line.startsWith('compatibility_flags')) {
       if (!line.includes(']')) throw new Error('compatibility_flags spans lines; teach parityWranglerConfig before reformatting wrangler.toml');
       const stripped = line.replace(/"global_fetch_strictly_public"\s*,?\s*/, '');
-      if (/"/.test(stripped.split('=')[1] ?? '')) kept.push(stripped);
+      if (/"/.test(stripped.split('=')[1] ?? '')) block.push(stripped);
       continue;
     }
-    const header = line.trim();
-    if (PARITY_DROPPED_TABLES.includes(header)) { dropping = true; continue; }
-    if (dropping && /^\[/.test(header)) dropping = PARITY_DROPPED_TABLES.includes(header);
-    if (!dropping) kept.push(line);
+    const trimmed = line.trim();
+    if (/^\[/.test(trimmed)) { flush(); header = trimmed; }
+    block.push(line);
   }
+  flush();
   return kept.join('\n');
 }

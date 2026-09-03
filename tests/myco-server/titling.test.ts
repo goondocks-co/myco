@@ -77,13 +77,13 @@ describe('titleSession', () => {
     const vars = launch.envVars;
     expect({ task: vars.MYCO_TASK, url: vars.MYCO_SERVER_URL, project: vars.MYCO_PROJECT, run: vars.MYCO_RUN_ID, admission: vars.MYCO_TASK_ADMISSION, oat: vars.CLAUDE_CODE_OAUTH_TOKEN, apiKey: vars.ANTHROPIC_API_KEY, timeout: vars.MYCO_TIMEOUT_SECONDS })
       .toEqual({ task: 'title-summary', url: ORIGIN, project: 'proj_1', run: first.runId, admission: 'captureDriven', oat: OAT, apiKey: undefined, timeout: String(TITLING_RUN_TIMEOUT_SECONDS) });
-    expect(JSON.parse(vars.MYCO_TASK_PARAMS!)).toEqual({ session_id: 's1', mode: 'claim' });
+    expect(JSON.parse(vars.MYCO_TASK_PARAMS!)).toEqual({ session_id: 's1', mode: 'claim', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS });
     expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic' });
     expect(vars.MYCO_MEMBER_TOKEN.length).toBeGreaterThan(20);
     expect(h.row('s1')).toEqual({ ...untouched, titled_at: NOW });
     // The run's row is the server's record of the dispatch, written before the launch: pending, with the parameters as its context, attributed to the minted credential.
     const run = h.runRow(first.runId!);
-    expect({ status: run?.status, task: run?.task, agent: run?.agent_id, context: JSON.parse(run?.run_context ?? 'null') }).toEqual({ status: 'pending', task: 'title-summary', agent: 'myco-agent', context: { session_id: 's1', mode: 'claim' } });
+    expect({ status: run?.status, task: run?.task, agent: run?.agent_id, context: JSON.parse(run?.run_context ?? 'null') }).toEqual({ status: 'pending', task: 'title-summary', agent: 'myco-agent', context: { session_id: 's1', mode: 'claim', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS } });
     expect(h.sqlite.query(`SELECT member_id FROM member_credentials WHERE id = ?`).get(run!.dispatched_by!)).toEqual({ member_id: 'mem_harness' });
     expect(logged.some((l) => l.includes('session_title_dispatched'))).toBe(true);
     expect(logged.some((l) => l.includes('harness_dispatch'))).toBe(true);
@@ -268,8 +268,8 @@ describe('titleSession on an owner\'s ask', () => {
     expect(asked.outcome).toBe('dispatched');
     // The stamp is the claim; who wrote the title is stamped by the write, from the context the server recorded.
     expect(h.row('open')).toEqual({ ...untouched, titled_at: NOW });
-    expect(JSON.parse(h.launches[0]!.envVars.MYCO_TASK_PARAMS!)).toEqual({ session_id: 'open', mode: 'owner', by: 'mem_asker' });
-    expect(JSON.parse(h.runRow(asked.runId!)!.run_context!)).toEqual({ session_id: 'open', mode: 'owner', by: 'mem_asker' });
+    expect(JSON.parse(h.launches[0]!.envVars.MYCO_TASK_PARAMS!)).toEqual({ session_id: 'open', mode: 'owner', by: 'mem_asker', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS });
+    expect(JSON.parse(h.runRow(asked.runId!)!.run_context!)).toEqual({ session_id: 'open', mode: 'owner', by: 'mem_asker', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS });
     expect(logged.join('\n')).not.toContain(KEY);
     h.sqlite.run(`UPDATE sessions SET title = 'Old', summary = 'old' WHERE session_id = 'open'`);
     expect((await h.ask('open', NOW + OWNER_TITLING_WINDOW_MS + 1)).outcome).toBe('dispatched');

@@ -32,7 +32,7 @@ import { admitResume, classifyFailure, type FailureObservation } from '../core/r
 
 /** The failure classes a harness may report; anything else is refused rather than mapped to a default. */
 const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
-import { revokeCredentialAsMember } from '../auth/tokens.js';
+import { releaseRun } from '../core/release.js';
 import { HARNESS_MEMBER_ID } from '../core/harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
@@ -220,10 +220,10 @@ export async function handleGetRun(env: ServerEnv, ctx: RouteContext): Promise<R
 async function releaseDispatchedRun(env: ServerEnv, ctx: RouteContext, runId: string, status: unknown): Promise<void> {
   if (ctx.memberId !== HARNESS_MEMBER_ID) return;
   if (typeof status !== 'string' || !(TERMINAL_RUN_STATUSES as readonly string[]).includes(status)) return;
-  const run = await getRun(env.db, { projectId: ctx.projectId }, runId);
+  const scope = { projectId: ctx.projectId };
+  const run = await getRun(env.db, scope, runId);
   if (run === null || run.dispatchedBy !== ctx.tokenId) return;
-  try { await env.harnessEnd?.(runId); } catch { /* the hold's own deadline still ends the container */ }
-  await revokeCredentialAsMember(env.db, ctx.memberId, ctx.tokenId, ctx.now);
+  await releaseRun(env, scope, run, ctx.now);
 }
 
 /**
