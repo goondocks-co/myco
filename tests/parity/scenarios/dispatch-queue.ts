@@ -26,7 +26,8 @@ export const dispatchQueue: ParityScenario = {
       const res = await fetch(`${target.url}/api/harness/dispatch`, {
         method: 'POST',
         headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-        body: JSON.stringify({ task: 'container-smoke', projectId: target.projectId, timeoutSeconds: 120 }),
+        // A task with no per-day ceiling: the queue is the thing under test, not the clock's cap.
+        body: JSON.stringify({ task: 'digest-only', projectId: target.projectId, timeoutSeconds: 120 }),
       });
       expect(res.status).toBe(200);
       return (await res.json()) as { runId: string; queued?: boolean; heldBy?: string };

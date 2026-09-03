@@ -94,7 +94,7 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
   const core = (request: Request) => server.handleRequest(request, env);
   return {
     fetch: options.uiDir === undefined ? core : withStaticAssets(options.uiDir, core),
-    bind: (listening: AddressableServer) => { bound = listening; if (options.originOf !== undefined) env.origin = options.originOf(listening.port); },
+    bind: (listening: AddressableServer) => { bound = listening; if (options.originOf !== undefined && typeof listening.port === 'number') env.origin = options.originOf(listening.port); },
     close: async () => { loop?.stop(); await env.settle(); sqlite.close(); },
   };
 }
