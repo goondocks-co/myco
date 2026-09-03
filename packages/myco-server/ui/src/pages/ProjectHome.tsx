@@ -28,7 +28,7 @@ const SKILLS_SHOWN = 6;
 /** How long after the last capture the project still counts as capturing. */
 const CAPTURE_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
 
-const RUN_TONE: Record<string, StatusTone> = { running: 'ochre', completed: 'sage', failed: 'terracotta' };
+const RUN_TONE: Record<string, StatusTone> = { queued: 'outline', running: 'ochre', completed: 'sage', failed: 'terracotta' };
 
 export function ProjectHome() {
   const { projectId = '' } = useParams();
@@ -50,10 +50,11 @@ export function ProjectHome() {
 }
 
 /** One sentence on what is happening now. */
-export function describeActivity(openSessions: number, runningRuns: number): string {
+export function describeActivity(openSessions: number, runningRuns: number, waitingRuns = 0): string {
   const parts: string[] = [];
   if (openSessions > 0) parts.push(`${openSessions} open ${openSessions === 1 ? 'session' : 'sessions'}`);
   if (runningRuns > 0) parts.push(`${runningRuns} ${runningRuns === 1 ? 'run' : 'runs'} running`);
+  if (waitingRuns > 0) parts.push(`${waitingRuns} waiting`);
   return parts.length === 0 ? 'Quiet right now — nothing running.' : parts.join(' · ');
 }
 
@@ -88,6 +89,7 @@ function Home({ project }: { project: ProjectSummary }) {
   const settings = useSettings();
   const base = `/p/${encodeURIComponent(project.projectId)}`;
   const runningRuns = runs.rows.filter((r) => r.status === 'running').length;
+  const waitingRuns = runs.rows.filter((r) => r.status === 'queued').length;
   const stats = activity.data?.stats;
   const unconfigured = noProviderYet(settings.data?.leaves);
   return (
@@ -96,7 +98,7 @@ function Home({ project }: { project: ProjectSummary }) {
         <div className="flex min-w-0 flex-col gap-1">
           <Eyebrow>Project</Eyebrow>
           <h1 className="myco-display-lg m-0 text-on-surface">{project.name}</h1>
-          <p className="m-0 font-sans text-sm text-on-surface-variant" data-testid="activity-line">{stats === undefined ? '…' : describeActivity(stats.openSessions, runningRuns)}</p>
+          <p className="m-0 font-sans text-sm text-on-surface-variant" data-testid="activity-line">{stats === undefined ? '…' : describeActivity(stats.openSessions, runningRuns, waitingRuns)}</p>
         </div>
         {stats !== undefined && <CaptureHealthPill stats={stats} />}
       </header>

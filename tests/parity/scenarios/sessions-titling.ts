@@ -4,10 +4,10 @@ import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget
 /**
  * The proof scenario for #1042: capture through /events, the after-response
  * titling dispatch, the dashboard label, the MCP read, and an owner's ask —
- * identical on both targets. Neither parity target binds a harness runtime,
- * so a title is never written here: both answer `harness_unavailable`, stamp
- * nothing, and label the session from its first prompt. The dispatch itself
- * is proven by the unit tests against a bound runtime and by the live smoke.
+ * identical on both targets. Both parity targets bind the recording runtime,
+ * which takes a dispatch and starts nothing: the claim is stamped and a run
+ * row waits, no title is ever written, and the session is labelled from its
+ * first prompt. A title landing is proven by the live smoke.
  */
 export const sessionsTitling: ParityScenario = {
   name: 'sessions and titling: capture, the unbound-runtime fallback, label, MCP, an owner\'s ask',
@@ -45,14 +45,16 @@ export const sessionsTitling: ParityScenario = {
       return (await res.json()) as { outcome: string; runId?: string };
     };
 
-    // capture, then the end's deferred attempt: with no runtime bound it stamps nothing
+    // capture, then the end's deferred attempt: the recording runtime takes the dispatch, so the claim is stamped and a run row waits for a runtime that never writes
     const s1 = `parity-${Date.now()}-1`;
     await runSession(s1, 'Add a retry to the runner please');
-    // The owner's ask lands after the deferred attempt has been answered; it is answered the same way.
-    expect(await askTitle(s1)).toEqual({ outcome: 'harness_unavailable' });
-    expect(await sessionRow(s1)).toEqual({ title: null, summary: null, titled_at: null });
+    const runFor = (sessionId: string) => target.sql(`SELECT status, harness FROM agent_runs WHERE task = 'title-summary' AND run_context LIKE ${lit(`%${sessionId}%`)} ORDER BY started_at DESC LIMIT 1`);
+    expect(await runFor(s1)).toEqual([{ status: 'pending', harness: 'record' }]);
+    expect(await sessionRow(s1)).toEqual({ title: null, summary: null, titled_at: expect.any(Number) });
+    // The owner's ask lands inside the deferred attempt's window; it is answered as already asked.
+    expect(await askTitle(s1)).toEqual({ outcome: 'already' });
 
-    // the owner list labels the session from its first prompt
+    // the owner list labels the session from its first prompt while no title is written
     expect((await ownerRows()).find((row) => row.sessionId === s1)?.label).toBe('Add a retry to the runner please');
 
     // MCP serves the session with no title
@@ -65,17 +67,20 @@ export const sessionsTitling: ParityScenario = {
     const mcpRows = ((await mcp.json()) as { result: { structuredContent: { result: Array<{ id: string; title: string | null }> } } }).result.structuredContent.result;
     expect(mcpRows.find((row) => row.id === s1)?.title).toBeNull();
 
-    // a second end of the session changes nothing
+    // a second end of the session changes nothing: one attempt per session
+    const stamped = (await sessionRow(s1)) as { titled_at: number };
     await post(s1, 'session.end', { endedAt: Date.now() });
-    expect(await askTitle(s1)).toEqual({ outcome: 'harness_unavailable' });
-    expect(await sessionRow(s1)).toEqual({ title: null, summary: null, titled_at: null });
+    expect(await askTitle(s1)).toEqual({ outcome: 'already' });
+    expect(await sessionRow(s1)).toEqual({ title: null, summary: null, titled_at: stamped.titled_at });
+    expect(await target.sql(`SELECT COUNT(*) AS c FROM agent_runs WHERE task = 'title-summary' AND run_context LIKE ${lit(`%${s1}%`)}`)).toEqual([{ c: 1 }]);
 
-    // an open session is answered the same way on an owner's ask
+    // an open session is dispatched on an owner's ask
     const s2 = `parity-${Date.now()}-2`;
     await post(s2, 'session.start', { agent: 'claude-code', startedAt: Date.now() });
     await post(s2, 'prompt', { promptId: crypto.randomUUID(), text: 'Rename the project from the card', origin: 'user' });
-    expect(await askTitle(s2)).toEqual({ outcome: 'harness_unavailable' });
-    expect(await sessionRow(s2)).toEqual({ title: null, summary: null, titled_at: null });
+    expect(await askTitle(s2)).toMatchObject({ outcome: 'dispatched' });
+    expect(await runFor(s2)).toEqual([{ status: 'pending', harness: 'record' }]);
+    expect(await sessionRow(s2)).toEqual({ title: null, summary: null, titled_at: expect.any(Number) });
     expect((await ownerRows()).find((row) => row.sessionId === s2)?.label).toBe('Rename the project from the card');
   },
 };

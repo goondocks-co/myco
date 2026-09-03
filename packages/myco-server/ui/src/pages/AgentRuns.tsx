@@ -17,12 +17,29 @@ import { NotFound } from './NotFound';
 /** The statuses a run is written with; anything else renders neutral rather than assuming the set is closed. */
 const STATUS_TABS = [
   { id: 'all', label: 'All' },
+  { id: 'queued', label: 'Queued' },
   { id: 'running', label: 'Running' },
   { id: 'completed', label: 'Completed' },
   { id: 'failed', label: 'Failed' },
 ];
 
-const STATUS_TONE: Record<string, StatusTone> = { running: 'ochre', completed: 'sage', failed: 'terracotta' };
+const STATUS_TONE: Record<string, StatusTone> = { queued: 'outline', running: 'ochre', completed: 'sage', failed: 'terracotta' };
+
+/** Each limit that can hold a queued run, in the reader's words. */
+const HELD_BY_WORDS: Record<string, string> = {
+  concurrent_runs: 'the limit on runs at once',
+  task_concurrent_runs: 'the limit on runs of this task at once',
+  task_runs_per_hour: 'the limit on runs of this task per hour',
+  fleet: 'the size of the fleet',
+};
+
+/** A queued run's line: its place in the queue and what holds it. */
+export function queuedWords(run: { position: number | null; heldBy: string | null }): string {
+  const ahead = run.position ?? 0;
+  const turn = ahead === 0 ? 'next in line' : `${ahead} ahead of it`;
+  const holder = run.heldBy === null ? 'a limit' : (HELD_BY_WORDS[run.heldBy] ?? run.heldBy);
+  return `waiting — ${turn} · held by ${holder}`;
+}
 
 const RESUME_TEXT: Record<string, string> = {
   ready: 'Can be resumed.',
@@ -91,12 +108,19 @@ function RunRow({ run, active, onOpen }: { run: RunListRow; active: boolean; onO
         <span className="min-w-0 flex-1 truncate text-on-surface">{run.task ?? run.id}</span>
         <span className="font-mono text-[11px] text-on-surface-variant">{run.status}</span>
       </div>
-      <div className="mt-1 flex gap-3 font-mono text-[11px] text-on-surface-variant">
-        <span>{formatRelative(run.startedAt)}</span>
-        <span>{formatDuration(run.startedAt, run.completedAt)}</span>
-        <span>{formatTokens(run.tokensUsed)} tok</span>
-        <span>{formatCost(run.costUsd, run.costSource)}</span>
-      </div>
+      {run.status === 'queued' ? (
+        <div className="mt-1 flex gap-3 font-mono text-[11px] text-on-surface-variant">
+          <span>{formatRelative(run.queuedAt)}</span>
+          <span>{queuedWords(run)}</span>
+        </div>
+      ) : (
+        <div className="mt-1 flex gap-3 font-mono text-[11px] text-on-surface-variant">
+          <span>{formatRelative(run.startedAt)}</span>
+          <span>{formatDuration(run.startedAt, run.completedAt)}</span>
+          <span>{formatTokens(run.tokensUsed)} tok</span>
+          <span>{formatCost(run.costUsd, run.costSource)}</span>
+        </div>
+      )}
     </Row>
   );
 }

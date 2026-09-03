@@ -7,8 +7,9 @@ import { sessionsTitling } from './scenarios/sessions-titling.ts';
 import { sessionTurns } from './scenarios/session-turns.ts';
 import { plans } from './scenarios/plans.ts';
 import { tick } from './scenarios/tick.ts';
+import { dispatchQueue } from './scenarios/dispatch-queue.ts';
 
-const scenarios = [sessionsTitling, sessionTurns, plans, backupRestore, tick];
+const scenarios = [sessionsTitling, sessionTurns, plans, backupRestore, tick, dispatchQueue];
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

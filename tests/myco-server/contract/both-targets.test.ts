@@ -254,28 +254,29 @@ describe('one server product, two deployment targets', () => {
     // required binding is NAMED here rather than answering a bare 503 at the first
     // request that happens to touch it.
     const hosted = serverEnvFromBindings({ BUCKET: undefined, SOURCE_LIMIT: {}, TOKEN_LIMIT: {}, MYCO_DB: {} } as never);
-    expect(absentIds(hosted.platform.capabilities())).toEqual(['blob-store']);
+    expect(absentIds(hosted.platform.capabilities())).toEqual(['blob-store', 'harness-runtime']);
 
     const { sqlite } = seededFile();
-    expect(absentIds(serverEnvFromBunConfig({ sqlite, blobDir: '' }).platform.capabilities())).toEqual(['blob-store']);
-    expect(absentIds(serverEnvFromBunConfig({ sqlite: undefined as never, blobDir: '/tmp/x' }).platform.capabilities())).toEqual(['relational-store']);
+    expect(absentIds(serverEnvFromBunConfig({ sqlite, blobDir: '' }).platform.capabilities())).toEqual(['blob-store', 'harness-runtime']);
+    expect(absentIds(serverEnvFromBunConfig({ sqlite: undefined as never, blobDir: '/tmp/x' }).platform.capabilities())).toEqual(['harness-runtime', 'relational-store']);
 
     // A handle that cannot answer a query is as missing as no handle at all.
     sqlite.close();
-    expect(absentIds(serverEnvFromBunConfig({ sqlite, blobDir: '/tmp/x' }).platform.capabilities())).toEqual(['relational-store']);
+    expect(absentIds(serverEnvFromBunConfig({ sqlite, blobDir: '/tmp/x' }).platform.capabilities())).toEqual(['harness-runtime', 'relational-store']);
   });
 
   it('states the same capabilities on both targets, with none absent when configured', () => {
     for (const t of TARGETS) {
       const caps = t.env.platform.capabilities();
-      expect({ target: t.name, absent: absentIds(caps) }).toEqual({ target: t.name, absent: [] });
+      // Neither contract target binds a harness runtime; that one capability is absent on both, by the same name.
+      expect({ target: t.name, absent: absentIds(caps) }).toEqual({ target: t.name, absent: ['harness-runtime'] });
       // The set is identical across targets, which is what lets one sentence
       // describe either one.
       expect({ target: t.name, ids: caps.map((c) => c.capability).sort() })
-        .toEqual({ target: t.name, ids: ['blob-store', 'rate-limiting', 'relational-store'] });
+        .toEqual({ target: t.name, ids: ['blob-store', 'harness-runtime', 'rate-limiting', 'relational-store'] });
       // Same wording, whichever target is answering.
       expect({ target: t.name, labels: caps.map((c) => c.label).sort() })
-        .toEqual({ target: t.name, labels: ['Blob storage', 'Project storage', 'Request rate limiting'] });
+        .toEqual({ target: t.name, labels: ['Blob storage', 'Harness runtime', 'Project storage', 'Request rate limiting'] });
     }
     // Each target names its own infrastructure in its own vocabulary.
     expect(W.env.platform.name).not.toBe(C.env.platform.name);
@@ -328,9 +329,9 @@ describe('agent runs read the same on both stores', () => {
       outcomes.push({ listed, detail, foreign, leaks: /sk-canary|providerConfig/.test(JSON.stringify({ listed, detail })) });
     }
     expect(outcomes[0]).toEqual({
-      listed: { rows: [{ id: 'run_c', agentId: 'agent_c', task: 'digest', status: 'failed', provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true }], cursor: null },
+      listed: { rows: [{ id: 'run_c', agentId: 'agent_c', task: 'digest', status: 'failed', provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true, queuedAt: null, heldBy: null, position: null }], cursor: null },
       detail: {
-        run: { id: 'run_c', agentId: 'agent_c', task: 'digest', status: 'failed', provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true, instruction: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: null, reasoningLevel: null, resumeMode: null, resumeAttempts: 0, error: 'boom', dispatchedBy: null, usageData: null, actionsTaken: null },
+        run: { id: 'run_c', agentId: 'agent_c', task: 'digest', status: 'failed', provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true, queuedAt: null, heldBy: null, position: null, instruction: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: null, reasoningLevel: null, resumeMode: null, resumeAttempts: 0, error: 'boom', dispatchedBy: null, usageData: null, actionsTaken: null },
         phases: [
           { name: 'prepare', status: 'completed', updatedAt: 5, summary: null, turnsUsed: 2, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: false, semanticCheckBlocked: false, postConditionFailed: false },
           { name: 'write', status: 'failed', updatedAt: 6, summary: 'ran out of turns', turnsUsed: null, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: true, semanticCheckBlocked: false, postConditionFailed: false },

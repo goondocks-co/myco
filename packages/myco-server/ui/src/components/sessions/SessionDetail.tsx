@@ -123,7 +123,7 @@ function GenerateSummary({ projectId, sessionId, session }: { projectId: string;
           setAsked(null);
           titling.mutate(undefined, {
             onSuccess: (answer) => {
-              if (answer.outcome === 'dispatched' && answer.runId !== undefined) setAsked({ runId: answer.runId, title: session.title, summary: session.summary, at: Date.now() });
+              if ((answer.outcome === 'dispatched' || answer.outcome === 'queued') && answer.runId !== undefined) setAsked({ runId: answer.runId, title: session.title, summary: session.summary, at: Date.now() });
             },
           });
         }}

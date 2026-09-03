@@ -66,7 +66,7 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
     if (run.startedAt === null || now < staleAfter(run.startedAt, run.runContext)) continue;
     const scope = { projectId: run.projectId };
     if (!(await failStaleRun(env.db, scope, run.id, now, STALE_RUN_ERROR))) continue;
-    await releaseRun(env, scope, run, now);
+    await releaseRun(env, scope, run, now, { drain: false });
     changed += 1;
   }
   return changed;

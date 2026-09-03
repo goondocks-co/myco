@@ -25,6 +25,8 @@ export interface BunServerConfig extends OwnerBindings {
   /** Base64 key that Deployment secrets are sealed under; supplied from the environment, never from the store it protects. */
   SECRET_WRAP_KEY?: string;
   now?: () => number;
+  /** The harness launch this process is given — the self-hosted runner, or the parity harness's recording launch. Absent, every dispatch answers that no runtime is bound. */
+  harnessLaunch?: (spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }) => Promise<void>;
 }
 
 /** This store reports a digest rejection in its own words; nothing else does. */
@@ -59,6 +61,7 @@ export function bunPlatform(config: BunServerConfig): PlatformDescriptor {
         present: true,
         operatorNames: [],
       },
+      { capability: 'harness-runtime', label: 'Harness runtime', present: config.harnessLaunch !== undefined, operatorNames: ['MYCO_HARNESS'] },
     ],
     classifyError: classifySqliteError,
     classifyBlobFailure: classifyBlobFailureOf,
@@ -87,6 +90,7 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
       SESSION_SECRET: config.SESSION_SECRET,
     },
     platform: bunPlatform(config),
+    ...(config.harnessLaunch === undefined ? {} : { harnessLaunch: config.harnessLaunch }),
     // Self-hosted holds the key the way this project already holds machine
     // secrets: an env value outside the store it protects.
     wrappingKey: wrappingKeyFromText(async () => config.SECRET_WRAP_KEY, 'SECRET_WRAP_KEY'),

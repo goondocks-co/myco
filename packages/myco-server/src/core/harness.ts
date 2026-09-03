@@ -16,12 +16,13 @@
  * only into the launched runtime's environment, under the variable its harness
  * reads, and never into telemetry or an answer.
  */
+import { heldBy, readDispatchLimits, type DispatchLimits, type HeldBy } from './limits.js';
 import type { ServerEnv } from './adapters.js';
 import { ensureMember } from '../auth/enrollment.js';
-import { issueMemberToken } from '../auth/tokens.js';
+import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
-import { applyRunUpdate, ensureAgent, recordDispatch } from './runs.js';
+import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, launchQueued, listQueuedAcrossProjects, recordQueued, getRun } from './runs.js';
 import { deploymentSecretStore } from './secrets.js';
 import { leafValues } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
@@ -88,6 +89,8 @@ export interface LaunchSpec {
   params?: Record<string, string>;
   /** The run id to launch under; minted here when absent. */
   runId?: string;
+  /** The run is a queued row the drain is launching: it moves from `queued` rather than being recorded afresh. */
+  fromQueue?: boolean;
 }
 
 export interface Launched {
@@ -98,9 +101,132 @@ export interface Launched {
   provider: string;
 }
 
+/** A dispatch the Deployment holds back: the run row waits in the queue under the limit that holds it. */
+export interface Queued {
+  runId: string;
+  task: string;
+  projectId: string;
+  heldBy: HeldBy;
+}
+
 export type DispatchOutcome =
-  | ({ dispatched: true } & Launched)
+  | ({ dispatched: true; queued: false } & Launched)
+  | ({ dispatched: true; queued: true } & Queued)
   | { dispatched: false; refusal: DispatchRefusal; providerType?: string };
+
+/** What the queue keeps of a launch spec until the drain launches it. */
+interface StoredSpec {
+  serverUrl: string;
+  actor: string;
+  timeoutSeconds: number;
+  params?: Record<string, string>;
+}
+
+/** How many queued runs one drain considers; the next wake continues. */
+export const DRAIN_BATCH = 200;
+
+/** A launch the write refused on a limit: no row is written, the credential minted for it is revoked, and the dispatch belongs in the queue. */
+export class LimitReached extends Error {
+  constructor() { super('a limit holds this dispatch'); this.name = 'LimitReached'; }
+}
+
+/** A queued row the drain found no longer queued: another drain launched it, or it failed. */
+export class NotQueued extends Error {
+  constructor() { super('the run is not queued'); this.name = 'NotQueued'; }
+}
+
+/**
+ * Whether a prepared dispatch may launch now, or which limit holds it.
+ * Reads the limits and the load fresh on every ask, so a limit changed in
+ * Settings applies to the next dispatch and the next drain alike.
+ */
+export async function admitDispatch(env: ServerEnv, task: string, now: number, limits?: DispatchLimits): Promise<HeldBy | null> {
+  const [read, load] = await Promise.all([limits === undefined ? readDispatchLimits(env.db) : Promise.resolve(limits), dispatchLoad(env.db, task, now)]);
+  return heldBy(load, read);
+}
+
+/**
+ * Dispatch a prepared task: launch it now, or hold it in the queue under the
+ * limit that holds it. The launch's own write carries the limit check, so a
+ * dispatch that reads the load as free and then loses the race to another is
+ * queued rather than launched past the limit.
+ */
+export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number): Promise<({ queued: false } & Launched) | ({ queued: true } & Queued)> {
+  const limits = await readDispatchLimits(env.db);
+  const held = await admitDispatch(env, prepared.task, now, limits);
+  if (held !== null) return { queued: true, ...(await enqueueDispatch(env, prepared, spec, held, now)) };
+  try {
+    return { queued: false, ...(await launchDispatch(env, prepared, spec, now, { limits })) };
+  } catch (err) {
+    if (!(err instanceof LimitReached)) throw err;
+    const holder = (await admitDispatch(env, prepared.task, now, limits)) ?? 'concurrent_runs';
+    return { queued: true, ...(await enqueueDispatch(env, prepared, spec, holder, now)) };
+  }
+}
+
+/**
+ * Hold a dispatch in the queue: a run row in `queued`, carrying the launch
+ * asked of it and the limit that holds it, with no credential until it
+ * launches. Wakes the Deployment so the drain follows as capacity returns.
+ */
+export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, held: HeldBy, now: number): Promise<Queued> {
+  await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now);
+  const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
+  const stored: StoredSpec = { serverUrl: spec.serverUrl, actor: spec.actor, timeoutSeconds: spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS, ...(spec.params === undefined ? {} : { params: spec.params }) };
+  if (!(await recordQueued(env.db, { projectId: prepared.projectId }, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored) }))) {
+    throw new Error('run id already taken');
+  }
+  emit({ kind: 'harness_queued', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor, heldBy: held });
+  try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
+  return { runId, task: prepared.task, projectId: prepared.projectId, heldBy: held };
+}
+
+/**
+ * Launch every queued run the limits now admit, oldest first. Each is prepared
+ * again — a provider changed after it queued applies, and a refusal fails the
+ * row by its own message — and admitted again against the load as it stands
+ * after the launches before it. Answers how many launched.
+ */
+export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
+  let launched = 0;
+  const limits = await readDispatchLimits(env.db);
+  for (const queued of await listQueuedAcrossProjects(env.db, DRAIN_BATCH)) {
+    const scope = { projectId: queued.projectId };
+    if (queued.task === null || queued.dispatchSpec === null) {
+      await failQueuedRun(env.db, scope, queued.id, now, 'the queued dispatch carries no launch');
+      continue;
+    }
+    let stored: StoredSpec;
+    try { stored = JSON.parse(queued.dispatchSpec) as StoredSpec; } catch {
+      await failQueuedRun(env.db, scope, queued.id, now, 'the queued dispatch carries no launch');
+      continue;
+    }
+    const prepared = await prepareDispatch(env, queued.task, queued.projectId);
+    if (!prepared.ok) {
+      if (prepared.refusal === 'harness_unavailable') return launched;
+      await failQueuedRun(env.db, scope, queued.id, now, DISPATCH_REFUSAL_MESSAGE[prepared.refusal]);
+      continue;
+    }
+    const held = await admitDispatch(env, queued.task, now, limits);
+    if (held !== null) {
+      // A Deployment-wide holder holds every later row too; a per-task holder holds only this task's.
+      if (held === 'fleet' || held === 'concurrent_runs') return launched;
+      continue;
+    }
+    try {
+      await launchDispatch(env, prepared.prepared, { ...stored, runId: queued.id, fromQueue: true }, now, { limits });
+      launched += 1;
+    } catch (err) {
+      // The write refused on a limit another launch reached first: the row stays queued for the next drain. A row no longer queued belongs to another drain; the next row still gets its turn.
+      if (err instanceof LimitReached && (await admitDispatch(env, queued.task, now, limits)) !== null) {
+        const holder = await admitDispatch(env, queued.task, now, limits);
+        if (holder === 'fleet' || holder === 'concurrent_runs') return launched;
+      }
+    }
+  }
+  return launched;
+}
+
 
 const parseLeaf = (value: string | undefined): unknown => {
   if (value === undefined) return undefined;
@@ -154,7 +280,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
  * of it. Rejects when the runtime refuses to start, after marking the row
  * failed; the caller decides what its own state does then.
  */
-export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number): Promise<Launched> {
+export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { limits?: DispatchLimits } = {}): Promise<Launched> {
   if (env.harnessLaunch === undefined) throw new Error('harness runtime unbound after preparation');
   const timeoutSeconds = spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS;
   await ensureMember(env.db, HARNESS_MEMBER_ID, now, 'harness runtime');
@@ -167,8 +293,22 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   // received. A parameter reader ignores the key it does not name.
   const runContext = JSON.stringify({ ...(spec.params ?? {}), timeoutSeconds });
   const scope = { projectId: prepared.projectId };
-  if (!(await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }))) {
-    throw new Error('run id already taken');
+  // A queued row moves to pending for this credential; any other id is recorded afresh. Either way the row exists before
+  // the launch, and the write itself carries the limit check when limits are given. A write that changed nothing minted
+  // a credential for no run: it is revoked here, and the caller learns whether a limit or the row's own state refused it.
+  const admission = options.limits === undefined ? undefined : { limits: options.limits, now };
+  const recorded = spec.fromQueue === true
+    ? await launchQueued(env.db, scope, runId, { task: prepared.task, dispatchedBy: minted.tokenId, startedAt: now, runContext, provider: prepared.providerType, model: prepared.model }, admission)
+    : await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }, admission);
+  if (!recorded) {
+    await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, minted.tokenId, now);
+    const existing = await getRun(env.db, scope, runId);
+    if (spec.fromQueue === true) {
+      if (existing === null || existing.status !== 'queued') throw new NotQueued();
+      throw new LimitReached();
+    }
+    if (existing !== null) throw new Error('run id already taken');
+    throw new LimitReached();
   }
   try {
     await env.harnessLaunch({
@@ -201,5 +341,5 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
 export async function dispatchTask(env: ServerEnv, task: string, projectId: string, spec: LaunchSpec, now: number): Promise<DispatchOutcome> {
   const prepared = await prepareDispatch(env, task, projectId);
   if (!prepared.ok) return { dispatched: false, refusal: prepared.refusal, ...(prepared.providerType === undefined ? {} : { providerType: prepared.providerType }) };
-  return { dispatched: true, ...(await launchDispatch(env, prepared.prepared, spec, now)) };
+  return { dispatched: true, ...(await dispatchPrepared(env, prepared.prepared, spec, now)) };
 }
