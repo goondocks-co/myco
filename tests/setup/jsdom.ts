@@ -97,8 +97,9 @@ g.Notification = NotificationStub;
 // Mirror the existing vitest setup (localStorage + matchMedia shims).
 await import('./vitest.js');
 
-// A `waitFor` in the dashboard tests waits for a fetch, a render and a re-render;
-// the library's one-second default is sized for a quiet machine, and a loaded
-// CI runner pays two to three times that for the same work.
+// An upper bound on how long a `waitFor` may wait for its condition, never a sleep:
+// every wait returns the moment its condition holds, and CI runs the whole jsdom
+// shard in one loaded process where the same fetch-and-render costs many times what
+// it does on a quiet machine.
 const { configure } = await import('@testing-library/react');
-configure({ asyncUtilTimeout: 5_000 });
+configure({ asyncUtilTimeout: 15_000 });

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { loadManifests, resolvePackageRoot } from './detect.js';
+import { loadManifests, manifestForManagedProjectFiles, resolvePackageRoot } from './detect.js';
 import { SymbiontInstaller, type ManagedProjectFilesResult } from './installer.js';
 import { listGroves, listRegisteredProjects } from '../grove/registry.js';
 import { resolveMycoHome } from '../grove/paths.js';
@@ -50,12 +50,16 @@ export function reconcileManagedProjectFiles(
   options: { manifests?: SymbiontManifest[]; packageRoot?: string } = {},
 ): ManagedProjectFilesResult | null {
   const manifests = options.manifests ?? loadManifests();
-  if (manifests.length === 0) return null;
+  // Managed project-file reconciliation writes symbiont-agnostic content
+  // (rules guidance, canonical skill dirs + plan dirs + wrangler cache), but
+  // the installer's writers still gate on `registration.skillsTarget` — so the
+  // manifest must be one that declares it, not whichever the filesystem
+  // enumerated first.
+  const manifest = manifestForManagedProjectFiles(manifests);
+  if (!manifest) return null;
   const packageRoot = options.packageRoot ?? resolvePackageRoot();
-  // Managed project-file reconciliation is symbiont-agnostic (rules guidance,
-  // canonical skill dirs + plan dirs + wrangler cache), so any manifest serves.
   const installer = new SymbiontInstaller(
-    manifests[0], projectRoot, packageRoot, false, vaultDir, groveId ?? null, 'project',
+    manifest, projectRoot, packageRoot, false, vaultDir, groveId ?? null, 'project',
   );
   return installer.reconcileManagedProjectFiles();
 }
