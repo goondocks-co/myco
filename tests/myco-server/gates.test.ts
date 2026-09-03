@@ -829,7 +829,7 @@ describe('gates', () => {
     // The schema's backfill is the one other writer. It is bounded here rather than
     // waved through: every row it lands carries a revoked_at, so the exemption cannot
     // become a path that mints a live credential outside the live-token predicate.
-    expect(inserting).toEqual([join(SRC, 'auth', 'tokens.ts'), join(SRC, 'db', 'schema.ts')]);
+    expect([...inserting].sort()).toEqual([join(SRC, 'auth', 'tokens.ts'), join(SRC, 'db', 'schema.ts')].sort());
     const backfill = readFileSync(join(SRC, 'db', 'schema.ts'), 'utf8').match(/INSERT (OR IGNORE )?INTO member_credentials[\s\S]*?`/)![0];
     expect(backfill.match(/INTO member_credentials\b/g)).toHaveLength(1);
     expect(backfill).toMatch(/COALESCE\(t\.revoked_at, t\.expires_at\)/);
