@@ -143,6 +143,13 @@ export async function main(): Promise<void> {
     throw new StartupError('MYCO_SOURCE_FROM=proxy requires MYCO_TRUSTED_HOPS to be at least 1');
   }
 
+  // A fleet of none is not a fleet: refusing at startup reports it once, rather than as every dispatch running unbounded.
+  const fleetEnv = (): number => {
+    const n = positiveInt('MYCO_FLEET', 1);
+    if (n < 1) throw new StartupError('MYCO_FLEET must be a whole number of runtimes, 1 or more');
+    return n;
+  };
+
   const bind = process.env.MYCO_BIND ?? 'loopback';
   if (bind !== 'loopback' && bind !== 'all') {
     throw new StartupError(`MYCO_BIND must be 'loopback' or 'all', and is ${JSON.stringify(bind)}`);
@@ -164,6 +171,7 @@ export async function main(): Promise<void> {
     sourceFrom,
     header: process.env.MYCO_TRUSTED_HEADER,
     origin: process.env.MYCO_ORIGIN,
+    ...(process.env.MYCO_FLEET === undefined ? {} : { fleet: fleetEnv() }),
     trustedHops: positiveInt('MYCO_TRUSTED_HOPS', 1),
     SECRET_WRAP_KEY: secretOf('SECRET_WRAP_KEY', false),
     SESSION_SECRET: secretOf('SESSION_SECRET', false),

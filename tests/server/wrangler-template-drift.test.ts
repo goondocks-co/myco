@@ -48,6 +48,21 @@ describe('renderDeployConfig', () => {
     expect(config.split('secret_name = "myco-secret-wrap-key"').length).toBe(3);
   });
 
+  it('sets the fleet the record names as max_instances and MYCO_FLEET beside the origin, and refuses a fleet that is not a count', () => {
+    const config = renderDeployConfig(record({ url: 'https://myco.example.com', databaseId: 'd1-uuid', fleet: 3 }));
+    expect(config).toContain('max_instances = 3');
+    expect(config).not.toContain('max_instances = 12');
+    expect(config).toContain('[vars]');
+    expect(config).toContain('MYCO_ORIGIN = "https://myco.example.com"');
+    expect(config).toContain('MYCO_FLEET = "3"');
+    expect(config.match(/^\[vars\]$/gm)).toHaveLength(1);
+    const untouched = renderDeployConfig(record({ databaseId: 'd1-uuid' }));
+    expect(untouched).toContain('max_instances = 12');
+    expect(untouched).not.toContain('[vars]');
+    expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', fleet: 0 }))).toThrow(/fleet/);
+    expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', fleet: 2.5 }))).toThrow(/fleet/);
+  });
+
   it('renders no route for a workers.dev URL and no store block without a store id', () => {
     const config = renderDeployConfig(record({ url: 'https://myco.example.workers.dev', databaseId: 'd1-uuid' }));
     expect(config).not.toContain('routes =');

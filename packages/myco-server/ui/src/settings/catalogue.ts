@@ -78,7 +78,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'agent.limits.concurrent_runs', label: 'Runs at once', kind: 'number', min: 1 },
       { leaf: 'agent.limits.task_concurrent_runs', label: 'Runs of one task at once', kind: 'number', min: 1 },
       { leaf: 'agent.limits.task_runs_per_hour', label: 'Runs of one task per hour', kind: 'number', min: 1 },
-      { leaf: 'agent.limits.fleet', label: 'Fleet size', kind: 'number', min: 1, note: 'How many runtimes this server can start at once; the operator sets it when the server is deployed.' },
     ],
   },
   {

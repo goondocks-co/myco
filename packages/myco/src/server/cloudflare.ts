@@ -298,6 +298,8 @@ export interface DeploymentRecord {
   storeId?: string;
   /** The pushed harness image's digest-pinned registry URI; the deploy config pins it once a push has recorded one. */
   harnessImage?: string;
+  /** How many harness runtimes the Deployment may start at once — the container fleet, set by `myco server config --fleet`; the template's number until then. */
+  fleet?: number;
 }
 
 /** The Worker's sign-in secrets, named as the Worker reads them. */
