@@ -211,6 +211,27 @@ export async function listSupersedingSporeIds(
 }
 
 /**
+ * Every spore this one replaced, newest first.
+ *
+ * The same events read from the other end: a supersede names one predecessor
+ * and a consolidate names every source it merged, so a reader arriving at a
+ * replacement sees what it grew out of rather than only where it leads.
+ */
+export async function listSupersededSporeIds(
+  db: RelationalStore,
+  scope: ReadScope,
+  sporeId: string,
+  limit = 10,
+): Promise<string[]> {
+  const { results } = await db
+    .prepare(`SELECT DISTINCT spore_id AS id FROM resolution_events
+       WHERE project_id = ? AND new_spore_id = ? AND action IN ('supersede', 'consolidate')
+       ORDER BY created_at DESC LIMIT ?`)
+    .bind(scope.projectId, sporeId, limit).all<{ id: string }>();
+  return results.map((r) => r.id);
+}
+
+/**
  * Consolidate sources into one wisdom spore: the wisdom row and, for every
  * source, its status move and its resolution event, in one batch — a caller
  * cannot leave a wisdom spore with half its sources still active, and a

@@ -147,7 +147,7 @@ Store a noteworthy observation for future sessions. Only save things that aren't
 **Bad**: "the auth system is complex"
 **Good**: "bcrypt.compare() silently returns false (not an error) on hash format mismatch — spent 2h debugging; the hash column was VARCHAR(50) but bcrypt outputs 60 chars"
 
-Session association is derived by the daemon; the MCP client does not pass it.
+Pass `session_id` from the `Session::` line injected at session start, on `save` and `consolidate` so the spore is filed under the session that produced it, and on `supersede` and `obsolete` so the retirement names the session that decided it.
 
 ### myco_plans — Manage plans
 

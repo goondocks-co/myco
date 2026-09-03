@@ -16,7 +16,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { notFound, ok, resolveProjectScope } from './scope.js';
-import { countSpores, getSpore, listSpores, listSupersedingSporeIds } from '../core/spores.js';
+import { countSpores, getSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds } from '../core/spores.js';
 import { getPublishedSkillContent, listLineageForSkill, listSkillRecords } from '../core/skills.js';
 import { listDigestRevisions, listDigests } from '../core/digests.js';
 import { listReleaseStates } from '../core/provenance.js';
@@ -28,6 +28,12 @@ export const MAX_PAGE = 200;
 const clampLimit = (raw: string | null): number => {
   const n = raw === null ? NaN : Number(raw);
   return Number.isSafeInteger(n) && n > 0 ? Math.min(n, MAX_PAGE) : 50;
+};
+
+/** Where a page starts; anything that is not a whole count of rows starts at the first. */
+const offsetOf = (raw: string | null): number => {
+  const n = raw === null ? NaN : Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : 0;
 };
 
 /** Resolve the Project or answer 404. A Project the caller does not hold is indistinguishable from one that does not exist. */
@@ -42,8 +48,10 @@ export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Pr
   const options = {
     observationType: ctx.url.searchParams.get('type') ?? undefined,
     status: ctx.url.searchParams.get('status') ?? undefined,
+    sessionId: ctx.url.searchParams.get('session') ?? undefined,
     search: ctx.url.searchParams.get('q') ?? undefined,
     limit: clampLimit(ctx.url.searchParams.get('limit')),
+    offset: offsetOf(ctx.url.searchParams.get('offset')),
   };
   const [spores, total] = await Promise.all([
     listSpores(env.db, scope, options),
@@ -52,13 +60,17 @@ export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Pr
   return ok({ spores, total, maxPage: MAX_PAGE });
 }
 
-/** One spore and what supersedes it, so a reader sees a retired spore's replacement rather than a dead end. */
+/** One spore and its lineage in both directions, so a reader sees a retired spore's replacement rather than a dead end, and a replacement what it grew out of. */
 export async function handleProjectSpore(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await scopeOf(env, ctx);
   if (scope === null) return notFound();
   const spore = await getSpore(env.db, scope, ctx.params.sporeId ?? '');
   if (spore === null) return notFound();
-  return ok({ spore, supersededBy: await listSupersedingSporeIds(env.db, scope, spore.id) });
+  const [supersededBy, supersedes] = await Promise.all([
+    listSupersedingSporeIds(env.db, scope, spore.id),
+    listSupersededSporeIds(env.db, scope, spore.id),
+  ]);
+  return ok({ spore, supersededBy, supersedes });
 }
 
 export async function handleProjectSkills(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

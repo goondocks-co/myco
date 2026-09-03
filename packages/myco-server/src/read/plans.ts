@@ -91,15 +91,6 @@ export async function getPlan(db: RelationalStore, scope: ReadScope, planKey: st
   return toPlan(row, tags.get(planKey) ?? []);
 }
 
-/** The session's latest prompt — the one an administrative save names as its origin — or null when the session holds none. */
-export async function latestPromptId(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<string | null> {
-  const row = await db
-    .prepare(`SELECT prompt_id FROM prompt_batches WHERE project_id = ? AND session_id = ? ORDER BY created_at DESC, prompt_id DESC LIMIT 1`)
-    .bind(scope.projectId, sessionId)
-    .first<{ prompt_id: string }>();
-  return row?.prompt_id ?? null;
-}
-
 /** True when the plan sits in the session inside the scope. */
 export async function planInSession(db: RelationalStore, scope: ReadScope, sessionId: string, planKey: string): Promise<boolean> {
   const row = await db.prepare(`SELECT 1 AS present FROM plans WHERE project_id = ? AND session_id = ? AND plan_key = ?`).bind(scope.projectId, sessionId, planKey).first<{ present: number }>();
