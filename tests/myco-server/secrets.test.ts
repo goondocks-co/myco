@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { deploymentSecretStore, maskSecret } from '@myco-server-worker/core/secrets.js';
+import { deploymentSecretStore, maskSecret, normalizeSecretValue, SecretValueError } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText, WRAPPING_KEY_BYTES, WrappingKeyUnavailableError } from '@myco-server-worker/platform/wrapping-key.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { migrateAndSeed } from './helpers/d1.js';
@@ -27,6 +27,18 @@ function rig(keyText: string = KEY) {
 const raw = (sqlite: Database) => JSON.stringify(sqlite.query(`SELECT * FROM deployment_secrets`).all());
 
 describe('deployment secrets', () => {
+  it('strips horizontal whitespace from a pasted value everywhere, and refuses a line break or control character rather than repairing it', async () => {
+    const { store } = rig();
+    await store.put('anthropic', '  sk-ant-oat01-ab cd\tef  ', 'mem_1', 1_000);
+    expect(await store.get('anthropic')).toBe('sk-ant-oat01-abcdef');
+    for (const bad of ['sk-ant-oat01-abc\n', 'valid\nINJECTED=owned', 'sk-\rant', '   ', 'sk\u0000ant']) {
+      await expect(store.put('anthropic', bad, 'mem_1', 1_000)).rejects.toBeInstanceOf(SecretValueError);
+    }
+    expect(await store.get('anthropic')).toBe('sk-ant-oat01-abcdef');
+    expect(normalizeSecretValue(' a b ')).toEqual({ ok: true, value: 'ab' });
+    expect(normalizeSecretValue('a\nb').ok).toBe(false);
+  });
+
   it('round-trips a value, and the stored row does not contain it', async () => {
     const r = rig();
     await r.store.put('anthropic', ANTHROPIC, 'mem_1', 1_000);
