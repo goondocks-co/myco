@@ -49,6 +49,18 @@ function server(routes: Record<string, () => Response>): { requested: string[] }
   return { requested };
 }
 
+/**
+ * Wait until the mocked server has been asked for `url`.
+ *
+ * A keystroke reaches the list through the filter debounce, then a request,
+ * then a render. Waiting for the rendered rows alone puts all three stages
+ * under one budget. The request is the event that separates them: waiting for
+ * it first, and for the rows second, gives each stage a whole budget of its
+ * own and names which stage is stuck when one fails.
+ */
+const asked = (requested: string[], url: string) =>
+  waitFor(() => expect(requested).toContain(url));
+
 const base = (extra: Record<string, () => Response> = {}) => ({
   '/auth/me': () => Response.json(ME),
   '/api/projects': () => Response.json(PROJECTS),
@@ -113,6 +125,7 @@ describe('Sessions list', () => {
     mount('/p/x/sessions');
     await screen.findAllByRole('row');
     fireEvent.click(screen.getByRole('tab', { name: 'Ended' }));
+    await asked(requested, '/api/projects/x/sessions?limit=50&state=ended');
     await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(2));
     expect(screen.getByTestId('rail-counts').textContent).toBe('2 SHOWN');
     expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions?state=ended');
@@ -122,8 +135,10 @@ describe('Sessions list', () => {
     fireEvent.change(box, { target: { value: 'f' } });
     fireEvent.change(box, { target: { value: 'fi' } });
     fireEvent.change(box, { target: { value: 'fix' } });
+    await asked(requested, '/api/projects/x/sessions?limit=50&q=fix');
     await waitFor(() => expect(screen.getAllByRole('row').map((r) => r.textContent)).toEqual([expect.stringContaining('codex')]));
     fireEvent.change(box, { target: { value: 'nothing-here' } });
+    await asked(requested, '/api/projects/x/sessions?limit=50&q=nothing-here');
     expect(await screen.findByText('No sessions match.')).toBeTruthy();
     expect(screen.getByTestId('rail-counts').textContent).toBe('0 SHOWN');
     expect(requested.filter((p) => p.startsWith('/api/projects/x/sessions?'))).toEqual([
@@ -166,13 +181,16 @@ describe('Sessions list', () => {
         expect(screen.getByTestId('location').textContent).toBe(`/p/x/sessions${narrowed}`);
         cleanup();
       }
-      server(base({
+      const { requested } = server(base({
         '/api/projects/x/sessions?limit=50': () => page(ROWS),
         '/api/projects/x/sessions/s1': () => Response.json({ session: ROWS[0], counts, projectId: 'x' }),
         '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([]),
         '/api/projects/x/activity': () => Response.json(ACTIVITY),
       }));
       mount('/p/x/sessions');
+      // List, then the read the auto-selection asks for, then the heading it renders.
+      await screen.findAllByRole('row');
+      await asked(requested, '/api/projects/x/sessions/s1');
       expect((await screen.findByRole('heading', { level: 2 })).textContent).toBe('Wave-based executor');
       expect(screen.getAllByRole('row')[0]!.getAttribute('data-selected')).toBe('true');
       expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions/s1');
@@ -180,7 +198,7 @@ describe('Sessions list', () => {
   });
 
   it('moves a cursor with the keyboard, follows a selection made by pointer, opens the row under it once, and jumps to the filter on slash', async () => onWideScreen(async () => {
-    server(base({
+    const { requested } = server(base({
       '/api/projects/x/sessions?limit=50': () => page(ROWS),
       '/api/projects/x/sessions/s1': () => Response.json({ session: ROWS[0], counts, projectId: 'x' }),
       '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([]),
@@ -193,15 +211,18 @@ describe('Sessions list', () => {
     mount('/p/x/sessions');
     let rows = await screen.findAllByRole('row');
     // The wide screen opens the first row on its own; the cursor starts there.
+    await asked(requested, '/api/projects/x/sessions/s1');
     await waitFor(() => expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('Wave-based executor'));
     const table = screen.getByRole('table', { name: 'Sessions' });
     fireEvent.keyDown(table, { key: 'j' });
     expect(screen.getAllByRole('row')[1]!.getAttribute('data-cursor')).toBe('true');
     fireEvent.keyDown(table, { key: 'Enter' });
+    await asked(requested, '/api/projects/x/sessions/s2');
     expect((await screen.findByRole('heading', { level: 2 })).textContent).toBe('Fix the flaky test…');
     // A pointer selection moves the cursor with it; the next k steps up from there.
     rows = screen.getAllByRole('row');
     fireEvent.click(rows[2]!);
+    await asked(requested, '/api/projects/x/sessions/s3');
     await waitFor(() => expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('An older one'));
     fireEvent.keyDown(table, { key: 'k' });
     expect(screen.getAllByRole('row')[1]!.getAttribute('data-cursor')).toBe('true');

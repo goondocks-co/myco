@@ -32,6 +32,18 @@ function server(routes: Record<string, () => Response>): { requested: string[] }
   return { requested };
 }
 
+/**
+ * Wait until the mocked server has been asked for `url`.
+ *
+ * A keystroke reaches the list through the filter debounce, then a request,
+ * then a render. Waiting for the rendered rows alone puts all three stages
+ * under one budget. The request is the event that separates them: waiting for
+ * it first, and for the rows second, gives each stage a whole budget of its
+ * own and names which stage is stuck when one fails.
+ */
+const asked = (requested: string[], url: string) =>
+  waitFor(() => expect(requested).toContain(url));
+
 const base = (extra: Record<string, () => Response> = {}) => ({
   '/auth/me': () => Response.json(ME),
   '/api/projects': () => Response.json(PROJECTS),
@@ -82,11 +94,14 @@ describe('Spores list', () => {
     mount('/p/x/spores');
     await screen.findAllByRole('row');
     fireEvent.click(screen.getByRole('tab', { name: 'All' }));
+    await asked(requested, '/api/projects/x/spores?limit=25');
     await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(3));
     fireEvent.change(screen.getByLabelText('Filter by type'), { target: { value: 'gotcha' } });
+    await asked(requested, '/api/projects/x/spores?limit=25&type=gotcha');
     await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(1));
     expect(screen.getByTestId('spore-rail-counts').textContent).toBe('1 MATCHING');
     fireEvent.change(screen.getByLabelText('Filter spores'), { target: { value: 'nothing-here' } });
+    await asked(requested, '/api/projects/x/spores?limit=25&type=gotcha&q=nothing-here');
     expect(await screen.findByText('No spores match.')).toBeTruthy();
     expect(requested.filter((r) => r.startsWith('/api/projects/x/spores'))).toEqual([
       '/api/projects/x/spores?limit=25&status=active',

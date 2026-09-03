@@ -18,6 +18,10 @@ mock.module('@myco/symbionts/detect.js', () => ({
     },
   ]),
   resolvePackageRoot: vi.fn().mockReturnValue('/tmp'),
+  // The managed-file reconcile needs a manifest that declares a skills target;
+  // every manifest above does.
+  manifestForManagedProjectFiles: vi.fn((manifests: { registration?: { skillsTarget?: string } }[]) =>
+    manifests?.find((m) => m.registration?.skillsTarget)),
 }));
 
 mock.module('@myco/symbionts/installer.js', () => ({
