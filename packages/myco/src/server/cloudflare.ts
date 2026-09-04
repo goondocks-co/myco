@@ -80,10 +80,81 @@ export async function listAccounts(runner: CommandRunner = systemRunner()): Prom
   return rows;
 }
 
-export interface DeployResult { versionId: string | null; url: string | null }
+export interface DeployResult {
+  versionId: string | null;
+  url: string | null;
+  /** Whether this deploy asked the platform to replace the container instances; a watcher has something to watch only when it did. */
+  willRoll: boolean;
+}
 
 /** What a deploy passes wrangler to leave the container application's images and instances exactly as they stand. */
 export const CONTAINERS_ROLLOUT_NONE = '--containers-rollout=none';
+
+/**
+ * Whether a deploy shipping `pushedImage` over `deployedImage` rolls the
+ * container application. Identical bytes roll nothing, and a caller that has
+ * to prepare for a rollout — reading the application's version before the
+ * deploy, say — asks this before running one.
+ */
+export function rollsContainers(pushedImage?: string, deployedImage?: string): boolean {
+  return pushedImage === undefined || pushedImage !== deployedImage;
+}
+
+/**
+ * Where the document opening at `start` closes, or -1 when it never does.
+ * Brackets inside a string are text, not structure.
+ */
+function documentEnd(text: string, start: number): number {
+  const open = text[start]!;
+  const close = open === '[' ? ']' : '}';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let at = start; at < text.length; at += 1) {
+    const char = text[at]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') { inString = true; continue; }
+    if (char === open) depth += 1;
+    else if (char === close) {
+      depth -= 1;
+      if (depth === 0) return at + 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The JSON value in a wrangler answer.
+ *
+ * `npx` prints `npm notice` lines and wrangler its own configuration warnings
+ * around the document, and a colour-coded warning opens with a bracket of its
+ * own, so every line that could open a document is tried and each is read only
+ * as far as its matching close — a trailer after the document is ignored the
+ * same way a preamble before it is. An answer carrying no readable document
+ * answers null rather than throwing: the caller decides what that means.
+ */
+export function wranglerJson<T>(stdout: string): T | null {
+  let offset = 0;
+  for (const line of stdout.split('\n')) {
+    const opens = line.length - line.trimStart().length;
+    const char = line[opens];
+    if (char === '[' || char === '{') {
+      const end = documentEnd(stdout, offset + opens);
+      if (end > 0) {
+        try {
+          return JSON.parse(stdout.slice(offset + opens, end)) as T;
+        } catch { /* a line that only looked like an opening bracket; keep looking */ }
+      }
+    }
+    offset += line.length + 1;
+  }
+  return null;
+}
 
 /**
  * Deploy the Worker.
@@ -100,11 +171,11 @@ export const CONTAINERS_ROLLOUT_NONE = '--containers-rollout=none';
  */
 export async function deployWorker(options: CloudflareOptions & { dryRun?: boolean; pushedImage?: string; deployedImage?: string }): Promise<DeployResult> {
   const { runner, env } = resolved(options);
-  const unchangedImage = options.pushedImage !== undefined && options.pushedImage === options.deployedImage;
+  const willRoll = rollsContainers(options.pushedImage, options.deployedImage);
   const args = wrangler(
     'deploy',
     ...configArgs(options),
-    ...(unchangedImage ? [CONTAINERS_ROLLOUT_NONE] : []),
+    ...(willRoll ? [] : [CONTAINERS_ROLLOUT_NONE]),
     ...(options.dryRun === true ? ['--dry-run'] : []),
   );
   const result = await runOrThrow(runner, 'npx', args, { cwd: options.configDir, env });
@@ -112,7 +183,13 @@ export async function deployWorker(options: CloudflareOptions & { dryRun?: boole
   return {
     versionId: /Current Version ID:\s*([0-9a-f-]+)/.exec(result.stdout)?.[1] ?? null,
     url: /(https:\/\/[^\s]+\.workers\.dev)/.exec(result.stdout)?.[1] ?? null,
+    willRoll,
   };
+}
+
+/** The container application wrangler derives from the Worker and its container class; the image the deploy pushes carries the same name. */
+export function harnessApplicationName(workerName: string): string {
+  return `${workerName}-harnesscontainer`;
 }
 
 /** The registry URI a `containers build --push` output pins: the LAST manifest digest it exported, under the image name wrangler derives from the Worker and container class. */
@@ -120,7 +197,128 @@ export function harnessImageUri(buildOutput: string, accountId: string, workerNa
   const digests = [...buildOutput.matchAll(/exporting manifest sha256:([0-9a-f]{64})/g)];
   const digest = digests.at(-1)?.[1];
   if (digest === undefined) throw new Error('the container build output carries no manifest digest; the image cannot be pinned');
-  return `registry.cloudflare.com/${accountId}/${workerName}-harnesscontainer@sha256:${digest}`;
+  return `registry.cloudflare.com/${accountId}/${harnessApplicationName(workerName)}@sha256:${digest}`;
+}
+
+/** A run the Deployment has in flight, as its own database holds it. */
+export interface LiveRun {
+  id: string;
+  task: string;
+  /** `pending` for a run whose container has not been launched yet, `running` for one under way. */
+  status: 'pending' | 'running';
+  /** Epoch milliseconds, or null for a run that has not started — a `pending` row is written before its container is launched. */
+  startedAt: number | null;
+  /** The budget the dispatcher wrote into the run's context, or null for a run that carries none. */
+  timeoutSeconds: number | null;
+}
+
+/**
+ * What the wait reads.
+ *
+ * `pending` counts as in flight exactly as `running` does: the dispatcher
+ * writes the row before it launches the container, and that run — dispatched,
+ * not yet started — is the one a deploy is most likely to lose. The server's
+ * own live-run reads use the same pair (`core/runs.ts`, `LIVE_RUNS_SQL`).
+ */
+const LIVE_RUNS_QUERY = "SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running')";
+
+interface LiveRunRow {
+  id?: unknown;
+  task?: unknown;
+  status?: unknown;
+  started_at?: unknown;
+  run_context?: unknown;
+}
+
+/** Raised when the Deployment's runs cannot be read; a deploy that cannot see them must not read that as an empty Deployment. */
+export class LiveRunsUnreadable extends Error {
+  constructor(readonly answer: string) {
+    super("the Deployment's runs could not be read; pass --no-drain to ship over whatever is running");
+    this.name = 'LiveRunsUnreadable';
+  }
+}
+
+/**
+ * The runs the Deployment has in flight, read from its own database.
+ *
+ * A deploy holds no application credential, so this reads through the
+ * operator's own wrangler login like every other command here. A command that
+ * fails is raised and an answer that carries no readable document is raised
+ * too: "nothing came back" and "nothing is running" are opposite facts, and a
+ * deploy that confused them would ship straight over live work.
+ */
+export async function readLiveRuns(options: CloudflareOptions & { databaseName: string }): Promise<LiveRun[]> {
+  const { runner, env } = resolved(options);
+  const result = await runOrThrow(runner, 'npx',
+    wrangler('d1', 'execute', options.databaseName, '--remote', '--json', '--command', LIVE_RUNS_QUERY, ...configArgs(options)),
+    { cwd: options.configDir, env });
+  const answers = wranglerJson<{ results?: LiveRunRow[] }[]>(result.stdout);
+  if (answers === null) throw new LiveRunsUnreadable(result.stdout);
+  const runs: LiveRun[] = [];
+  for (const answer of answers) {
+    for (const row of answer.results ?? []) {
+      if (typeof row.id !== 'string') continue;
+      runs.push({
+        id: row.id,
+        task: typeof row.task === 'string' && row.task !== '' ? row.task : 'a run without a task',
+        status: row.status === 'pending' ? 'pending' : 'running',
+        startedAt: typeof row.started_at === 'number' ? row.started_at : null,
+        timeoutSeconds: runContextTimeout(row.run_context),
+      });
+    }
+  }
+  return runs;
+}
+
+/** The budget a run's context names, or null when the context holds none the harness would honour. */
+function runContextTimeout(runContext: unknown): number | null {
+  if (typeof runContext !== 'string' || runContext === '') return null;
+  try {
+    const parsed = JSON.parse(runContext) as { timeoutSeconds?: unknown };
+    return typeof parsed.timeoutSeconds === 'number' && parsed.timeoutSeconds > 0 ? parsed.timeoutSeconds : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where a rollout stands: the image and version the application carries, how many instances it has, and how many answer healthy. */
+export interface ContainerRollout {
+  version: number;
+  instances: number;
+  healthy: number;
+  /** The digest-pinned image the application is configured with, or null when the answer names none. */
+  image: string | null;
+}
+
+/** The container application's id, or null when the account holds none of that name — a Deployment whose first deploy has not created one. A failed command is raised, because that is a different fact. */
+export async function containerApplicationId(options: CloudflareOptions & { workerName: string }): Promise<string | null> {
+  const { runner, env } = resolved(options);
+  const result = await runOrThrow(runner, 'npx', wrangler('containers', 'list', '--json', ...configArgs(options)), { cwd: options.configDir, env });
+  const rows = wranglerJson<{ id?: unknown; name?: unknown }[]>(result.stdout) ?? [];
+  const name = harnessApplicationName(options.workerName);
+  const match = rows.find((row) => row.name === name);
+  return typeof match?.id === 'string' ? match.id : null;
+}
+
+/**
+ * Where the container application stands, or null when the answer is not
+ * readable. A failed command is raised so its stderr reaches the operator; an
+ * answer that came back unreadable is a reason to ask again rather than to
+ * fail a deploy that already succeeded.
+ */
+export async function containerRollout(options: CloudflareOptions & { applicationId: string }): Promise<ContainerRollout | null> {
+  const { runner, env } = resolved(options);
+  const result = await runOrThrow(runner, 'npx', wrangler('containers', 'info', options.applicationId, '--json', ...configArgs(options)), { cwd: options.configDir, env });
+  const info = wranglerJson<{ version?: unknown; instances?: unknown; health?: { instances?: { healthy?: unknown } }; configuration?: { image?: unknown } }>(result.stdout);
+  if (info === null || typeof info.version !== 'number' || typeof info.instances !== 'number') return null;
+  const healthy = info.health?.instances?.healthy;
+  const image = info.configuration?.image;
+  return {
+    version: info.version,
+    instances: info.instances,
+    healthy: typeof healthy === 'number' ? healthy : 0,
+    image: typeof image === 'string' && image !== '' ? image : null,
+  };
 }
 
 /**
@@ -315,6 +513,8 @@ export interface DeploymentRecord {
   harnessImage?: string;
   /** How many harness runtimes the Deployment may start at once — the container fleet, set by `myco server config --fleet`; the template's number until then. */
   fleet?: number;
+  /** The last container rollout a deploy watched to its end: the application version the instances reached, and when they all carried it. Absent until one completes under a watch. */
+  lastRollout?: { version: number; completedAt: string };
 }
 
 /** The Worker's sign-in secrets, named as the Worker reads them. */
