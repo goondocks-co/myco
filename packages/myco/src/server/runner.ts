@@ -54,12 +54,138 @@ export function systemRunner(): CommandRunner {
   };
 }
 
-/** Raised with the command's own stderr, which is what an operator needs to see. */
+/** Where a JSON document opening at `start` ends, or -1 when it never closes. A bracket inside a string is text. */
+function documentEnd(text: string, start: number): number {
+  const open = text[start]!;
+  const close = open === '[' ? ']' : '}';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let at = start; at < text.length; at += 1) {
+    const char = text[at]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') { inString = true; continue; }
+    if (char === open) depth += 1;
+    else if (char === close) {
+      depth -= 1;
+      if (depth === 0) return at + 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The JSON value inside a command's output.
+ *
+ * A command prints its own preamble and trailer around the document — npm's
+ * notices, a tool's configuration warnings, a log-file line — and a
+ * colour-coded warning opens with a bracket of its own, so every line that
+ * could open a document is tried and each is read only as far as its matching
+ * close. Output carrying no readable document answers null rather than
+ * throwing: the caller decides what that means.
+ */
+export function jsonDocument<T>(text: string): T | null {
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    const opens = line.length - line.trimStart().length;
+    const char = line[opens];
+    if (char === '[' || char === '{') {
+      const end = documentEnd(text, offset + opens);
+      if (end > 0) {
+        try {
+          return JSON.parse(text.slice(offset + opens, end)) as T;
+        } catch { /* a line that only looked like an opening bracket; keep looking */ }
+      }
+    }
+    offset += line.length + 1;
+  }
+  return null;
+}
+
+/** How many lines of a failed command's own output a message carries. */
+const FAILURE_LINES = 6;
+/** How many characters of those lines a message carries. */
+const FAILURE_CHARS = 1000;
+
+/** The error document a `--json` command prints when the API refuses it. */
+interface ErrorDocument {
+  error?: { text?: unknown; notes?: unknown };
+}
+
+/** The error a JSON answer names, with each note it carries, or null when the output holds no such document. */
+function jsonFailure(stdout: string): string | null {
+  const document = jsonDocument<ErrorDocument>(stdout);
+  const text = document?.error?.text;
+  if (typeof text !== 'string' || text.trim() === '') return null;
+  const lines = [text.trim()];
+  for (const note of Array.isArray(document?.error?.notes) ? document.error.notes : []) {
+    const noteText = (note as { text?: unknown } | null)?.text;
+    if (typeof noteText === 'string' && noteText.trim() !== '') lines.push(noteText.trim());
+  }
+  return lines.join('\n');
+}
+
+/** Colour codes, which a warning wears in the middle of its own name. */
+const ANSI = /\u001b\[[0-9;]*m/g;
+
+/**
+ * The tail of a command's own output, with the noise a wrapper prints around
+ * it dropped: npm's notices, and the `[WARNING]` block a tool opens with its
+ * indented continuation. Colour codes come off first, because a coloured
+ * warning carries them inside the word the filter matches. What is left is
+ * bounded, because an operator reading a failure needs the last thing the
+ * command said, not its whole session.
+ */
+export function commandOutputTail(text: string): string {
+  const kept: string[] = [];
+  let inWarning = false;
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(ANSI, '');
+    if (line.includes('[WARNING]')) { inWarning = true; continue; }
+    if (inWarning) {
+      if (line.trim() === '' || /^\s/.test(line)) continue;
+      inWarning = false;
+    }
+    if (line.trim() === '' || /^\s*npm notice/.test(line)) continue;
+    kept.push(line.trimEnd());
+  }
+  const tail = kept.slice(-FAILURE_LINES).join('\n');
+  return tail.length > FAILURE_CHARS ? tail.slice(tail.length - FAILURE_CHARS) : tail;
+}
+
+/**
+ * What a failed command actually said.
+ *
+ * A `--json` command writes its error document to stdout and its
+ * configuration warnings to stderr, so a message built from stderr alone names
+ * the warning and not the failure. The JSON document answers first, then both
+ * streams with the wrapper noise dropped. Nothing survives the filters only
+ * when the whole output was noise, and then the raw output is better than
+ * silence.
+ */
+export function commandFailureDetail(result: CommandResult): string {
+  const named = jsonFailure(result.stdout);
+  if (named !== null) return named;
+  const spoken = [commandOutputTail(result.stdout), commandOutputTail(result.stderr)].filter((part) => part !== '');
+  if (spoken.length > 0) return spoken.join('\n');
+  return result.stderr.trim() || result.stdout.trim();
+}
+
+/** Raised with what the command itself said, which is what an operator needs to see. */
 export class CommandFailed extends Error {
   constructor(readonly command: string, readonly args: readonly string[], readonly result: CommandResult) {
-    super(`${command} ${args.join(' ')} exited ${result.code}: ${result.stderr.trim() || result.stdout.trim()}`);
+    super(`${command} ${args.join(' ')} exited ${result.code}: ${commandFailureDetail(result)}`);
     this.name = 'CommandFailed';
   }
+
+  get stdout(): string { return this.result.stdout; }
+
+  get stderr(): string { return this.result.stderr; }
 }
 
 export async function runOrThrow(
