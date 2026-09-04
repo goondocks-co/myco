@@ -1,11 +1,51 @@
 import { evaluateUserPromptRules, resolveSubagentThread } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
-import { runMemberHook, type HookMainOptions } from '../member/capture.js';
+import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
+import { canStartRequest, subRequestBudget } from '../member/budget.js';
 import { deriveId, mintId, planEvent, planKeyForTag, promptEvent, type OutboundEvent } from '../member/envelope.js';
 import { readSessionState } from '../member/session-state.js';
 import { firstHeading, sha256Text } from '../member/text.js';
+import { classifyEventAnswer } from '../member/transport.js';
+import type { HookResponse } from './response.js';
 import { planTagEnvelopeRegex } from '../plans/tag-envelopes.js';
 import { HOOK_CONFIG } from './hook-config.generated.js';
+
+const RECALL_PATH = '/context/prompt';
+/** The longest one recall call may take, whatever the hook has left. */
+export const RECALL_CAP_MS = 1500;
+
+/**
+ * What the Deployment serves this prompt, appended to the `Session::` line
+ * after a blank line.
+ *
+ * The call takes a third of what the hook has left, capped, so the drain that
+ * follows it still ships records rather than spooling the turn whole. Anything
+ * short of a served block — no room, a timeout, a refusal, an empty answer —
+ * leaves the `Session::` line standing alone and writes one line to stderr.
+ *
+ * The outcome moves the offline latch the way a drain pass does: a dark
+ * Deployment is latched here, and an answer clears the latch so the drain that
+ * follows is not skipped against a server that has just replied.
+ */
+function recall(session: string, promptId: string, text: string, response: HookResponse) {
+  return async (run: HookRun): Promise<HookResponse | undefined> => {
+    if (!canStartRequest(run.budget, run.now())) return undefined;
+    const answer = classifyEventAnswer(await run.client.request('POST', RECALL_PATH, {
+      body: JSON.stringify({ sessionId: session, promptId, text }),
+      headers: { 'content-type': 'application/json' },
+      budget: subRequestBudget(run.budget, RECALL_CAP_MS, run.now()),
+    }));
+    if (answer.class !== 'acked') {
+      if (answer.class === 'retry') run.spool.markOffline(run.now(), answer.retryAfterMs);
+      process.stderr.write(`[myco] user-prompt-submit: recall skipped (${answer.class})\n`);
+      return undefined;
+    }
+    run.spool.clearLatch();
+    const served = typeof answer.body.context === 'string' ? answer.body.context : '';
+    if (served.length === 0) return undefined;
+    return { ...response, additionalContext: `${response.additionalContext}\n\n${served}` };
+  };
+}
 
 export async function main(opts: HookMainOptions = {}) {
   await runMemberHook('user-prompt-submit', opts, (run) => {
@@ -69,6 +109,7 @@ export async function main(opts: HookMainOptions = {}) {
         state.planTagCount += plans.length;
       },
       response,
+      context: recall(sessionId, promptId, text, response),
     };
   });
 }
