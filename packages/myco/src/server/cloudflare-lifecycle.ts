@@ -70,6 +70,17 @@ export const DEFAULT_RUN_TIMEOUT_SECONDS = 300;
  */
 export const ROLLOUT_WATCH_TIMEOUT_SECONDS = 1800;
 
+/**
+ * How long the watch gives the platform to start replacing the instances.
+ * A deploy can change the `[[containers]]` table and still name the same
+ * resources — a setting spelled another way is one — and the platform starts
+ * nothing for it: the application keeps the version it carried, and no later
+ * poll will say otherwise. Past this window with the version standing and no
+ * instance ever seen being replaced, the watch says so instead of spending its
+ * whole bound on a rollout that is not coming.
+ */
+export const ROLLOUT_START_WINDOW_SECONDS = 180;
+
 /** How often the wait asks the Deployment what is still running. */
 const LIVE_RUN_POLL_MS = 15_000;
 /** How often the watch asks the container application where the rollout stands. */
@@ -200,6 +211,12 @@ async function waitForLiveRuns(
  * pushed. Where an answer names no image at all, the fleet must have been seen
  * mid-replacement at least once before a full count is believed.
  *
+ * A rollout that never starts is told apart from one still running by the
+ * start window: past it, with the version standing and no instance ever seen
+ * being replaced, the platform has started nothing for this deploy and the
+ * watch ends. Once a later version is read the watch is on a real rollout, and
+ * runs to its full bound.
+ *
  * The bound is the longest task budget: an instance carrying a run is spared
  * until that run's budget is spent, so a rollout cannot outlast it by anything
  * the deploy is responsible for. Past the bound the deploy still succeeded, so
@@ -210,9 +227,12 @@ async function watchRollout(
 ): Promise<{ version: number; completedAt: string } | null> {
   const report = options.report ?? console.log;
   const clock = options.clock ?? systemClock;
-  const deadline = clock.now() + ROLLOUT_WATCH_TIMEOUT_SECONDS * 1000;
+  const started = clock.now();
+  const deadline = started + ROLLOUT_WATCH_TIMEOUT_SECONDS * 1000;
+  const startWindow = started + ROLLOUT_START_WINDOW_SECONDS * 1000;
   let said = '';
   let sawReplacement = false;
+  let sawNewVersion = false;
 
   /** Says a line once, however many polls answer the same thing. */
   const sayOnce = (line: string): void => {
@@ -221,6 +241,10 @@ async function watchRollout(
     said = line;
   };
 
+  // The cadence, said up front: minutes of quiet between the lines below is
+  // the watch working, not the watch stuck.
+  report(`Watching the rollout; the platform reports the instances every ${ROLLOUT_POLL_MS / 1000} s.`);
+
   for (;;) {
     let state = null;
     try {
@@ -228,7 +252,9 @@ async function watchRollout(
     } catch (err) {
       sayOnce(`The container application could not be read: ${describeFailure(err)}`);
     }
+    if (state !== null && state.healthy < state.instances) sawReplacement = true;
     if (state !== null && state.version > options.versionBefore) {
+      sawNewVersion = true;
       const everyInstanceHealthy = state.healthy >= state.instances;
       const carriesPushedImage = state.image === null ? sawReplacement : state.image === options.pushedImage;
       if (everyInstanceHealthy && carriesPushedImage) {
@@ -236,9 +262,14 @@ async function watchRollout(
         return { version: state.version, completedAt: new Date(clock.now()).toISOString() };
       }
       if (!everyInstanceHealthy) {
-        sawReplacement = true;
         sayOnce(`Rolling out: ${state.healthy} of ${state.instances} instances on the new version`);
       }
+    }
+    // An application that answers is the only one whose standing version is
+    // evidence; a read that failed says nothing about what the platform did.
+    if (state !== null && !sawNewVersion && !sawReplacement && clock.now() >= startWindow) {
+      report('The platform started no rollout for this deploy: the container settings in force already match.');
+      return null;
     }
     if (clock.now() >= deadline) {
       report('The rollout is still in progress; a run started now may land on an instance still on the old version.');
