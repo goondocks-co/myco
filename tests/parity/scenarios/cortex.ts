@@ -35,13 +35,27 @@ export const cortex: ParityScenario = {
     await target.sql(`DELETE FROM cortex_instructions WHERE project_id = ${lit(target.projectId)}`);
     await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.limits.concurrent_runs'`);
 
-    const dispatch = async () => {
+    const dispatch = async (ask: Record<string, unknown> = {}) => {
       const res = await fetch(`${target.url}/api/harness/dispatch`, {
         method: 'POST',
         headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-        body: JSON.stringify({ task: 'cortex-instructions', projectId: target.projectId }),
+        body: JSON.stringify({ task: 'cortex-instructions', projectId: target.projectId, ...ask }),
       });
       return { status: res.status, body: (await res.json()) as { outcome?: string; runId?: string; queued?: boolean } };
+    };
+    const asOwner = async <T>(path: string): Promise<T> => {
+      const res = await fetch(`${target.url}${path}`, { headers: { ...target.ownerHeaders(), origin: target.url } });
+      expect(`${path}: ${res.status}`).toBe(`${path}: 200`);
+      return (await res.json()) as T;
+    };
+    const startSession = async (sessionId: string) => {
+      const res = await fetch(`${target.url}/context/session`, {
+        method: 'POST',
+        headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId, kind: 'start' }),
+      });
+      expect(res.status).toBe(200);
+      return (await res.json()) as { persisted: boolean; context: string; parts: Array<{ kind: string }> };
     };
     const wake = async () => {
       const res = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
@@ -81,10 +95,10 @@ export const cortex: ParityScenario = {
     await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind)
       VALUES (${lit(tokenId)}, 'mem_harness', 'harness', ${lit(await sha256Hex(token))}, ${now}, ${now + 86_400_000}, NULL, 0, NULL, ${lit(tokenId)}, ${now}, NULL, NULL, NULL)`);
     await target.sql(`UPDATE agent_runs SET status = 'running', dispatched_by = ${lit(tokenId)}, started_at = ${Date.now()} WHERE id = ${lit(firstRunId)}`);
-    const asRun = async (path: string, body: Record<string, unknown>) => {
+    const asRun = async (path: string, body: Record<string, unknown>, runToken = token) => {
       const res = await fetch(`${target.url}${path}`, {
         method: 'POST',
-        headers: { ...memberHeadersFor(token, target.projectId), 'content-type': 'application/json' },
+        headers: { ...memberHeadersFor(runToken, target.projectId), 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
       expect(`${path}: ${res.status}`).toBe(`${path}: 200`);
@@ -132,19 +146,56 @@ export const cortex: ParityScenario = {
     expect((JSON.parse(drained.runContext!) as { input_hash: string }).input_hash).not.toBe(firstHash);
 
     // The artifact the first run filed is what a new session is served at its start.
-    const sessionId = `parity-cortex-${stamp}`;
-    const started = await fetch(`${target.url}/context/session`, {
-      method: 'POST',
-      headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId, kind: 'start' }),
-    });
-    expect(started.status).toBe(200);
-    const block = (await started.json()) as { persisted: boolean; context: string; parts: Array<{ kind: string }> };
+    const block = await startSession(`parity-cortex-${stamp}`);
     expect({ persisted: block.persisted, parts: block.parts.map((p) => p.kind) }).toEqual({ persisted: true, parts: ['instructions'] });
     expect(block.context).toContain(`Parity instructions ${stamp}`);
 
+    // The digest on the harness: an owner asks for it from scratch, the run
+    // writes one tier three times, and the owner reads the chain the writes left.
+    await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${Date.now()} WHERE status IN ('pending', 'running', 'queued')`);
+    await target.sql(`DELETE FROM digest_extract_revisions WHERE project_id = ${lit(target.projectId)}`);
+    await target.sql(`DELETE FROM digest_extracts WHERE project_id = ${lit(target.projectId)}`);
+
+    const asked = await dispatch({ task: 'digest-only', fresh: true });
+    expect(asked.status).toBe(200);
+    const digestRunId = String(asked.body.runId);
+    const digestRow = await row(digestRunId);
+    expect(digestRow.status).toBe('pending');
+    expect((JSON.parse(digestRow.runContext!) as { fresh?: boolean }).fresh).toBe(true);
+    expect(digestRow.instruction).toContain('write every tier from the material alone');
+
+    const digestToken = `parity-digest-${stamp}`.padEnd(43, 'x').slice(0, 43);
+    const digestTokenId = `mt_parity_digest_${stamp}`;
+    await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind)
+      VALUES (${lit(digestTokenId)}, 'mem_harness', 'harness', ${lit(await sha256Hex(digestToken))}, ${now}, ${now + 86_400_000}, NULL, 0, NULL, ${lit(digestTokenId)}, ${now}, NULL, NULL, NULL)`);
+    await target.sql(`UPDATE agent_runs SET status = 'running', dispatched_by = ${lit(digestTokenId)}, started_at = ${Date.now()} WHERE id = ${lit(digestRunId)}`);
+
+    for (const body of ['one', 'two', 'three']) {
+      expect(await asRun('/runs/digest-write', { runId: digestRunId, tier: 5000, content: `digest ${body} ${stamp}` }, digestToken))
+        .toMatchObject({ persisted: true, held: true, written: true, tier: 5000 });
+    }
+
+    const held = await asOwner<{ digests: Array<{ tier: number; agentId: string; content: string; substrateHash: string | null }> }>(`/api/projects/${target.projectId}/digests`);
+    const tier = held.digests.find((d) => d.tier === 5000)!;
+    expect(tier.content).toBe(`digest three ${stamp}`);
+    expect(tier.substrateHash).toHaveLength(64);
+    const chain = await asOwner<{ revisions: Array<{ id: number; content: string; runId: string | null; parentRevisionId: number | null }> }>(
+      `/api/projects/${target.projectId}/digests/5000/revisions?agentId=${encodeURIComponent(tier.agentId)}`,
+    );
+    expect(chain.revisions.map((r) => ({ content: r.content, runId: r.runId })))
+      .toEqual([{ content: `digest two ${stamp}`, runId: digestRunId }, { content: `digest one ${stamp}`, runId: digestRunId }]);
+    expect(chain.revisions[0]!.parentRevisionId).toBe(chain.revisions[1]!.id);
+
+    // With the digest switched on for session start, a new session is served the tier the run wrote.
+    await leaf('cortex.digest.inject_on_session_start', true);
+    const withDigest = await startSession(`parity-digest-${stamp}`);
+    expect(withDigest.parts.map((p) => p.kind)).toContain('digest');
+    expect(withDigest.context).toContain('## Preferred Digest (Tier 5000)');
+    expect(withDigest.context).toContain(`digest three ${stamp}`);
+    await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'cortex.digest.inject_on_session_start'`);
+
     // Leave the board as the next scenario expects it.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${Date.now()} WHERE status IN ('pending', 'running', 'queued')`);
-    await target.sql(`UPDATE member_credentials SET revoked_at = ${Date.now()} WHERE id = ${lit(tokenId)}`);
+    await target.sql(`UPDATE member_credentials SET revoked_at = ${Date.now()} WHERE id IN (${lit(tokenId)}, ${lit(digestTokenId)})`);
   },
 };

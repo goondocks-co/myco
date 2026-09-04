@@ -16,10 +16,11 @@ import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { drainQueue, HARNESS_AGENT_ID, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { runScheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { getRun, upsertCortexInstructions } from '@myco-server-worker/core/runs.js';
-import { upsertDigest } from '@myco-server-worker/core/digests.js';
+import { listDigests, upsertDigest } from '@myco-server-worker/core/digests.js';
 import { insertSpore } from '@myco-server-worker/core/spores.js';
 import { RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_CLOSE_REPORTS, RUN_CLOSE_RULES } from '@myco-server-worker/core/run-postconditions.js';
 import { buildTaskInput } from '@myco-server-worker/core/task-inputs.js';
+import { DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT } from '@myco-server-worker/core/cortex-input.js';
 import { listInstructions } from '@myco-server-worker/read/cortex.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
@@ -27,6 +28,7 @@ import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 const NOW = 1_800_000_000_000;
 const SCOPE = { projectId: 'proj_1' };
 const TASK = 'cortex-instructions';
+const DIGEST_TASK = 'digest-only';
 type Launch = { runId: string; timeoutSeconds: number; envVars: Record<string, string> };
 
 async function fixture(opts: { capability?: boolean } = {}) {
@@ -308,7 +310,7 @@ describe('the clock and the queue', () => {
 
 describe('what the instructions run owes before it closes', () => {
   it('names the report and the artifact the task must have left', () => {
-    expect(RUN_CLOSE_REPORTS[TASK]).toBe('cortex_instructions');
+    expect(RUN_CLOSE_REPORTS[TASK]).toEqual(['cortex_instructions']);
     expect(RUN_CLOSE_RULES[TASK]?.artifact).toBeFunction();
   });
 
@@ -344,5 +346,160 @@ describe('what the instructions run owes before it closes', () => {
     await f.answered('/runs/report', { runId: 'run_dry_close', agentId: HARNESS_AGENT_ID, action: 'cortex_instructions', summary: 'would have written' }, dry.token);
     expect(await f.close('run_dry_close', dry.token)).toMatchObject({ persisted: true, changed: 1 });
     expect((await getRun(f.db, SCOPE, 'run_dry_close'))?.status).toBe('completed');
+  });
+});
+
+describe('the digest a run writes', () => {
+  it('files one tier for the run\'s agent under the server\'s hash, and answers a caller holding no such run nothing', async () => {
+    const f = await fixture();
+    f.liveRun('run_digest', DIGEST_TASK, { input_hash: 'server-hash', counts: { spores: 7, sessions: 2 } });
+    f.liveRun('run_other', TASK, { input_hash: 'h' });
+    expect(await f.answered('/runs/digest-write', { runId: 'run_digest', tier: 5000, content: '# the digest' }))
+      .toEqual({ persisted: true, held: true, written: true, tier: 5000, revisionOf: null });
+
+    const rows = await listDigests(f.db, SCOPE);
+    expect(rows.map((r) => ({ agentId: r.agentId, tier: r.tier, content: r.content, substrateHash: r.substrateHash })))
+      .toEqual([{ agentId: HARNESS_AGENT_ID, tier: 5000, content: '# the digest', substrateHash: 'server-hash' }]);
+
+    // A run of another task, and a caller holding no run at all, write nothing.
+    expect(await f.answered('/runs/digest-write', { runId: 'run_other', tier: 5000, content: '# nope' }))
+      .toEqual({ persisted: true, held: false, written: false });
+    expect(await f.answered('/runs/digest-write', { runId: 'run_absent', tier: 5000, content: '# nope' }))
+      .toEqual({ persisted: true, held: false, written: false });
+    expect((await listDigests(f.db, SCOPE)).map((r) => r.content)).toEqual(['# the digest']);
+  });
+
+  it('refuses a tier the Deployment does not serve, by name', async () => {
+    const f = await fixture();
+    f.liveRun('run_digest', DIGEST_TASK, { input_hash: 'h' });
+    const answered = await f.answered('/runs/digest-write', { runId: 'run_digest', tier: 3000, content: '# nope' });
+    expect(String(answered.reason)).toContain('tier is one of 1500, 5000, 10000');
+    expect(await listDigests(f.db, SCOPE)).toEqual([]);
+  });
+
+  it('writes nothing for a dry run', async () => {
+    const f = await fixture();
+    f.liveRun('run_dry', DIGEST_TASK, { input_hash: 'h' }, null, true);
+    expect(await f.answered('/runs/digest-write', { runId: 'run_dry', tier: 1500, content: '# nope' }))
+      .toEqual({ persisted: true, held: true, written: false });
+    expect(await listDigests(f.db, SCOPE)).toEqual([]);
+  });
+
+  it('archives the body it replaces, naming the run that replaced it and what its material counted', async () => {
+    const f = await fixture();
+    f.liveRun('run_first', DIGEST_TASK, { input_hash: 'hash-one', counts: { spores: 4, sessions: 1 } });
+    expect((await f.answered('/runs/digest-write', { runId: 'run_first', tier: 5000, content: '# first' })).revisionOf).toBeNull();
+
+    const second = await f.credential();
+    f.liveRun('run_second', DIGEST_TASK, { input_hash: 'hash-two', counts: { spores: 9, sessions: 3 } }, null, false, second.tokenId);
+    const answered = await f.answered('/runs/digest-write', { runId: 'run_second', tier: 5000, content: '# second' }, second.token);
+    expect(answered).toMatchObject({ written: true, tier: 5000 });
+    expect(typeof answered.revisionOf).toBe('number');
+
+    const revisions = f.sqlite.query(`SELECT id, tier, content, metadata, run_id AS runId, parent_revision_id AS parentRevisionId FROM digest_extract_revisions ORDER BY id`).all() as Array<Record<string, unknown>>;
+    expect(revisions.map((r) => ({ tier: r.tier, content: r.content, runId: r.runId, metadata: r.metadata, parentRevisionId: r.parentRevisionId })))
+      .toEqual([{ tier: 5000, content: '# first', runId: 'run_second', metadata: JSON.stringify({ spores: 9, sessions: 3 }), parentRevisionId: null }]);
+
+    const third = await f.credential();
+    f.liveRun('run_third', DIGEST_TASK, { input_hash: 'hash-three' }, null, false, third.tokenId);
+    await f.answered('/runs/digest-write', { runId: 'run_third', tier: 5000, content: '# third' }, third.token);
+    const chained = f.sqlite.query(`SELECT id, content, parent_revision_id AS parentRevisionId FROM digest_extract_revisions ORDER BY id`).all() as Array<{ id: number; content: string; parentRevisionId: number | null }>;
+    expect(chained.map((r) => r.content)).toEqual(['# first', '# second']);
+    expect(chained[1]!.parentRevisionId).toBe(chained[0]!.id);
+    expect((await listDigests(f.db, SCOPE)).map((r) => ({ content: r.content, substrateHash: r.substrateHash })))
+      .toEqual([{ content: '# third', substrateHash: 'hash-three' }]);
+  });
+
+  it('admits a digest run to the material a Cortex run reads', async () => {
+    const f = await fixture();
+    f.liveRun('run_digest', DIGEST_TASK, { input_hash: 'h' });
+    f.session('s1', 'Session one', true);
+    await f.spore('sp_1', 'the digest run reads this');
+    await upsertDigest(f.db, SCOPE, { id: 'd1', agentId: HARNESS_AGENT_ID, tier: 5000, content: 'held', substrateHash: null, generatedAt: NOW });
+
+    expect(((await f.answered('/runs/sessions', { runId: 'run_digest' })).sessions as unknown[]).length).toBe(1);
+    expect(((await f.answered('/runs/spores', { runId: 'run_digest' })).spores as unknown[]).length).toBe(1);
+    expect(await f.answered('/runs/digest', { runId: 'run_digest', tier: 5000 }))
+      .toEqual({ persisted: true, held: true, digest: { tier: 5000, content: 'held', generatedAt: NOW } });
+  });
+
+  it('hands a digest run its tier window rather than the page any other run may ask for', async () => {
+    const f = await fixture();
+    f.liveRun('run_digest', DIGEST_TASK, { input_hash: 'h' });
+    const second = await f.credential();
+    f.liveRun('run_cortex', TASK, { input_hash: 'h' }, null, false, second.tokenId);
+    for (let i = 0; i < DIGEST_SESSION_PAGE_LIMIT + 1; i += 1) f.session(`s${i}`, `Session ${i}`, true);
+    for (let i = 0; i < DIGEST_SPORE_PAGE_LIMIT + 1; i += 1) await f.spore(`sp_${i}`, `spore ${i}`);
+
+    const digestSessions = await f.answered('/runs/sessions', { runId: 'run_digest', limit: 9999 });
+    const cortexSessions = await f.answered('/runs/sessions', { runId: 'run_cortex', limit: 9999 }, second.token);
+    expect((digestSessions.sessions as unknown[]).length).toBe(DIGEST_SESSION_PAGE_LIMIT);
+    expect((cortexSessions.sessions as unknown[]).length).toBe(DIGEST_SESSION_PAGE_LIMIT + 1);
+
+    const digestSpores = await f.answered('/runs/spores', { runId: 'run_digest', limit: 200 });
+    const cortexSpores = await f.answered('/runs/spores', { runId: 'run_cortex', limit: 200 }, second.token);
+    expect((digestSpores.spores as unknown[]).length).toBe(DIGEST_SPORE_PAGE_LIMIT);
+    expect((cortexSpores.spores as unknown[]).length).toBe(DIGEST_SPORE_PAGE_LIMIT + 1);
+  });
+
+  it('carries the owner\'s from-scratch ask onto the run\'s own context, and never answers a digest ask unchanged', async () => {
+    const f = await fixture();
+    const first = await f.dispatch({ task: DIGEST_TASK, fresh: true });
+    expect(first.status).toBe(200);
+    const rowOf = (runId: unknown) => f.runs().find((r) => r.id === runId)!;
+    const row = rowOf(first.body.runId);
+    expect(JSON.parse(String(row.runContext)).fresh).toBe(true);
+    expect(String(row.instruction)).toContain('write every tier from the material alone');
+
+    // A second ask over material that has not moved still starts a run: the run
+    // itself judges tier by tier what is worth rewriting.
+    const again = await f.dispatch({ task: DIGEST_TASK });
+    expect(again.body.outcome).toBeUndefined();
+    expect(String(again.body.runId)).toStartWith('run_');
+    const plain = rowOf(again.body.runId);
+    expect(JSON.parse(String(plain.runContext)).fresh).toBeUndefined();
+    expect(String(plain.instruction)).not.toContain('write every tier from the material alone');
+  });
+
+  it('names the reports that close a digest run', () => {
+    expect(RUN_CLOSE_REPORTS[DIGEST_TASK]).toEqual(['digest', 'skip']);
+  });
+
+  it('closes a run that reported a skip, which owes no row at all', async () => {
+    const f = await fixture();
+    f.liveRun('run_skipped', DIGEST_TASK, { input_hash: 'h' });
+    await f.answered('/runs/report', { runId: 'run_skipped', agentId: HARNESS_AGENT_ID, action: 'skip', summary: 'already current' });
+    expect(await f.close('run_skipped')).toMatchObject({ persisted: true, changed: 1 });
+    expect((await getRun(f.db, SCOPE, 'run_skipped'))?.status).toBe('completed');
+  });
+
+  it('closes a run that reported and wrote, and fails one that reported and left no tier', async () => {
+    const f = await fixture();
+    const wrote = await f.credential();
+    f.liveRun('run_wrote', DIGEST_TASK, { input_hash: 'h' }, null, false, wrote.tokenId);
+    await f.answered('/runs/digest-write', { runId: 'run_wrote', tier: 5000, content: '# a tier' }, wrote.token);
+    await f.answered('/runs/report', { runId: 'run_wrote', agentId: HARNESS_AGENT_ID, action: 'digest', summary: 'wrote one tier' }, wrote.token);
+    expect(await f.close('run_wrote', wrote.token)).toMatchObject({ persisted: true, changed: 1 });
+    expect((await getRun(f.db, SCOPE, 'run_wrote'))?.status).toBe('completed');
+
+    const claimed = await f.credential();
+    f.liveRun('run_claimed', DIGEST_TASK, { input_hash: 'another-hash' }, null, false, claimed.tokenId);
+    await f.answered('/runs/report', { runId: 'run_claimed', agentId: HARNESS_AGENT_ID, action: 'digest', summary: 'said so' }, claimed.token);
+    expect(await f.close('run_claimed', claimed.token)).toMatchObject({ persisted: true, applied: false, reason: 'postcondition' });
+    const failed = await getRun(f.db, SCOPE, 'run_claimed');
+    expect({ status: failed?.status, error: failed?.error }).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
+
+    const dry = await f.credential();
+    f.liveRun('run_dry_close', DIGEST_TASK, { input_hash: 'h' }, null, true, dry.tokenId);
+    await f.answered('/runs/report', { runId: 'run_dry_close', agentId: HARNESS_AGENT_ID, action: 'digest', summary: 'would have written' }, dry.token);
+    expect(await f.close('run_dry_close', dry.token)).toMatchObject({ persisted: true, changed: 1 });
+  });
+
+  it('reads a run that reported nothing as owing its report', async () => {
+    const f = await fixture();
+    f.liveRun('run_silent', DIGEST_TASK, { input_hash: 'h' });
+    expect(await f.close('run_silent')).toMatchObject({ persisted: true, applied: false, reason: 'postcondition' });
+    const failed = await getRun(f.db, SCOPE, 'run_silent');
+    expect({ status: failed?.status, error: failed?.error }).toEqual({ status: 'failed', error: RUN_CLOSE_ERROR });
   });
 });

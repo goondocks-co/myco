@@ -44,8 +44,8 @@ export const SPORE_FULL_READ_BUDGET = 12;
 /** The largest body one full read carries, so a single spore cannot flood a model's context; a body longer than this arrives cut, and the answer says so. */
 export const SPORE_BODY_CHARS = SPORE_PREVIEW_CHARS * 40;
 
-/** The tasks whose runs read this Project's spores over the run routes: the sweep that resolves them, and the instructions run that cites them. */
-export const SPORE_READ_TASKS: readonly string[] = ['supersession-sweep', 'cortex-instructions'];
+/** The tasks whose runs read this Project's spores over the run routes: the sweep that resolves them, the instructions run that cites them, and the digest run that writes from them. */
+export const SPORE_READ_TASKS: readonly string[] = ['supersession-sweep', 'cortex-instructions', 'digest-only'];
 
 /** The tasks whose runs also record and resolve spores. A run that only reads never reaches the two writes. */
 export const SPORE_TOOL_TASKS: readonly string[] = ['supersession-sweep'];

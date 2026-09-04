@@ -1,5 +1,7 @@
 /**
- * The input a `cortex-instructions` run is handed, built by the server.
+ * The input a Cortex run is handed, built by the server: the prompt a
+ * `cortex-instructions` run authors from, and the one a `digest-only` run
+ * regenerates its extracts from.
  *
  * 1.4 assembled this against a local vault (`packages/myco/src/context/cortex-brief.ts`).
  * A dispatched run holds no vault, so the Deployment builds the payload and
@@ -28,8 +30,8 @@
  */
 import type { RelationalStore } from './adapters.js';
 import { digestForTier, listDigests } from './digests.js';
-import { listSpores } from './spores.js';
-import type { RecallLeaves } from './recall.js';
+import { countSpores, listSpores, SPORE_PREVIEW_CHARS } from './spores.js';
+import { DIGEST_TIERS, type RecallLeaves } from './recall.js';
 import type { ProjectCapability } from './settings.js';
 import { SERVED_TOOLS } from './tool-catalogue.js';
 import { TOOL_DEFINITIONS } from '../mcp/definitions.js';
@@ -293,5 +295,170 @@ export async function buildInstructionsInput(
       spores: material.wisdom.length + material.decision.length + material.discovery.length,
       plans: material.plans.length,
     },
+  };
+}
+
+/** How many settled sessions one page of a run's session list carries by default. */
+export const RUN_SESSIONS_DEFAULT_LIMIT = 5;
+/** The largest page of sessions any run is handed. */
+export const RUN_SESSIONS_MAX_LIMIT = 50;
+/** How much of a session's summary one row of that page carries. */
+export const RUN_SESSION_SUMMARY_CHARS = 360;
+
+/**
+ * The material window each digest tier is written inside, in estimated tokens.
+ *
+ * Carried from 1.4 (`packages/myco/src/constants.ts` `DIGEST_TIER_MIN_CONTEXT`),
+ * where they named the smallest context a tier's synthesis could run in. They
+ * bound the other side of that same budget here: what `/runs/sessions` and
+ * `/runs/spores` hand a `digest-only` run, so the material a run reads fits the
+ * tier it writes.
+ */
+export const DIGEST_TIER_MIN_CONTEXT_TOKENS: Readonly<Record<number, number>> = {
+  1500: 6_500,
+  5000: 18_500,
+  10000: 30_500,
+};
+
+/** Characters of material to one estimated token. */
+export const CHARS_PER_TOKEN = 4;
+
+/**
+ * The tier whose window the material routes apply to a digest run.
+ *
+ * A hosted run reads the material once and writes every tier from that one
+ * reading, so what it reads has to fit the smallest window as well as the
+ * largest.
+ */
+export const DIGEST_MATERIAL_TIER = 1500;
+
+/** What one row of material carries besides its preview: its ids, its labels and its instants. */
+export const MATERIAL_ROW_OVERHEAD_CHARS = 240;
+
+/** How many rows carrying a preview of `previewChars` fit inside `tier`'s window. */
+export function materialRowsForTier(tier: number, previewChars: number): number {
+  const tokens = DIGEST_TIER_MIN_CONTEXT_TOKENS[tier] ?? DIGEST_TIER_MIN_CONTEXT_TOKENS[DIGEST_MATERIAL_TIER]!;
+  return Math.max(1, Math.floor((tokens * CHARS_PER_TOKEN) / (previewChars + MATERIAL_ROW_OVERHEAD_CHARS)));
+}
+
+/** How many spore previews one page of `/runs/spores` hands a digest run. */
+export const DIGEST_SPORE_PAGE_LIMIT = materialRowsForTier(DIGEST_MATERIAL_TIER, SPORE_PREVIEW_CHARS);
+/** How many session rows one page of `/runs/sessions` hands a digest run. */
+export const DIGEST_SESSION_PAGE_LIMIT = materialRowsForTier(DIGEST_MATERIAL_TIER, RUN_SESSION_SUMMARY_CHARS);
+
+/** What the run is told when the owner asks for the digest to be written from the material alone. */
+export const DIGEST_FRESH_DIRECTION = 'Ignore the existing digest; write every tier from the material alone.';
+
+export interface DigestCounts extends Readonly<Record<string, number>> {
+  spores: number;
+  sessions: number;
+}
+
+/** What one digest build answers: the prompt the run receives, the hash of its material, and what that material counted. */
+export interface DigestInput {
+  instruction: string;
+  inputHash: string;
+  counts: DigestCounts;
+}
+
+/** What the digest build is told beyond the store: the Deployment's recall leaves, whether to start over, and the instant it runs at. */
+export interface DigestInputOptions {
+  leaves: RecallLeaves;
+  /** The run writes every tier from the material alone rather than carrying the current digest forward. */
+  fresh: boolean;
+  now: number;
+}
+
+/** The material one digest build read: what the Project already holds, and how much new material stands behind this pass. */
+interface DigestMaterial {
+  tiers: Array<{ tier: number; generatedAt: number; size: number }>;
+  spores: number;
+  sessions: number;
+  /** The session page filled, so the count is the window's rather than the Project's. */
+  sessionsAtWindow: boolean;
+}
+
+const EMPTY_DIGEST_TIERS = 'No digest has been written yet — every tier is a first draft.';
+
+function renderTiers(material: DigestMaterial): string {
+  if (material.tiers.length === 0) return EMPTY_DIGEST_TIERS;
+  return material.tiers
+    .map((row) => `- Tier ${row.tier}: ${row.size} characters, generated ${new Date(row.generatedAt).toISOString()}`)
+    .join('\n');
+}
+
+function renderMaterialCounts(material: DigestMaterial): string {
+  const sessions = material.sessionsAtWindow ? `${material.sessions} or more` : String(material.sessions);
+  return [
+    `- Active spores: ${material.spores}`,
+    `- Sessions that ended since the newest digest: ${sessions}`,
+  ].join('\n');
+}
+
+function renderWindows(): string {
+  return DIGEST_TIERS
+    .map((tier) => `- Tier ${tier}: ${DIGEST_TIER_MIN_CONTEXT_TOKENS[tier]} estimated tokens of material.`)
+    .join('\n');
+}
+
+/** Everything the digest payload reads, through the stores that own it. */
+async function readDigestMaterial(db: RelationalStore, scope: ReadScope): Promise<DigestMaterial> {
+  const digests = await listDigests(db, scope);
+  const newest = digests.reduce<number | null>((held, row) => (held === null || row.generatedAt > held ? row.generatedAt : held), null);
+  const [spores, sessions] = await Promise.all([
+    countSpores(db, scope, { status: 'active', includeActive: false }),
+    listSessions(db, scope, { limit: DIGEST_SESSION_PAGE_LIMIT, state: 'ended', ...(newest === null ? {} : { since: newest }) }),
+  ]);
+  return {
+    tiers: [...digests].sort((left, right) => left.tier - right.tier).map((row) => ({ tier: row.tier, generatedAt: row.generatedAt, size: row.content.length })),
+    spores,
+    sessions: sessions.rows.length,
+    sessionsAtWindow: sessions.rows.length >= DIGEST_SESSION_PAGE_LIMIT,
+  };
+}
+
+/**
+ * Build the instruction a `digest-only` run receives, and its hash.
+ *
+ * The digest has no dedup gate. Instructions are one artifact whose material
+ * either moved or did not, so an unmoved build is answered without a run; a
+ * digest is three tiers a run judges one at a time, and the run itself says
+ * through its report which tiers it left alone. The hash is still built — it is
+ * filed on every extract the run writes as the substrate hash, naming the
+ * material behind each tier — but nothing compares it.
+ *
+ * **The hash IS the prompt, minus the direction the owner gave.** It is taken
+ * over the composed body, and the from-scratch line is composed after it. The
+ * direction says how to treat what the Project holds, not what the Project
+ * holds, so two runs over one material file their extracts under one substrate
+ * hash whether or not one of them is told to start over. Nothing in the body
+ * carries a clock.
+ */
+export async function buildDigestInput(
+  db: RelationalStore,
+  scope: ReadScope,
+  options: DigestInputOptions,
+): Promise<DigestInput> {
+  const material = await readDigestMaterial(db, scope);
+  const parts = [
+    'Regenerate this project\'s digest extracts at every token tier from the project\'s current knowledge.',
+    `Session start serves tier ${options.leaves.digestTier} to an agent that asks for the digest, so that tier carries the most weight.`,
+    '',
+    '## Current digest',
+    renderTiers(material),
+    '',
+    '## Material behind this pass',
+    renderMaterialCounts(material),
+    '',
+    '## Material windows per tier',
+    renderWindows(),
+    `One page of \`vault_spores\` carries at most ${DIGEST_SPORE_PAGE_LIMIT} previews and one page of \`vault_sessions\` at most ${DIGEST_SESSION_PAGE_LIMIT} sessions; page with \`offset\` for the rest.`,
+  ];
+
+  const body = parts.join('\n');
+  return {
+    instruction: options.fresh ? `${body}\n\n## From scratch\n${DIGEST_FRESH_DIRECTION}` : body,
+    inputHash: await sha256Hex(body),
+    counts: { spores: material.spores, sessions: material.sessions },
   };
 }

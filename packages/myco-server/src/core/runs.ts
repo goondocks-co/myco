@@ -445,6 +445,18 @@ export async function getRun(db: RelationalStore, scope: ReadScope, runId: strin
   return db.prepare(RUN_SELECT).bind(scope.projectId, runId).first<RunRow>();
 }
 
+/** The hash of the material the server built this run's prompt from, as its context records it. */
+export function inputHashOf(run: RunRow): string | null {
+  if (run.runContext === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(run.runContext);
+    const value = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as { input_hash?: unknown }).input_hash : undefined;
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The instruction one run carries, read on its own.
  *

@@ -133,3 +133,27 @@ export function digestForTier(rows: readonly DigestRow[], tier: number): DigestC
   if (exact) return { row: exact, fallback: false };
   return { row: [...tiers].sort((a, b) => Math.abs(a.tier - tier) - Math.abs(b.tier - tier))[0], fallback: true };
 }
+
+/**
+ * Whether this run left the digest rows it owed.
+ *
+ * Two arms, and either one proves the pass. A run that replaced a tier leaves
+ * its id on the revision the write archived. A run writing the first body a tier
+ * ever holds archives nothing, so the revision arm stays empty and the extract
+ * itself is the evidence: it carries the substrate hash the server put on that
+ * run and an instant no earlier than the run's own start.
+ */
+export async function digestWrittenBy(
+  db: RelationalStore,
+  scope: ReadScope,
+  run: { runId: string; substrateHash: string | null; since: number | null },
+): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT 1 AS one FROM digest_extract_revisions WHERE project_id = ? AND run_id = ?
+      UNION ALL
+      SELECT 1 FROM digest_extracts WHERE project_id = ? AND substrate_hash = ? AND generated_at >= ?
+      LIMIT 1`)
+    .bind(scope.projectId, run.runId, scope.projectId, run.substrateHash, run.since)
+    .first<{ one: number }>();
+  return row !== null;
+}

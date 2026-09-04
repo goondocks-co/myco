@@ -279,14 +279,22 @@ export function useInstructions(projectId: string) {
 
 /** The task that writes a project's session-start instructions. */
 export const INSTRUCTIONS_TASK = 'cortex-instructions';
+/** The task that writes a project's digest at every tier. */
+export const DIGEST_TASK = 'digest-only';
 
-/** What the server answers when asked to write the instructions again: a run started, a run waiting, or nothing to do. */
-export type InstructionsOutcome = 'running' | 'queued' | 'unchanged';
+/** What the server answers when asked to write one of these again: a run started, a run waiting, or nothing to do. */
+export type DispatchOutcome = 'running' | 'queued' | 'unchanged';
 
-export const INSTRUCTIONS_OUTCOME_TEXT: Record<InstructionsOutcome, string> = {
+export const INSTRUCTIONS_OUTCOME_TEXT: Record<DispatchOutcome, string> = {
   running: 'Writing new instructions — they land in a few minutes',
   queued: 'Waiting for a runtime — this starts as one frees up',
   unchanged: 'Nothing has changed since these were written',
+};
+
+export const DIGEST_OUTCOME_TEXT: Record<DispatchOutcome, string> = {
+  running: 'Writing the digest — it lands in a few minutes',
+  queued: 'Waiting for a runtime — this starts as one frees up',
+  unchanged: 'Nothing has changed since this was written',
 };
 
 /** Why the ask went nowhere, in the reader's words. */
@@ -297,29 +305,60 @@ export const INSTRUCTIONS_REFUSAL_TEXT: Record<string, string> = {
 
 export const INSTRUCTIONS_REFUSAL_FALLBACK = 'The instructions could not be written right now';
 
-export interface InstructionsRefreshAnswer {
-  outcome: InstructionsOutcome;
-  /** The run writing them, on `running` and `queued`. */
+export const DIGEST_REFUSAL_TEXT: Record<string, string> = {
+  max_runs_per_day: 'The digest has already been written once today — ask again tomorrow',
+  harness_unavailable: 'This deployment has no way to write the digest yet',
+};
+
+export const DIGEST_REFUSAL_FALLBACK = 'The digest could not be written right now';
+
+export interface DispatchAnswer {
+  outcome: DispatchOutcome;
+  /** The run writing it, on `running` and `queued`. */
   runId?: string;
 }
 
+/** What one ask carries beyond the task itself. */
+export interface DispatchAsk {
+  /** Write from the project's material alone rather than carrying the current text forward. */
+  fresh?: boolean;
+}
+
 /** The message for a refused ask, read off whatever the server answered. */
-export function refusalText(error: unknown): string {
+function refusalTextFrom(error: unknown, words: Record<string, string>, fallback: string): string {
   const named = error instanceof ApiError && typeof (error.body as { error?: unknown } | null)?.error === 'string'
     ? (error.body as { error: string }).error
     : null;
-  return named === null ? INSTRUCTIONS_REFUSAL_FALLBACK : INSTRUCTIONS_REFUSAL_TEXT[named] ?? INSTRUCTIONS_REFUSAL_FALLBACK;
+  return named === null ? fallback : words[named] ?? fallback;
 }
 
-/** Asks the server to write this project's instructions again; on an answer, the stored instructions are read again. */
-export function useRefreshInstructions(projectId: string) {
+export function refusalText(error: unknown): string {
+  return refusalTextFrom(error, INSTRUCTIONS_REFUSAL_TEXT, INSTRUCTIONS_REFUSAL_FALLBACK);
+}
+
+export function digestRefusalText(error: unknown): string {
+  return refusalTextFrom(error, DIGEST_REFUSAL_TEXT, DIGEST_REFUSAL_FALLBACK);
+}
+
+/** Asks the server to write one of this project's generated artifacts again; on an answer, what it holds is read again. */
+function useArtifactDispatch(projectId: string, task: string, holds: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async (): Promise<InstructionsRefreshAnswer> => {
-      const answered = await postJson<{ outcome?: string; runId?: string; queued?: boolean }>('/api/harness/dispatch', { task: INSTRUCTIONS_TASK, projectId });
+    mutationFn: async (ask: DispatchAsk = {}): Promise<DispatchAnswer> => {
+      const answered = await postJson<{ outcome?: string; runId?: string; queued?: boolean }>('/api/harness/dispatch', {
+        task, projectId, ...(ask.fresh === true ? { fresh: true } : {}),
+      });
       if (answered.outcome === 'unchanged') return { outcome: 'unchanged' };
       return { outcome: answered.queued === true ? 'queued' : 'running', ...(answered.runId === undefined ? {} : { runId: answered.runId }) };
     },
-    onSuccess: () => client.invalidateQueries({ queryKey: ['instructions', projectId] }),
+    onSuccess: () => client.invalidateQueries({ queryKey: [holds, projectId] }),
   });
+}
+
+export function useRefreshInstructions(projectId: string) {
+  return useArtifactDispatch(projectId, INSTRUCTIONS_TASK, 'instructions');
+}
+
+export function useRegenerateDigest(projectId: string) {
+  return useArtifactDispatch(projectId, DIGEST_TASK, 'digests');
 }

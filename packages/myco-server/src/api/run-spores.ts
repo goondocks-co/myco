@@ -23,10 +23,12 @@ import type { RouteContext } from '../context.js';
 import { heldRun, sessionNamedByRun } from './run-admission.js';
 import {
   countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds,
-  listSupersedingSporeIds, resolveSpore, MAX_SPORE_CONTENT_BYTES, RESOLUTION_ACTIONS,
+  listSupersedingSporeIds, resolveSpore, DEFAULT_SPORE_LIMIT, MAX_SPORE_CONTENT_BYTES, MAX_SPORE_LIMIT, RESOLUTION_ACTIONS,
   SPORE_BODY_CHARS, SPORE_FULL_READ_BUDGET, SPORE_PREVIEW_CHARS, SPORE_READ_TASKS, SPORE_STATUSES, SPORE_TOOL_TASKS,
   type ResolutionAction, type SporeRow,
 } from '../core/spores.js';
+import { DIGEST_SPORE_PAGE_LIMIT } from '../core/cortex-input.js';
+import { DIGEST_TASK } from '../core/task-inputs.js';
 import { mintSporeId, overSporeCap, planSporeResolution, SPORE_CAP_REASON, sporeTags } from '../core/spore-writes.js';
 import { mutateState, type RunRow } from '../core/runs.js';
 import { latestPromptId } from '../read/sessions.js';
@@ -104,11 +106,14 @@ export async function handleRunSpores(env: ServerEnv, ctx: RouteContext): Promis
   if (asked !== 'all' && !(SPORE_STATUSES as readonly string[]).includes(asked as string)) {
     return Response.json(refused(ctx, refusal(`status is one of ${SPORE_STATUSES.join(', ')} or all`, 'parse')));
   }
+  // A digest run reads its material once and writes every tier from it, so its
+  // page is the tier window's rather than the inventory's own.
+  const ceiling = run.task === DIGEST_TASK ? DIGEST_SPORE_PAGE_LIMIT : MAX_SPORE_LIMIT;
   const options = {
     status: asked === 'all' ? undefined : asked as string,
     observationType: optional(body.observation_type),
     search: optional(body.search, MAX_SEARCH_CHARS),
-    limit: int(body.limit),
+    limit: Math.min(int(body.limit) ?? DEFAULT_SPORE_LIMIT, ceiling),
     offset: int(body.offset),
   };
   const scope = { projectId: ctx.projectId };
