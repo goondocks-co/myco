@@ -435,6 +435,7 @@ Disposition here is about the **data class**, and separately about **migration**
 | `spores` | KEEP | MIGRATE | Core | Blk | Server tables land in #919 | #924 |
 | `resolution_events` | KEEP | MIGRATE | Core | Blk | Supersede/consolidate lineage | #924 |
 | `spore_injections` | KEEP | REBUILD | Core | Blk | What the prompt hook was served, per (session, prompt); 1.4 carries it on `activities` | #1044 |
+| `session_injections` | KEEP | REBUILD | Core | Blk | What a session was served once, per (session, kind); the plan nudge today. 1.4 carries it on `activities` | #1026 |
 | `skill_records` | KEEP | MIGRATE | Core | Blk | | #924 |
 | `skill_candidates` | KEEP | MIGRATE | Core | Blk | | #924 |
 | `skill_lineage` | KEEP | MIGRATE | Core | Blk | | #924 |
@@ -496,7 +497,7 @@ Capabilities that are not a single registry token but must still carry a disposi
 | Project Reassignment | REPLACE | Core | Blk | Server-side correction of duplicate Project identities | #923 |
 | Symbiont detection and hook installation | REPLACE | MS | Blk | Continuous on developer machines; absent in sandbox images | #917 |
 | Managed Asset Reconciliation | REPLACE | MS | Blk | One idempotent path over global assets and every registered Project | #917 |
-| Recall injection (`UserPromptSubmit`) | REPLACE | Core | Blk | Server endpoint, < 2 s p95, ≤ 10 000 chars | #921 |
+| Recall injection (`UserPromptSubmit`) | REPLACE | Core | Blk | Served by `POST /context/prompt`: the plan nudge and the session's unseen spores, answered after the prompt is spooled — ≤ 10 000 chars cut at a part boundary, < 2 s p95 | #921 |
 | External read-only MCP for cloud agents | REPLACE | MCP, Core | Blk | Project-scoped read-only Access Grant; new in 2.0, replacing "no such capability" | #921 |
 | HTTPS / trusted-proxy contract | REPLACE | W, C | Blk | Platform TLS on W; documented proxy contract on C | #909 |
 | Update reliability | KEEP | M, MS | Blk | | #922 |
@@ -608,9 +609,9 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `cortex.instructions.inject_on_subagent_start` | REPLACE | Deployment | Core | Injection policy the Deployment applies | #919 |
 | `cortex.digest.tier` | REPLACE | Deployment | Core | Digest size the Deployment generates | #919 |
 | `cortex.digest.inject_on_session_start` | REPLACE | Deployment | Core | Injection policy the Deployment applies | #919 |
-| `cortex.spores.inject_on_prompt_submit` | REPLACE | Deployment | Core | Injection policy the Deployment applies | #919 |
-| `cortex.spores.max_per_prompt` | REPLACE | Deployment | Core | Injection budget the Deployment applies | #919 |
-| `cortex.plans.inject_intent_nudge_on_prompt_submit` | REPLACE | Deployment | Core | Injection policy the Deployment applies | #919 |
+| `cortex.spores.inject_on_prompt_submit` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/prompt` | #1026 |
+| `cortex.spores.max_per_prompt` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/prompt`, clamped to 0..10 | #1026 |
+| `cortex.plans.inject_intent_nudge_on_prompt_submit` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/prompt`, once per session | #1026 |
 | `cortex.canopy.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent | #915 |
 | `cortex.canopy.refresh.background_enabled` | REPLACE | Deployment | Core | Deployment-side map refresh policy | #920 |
 | `cortex.canopy.refresh.background_period_minutes` | REPLACE | Deployment | Core | Deployment-side map refresh schedule | #920 |

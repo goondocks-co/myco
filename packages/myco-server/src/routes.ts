@@ -18,6 +18,7 @@ import {
 import { MAX_UPLOAD_BODY_BYTES } from './core/backup.js';
 import { handleBlobRead } from './api/blobs.js';
 import { handleGetSpore, handleListSpores, handleResolveSpore, handleSaveSpore } from './api/spores.js';
+import { handlePromptContext } from './api/recall.js';
 import {
   handleProjectDigestRevisions, handleProjectDigests, handleProjectReleaseStates,
   handleProjectSkill, handleProjectSkills, handleProjectSpore, handleProjectSpores, handleProjectInstructions,
@@ -113,6 +114,10 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/spores/list', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleListSpores },
   { method: 'POST', path: '/spores/get', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleGetSpore },
   { method: 'POST', path: '/spores/resolve', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleResolveSpore },
+  // What a prompt is served: the plan nudge and the session's unseen spores.
+  // `quotaPrecheck: false`: the byte quota bounds what a member's capture may
+  // write, and this route answers a read of the Project's own intelligence.
+  { method: 'POST', path: '/context/prompt', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handlePromptContext },
   { method: 'POST', path: '/runs/state/read', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleReadState },
   { method: 'POST', path: '/runs/state/write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteState },
   // The tool surface: the seven MCP tools over the Deployment for a member, the

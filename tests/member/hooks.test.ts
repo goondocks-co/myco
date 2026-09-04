@@ -39,9 +39,17 @@ afterEach(() => {
   resetMachineIdCache();
 });
 
-const RETIRED = ['/sessions/register', '/sessions/unregister', '/events/stop', '/events/sync-transcript-prompts', '/context', '/context/prompt', '/context/subagent', '/canopy/inject', '/api/sessions'];
+/** 1.4 wire paths no hook may dial; a path under one of these is the same violation. */
+const RETIRED = ['/sessions/register', '/sessions/unregister', '/events/stop', '/events/sync-transcript-prompts', '/context/subagent', '/context/resume', '/canopy/inject', '/api/sessions'];
+/** 1.4's session-start composition, matched exactly: `/context/prompt` beside it is the live recall route. */
+const RETIRED_EXACT = ['/context'];
 const dialled = () => fetchSpy.requests.map((r) => r.path);
-const assertNoRetired = () => { for (const p of dialled()) for (const r of RETIRED) expect(p.startsWith(r)).toBe(false); };
+const assertNoRetired = () => {
+  for (const p of dialled()) {
+    for (const r of RETIRED) expect(p.startsWith(r)).toBe(false);
+    for (const r of RETIRED_EXACT) expect(p).not.toBe(r);
+  }
+};
 const session = 'sess-hooks-1';
 const transcript = (lines: unknown[]): string => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-tx-')), `${session}.jsonl`);
@@ -86,7 +94,7 @@ describe('member hooks through the worker', () => {
       'task.completed', 'stop.failure', 'notification', 'error', 'response', 'transcript.segment', 'session.end',
     ]));
     assertNoRetired();
-    expect(new Set(dialled())).toEqual(new Set(['/events', ...dialled().filter((p) => p.startsWith('/blobs/'))]));
+    expect(new Set(dialled())).toEqual(new Set(['/events', '/context/prompt', ...dialled().filter((p) => p.startsWith('/blobs/'))]));
     // Every spool file is gone: each hook drained its own events.
     expect(new MemberSpool('proj_1', { mycoHome }).sessionIds()).toEqual([]);
   });

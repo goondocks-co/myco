@@ -31,7 +31,7 @@ export const BACKUP_TABLES: readonly string[] = [
   'member_credentials', 'agents',
   'sessions', 'events', 'blobs', 'prompt_batches', 'tool_calls', 'responses', 'plans',
   'attachments', 'transcripts', 'transcript_segments', 'tags',
-  'agent_tasks', 'agent_runs', 'agent_state', 'spores', 'resolution_events', 'spore_injections',
+  'agent_tasks', 'agent_runs', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections',
   'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage',
   'digest_extracts', 'cortex_instructions', 'knowledge_release_state', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',

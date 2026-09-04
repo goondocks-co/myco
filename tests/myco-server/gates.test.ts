@@ -654,6 +654,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ eventId: `re_${runSeq++}`, agentId: 'agent_gate', sporeId: 'nope', action: 'obsolete', status: 'obsolete' }) }),
       },
+      'POST /context/prompt': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/context/prompt', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/context/prompt', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ sessionId: `s_gate_${runSeq++}`, promptId: 'p_gate', text: 'what did we settle on' }) }),
+      },
       'POST /runs/state/read': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/state/read', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -1037,6 +1042,7 @@ describe('gates', () => {
       'auth GET /auth/login',
       'enroll POST /members/join',
       'member POST /blobs/{sha256}',
+      'member POST /context/prompt',
       'member POST /events',
       'member POST /mcp',
       'member POST /members/link-github',
