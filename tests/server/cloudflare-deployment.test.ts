@@ -85,17 +85,21 @@ describe('deploy', () => {
     // Replacing the instances for identical bytes takes every run in flight
     // through a drain and gains nothing.
     const image = `registry.cloudflare.com/${'a'.repeat(32)}/myco-server-harnesscontainer@sha256:${'b'.repeat(64)}`;
-    await deployWorker({ ...base(), runner: runner(), pushedImage: image, deployedImage: image });
+    const unchanged = await deployWorker({ ...base(), runner: runner(), pushedImage: image, deployedImage: image });
     expect(calls[0]!.args).toContain(CONTAINERS_ROLLOUT_NONE);
+    // The caller watching the instances onto a new version is told there is nothing to watch.
+    expect(unchanged.willRoll).toBe(false);
 
     calls = [];
-    await deployWorker({ ...base(), runner: runner(), pushedImage: image, deployedImage: `${image.slice(0, -1)}c` });
+    const moved = await deployWorker({ ...base(), runner: runner(), pushedImage: image, deployedImage: `${image.slice(0, -1)}c` });
     expect(calls[0]!.args).not.toContain(CONTAINERS_ROLLOUT_NONE);
+    expect(moved.willRoll).toBe(true);
 
     // A first deploy has nothing deployed to compare against, and rolls.
     calls = [];
-    await deployWorker({ ...base(), runner: runner(), pushedImage: image });
+    const first = await deployWorker({ ...base(), runner: runner(), pushedImage: image });
     expect(calls[0]!.args).not.toContain(CONTAINERS_ROLLOUT_NONE);
+    expect(first.willRoll).toBe(true);
   });
 
   it('applies migrations against the remote database, never a local one', async () => {
