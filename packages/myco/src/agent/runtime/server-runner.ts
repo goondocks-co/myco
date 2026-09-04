@@ -8,6 +8,12 @@
  * harness adapters) and reaches storage exclusively through the run-control
  * routes: the claim, the status updates, and a tool surface materialized per
  * task (`server-tools.ts`).
+ *
+ * A stop signal is a drain here, not a death: the platform replacing an
+ * instance sends it and then waits fifteen minutes, so the run in flight
+ * finishes and posts its own end. The Deployment-side hold that keeps the
+ * container awake (`packages/myco-server/src/platform/cloudflare/run-hold.ts`)
+ * renews on its own alarm and a replacement does not touch it.
  */
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import type { RequestBudget } from '@myco/member/budget.js';
@@ -31,21 +37,29 @@ export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 
 /** How a run that ran past its own bound is recorded. */
 export const RUN_DEADLINE_ERROR = 'the run reached its deadline';
-/** How a run whose container the platform took away mid-flight is recorded. */
-export const RUN_REPLACED_ERROR = 'the runtime was replaced while the run was in flight';
-/** The signals a platform sends a container it is taking away. */
+/** How a run the platform took the runtime away from, before the run reached its own end, is recorded. */
+export const RUN_RECLAIMED_ERROR = 'the platform reclaimed the runtime before the run ended';
+/** The signals a platform sends a container it is draining. */
 export const RUNTIME_STOP_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
 /** How much of a failure message rides the run row. */
 export const MAX_RUN_ERROR_CHARS = 2000;
 /** How many times a terminal status is offered to the Deployment before the run is left to the stale sweep. */
 export const TERMINAL_UPDATE_ATTEMPTS = 2;
 /**
- * The budget a dying container gets to name its run.
+ * How long a draining container lets its run keep working before the run is
+ * named reclaimed.
  *
- * A platform taking a container away allows seconds, not minutes, between its
- * signal and the kill. The run's own budget is sized for model calls; borrowing
- * it here would spend the whole grace period on one attempt that the kill
- * interrupts anyway, and the row would carry nothing.
+ * A stop signal opens a fifteen-minute window: the platform sends it, waits,
+ * and only then kills the process, so in-flight work runs to its own end. This
+ * budget sits a minute inside that wall, which leaves the reclaim post time to
+ * land before the kill.
+ */
+export const RECLAIM_WARNING_MS = 14 * 60_000;
+/**
+ * The budget the reclaim post gets.
+ *
+ * It is spent in the last minute of the drain window, so it is sized to finish
+ * there rather than to the run's own budget, which is sized for model calls.
  */
 export const SIGNAL_BUDGET: RequestBudget = { connectTimeoutMs: 1_500, requestTimeoutMs: 4_000 };
 /** How a run the Deployment refused to close as completed is recorded by the container that ran it. */
@@ -137,17 +151,30 @@ export interface HeldRun {
  * Record one run's failure over the run-control surface.
  *
  * `attempts` is the caller's: a run failing on its own terms offers the status
- * twice, and a container being taken away offers it once inside a budget short
- * enough to finish before the kill.
+ * twice, and a container whose runtime the platform is reclaiming offers it
+ * once inside a budget short enough to finish before the kill.
+ *
+ * `replaced` marks the failure as one a deployment caused rather than one the
+ * work caused. The Deployment adds that word to the run's context, keeps the
+ * failed row out of the task's per-day count, and queues one fresh run of the
+ * same task in its place.
  */
-export async function recordRunFailure(held: HeldRun, error: string, attempts = TERMINAL_UPDATE_ATTEMPTS): Promise<RunStatusOutcome> {
-  const store = createHttpRunStore({
-    client: held.client,
-    agentId: held.agentId ?? DEFAULT_AGENT_ID,
-    admissionForTask: () => ({ capability: 'cortex' }),
-    budget: held.budget,
-  });
-  return recordTerminal(store, held.runId, 'failed', { completed_at: Date.now(), error: error.slice(0, MAX_RUN_ERROR_CHARS) }, attempts);
+export async function recordRunFailure(
+  held: HeldRun, error: string, attempts = TERMINAL_UPDATE_ATTEMPTS, options: { replaced?: boolean } = {},
+): Promise<RunStatusOutcome> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const answered = await postRunControl(held.client, held.budget, '/runs/update', {
+        runId: held.runId,
+        update: { status: 'failed', completed_at: Date.now(), error: error.slice(0, MAX_RUN_ERROR_CHARS) },
+        ...(options.replaced === true ? { replaced: true } : {}),
+      });
+      const applied = answered.applied !== false;
+      return applied ? { applied } : { applied, ...(typeof answered.reason === 'string' ? { reason: answered.reason } : {}) };
+    } catch (failure) {
+      if (attempt >= attempts) throw failure;
+    }
+  }
 }
 
 /** Where a process's own deaths are announced. */
@@ -155,27 +182,43 @@ export interface ProcessEvents {
   on(event: string, listener: (reason?: unknown) => void): unknown;
 }
 
-/** What the container does with a death: which run is in flight, and what to do once it has been named. */
+/** What the container does with a death or a drain: which run is in flight, and what to do once the runtime is leaving. */
 export interface RunFailureHandlers {
   held: () => HeldRun | null;
   /** Called after the attempt to name the failure; `named` says whether a run row carries it, and `refused` carries the Deployment's word when it turned the status down. */
   onNamed: (error: string, named: boolean, refused?: string) => void;
+  /** Called at the first stop signal: the runtime is draining, takes no new run, and says so on its probe. */
+  onStopping?: () => void;
+  /** Called when the drain ends with no run to name: an ordinary stop, and the process leaves clean. */
+  onDrained?: () => void;
+}
+
+/** What the handlers may have moved for a test: how long a drain lets its run work before the run is named reclaimed. */
+export interface RunFailureOptions {
+  reclaimAfterMs?: number;
 }
 
 /**
- * Name this container's run on its own row when the process dies.
+ * Answer this container's deaths and its drain.
  *
- * A container that throws, rejects, or is taken away by the platform mid-rollout
- * otherwise just stops talking, and the run stays `running` until the stale
- * sweep gives up on it minutes later under a message that says nothing about
- * what happened. Every one of those deaths reaches the row here instead.
+ * A container that throws or rejects otherwise just stops talking, and the run
+ * stays `running` until the stale sweep gives up on it minutes later under a
+ * message that says nothing about what happened; both of those deaths reach the
+ * row here.
+ *
+ * A stop signal is the other case and answers differently. The platform sends
+ * it to drain the instance and waits fifteen minutes before the kill, so the
+ * run in flight keeps working and posts its own ending, and the container then
+ * leaves clean. A container holding no run leaves at once. Only a run still in
+ * flight at `reclaimAfterMs` is named: the platform is about to take the
+ * runtime, and the row says so rather than falling to the sweep.
  */
-export function installRunFailureHandlers(events: ProcessEvents, handlers: RunFailureHandlers): void {
-  // One death, one attempt to name it. A platform sends SIGTERM then SIGINT, and
-  // sends SIGTERM again when the first is not answered; each extra pass would
-  // spend the grace period re-posting a status the first pass already carried.
+export function installRunFailureHandlers(events: ProcessEvents, handlers: RunFailureHandlers, options: RunFailureOptions = {}): void {
+  // One death, one attempt to name it. A handler that threw would raise
+  // `unhandledRejection` and re-enter this same path; the latch stops the loop.
   let dying = false;
-  const name = async (error: string, budget?: RequestBudget): Promise<void> => {
+  /** A reclaim posts once inside its own budget and marks the failure as a deployment's; a death this process caused posts on the run's own terms. */
+  const name = async (error: string, reclaim: boolean): Promise<void> => {
     if (dying) return;
     dying = true;
     const held = handlers.held();
@@ -186,7 +229,12 @@ export function installRunFailureHandlers(events: ProcessEvents, handlers: RunFa
         // A run whose own ending already landed answers this status with a
         // refusal, and the row keeps the ending it carries; the container says
         // which happened rather than reporting a failure it did not write.
-        const outcome = await recordRunFailure(budget === undefined ? held : { ...held, budget }, error, budget === undefined ? TERMINAL_UPDATE_ATTEMPTS : 1);
+        const outcome = await recordRunFailure(
+          reclaim ? { ...held, budget: SIGNAL_BUDGET } : held,
+          error,
+          reclaim ? 1 : TERMINAL_UPDATE_ATTEMPTS,
+          reclaim ? { replaced: true } : {},
+        );
         named = outcome.applied;
         refused = refusalOf(outcome);
       } catch {
@@ -195,12 +243,24 @@ export function installRunFailureHandlers(events: ProcessEvents, handlers: RunFa
     }
     handlers.onNamed(error, named, refused);
   };
-  // A handler that threw would raise `unhandledRejection` and re-enter this same
-  // path; the latch above stops the loop and this stops the noise.
-  const start = (error: string, budget?: RequestBudget) => { void name(error, budget).catch(() => {}); };
+  const start = (error: string, reclaim = false) => { void name(error, reclaim).catch(() => {}); };
+  // A platform sends SIGTERM then SIGINT, and sends SIGTERM again when the
+  // first is not answered; the latch makes every pass after the first a no-op.
+  let stopping = false;
+  const drain = (): void => {
+    if (stopping) return;
+    stopping = true;
+    handlers.onStopping?.();
+    if (handlers.held() === null) { handlers.onDrained?.(); return; }
+    const timer = setTimeout(() => {
+      if (handlers.held() === null) { handlers.onDrained?.(); return; }
+      start(RUN_RECLAIMED_ERROR, true);
+    }, options.reclaimAfterMs ?? RECLAIM_WARNING_MS);
+    (timer as { unref?: () => void }).unref?.();
+  };
   events.on('uncaughtException', (reason) => { start(runErrorText(reason)); });
   events.on('unhandledRejection', (reason) => { start(runErrorText(reason)); });
-  for (const signal of RUNTIME_STOP_SIGNALS) events.on(signal, () => { start(RUN_REPLACED_ERROR, SIGNAL_BUDGET); });
+  for (const signal of RUNTIME_STOP_SIGNALS) events.on(signal, () => { drain(); });
 }
 
 /**

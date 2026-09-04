@@ -13,22 +13,33 @@ let running = false;
 let fatal: string | null = null;
 /** The run this container holds: set at the claim, cleared once the run carries a terminal status. */
 let inFlight: HeldRun | null = null;
+/** Whether the platform has asked this runtime to stop: it takes no new run, and its probe says so. */
+let stopping = false;
 
 /**
- * Every way this process can die names the run it holds on that run's own row.
+ * A death names the run this container holds; a drain lets that run finish.
  *
- * A container that throws, rejects, or is taken away by the platform mid-rollout
- * otherwise just stops talking, and the Deployment learns nothing until the
- * stale sweep gives up on the run minutes later under a message that describes
- * the silence rather than the cause.
+ * A container that throws or rejects otherwise just stops talking, and the
+ * Deployment learns nothing until the stale sweep gives up on the run minutes
+ * later under a message that describes the silence rather than the cause. Its
+ * exit code says which happened: a run named on its row is a failure this
+ * container caused, a death holding no run is an ordinary stop.
  *
- * The process leaves either way — a container that lingers through a scale-down
- * is killed instead of stopping — and its exit code says which happened: a run
- * named on its row is a failure this container caused, a death holding no run is
- * an ordinary stop. `/probe` is served until the moment it goes.
+ * A stop signal is the platform draining this instance to replace it, and it
+ * waits fifteen minutes for the work in flight. The run keeps going, posts its
+ * own ending, and the process then leaves clean. `/probe` is served until the
+ * moment it goes, and answers `draining` from the first signal on.
  */
 installRunFailureHandlers(process, {
   held: () => inFlight,
+  onStopping: () => {
+    stopping = true;
+    console.log(JSON.stringify({ kind: 'server_entry_draining', holding: inFlight === null ? null : inFlight.runId }));
+  },
+  onDrained: () => {
+    console.log(JSON.stringify({ kind: 'server_entry_drained', ran: result }));
+    process.exit(0);
+  },
   onNamed: (error, named, refused) => {
     fatal = error;
     inFlight = null;
@@ -50,6 +61,9 @@ async function executeFromEnv(): Promise<void> {
   const runId = env('MYCO_RUN_ID');
   const taskName = env('MYCO_TASK');
   if (!serverUrl || !token || !projectId || !runId || !taskName) return;
+  // A runtime already draining starts nothing: the dispatch belongs to whichever
+  // instance the platform brings up next.
+  if (stopping) return;
 
   running = true;
   const providerJson = env('MYCO_PROVIDER_JSON');
@@ -98,6 +112,9 @@ async function executeFromEnv(): Promise<void> {
   inFlight = null;
   running = false;
   console.log(JSON.stringify({ kind: 'server_run_finished', ...result }));
+  // The drain was waiting on exactly this: the run carries its own ending, and
+  // the container the platform asked for has nothing left to hold.
+  if (stopping) process.exit(0);
 }
 
 Bun.serve({
@@ -106,7 +123,7 @@ Bun.serve({
   fetch: async (req) => {
     const path = new URL(req.url).pathname;
     if (path === '/probe') {
-      return Response.json({ ok: true, startedAt, uptimeMs: Date.now() - startedAt, pid: process.pid, running, result, fatal, dispatched: process.env.MYCO_RUN_ID ?? null });
+      return Response.json({ ok: true, startedAt, uptimeMs: Date.now() - startedAt, pid: process.pid, running, draining: stopping, result, fatal, dispatched: process.env.MYCO_RUN_ID ?? null });
     }
     if (path === '/spawn') {
       const child = Bun.spawn(['sh', '-c', 'echo child-ok'], { stdout: 'pipe' });

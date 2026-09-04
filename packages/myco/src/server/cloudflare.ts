@@ -82,16 +82,31 @@ export async function listAccounts(runner: CommandRunner = systemRunner()): Prom
 
 export interface DeployResult { versionId: string | null; url: string | null }
 
+/** What a deploy passes wrangler to leave the container application's images and instances exactly as they stand. */
+export const CONTAINERS_ROLLOUT_NONE = '--containers-rollout=none';
+
 /**
  * Deploy the Worker.
  *
  * `--dry-run` first is not a courtesy: a deploy that fails halfway leaves the
  * account holding some of what it was going to create, and the build is where
  * most failures are.
+ *
+ * A deploy that ships the image already running rolls nothing: replacing the
+ * container instances would take every run in flight through a drain for bytes
+ * identical to the ones already there. `pushedImage` is what the build just
+ * put in the registry and `deployedImage` what the record named before it; the
+ * two matching is exactly that case.
  */
-export async function deployWorker(options: CloudflareOptions & { dryRun?: boolean }): Promise<DeployResult> {
+export async function deployWorker(options: CloudflareOptions & { dryRun?: boolean; pushedImage?: string; deployedImage?: string }): Promise<DeployResult> {
   const { runner, env } = resolved(options);
-  const args = wrangler('deploy', ...configArgs(options), ...(options.dryRun === true ? ['--dry-run'] : []));
+  const unchangedImage = options.pushedImage !== undefined && options.pushedImage === options.deployedImage;
+  const args = wrangler(
+    'deploy',
+    ...configArgs(options),
+    ...(unchangedImage ? [CONTAINERS_ROLLOUT_NONE] : []),
+    ...(options.dryRun === true ? ['--dry-run'] : []),
+  );
   const result = await runOrThrow(runner, 'npx', args, { cwd: options.configDir, env });
 
   return {

@@ -22,7 +22,7 @@ import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
-import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, skipQueued, NO_LIMITS } from './runs.js';
+import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { deploymentSecretStore } from './secrets.js';
 import { leafValues } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
@@ -41,6 +41,12 @@ export const DEFAULT_DISPATCH_TIMEOUT_SECONDS = 300;
 export const RUN_OVERRUN_MARGIN_MS = 120_000;
 /** The admission a capture-driven task carries into its container, in place of a capability name. */
 export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
+/** How many runs of one task a Project may have re-queued in a day in place of runs the platform replaced. */
+export const REPLACED_REQUEUES_PER_DAY = 2;
+/** The window the per-day caps are counted over. */
+const DAY_MS = 86_400_000;
+/** The keys of a run's context the dispatcher writes itself; a re-queue rebuilds them rather than carrying them. */
+const DISPATCHER_CONTEXT_KEYS = new Set(['timeoutSeconds', 'input_hash', 'counts', 'fresh', 'replaced', 'replaces']);
 
 /**
  * Why a dispatch is refused before anything is launched. Each is a settled
@@ -100,6 +106,8 @@ export interface LaunchSpec {
   counts?: Readonly<Record<string, number | boolean>>;
   /** How this run differs from an ordinary one. */
   options?: DispatchOptions;
+  /** The run this one stands in for, recorded in its context, when the platform replaced that run mid-flight. */
+  replaces?: string;
 }
 
 /** What a caller asks of one dispatch beyond the task and its parameters. */
@@ -138,6 +146,7 @@ interface StoredSpec {
   timeoutSeconds: number;
   params?: Record<string, string>;
   options?: DispatchOptions;
+  replaces?: string;
 }
 
 /** How many queued runs one drain considers; the next wake continues. */
@@ -199,6 +208,7 @@ export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch
     serverUrl: spec.serverUrl, actor: spec.actor, timeoutSeconds: spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
     ...(spec.params === undefined ? {} : { params: spec.params }),
     ...(spec.options === undefined ? {} : { options: spec.options }),
+    ...(spec.replaces === undefined ? {} : { replaces: spec.replaces }),
   };
   const scope = { projectId: prepared.projectId };
   if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored) }, options))) {
@@ -341,6 +351,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     ...(spec.inputHash === undefined ? {} : { input_hash: spec.inputHash }),
     ...(spec.counts === undefined ? {} : { counts: spec.counts }),
     ...(spec.options?.fresh === true ? { fresh: true } : {}),
+    ...(spec.replaces === undefined ? {} : { replaces: spec.replaces }),
   });
   const scope = { projectId: prepared.projectId };
   // A queued row moves to pending for this credential; any other id is recorded afresh. Either way the row exists before
@@ -393,4 +404,82 @@ export async function dispatchTask(env: ServerEnv, task: string, projectId: stri
   const prepared = await prepareDispatch(env, task, projectId);
   if (!prepared.ok) return { dispatched: false, refusal: prepared.refusal, ...(prepared.providerType === undefined ? {} : { providerType: prepared.providerType }) };
   return { dispatched: true, ...(await dispatchPrepared(env, prepared.prepared, spec, now)) };
+}
+
+/** The run the platform replaced, with everything a fresh dispatch of it needs that the row does not carry. */
+export interface ReplacedRun {
+  run: RunRow;
+  projectId: string;
+  /** The origin the successor's runtime calls back to — the failing run's own request origin. */
+  serverUrl: string;
+  actor: string;
+}
+
+/** What became of the ask to run a replaced run again. */
+export type RequeueOutcome =
+  | { requeued: true; runId: string; queued: boolean }
+  | { requeued: false; reason: 'no_task' | 'already_requeued' | 'daily_cap' | 'refused' };
+
+/**
+ * The parameters a re-queue carries forward: what the dispatch's caller named,
+ * without the words the dispatcher writes for itself. A task whose prompt the
+ * server builds has it built again at launch, so the hash and the counts the
+ * old context carries belong to the run that ended.
+ */
+function carriedParams(runContext: string | null): Record<string, string> {
+  if (runContext === null) return {};
+  let parsed: unknown;
+  try { parsed = JSON.parse(runContext); } catch { return {}; }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  return Object.fromEntries(
+    Object.entries(parsed as Record<string, unknown>)
+      .filter(([key, value]) => !DISPATCHER_CONTEXT_KEYS.has(key) && typeof value === 'string')
+      .map(([key, value]) => [key, value as string]),
+  );
+}
+
+/** One field of a run's context, read as the type the caller expects. */
+function contextField<T>(runContext: string | null, key: string, ofType: (value: unknown) => T | undefined): T | undefined {
+  if (runContext === null) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(runContext);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    return ofType((parsed as Record<string, unknown>)[key]);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Run a replaced run again: one fresh dispatch of the same task for the same
+ * Project, naming the run it stands in for.
+ *
+ * It goes through the dispatcher like any other ask, so the queue and the
+ * limits apply and a task whose prompt the server builds has it built at
+ * launch against the vault as it then stands. Two caps hold it: a run already
+ * answered by a successor is never answered twice, and a Project gets
+ * `REPLACED_REQUEUES_PER_DAY` of one task in a day, so a Deployment rolling
+ * again and again does not turn one ask into a stream of runs.
+ */
+export async function requeueReplaced(env: ServerEnv, replaced: ReplacedRun, now: number): Promise<RequeueOutcome> {
+  const { run, projectId } = replaced;
+  if (run.task === null) return { requeued: false, reason: 'no_task' };
+  const scope = { projectId };
+  if (await hasSuccessorOf(env.db, scope, run.id)) return { requeued: false, reason: 'already_requeued' };
+  if (await successorsSince(env.db, scope, run.task, now - DAY_MS) >= REPLACED_REQUEUES_PER_DAY) {
+    return { requeued: false, reason: 'daily_cap' };
+  }
+  const timeoutSeconds = contextField(run.runContext, 'timeoutSeconds', (v) => (typeof v === 'number' && v > 0 ? v : undefined));
+  const fresh = contextField(run.runContext, 'fresh', (v) => (v === true ? true : undefined));
+  const outcome = await dispatchTask(env, run.task, projectId, {
+    serverUrl: replaced.serverUrl,
+    actor: replaced.actor,
+    ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+    params: carriedParams(run.runContext),
+    options: { dryRun: run.dryRun === 1, ...(fresh === undefined ? {} : { fresh }) },
+    replaces: run.id,
+  }, now);
+  if (!outcome.dispatched) return { requeued: false, reason: 'refused' };
+  emit({ kind: 'harness_requeued', runId: outcome.runId, task: run.task, projectId, replaces: run.id, queued: outcome.queued });
+  return { requeued: true, runId: outcome.runId, queued: outcome.queued };
 }

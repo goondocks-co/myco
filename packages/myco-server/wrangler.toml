@@ -81,6 +81,12 @@ image = "./harness/Dockerfile"
 # serves development and CI builds. An image-only change deployed through the
 # Dockerfile form still needs a field edit in this table to roll.
 max_instances = 12
+# The platform spares an instance whose connection to its Durable Object is
+# younger than this many seconds when it replaces the application. One Durable
+# Object wraps one run, so connection age is run age, and a grace period at the
+# longest task budget spares every run still inside its own bound. Held there by
+# tests/server/wrangler-template-drift.test.ts.
+rollout_active_grace_period = 1800
 # The dev default is 256MiB; the harness spawns the Claude Code CLI beside bun,
 # and a run under the default is killed by memory mid-execution with no
 # JS-level evidence — the process dies, the entry's guards never fire.

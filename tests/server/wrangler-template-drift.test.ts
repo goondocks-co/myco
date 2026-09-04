@@ -11,6 +11,8 @@ import { WRANGLER_TEMPLATE } from '@myco/server/wrangler-template.js';
 import { DeployConfigIncomplete, parityWranglerConfig, renderDeployConfig } from '@myco/server/deploy-config.js';
 import { harnessImageUri } from '@myco/server/cloudflare.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from '@myco-server-worker/core/harness.js';
+import { TASK_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/task-catalogue.js';
 
 const SHIPPED = fileURLToPath(new URL('../../packages/myco-server/wrangler.toml', import.meta.url));
 
@@ -27,6 +29,22 @@ const record = (over: Partial<DeploymentRecord> = {}): DeploymentRecord => ({
 describe('wrangler template', () => {
   it('is byte-identical to the committed Worker configuration', () => {
     expect(WRANGLER_TEMPLATE).toBe(readFileSync(SHIPPED, 'utf8'));
+  });
+
+  it('spares every run inside its own budget from a rollout, and renders that grace into the deploy config', () => {
+    // The platform replaces an instance only once its connection to its Durable
+    // Object is older than this. `wrangler.toml`'s container table binds ONE
+    // Durable Object per run, so connection age is run age: a grace period at
+    // or above the longest task budget spares every run still inside its bound.
+    const grace = Number(/^rollout_active_grace_period = (\d+)$/m.exec(WRANGLER_TEMPLATE)?.[1]);
+    expect(Number.isInteger(grace)).toBe(true);
+    for (const [task, seconds] of Object.entries(TASK_RUN_TIMEOUT_SECONDS)) {
+      expect({ task, spared: grace >= seconds }).toEqual({ task, spared: true });
+    }
+    expect(grace).toBeGreaterThanOrEqual(DEFAULT_DISPATCH_TIMEOUT_SECONDS);
+    // The container table is where wrangler reads it, and the renderer carries the whole table through.
+    expect(WRANGLER_TEMPLATE.split('[[containers]]')[1]).toContain(`rollout_active_grace_period = ${grace}`);
+    expect(renderDeployConfig(record({ databaseId: 'd1-uuid' }))).toContain(`rollout_active_grace_period = ${grace}`);
   });
 
   it('carries the placeholder the renderer substitutes, exactly once', () => {

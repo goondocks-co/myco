@@ -33,6 +33,13 @@ const HELD_BY_WORDS: Record<string, string> = {
   fleet: 'the size of the fleet',
 };
 
+/** What a deploy did to a run, in the reader's words: nothing for an ordinary run. */
+export function deployWords(run: { replaced: boolean; replaces: string | null }): string | null {
+  if (run.replaced) return 'replaced during a deploy';
+  if (run.replaces !== null) return `retry of ${run.replaces}`;
+  return null;
+}
+
 /** A queued run's line: its place in the queue and what holds it. */
 export function queuedWords(run: { position: number | null; heldBy: string | null }): string {
   const ahead = run.position ?? 0;
@@ -101,6 +108,7 @@ export function AgentRuns() {
 }
 
 function RunRow({ run, active, onOpen }: { run: RunListRow; active: boolean; onOpen: () => void }) {
+  const deploy = deployWords(run);
   return (
     <Row isActive={active} onClick={onOpen} accent={run.failed ? 'terra' : 'sage'}>
       <div className="flex items-center gap-2 font-sans text-sm">
@@ -108,6 +116,7 @@ function RunRow({ run, active, onOpen }: { run: RunListRow; active: boolean; onO
         <span className="min-w-0 flex-1 truncate text-on-surface">{run.task ?? run.id}</span>
         <span className="font-mono text-[11px] text-on-surface-variant">{run.status}</span>
       </div>
+      {deploy !== null && <div className="mt-1 truncate font-sans text-[11px] text-tertiary">{deploy}</div>}
       {run.status === 'queued' ? (
         <div className="mt-1 flex gap-3 font-mono text-[11px] text-on-surface-variant">
           <span>{formatRelative(run.queuedAt)}</span>
@@ -138,12 +147,14 @@ function RunDetail({ projectId, runId }: { projectId: string; runId: string }) {
 
 function RunBody({ run, phases, reports, agentName }: { run: RunDetailRow; phases: PhaseRow[] | null; reports: ReportRow[]; agentName: string | null }) {
   const failed = run.status === 'failed' || run.error !== null;
+  const deploy = deployWords(run);
   return (
     <div className="flex flex-col gap-4">
       <div>
         <div className="font-sans text-[10px] uppercase tracking-wide text-on-surface-variant">Run · {run.task ?? 'task'}</div>
         <h2 className="font-serif text-xl text-on-surface">{run.task ?? run.id}</h2>
         <div className="font-mono text-[11px] text-on-surface-variant">{run.id}</div>
+        {deploy !== null && <div className="mt-1 font-sans text-xs text-tertiary">{deploy}</div>}
       </div>
 
       {failed && (
