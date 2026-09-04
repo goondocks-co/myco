@@ -46,7 +46,7 @@ export const CORTEX_INSTRUCTIONS_ACTION = 'cortex_instructions';
 export interface TaskInput {
   instruction: string;
   inputHash: string;
-  counts: Readonly<Record<string, number>>;
+  counts: Readonly<Record<string, number | boolean>>;
 }
 
 /** What a caller asks of one build beyond the Project and the instant. */

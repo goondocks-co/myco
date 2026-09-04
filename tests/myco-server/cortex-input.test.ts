@@ -10,9 +10,12 @@
 import { describe, expect, it } from 'bun:test';
 import {
   buildDigestInput, buildInstructionsInput, CONTENT_PREVIEW_MAX_CHARS, DIGEST_EXCERPT_MAX_CHARS,
-  DIGEST_FRESH_DIRECTION, DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT, DIGEST_TIER_MIN_CONTEXT_TOKENS,
-  materialRowsForTier, preview, RECENT_PLAN_LIMIT, RECENT_SESSION_LIMIT, RECENT_WISDOM_SPORE_LIMIT,
+  DIGEST_FRESH_DIRECTION, DIGEST_MATERIAL_TIER, DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT,
+  DIGEST_TIER_MIN_CONTEXT_TOKENS, MATERIAL_ROW_KEYS_ESTIMATE_CHARS, materialRowsForTier, preview,
+  RECENT_PLAN_LIMIT, RECENT_SESSION_LIMIT, RECENT_WISDOM_SPORE_LIMIT, RUN_SESSION_LABEL_CHARS,
+  RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS, SESSION_ROW_OVERHEAD_CHARS,
 } from '@myco-server-worker/core/cortex-input.js';
+import { SPORE_FULL_READ_BUDGET } from '@myco-server-worker/core/spores.js';
 import { recallLeaves, type RecallLeaves } from '@myco-server-worker/core/recall.js';
 import { SERVED_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
 import { upsertDigest } from '@myco-server-worker/core/digests.js';
@@ -202,7 +205,7 @@ describe('the input a digest run is handed', () => {
     await f.spore('gotcha', 'the drain rebuilds');
 
     const built = await f.digest();
-    expect(built.counts).toEqual({ spores: 2, sessions: 1 });
+    expect(built.counts).toEqual({ spores: 2, sessionsInWindow: 1, windowFull: false });
     expect(built.instruction).toContain('- Active spores: 2');
     expect(built.instruction).toContain('- Sessions that ended since the newest digest: 1');
   });
@@ -215,7 +218,11 @@ describe('the input a digest run is handed', () => {
     }
     expect(built.instruction).toContain(`at most ${DIGEST_SPORE_PAGE_LIMIT} previews`);
     expect(built.instruction).toContain(`at most ${DIGEST_SESSION_PAGE_LIMIT} sessions`);
-    expect(materialRowsForTier(10000, 200)).toBeGreaterThan(materialRowsForTier(1500, 200));
+    expect(built.instruction).toContain(`at most ${SPORE_FULL_READ_BUDGET} spores in full`);
+    expect(materialRowsForTier(10000, 200, 80)).toBeGreaterThan(materialRowsForTier(1500, 200, 80));
+    // Every part of a row but its keys is cut to a constant, so the page ceilings are derived rather than guessed.
+    expect(DIGEST_SESSION_PAGE_LIMIT).toBe(materialRowsForTier(DIGEST_MATERIAL_TIER, RUN_SESSION_SUMMARY_CHARS, SESSION_ROW_OVERHEAD_CHARS));
+    expect(SESSION_ROW_OVERHEAD_CHARS).toBe(RUN_SESSION_TITLE_CHARS + RUN_SESSION_LABEL_CHARS + MATERIAL_ROW_KEYS_ESTIMATE_CHARS);
   });
 
   it('tells the run to start over only when the owner asked for it, and hashes the material either way', async () => {

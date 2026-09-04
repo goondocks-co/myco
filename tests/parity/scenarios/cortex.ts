@@ -34,6 +34,10 @@ export const cortex: ParityScenario = {
     await target.sql(`DELETE FROM agent_runs WHERE task = 'cortex-instructions'`);
     await target.sql(`DELETE FROM cortex_instructions WHERE project_id = ${lit(target.projectId)}`);
     await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.limits.concurrent_runs'`);
+    // The digest injection switch is reset here rather than after the assertion
+    // that turns it on: a failed expect leaves the scenario, and a leaf left on
+    // changes what every later session start is served.
+    await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'cortex.digest.inject_on_session_start'`);
 
     const dispatch = async (ask: Record<string, unknown> = {}) => {
       const res = await fetch(`${target.url}/api/harness/dispatch`, {
@@ -186,13 +190,18 @@ export const cortex: ParityScenario = {
       .toEqual([{ content: `digest two ${stamp}`, runId: digestRunId }, { content: `digest one ${stamp}`, runId: digestRunId }]);
     expect(chain.revisions[0]!.parentRevisionId).toBe(chain.revisions[1]!.id);
 
-    // With the digest switched on for session start, a new session is served the tier the run wrote.
+    // With the digest switched on for session start, a new session is served the
+    // tier the run wrote. The switch goes back off whatever the assertions do: a
+    // leaf left on changes what every later session start is served.
     await leaf('cortex.digest.inject_on_session_start', true);
-    const withDigest = await startSession(`parity-digest-${stamp}`);
-    expect(withDigest.parts.map((p) => p.kind)).toContain('digest');
-    expect(withDigest.context).toContain('## Preferred Digest (Tier 5000)');
-    expect(withDigest.context).toContain(`digest three ${stamp}`);
-    await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'cortex.digest.inject_on_session_start'`);
+    try {
+      const withDigest = await startSession(`parity-digest-${stamp}`);
+      expect(withDigest.parts.map((p) => p.kind)).toContain('digest');
+      expect(withDigest.context).toContain('## Preferred Digest (Tier 5000)');
+      expect(withDigest.context).toContain(`digest three ${stamp}`);
+    } finally {
+      await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'cortex.digest.inject_on_session_start'`);
+    }
 
     // Leave the board as the next scenario expects it.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${Date.now()} WHERE status IN ('pending', 'running', 'queued')`);

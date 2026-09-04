@@ -10,7 +10,10 @@ import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import worker from '@myco-server-worker/index.js';
 import { ServerClient } from '@myco/member/transport.js';
-import { CAPTURE_DRIVEN_ADMISSION, runServerTask } from '@myco/agent/runtime/server-runner.js';
+import {
+  CAPTURE_DRIVEN_ADMISSION, installRunFailureHandlers, RUN_DEADLINE_ERROR, RUN_REPLACED_ERROR, runServerTask,
+  type HeldRun,
+} from '@myco/agent/runtime/server-runner.js';
 import type { AgentHarness, HarnessExecuteInput } from '@myco/agent/harness/types.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
@@ -141,5 +144,58 @@ describe('runServerTask', () => {
     const result = await runServerTask({ client, budget, runId: 'run_smoke_4', taskName: 'no-such-task', harness: fakeHarness('silent') });
     expect({ status: result.status, error: result.error }).toEqual({ status: 'failed', error: 'unknown task: no-such-task' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(0);
+  });
+});
+
+describe('a run that dies names itself', () => {
+  it('fails at its own deadline, even where the harness never honours the abort', async () => {
+    const { client, sqlite } = await harness();
+    const hanging: AgentHarness = {
+      async execute() {
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+        return { finalText: 'too late', turnsUsed: 1 } as never;
+      },
+      supports: () => false,
+    } as unknown as AgentHarness;
+    const result = await runServerTask({ client, budget, runId: 'run_deadline', taskName: 'container-smoke', harness: hanging, timeoutSeconds: 0.05 });
+    expect({ status: result.status, error: result.error }).toEqual({ status: 'failed', error: RUN_DEADLINE_ERROR });
+    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_deadline'`).get())
+      .toEqual({ status: 'failed', error: RUN_DEADLINE_ERROR });
+  });
+
+  it('fails with the message of an execution that rejects after its own turn', async () => {
+    const { client, sqlite } = await harness();
+    const late: AgentHarness = {
+      execute: () => new Promise((_, reject) => setTimeout(() => reject(new Error('the provider closed the stream')), 5)),
+      supports: () => false,
+    } as unknown as AgentHarness;
+    const result = await runServerTask({ client, budget, runId: 'run_late', taskName: 'container-smoke', harness: late });
+    expect({ status: result.status, error: result.error }).toEqual({ status: 'failed', error: 'the provider closed the stream' });
+    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_late'`).get())
+      .toEqual({ status: 'failed', error: 'the provider closed the stream' });
+  });
+
+  it('names the run on the row when the platform takes the container away, and when the process throws', async () => {
+    const { client, sqlite } = await harness();
+    await runServerTask({ client, budget, runId: 'run_taken', taskName: 'container-smoke', harness: fakeHarness('silent') });
+    sqlite.query(`UPDATE agent_runs SET status = 'running', completed_at = NULL, error = NULL WHERE id = 'run_taken'`).run();
+
+    // A stand-in for the process: the same events, raised on demand.
+    const listeners = new Map<string, Array<(reason?: unknown) => void>>();
+    const events = { on: (event: string, listener: (reason?: unknown) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]) };
+    const named: Array<{ error: string; named: boolean }> = [];
+    let held: HeldRun | null = { client, budget, runId: 'run_taken' };
+    installRunFailureHandlers(events, { held: () => held, onNamed: (error, wasNamed) => { named.push({ error, named: wasNamed }); held = null; } });
+
+    for (const listener of listeners.get('SIGTERM') ?? []) listener();
+    await Bun.sleep(50);
+    expect(named).toEqual([{ error: RUN_REPLACED_ERROR, named: true }]);
+    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_taken'`).get())
+      .toEqual({ status: 'failed', error: RUN_REPLACED_ERROR });
+
+    // A death with no run in flight leaves no row to name and says so.
+    for (const listener of listeners.get('uncaughtException') ?? []) listener(new Error('nothing held'));
+    await Bun.sleep(20);
+    expect(named[1]).toEqual({ error: 'nothing held', named: false });
   });
 });

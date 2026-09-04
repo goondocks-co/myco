@@ -12,7 +12,8 @@ import type { OwnerContext } from '../context.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, DISPATCH_REFUSAL_MESSAGE, dispatchTask } from '../core/harness.js';
 import { emit } from '../telemetry.js';
 import { taskEntriesSince } from '../core/runs.js';
-import { TASK_SCHEDULE } from '../core/task-catalogue.js';
+import { runTimeoutForTask, TASK_SCHEDULE } from '../core/task-catalogue.js';
+import { scheduleFor, scheduleLeaves } from '../core/scheduled-tasks.js';
 import { buildTaskInput } from '../core/task-inputs.js';
 import { badRequest, ok, readJsonObject } from './scope.js';
 
@@ -28,7 +29,10 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   const task = typeof body.task === 'string' && body.task.length > 0 && body.task.length <= 128 ? body.task : null;
   const projectId = typeof body.projectId === 'string' && PROJECT_ID_SHAPE.test(body.projectId) ? body.projectId : null;
   if (task === null || projectId === null) return badRequest('dispatch requires task and projectId');
-  const timeoutSeconds = typeof body.timeoutSeconds === 'number' && body.timeoutSeconds > 0 && body.timeoutSeconds <= 3600 ? body.timeoutSeconds : DEFAULT_DISPATCH_TIMEOUT_SECONDS;
+  // The caller's bound, else the task's own budget, else the flat default.
+  const timeoutSeconds = typeof body.timeoutSeconds === 'number' && body.timeoutSeconds > 0 && body.timeoutSeconds <= 3600
+    ? body.timeoutSeconds
+    : runTimeoutForTask(task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS;
   const dryRun = body.dryRun === true;
   const fresh = body.fresh === true;
 
@@ -42,8 +46,15 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
     emit({ kind: 'harness_unchanged', task, projectId, actor: ctx.member.id });
     return ok({ outcome: 'unchanged' });
   }
-  // A person's ask bypasses the clock's interval, never its per-day ceiling: the cap is the day's spend, whoever asks.
-  const ceiling = TASK_SCHEDULE[task]?.maxRunsPerDay;
+  // A person's ask bypasses the clock's interval, never its per-day ceiling: the
+  // cap is the day's spend, whoever asks. The ceiling is the declared block under
+  // the owner's own override, so a Deployment that lifts the cap for a day —
+  // after a run that spent its money and produced nothing — is answered by the
+  // number it set rather than the one shipped.
+  const declared = TASK_SCHEDULE[task];
+  const ceiling = declared === null || declared === undefined
+    ? undefined
+    : scheduleFor(task, declared, (await scheduleLeaves(env)).overrides).maxRunsPerDay;
   if (ceiling !== undefined && (await taskEntriesSince(env.db, { projectId }, task, ctx.now - 86_400_000)) >= ceiling) {
     return Response.json({ error: 'max_runs_per_day', message: `this task has run its ${ceiling} for the day` }, { status: 409 });
   }

@@ -20,6 +20,7 @@ import { loadAllTasks } from '../registry.js';
 import { composeHostedPrompt, composeTaskPrompt } from '../prompt-composition.js';
 import type { AgentHarness } from '../harness/types.js';
 import type { ProviderConfig } from '../types.js';
+import type { RunStore } from './run-store.js';
 import { createHttpRunStore, postRunControl, type RunClaimAdmission } from './run-store-http.js';
 import { INSTRUCTED_TASKS, materializedToolsForTask, type ServerToolContext } from './server-tools.js';
 
@@ -27,6 +28,22 @@ export { materializedReportTool } from './server-tools.js';
 
 /** The admission a dispatch names: a capability the Project must hold, or `captureDriven` for a task gated on a provider alone. */
 export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
+
+/** How a run that ran past its own bound is recorded. */
+export const RUN_DEADLINE_ERROR = 'the run reached its deadline';
+/** How a run whose container the platform took away mid-flight is recorded. */
+export const RUN_REPLACED_ERROR = 'the runtime was replaced while the run was in flight';
+/** The signals a platform sends a container it is taking away. */
+export const RUNTIME_STOP_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
+/** How much of a failure message rides the run row. */
+export const MAX_RUN_ERROR_CHARS = 2000;
+/** How many times a terminal status is offered to the Deployment before the run is left to the stale sweep. */
+export const TERMINAL_UPDATE_ATTEMPTS = 2;
+
+/** One failure message, bounded, whatever shape it arrived in. */
+export function runErrorText(reason: unknown): string {
+  return (reason instanceof Error ? reason.message : String(reason)).slice(0, MAX_RUN_ERROR_CHARS);
+}
 
 /** What a server task run needs; everything arrives in the dispatch, nothing is read ambiently. */
 export interface ServerTaskOptions {
@@ -57,6 +74,82 @@ export interface ServerTaskResult {
 /** The claim's admission from the dispatch's word: the capture-driven marker, or a capability name. */
 export function claimAdmission(admission: string | undefined): RunClaimAdmission {
   return admission === CAPTURE_DRIVEN_ADMISSION ? { captureDriven: true } : { capability: admission ?? 'cortex' };
+}
+
+/**
+ * Offer one terminal status to the Deployment, twice.
+ *
+ * The status is the only thing that tells a reader a run ended for a reason
+ * rather than went away, and a single refused request would turn a named
+ * failure into the stale sweep's silence.
+ */
+async function recordTerminal(store: RunStore, runId: string, status: 'completed' | 'failed', completion: Record<string, unknown>): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await store.updateRunStatus(runId, status, completion as never);
+      return;
+    } catch (error) {
+      if (attempt >= TERMINAL_UPDATE_ATTEMPTS) throw error;
+    }
+  }
+}
+
+/** What a container holds while one run is in flight: enough to name that run's failure on its own row. */
+export interface HeldRun {
+  client: ServerClient;
+  budget: RequestBudget;
+  runId: string;
+  agentId?: string;
+}
+
+/** Record one run's failure over the run-control surface, offered twice before the sweep is left to it. */
+export async function recordRunFailure(held: HeldRun, error: string): Promise<void> {
+  const store = createHttpRunStore({
+    client: held.client,
+    agentId: held.agentId ?? DEFAULT_AGENT_ID,
+    admissionForTask: () => ({ capability: 'cortex' }),
+    budget: held.budget,
+  });
+  await recordTerminal(store, held.runId, 'failed', { completed_at: Date.now(), error: error.slice(0, MAX_RUN_ERROR_CHARS) });
+}
+
+/** Where a process's own deaths are announced. */
+export interface ProcessEvents {
+  on(event: string, listener: (reason?: unknown) => void): unknown;
+}
+
+/** What the container does with a death: which run is in flight, and what to do once it has been named. */
+export interface RunFailureHandlers {
+  held: () => HeldRun | null;
+  /** Called after the attempt to name the failure; `named` says whether a run row carries it. */
+  onNamed: (error: string, named: boolean) => void;
+}
+
+/**
+ * Name this container's run on its own row when the process dies.
+ *
+ * A container that throws, rejects, or is taken away by the platform mid-rollout
+ * otherwise just stops talking, and the run stays `running` until the stale
+ * sweep gives up on it minutes later under a message that says nothing about
+ * what happened. Every one of those deaths reaches the row here instead.
+ */
+export function installRunFailureHandlers(events: ProcessEvents, handlers: RunFailureHandlers): void {
+  const name = async (error: string): Promise<void> => {
+    const held = handlers.held();
+    let named = false;
+    if (held !== null) {
+      try {
+        await recordRunFailure(held, error);
+        named = true;
+      } catch {
+        // The stale sweep closes the row when the Deployment is unreachable.
+      }
+    }
+    handlers.onNamed(error, named);
+  };
+  events.on('uncaughtException', (reason) => { void name(runErrorText(reason)); });
+  events.on('unhandledRejection', (reason) => { void name(runErrorText(reason)); });
+  for (const signal of RUNTIME_STOP_SIGNALS) events.on(signal, () => { void name(RUN_REPLACED_ERROR); });
 }
 
 /**
@@ -140,9 +233,16 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
 
     const abort = new AbortController();
     const timeoutMs = (options.timeoutSeconds ?? task.timeoutSeconds ?? 300) * 1000;
-    const timer = setTimeout(() => abort.abort(), timeoutMs);
+    // The deadline is raced against the execution rather than left to the abort
+    // controller alone: a harness that does not honour the signal would run past
+    // its bound and answer normally, and the run would close completed on work
+    // the Deployment stopped waiting for.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { abort.abort(); reject(new Error(RUN_DEADLINE_ERROR)); }, timeoutMs);
+    });
     try {
-      const result = await harness.execute({
+      const execution = harness.execute({
         prompt,
         model: options.model ?? task.model ?? 'claude-opus-5',
         maxTurns: task.maxTurns,
@@ -152,7 +252,11 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
         abortController: abort,
         reasoningLevel: task.reasoningLevel,
       });
-      await store.updateRunStatus(runId, 'completed', {
+      // The loser of the race settles alone; its later rejection is the run's
+      // outcome only when it won.
+      execution.catch(() => {});
+      const result = await Promise.race([execution, deadline]);
+      await recordTerminal(store, runId, 'completed', {
         completed_at: Date.now(),
         tokens_used: result.usage?.totalTokens ?? null,
       });
@@ -161,9 +265,9 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       clearTimeout(timer);
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = runErrorText(error);
     try {
-      await store.updateRunStatus(runId, 'failed', { completed_at: Date.now(), error: message });
+      await recordTerminal(store, runId, 'failed', { completed_at: Date.now(), error: message });
     } catch {
       // The terminal update is best-effort: the stale sweep closes the row
       // when the Deployment is unreachable, and the container's log holds

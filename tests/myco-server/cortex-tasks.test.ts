@@ -13,14 +13,17 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
-import { drainQueue, HARNESS_AGENT_ID, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, drainQueue, HARNESS_AGENT_ID, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { TASK_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/task-catalogue.js';
 import { runScheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { getRun, upsertCortexInstructions } from '@myco-server-worker/core/runs.js';
 import { listDigests, upsertDigest } from '@myco-server-worker/core/digests.js';
 import { insertSpore } from '@myco-server-worker/core/spores.js';
 import { RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_CLOSE_REPORTS, RUN_CLOSE_RULES } from '@myco-server-worker/core/run-postconditions.js';
 import { buildTaskInput } from '@myco-server-worker/core/task-inputs.js';
-import { DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT } from '@myco-server-worker/core/cortex-input.js';
+import {
+  DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT, RUN_SESSION_LABEL_CHARS, RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS,
+} from '@myco-server-worker/core/cortex-input.js';
 import { listInstructions } from '@myco-server-worker/read/cortex.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
@@ -176,12 +179,29 @@ describe('the routes a Cortex run holds', () => {
     expect((all.sessions as unknown[]).length).toBe(4);
   });
 
+  it('cuts every part of a session row to its own bound, so a long title cannot outgrow the page', async () => {
+    const f = await fixture();
+    f.liveRun('run_1', TASK, { input_hash: 'h' });
+    f.sqlite.run(
+      `INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at, title, summary)
+       VALUES ('proj_1', 'long', 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?, ?, ?)`,
+      [NOW, NOW, NOW, NOW + 1, 'title '.repeat(200), 'summary '.repeat(200)],
+    );
+    const row = ((await f.answered('/runs/sessions', { runId: 'run_1' })).sessions as Array<{ title: string; label: string; summary: string }>)[0]!;
+    expect(row.title.length).toBeLessThanOrEqual(RUN_SESSION_TITLE_CHARS + 1);
+    expect(row.label.length).toBeLessThanOrEqual(RUN_SESSION_LABEL_CHARS + 1);
+    expect(row.summary.length).toBeLessThanOrEqual(RUN_SESSION_SUMMARY_CHARS + 1);
+  });
+
   it('serves one digest tier in full and every tier\'s shape when none is named', async () => {
     const f = await fixture();
     f.liveRun('run_1', TASK, { input_hash: 'h' });
     await upsertDigest(f.db, SCOPE, { id: 'd1', agentId: HARNESS_AGENT_ID, tier: 5000, content: 'the digest', substrateHash: null, generatedAt: NOW });
     expect(await f.answered('/runs/digest', { runId: 'run_1', tier: 5000 }))
-      .toEqual({ persisted: true, held: true, digest: { tier: 5000, content: 'the digest', generatedAt: NOW } });
+      .toEqual({ persisted: true, held: true, digest: { tier: 5000, content: 'the digest', generatedAt: NOW, fallback: false } });
+    // A run that only reads is served the nearest tier the Project holds, and told which it got.
+    expect(await f.answered('/runs/digest', { runId: 'run_1', tier: 10000 }))
+      .toEqual({ persisted: true, held: true, digest: { tier: 5000, content: 'the digest', generatedAt: NOW, fallback: true } });
     expect(await f.answered('/runs/digest', { runId: 'run_1' }))
       .toEqual({ persisted: true, held: true, tiers: [{ tier: 5000, generatedAt: NOW, contentLength: 10 }] });
     expect(await f.answered('/runs/digest', { runId: 'run_absent' })).toEqual({ persisted: true, held: false });
@@ -221,6 +241,34 @@ describe('a dispatch of the instructions task', () => {
     const answered = await f.dispatch({ dryRun: true });
     expect(answered.status).toBe(200);
     expect(f.runs()[0]!.dryRun).toBe(1);
+  });
+
+  it('carries the task\'s own run budget into the run\'s context, and the flat default for a task that names none', async () => {
+    const f = await fixture();
+    const asked = await f.dispatch();
+    expect(JSON.parse(String(f.runs().find((r) => r.id === asked.body.runId)!.runContext)).timeoutSeconds).toBe(TASK_RUN_TIMEOUT_SECONDS[TASK]);
+
+    const digest = await f.dispatch({ task: DIGEST_TASK });
+    expect(JSON.parse(String(f.runs().find((r) => r.id === digest.body.runId)!.runContext)).timeoutSeconds).toBe(TASK_RUN_TIMEOUT_SECONDS[DIGEST_TASK]);
+
+    const smoke = await f.dispatch({ task: 'container-smoke' });
+    expect(JSON.parse(String(f.runs().find((r) => r.id === smoke.body.runId)!.runContext)).timeoutSeconds).toBe(DEFAULT_DISPATCH_TIMEOUT_SECONDS);
+
+    // A caller naming its own bound keeps it.
+    const named = await f.dispatch({ task: 'container-smoke', timeoutSeconds: 42 });
+    expect(JSON.parse(String(f.runs().find((r) => r.id === named.body.runId)!.runContext)).timeoutSeconds).toBe(42);
+  });
+
+  it('reads the day\'s ceiling through the owner\'s own schedule override', async () => {
+    const f = await fixture();
+    await f.dispatch();
+    await f.spore('sp_1', 'moved');
+    expect(await f.dispatch()).toMatchObject({ status: 409, body: { error: 'max_runs_per_day' } });
+
+    // A run that spent its money and produced nothing is a day an owner may lift.
+    f.setting('agent.tasks', { [TASK]: { schedule: { maxRunsPerDay: 3 } } });
+    await f.spore('sp_2', 'moved again');
+    expect((await f.dispatch()).status).toBe(200);
   });
 
   it('is answered its per-day ceiling once the day is spent', async () => {
@@ -352,7 +400,7 @@ describe('what the instructions run owes before it closes', () => {
 describe('the digest a run writes', () => {
   it('files one tier for the run\'s agent under the server\'s hash, and answers a caller holding no such run nothing', async () => {
     const f = await fixture();
-    f.liveRun('run_digest', DIGEST_TASK, { input_hash: 'server-hash', counts: { spores: 7, sessions: 2 } });
+    f.liveRun('run_digest', DIGEST_TASK, { input_hash: 'server-hash', counts: { spores: 7, sessionsInWindow: 2, windowFull: false } });
     f.liveRun('run_other', TASK, { input_hash: 'h' });
     expect(await f.answered('/runs/digest-write', { runId: 'run_digest', tier: 5000, content: '# the digest' }))
       .toEqual({ persisted: true, held: true, written: true, tier: 5000, revisionOf: null });
@@ -387,18 +435,18 @@ describe('the digest a run writes', () => {
 
   it('archives the body it replaces, naming the run that replaced it and what its material counted', async () => {
     const f = await fixture();
-    f.liveRun('run_first', DIGEST_TASK, { input_hash: 'hash-one', counts: { spores: 4, sessions: 1 } });
+    f.liveRun('run_first', DIGEST_TASK, { input_hash: 'hash-one', counts: { spores: 4, sessionsInWindow: 1, windowFull: false } });
     expect((await f.answered('/runs/digest-write', { runId: 'run_first', tier: 5000, content: '# first' })).revisionOf).toBeNull();
 
     const second = await f.credential();
-    f.liveRun('run_second', DIGEST_TASK, { input_hash: 'hash-two', counts: { spores: 9, sessions: 3 } }, null, false, second.tokenId);
+    f.liveRun('run_second', DIGEST_TASK, { input_hash: 'hash-two', counts: { spores: 9, sessionsInWindow: 3, windowFull: false } }, null, false, second.tokenId);
     const answered = await f.answered('/runs/digest-write', { runId: 'run_second', tier: 5000, content: '# second' }, second.token);
     expect(answered).toMatchObject({ written: true, tier: 5000 });
     expect(typeof answered.revisionOf).toBe('number');
 
     const revisions = f.sqlite.query(`SELECT id, tier, content, metadata, run_id AS runId, parent_revision_id AS parentRevisionId FROM digest_extract_revisions ORDER BY id`).all() as Array<Record<string, unknown>>;
     expect(revisions.map((r) => ({ tier: r.tier, content: r.content, runId: r.runId, metadata: r.metadata, parentRevisionId: r.parentRevisionId })))
-      .toEqual([{ tier: 5000, content: '# first', runId: 'run_second', metadata: JSON.stringify({ spores: 9, sessions: 3 }), parentRevisionId: null }]);
+      .toEqual([{ tier: 5000, content: '# first', runId: 'run_second', metadata: JSON.stringify({ spores: 9, sessionsInWindow: 3, windowFull: false }), parentRevisionId: null }]);
 
     const third = await f.credential();
     f.liveRun('run_third', DIGEST_TASK, { input_hash: 'hash-three' }, null, false, third.tokenId);
@@ -420,7 +468,11 @@ describe('the digest a run writes', () => {
     expect(((await f.answered('/runs/sessions', { runId: 'run_digest' })).sessions as unknown[]).length).toBe(1);
     expect(((await f.answered('/runs/spores', { runId: 'run_digest' })).spores as unknown[]).length).toBe(1);
     expect(await f.answered('/runs/digest', { runId: 'run_digest', tier: 5000 }))
-      .toEqual({ persisted: true, held: true, digest: { tier: 5000, content: 'held', generatedAt: NOW } });
+      .toEqual({ persisted: true, held: true, digest: { tier: 5000, content: 'held', generatedAt: NOW, fallback: false } });
+    // The run that WRITES the tiers is served the tier it asked for or nothing: a
+    // neighbour's body carried forward under an absent tier's name collapses the two.
+    expect(await f.answered('/runs/digest', { runId: 'run_digest', tier: 10000 }))
+      .toEqual({ persisted: true, held: true, digest: null });
   });
 
   it('hands a digest run its tier window rather than the page any other run may ask for', async () => {

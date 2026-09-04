@@ -258,7 +258,7 @@ export function materializedSessionsTool(ctx: ServerToolContext): MycoToolDefini
     name: 'vault_sessions',
     description: 'List this project\'s settled sessions, newest first — id, label, start and end, title, and the opening of the summary. Sessions still in flight are never listed.',
     inputSchema: {
-      limit: z.number().optional().describe('Maximum number of sessions to return (max 50)'),
+      limit: z.number().optional().describe('Maximum number of sessions to return; a larger ask is answered with this run\'s own page ceiling'),
     },
     annotations: { readOnlyHint: true },
     handler: async (args: { limit?: number }) => {
@@ -273,7 +273,7 @@ export function materializedSessionsTool(ctx: ServerToolContext): MycoToolDefini
 export function materializedReadDigestTool(ctx: ServerToolContext): MycoToolDefinition {
   return {
     name: 'vault_read_digest',
-    description: 'Read the current digest. With no arguments it returns what each tier holds; with a tier it returns that tier\'s content in full, falling back to the nearest tier the project has.',
+    description: 'Read the current digest. With no arguments it returns what each tier holds; with a tier it returns that tier\'s content in full. A run that only reads may be served the nearest tier the project has instead, and the answer says so with "fallback": true; a run that writes the digest is served the tier it asked for or nothing.',
     inputSchema: {
       tier: z.number().optional().describe('Tier to read in full (1500, 5000, or 10000). Omit for a summary of all tiers.'),
     },

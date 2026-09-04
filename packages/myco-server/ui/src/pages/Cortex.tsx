@@ -167,32 +167,30 @@ function Digests({ projectId }: { projectId: string }) {
   const agents = [...new Set(list.map((d) => d.agentId))];
   return (
     <PageLoading isLoading={digests.isPending} error={digests.error}>
-      {list.length === 0 ? (
-        <Panel title="Digest" actions={<RegenerateDigest projectId={projectId} />}>
-          <p className="font-sans text-sm text-on-surface-variant">No digest generated yet. It appears here once the digest task has run.</p>
-        </Panel>
-      ) : (
-        <div className="flex flex-col gap-4">
-          {agents.map((agentId, index) => (
-            <AgentDigests key={agentId} projectId={projectId} agentId={agentId} digests={list.filter((d) => d.agentId === agentId)} showAgent={agents.length > 1} offerRegenerate={index === 0} />
-          ))}
-        </div>
-      )}
+      <div className="flex flex-col gap-4">
+        <div className="flex justify-end"><RegenerateDigest projectId={projectId} /></div>
+        {list.length === 0 ? (
+          <Panel title="Digest">
+            <p className="font-sans text-sm text-on-surface-variant">No digest generated yet. It appears here once the digest task has run.</p>
+          </Panel>
+        ) : (
+          agents.map((agentId) => (
+            <AgentDigests key={agentId} projectId={projectId} agentId={agentId} digests={list.filter((d) => d.agentId === agentId)} showAgent={agents.length > 1} />
+          ))
+        )}
+      </div>
     </PageLoading>
   );
 }
 
-function AgentDigests({ projectId, agentId, digests, showAgent, offerRegenerate }: { projectId: string; agentId: string; digests: DigestRow[]; showAgent: boolean; offerRegenerate: boolean }) {
+function AgentDigests({ projectId, agentId, digests, showAgent }: { projectId: string; agentId: string; digests: DigestRow[]; showAgent: boolean }) {
   const [tier, setTier] = useState<number>(digests[0]!.tier);
   const current = digests.find((d) => d.tier === tier) ?? digests[0]!;
   const revisions = useDigestRevisions(projectId, agentId, current.tier);
   const runBase = `/p/${encodeURIComponent(projectId)}/runs`;
   return (
     <Panel eyebrow={showAgent ? agentId : undefined} title="Digest" actions={
-      <div className="flex flex-wrap items-start gap-2">
-        <SubtabPill tabs={digests.map((d) => ({ id: String(d.tier), label: `${d.tier.toLocaleString()} tokens` }))} activeTab={String(current.tier)} onTabChange={(id) => setTier(Number(id))} />
-        {offerRegenerate && <RegenerateDigest projectId={projectId} />}
-      </div>
+      <SubtabPill tabs={digests.map((d) => ({ id: String(d.tier), label: `${d.tier.toLocaleString()} tokens` }))} activeTab={String(current.tier)} onTabChange={(id) => setTier(Number(id))} />
     }>
       <div className="mb-3">
         <Badge variant="secondary" title={formatDateTime(current.generatedAt)}>generated {formatRelative(current.generatedAt)}</Badge>

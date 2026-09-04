@@ -44,7 +44,7 @@ async function setup() {
   await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_sweep', agentId: 'myco-agent', task: 'supersession-sweep', provider: 'anthropic', model: null, runContext: JSON.stringify({ session_id: 's1' }), dispatchedBy: minted.tokenId, startedAt: now });
   await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_smoke', agentId: 'myco-agent', task: 'container-smoke', provider: 'anthropic', model: null, runContext: null, dispatchedBy: minted.tokenId, startedAt: now });
   await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_cortex', agentId: 'myco-agent', task: 'cortex-instructions', provider: 'anthropic', model: null, runContext: JSON.stringify({ input_hash: 'server-hash' }), dispatchedBy: minted.tokenId, startedAt: now });
-  await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_digest', agentId: 'myco-agent', task: 'digest-only', provider: 'anthropic', model: null, runContext: JSON.stringify({ input_hash: 'digest-hash', counts: { spores: 3, sessions: 1 } }), dispatchedBy: minted.tokenId, startedAt: now });
+  await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_digest', agentId: 'myco-agent', task: 'digest-only', provider: 'anthropic', model: null, runContext: JSON.stringify({ input_hash: 'digest-hash', counts: { spores: 3, sessionsInWindow: 1, windowFull: false } }), dispatchedBy: minted.tokenId, startedAt: now });
   e.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE id IN ('run_1', 'run_sweep', 'run_smoke', 'run_cortex', 'run_digest')`);
   return { ...e, now, client: clientFor(minted.token) };
 }
@@ -146,7 +146,10 @@ describe('the instructions run\'s tools', () => {
     expect((listed.sessions as Array<{ id: string }>).map((s) => s.id)).toEqual(['s1']);
 
     expect(textOf(await materializedReadDigestTool(ctx).handler({ tier: 5000 }, {})))
-      .toEqual({ digest: { tier: 5000, content: 'the digest', generatedAt: now } });
+      .toEqual({ digest: { tier: 5000, content: 'the digest', generatedAt: now, fallback: false } });
+    // A run that only reads is served the nearest tier, and the answer says which it got.
+    expect(textOf(await materializedReadDigestTool(ctx).handler({ tier: 10000 }, {})))
+      .toEqual({ digest: { tier: 5000, content: 'the digest', generatedAt: now, fallback: true } });
     expect(textOf(await materializedReadDigestTool(ctx).handler({}, {})))
       .toEqual({ tiers: [{ tier: 5000, generatedAt: now, contentLength: 10 }] });
   });
@@ -199,7 +202,7 @@ describe('the digest run\'s tools', () => {
     expect(sqlite.query(`SELECT tier, content, substrate_hash AS substrateHash FROM digest_extracts`).all())
       .toEqual([{ tier: 5000, content: '# second', substrateHash: 'digest-hash' }]);
     expect(sqlite.query(`SELECT content, run_id AS runId, metadata FROM digest_extract_revisions`).all())
-      .toEqual([{ content: '# first', runId: 'run_digest', metadata: JSON.stringify({ spores: 3, sessions: 1 }) }]);
+      .toEqual([{ content: '# first', runId: 'run_digest', metadata: JSON.stringify({ spores: 3, sessionsInWindow: 1, windowFull: false }) }]);
   });
 
   it('answer a tier the deployment does not serve, and a run holding no digest surface, as tool errors', async () => {

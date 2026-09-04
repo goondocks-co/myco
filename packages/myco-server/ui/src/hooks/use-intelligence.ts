@@ -291,10 +291,16 @@ export const INSTRUCTIONS_OUTCOME_TEXT: Record<DispatchOutcome, string> = {
   unchanged: 'Nothing has changed since these were written',
 };
 
-export const DIGEST_OUTCOME_TEXT: Record<DispatchOutcome, string> = {
+/**
+ * What the server answers when asked to write the digest again. There is no
+ * `unchanged`: the digest is never deduped at the dispatch, so an ask always
+ * starts a run and the run itself says which tiers it left alone.
+ */
+export type DigestOutcome = Exclude<DispatchOutcome, 'unchanged'>;
+
+export const DIGEST_OUTCOME_TEXT: Record<DigestOutcome, string> = {
   running: 'Writing the digest — it lands in a few minutes',
   queued: 'Waiting for a runtime — this starts as one frees up',
-  unchanged: 'Nothing has changed since this was written',
 };
 
 /** Why the ask went nowhere, in the reader's words. */
@@ -315,6 +321,11 @@ export const DIGEST_REFUSAL_FALLBACK = 'The digest could not be written right no
 export interface DispatchAnswer {
   outcome: DispatchOutcome;
   /** The run writing it, on `running` and `queued`. */
+  runId?: string;
+}
+
+export interface DigestAnswer {
+  outcome: DigestOutcome;
   runId?: string;
 }
 
@@ -340,25 +351,32 @@ export function digestRefusalText(error: unknown): string {
   return refusalTextFrom(error, DIGEST_REFUSAL_TEXT, DIGEST_REFUSAL_FALLBACK);
 }
 
-/** Asks the server to write one of this project's generated artifacts again; on an answer, what it holds is read again. */
-function useArtifactDispatch(projectId: string, task: string, holds: string) {
+/** Asks the server to write one of this project's generated artifacts again. */
+async function askForArtifact(task: string, projectId: string, ask: DispatchAsk): Promise<DispatchAnswer> {
+  const answered = await postJson<{ outcome?: string; runId?: string; queued?: boolean }>('/api/harness/dispatch', {
+    task, projectId, ...(ask.fresh === true ? { fresh: true } : {}),
+  });
+  if (answered.outcome === 'unchanged') return { outcome: 'unchanged' };
+  return { outcome: answered.queued === true ? 'queued' : 'running', ...(answered.runId === undefined ? {} : { runId: answered.runId }) };
+}
+
+/** Asks for this project's instructions again; on an answer, the stored instructions are read again. */
+export function useRefreshInstructions(projectId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async (ask: DispatchAsk = {}): Promise<DispatchAnswer> => {
-      const answered = await postJson<{ outcome?: string; runId?: string; queued?: boolean }>('/api/harness/dispatch', {
-        task, projectId, ...(ask.fresh === true ? { fresh: true } : {}),
-      });
-      if (answered.outcome === 'unchanged') return { outcome: 'unchanged' };
-      return { outcome: answered.queued === true ? 'queued' : 'running', ...(answered.runId === undefined ? {} : { runId: answered.runId }) };
-    },
-    onSuccess: () => client.invalidateQueries({ queryKey: [holds, projectId] }),
+    mutationFn: (ask: DispatchAsk = {}) => askForArtifact(INSTRUCTIONS_TASK, projectId, ask),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['instructions', projectId] }),
   });
 }
 
-export function useRefreshInstructions(projectId: string) {
-  return useArtifactDispatch(projectId, INSTRUCTIONS_TASK, 'instructions');
-}
-
+/** Asks for this project's digest again; on an answer, the stored digests are read again. */
 export function useRegenerateDigest(projectId: string) {
-  return useArtifactDispatch(projectId, DIGEST_TASK, 'digests');
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (ask: DispatchAsk = {}): Promise<DigestAnswer> => {
+      const answered = await askForArtifact(DIGEST_TASK, projectId, ask);
+      return { ...answered, outcome: answered.outcome === 'queued' ? 'queued' : 'running' };
+    },
+    onSuccess: () => client.invalidateQueries({ queryKey: ['digests', projectId] }),
+  });
 }

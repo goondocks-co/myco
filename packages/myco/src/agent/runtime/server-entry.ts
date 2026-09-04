@@ -4,23 +4,37 @@
  * Durable Object's hold and probes have something to talk to.
  */
 import { ServerClient } from '@myco/member/transport.js';
-import { runServerTask, type ServerTaskResult } from './server-runner.js';
+import { installRunFailureHandlers, runServerTask, type HeldRun, type ServerTaskResult } from './server-runner.js';
 import type { ProviderConfig } from '../types.js';
 
 const startedAt = Date.now();
 let result: ServerTaskResult | null = null;
 let running = false;
 let fatal: string | null = null;
+/** The run this container holds: set at the claim, cleared once the run carries a terminal status. */
+let inFlight: HeldRun | null = null;
 
-// The serve loop is this process's lifetime; a rejection that killed pid 1
-// would stop the container with its evidence still in memory.
-process.on('unhandledRejection', (reason) => {
-  fatal = reason instanceof Error ? reason.message : String(reason);
-  console.log(JSON.stringify({ kind: 'server_entry_rejection', fatal }));
-});
-process.on('uncaughtException', (error) => {
-  fatal = error instanceof Error ? error.message : String(error);
-  console.log(JSON.stringify({ kind: 'server_entry_exception', fatal }));
+/**
+ * Every way this process can die names the run it holds on that run's own row.
+ *
+ * A container that throws, rejects, or is taken away by the platform mid-rollout
+ * otherwise just stops talking, and the Deployment learns nothing until the
+ * stale sweep gives up on the run minutes later under a message that describes
+ * the silence rather than the cause.
+ *
+ * A container holding no run stays up with its evidence in memory, so `/probe`
+ * can still be asked what happened; one that has named its run has said
+ * everything it has to say and leaves.
+ */
+installRunFailureHandlers(process, {
+  held: () => inFlight,
+  onNamed: (error, named) => {
+    fatal = error;
+    inFlight = null;
+    running = false;
+    console.log(JSON.stringify({ kind: 'server_entry_stopped', fatal, named }));
+    if (named) process.exit(1);
+  },
 });
 
 function env(name: string): string | undefined {
@@ -54,9 +68,11 @@ async function executeFromEnv(): Promise<void> {
     params = undefined;
   }
   const client = new ServerClient({ serverUrl, token, projectId });
+  const budget = { connectTimeoutMs: 10_000, requestTimeoutMs: 120_000 };
+  inFlight = { client, budget, runId };
   result = await runServerTask({
     client,
-    budget: { connectTimeoutMs: 10_000, requestTimeoutMs: 120_000 },
+    budget,
     runId,
     taskName,
     timeoutSeconds: Number.isFinite(Number(env('MYCO_TIMEOUT_SECONDS'))) ? Number(env('MYCO_TIMEOUT_SECONDS')) : 300,
@@ -66,6 +82,8 @@ async function executeFromEnv(): Promise<void> {
     params,
     admission: env('MYCO_TASK_ADMISSION'),
   });
+  // The run carries its own terminal status now; a later death has no row to name.
+  inFlight = null;
   running = false;
   console.log(JSON.stringify({ kind: 'server_run_finished', ...result }));
 }

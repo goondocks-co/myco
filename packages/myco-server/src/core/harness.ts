@@ -97,7 +97,7 @@ export interface LaunchSpec {
   /** The hash of the material behind `instruction`, recorded in the run's context so the write route reads it from the run rather than from the caller. */
   inputHash?: string;
   /** What the material behind the input counted, recorded beside the hash. */
-  counts?: Readonly<Record<string, number>>;
+  counts?: Readonly<Record<string, number | boolean>>;
   /** How this run differs from an ordinary one. */
   options?: DispatchOptions;
 }

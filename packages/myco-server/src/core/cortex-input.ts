@@ -30,7 +30,7 @@
  */
 import type { RelationalStore } from './adapters.js';
 import { digestForTier, listDigests } from './digests.js';
-import { countSpores, listSpores, SPORE_PREVIEW_CHARS } from './spores.js';
+import { countSpores, listSpores, SPORE_FULL_READ_BUDGET, SPORE_PREVIEW_CHARS } from './spores.js';
 import { DIGEST_TIERS, type RecallLeaves } from './recall.js';
 import type { ProjectCapability } from './settings.js';
 import { SERVED_TOOLS } from './tool-catalogue.js';
@@ -304,15 +304,20 @@ export const RUN_SESSIONS_DEFAULT_LIMIT = 5;
 export const RUN_SESSIONS_MAX_LIMIT = 50;
 /** How much of a session's summary one row of that page carries. */
 export const RUN_SESSION_SUMMARY_CHARS = 360;
+/** How much of a session's title one row of that page carries. */
+export const RUN_SESSION_TITLE_CHARS = 80;
+/** How much of a session's label one row of that page carries. */
+export const RUN_SESSION_LABEL_CHARS = 80;
 
 /**
  * The material window each digest tier is written inside, in estimated tokens.
  *
  * Carried from 1.4 (`packages/myco/src/constants.ts` `DIGEST_TIER_MIN_CONTEXT`),
- * where they named the smallest context a tier's synthesis could run in. They
- * bound the other side of that same budget here: what `/runs/sessions` and
- * `/runs/spores` hand a `digest-only` run, so the material a run reads fits the
- * tier it writes.
+ * where they name the smallest context window a tier's synthesis may run in.
+ * The material bound is DERIVED from them rather than equal to them: a window
+ * holds the run's whole conversation, and what `/runs/sessions` and
+ * `/runs/spores` hand a `digest-only` run is sized so one reading of the
+ * material fits inside it.
  */
 export const DIGEST_TIER_MIN_CONTEXT_TOKENS: Readonly<Record<number, number>> = {
   1500: 6_500,
@@ -332,26 +337,41 @@ export const CHARS_PER_TOKEN = 4;
  */
 export const DIGEST_MATERIAL_TIER = 1500;
 
-/** What one row of material carries besides its preview: its ids, its labels and its instants. */
-export const MATERIAL_ROW_OVERHEAD_CHARS = 240;
+/**
+ * What a row's ids and instants add beyond the text the routes cut.
+ *
+ * The only estimate in the sizing: a spore id, a session id, an observation
+ * type, an importance and two instants are short by construction but bounded by
+ * nothing this module can name. Every other part of a row is cut to a constant
+ * beside it, so the estimate covers the keys alone.
+ */
+export const MATERIAL_ROW_KEYS_ESTIMATE_CHARS = 80;
 
-/** How many rows carrying a preview of `previewChars` fit inside `tier`'s window. */
-export function materialRowsForTier(tier: number, previewChars: number): number {
+/** What one session row of the material carries besides its summary: a cut title, a cut label, and its keys. */
+export const SESSION_ROW_OVERHEAD_CHARS = RUN_SESSION_TITLE_CHARS + RUN_SESSION_LABEL_CHARS + MATERIAL_ROW_KEYS_ESTIMATE_CHARS;
+/** What one spore row of the material carries besides its preview: its keys. */
+export const SPORE_ROW_OVERHEAD_CHARS = MATERIAL_ROW_KEYS_ESTIMATE_CHARS;
+
+/** How many rows of `previewChars` of text plus `overheadChars` of everything else fit inside `tier`'s window. */
+export function materialRowsForTier(tier: number, previewChars: number, overheadChars: number): number {
   const tokens = DIGEST_TIER_MIN_CONTEXT_TOKENS[tier] ?? DIGEST_TIER_MIN_CONTEXT_TOKENS[DIGEST_MATERIAL_TIER]!;
-  return Math.max(1, Math.floor((tokens * CHARS_PER_TOKEN) / (previewChars + MATERIAL_ROW_OVERHEAD_CHARS)));
+  return Math.max(1, Math.floor((tokens * CHARS_PER_TOKEN) / (previewChars + overheadChars)));
 }
 
 /** How many spore previews one page of `/runs/spores` hands a digest run. */
-export const DIGEST_SPORE_PAGE_LIMIT = materialRowsForTier(DIGEST_MATERIAL_TIER, SPORE_PREVIEW_CHARS);
+export const DIGEST_SPORE_PAGE_LIMIT = materialRowsForTier(DIGEST_MATERIAL_TIER, SPORE_PREVIEW_CHARS, SPORE_ROW_OVERHEAD_CHARS);
 /** How many session rows one page of `/runs/sessions` hands a digest run. */
-export const DIGEST_SESSION_PAGE_LIMIT = materialRowsForTier(DIGEST_MATERIAL_TIER, RUN_SESSION_SUMMARY_CHARS);
+export const DIGEST_SESSION_PAGE_LIMIT = materialRowsForTier(DIGEST_MATERIAL_TIER, RUN_SESSION_SUMMARY_CHARS, SESSION_ROW_OVERHEAD_CHARS);
 
 /** What the run is told when the owner asks for the digest to be written from the material alone. */
 export const DIGEST_FRESH_DIRECTION = 'Ignore the existing digest; write every tier from the material alone.';
 
-export interface DigestCounts extends Readonly<Record<string, number>> {
+export interface DigestCounts extends Readonly<Record<string, number | boolean>> {
   spores: number;
-  sessions: number;
+  /** Sessions that ended after the newest digest's own instant, as far as the window reaches. */
+  sessionsInWindow: number;
+  /** The session page filled, so `sessionsInWindow` is the window's count rather than the Project's. */
+  windowFull: boolean;
 }
 
 /** What one digest build answers: the prompt the run receives, the hash of its material, and what that material counted. */
@@ -373,9 +393,9 @@ export interface DigestInputOptions {
 interface DigestMaterial {
   tiers: Array<{ tier: number; generatedAt: number; size: number }>;
   spores: number;
-  sessions: number;
+  sessionsInWindow: number;
   /** The session page filled, so the count is the window's rather than the Project's. */
-  sessionsAtWindow: boolean;
+  windowFull: boolean;
 }
 
 const EMPTY_DIGEST_TIERS = 'No digest has been written yet — every tier is a first draft.';
@@ -388,7 +408,7 @@ function renderTiers(material: DigestMaterial): string {
 }
 
 function renderMaterialCounts(material: DigestMaterial): string {
-  const sessions = material.sessionsAtWindow ? `${material.sessions} or more` : String(material.sessions);
+  const sessions = material.windowFull ? `${material.sessionsInWindow} or more` : String(material.sessionsInWindow);
   return [
     `- Active spores: ${material.spores}`,
     `- Sessions that ended since the newest digest: ${sessions}`,
@@ -412,8 +432,8 @@ async function readDigestMaterial(db: RelationalStore, scope: ReadScope): Promis
   return {
     tiers: [...digests].sort((left, right) => left.tier - right.tier).map((row) => ({ tier: row.tier, generatedAt: row.generatedAt, size: row.content.length })),
     spores,
-    sessions: sessions.rows.length,
-    sessionsAtWindow: sessions.rows.length >= DIGEST_SESSION_PAGE_LIMIT,
+    sessionsInWindow: sessions.rows.length,
+    windowFull: sessions.rows.length >= DIGEST_SESSION_PAGE_LIMIT,
   };
 }
 
@@ -453,12 +473,13 @@ export async function buildDigestInput(
     '## Material windows per tier',
     renderWindows(),
     `One page of \`vault_spores\` carries at most ${DIGEST_SPORE_PAGE_LIMIT} previews and one page of \`vault_sessions\` at most ${DIGEST_SESSION_PAGE_LIMIT} sessions; page with \`offset\` for the rest.`,
+    `This run may read at most ${SPORE_FULL_READ_BUDGET} spores in full with \`vault_spore\`; judge the rest by their previews.`,
   ];
 
   const body = parts.join('\n');
   return {
     instruction: options.fresh ? `${body}\n\n## From scratch\n${DIGEST_FRESH_DIRECTION}` : body,
     inputHash: await sha256Hex(body),
-    counts: { spores: material.spores, sessions: material.sessions },
+    counts: { spores: material.spores, sessionsInWindow: material.sessionsInWindow, windowFull: material.windowFull },
   };
 }

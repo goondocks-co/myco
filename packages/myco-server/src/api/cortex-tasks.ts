@@ -33,7 +33,8 @@ import {
   CORTEX_INSTRUCTIONS_TASK, DIGEST_READ_TASKS, DIGEST_TASK, DIGEST_WRITE_TASKS, INSTRUCTED_TASKS, SESSION_LIST_TASKS,
 } from '../core/task-inputs.js';
 import {
-  DIGEST_SESSION_PAGE_LIMIT, preview, RUN_SESSION_SUMMARY_CHARS, RUN_SESSIONS_DEFAULT_LIMIT, RUN_SESSIONS_MAX_LIMIT,
+  DIGEST_SESSION_PAGE_LIMIT, preview, RUN_SESSION_LABEL_CHARS, RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS,
+  RUN_SESSIONS_DEFAULT_LIMIT, RUN_SESSIONS_MAX_LIMIT,
 } from '../core/cortex-input.js';
 import { listSessions } from '../read/sessions.js';
 import { MAX_STATE_BYTES } from './runs.js';
@@ -131,10 +132,10 @@ export async function handleRunSessions(env: ServerEnv, ctx: RouteContext): Prom
     held: true,
     sessions: page.rows.map((row) => ({
       id: row.sessionId,
-      label: row.label,
+      label: preview(row.label, RUN_SESSION_LABEL_CHARS),
       startedAt: row.startedAt,
       endedAt: row.endedAt,
-      title: row.title,
+      title: preview(row.title, RUN_SESSION_TITLE_CHARS),
       summary: preview(row.summary, RUN_SESSION_SUMMARY_CHARS),
     })),
   });
@@ -158,11 +159,17 @@ export async function handleRunDigest(env: ServerEnv, ctx: RouteContext): Promis
       tiers: rows.map((row) => ({ tier: row.tier, generatedAt: row.generatedAt, contentLength: row.content.length })),
     });
   }
+  // The run that WRITES the digest is served the tier it asked for or nothing:
+  // handed a neighbour's body under the name of an absent tier, it carries that
+  // body forward as the tier's own and the two collapse into one. A run that
+  // only reads is served the nearest tier, and told which it got.
   const chosen = digestForTier(rows, tier);
+  const exactOnly = run.task !== null && DIGEST_WRITE_TASKS.includes(run.task);
+  const served = chosen === null || (exactOnly && chosen.fallback) ? null : chosen;
   return Response.json({
     persisted: true,
     held: true,
-    digest: chosen === null ? null : { tier: chosen.row.tier, content: chosen.row.content, generatedAt: chosen.row.generatedAt },
+    digest: served === null ? null : { tier: served.row.tier, content: served.row.content, generatedAt: served.row.generatedAt, fallback: served.fallback },
   });
 }
 
