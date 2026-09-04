@@ -1,7 +1,8 @@
 /**
- * What a prompt is served at submit time: the plan-intent nudge and the
- * session's unseen spores, composed into one block for the member's prompt
- * hook.
+ * What a session is served: the plan-intent nudge and the session's unseen
+ * spores at prompt-submit time, and the Project's instructions and preferred
+ * digest when a session or a subagent starts — each composed into one block for
+ * the member hook that asked for it.
  *
  * This module OWNS `session_injections`. One row per (project, session, kind)
  * carries a contributor a session receives at most once; the `INSERT OR IGNORE`
@@ -32,13 +33,22 @@
  * failure in the spore half then leaves the nudge unburned for the next prompt.
  */
 import type { RelationalStore } from './adapters.js';
+import { digestForTier, listDigests } from './digests.js';
 import { INJECTION_LEAVES, injectionLeaves, selectSporesForPrompt, type InjectionLeaves, type InjectionSkip } from './injection.js';
 import { leafValues } from './settings.js';
 import { sha256Hex } from '../hash.js';
+import { newestInstructions } from '../read/cortex.js';
 import type { ReadScope } from '../read/scope.js';
 
 /** The most text one prompt is served. A part that would cross it is dropped whole. */
 export const PROMPT_CONTEXT_MAX_CHARS = 10_000;
+
+/**
+ * The most text one session start is served: room for a 10 000-token digest
+ * standing beside the Project's instructions. A part that would cross it is
+ * dropped whole.
+ */
+export const SESSION_CONTEXT_MAX_CHARS = 60_000;
 
 /** The blank line between two parts of one served block. */
 const JOIN = '\n\n';
@@ -63,20 +73,48 @@ export const PLAN_INTENT_NUDGE =
 export const PLAN_NUDGE_DEFAULT = true;
 const PLAN_NUDGE_LEAF = 'cortex.plans.inject_intent_nudge_on_prompt_submit';
 
-/** The leaves prompt recall reads. */
-export const RECALL_LEAVES: readonly string[] = [...INJECTION_LEAVES, PLAN_NUDGE_LEAF];
+const INSTRUCTIONS_START_LEAF = 'cortex.instructions.inject_on_session_start';
+const INSTRUCTIONS_SUBAGENT_LEAF = 'cortex.instructions.inject_on_subagent_start';
+const DIGEST_START_LEAF = 'cortex.digest.inject_on_session_start';
+const DIGEST_TIER_LEAF = 'cortex.digest.tier';
+
+/** Instructions travel to a starting session and to a starting subagent unless the Deployment says not to. */
+export const INSTRUCTIONS_START_DEFAULT = true;
+export const INSTRUCTIONS_SUBAGENT_DEFAULT = true;
+/** The digest is the expensive half of a session start, and it is served only where a Deployment asks for it. */
+export const DIGEST_START_DEFAULT = false;
+/** The digest sizes the Settings page offers, and the one it starts on. */
+export const DIGEST_TIERS: readonly number[] = [1500, 5000, 10000];
+export const DIGEST_TIER_DEFAULT = 5000;
+
+/** The leaves recall reads. */
+export const RECALL_LEAVES: readonly string[] = [
+  ...INJECTION_LEAVES, PLAN_NUDGE_LEAF,
+  INSTRUCTIONS_START_LEAF, INSTRUCTIONS_SUBAGENT_LEAF, DIGEST_START_LEAF, DIGEST_TIER_LEAF,
+];
 
 export interface RecallLeaves {
   injection: InjectionLeaves;
   planNudge: boolean;
+  instructionsAtSessionStart: boolean;
+  instructionsAtSubagentStart: boolean;
+  digestAtSessionStart: boolean;
+  /** One of `DIGEST_TIERS`; a stored value naming any other size falls to the default. */
+  digestTier: number;
 }
+
+const bool = (value: unknown, fallback: boolean): boolean => (typeof value === 'boolean' ? value : fallback);
 
 /** Recall's leaves over the stored values, each defaulted. */
 export function recallLeaves(leaves: Record<string, unknown>): RecallLeaves {
-  const nudge = leaves[PLAN_NUDGE_LEAF];
+  const tier = leaves[DIGEST_TIER_LEAF];
   return {
     injection: injectionLeaves(leaves),
-    planNudge: typeof nudge === 'boolean' ? nudge : PLAN_NUDGE_DEFAULT,
+    planNudge: bool(leaves[PLAN_NUDGE_LEAF], PLAN_NUDGE_DEFAULT),
+    instructionsAtSessionStart: bool(leaves[INSTRUCTIONS_START_LEAF], INSTRUCTIONS_START_DEFAULT),
+    instructionsAtSubagentStart: bool(leaves[INSTRUCTIONS_SUBAGENT_LEAF], INSTRUCTIONS_SUBAGENT_DEFAULT),
+    digestAtSessionStart: bool(leaves[DIGEST_START_LEAF], DIGEST_START_DEFAULT),
+    digestTier: typeof tier === 'number' && DIGEST_TIERS.includes(tier) ? tier : DIGEST_TIER_DEFAULT,
   };
 }
 
@@ -115,21 +153,31 @@ export type PromptContextPart =
   | { kind: 'plan-nudge' }
   | { kind: 'spores'; sporeIds: string[] };
 
+/** What one part of a session's served block is; a digest names the tier it actually carries. */
+export type SessionContextPart =
+  | { kind: 'instructions' }
+  | { kind: 'digest'; tier: number };
+
 /** Why the nudge stood down when nothing went wrong. */
 export type NudgeSkip = 'off' | 'no_intent' | 'repeat';
 
 /**
- * Why a contributor served nothing.
+ * Why a contributor served nothing, and why a whole block did.
  *
- * A bare name is a throw inside that contributor. A qualified name is the gate
- * it closed on: the selector's own gates travel under `spores:`, the nudge's
- * under `plan-nudge:`. A caller reading an empty block therefore learns which
- * gate closed rather than only that one did.
+ * A bare contributor name is a throw inside it. A qualified name is the gate it
+ * closed on: the selector's own gates travel under `spores:`, the nudge's under
+ * `plan-nudge:`. `capability` and `repeat` answer for the whole block — a
+ * Project not admitted, and a session already holding the record this block
+ * would burn. A caller reading an empty block therefore learns which gate
+ * closed rather than only that one did.
  */
 export type RecallSkip =
   | 'capability'
+  | 'repeat'
   | 'spores'
   | 'plan-nudge'
+  | 'instructions'
+  | 'digest'
   | `spores:${InjectionSkip}`
   | `plan-nudge:${NudgeSkip}`;
 
@@ -139,9 +187,15 @@ export interface PromptContext {
   skipped: RecallSkip[];
 }
 
+export interface SessionContextAnswer {
+  context: string;
+  parts: SessionContextPart[];
+  skipped: RecallSkip[];
+}
+
 /** One contributor's part and the text it puts into the served block. */
-export interface Contribution {
-  part: PromptContextPart;
+export interface Contribution<Part = PromptContextPart> {
+  part: Part;
   text: string;
 }
 
@@ -156,11 +210,11 @@ export interface Contribution {
  * session is not served it again: the records are at-most-once, and a part lost
  * to the bound costs what a lost answer costs.
  */
-export function partsWithinBound(
-  contributions: readonly Contribution[],
+export function partsWithinBound<Part>(
+  contributions: readonly Contribution<Part>[],
   max: number = PROMPT_CONTEXT_MAX_CHARS,
-): Contribution[] {
-  const kept: Contribution[] = [];
+): Contribution<Part>[] {
+  const kept: Contribution<Part>[] = [];
   let length = 0;
   for (const contribution of contributions) {
     const grown = length === 0 ? contribution.text.length : length + JOIN.length + contribution.text.length;
@@ -219,6 +273,102 @@ export async function composePromptContext(
 
   const kept = partsWithinBound([nudge, spores].filter((c): c is Contribution => c !== null));
 
+  return {
+    context: kept.map((c) => c.text).join(JOIN),
+    parts: kept.map((c) => c.part),
+    skipped,
+  };
+}
+
+/**
+ * The three lines a delegated subagent is handed above the Project's
+ * instructions, telling it what the text below is and how far its own authority
+ * runs. Carried verbatim from the member-side surface they were written for.
+ */
+export const SUBAGENT_CORTEX_GUIDANCE = [
+  'You are a delegated subagent working inside a Myco-connected project.',
+  'Follow these managed Cortex instructions as current project guidance.',
+  'Apply them to your assigned task, and defer broad orchestration decisions back to the parent agent.',
+].join('\n');
+
+/** The heading a digest stands under, naming the tier the block actually carries. */
+export const digestHeading = (tier: number): string => `## Preferred Digest (Tier ${tier})\n`;
+
+/** Which start a block is being composed for. */
+export type SessionContextKind = 'start' | 'subagent';
+
+/**
+ * The record kind a start burns. A subagent names its own type, so a session
+ * that delegates to two kinds of subagent serves each of them once.
+ */
+export function sessionInjectionKind(kind: SessionContextKind, agentType?: string): string {
+  return kind === 'start' ? 'cortex' : `cortex:${agentType || 'unknown'}`;
+}
+
+/**
+ * The block one session start or one subagent start is served.
+ *
+ * Instructions stand first with no heading of their own — the artifact is
+ * written to be read as project guidance, and a frame around it would be one
+ * more thing to keep true. A subagent gets the guidance lines above them and
+ * never the digest: a delegated task inherits its parent's framing rather than
+ * re-reading the whole project.
+ *
+ * The record is written AFTER the block composes and only where there is
+ * something to serve, so a Project holding no instructions and no digest leaves
+ * the session unburned. A second start for the same session composes the same
+ * block, finds the record standing, and serves an empty block naming `repeat`.
+ */
+export async function composeSessionContext(
+  db: RelationalStore,
+  scope: ReadScope,
+  leaves: RecallLeaves,
+  capabilityOn: boolean,
+  input: { sessionId: string; kind: SessionContextKind; agentType?: string; now: number },
+): Promise<SessionContextAnswer> {
+  if (!capabilityOn) return { context: '', parts: [], skipped: ['capability'] };
+
+  const skipped: RecallSkip[] = [];
+  const contributions: Contribution<SessionContextPart>[] = [];
+
+  const wantsInstructions = input.kind === 'start'
+    ? leaves.instructionsAtSessionStart
+    : leaves.instructionsAtSubagentStart;
+  if (wantsInstructions) {
+    try {
+      const trimmed = (await newestInstructions(db, scope))?.content.trim() ?? '';
+      if (trimmed.length > 0) {
+        contributions.push({
+          part: { kind: 'instructions' },
+          text: input.kind === 'subagent' ? `${SUBAGENT_CORTEX_GUIDANCE}${JOIN}${trimmed}` : trimmed,
+        });
+      }
+    } catch {
+      skipped.push('instructions');
+    }
+  }
+
+  if (input.kind === 'start' && leaves.digestAtSessionStart) {
+    try {
+      const served = digestForTier(await listDigests(db, scope), leaves.digestTier);
+      if (served !== null) {
+        contributions.push({
+          part: { kind: 'digest', tier: served.row.tier },
+          text: `${digestHeading(served.row.tier)}${served.row.content}`,
+        });
+      }
+    } catch {
+      skipped.push('digest');
+    }
+  }
+
+  const kept = partsWithinBound(contributions, SESSION_CONTEXT_MAX_CHARS);
+  if (kept.length === 0) return { context: '', parts: [], skipped };
+
+  const kind = sessionInjectionKind(input.kind, input.agentType);
+  if (!await recordSessionInjection(db, scope, input.sessionId, kind, input.now)) {
+    return { context: '', parts: [], skipped: [...skipped, 'repeat'] };
+  }
   return {
     context: kept.map((c) => c.text).join(JOIN),
     parts: kept.map((c) => c.part),

@@ -39,6 +39,13 @@ export interface SessionState {
   planPaths: Record<string, { planKey: string; hash: string }>;
   /** Blob keys of attachments already emitted. */
   attachmentKeys: string[];
+  /**
+   * The recall kinds this session has already been served — `cortex` for its
+   * start, `cortex:<agentType>` for a subagent's. A hook that finds its kind
+   * here asks the Deployment for nothing, so a symbiont running session-start
+   * on every invocation spends the budget once.
+   */
+  delivered: string[];
   /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */
   startedAt?: number;
   /** When the server last acknowledged one of this session's records. */
@@ -47,7 +54,7 @@ export interface SessionState {
 }
 
 export function emptySessionState(now: number = Date.now()): SessionState {
-  return { version: SESSION_STATE_VERSION, highWater: 0, prompts: {}, planHashes: {}, planTagCount: 0, planPaths: {}, attachmentKeys: [], updatedAt: now };
+  return { version: SESSION_STATE_VERSION, highWater: 0, prompts: {}, planHashes: {}, planTagCount: 0, planPaths: {}, attachmentKeys: [], delivered: [], updatedAt: now };
 }
 
 export function sessionStatePath(spoolDir: string, sessionId: string): string {
@@ -94,6 +101,7 @@ function trimTracked(state: SessionState): void {
     for (const key of pathKeys.slice(0, pathKeys.length - MAX_TRACKED)) delete state.planPaths[key];
   }
   if (state.attachmentKeys.length > MAX_TRACKED) state.attachmentKeys = state.attachmentKeys.slice(-MAX_TRACKED);
+  if (state.delivered.length > MAX_TRACKED) state.delivered = state.delivered.slice(-MAX_TRACKED);
 }
 
 /** Write the state atomically (0600). Callers hold the buffer lock, or run inside a callback that already does. */
