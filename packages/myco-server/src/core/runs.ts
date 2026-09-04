@@ -895,6 +895,11 @@ const contextValue = (key: string): string => `CASE WHEN json_valid(run_context)
  * asked for one run of the task and got a deployment instead; counting it would
  * spend the day's ceiling on work nobody received, and the successor queued in
  * its place would meet a cap the failure itself created.
+ *
+ * `lastTaskEntryAt` above still counts a replaced row, and must: the ceiling is
+ * the day's spend and a replaced run spent none of it, while the interval is
+ * when the task last entered the list — which it did, so the clock does not
+ * dispatch it again the same instant.
  */
 export async function taskEntriesSince(db: RelationalStore, scope: ReadScope, task: string, sinceMs: number): Promise<number> {
   const row = await db.prepare(
@@ -911,12 +916,16 @@ export async function taskEntriesSince(db: RelationalStore, scope: ReadScope, ta
  *
  * The context is the dispatcher's column and a runtime may not set it; this is
  * the one key a runtime adds, through the failure it posts, and it adds nothing
- * else. A context that is not an object this reads is left as it stands.
+ * else. A context that is not an object is left exactly as it stands and the
+ * answer says so: a number or a bare string is valid JSON on its own, and
+ * setting a key on one would rewrite the whole value. The type is asked inside
+ * a CASE so a context that is no JSON at all answers rather than raising.
  */
 export async function markRunReplaced(db: RelationalStore, scope: ReadScope, runId: string): Promise<boolean> {
   const result = await db.prepare(
     `UPDATE agent_runs SET run_context = json_set(COALESCE(run_context, '{}'), '$.replaced', json('true'))
-      WHERE project_id = ? AND id = ? AND (run_context IS NULL OR json_valid(run_context))`,
+      WHERE project_id = ? AND id = ?
+        AND (run_context IS NULL OR json_type(CASE WHEN json_valid(run_context) THEN run_context END) = 'object')`,
   ).bind(scope.projectId, runId).run();
   return result.meta.changes === 1;
 }

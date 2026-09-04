@@ -15,6 +15,8 @@ let fatal: string | null = null;
 let inFlight: HeldRun | null = null;
 /** Whether the platform has asked this runtime to stop: it takes no new run, and its probe says so. */
 let stopping = false;
+/** Set the instant the run posts its own ending: the drain waits for that post rather than leaving inside it. */
+let closing = false;
 
 /**
  * A death names the run this container holds; a drain lets that run finish.
@@ -37,6 +39,11 @@ installRunFailureHandlers(process, {
     console.log(JSON.stringify({ kind: 'server_entry_draining', holding: inFlight === null ? null : inFlight.runId }));
   },
   onDrained: () => {
+    // A run part-way through posting its own ending has released the hold
+    // already; leaving here would cut that post off. The post's own answer ends
+    // this process a few lines below, and the platform's kill is the floor
+    // under a post that never answers.
+    if (closing && result === null) return;
     console.log(JSON.stringify({ kind: 'server_entry_drained', ran: result }));
     process.exit(0);
   },
@@ -61,8 +68,8 @@ async function executeFromEnv(): Promise<void> {
   const runId = env('MYCO_RUN_ID');
   const taskName = env('MYCO_TASK');
   if (!serverUrl || !token || !projectId || !runId || !taskName) return;
-  // A runtime already draining starts nothing: the dispatch belongs to whichever
-  // instance the platform brings up next.
+  // A runtime told to stop before it claimed anything runs nothing: the row
+  // stays as the dispatcher wrote it, for the Deployment to launch again.
   if (stopping) return;
 
   running = true;
@@ -95,9 +102,9 @@ async function executeFromEnv(): Promise<void> {
     // answers. The Deployment releases this container the instant that status
     // lands, and the stop signal it sends arrives while the request is still
     // open; a hold that outlived the post names a failure on a row that closed.
-    // The trade is the window between this line and the Deployment's receipt: a
-    // stop landing inside it names nothing, and the stale sweep closes the row.
-    onClosing: () => { inFlight = null; },
+    // `closing` marks the same instant for the drain, which waits for the post
+    // to answer instead of leaving inside it.
+    onClosing: () => { inFlight = null; closing = true; },
     taskName,
     timeoutSeconds: Number.isFinite(Number(env('MYCO_TIMEOUT_SECONDS'))) ? Number(env('MYCO_TIMEOUT_SECONDS')) : 300,
     provider,

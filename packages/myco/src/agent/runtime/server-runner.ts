@@ -53,6 +53,13 @@ export const TERMINAL_UPDATE_ATTEMPTS = 2;
  * and only then kills the process, so in-flight work runs to its own end. This
  * budget sits a minute inside that wall, which leaves the reclaim post time to
  * land before the kill.
+ *
+ * That last minute is the one place the two endings meet: a run that finishes
+ * after the reclaim post has landed offers its own status to a row already
+ * closed, is answered `terminal`, and the row keeps the reclaim — so the
+ * successor queued for it runs even though the work it stands in for did
+ * finish. A minute of duplicated work at the far edge of a rollout is the price
+ * of a row that never sits `running` behind a container that has gone.
  */
 export const RECLAIM_WARNING_MS = 14 * 60_000;
 /**

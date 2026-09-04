@@ -67,12 +67,18 @@ describe('what a replaced run costs the day', () => {
     expect(f.contextOf('run_a')).toEqual({ timeoutSeconds: 120, replaced: true });
   });
 
-  it('reads a context the store never wrote as JSON without failing the count', async () => {
+  it('marks no context that is not an object, and counts the run either way', async () => {
     const f = fixture();
-    await dispatched(f, 'run_a', 'container-smoke', { timeoutSeconds: 120 });
-    f.sqlite.run(`UPDATE agent_runs SET run_context = 'not json at all' WHERE id = 'run_a'`);
-    expect(await taskEntriesSince(f.db, SCOPE, 'container-smoke', NOW - DAY)).toBe(1);
-    expect(await markRunReplaced(f.db, SCOPE, 'run_a')).toBe(false);
+    // Neither of these is a context the dispatcher writes. The first is no JSON
+    // at all; the second is valid JSON whose root is a scalar, which a naive
+    // guard admits and a key-set then overwrites whole.
+    for (const [id, context] of [['run_a', 'not json at all'], ['run_b', '7'], ['run_c', '"a string"']] as const) {
+      await dispatched(f, id, 'container-smoke', { timeoutSeconds: 120 });
+      f.sqlite.run(`UPDATE agent_runs SET run_context = ? WHERE id = ?`, [context, id]);
+      expect({ id, marked: await markRunReplaced(f.db, SCOPE, id) }).toEqual({ id, marked: false });
+      expect({ id, kept: (f.sqlite.query(`SELECT run_context c FROM agent_runs WHERE id = ?`).get(id) as { c: string }).c }).toEqual({ id, kept: context });
+    }
+    expect(await taskEntriesSince(f.db, SCOPE, 'container-smoke', NOW - DAY)).toBe(3);
   });
 });
 
@@ -96,6 +102,44 @@ describe('the run that stands in for a replaced one', () => {
     expect(await requeueReplaced(f.env, { run, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 2))
       .toEqual({ requeued: false, reason: 'already_requeued' });
     expect(f.rows().filter((r) => r.task === 'title-summary')).toHaveLength(2);
+  });
+
+  it('builds the successor\'s prompt so an instructed task does not run empty, and leaves a still Project alone', async () => {
+    const f = fixture();
+    await dispatched(f, 'run_a', 'cortex-instructions', { timeoutSeconds: 900, input_hash: 'the ended run\'s own' });
+    await markRunReplaced(f.db, SCOPE, 'run_a');
+
+    const outcome = await requeueReplaced(f.env, { run: (await getRun(f.db, SCOPE, 'run_a'))!, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 1);
+    expect(outcome).toMatchObject({ requeued: true });
+    const successor = (outcome as { runId: string }).runId;
+    // The prompt the server built rides the row, and the hash beside it is this
+    // build's, so the artifact the successor writes is filed under something.
+    const built = f.sqlite.query(`SELECT instruction, run_context c FROM agent_runs WHERE id = ?`).get(successor) as { instruction: string | null; c: string };
+    expect(built.instruction).toContain('## Recent sessions');
+    const hash = (JSON.parse(built.c) as { input_hash?: string }).input_hash;
+    expect(hash).toHaveLength(64);
+    expect(hash).not.toBe('the ended run\'s own');
+
+    // A Project standing where its artifact already stands is left alone: the
+    // successor would spend a model call over material nobody moved.
+    f.sqlite.run(`INSERT INTO cortex_instructions (project_id, id, agent_id, content, input_hash, source_run_id, generated_at) VALUES ('proj_1', 'ci_1', 'myco-agent', 'x', ?, ?, ?)`, [hash!, successor, NOW]);
+    await dispatched(f, 'run_b', 'cortex-instructions', { timeoutSeconds: 900 }, NOW + 2);
+    await markRunReplaced(f.db, SCOPE, 'run_b');
+    expect(await requeueReplaced(f.env, { run: (await getRun(f.db, SCOPE, 'run_b'))!, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 3))
+      .toEqual({ requeued: false, reason: 'unchanged' });
+  });
+
+  it('builds a digest successor from the material alone when the run it stands in for asked for that', async () => {
+    const f = fixture();
+    await dispatched(f, 'run_a', 'digest-only', { timeoutSeconds: 1800, fresh: true });
+    await markRunReplaced(f.db, SCOPE, 'run_a');
+    const outcome = await requeueReplaced(f.env, { run: (await getRun(f.db, SCOPE, 'run_a'))!, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 1);
+    expect(outcome).toMatchObject({ requeued: true });
+    const successor = (outcome as { runId: string }).runId;
+    const built = f.sqlite.query(`SELECT instruction, run_context c FROM agent_runs WHERE id = ?`).get(successor) as { instruction: string | null; c: string };
+    expect(built.instruction).toContain('write every tier from the material alone');
+    expect(JSON.parse(built.c) as Record<string, unknown>).toMatchObject({ fresh: true, timeoutSeconds: 1800, replaces: 'run_a' });
+    expect(String((JSON.parse(built.c) as { input_hash?: string }).input_hash)).toHaveLength(64);
   });
 
   it('stops at the day\'s cap on re-queues of one task, and the cap is a named number', async () => {
@@ -156,6 +200,30 @@ describe('what a runtime may add to a run it did not dispatch', () => {
     expect(await post('/runs/update', { runId: 'run_live', replaced: true, update: { status: 'failed', run_context: '{"input_hash":"mine"}' } }))
       .toMatchObject({ persisted: false, code: 'refused' });
     expect(contextOf('run_live')).toEqual({ timeoutSeconds: 120, input_hash: 'h' });
+  });
+
+  it('leaves a scalar context alone and queues nothing behind it', async () => {
+    const { post, sqlite, rows } = await runtime();
+    sqlite.run(`UPDATE agent_runs SET run_context = '7' WHERE id = 'run_live'`);
+    expect(await post('/runs/update', { runId: 'run_live', replaced: true, update: { status: 'failed', completed_at: Date.now(), error: 'reclaimed' } }))
+      .toEqual({ persisted: true, changed: 1 });
+    expect((sqlite.query(`SELECT run_context c FROM agent_runs WHERE id = 'run_live'`).get() as { c: string }).c).toBe('7');
+    expect(rows()).toHaveLength(1);
+  });
+
+  it('is refused by a member that is not the run\'s own runtime: nothing marked, nothing queued', async () => {
+    const { bindings, db, sqlite, contextOf, rows } = await runtime();
+    // A member of the same Project holding the run id, presenting a credential
+    // the dispatch never minted for this run.
+    const other = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+    const answered = await (await worker.fetch(memberPost(other.token, {
+      runId: 'run_live', replaced: true, update: { status: 'failed', completed_at: Date.now(), error: 'not mine to say' },
+    }, '/runs/update'), bindings as never)).json() as Record<string, unknown>;
+    // The status it posted stands; the word it may not say changed nothing.
+    expect(answered).toEqual({ persisted: true, changed: 1 });
+    expect(contextOf('run_live')).toEqual({ timeoutSeconds: 120, input_hash: 'h' });
+    expect(rows()).toHaveLength(1);
+    expect(sqlite.query(`SELECT status FROM agent_runs WHERE id = 'run_live'`).get()).toEqual({ status: 'failed' });
   });
 
   it('leaves the context alone on a failure that names no deployment', async () => {

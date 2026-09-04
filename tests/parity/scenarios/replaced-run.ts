@@ -47,7 +47,7 @@ export const replacedRun: ParityScenario = {
     const row = async (runId: string) =>
       (await target.sql(`SELECT status, run_context AS runContext FROM agent_runs WHERE id = ${lit(runId)}`))[0] as { status: string; runContext: string | null };
     const successorOf = async (runId: string): Promise<string | null> => {
-      const rows = await target.sql(`SELECT id FROM agent_runs WHERE task = 'container-smoke' AND json_valid(run_context) AND json_extract(run_context, '$.replaces') = ${lit(runId)}`);
+      const rows = await target.sql(`SELECT id FROM agent_runs WHERE task = 'container-smoke' AND json_extract(CASE WHEN json_valid(run_context) THEN run_context END, '$.replaces') = ${lit(runId)}`);
       return rows.length === 0 ? null : String((rows[0] as { id: string }).id);
     };
     const listed = async () => {
@@ -56,14 +56,30 @@ export const replacedRun: ParityScenario = {
       return ((await res.json()) as { rows: Array<{ id: string; replaced: boolean; replaces: string | null }> }).rows;
     };
 
-    // The runtime's own credential: a row for a token this scenario chose.
-    // The wire's token grammar: 32 random bytes as unpadded base64url. This one is chosen rather than random so its digest can be written directly.
-    const token = `parity-replaced-${stamp}`.padEnd(43, 'x').slice(0, 43);
-    const tokenId = `mt_parity_replaced_${stamp}`;
-    await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind)
-      VALUES (${lit(tokenId)}, 'mem_harness', 'harness', ${lit(await sha256Hex(token))}, ${now}, ${now + 86_400_000}, NULL, 0, NULL, ${lit(tokenId)}, ${now}, NULL, NULL, NULL)`);
-    /** The runtime's own word about how its run ended: a deploy took the runtime away. */
+    // A runtime's own credential, one per run: the store keeps a digest of the
+    // token, so a row is written for a token this scenario chose. The wire's
+    // token grammar is 32 random bytes as unpadded base64url; these are chosen
+    // rather than random so their digests can be written directly. Each run's
+    // ending revokes the credential its dispatch minted, so the next link in
+    // the chain gets its own, exactly as a real dispatch would.
+    const minted: string[] = [];
+    const mintRuntime = async (n: number): Promise<{ token: string; tokenId: string }> => {
+      const token = `parity-replaced-${n}-${stamp}`.padEnd(43, 'x').slice(0, 43);
+      const tokenId = `mt_parity_replaced_${n}_${stamp}`;
+      await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind)
+        VALUES (${lit(tokenId)}, 'mem_harness', 'harness', ${lit(await sha256Hex(token))}, ${now}, ${now + 86_400_000}, NULL, 0, NULL, ${lit(tokenId)}, ${now}, NULL, NULL, NULL)`);
+      minted.push(tokenId);
+      return { token, tokenId };
+    };
+    /**
+     * The runtime's own word about how its run ended: a deploy took the runtime
+     * away. Only the credential the dispatch minted for a run may say it, so
+     * this scenario takes that place on the row before it speaks — the same
+     * stand-in the Cortex scenario makes to play a run.
+     */
     const failReplaced = async (runId: string) => {
+      const { token, tokenId } = await mintRuntime(minted.length);
+      await target.sql(`UPDATE agent_runs SET status = 'running', dispatched_by = ${lit(tokenId)}, started_at = ${Date.now()} WHERE id = ${lit(runId)}`);
       const res = await fetch(`${target.url}/runs/update`, {
         method: 'POST',
         headers: { ...memberHeadersFor(token, target.projectId), 'content-type': 'application/json' },
@@ -119,6 +135,6 @@ export const replacedRun: ParityScenario = {
     // Leave the board as the next scenario expects it.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${Date.now()} WHERE status IN ('pending', 'running', 'queued')`);
     await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.tasks'`);
-    await target.sql(`UPDATE member_credentials SET revoked_at = ${Date.now()} WHERE id = ${lit(tokenId)}`);
+    await target.sql(`UPDATE member_credentials SET revoked_at = ${Date.now()} WHERE id IN (${minted.map(lit).join(', ')})`);
   },
 };

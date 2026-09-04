@@ -237,12 +237,19 @@ async function releaseDispatchedRun(env: ServerEnv, ctx: RouteContext, runId: st
  * away adds that one word through the failure it posts, and adds nothing else.
  * The word is what keeps the failed row out of the task's per-day count and
  * what names the successor's predecessor on the run the queue then holds.
+ *
+ * Only the runtime the dispatch minted a credential FOR may say it, keyed on
+ * the run's own `dispatched_by` exactly as the release is. The word starts a
+ * run on the Deployment's money: any other member holding a run id would turn
+ * one failure into a dispatch nobody asked for. A caller that is not that
+ * runtime marks nothing and queues nothing; its status update still stands, and
+ * it is answered as the update route answers any other.
  */
 async function recordReplacedRun(env: ServerEnv, ctx: RouteContext, runId: string): Promise<void> {
   const scope = { projectId: ctx.projectId };
-  if (!(await markRunReplaced(env.db, scope, runId))) return;
   const run = await getRun(env.db, scope, runId);
-  if (run === null) return;
+  if (run === null || run.dispatchedBy !== ctx.tokenId) return;
+  if (!(await markRunReplaced(env.db, scope, runId))) return;
   await requeueReplaced(env, { run, projectId: ctx.projectId, serverUrl: ctx.origin, actor: ctx.memberId }, ctx.now);
 }
 

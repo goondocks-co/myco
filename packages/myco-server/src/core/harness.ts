@@ -418,12 +418,12 @@ export interface ReplacedRun {
 /** What became of the ask to run a replaced run again. */
 export type RequeueOutcome =
   | { requeued: true; runId: string; queued: boolean }
-  | { requeued: false; reason: 'no_task' | 'already_requeued' | 'daily_cap' | 'refused' };
+  | { requeued: false; reason: 'no_task' | 'already_requeued' | 'daily_cap' | 'unchanged' | 'refused' };
 
 /**
  * The parameters a re-queue carries forward: what the dispatch's caller named,
  * without the words the dispatcher writes for itself. A task whose prompt the
- * server builds has it built again at launch, so the hash and the counts the
+ * server builds has that prompt built afresh, so the hash and the counts the
  * old context carries belong to the run that ended.
  */
 function carriedParams(runContext: string | null): Record<string, string> {
@@ -455,11 +455,16 @@ function contextField<T>(runContext: string | null, key: string, ofType: (value:
  * Project, naming the run it stands in for.
  *
  * It goes through the dispatcher like any other ask, so the queue and the
- * limits apply and a task whose prompt the server builds has it built at
- * launch against the vault as it then stands. Two caps hold it: a run already
- * answered by a successor is never answered twice, and a Project gets
- * `REPLACED_REQUEUES_PER_DAY` of one task in a day, so a Deployment rolling
- * again and again does not turn one ask into a stream of runs.
+ * limits apply. A task whose prompt the server builds has it built here, the
+ * same build an owner's ask makes: a successor that launched at once with no
+ * instruction and no hash would run on an empty prompt and its artifact write
+ * would answer `written: false`. A Project standing where its artifact already
+ * stands is left alone rather than run over unmoved material.
+ *
+ * Two caps hold the rest: a run already answered by a successor is never
+ * answered twice, and a Project gets `REPLACED_REQUEUES_PER_DAY` of one task in
+ * a day, so a Deployment rolling again and again does not turn one ask into a
+ * stream of runs.
  */
 export async function requeueReplaced(env: ServerEnv, replaced: ReplacedRun, now: number): Promise<RequeueOutcome> {
   const { run, projectId } = replaced;
@@ -471,11 +476,20 @@ export async function requeueReplaced(env: ServerEnv, replaced: ReplacedRun, now
   }
   const timeoutSeconds = contextField(run.runContext, 'timeoutSeconds', (v) => (typeof v === 'number' && v > 0 ? v : undefined));
   const fresh = contextField(run.runContext, 'fresh', (v) => (v === true ? true : undefined));
+  const built = await buildTaskInput(env, run.task, projectId, now, { fresh: fresh === true });
+  if (built !== null && built.unchanged) {
+    emit({ kind: 'task_skipped', task: run.task, projectId, skip: INPUT_UNCHANGED });
+    return { requeued: false, reason: 'unchanged' };
+  }
+  const input: Pick<LaunchSpec, 'instruction' | 'inputHash' | 'counts'> = built === null || built.unchanged
+    ? {}
+    : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
   const outcome = await dispatchTask(env, run.task, projectId, {
     serverUrl: replaced.serverUrl,
     actor: replaced.actor,
     ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
     params: carriedParams(run.runContext),
+    ...input,
     options: { dryRun: run.dryRun === 1, ...(fresh === undefined ? {} : { fresh }) },
     replaces: run.id,
   }, now);
