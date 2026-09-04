@@ -91,7 +91,7 @@ export interface ServerTaskResult {
   runId: string;
   status: 'completed' | 'failed' | 'skipped';
   error?: string;
-  /** The Deployment's word when it did not apply the terminal status this run posted. */
+  /** The Deployment's word when it did not apply the terminal status this run posted; `error` then names the refusal itself. */
   refused?: string;
   reportCount: number;
 }
@@ -118,6 +118,11 @@ async function recordTerminal(
       if (attempt >= attempts) throw error;
     }
   }
+}
+
+/** The Deployment's word when it did not apply a terminal status, or nothing when it did. */
+function refusalOf(outcome: RunStatusOutcome): string | undefined {
+  return outcome.applied ? undefined : outcome.reason ?? RUN_REFUSED_CLOSE_ERROR;
 }
 
 /** What a container holds while one run is in flight: enough to name that run's failure on its own row. */
@@ -183,7 +188,7 @@ export function installRunFailureHandlers(events: ProcessEvents, handlers: RunFa
         // which happened rather than reporting a failure it did not write.
         const outcome = await recordRunFailure(budget === undefined ? held : { ...held, budget }, error, budget === undefined ? TERMINAL_UPDATE_ATTEMPTS : 1);
         named = outcome.applied;
-        refused = outcome.applied ? undefined : outcome.reason ?? RUN_REFUSED_CLOSE_ERROR;
+        refused = refusalOf(outcome);
       } catch {
         // The stale sweep closes the row when the Deployment is unreachable.
       }
@@ -311,8 +316,9 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       // The Deployment decides whether a run closes; a container that logged its
       // own word over the server's would report a run finished that the row calls
       // failed, and the container's log is where a person looks first.
-      if (!closed.applied) {
-        return { runId, status: 'failed', error: closed.reason ?? RUN_REFUSED_CLOSE_ERROR, reportCount: counter.reports };
+      const refused = refusalOf(closed);
+      if (refused !== undefined) {
+        return { runId, status: 'failed', error: RUN_REFUSED_CLOSE_ERROR, refused, reportCount: counter.reports };
       }
       return { runId, status: 'completed', reportCount: counter.reports };
     } finally {
@@ -323,8 +329,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     let refused: string | undefined;
     try {
       options.onClosing?.();
-      const closed = await recordTerminal(store, runId, 'failed', { completed_at: Date.now(), error: message });
-      refused = closed.applied ? undefined : closed.reason ?? RUN_REFUSED_CLOSE_ERROR;
+      refused = refusalOf(await recordTerminal(store, runId, 'failed', { completed_at: Date.now(), error: message }));
     } catch {
       // The terminal update is best-effort: the stale sweep closes the row
       // when the Deployment is unreachable, and the container's log holds

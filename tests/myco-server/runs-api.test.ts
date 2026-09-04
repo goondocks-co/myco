@@ -182,6 +182,14 @@ describe('run lifecycle over HTTP', () => {
     expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'r2'`).get()).toEqual({ status: 'failed', error: 'boom' });
   });
 
+  it('applies a repeat of the ending a run already carries, so a retried close is not a refusal', async () => {
+    const { post, sqlite } = await harness();
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
+    expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } })).toEqual({ persisted: true, changed: 1 });
+    expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 43 } })).toEqual({ persisted: true, changed: 0 });
+    expect(sqlite.query(`SELECT status, completed_at c FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ status: 'completed', c: 42 });
+  });
+
   it('applies an update naming no status to a run that has already ended', async () => {
     const { post, sqlite } = await harness();
     await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
@@ -240,6 +248,20 @@ describe('failure and resume admission over HTTP', () => {
     const res = await post('/runs/failed', { runId: 'r1', errorClass: 'session-expired', error: 'x', resumable: 0, status: 'exhausted' });
     expect(res.status).toBe('ready');
     expect((sqlite.query(`SELECT resume_status s FROM agent_runs WHERE id='r1'`).get() as { s: string }).s).toBe('ready');
+  });
+
+  it('refuses to record a failure on a run that ended under another status, and repeats one it already carries', async () => {
+    const { post, sqlite } = await harness();
+    await post('/runs/claim', claim('r1'));
+    await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } });
+    expect(await post('/runs/failed', { runId: 'r1', errorClass: 'other', error: 'boom' }))
+      .toEqual({ persisted: true, changed: 0, applied: false, reason: 'terminal' });
+    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ status: 'completed', error: null });
+
+    await post('/runs/claim', claim('r2'));
+    expect((await post('/runs/failed', { runId: 'r2', errorClass: 'other', error: 'first' })).changed).toBe(1);
+    expect(await post('/runs/failed', { runId: 'r2', errorClass: 'other', error: 'second' })).toEqual({ persisted: true, changed: 0 });
+    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'r2'`).get()).toEqual({ status: 'failed', error: 'first' });
   });
 
   it('refuses an error class it does not know rather than mapping it to a default', async () => {

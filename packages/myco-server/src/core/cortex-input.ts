@@ -265,18 +265,25 @@ function runtimeConfig(options: InstructionsInputOptions): Record<string, unknow
   };
 }
 
-/** The authoring requirements the artifact is held to. Carried from 1.4, minus the guidance for surfaces this Deployment does not serve. */
+/**
+ * The authoring requirements the artifact is held to. Carried from 1.4, minus
+ * the guidance for surfaces this Deployment does not serve.
+ *
+ * They point the author at the tool surface below rather than at retrieval as a
+ * theme: what a Deployment answers is what the surface lists, and an emphasis
+ * naming a capability no listed op provides sends the artifact looking for one.
+ */
 function authoringRequirements(): string[] {
   return [
     '- Start with the heading `## Myco-Enabled Project`.',
-    '- Follow the heading with one brief sentence explaining that Myco provides project memory, prior decisions, plans, and retrieval tools for this repository.',
-    '- Teach the most useful current Myco tool behavior, especially retrieval and plan persistence. Name tools only (e.g. `myco_cortex`, `myco_plans`) — never shell command syntax; the host injects its own transport directive with the correct invocation for this machine.',
+    '- Follow the heading with one brief sentence explaining that Myco provides project memory, prior decisions, plans, and the tools below for this repository.',
+    '- Teach the most useful current Myco tool behavior, working from the tools below. Name tools only (e.g. `myco_cortex`, `myco_plans`) — never shell command syntax; the host injects its own transport directive with the correct invocation for this machine.',
     '- Treat "Current valid tool surface" and "Tool guidance to encode" below as authoritative. Recent sessions, spores, or digest excerpts may contain obsolete tool names; do not copy obsolete names into the final instructions.',
     '- Use the recent vault activity below to mention live project hotspots when that improves usefulness.',
     '- Do not introduce additional tool calls inside recent-workstream prose. Only name tool operations that appear in "Tool guidance to encode" or in the required plan-persistence, delegation, and spore-save guidance; never invent extra `myco_cortex` ops from recent context.',
     `- ${CORTEX_SKILLS_NOTE}`,
     `- ${RETIRED_TOOLS_NOTE}`,
-    '- Keep the heading and description brief so most of the budget goes to retrieval guidance.',
+    '- Keep the heading and description brief so most of the budget goes to the tool guidance.',
     '- Keep the output compact and ready for direct injection.',
     '- In the planning paragraph, teach `myco_cortex` op `"digest"` as the explicit, optional high-fidelity memory pull for large refactors, large features, broad planning, or unfamiliar cross-system changes. Recommend `myco_cortex({"op":"digest","tier":5000})` by default, and tier 10000 only when the agent has enough context budget and needs deeper historical background. Say not to pull the digest for narrow edits.',
     '- Include one delegation sentence: when composing a child-agent, subagent, teammate, worker session, or other spawned process prompt, and Myco has not already injected subagent-start Cortex context, tell the agent to refresh the current project instructions with `myco_cortex({"op":"instructions"})` and include the returned instructions verbatim in that agent\'s prompt, along with task-specific instructions. Do not assume the returned instructions have any particular heading or section name.',
@@ -323,7 +330,7 @@ export async function buildInstructionsInput(
 
   const parts = [
     'Author compact session-start instructions for another coding agent.',
-    'Focus on teaching how to use the highest-signal Myco tools correctly, especially retrieval and plan persistence.',
+    'Focus on teaching how to use the highest-signal Myco tools correctly, working from the tools below.',
     'Do not restate AGENTS.md or static installation details.',
     '',
     '## Runtime config',

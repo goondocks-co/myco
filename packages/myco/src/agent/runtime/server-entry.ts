@@ -81,6 +81,8 @@ async function executeFromEnv(): Promise<void> {
     // answers. The Deployment releases this container the instant that status
     // lands, and the stop signal it sends arrives while the request is still
     // open; a hold that outlived the post names a failure on a row that closed.
+    // The trade is the window between this line and the Deployment's receipt: a
+    // stop landing inside it names nothing, and the stale sweep closes the row.
     onClosing: () => { inFlight = null; },
     taskName,
     timeoutSeconds: Number.isFinite(Number(env('MYCO_TIMEOUT_SECONDS'))) ? Number(env('MYCO_TIMEOUT_SECONDS')) : 300,

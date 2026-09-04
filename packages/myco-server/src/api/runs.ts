@@ -228,8 +228,25 @@ async function releaseDispatchedRun(env: ServerEnv, ctx: RouteContext, runId: st
   await releaseRun(env, scope, run, ctx.now);
 }
 
-/** The answer a status change gets on a run that has already ended: nothing moved, and the row's own ending stands. */
+/** The answer a status change gets on a run that has already ended under a DIFFERENT ending: nothing moved, and the row's own ending stands. */
 const TERMINAL_ANSWER = { persisted: true, changed: 0, applied: false, reason: 'terminal' } as const;
+/** The answer a status change gets on a run already carrying that very status: nothing moved, and nothing needs to. */
+const SETTLED_ANSWER = { persisted: true, changed: 0 } as const;
+
+/**
+ * What a status write answers on a run that has already ended, or nothing when
+ * the run is still open.
+ *
+ * A repeat of the ending the row carries is the same close arriving twice — a
+ * retried request, or a runtime offering its terminal status the second time the
+ * update surface allows it — and it is answered as applied: the row says what
+ * the caller asked it to say. A DIFFERENT ending is the race, and it is refused
+ * by name.
+ */
+function endedAnswer(status: string | undefined, posted: unknown): Response | null {
+  if (!isTerminalRunStatus(status)) return null;
+  return Response.json(status === posted ? SETTLED_ANSWER : TERMINAL_ANSWER);
+}
 
 /**
  * Apply a partial update to one run.
@@ -247,8 +264,9 @@ const TERMINAL_ANSWER = { persisted: true, changed: 0, applied: false, reason: '
  * status change in its own WHERE clause; this route reads the row back on a
  * write that moved nothing and answers `terminal`, so a container posting a
  * second ending learns the row is closed rather than reading the refusal as a
- * run in another Project. An update carrying no status still applies to a
- * terminal row.
+ * run in another Project. Posting the ending the row already carries is applied
+ * rather than refused — a retry must be safe. An update carrying no status still
+ * applies to a terminal row.
  */
 export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
@@ -277,13 +295,15 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   }
   const guarded = 'status' in runUpdate;
   const before = guarded ? await getRun(env.db, scope, runId) : null;
-  if (isTerminalRunStatus(before?.status)) return Response.json(TERMINAL_ANSWER);
+  const settled = endedAnswer(before?.status, runUpdate.status);
+  if (settled !== null) return settled;
   if (runUpdate.status === 'completed') {
     const missing = before === null ? null : await runCloseRefusal(env.db, scope, before);
     if (missing !== null) {
       const failed = await applyRunUpdate(env.db, scope, runId, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: missing } as RunUpdate);
       if (failed === 1) await releaseDispatchedRun(env, ctx, runId, 'failed');
-      if (failed === 0 && isTerminalRunStatus((await getRun(env.db, scope, runId))?.status)) return Response.json(TERMINAL_ANSWER);
+      const raced = failed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
+      if (raced !== null) return raced;
       return Response.json({ persisted: true, changed: failed, applied: false, reason: 'postcondition' });
     }
   }
@@ -292,7 +312,8 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
     await releaseDispatchedRun(env, ctx, runId, runUpdate.status);
     return Response.json({ persisted: true, changed });
   }
-  if (guarded && isTerminalRunStatus((await getRun(env.db, scope, runId))?.status)) return Response.json(TERMINAL_ANSWER);
+  const raced = guarded ? endedAnswer((await getRun(env.db, scope, runId))?.status, runUpdate.status) : null;
+  if (raced !== null) return raced;
   return Response.json({ persisted: true, changed });
 }
 
@@ -432,8 +453,16 @@ export async function handleRecordFailure(env: ServerEnv, ctx: RouteContext): Pr
   // reuse it.
   if (decision.clearCheckpoints) update.checkpoints = null;
 
-  const changed = await applyRunUpdate(env.db, { projectId: ctx.projectId }, runId, update as RunUpdate);
+  // The write is guarded on the row not already being terminal, and a run that
+  // ended under another status answers the same refusal the update route gives:
+  // `changed: 0` alone reads exactly like a run in another Project.
+  const scope = { projectId: ctx.projectId };
+  const ended = endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed');
+  if (ended !== null) return ended;
+  const changed = await applyRunUpdate(env.db, scope, runId, update as RunUpdate);
   if (changed === 1) await releaseDispatchedRun(env, ctx, runId, 'failed');
+  const raced = changed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
+  if (raced !== null) return raced;
   return Response.json({ persisted: true, changed, ...decision });
 }
 

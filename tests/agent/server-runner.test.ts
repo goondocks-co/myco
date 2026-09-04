@@ -11,8 +11,8 @@ import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import worker from '@myco-server-worker/index.js';
 import { ServerClient } from '@myco/member/transport.js';
 import {
-  CAPTURE_DRIVEN_ADMISSION, installRunFailureHandlers, RUN_DEADLINE_ERROR, RUN_REPLACED_ERROR, runServerTask,
-  type HeldRun,
+  CAPTURE_DRIVEN_ADMISSION, installRunFailureHandlers, RUN_DEADLINE_ERROR, RUN_REFUSED_CLOSE_ERROR, RUN_REPLACED_ERROR,
+  runServerTask, type HeldRun,
 } from '@myco/agent/runtime/server-runner.js';
 import type { AgentHarness, HarnessExecuteInput } from '@myco/agent/harness/types.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
@@ -243,7 +243,7 @@ describe('a run that dies names itself', () => {
       onClaimed: () => { held = { client, budget, runId: 'run_taken_early' }; },
       onClosing: () => { held = null; },
     });
-    expect(result).toEqual({ runId: 'run_taken_early', status: 'failed', error: 'terminal', reportCount: 0 });
+    expect(result).toEqual({ runId: 'run_taken_early', status: 'failed', error: RUN_REFUSED_CLOSE_ERROR, refused: 'terminal', reportCount: 0 });
     expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_taken_early'`).get())
       .toEqual({ status: 'failed', error: RUN_REPLACED_ERROR });
   });
@@ -279,7 +279,7 @@ describe('what the container makes of the deployment\'s answer', () => {
       },
     } as unknown as ServerClient;
     const result = await runServerTask({ client: stub, budget, runId: 'run_refused', taskName: 'container-smoke', harness: fakeHarness('silent') });
-    expect(result).toEqual({ runId: 'run_refused', status: 'failed', error: 'postcondition', reportCount: 0 });
+    expect(result).toEqual({ runId: 'run_refused', status: 'failed', error: RUN_REFUSED_CLOSE_ERROR, refused: 'postcondition', reportCount: 0 });
   });
 
   it('takes the run as its own only once the claim lands', async () => {
