@@ -81,7 +81,13 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   // which is what makes a daily interval safe once it is on.
   'cortex-instructions': { enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 },
   'cortex-prompt-builder': null,
-  'digest-only': null,
+  // Declared and switched off, for the ceiling rather than the clock. A digest
+  // run is the dearest thing this Deployment starts — three tiers rewritten by a
+  // frontier model — and a task with no schedule has no per-day cap, so an
+  // owner's button could spend it again and again in an afternoon. The block
+  // gives the button its one-a-day ceiling and gives the owner the same override
+  // to lift it, while the clock runs nothing until they turn it on.
+  'digest-only': { enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 },
   'skill-survey': null,
   'skill-generate': null,
   'skill-evolve': null,
@@ -93,6 +99,27 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   'title-summary': null,
 };
 
+/**
+ * How long one run of a task may take, by task.
+ *
+ * The dispatcher's flat default is a titling run's shape: a handful of turns at
+ * low reasoning, done in seconds. A Cortex run is a dozen turns of a frontier
+ * model over a payload the server assembled, and a digest run rewrites three
+ * tiers from a whole vault; both take minutes, and a run aborted mid-work has
+ * spent its money and left nothing. A task named here carries its own budget
+ * into the run's context, which is also the window the run's own routes admit it
+ * inside and the point past which the stale sweep gives up on it.
+ */
+export const TASK_RUN_TIMEOUT_SECONDS: Readonly<Record<string, number>> = {
+  'cortex-instructions': 900,
+  'digest-only': 1800,
+};
+
+/** The budget one run of this task gets, or null for a task that takes the dispatcher's default. */
+export function runTimeoutForTask(task: string): number | null {
+  return TASK_RUN_TIMEOUT_SECONDS[task] ?? null;
+}
+
 /** Named preconditions a schedule may name; a task naming one absent here is refused by a gate, never skipped in silence. */
 export const PRE_CONDITIONS: Readonly<Record<string, (args: { projectId: string }) => Promise<boolean>>> = {};
 
@@ -103,10 +130,13 @@ export const ACCELERATORS: Readonly<Record<string, (args: { projectId: string; l
  * The tasks a person asks for one at a time: they carry no schedule, and a
  * schedule appearing on one is a cost the Deployment would pay on the clock
  * without anyone deciding it should.
+ *
+ * `digest-only` is not among them any more: it carries a declared schedule that
+ * ships switched off, which is what gives an owner's ask a per-day ceiling and
+ * an override to lift it.
  */
 export const MANUAL_ONLY_TASKS: readonly string[] = [
   'vault-seed',
-  'digest-only',
   'extract-only',
   'supersession-sweep',
   'review-session',

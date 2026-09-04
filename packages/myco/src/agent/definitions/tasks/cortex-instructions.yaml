@@ -11,7 +11,9 @@ agent: myco-agent
 isDefault: false
 reasoningLevel: default
 maxTurns: 12
-timeoutSeconds: 180
+# The same budget the server catalogue gives one hosted run
+# (`TASK_RUN_TIMEOUT_SECONDS`, packages/myco-server/src/core/task-catalogue.ts).
+timeoutSeconds: 900
 schedule:
   # The LOCAL executor's schedule. A Deployment runs this task on the server
   # catalogue's own block instead — 24 h in sleep, one a day, shipped switched

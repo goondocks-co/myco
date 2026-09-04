@@ -1,12 +1,13 @@
 /**
  * What a Cortex run reads and writes.
  *
- * A `cortex-instructions` run holds no vault. It reads the prompt the server
- * built for it, the Project's recent sessions and its current digest, and it
- * writes back the one artifact it owes. Each route admits exactly one caller:
- * the harness credential that dispatched a live run of such a task
- * (`heldRun`). A plain member, another task, a finished run, or another
- * credential of the harness is answered `held: false`.
+ * A Cortex run holds no vault. It reads the prompt the server built for it, the
+ * Project's recent sessions and its current digest, and it writes back what it
+ * owes: a `cortex-instructions` run one artifact, a `digest-only` run one
+ * extract per tier. Each route admits exactly one caller: the harness credential
+ * that dispatched a live run of such a task (`heldRun`). A plain member, another
+ * task, a finished run, or another credential of the harness is answered
+ * `held: false`.
  *
  * **The hash the artifact is filed under comes off the run row, never the
  * body.** The server built the material and recorded its hash in the run's
@@ -17,26 +18,30 @@
  * A dry run reads everything and writes nothing: the write answers
  * `written: false`, and the run still records its report, so the close gate
  * reads what actually happened.
+ *
+ * The material a digest run is handed is bounded by the tier windows
+ * (`core/cortex-input.ts`) rather than by what the surface would serve any other
+ * run: one reading of the material has to fit the smallest tier it writes.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { heldRun } from './run-admission.js';
-import { digestForTier, listDigests } from '../core/digests.js';
-import { upsertCortexInstructions, runInstruction, type RunRow } from '../core/runs.js';
+import { digestForTier, listDigests, upsertDigest } from '../core/digests.js';
+import { inputHashOf, upsertCortexInstructions, runInstruction, type RunRow } from '../core/runs.js';
 import { DIGEST_TIERS } from '../core/recall.js';
-import { CORTEX_INSTRUCTIONS_TASK, DIGEST_READ_TASKS, INSTRUCTED_TASKS, SESSION_LIST_TASKS } from '../core/task-inputs.js';
-import { preview } from '../core/cortex-input.js';
+import {
+  CORTEX_INSTRUCTIONS_TASK, DIGEST_READ_TASKS, DIGEST_TASK, DIGEST_WRITE_TASKS, INSTRUCTED_TASKS, SESSION_LIST_TASKS,
+} from '../core/task-inputs.js';
+import {
+  DIGEST_SESSION_PAGE_LIMIT, preview, RUN_SESSION_LABEL_CHARS, RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS,
+  RUN_SESSIONS_DEFAULT_LIMIT, RUN_SESSIONS_MAX_LIMIT,
+} from '../core/cortex-input.js';
 import { listSessions } from '../read/sessions.js';
 import { MAX_STATE_BYTES } from './runs.js';
 import { refused } from '../ingest/events.js';
 import { refusal, type Refusal } from '../telemetry.js';
 
 const MAX_ID_CHARS = 192;
-/** How many sessions one page of the run's own session list carries. */
-export const RUN_SESSIONS_DEFAULT_LIMIT = 5;
-export const RUN_SESSIONS_MAX_LIMIT = 50;
-/** How much of a session's summary one row carries. */
-export const RUN_SESSION_SUMMARY_CHARS = 360;
 
 const BAD_BODY: Refusal = refusal('body is not an object', 'parse');
 /** The answer every route here gives a caller that holds no Cortex run. */
@@ -54,13 +59,13 @@ function parseBody(body: string): Record<string, unknown> | null {
   }
 }
 
-/** The hash of the material the server built this run's prompt from, as its context records it. */
-export function inputHashOf(run: RunRow): string | null {
+/** What the material behind this run's prompt counted, as its context records it, or null where it counted nothing. */
+export function countsOf(run: RunRow): string | null {
   if (run.runContext === null) return null;
   try {
     const parsed: unknown = JSON.parse(run.runContext);
-    const value = isRecord(parsed) ? parsed.input_hash : undefined;
-    return typeof value === 'string' && value.length > 0 ? value : null;
+    const value = isRecord(parsed) ? parsed.counts : undefined;
+    return isRecord(value) ? JSON.stringify(value) : null;
   } catch {
     return null;
   }
@@ -117,17 +122,20 @@ export async function handleRunSessions(env: ServerEnv, ctx: RouteContext): Prom
   if (run === null) return Response.json(UNHELD);
 
   const asked = typeof body.limit === 'number' && Number.isSafeInteger(body.limit) ? body.limit : RUN_SESSIONS_DEFAULT_LIMIT;
-  const limit = Math.min(Math.max(asked, 1), RUN_SESSIONS_MAX_LIMIT);
+  // A digest run reads its material once and writes every tier from it, so its
+  // page is the tier window's rather than the surface's own.
+  const ceiling = run.task === DIGEST_TASK ? DIGEST_SESSION_PAGE_LIMIT : RUN_SESSIONS_MAX_LIMIT;
+  const limit = Math.min(Math.max(asked, 1), ceiling);
   const page = await listSessions(env.db, { projectId: ctx.projectId }, { limit, state: 'ended' });
   return Response.json({
     persisted: true,
     held: true,
     sessions: page.rows.map((row) => ({
       id: row.sessionId,
-      label: row.label,
+      label: preview(row.label, RUN_SESSION_LABEL_CHARS),
       startedAt: row.startedAt,
       endedAt: row.endedAt,
-      title: row.title,
+      title: preview(row.title, RUN_SESSION_TITLE_CHARS),
       summary: preview(row.summary, RUN_SESSION_SUMMARY_CHARS),
     })),
   });
@@ -151,10 +159,56 @@ export async function handleRunDigest(env: ServerEnv, ctx: RouteContext): Promis
       tiers: rows.map((row) => ({ tier: row.tier, generatedAt: row.generatedAt, contentLength: row.content.length })),
     });
   }
+  // The run that WRITES the digest is served the tier it asked for or nothing:
+  // handed a neighbour's body under the name of an absent tier, it carries that
+  // body forward as the tier's own and the two collapse into one. A run that
+  // only reads is served the nearest tier, and told which it got.
   const chosen = digestForTier(rows, tier);
+  const exactOnly = run.task !== null && DIGEST_WRITE_TASKS.includes(run.task);
+  const served = chosen === null || (exactOnly && chosen.fallback) ? null : chosen;
   return Response.json({
     persisted: true,
     held: true,
-    digest: chosen === null ? null : { tier: chosen.row.tier, content: chosen.row.content, generatedAt: chosen.row.generatedAt },
+    digest: served === null ? null : { tier: served.row.tier, content: served.row.content, generatedAt: served.row.generatedAt, fallback: served.fallback },
   });
+}
+
+/**
+ * One tier of the Project's digest, written by the run that regenerated it.
+ *
+ * The extract carries the hash of the material the server handed the run,
+ * naming what stands behind that tier; the revision the write archives carries
+ * the run and what that material counted, so the body a tier replaced names the
+ * pass that replaced it. A tier the Deployment does not serve is
+ * refused by name rather than stored under a size nothing reads.
+ */
+export async function handleDigestWrite(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (!body) return Response.json(refused(ctx, BAD_BODY));
+  const runId = str(body.runId);
+  const content = str(body.content, MAX_STATE_BYTES);
+  if (runId === null || content === null) {
+    return Response.json(refused(ctx, refusal(`a digest requires runId and content of 1 to ${MAX_STATE_BYTES} characters`, 'parse')));
+  }
+  const tier = typeof body.tier === 'number' && DIGEST_TIERS.includes(body.tier) ? body.tier : null;
+  if (tier === null) return Response.json(refused(ctx, refusal(`tier is one of ${DIGEST_TIERS.join(', ')}`, 'parse')));
+
+  const run = await heldRun(env, ctx, runId, DIGEST_WRITE_TASKS);
+  if (run === null) return Response.json({ ...UNHELD, written: false });
+  if (run.dryRun === 1) return Response.json({ persisted: true, held: true, written: false });
+
+  const scope = { projectId: ctx.projectId };
+  const held = await listDigests(env.db, scope, run.agentId);
+  const replaced = held.find((row) => row.tier === tier) ?? null;
+  await upsertDigest(env.db, scope, {
+    id: crypto.randomUUID(),
+    agentId: run.agentId,
+    tier,
+    content,
+    substrateHash: inputHashOf(run),
+    metadata: countsOf(run),
+    runId,
+    generatedAt: ctx.now,
+  });
+  return Response.json({ persisted: true, held: true, written: true, tier, revisionOf: replaced?.generatedAt ?? null });
 }

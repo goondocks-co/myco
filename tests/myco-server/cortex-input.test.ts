@@ -9,9 +9,13 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
-  buildInstructionsInput, CONTENT_PREVIEW_MAX_CHARS, DIGEST_EXCERPT_MAX_CHARS, preview,
-  RECENT_PLAN_LIMIT, RECENT_SESSION_LIMIT, RECENT_WISDOM_SPORE_LIMIT,
+  buildDigestInput, buildInstructionsInput, CONTENT_PREVIEW_MAX_CHARS, DIGEST_EXCERPT_MAX_CHARS,
+  DIGEST_FRESH_DIRECTION, DIGEST_FULL_READ_BODY_CHARS, DIGEST_MATERIAL_TIER, DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT,
+  DIGEST_TIER_MIN_CONTEXT_TOKENS, MATERIAL_ROW_KEYS_ESTIMATE_CHARS, materialRowsForTier, preview,
+  RECENT_PLAN_LIMIT, RECENT_SESSION_LIMIT, RECENT_WISDOM_SPORE_LIMIT, RUN_SESSION_LABEL_CHARS,
+  RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS, SESSION_ROW_OVERHEAD_CHARS,
 } from '@myco-server-worker/core/cortex-input.js';
+import { SPORE_FULL_READ_BUDGET } from '@myco-server-worker/core/spores.js';
 import { recallLeaves, type RecallLeaves } from '@myco-server-worker/core/recall.js';
 import { SERVED_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
 import { upsertDigest } from '@myco-server-worker/core/digests.js';
@@ -56,7 +60,9 @@ function fixture() {
     e.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`, [name, JSON.stringify(value), NOW]);
   const build = (over: Partial<{ leaves: RecallLeaves; capabilities: typeof CAPABILITIES; now: number }> = {}) =>
     buildInstructionsInput(e.db, SCOPE, { leaves: LEAVES, capabilities: CAPABILITIES, now: NOW, ...over });
-  return { ...e, session, spore, plan, leaf, build };
+  const digest = (over: Partial<{ leaves: RecallLeaves; fresh: boolean; now: number }> = {}) =>
+    buildDigestInput(e.db, SCOPE, { leaves: LEAVES, fresh: false, now: NOW, ...over });
+  return { ...e, session, spore, plan, leaf, build, digest };
 }
 
 describe('the preview a payload carries', () => {
@@ -173,5 +179,70 @@ describe('the input hash', () => {
       [NOW, NOW, NOW],
     );
     expect((await f.build()).inputHash).toBe(base.inputHash);
+  });
+});
+
+describe('the input a digest run is handed', () => {
+  it('names what each tier holds, and says so plainly when the project holds none', async () => {
+    const f = fixture();
+    expect((await f.digest()).instruction).toContain('No digest has been written yet');
+
+    await upsertDigest(f.db, SCOPE, { id: 'd1', agentId: 'myco-agent', tier: 5000, content: 'a'.repeat(120), substrateHash: null, generatedAt: NOW - 10_000 });
+    await upsertDigest(f.db, SCOPE, { id: 'd2', agentId: 'myco-agent', tier: 10000, content: 'b'.repeat(400), substrateHash: null, generatedAt: NOW - 20_000 });
+    const built = await f.digest();
+    expect(built.instruction).toContain('- Tier 5000: 120 characters, generated ');
+    expect(built.instruction).toContain('- Tier 10000: 400 characters, generated ');
+  });
+
+  it('counts the active spores and the sessions that ended since the newest digest', async () => {
+    const f = fixture();
+    // The fixture starts each session a second before the last, so the first
+    // written is the newer of the two; the digest is dated between them.
+    f.session('Newer work', 'after the digest');
+    f.session('Older work', 'before the digest');
+    await upsertDigest(f.db, SCOPE, { id: 'd1', agentId: 'myco-agent', tier: 5000, content: 'held', substrateHash: null, generatedAt: NOW - 1500 });
+    await f.spore('decision', 'we chose the queue');
+    await f.spore('gotcha', 'the drain rebuilds');
+
+    const built = await f.digest();
+    expect(built.counts).toEqual({ spores: 2, sessionsInWindow: 1, windowFull: false });
+    expect(built.instruction).toContain('- Active spores: 2');
+    expect(built.instruction).toContain('- Sessions that ended since the newest digest: 1');
+  });
+
+  it('states the per-tier material windows and the pages the routes hand the run', async () => {
+    const f = fixture();
+    const built = await f.digest();
+    for (const [tier, tokens] of Object.entries(DIGEST_TIER_MIN_CONTEXT_TOKENS)) {
+      expect(built.instruction).toContain(`- Tier ${tier}: ${tokens} estimated tokens of material.`);
+    }
+    expect(built.instruction).toContain(`at most ${DIGEST_SPORE_PAGE_LIMIT} previews`);
+    expect(built.instruction).toContain(`at most ${DIGEST_SESSION_PAGE_LIMIT} sessions`);
+    expect(built.instruction).toContain(`up to ${SPORE_FULL_READ_BUDGET} full reads`);
+    // The full reads spend against the same window the page ceilings are cut from.
+    expect(built.instruction).toContain(`bounded to ${DIGEST_FULL_READ_BODY_CHARS} characters`);
+    expect(DIGEST_FULL_READ_BODY_CHARS * SPORE_FULL_READ_BUDGET).toBeLessThanOrEqual(DIGEST_TIER_MIN_CONTEXT_TOKENS[DIGEST_MATERIAL_TIER]! * 4);
+    expect(materialRowsForTier(10000, 200, 80)).toBeGreaterThan(materialRowsForTier(1500, 200, 80));
+    // Every part of a row but its keys is cut to a constant, so the page ceilings are derived rather than guessed.
+    expect(DIGEST_SESSION_PAGE_LIMIT).toBe(materialRowsForTier(DIGEST_MATERIAL_TIER, RUN_SESSION_SUMMARY_CHARS, SESSION_ROW_OVERHEAD_CHARS));
+    expect(SESSION_ROW_OVERHEAD_CHARS).toBe(RUN_SESSION_TITLE_CHARS + RUN_SESSION_LABEL_CHARS + MATERIAL_ROW_KEYS_ESTIMATE_CHARS);
+  });
+
+  it('tells the run to start over only when the owner asked for it, and hashes the material either way', async () => {
+    const f = fixture();
+    await upsertDigest(f.db, SCOPE, { id: 'd1', agentId: 'myco-agent', tier: 5000, content: 'held', substrateHash: null, generatedAt: NOW - 40_000 });
+    const carried = await f.digest();
+    const scratch = await f.digest({ fresh: true });
+    expect(carried.instruction).not.toContain(DIGEST_FRESH_DIRECTION);
+    expect(scratch.instruction).toContain(DIGEST_FRESH_DIRECTION);
+    expect(scratch.inputHash).toBe(carried.inputHash);
+  });
+
+  it('holds its hash still over the clock and moves it when the material moves', async () => {
+    const f = fixture();
+    const base = await f.digest();
+    expect((await f.digest({ now: NOW + 900_000 })).inputHash).toBe(base.inputHash);
+    await f.spore('decision', 'a spore landed');
+    expect((await f.digest()).inputHash).not.toBe(base.inputHash);
   });
 });

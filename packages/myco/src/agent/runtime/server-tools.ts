@@ -8,7 +8,8 @@
  * so a sweep surveys a whole vault by its previews and pulls bodies only for the
  * clusters it means to resolve. A `cortex-instructions` run holds four reads —
  * spore previews, one spore in full, the settled sessions, and the digest — and
- * files its artifact through its report. Every route admits only the credential that
+ * files its artifact through its report. A `digest-only` run holds those same
+ * four reads and the tier write. Every route admits only the credential that
  * dispatched a live run of that task. The tools keep the names and argument
  * shapes the task definition has always used, so one definition serves both the
  * local executor and this runtime.
@@ -27,10 +28,12 @@ export const TITLE_SUMMARY_TASK = 'title-summary';
 export const SUPERSESSION_SWEEP_TASK = 'supersession-sweep';
 /** The task whose runs author this Project's session-start instructions. */
 export const CORTEX_INSTRUCTIONS_TASK = 'cortex-instructions';
+/** The task whose runs regenerate this Project's digest extracts. */
+export const DIGEST_TASK = 'digest-only';
 /** Every task this runtime materializes a tool surface for. */
-export const SERVED_TASKS: readonly string[] = [TITLE_SUMMARY_TASK, SUPERSESSION_SWEEP_TASK, CORTEX_INSTRUCTIONS_TASK];
+export const SERVED_TASKS: readonly string[] = [TITLE_SUMMARY_TASK, SUPERSESSION_SWEEP_TASK, CORTEX_INSTRUCTIONS_TASK, DIGEST_TASK];
 /** The tasks whose prompt the server builds; a run of one reads it back over `/runs/instruction` rather than from its environment. */
-export const INSTRUCTED_TASKS: readonly string[] = [CORTEX_INSTRUCTIONS_TASK];
+export const INSTRUCTED_TASKS: readonly string[] = [CORTEX_INSTRUCTIONS_TASK, DIGEST_TASK];
 /** The report action a `cortex-instructions` run records its artifact under; the same call files the artifact itself. */
 export const CORTEX_INSTRUCTIONS_ACTION = 'cortex_instructions';
 
@@ -255,7 +258,7 @@ export function materializedSessionsTool(ctx: ServerToolContext): MycoToolDefini
     name: 'vault_sessions',
     description: 'List this project\'s settled sessions, newest first — id, label, start and end, title, and the opening of the summary. Sessions still in flight are never listed.',
     inputSchema: {
-      limit: z.number().optional().describe('Maximum number of sessions to return (max 50)'),
+      limit: z.number().optional().describe('Maximum number of sessions to return; a larger ask is answered with this run\'s own page ceiling'),
     },
     annotations: { readOnlyHint: true },
     handler: async (args: { limit?: number }) => {
@@ -270,7 +273,7 @@ export function materializedSessionsTool(ctx: ServerToolContext): MycoToolDefini
 export function materializedReadDigestTool(ctx: ServerToolContext): MycoToolDefinition {
   return {
     name: 'vault_read_digest',
-    description: 'Read the current digest. With no arguments it returns what each tier holds; with a tier it returns that tier\'s content in full, falling back to the nearest tier the project has.',
+    description: 'Read the current digest. With no arguments it returns what each tier holds; with a tier it returns that tier\'s content in full. A run that only reads may be served the nearest tier the project has instead, and the answer says so with "fallback": true; a run that writes the digest is served the tier it asked for or nothing.',
     inputSchema: {
       tier: z.number().optional().describe('Tier to read in full (1500, 5000, or 10000). Omit for a summary of all tiers.'),
     },
@@ -279,6 +282,30 @@ export function materializedReadDigestTool(ctx: ServerToolContext): MycoToolDefi
       const answered = await askRunControl(ctx, '/runs/digest', { runId: ctx.runId, ...args });
       if (errored(answered)) return text(answered);
       return text(args.tier === undefined ? { tiers: answered.tiers } : { digest: answered.digest });
+    },
+  };
+}
+
+/**
+ * One tier of the digest the run writes. The tier and the body are the model's;
+ * everything filed beside them — the agent, the substrate hash, and what the
+ * material counted — comes off the run row.
+ */
+export function materializedWriteDigestTool(ctx: ServerToolContext, counter: { writes: number }): MycoToolDefinition {
+  return {
+    name: 'vault_write_digest',
+    description: 'Write or update a digest extract at a specific token tier. Uses UPSERT on (agent_id, tier).',
+    inputSchema: {
+      tier: z.number().describe('Token budget tier (e.g., 1500, 5000, 10000)'),
+      content: z.string().describe('The digest extract content in markdown'),
+    },
+    annotations: { idempotentHint: true },
+    handler: async (args: { tier: number; content: string }) => {
+      const answered = await askRunControl(ctx, '/runs/digest-write', { runId: ctx.runId, tier: args.tier, content: args.content });
+      if (errored(answered)) return text(answered);
+      if (answered.written !== true) return text({ error: 'the digest was not stored for this run' });
+      counter.writes += 1;
+      return text({ tier: answered.tier, revision_of: answered.revisionOf });
     },
   };
 }
@@ -294,6 +321,12 @@ export function materializedToolsForTask(taskName: string, ctx: ServerToolContex
   }
   if (taskName === CORTEX_INSTRUCTIONS_TASK) {
     tools.push(materializedSporesTool(ctx), materializedSporeTool(ctx), materializedSessionsTool(ctx), materializedReadDigestTool(ctx));
+  }
+  if (taskName === DIGEST_TASK) {
+    tools.push(
+      materializedSporesTool(ctx), materializedSporeTool(ctx), materializedSessionsTool(ctx),
+      materializedReadDigestTool(ctx), materializedWriteDigestTool(ctx, counter),
+    );
   }
   return tools;
 }

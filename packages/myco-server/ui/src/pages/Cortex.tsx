@@ -10,13 +10,25 @@ import { PageLoading } from '../components/ui/page-loading';
 import { Panel } from '../components/ui/panel';
 import { SubtabPill } from '../components/ui/subtab-pill';
 import {
-  INSTRUCTIONS_OUTCOME_TEXT, refusalText, useDigestRevisions, useDigests, useInstructions, useRefreshInstructions,
+  DIGEST_OUTCOME_TEXT, digestRefusalText, INSTRUCTIONS_OUTCOME_TEXT, refusalText, useDigestRevisions, useDigests,
+  useInstructions, useRefreshInstructions, useRegenerateDigest,
   type DigestRow, type InstructionsCounts,
 } from '../hooks/use-intelligence';
 import { cn } from '../lib/cn';
 import { formatDateTime, formatRelative } from '../lib/format';
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
+
+/** What an ask answered, under the control that made it: the outcome in the reader's words, and the run doing the work. */
+function AskNote({ projectId, note, runId }: { projectId: string; note: string | null; runId?: string }) {
+  if (note === null) return null;
+  return (
+    <span className="font-sans text-xs text-tertiary" role="status">
+      {note}
+      {runId !== undefined && <> · <Link to={`/p/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(runId)}`} className="underline">see the run</Link></>}
+    </span>
+  );
+}
 
 const TABS = [
   { id: 'instructions', label: 'Instructions' },
@@ -71,18 +83,47 @@ function RefreshInstructions({ projectId }: { projectId: string }) {
         type="button"
         aria-disabled={busy}
         aria-busy={busy}
-        onClick={() => { if (!busy) refresh.mutate(); }}
+        onClick={() => { if (!busy) refresh.mutate({}); }}
         className={cn(button, 'inline-flex h-8 items-center gap-2 font-medium', busy && 'opacity-60')}
       >
         {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
         {busy ? 'Asking…' : 'Refresh instructions'}
       </button>
-      {note !== null && (
-        <span className="font-sans text-xs text-tertiary" role="status">
-          {note}
-          {answer?.runId !== undefined && <> · <Link to={`/p/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(answer.runId)}`} className="underline">see the run</Link></>}
-        </span>
-      )}
+      <AskNote projectId={projectId} note={note} runId={answer?.runId} />
+    </div>
+  );
+}
+
+/**
+ * Asks for this project's digest to be written again, and says how it went.
+ * "From scratch" tells the run to write every tier from the project's material
+ * alone instead of carrying the current text forward.
+ */
+function RegenerateDigest({ projectId }: { projectId: string }) {
+  const regenerate = useRegenerateDigest(projectId);
+  const [fresh, setFresh] = useState(false);
+  const answer = regenerate.data;
+  const note = regenerate.error ? digestRefusalText(regenerate.error) : answer ? DIGEST_OUTCOME_TEXT[answer.outcome] : null;
+  const busy = regenerate.isPending;
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex items-center gap-2">
+        <label className="inline-flex items-center gap-1.5 font-sans text-xs text-on-surface-variant">
+          <input type="checkbox" checked={fresh} onChange={(e) => setFresh(e.target.checked)} className="h-3.5 w-3.5 accent-primary" />
+          From scratch
+        </label>
+        <button
+          type="button"
+          aria-disabled={busy}
+          aria-busy={busy}
+          onClick={() => { if (!busy) regenerate.mutate({ fresh }); }}
+          className={cn(button, 'inline-flex h-8 items-center gap-2 font-medium', busy && 'opacity-60')}
+        >
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+          {busy ? 'Asking…' : 'Regenerate digest'}
+        </button>
+      </div>
+      <AskNote projectId={projectId} note={note} runId={answer?.runId} />
     </div>
   );
 }
@@ -126,15 +167,18 @@ function Digests({ projectId }: { projectId: string }) {
   const agents = [...new Set(list.map((d) => d.agentId))];
   return (
     <PageLoading isLoading={digests.isPending} error={digests.error}>
-      {list.length === 0 ? (
-        <Panel title="Digest">
-          <p className="font-sans text-sm text-on-surface-variant">No digest generated yet. It appears here once the digest task has run.</p>
-        </Panel>
-      ) : (
-        <div className="flex flex-col gap-4">
-          {agents.map((agentId) => <AgentDigests key={agentId} projectId={projectId} agentId={agentId} digests={list.filter((d) => d.agentId === agentId)} showAgent={agents.length > 1} />)}
-        </div>
-      )}
+      <div className="flex flex-col gap-4">
+        <div className="flex justify-end"><RegenerateDigest projectId={projectId} /></div>
+        {list.length === 0 ? (
+          <Panel title="Digest">
+            <p className="font-sans text-sm text-on-surface-variant">No digest generated yet. It appears here once the digest task has run.</p>
+          </Panel>
+        ) : (
+          agents.map((agentId) => (
+            <AgentDigests key={agentId} projectId={projectId} agentId={agentId} digests={list.filter((d) => d.agentId === agentId)} showAgent={agents.length > 1} />
+          ))
+        )}
+      </div>
     </PageLoading>
   );
 }

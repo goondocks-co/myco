@@ -28,7 +28,7 @@ import {
   handleRegisterAgent, handleRunAdmission,
   handleRunReports, handleWriteReport, handleRecordRunEvents, handleSupersedeRuns, handleUpdateRun, handleWriteState,
 } from './api/runs.js';
-import { handleInstructionsWrite, handleRunDigest, handleRunInstruction, handleRunSessions } from './api/cortex-tasks.js';
+import { handleDigestWrite, handleInstructionsWrite, handleRunDigest, handleRunInstruction, handleRunSessions } from './api/cortex-tasks.js';
 import {
   handleCredentialActivity, handleCredentials, handleInvitations, handleMembers, handleMintInvitation,
   handleRevokeCredential, handleRevokeInvitation, handleRevokeMember,
@@ -111,12 +111,14 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/runs/spore-create', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSporeCreate },
   { method: 'POST', path: '/runs/spore-resolve', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSporeResolve },
   // What a Cortex run reads and writes: the prompt the server built for it, the
-  // Project's settled sessions and its digest, and the one artifact it owes —
-  // admitted only to the harness credential that dispatched a live run of such a task.
+  // Project's settled sessions and its digest, and what it owes — the instructions
+  // artifact, or one digest extract per tier — admitted only to the harness
+  // credential that dispatched a live run of such a task.
   { method: 'POST', path: '/runs/instruction', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunInstruction },
   { method: 'POST', path: '/runs/instructions-write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleInstructionsWrite },
   { method: 'POST', path: '/runs/sessions', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSessions },
   { method: 'POST', path: '/runs/digest', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunDigest },
+  { method: 'POST', path: '/runs/digest-write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleDigestWrite },
   { method: 'POST', path: '/spores/save', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSaveSpore },
   { method: 'POST', path: '/spores/list', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleListSpores },
   { method: 'POST', path: '/spores/get', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleGetSpore },

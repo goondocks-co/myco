@@ -10,6 +10,7 @@ import { describe, expect, it } from 'bun:test';
 import { loadAllTasks } from '@myco/agent/registry.js';
 import { resolveDefinitionsDir } from '@myco/agent/loader.js';
 import { materializedToolsForTask, SERVED_TASKS } from '@myco/agent/runtime/server-tools.js';
+import { TASK_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/task-catalogue.js';
 
 /**
  * Names a served task declares that the Deployment does not serve, with what
@@ -108,6 +109,18 @@ describe('the served tool surface', () => {
   it('materializes more than the report for exactly the served tasks', () => {
     const beyondReport = [...tasks.keys()].filter((name) => servedNames(name).length > 1).sort();
     expect(beyondReport).toEqual([...SERVED_TASKS].sort());
+  });
+
+  /**
+   * A task file's own bound and the Deployment's budget for the same task are
+   * two numbers for one thing: the dispatcher writes its budget onto the run,
+   * and the runtime prefers the dispatch's — but a task file that still names a
+   * smaller bound is what a local run gets, and what a reader believes.
+   */
+  it('gives each task one run budget: the catalogue\'s and the definition\'s agree', () => {
+    for (const [task, seconds] of Object.entries(TASK_RUN_TIMEOUT_SECONDS)) {
+      expect({ task, timeoutSeconds: tasks.get(task)?.timeoutSeconds }).toEqual({ task, timeoutSeconds: seconds });
+    }
   });
 
   it('excuses only names the served task definitions still declare', () => {

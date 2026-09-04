@@ -124,6 +124,8 @@ export function createLocalRunStore(binding: LocalRunStoreBinding): LocalRunStor
 
     async updateRunStatus(runId, status, completion) {
       updateRunStatus(runId, status, completion, scope);
+      // A local run has no close gate between it and its own row.
+      return { applied: true };
     },
 
     async applyRunUpdate(runId, update) {

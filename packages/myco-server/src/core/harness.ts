@@ -97,7 +97,7 @@ export interface LaunchSpec {
   /** The hash of the material behind `instruction`, recorded in the run's context so the write route reads it from the run rather than from the caller. */
   inputHash?: string;
   /** What the material behind the input counted, recorded beside the hash. */
-  counts?: Readonly<Record<string, number>>;
+  counts?: Readonly<Record<string, number | boolean>>;
   /** How this run differs from an ordinary one. */
   options?: DispatchOptions;
 }
@@ -106,6 +106,8 @@ export interface LaunchSpec {
 export interface DispatchOptions {
   /** The run does its work and writes nothing; its write routes answer `written: false`. */
   dryRun?: boolean;
+  /** The run writes its artifact from the material alone rather than carrying the current one forward. */
+  fresh?: boolean;
 }
 
 export interface Launched {
@@ -243,17 +245,17 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
     // A task whose prompt the server builds has it built again here: the run
     // launches with the vault as it stands at this instant, and a Project that
     // has not moved past the artifact it already holds costs nothing.
-    const built = await buildTaskInput(env, queued.task, queued.projectId, now);
+    const built = await buildTaskInput(env, queued.task, queued.projectId, now, { fresh: stored.options?.fresh === true });
     if (built !== null && built.unchanged) {
       await skipQueued(env.db, scope, queued.id, now, INPUT_UNCHANGED);
       emit({ kind: 'task_skipped', task: queued.task, projectId: queued.projectId, skip: INPUT_UNCHANGED });
       continue;
     }
-    const fresh: Pick<LaunchSpec, 'instruction' | 'inputHash' | 'counts'> = built === null || built.unchanged
+    const rebuilt: Pick<LaunchSpec, 'instruction' | 'inputHash' | 'counts'> = built === null || built.unchanged
       ? {}
       : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
     try {
-      await launchDispatch(env, prepared.prepared, { ...stored, ...fresh, runId: queued.id, fromQueue: true }, now, { limits });
+      await launchDispatch(env, prepared.prepared, { ...stored, ...rebuilt, runId: queued.id, fromQueue: true }, now, { limits });
       launched += 1;
     } catch (err) {
       // The write refused on a limit another launch reached first: the row stays queued for the next drain. A row no longer queued belongs to another drain; the next row still gets its turn.
@@ -338,6 +340,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     timeoutSeconds,
     ...(spec.inputHash === undefined ? {} : { input_hash: spec.inputHash }),
     ...(spec.counts === undefined ? {} : { counts: spec.counts }),
+    ...(spec.options?.fresh === true ? { fresh: true } : {}),
   });
   const scope = { projectId: prepared.projectId };
   // A queued row moves to pending for this credential; any other id is recorded afresh. Either way the row exists before

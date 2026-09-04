@@ -16,7 +16,7 @@ import { ServerClient } from '@myco/member/transport.js';
 import {
   materializedCreateSporeTool, materializedReadDigestTool, materializedReportTool, materializedResolveSporeTool,
   materializedSessionMaterialTool, materializedSessionsTool, materializedSporeTool, materializedSporesTool,
-  materializedUpdateSessionTool,
+  materializedUpdateSessionTool, materializedWriteDigestTool,
 } from '@myco/agent/runtime/server-tools.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
@@ -44,7 +44,8 @@ async function setup() {
   await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_sweep', agentId: 'myco-agent', task: 'supersession-sweep', provider: 'anthropic', model: null, runContext: JSON.stringify({ session_id: 's1' }), dispatchedBy: minted.tokenId, startedAt: now });
   await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_smoke', agentId: 'myco-agent', task: 'container-smoke', provider: 'anthropic', model: null, runContext: null, dispatchedBy: minted.tokenId, startedAt: now });
   await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_cortex', agentId: 'myco-agent', task: 'cortex-instructions', provider: 'anthropic', model: null, runContext: JSON.stringify({ input_hash: 'server-hash' }), dispatchedBy: minted.tokenId, startedAt: now });
-  e.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE id IN ('run_1', 'run_sweep', 'run_smoke', 'run_cortex')`);
+  await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_digest', agentId: 'myco-agent', task: 'digest-only', provider: 'anthropic', model: null, runContext: JSON.stringify({ input_hash: 'digest-hash', counts: { spores: 3, sessionsInWindow: 1, windowFull: false } }), dispatchedBy: minted.tokenId, startedAt: now });
+  e.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE id IN ('run_1', 'run_sweep', 'run_smoke', 'run_cortex', 'run_digest')`);
   return { ...e, now, client: clientFor(minted.token) };
 }
 
@@ -145,7 +146,10 @@ describe('the instructions run\'s tools', () => {
     expect((listed.sessions as Array<{ id: string }>).map((s) => s.id)).toEqual(['s1']);
 
     expect(textOf(await materializedReadDigestTool(ctx).handler({ tier: 5000 }, {})))
-      .toEqual({ digest: { tier: 5000, content: 'the digest', generatedAt: now } });
+      .toEqual({ digest: { tier: 5000, content: 'the digest', generatedAt: now, fallback: false } });
+    // A run that only reads is served the nearest tier, and the answer says which it got.
+    expect(textOf(await materializedReadDigestTool(ctx).handler({ tier: 10000 }, {})))
+      .toEqual({ digest: { tier: 5000, content: 'the digest', generatedAt: now, fallback: true } });
     expect(textOf(await materializedReadDigestTool(ctx).handler({}, {})))
       .toEqual({ tiers: [{ tier: 5000, generatedAt: now, contentLength: 10 }] });
   });
@@ -182,5 +186,36 @@ describe('the instructions run\'s tools', () => {
     await materializedReportTool(ctx, counter).handler({ action: 'skip', summary: 'nothing to do' }, {});
     expect(sqlite.query(`SELECT COUNT(*) c FROM cortex_instructions`).get()).toEqual({ c: 0 });
     expect(counter.reports).toBe(1);
+  });
+});
+
+describe('the digest run\'s tools', () => {
+  it('write one tier, filing the substrate hash and the run off the run row', async () => {
+    const { client, sqlite } = await setup();
+    const ctx = { client, budget, runId: 'run_digest', agentId: 'myco-agent' };
+    const counter = { writes: 0 };
+    const write = materializedWriteDigestTool(ctx, counter);
+
+    expect(textOf(await write.handler({ tier: 5000, content: '# first' }, {}))).toEqual({ tier: 5000, revision_of: null });
+    expect(textOf(await write.handler({ tier: 5000, content: '# second' }, {}))).toMatchObject({ tier: 5000 });
+    expect(counter.writes).toBe(2);
+    expect(sqlite.query(`SELECT tier, content, substrate_hash AS substrateHash FROM digest_extracts`).all())
+      .toEqual([{ tier: 5000, content: '# second', substrateHash: 'digest-hash' }]);
+    expect(sqlite.query(`SELECT content, run_id AS runId, metadata FROM digest_extract_revisions`).all())
+      .toEqual([{ content: '# first', runId: 'run_digest', metadata: JSON.stringify({ spores: 3, sessionsInWindow: 1, windowFull: false }) }]);
+  });
+
+  it('answer a tier the deployment does not serve, and a run holding no digest surface, as tool errors', async () => {
+    const { client, sqlite } = await setup();
+    const counter = { writes: 0 };
+    const refused = textOf(await materializedWriteDigestTool({ client, budget, runId: 'run_digest', agentId: 'myco-agent' }, counter)
+      .handler({ tier: 3000, content: '# nope' }, {}));
+    expect(String(refused.error)).toContain('tier is one of');
+
+    const unheld = textOf(await materializedWriteDigestTool({ client, budget, runId: 'run_smoke', agentId: 'myco-agent' }, counter)
+      .handler({ tier: 5000, content: '# nope' }, {}));
+    expect(unheld).toEqual({ error: 'this run holds no such surface' });
+    expect(counter.writes).toBe(0);
+    expect(sqlite.query(`SELECT COUNT(*) c FROM digest_extracts`).get()).toEqual({ c: 0 });
   });
 });

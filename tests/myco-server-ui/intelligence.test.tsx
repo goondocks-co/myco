@@ -22,15 +22,19 @@ const detail = (over: Record<string, unknown> = {}, phases: unknown = [], report
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
 
-function server(routes: Record<string, () => Response>): void {
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+/** One stubbed endpoint; it is handed the request's own options so a test can read what the page asked for. */
+type Endpoint = (init?: RequestInit) => Response | Promise<Response>;
+
+function server(routes: Record<string, Endpoint>): void {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const pathname = new URL(href, 'https://s').pathname;
-    return routes[pathname]?.() ?? new Response(null, { status: 404 });
+    const endpoint = routes[pathname];
+    return endpoint === undefined ? new Response(null, { status: 404 }) : endpoint(init);
   }) as typeof fetch;
 }
 
-const base = (extra: Record<string, () => Response> = {}) => ({
+const base = (extra: Record<string, Endpoint> = {}) => ({
   '/auth/me': () => Response.json(ME),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/agents': () => Response.json({ agents: [{ id: 'agent_1', name: 'Myco agent', provider: 'anthropic', model: 'claude', enabled: true }] }),
@@ -230,5 +234,49 @@ describe('Cortex', () => {
     fireEvent.click(screen.getByRole('tab', { name: '5,000 tokens' }));
     expect(await screen.findByText('full digest')).toBeTruthy();
     expect(await screen.findByText('No earlier revisions.')).toBeTruthy();
+  });
+
+  it('asks for the digest again, from scratch when told to, and names each outcome in the reader\'s words', async () => {
+    const asked: Array<Record<string, unknown>> = [];
+    const answers: Response[] = [
+      Response.json({ runId: 'run_d1', task: 'digest-only', projectId: 'x', queued: false, timeoutSeconds: 300, provider: 'anthropic' }),
+      Response.json({ runId: 'run_d2', task: 'digest-only', projectId: 'x', queued: true, heldBy: 'concurrent_runs' }),
+      Response.json({ error: 'max_runs_per_day', message: 'ceiling met' }, { status: 409 }),
+    ];
+    server(base({
+      '/api/projects/x/cortex/instructions': () => Response.json({ instructions: [] }),
+      '/api/projects/x/digests': () => Response.json({ digests: [
+        { id: 'd1', agentId: 'agent_1', tier: 1500, content: 'brief digest', substrateHash: null, generatedAt: NOW },
+      ] }),
+      '/api/projects/x/digests/1500/revisions': () => Response.json({ revisions: [] }),
+      '/api/harness/dispatch': (init?: RequestInit) => { asked.push(JSON.parse(String(init?.body)) as Record<string, unknown>); return answers.shift()!; },
+    }));
+    mount('/p/x/cortex?tab=digest');
+    const press = async () => fireEvent.click(await screen.findByRole('button', { name: /Regenerate digest/ }));
+
+    await press();
+    expect(await screen.findByText(/Writing the digest/)).toBeTruthy();
+    expect(screen.getByText('see the run').getAttribute('href')).toBe('/p/x/runs/run_d1');
+
+    fireEvent.click(screen.getByLabelText('From scratch'));
+    await press();
+    expect(await screen.findByText(/Waiting for a runtime/)).toBeTruthy();
+
+    await press();
+    expect(await screen.findByText(/already been written once today/)).toBeTruthy();
+    expect(asked).toEqual([
+      { task: 'digest-only', projectId: 'x' },
+      { task: 'digest-only', projectId: 'x', fresh: true },
+      { task: 'digest-only', projectId: 'x', fresh: true },
+    ]);
+  });
+
+  it('offers to write a digest the project does not have yet', async () => {
+    server(base({
+      '/api/projects/x/cortex/instructions': () => Response.json({ instructions: [] }),
+      '/api/projects/x/digests': () => Response.json({ digests: [] }),
+    }));
+    mount('/p/x/cortex?tab=digest');
+    expect(await screen.findByRole('button', { name: /Regenerate digest/ })).toBeTruthy();
   });
 });
