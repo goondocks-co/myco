@@ -1,5 +1,6 @@
 /**
- * The recall surface: what a member's prompt hook is served for one prompt.
+ * The recall surface: what a member's hooks are served for one prompt, and for
+ * one session or subagent start.
  *
  * The route answers within the hook's own budget, so it composes and answers in
  * one call and holds no state of its own beyond the records `core/recall.ts`
@@ -9,13 +10,15 @@
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
-import { composePromptContext, readRecallLeaves } from '../core/recall.js';
+import { composePromptContext, composeSessionContext, readRecallLeaves, type SessionContextKind } from '../core/recall.js';
 import { settingsWriter } from '../core/settings.js';
 import { refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 
 const MAX_SESSION_CHARS = 384;
 const MAX_PROMPT_ID_CHARS = 192;
+const MAX_AGENT_TYPE_CHARS = 192;
+const MAX_AGENT_ID_CHARS = 192;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown, max: number): string | null => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : null);
@@ -50,6 +53,32 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
   ]);
   const served = await composePromptContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
     sessionId, promptId, text, now: ctx.now,
+  });
+  return Response.json({ persisted: true, ...served });
+}
+
+const isSessionKind = (v: unknown): v is SessionContextKind => v === 'start' || v === 'subagent';
+/** An optional bounded string: absent reads as absent, anything else must be a string within the bound. */
+const optional = (v: unknown, max: number): string | null | undefined => (v === undefined ? undefined : str(v, max));
+
+export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (!body) return Response.json(refused(ctx, BAD_BODY));
+
+  const sessionId = str(body.sessionId, MAX_SESSION_CHARS);
+  const kind = isSessionKind(body.kind) ? body.kind : null;
+  const agentId = optional(body.agentId, MAX_AGENT_ID_CHARS);
+  const agentType = optional(body.agentType, MAX_AGENT_TYPE_CHARS);
+  if (sessionId === null || kind === null || agentId === null || agentType === null) {
+    return Response.json(refused(ctx, refusal('session context requires sessionId and kind "start" or "subagent"', 'parse')));
+  }
+
+  const [leaves, capabilityOn] = await Promise.all([
+    readRecallLeaves(env.db),
+    settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
+  ]);
+  const served = await composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
+    sessionId, kind, agentId, agentType, now: ctx.now,
   });
   return Response.json({ persisted: true, ...served });
 }

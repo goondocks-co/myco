@@ -3,13 +3,36 @@ import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { AntigravityJsonlParser } from '../symbionts/parsers/antigravity-jsonl.js';
 import { runGit } from '../utils/git.js';
-import { runMemberHook, type HookMainOptions } from '../member/capture.js';
+import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { deriveId, promptEvent, sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
+import { servedOnce } from '../member/recall.js';
 import { readSessionState } from '../member/session-state.js';
 import { sessionLineage } from '../member/transcript.js';
 import { sha256Text } from '../member/text.js';
+import { HOOK_CONFIG } from './hook-config.generated.js';
+import type { HookResponse } from './response.js';
 
 const antigravityParser = new AntigravityJsonlParser();
+
+const SESSION_RECALL_PATH = '/context/session';
+
+/**
+ * What the Deployment serves this session, with the branch and the session id
+ * under it — each on its own line, separated by a blank line, in the shape the
+ * harness receives them in.
+ *
+ * A symbiont whose transcript is written after this hook fires spends up to
+ * 1 500 ms waiting for its first turn above, and the seam runs on what the
+ * budget has left after that wait.
+ */
+function recall(sessionId: string, branch: string | undefined) {
+  return async (run: HookRun): Promise<HookResponse | undefined> => {
+    const served = await servedOnce(run, SESSION_RECALL_PATH, { sessionId, kind: 'start' });
+    if (served === undefined) return undefined;
+    const lines = [served, ...(branch ? [`Branch:: \`${branch}\``] : []), `Session:: \`${sessionId}\``];
+    return { additionalContext: lines.join('\n\n') };
+  };
+}
 
 /**
  * Read AGY `transcript_full.jsonl` and return the user prompts in order. Empty
@@ -78,6 +101,9 @@ export async function main(opts: HookMainOptions = {}) {
     }
     return {
       events,
+      // A symbiont whose harness discards a SessionStart answer is asked for
+      // nothing: the call would spend the hook's budget on a block nobody reads.
+      context: HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true ? recall(sessionId, branch) : undefined,
       record: captured.length === 0 ? undefined : (state) => {
         for (const [hash, promptId] of captured) {
           state.prompts[hash] = promptId;

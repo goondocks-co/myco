@@ -9,12 +9,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
+import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
+import { runGit } from '@myco/utils/git.js';
 import { setBufferedStdin } from '@myco/hooks/read-stdin.js';
 import { _resetManifestCache } from '@myco/hooks/normalize.js';
 import { writeHookResponse } from '@myco/hooks/response.js';
-import { RECALL_CAP_MS } from '@myco/hooks/user-prompt-submit.js';
 import { runMemberHook, type HookOutcome, type HookRun } from '@myco/member/capture.js';
 import { resolveHookBudget, subRequestBudget } from '@myco/member/budget.js';
+import { recallKind, RECALL_CAP_MS } from '@myco/member/recall.js';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
@@ -281,5 +283,235 @@ describe('the prompt hook', () => {
     );
     expect(out.stdout).toContain('Session::');
     expect(spy.requests.map((r) => r.path)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two start hooks
+// ---------------------------------------------------------------------------
+
+const admit = () => rig.env.sqlite
+  .query(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`)
+  .run(Date.now());
+const guidance = (content = 'Keep the plan current.') => rig.env.sqlite
+  .query(`INSERT INTO cortex_instructions (project_id, id, agent_id, content, input_hash, source_run_id, generated_at) VALUES ('proj_1', ?, 'agent_1', ?, 'h', NULL, ?)`)
+  .run(`ci_${content.length}`, content, Date.now());
+const delivered = () => readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, SESSION).delivered;
+const darkTo = (path: string): FetchLike => async (input, init) => {
+  const req = new Request(input, init);
+  if (new URL(req.url).pathname === path) throw new Error('connection refused');
+  return rig.fetch(req);
+};
+
+describe('the session-start hook', () => {
+  const start = (fetchImpl: FetchLike) => runHook(
+    'session-start',
+    { session_id: SESSION, hook_event_name: 'SessionStart', transcript_path: transcript(), cwd: '/work/repo' },
+    { fetch: fetchImpl },
+  );
+
+  it('asks for the session block and writes the branch and the session under it', async () => {
+    admit();
+    guidance();
+    const spy = recordingFetch(rig.fetch);
+    const out = await start(spy.fetch);
+
+    const asked = spy.requests.filter((r) => r.path === '/context/session');
+    expect(asked).toHaveLength(1);
+    expect(JSON.parse(asked[0].body!)).toEqual({ sessionId: SESSION, kind: 'start' });
+    // The session event is on the wire before the block is asked for.
+    expect(spy.requests.map((r) => r.path).indexOf('/context/session'))
+      .toBeLessThan(spy.requests.map((r) => r.path).indexOf('/events'));
+
+    // The block, then the branch this checkout is on, then the session — each
+    // its own paragraph, in the order the harness has received them in.
+    expect(out.stdout).toBe([
+      'Keep the plan current.',
+      `Branch:: \`${runGit(['rev-parse', '--abbrev-ref', 'HEAD'], process.cwd())}\``,
+      `Session:: \`${SESSION}\``,
+    ].join('\n\n'));
+    expect(rig.rows('sessions')).toBe(1);
+  });
+
+  it('marks the kind the Deployment named and asks once per session', async () => {
+    admit();
+    guidance();
+    await start(rig.fetch);
+    expect(delivered()).toEqual(['cortex']);
+
+    const spy = recordingFetch(rig.fetch);
+    const again = await start(spy.fetch);
+    expect(spy.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
+    expect(again.stdout).toBe('');
+  });
+
+  it('remembers a Project that is not admitted, and asks it nothing again', async () => {
+    const spy = recordingFetch(rig.fetch);
+    const out = await start(spy.fetch);
+    expect(spy.requests.map((r) => r.path)).toContain('/context/session');
+    expect(out.stdout).toBe('');
+    // `capability` is settled for the life of the session, so the kind is marked.
+    expect(delivered()).toEqual(['cortex']);
+
+    const again = recordingFetch(rig.fetch);
+    await start(again.fetch);
+    expect(again.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
+  });
+
+  it('asks again while the admitted Project simply holds nothing yet', async () => {
+    admit();
+    const first = recordingFetch(rig.fetch);
+    const out = await start(first.fetch);
+    expect(out.stdout).toBe('');
+    // Nothing settled: an artifact written later still reaches this session.
+    expect(delivered()).toEqual([]);
+
+    guidance();
+    const second = recordingFetch(rig.fetch);
+    const later = await start(second.fetch);
+    expect(second.requests.map((r) => r.path).filter((p) => p === '/context/session')).toHaveLength(1);
+    expect(later.stdout.startsWith('Keep the plan current.')).toBe(true);
+    expect(delivered()).toEqual(['cortex']);
+  });
+
+  it('is not called at all while the offline latch holds', async () => {
+    admit();
+    guidance();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    spool.markOffline(Date.now());
+    const spy = recordingFetch(rig.fetch);
+    const out = await start(spy.fetch);
+    expect(spy.requests.map((r) => r.path)).toEqual([]);
+    expect(out.stdout).toBe('');
+    expect(delivered()).toEqual([]);
+  });
+
+  it('latches the dark Deployment, writes one line, and marks nothing', async () => {
+    admit();
+    guidance();
+    const out = await start(darkTo('/context/session'));
+    expect(out.stderr).toContain('[myco] session-start: recall skipped (retry)');
+    expect(out.stdout).toBe('');
+    expect(delivered()).toEqual([]);
+    expect(new MemberSpool('proj_1', { mycoHome }).shouldDial(Date.now())).toBe(false);
+  });
+
+  it('asks for nothing when the session was dropped', async () => {
+    admit();
+    guidance();
+    const dropped = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-recall-drop-')), `${SESSION}.jsonl`);
+    fs.writeFileSync(dropped, JSON.stringify({ type: 'user', entrypoint: 'sdk-py', message: { role: 'user', content: 'x' } }) + '\n');
+    const spy = recordingFetch(rig.fetch);
+    const out = await runHook('session-start', { session_id: SESSION, hook_event_name: 'SessionStart', transcript_path: dropped }, { fetch: spy.fetch });
+    expect(out.stderr).toContain('session-start: dropped');
+    expect(spy.requests.map((r) => r.path)).toEqual([]);
+  });
+
+  it('asks for nothing on behalf of a symbiont whose harness discards the answer', async () => {
+    admit();
+    guidance();
+    expect(HOOK_CONFIG['claude-code'].capabilities.sessionStartInjection).toBe(true);
+    expect(HOOK_CONFIG.windsurf.capabilities.sessionStartInjection).toBe(false);
+    const spy = recordingFetch(rig.fetch);
+    // Windsurf names its session on its own field, so the hook runs and the
+    // capability alone is what holds the call back.
+    await runHook(
+      'session-start',
+      { trajectory_id: SESSION, hook_event_name: 'SessionStart', transcript_path: transcript(), cwd: '/work/repo' },
+      { fetch: spy.fetch, symbiont: 'windsurf' },
+    );
+    expect(spy.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
+    // The event itself still travels.
+    expect(spy.requests.map((r) => r.path)).toContain('/events');
+  });
+});
+
+describe('the subagent-start hook', () => {
+  const delegate = (fetchImpl: FetchLike, over: Record<string, unknown> = {}, symbiont = 'claude-code') => runHook(
+    'subagent-start',
+    { session_id: SESSION, hook_event_name: 'SubagentStart', transcript_path: transcript(), agent_id: 'a1', agent_type: 'code-reviewer', ...over },
+    { fetch: fetchImpl, symbiont },
+  );
+
+  it('serves the delegated agent the guidance block, and serves the next delegation of the same type too', async () => {
+    admit();
+    guidance();
+    const spy = recordingFetch(rig.fetch);
+    const out = await delegate(spy.fetch);
+
+    const asked = spy.requests.filter((r) => r.path === '/context/session');
+    expect(asked).toHaveLength(1);
+    expect(JSON.parse(asked[0].body!)).toEqual({ sessionId: SESSION, kind: 'subagent', agentId: 'a1', agentType: 'code-reviewer' });
+    expect(JSON.parse(out.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'SubagentStart',
+        additionalContext: 'You are a delegated subagent working inside a Myco-connected project.\n'
+          + 'Follow these managed Cortex instructions as current project guidance.\n'
+          + 'Apply them to your assigned task, and defer broad orchestration decisions back to the parent agent.\n\n'
+          + 'Keep the plan current.',
+      },
+    });
+    expect(delivered()).toEqual(['cortex:a1']);
+
+    // A second delegation of the same type is a second subagent, and is served.
+    const second = recordingFetch(rig.fetch);
+    const other = await delegate(second.fetch, { agent_id: 'a2' });
+    expect(second.requests.map((r) => r.path).filter((p) => p === '/context/session')).toHaveLength(1);
+    expect(JSON.parse(other.stdout).hookSpecificOutput.additionalContext).toContain('Keep the plan current.');
+    expect(delivered()).toEqual(['cortex:a1', 'cortex:a2']);
+
+    // The same delegation twice is one subagent.
+    const repeated = recordingFetch(rig.fetch);
+    await delegate(repeated.fetch, { agent_id: 'a1' });
+    expect(repeated.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
+  });
+
+  it('names the delegation the way the Deployment records it', async () => {
+    admit();
+    guidance();
+    // A harness naming no id falls to the type; one naming neither to a single name.
+    await delegate(rig.fetch, { agent_id: undefined, agent_type: 'explorer' });
+    expect(delivered()).toEqual(['cortex:explorer']);
+    await delegate(rig.fetch, { agent_id: undefined, agent_type: undefined });
+    expect(delivered()).toEqual(['cortex:explorer', 'cortex:unknown']);
+    // The member's own key and the kind the Deployment answers are the same name.
+    expect([
+      recallKind({ sessionId: SESSION, kind: 'start' }),
+      recallKind({ sessionId: SESSION, kind: 'subagent', agentId: ' a1 ', agentType: 'code-reviewer' }),
+      recallKind({ sessionId: SESSION, kind: 'subagent', agentType: 'explorer' }),
+      recallKind({ sessionId: SESSION, kind: 'subagent' }),
+    ]).toEqual(['cortex', 'cortex:a1', 'cortex:explorer', 'cortex:unknown']);
+  });
+
+  it('asks for nothing on behalf of a symbiont whose harness discards the answer', async () => {
+    admit();
+    guidance();
+    expect(HOOK_CONFIG.cursor.capabilities.subagentStartInjection).toBe(false);
+    const spy = recordingFetch(rig.fetch);
+    const out = await delegate(spy.fetch, {}, 'cursor');
+    expect(spy.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
+    expect(out.stdout).toBe('');
+    // The event itself still travels.
+    expect(spy.requests.map((r) => r.path)).toContain('/events');
+  });
+
+  it('is not called at all while the offline latch holds', async () => {
+    admit();
+    guidance();
+    new MemberSpool('proj_1', { mycoHome }).markOffline(Date.now());
+    const spy = recordingFetch(rig.fetch);
+    const out = await delegate(spy.fetch);
+    expect(spy.requests.map((r) => r.path)).toEqual([]);
+    expect(out.stdout).toBe('');
+    expect(delivered()).toEqual([]);
+  });
+
+  it('latches the dark Deployment, writes one line, and keeps the event', async () => {
+    admit();
+    guidance();
+    const out = await delegate(darkTo('/context/session'));
+    expect(out.stderr).toContain('[myco] subagent-start: recall skipped (retry)');
+    expect(out.stdout).toBe('');
+    expect(delivered()).toEqual([]);
   });
 });

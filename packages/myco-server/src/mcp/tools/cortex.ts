@@ -5,7 +5,7 @@
  * The Canopy, notification and maintenance ops are named in the registry as
  * not yet served; nothing here answers them.
  */
-import { listDigests, type DigestRow } from '../../core/digests.js';
+import { digestForTier, listDigests } from '../../core/digests.js';
 import { listInstructions } from '../../read/cortex.js';
 import { listProjects } from '../../read/sessions.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
@@ -22,26 +22,15 @@ export interface DigestResult {
   generated_at?: number;
 }
 
-/** The newest digest of each tier, whichever agent produced it. */
-function newestPerTier(rows: readonly DigestRow[]): DigestRow[] {
-  const byTier = new Map<number, DigestRow>();
-  for (const row of rows) {
-    const held = byTier.get(row.tier);
-    if (held === undefined || row.generatedAt > held.generatedAt) byTier.set(row.tier, row);
-  }
-  return [...byTier.values()];
-}
-
 export async function handleCortexDigest(input: ToolInput, ctx: ToolContext): Promise<unknown> {
   const scope = await scopeOf(ctx, input);
   if (scope === null) return failure('Project not found');
   const requested = typeof input.tier === 'number' ? input.tier : DEFAULT_TIER;
-  const tiers = newestPerTier(await listDigests(ctx.env.db, scope));
-  if (tiers.length === 0) return { content: NO_DIGEST_MESSAGE, tier: requested, fallback: false } satisfies DigestResult;
-  const exact = tiers.find((t) => t.tier === requested);
-  if (exact) return { content: exact.content, tier: exact.tier, fallback: false, generated_at: exact.generatedAt } satisfies DigestResult;
-  const nearest = [...tiers].sort((a, b) => Math.abs(a.tier - requested) - Math.abs(b.tier - requested))[0];
-  return { content: nearest.content, tier: nearest.tier, fallback: true, generated_at: nearest.generatedAt } satisfies DigestResult;
+  const served = digestForTier(await listDigests(ctx.env.db, scope), requested);
+  if (served === null) return { content: NO_DIGEST_MESSAGE, tier: requested, fallback: false } satisfies DigestResult;
+  return {
+    content: served.row.content, tier: served.row.tier, fallback: served.fallback, generated_at: served.row.generatedAt,
+  } satisfies DigestResult;
 }
 
 export async function handleCortexInstructions(input: ToolInput, ctx: ToolContext): Promise<unknown> {

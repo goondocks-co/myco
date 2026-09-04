@@ -20,3 +20,12 @@ export async function listInstructions(db: RelationalStore, scope: ReadScope): P
     .all<InstructionsRow>();
   return results.map((r) => ({ ...r, sourceRunId: r.sourceRunId ?? null }));
 }
+
+/** The newest instructions the project holds, whichever agent wrote it; ties fall to the lower id. */
+export async function newestInstructions(db: RelationalStore, scope: ReadScope): Promise<{ content: string; generatedAt: number } | null> {
+  return db
+    .prepare(`SELECT content, generated_at AS generatedAt
+       FROM cortex_instructions WHERE project_id = ? ORDER BY generated_at DESC, id ASC LIMIT 1`)
+    .bind(scope.projectId)
+    .first<{ content: string; generatedAt: number }>();
+}
