@@ -48,7 +48,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 71;
+const EMIT_CALLS = 73;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -419,7 +419,8 @@ describe('gates', () => {
 
   it('advertises the rate-limit window it is configured with', () => {
     const toml = readFileSync(join(WORKER, 'wrangler.toml'), 'utf8');
-    const periods = [...toml.matchAll(/period = (\d+)/g)].map((m) => Number(m[1]));
+    // The word alone, never the tail of a longer key: the container table names a `rollout_active_grace_period`.
+    const periods = [...toml.matchAll(/\bperiod = (\d+)/g)].map((m) => Number(m[1]));
     expect(periods).toEqual([RETRY_AFTER_SECONDS, RETRY_AFTER_SECONDS]);
   });
 

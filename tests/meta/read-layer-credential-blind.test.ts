@@ -68,15 +68,33 @@ describe('read layer', () => {
     // be named, so the names appearing anywhere in a read module is the gate; the
     // one reader that parses `checkpoints` into phases names it in exactly one
     // module, which is pinned here.
+    //
+    // `run_context` is admitted in that same module and nowhere else, and only
+    // under `json_extract` for the named keys below: the whole column carries
+    // whatever a dispatch put in it, and a reader that selected it would hand a
+    // dashboard the lot. A key added here is a key someone chose to publish.
     const offenders: string[] = [];
     for (const file of tsFiles(READ_DIR)) {
       const source = readFileSync(file, 'utf8');
       const rel = file.slice(READ_DIR.length + 1);
       for (const column of ['execution_overrides', 'run_context', 'cost_data', 'checkpoints']) {
-        if (source.includes(column) && !(column === 'checkpoints' && rel === 'runs.ts')) offenders.push(`${rel}: ${column}`);
+        if (!source.includes(column)) continue;
+        if (rel === 'runs.ts' && (column === 'checkpoints' || column === 'run_context')) continue;
+        offenders.push(`${rel}: ${column}`);
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it('publishes exactly the named context keys, each one read out of the column rather than with it', () => {
+    const source = readFileSync(join(READ_DIR, 'runs.ts'), 'utf8');
+    // Every mention of the column sits inside a JSON reader, so nothing selects it whole.
+    expect(source.match(/run_context/g) ?? []).toHaveLength((source.match(/json_(?:valid|extract)\(run_context/g) ?? []).length);
+    // And the reader takes one named key at a time; these are the keys it takes.
+    expect(source).toMatch(/json_extract\(run_context, '\$\.\$\{key\}'\)/);
+    const keys = [...source.matchAll(/contextValue\('([a-z_]+)'\)/g)].map((m) => m[1]);
+    expect(keys.length).toBeGreaterThan(0);
+    expect([...new Set(keys)].sort()).toEqual(['replaced', 'replaces']);
   });
 
   it('names no Request type and takes no full Env', () => {

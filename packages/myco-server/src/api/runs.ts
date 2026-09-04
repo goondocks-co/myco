@@ -23,8 +23,8 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
 import {
   applyRunUpdate, claimRun, DISPATCHER_OWNED_COLUMNS, getRun, getState, insertReport, isTerminalRunStatus, listAgents,
-  listReports, mutateState, projectAdmission, recordRunEvents, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns,
-  upsertAgent,
+  listReports, markRunReplaced, mutateState, projectAdmission, recordRunEvents, RUN_UPDATE_COLUMNS,
+  supersedeEquivalentResumableRuns, upsertAgent,
   type RunInsert, type RunUpdate, type RunEventRowInsert,
 } from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
@@ -35,7 +35,7 @@ import { admitResume, classifyFailure, type FailureObservation } from '../core/r
 const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
 import { releaseRun } from '../core/release.js';
 import { runCloseRefusal } from '../core/run-postconditions.js';
-import { HARNESS_MEMBER_ID } from '../core/harness.js';
+import { HARNESS_MEMBER_ID, requeueReplaced } from '../core/harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
@@ -228,6 +228,34 @@ async function releaseDispatchedRun(env: ServerEnv, ctx: RouteContext, runId: st
   await releaseRun(env, scope, run, ctx.now);
 }
 
+/**
+ * Record that a deployment ended this run, and stand one fresh run of the same
+ * task in its place.
+ *
+ * The run's context belongs to the dispatcher and a runtime may not set it.
+ * `replaced` is the single exception: a runtime that the platform is taking
+ * away adds that one word through the failure it posts, and adds nothing else.
+ * The word is what keeps the failed row out of the task's per-day count and
+ * what names the successor's predecessor on the run the queue then holds.
+ *
+ * Only the runtime the dispatch minted a credential FOR may say it, keyed on
+ * the run's own `dispatched_by` exactly as the release is. The word starts a
+ * run on the Deployment's money: any other member holding a run id would turn
+ * one failure into a dispatch nobody asked for. A caller that is not that
+ * runtime marks nothing and queues nothing; its status update still stands, and
+ * it is answered as the update route answers any other.
+ */
+async function recordReplacedRun(env: ServerEnv, ctx: RouteContext, runId: string): Promise<void> {
+  const scope = { projectId: ctx.projectId };
+  const run = await getRun(env.db, scope, runId);
+  if (run === null || run.dispatchedBy !== ctx.tokenId) return;
+  if (!(await markRunReplaced(env.db, scope, runId))) return;
+  await requeueReplaced(env, { run, projectId: ctx.projectId, serverUrl: ctx.origin, actor: ctx.memberId }, ctx.now);
+}
+
+/** Whether a failure body asks for the one context word a runtime may add. */
+const asksReplaced = (body: Record<string, unknown>, status: unknown): boolean => body.replaced === true && status === 'failed';
+
 /** The answer a status change gets on a run that has already ended under a DIFFERENT ending: nothing moved, and the row's own ending stands. */
 const TERMINAL_ANSWER = { persisted: true, changed: 0, applied: false, reason: 'terminal' } as const;
 /** The answer a status change gets on a run already carrying that very status: nothing moved, and nothing needs to. */
@@ -310,6 +338,7 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   const changed = await applyRunUpdate(env.db, scope, runId, runUpdate);
   if (changed === 1) {
     await releaseDispatchedRun(env, ctx, runId, runUpdate.status);
+    if (asksReplaced(body, runUpdate.status)) await recordReplacedRun(env, ctx, runId);
     return Response.json({ persisted: true, changed });
   }
   const raced = guarded ? endedAnswer((await getRun(env.db, scope, runId))?.status, runUpdate.status) : null;
@@ -460,7 +489,10 @@ export async function handleRecordFailure(env: ServerEnv, ctx: RouteContext): Pr
   const ended = endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed');
   if (ended !== null) return ended;
   const changed = await applyRunUpdate(env.db, scope, runId, update as RunUpdate);
-  if (changed === 1) await releaseDispatchedRun(env, ctx, runId, 'failed');
+  if (changed === 1) {
+    await releaseDispatchedRun(env, ctx, runId, 'failed');
+    if (body.replaced === true) await recordReplacedRun(env, ctx, runId);
+  }
   const raced = changed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
   if (raced !== null) return raced;
   return Response.json({ persisted: true, changed, ...decision });

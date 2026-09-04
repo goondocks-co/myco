@@ -25,6 +25,10 @@ export interface RunListRow {
   heldBy: string | null;
   /** How many queued runs are ahead of a queued run; null for any other. */
   position: number | null;
+  /** Whether a deployment ended this run rather than its own work. */
+  replaced: boolean;
+  /** The run this one stands in for: the deployment that ended that run put this one in its place. */
+  replaces: string | null;
 }
 
 /**
@@ -83,9 +87,13 @@ export interface RunFilters {
 const POSITION_SQL = `(SELECT COUNT(*) FROM agent_runs q WHERE q.status = 'queued'
   AND (q.queued_at < agent_runs.queued_at OR (q.queued_at = agent_runs.queued_at AND q.id < agent_runs.id)))`;
 
+/** One key of a run's context, for the two words a reader needs off it; a context that is not JSON reads as none. */
+const contextValue = (key: string): string => `CASE WHEN json_valid(run_context) THEN json_extract(run_context, '$.${key}') END`;
+
 const LIST_COLUMNS = `id, agent_id, task, status, provider, model, started_at, resumed_at, completed_at,
   tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed,
-  queued_at, held_by, CASE WHEN status = 'queued' THEN ${POSITION_SQL} ELSE NULL END AS position`;
+  queued_at, held_by, CASE WHEN status = 'queued' THEN ${POSITION_SQL} ELSE NULL END AS position,
+  ${contextValue('replaced')} AS replaced, ${contextValue('replaces')} AS replaces`;
 
 const DETAIL_COLUMNS = `${LIST_COLUMNS}, instruction, session_ref, actual_cost_usd, estimated_cost_usd, reasoning_level,
   resume_mode, resume_attempts, error, dispatched_by, usage_data, actions_taken, checkpoints`;
@@ -115,6 +123,8 @@ function toListRow(row: Record<string, unknown>): RunListRow {
     queuedAt: num(row.queued_at),
     heldBy: text(row.held_by),
     position: num(row.position),
+    replaced: flag(row.replaced),
+    replaces: text(row.replaces),
   };
 }
 

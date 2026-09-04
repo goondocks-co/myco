@@ -22,6 +22,8 @@ export interface RunListRow {
   queuedAt: number | null;
   heldBy: string | null;
   position: number | null;
+  replaced: boolean;
+  replaces: string | null;
 }
 
 export interface RunDetailRow extends RunListRow {

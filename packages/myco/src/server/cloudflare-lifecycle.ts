@@ -109,7 +109,7 @@ export async function createCloudflareDeployment(options: LifecycleOptions): Pro
   const withConfig = { ...options, configFile: path.basename(configFile) };
 
   await applyMigrations({ ...withConfig, databaseName: DATABASE_NAME });
-  const deployed = await deployWorker(withConfig);
+  const deployed = await deployWorker({ ...withConfig, pushedImage: record.harnessImage, ...(existing?.harnessImage === undefined ? {} : { deployedImage: existing.harnessImage }) });
 
   // After the first deploy: a secret lands on the live Worker; putting one
   // ahead of a Worker that is not there yet is version-dependent behavior.
@@ -133,7 +133,7 @@ export async function updateCloudflareDeployment(options: LifecycleOptions): Pro
   const configFile = writeDeployConfig(pinned, options.configDir);
   const withConfig = { ...options, configFile: path.basename(configFile) };
   await applyMigrations({ ...withConfig, databaseName: record.databaseName });
-  const deployed = await deployWorker(withConfig);
+  const deployed = await deployWorker({ ...withConfig, pushedImage: pinned.harnessImage, ...(record.harnessImage === undefined ? {} : { deployedImage: record.harnessImage }) });
   writeDeploymentRecord({ ...pinned, versionId: deployed.versionId, deployedAt: new Date().toISOString() }, options.mycoHome);
   return { versionId: deployed.versionId };
 }

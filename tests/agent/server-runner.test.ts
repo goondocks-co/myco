@@ -11,8 +11,8 @@ import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import worker from '@myco-server-worker/index.js';
 import { ServerClient } from '@myco/member/transport.js';
 import {
-  CAPTURE_DRIVEN_ADMISSION, installRunFailureHandlers, RUN_DEADLINE_ERROR, RUN_REFUSED_CLOSE_ERROR, RUN_REPLACED_ERROR,
-  runServerTask, type HeldRun,
+  CAPTURE_DRIVEN_ADMISSION, installRunFailureHandlers, RECLAIM_WARNING_MS, RUN_DEADLINE_ERROR, RUN_REFUSED_CLOSE_ERROR,
+  RUN_RECLAIMED_ERROR, runServerTask, type HeldRun,
 } from '@myco/agent/runtime/server-runner.js';
 import type { AgentHarness, HarnessExecuteInput } from '@myco/agent/harness/types.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
@@ -175,77 +175,91 @@ describe('a run that dies names itself', () => {
       .toEqual({ status: 'failed', error: 'the provider closed the stream' });
   });
 
-  it('names the run on the row when the platform takes the container away, and when the process throws', async () => {
-    const { client, sqlite } = await harness();
-    await runServerTask({ client, budget, runId: 'run_taken', taskName: 'container-smoke', harness: fakeHarness('silent') });
-    sqlite.query(`UPDATE agent_runs SET status = 'running', completed_at = NULL, error = NULL WHERE id = 'run_taken'`).run();
-
-    // A stand-in for the process: the same events, raised on demand.
-    const listeners = new Map<string, Array<(reason?: unknown) => void>>();
-    const events = { on: (event: string, listener: (reason?: unknown) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]) };
-    const named: Array<{ error: string; named: boolean }> = [];
-    let held: HeldRun | null = { client, budget, runId: 'run_taken' };
-    installRunFailureHandlers(events, { held: () => held, onNamed: (error, wasNamed) => { named.push({ error, named: wasNamed }); held = null; } });
-
-    for (const listener of listeners.get('SIGTERM') ?? []) listener();
-    await Bun.sleep(50);
-    expect(named).toEqual([{ error: RUN_REPLACED_ERROR, named: true }]);
-    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_taken'`).get())
-      .toEqual({ status: 'failed', error: RUN_REPLACED_ERROR });
-
-    // A platform that sends SIGTERM again, or SIGINT after it, is answered once:
-    // the row already carries what happened and the grace period is not spent twice.
-    for (const listener of [...(listeners.get('SIGTERM') ?? []), ...(listeners.get('SIGINT') ?? [])]) listener();
-    for (const listener of listeners.get('uncaughtException') ?? []) listener(new Error('and then this'));
-    await Bun.sleep(30);
-    expect(named).toHaveLength(1);
-  });
-
-  it('answers no signal once the run has posted its own end: the release arrives, and nothing further reaches the row', async () => {
+  it('lets a run in flight finish under a stop signal: nothing is posted, the run\'s own ending lands, and the drain then ends clean', async () => {
     const { client, sqlite } = await harness();
     const listeners = new Map<string, Array<(reason?: unknown) => void>>();
     const events = { on: (event: string, listener: (reason?: unknown) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]) };
     const named: Array<{ error: string; named: boolean }> = [];
+    const seen: string[] = [];
     let held: HeldRun | null = null;
-    installRunFailureHandlers(events, { held: () => held, onNamed: (error, wasNamed) => { named.push({ error, named: wasNamed }); } });
-
-    const result = await runServerTask({
-      client, budget, runId: 'run_closing', taskName: 'container-smoke', harness: fakeHarness('silent'),
-      onClaimed: () => { held = { client, budget, runId: 'run_closing' }; },
-      // The Deployment releases the container the instant the close lands, so
-      // the signal arrives while this very post is still open.
-      onClosing: () => { held = null; for (const listener of listeners.get('SIGTERM') ?? []) listener(); },
-    });
-    await Bun.sleep(60);
-    expect(result).toEqual({ runId: 'run_closing', status: 'completed', reportCount: 0 });
-    expect(named).toEqual([{ error: RUN_REPLACED_ERROR, named: false }]);
-    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_closing'`).get()).toEqual({ status: 'completed', error: null });
-  });
-
-  it('still names a signal that arrives before the run posts anything, and the close that follows finds the row terminal', async () => {
-    const { client, sqlite } = await harness();
-    const listeners = new Map<string, Array<(reason?: unknown) => void>>();
-    const events = { on: (event: string, listener: (reason?: unknown) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]) };
-    let held: HeldRun | null = null;
-    installRunFailureHandlers(events, { held: () => held, onNamed: () => { held = null; } });
+    // A budget the run finishes well inside: the platform's own wall is minutes away.
+    installRunFailureHandlers(events, {
+      held: () => held,
+      onNamed: (error, wasNamed) => { named.push({ error, named: wasNamed }); },
+      onStopping: () => { seen.push('draining'); },
+      onDrained: () => { seen.push('drained'); },
+    }, { reclaimAfterMs: 10_000 });
 
     const takenMidRun = {
       async execute() {
         for (const listener of listeners.get('SIGTERM') ?? []) listener();
-        await Bun.sleep(60);
+        await Bun.sleep(40);
         return { finalText: 'done', turnsUsed: 1, usage: { totalTokens: 7 } as never };
       },
       supports: () => false,
     } as unknown as AgentHarness;
 
     const result = await runServerTask({
-      client, budget, runId: 'run_taken_early', taskName: 'container-smoke', harness: takenMidRun,
-      onClaimed: () => { held = { client, budget, runId: 'run_taken_early' }; },
+      client, budget, runId: 'run_drained', taskName: 'container-smoke', harness: takenMidRun,
+      onClaimed: () => { held = { client, budget, runId: 'run_drained' }; },
       onClosing: () => { held = null; },
     });
-    expect(result).toEqual({ runId: 'run_taken_early', status: 'failed', error: RUN_REFUSED_CLOSE_ERROR, refused: 'terminal', reportCount: 0 });
-    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_taken_early'`).get())
-      .toEqual({ status: 'failed', error: RUN_REPLACED_ERROR });
+    await Bun.sleep(30);
+    expect(result).toEqual({ runId: 'run_drained', status: 'completed', reportCount: 0 });
+    expect(named).toEqual([]);
+    expect(seen).toEqual(['draining']);
+    expect(sqlite.query(`SELECT status, error, run_context c FROM agent_runs WHERE id = 'run_drained'`).get())
+      .toEqual({ status: 'completed', error: null, c: null });
+  });
+
+  it('ends the drain at once in a container holding no run, and answers a second signal with nothing', async () => {
+    const listeners = new Map<string, Array<(reason?: unknown) => void>>();
+    const events = { on: (event: string, listener: (reason?: unknown) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]) };
+    const seen: string[] = [];
+    installRunFailureHandlers(events, {
+      held: () => null,
+      onNamed: () => { seen.push('named'); },
+      onStopping: () => { seen.push('draining'); },
+      onDrained: () => { seen.push('drained'); },
+    });
+    for (const listener of listeners.get('SIGTERM') ?? []) listener();
+    // A platform that sends SIGTERM again, or SIGINT after it, is answered once.
+    for (const listener of [...(listeners.get('SIGTERM') ?? []), ...(listeners.get('SIGINT') ?? [])]) listener();
+    await Bun.sleep(20);
+    expect(seen).toEqual(['draining', 'drained']);
+  });
+
+  it('names a run still in flight when the drain budget runs out, marking it one a deployment replaced', async () => {
+    const { client, sqlite } = await harness();
+    await runServerTask({ client, budget, runId: 'run_reclaimed', taskName: 'container-smoke', harness: fakeHarness('silent') });
+    sqlite.query(`UPDATE agent_runs SET status = 'running', completed_at = NULL, error = NULL WHERE id = 'run_reclaimed'`).run();
+
+    const listeners = new Map<string, Array<(reason?: unknown) => void>>();
+    const events = { on: (event: string, listener: (reason?: unknown) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]) };
+    const named: Array<{ error: string; named: boolean }> = [];
+    let held: HeldRun | null = { client, budget, runId: 'run_reclaimed' };
+    installRunFailureHandlers(events, {
+      held: () => held,
+      onNamed: (error, wasNamed) => { named.push({ error, named: wasNamed }); held = null; },
+    }, { reclaimAfterMs: 5 });
+
+    for (const listener of listeners.get('SIGTERM') ?? []) listener();
+    await Bun.sleep(120);
+    expect(named).toEqual([{ error: RUN_RECLAIMED_ERROR, named: true }]);
+    const row = sqlite.query(`SELECT status, error, run_context c FROM agent_runs WHERE id = 'run_reclaimed'`).get() as { status: string; error: string; c: string };
+    expect({ status: row.status, error: row.error }).toEqual({ status: 'failed', error: RUN_RECLAIMED_ERROR });
+    expect(JSON.parse(row.c) as { replaced?: boolean }).toEqual({ replaced: true });
+
+    // A signal after the reclaim spends nothing: the row already carries what happened.
+    for (const listener of [...(listeners.get('SIGTERM') ?? []), ...(listeners.get('SIGINT') ?? [])]) listener();
+    for (const listener of listeners.get('uncaughtException') ?? []) listener(new Error('and then this'));
+    await Bun.sleep(30);
+    expect(named).toHaveLength(1);
+  });
+
+  it('holds the drain budget inside the fifteen minutes the platform waits before the kill', () => {
+    expect(RECLAIM_WARNING_MS).toBeLessThan(15 * 60_000);
+    expect(RECLAIM_WARNING_MS).toBeGreaterThan(10 * 60_000);
   });
 
   it('names nothing for a death in a container holding no run, and says so', async () => {

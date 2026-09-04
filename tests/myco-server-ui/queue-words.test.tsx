@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { queuedWords } from '../../packages/myco-server/ui/src/pages/AgentRuns';
+import { deployWords, queuedWords } from '../../packages/myco-server/ui/src/pages/AgentRuns';
 import { describeActivity } from '../../packages/myco-server/ui/src/pages/ProjectHome';
 import { HELD_BY_WORDS } from '../../packages/myco-server/src/core/limits';
 
@@ -15,6 +15,12 @@ describe('a queued run in the reader\'s words', () => {
     for (const [holder, words] of Object.entries(HELD_BY_WORDS)) {
       expect(queuedWords({ position: 0, heldBy: holder })).toBe(`waiting — next in line · held by ${words}`);
     }
+  });
+
+  it('says what a deploy did to a run, and says nothing about an ordinary one', () => {
+    expect(deployWords({ replaced: true, replaces: null })).toBe('replaced during a deploy');
+    expect(deployWords({ replaced: false, replaces: 'run_abc' })).toBe('retry of run_abc');
+    expect(deployWords({ replaced: false, replaces: null })).toBeNull();
   });
 
   it('counts waiting runs on the home\'s activity line', () => {
