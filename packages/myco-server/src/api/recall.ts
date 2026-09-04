@@ -18,6 +18,7 @@ import { refused } from '../ingest/events.js';
 const MAX_SESSION_CHARS = 384;
 const MAX_PROMPT_ID_CHARS = 192;
 const MAX_AGENT_TYPE_CHARS = 192;
+const MAX_AGENT_ID_CHARS = 192;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown, max: number): string | null => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : null);
@@ -57,6 +58,8 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
 }
 
 const isSessionKind = (v: unknown): v is SessionContextKind => v === 'start' || v === 'subagent';
+/** An optional bounded string: absent reads as absent, anything else must be a string within the bound. */
+const optional = (v: unknown, max: number): string | null | undefined => (v === undefined ? undefined : str(v, max));
 
 export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
@@ -64,8 +67,9 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
 
   const sessionId = str(body.sessionId, MAX_SESSION_CHARS);
   const kind = isSessionKind(body.kind) ? body.kind : null;
-  const agentType = body.agentType === undefined ? undefined : str(body.agentType, MAX_AGENT_TYPE_CHARS);
-  if (sessionId === null || kind === null || agentType === null) {
+  const agentId = optional(body.agentId, MAX_AGENT_ID_CHARS);
+  const agentType = optional(body.agentType, MAX_AGENT_TYPE_CHARS);
+  if (sessionId === null || kind === null || agentId === null || agentType === null) {
     return Response.json(refused(ctx, refusal('session context requires sessionId and kind "start" or "subagent"', 'parse')));
   }
 
@@ -74,7 +78,7 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
   ]);
   const served = await composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
-    sessionId, kind, agentType, now: ctx.now,
+    sessionId, kind, agentId, agentType, now: ctx.now,
   });
   return Response.json({ persisted: true, ...served });
 }

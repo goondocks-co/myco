@@ -12,7 +12,8 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import {
   composePromptContext, composeSessionContext, detectsPlanIntent, digestHeading, partsWithinBound,
   PLAN_INTENT_NUDGE, PROMPT_CONTEXT_MAX_CHARS, recallLeaves, recordSessionInjection,
-  SESSION_CONTEXT_MAX_CHARS, SUBAGENT_CORTEX_GUIDANCE, type RecallLeaves, type SessionContextKind,
+  SESSION_CONTEXT_MAX_CHARS, sessionInjectionKind, SUBAGENT_CORTEX_GUIDANCE,
+  type RecallLeaves, type RecallSkip, type SessionContextKind,
 } from '@myco-server-worker/core/recall.js';
 import { upsertDigest } from '@myco-server-worker/core/digests.js';
 import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.js';
@@ -226,13 +227,17 @@ const instructions = (sqlite: Database, over: Partial<{ id: string; agentId: str
 
 const forSession = (
   db: RelationalStore,
-  over: Partial<{ leaves: RecallLeaves; capabilityOn: boolean; scope: ReadScope; sessionId: string; kind: SessionContextKind; agentType: string; now: number }> = {},
+  over: Partial<{ leaves: RecallLeaves; capabilityOn: boolean; scope: ReadScope; sessionId: string; kind: SessionContextKind; agentId: string; agentType: string; now: number }> = {},
 ) => composeSessionContext(db, over.scope ?? SCOPE, over.leaves ?? ON, over.capabilityOn ?? true, {
   sessionId: over.sessionId ?? SESSION,
   kind: over.kind ?? 'start',
+  agentId: over.agentId,
   agentType: over.agentType,
   now: over.now ?? NOW,
 });
+
+/** An empty block for a start, with the gates it closed on. */
+const emptyStart = (skipped: RecallSkip[]) => ({ context: '', parts: [], skipped, kind: 'cortex' });
 
 describe('the newest instructions', () => {
   it('serves the latest generation, and the lower id where two agents landed in the same instant', async () => {
@@ -249,7 +254,7 @@ describe('the newest instructions', () => {
 
   it('answers an empty block for a Project holding no instructions, and records nothing', async () => {
     const { db, sqlite } = store();
-    expect(await forSession(db)).toEqual({ context: '', parts: [], skipped: [] });
+    expect(await forSession(db)).toEqual(emptyStart(['instructions:empty', 'digest:off']));
     expect(sessionRows(sqlite)).toEqual([]);
   });
 });
@@ -261,7 +266,8 @@ describe('a session start', () => {
     const served = await forSession(db);
     expect(served.context).toBe('# Project guidance\nKeep the plan current.');
     expect(served.parts).toEqual([{ kind: 'instructions' }]);
-    expect(served.skipped).toEqual([]);
+    expect(served.skipped).toEqual(['digest:off']);
+    expect(served.kind).toBe('cortex');
     expect(sessionRows(sqlite)).toEqual([{ project_id: SCOPE.projectId, session_id: SESSION, kind: 'cortex', created_at: NOW }]);
   });
 
@@ -269,7 +275,7 @@ describe('a session start', () => {
     const { db, sqlite } = store();
     instructions(sqlite);
     expect((await forSession(db)).parts).toEqual([{ kind: 'instructions' }]);
-    expect(await forSession(db)).toEqual({ context: '', parts: [], skipped: ['repeat'] });
+    expect(await forSession(db)).toEqual(emptyStart(['digest:off', 'repeat']));
     expect(sessionRows(sqlite)).toHaveLength(1);
   });
 
@@ -277,13 +283,14 @@ describe('a session start', () => {
     const { db, sqlite } = store();
     instructions(sqlite);
     expect(await forSession(db, { leaves: { ...ON, instructionsAtSessionStart: false } }))
-      .toEqual({ context: '', parts: [], skipped: [] });
+      .toEqual(emptyStart(['instructions:off', 'digest:off']));
+    expect(sessionRows(sqlite)).toEqual([]);
   });
 
   it('is served nothing at all where the Project is not admitted', async () => {
     const { db, sqlite } = store();
     instructions(sqlite);
-    expect(await forSession(db, { capabilityOn: false })).toEqual({ context: '', parts: [], skipped: ['capability'] });
+    expect(await forSession(db, { capabilityOn: false })).toEqual(emptyStart(['capability']));
     expect(sessionRows(sqlite)).toEqual([]);
   });
 });
@@ -295,7 +302,13 @@ describe('the digest at session start', () => {
   it('stays away unless the Deployment asks for it', async () => {
     const { db } = store();
     await digest(db, 5000, 'the middle digest');
-    expect(await forSession(db)).toEqual({ context: '', parts: [], skipped: [] });
+    expect(await forSession(db)).toEqual(emptyStart(['instructions:empty', 'digest:off']));
+  });
+
+  it('names the empty where the Deployment asks for a digest the Project has never generated', async () => {
+    const { db } = store();
+    expect((await forSession(db, { leaves: { ...ON, digestAtSessionStart: true } })).skipped)
+      .toEqual(['instructions:empty', 'digest:empty']);
   });
 
   it('stands under its tier heading, after the instructions', async () => {
@@ -356,23 +369,38 @@ describe('a subagent start', () => {
     expect(served.parts).toEqual([{ kind: 'instructions' }]);
   });
 
-  it('serves each subagent type once, and the session start beside them', async () => {
+  it('serves every delegation, keyed on its own id, and the session start beside them', async () => {
     const { db, sqlite } = store();
     instructions(sqlite);
-    expect((await forSession(db, { kind: 'subagent', agentType: 'code-reviewer' })).parts).toEqual([{ kind: 'instructions' }]);
-    expect(await forSession(db, { kind: 'subagent', agentType: 'code-reviewer' })).toEqual({ context: '', parts: [], skipped: ['repeat'] });
-    expect((await forSession(db, { kind: 'subagent', agentType: 'explorer' })).parts).toEqual([{ kind: 'instructions' }]);
-    // A subagent carrying no type of its own is served under one name.
-    expect((await forSession(db, { kind: 'subagent' })).parts).toEqual([{ kind: 'instructions' }]);
+    // Two delegations of one type are two subagents, and each is served.
+    for (const agentId of ['a1', 'a2']) {
+      const served = await forSession(db, { kind: 'subagent', agentId, agentType: 'code-reviewer' });
+      expect({ agentId, parts: served.parts, kind: served.kind })
+        .toEqual({ agentId, parts: [{ kind: 'instructions' }], kind: `cortex:${agentId}` });
+    }
+    // The same delegation twice is one subagent.
+    expect(await forSession(db, { kind: 'subagent', agentId: 'a1', agentType: 'code-reviewer' }))
+      .toEqual({ context: '', parts: [], skipped: ['repeat'], kind: 'cortex:a1' });
+    // A harness naming no id falls to the type, and one naming neither to a single name.
+    expect((await forSession(db, { kind: 'subagent', agentType: 'explorer' })).kind).toBe('cortex:explorer');
+    expect((await forSession(db, { kind: 'subagent' })).kind).toBe('cortex:unknown');
     expect((await forSession(db, { kind: 'start' })).parts).toEqual([{ kind: 'instructions' }]);
-    expect(sessionRows(sqlite).map((r) => r.kind)).toEqual(['cortex:code-reviewer', 'cortex:explorer', 'cortex:unknown', 'cortex']);
+    expect(sessionRows(sqlite).map((r) => r.kind))
+      .toEqual(['cortex:a1', 'cortex:a2', 'cortex:explorer', 'cortex:unknown', 'cortex']);
+  });
+
+  it('names the delegation the way the record does, trimming what the harness sent', () => {
+    expect(sessionInjectionKind('start', 'a1', 'code-reviewer')).toBe('cortex');
+    expect(sessionInjectionKind('subagent', ' a1 ', 'code-reviewer')).toBe('cortex:a1');
+    expect(sessionInjectionKind('subagent', '  ', ' code-reviewer ')).toBe('cortex:code-reviewer');
+    expect(sessionInjectionKind('subagent')).toBe('cortex:unknown');
   });
 
   it('holds the instructions back where the Deployment switched the subagent surface off', async () => {
     const { db, sqlite } = store();
     instructions(sqlite);
     expect(await forSession(db, { kind: 'subagent', agentType: 'code-reviewer', leaves: { ...ON, instructionsAtSubagentStart: false } }))
-      .toEqual({ context: '', parts: [], skipped: [] });
+      .toEqual({ context: '', parts: [], skipped: ['instructions:off'], kind: 'cortex:code-reviewer' });
     // The session-start surface is a different switch and stays on.
     expect((await forSession(db, { leaves: { ...ON, instructionsAtSubagentStart: false } })).parts).toEqual([{ kind: 'instructions' }]);
   });
@@ -390,7 +418,7 @@ describe('the session bound', () => {
 
     const tooLong = store();
     instructions(tooLong.sqlite, { content: 'x'.repeat(SESSION_CONTEXT_MAX_CHARS + 1) });
-    expect(await forSession(tooLong.db)).toEqual({ context: '', parts: [], skipped: [] });
+    expect(await forSession(tooLong.db)).toEqual(emptyStart(['digest:off']));
     expect(sessionRows(tooLong.sqlite)).toEqual([]);
   });
 });
@@ -481,7 +509,7 @@ describe('POST /context/session', () => {
 
   it('refuses a body it cannot read, one that names no session, and one naming a kind it does not serve', async () => {
     const { e, token } = await member();
-    for (const body of ['not json', '[]', '{}', { sessionId: 's' }, { kind: 'start' }, { sessionId: 's', kind: 'resume' }, { sessionId: 's', kind: 'start', agentType: '' }]) {
+    for (const body of ['not json', '[]', '{}', { sessionId: 's' }, { kind: 'start' }, { sessionId: 's', kind: 'resume' }, { sessionId: 's', kind: 'start', agentType: '' }, { sessionId: 's', kind: 'subagent', agentId: 42 }]) {
       const got = await answer(e, token, body);
       expect({ body: JSON.stringify(body), persisted: got.persisted, code: got.code })
         .toEqual({ body: JSON.stringify(body), persisted: false, code: 'parse' });
@@ -491,7 +519,7 @@ describe('POST /context/session', () => {
   it('answers the Project that is not admitted an empty block naming the gate', async () => {
     const { e, token } = await member();
     expect(await answer(e, token, { sessionId: 's1', kind: 'start' }))
-      .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'] });
+      .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'], kind: 'cortex' });
   });
 
   it('answers the instructions once, and the subagent block under its own kind', async () => {
@@ -503,16 +531,21 @@ describe('POST /context/session', () => {
     expect(first.persisted).toBe(true);
     expect(first.parts).toEqual([{ kind: 'instructions' }]);
     expect(first.context).toBe('Keep the plan current.');
+    expect(first.kind).toBe('cortex');
     expect(String(first.context).length).toBeLessThanOrEqual(SESSION_CONTEXT_MAX_CHARS);
 
     expect(await answer(e, token, { sessionId: 's1', kind: 'start' }))
-      .toEqual({ persisted: true, context: '', parts: [], skipped: ['repeat'] });
+      .toEqual({ persisted: true, context: '', parts: [], skipped: ['digest:off', 'repeat'], kind: 'cortex' });
 
-    const delegated = await answer(e, token, { sessionId: 's1', kind: 'subagent', agentType: 'code-reviewer' });
-    expect(delegated.parts).toEqual([{ kind: 'instructions' }]);
-    expect(String(delegated.context).startsWith(SUBAGENT_CORTEX_GUIDANCE)).toBe(true);
+    // Two delegations of one type: the id keys them apart and each is served.
+    for (const agentId of ['a1', 'a2']) {
+      const delegated = await answer(e, token, { sessionId: 's1', kind: 'subagent', agentId, agentType: 'code-reviewer' });
+      expect({ agentId, parts: delegated.parts, kind: delegated.kind })
+        .toEqual({ agentId, parts: [{ kind: 'instructions' }], kind: `cortex:${agentId}` });
+      expect(String(delegated.context).startsWith(SUBAGENT_CORTEX_GUIDANCE)).toBe(true);
+    }
 
     expect(e.sqlite.query(`SELECT kind FROM session_injections ORDER BY kind`).all())
-      .toEqual([{ kind: 'cortex' }, { kind: 'cortex:code-reviewer' }]);
+      .toEqual([{ kind: 'cortex' }, { kind: 'cortex:a1' }, { kind: 'cortex:a2' }]);
   });
 });

@@ -498,7 +498,7 @@ Capabilities that are not a single registry token but must still carry a disposi
 | Symbiont detection and hook installation | REPLACE | MS | Blk | Continuous on developer machines; absent in sandbox images | #917 |
 | Managed Asset Reconciliation | REPLACE | MS | Blk | One idempotent path over global assets and every registered Project | #917 |
 | Recall injection (`UserPromptSubmit`) | REPLACE | Core | Blk | Served by `POST /context/prompt`: the plan nudge and the session's unseen spores, answered after the prompt is spooled — ≤ 10 000 chars cut at a part boundary, < 2 s p95 | #921 |
-| Recall injection (`SessionStart`, `SubagentStart`) | REPLACE | Core | Blk | Served by `POST /context/session`: the Project's newest instructions, and the preferred digest where a Deployment asks for it — once per session, once per subagent type, ≤ 60 000 chars cut at a part boundary | #1026 |
+| Recall injection (`SessionStart`, `SubagentStart`) | REPLACE | Core | Blk | Served by `POST /context/session`: the Project's newest instructions, and the preferred digest where a Deployment asks for it — once per session, once per subagent, ≤ 60 000 chars cut at a part boundary | #1026 |
 | External read-only MCP for cloud agents | REPLACE | MCP, Core | Blk | Project-scoped read-only Access Grant; new in 2.0, replacing "no such capability" | #921 |
 | HTTPS / trusted-proxy contract | REPLACE | W, C | Blk | Platform TLS on W; documented proxy contract on C | #909 |
 | Update reliability | KEEP | M, MS | Blk | | #922 |
@@ -607,7 +607,7 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `notifications.retention_days` | REPLACE | Deployment | Core | Prune window for Deployment-held notification records; no member owns it | #915 |
 | `cortex.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent | #915 |
 | `cortex.instructions.inject_on_session_start` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/session`, once per session | #1026 |
-| `cortex.instructions.inject_on_subagent_start` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/session`, once per subagent type | #1026 |
+| `cortex.instructions.inject_on_subagent_start` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/session`, once per subagent | #1026 |
 | `cortex.digest.tier` | REPLACE | Deployment | Core | Digest size the Deployment generates and serves at session start, nearest tier held when the exact one is absent | #1026 |
 | `cortex.digest.inject_on_session_start` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/session`; off unless a Deployment asks for it | #1026 |
 | `cortex.spores.inject_on_prompt_submit` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/prompt` | #1026 |

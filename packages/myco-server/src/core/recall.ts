@@ -161,15 +161,19 @@ export type SessionContextPart =
 /** Why the nudge stood down when nothing went wrong. */
 export type NudgeSkip = 'off' | 'no_intent' | 'repeat';
 
+/** Why the instructions or the digest stood down when nothing went wrong. */
+export type CortexSkip = 'off' | 'empty';
+
 /**
  * Why a contributor served nothing, and why a whole block did.
  *
  * A bare contributor name is a throw inside it. A qualified name is the gate it
  * closed on: the selector's own gates travel under `spores:`, the nudge's under
- * `plan-nudge:`. `capability` and `repeat` answer for the whole block — a
- * Project not admitted, and a session already holding the record this block
- * would burn. A caller reading an empty block therefore learns which gate
- * closed rather than only that one did.
+ * `plan-nudge:`, and the two session contributors under `instructions:` and
+ * `digest:`. `capability` and `repeat` answer for the whole block — a Project
+ * not admitted, and a session already holding the record this block would burn.
+ * A caller reading an empty block therefore learns which gate closed rather
+ * than only that one did.
  */
 export type RecallSkip =
   | 'capability'
@@ -179,7 +183,9 @@ export type RecallSkip =
   | 'instructions'
   | 'digest'
   | `spores:${InjectionSkip}`
-  | `plan-nudge:${NudgeSkip}`;
+  | `plan-nudge:${NudgeSkip}`
+  | `instructions:${CortexSkip}`
+  | `digest:${CortexSkip}`;
 
 export interface PromptContext {
   context: string;
@@ -187,10 +193,16 @@ export interface PromptContext {
   skipped: RecallSkip[];
 }
 
-export interface SessionContextAnswer {
+export interface RecallSessionBlock {
   context: string;
   parts: SessionContextPart[];
   skipped: RecallSkip[];
+  /**
+   * The record this block burns, or would have burned. Answered whatever the
+   * outcome, so the member remembers a settled decision under the same name the
+   * Deployment keeps it under.
+   */
+  kind: string;
 }
 
 /** One contributor's part and the text it puts into the served block. */
@@ -298,11 +310,15 @@ export const digestHeading = (tier: number): string => `## Preferred Digest (Tie
 export type SessionContextKind = 'start' | 'subagent';
 
 /**
- * The record kind a start burns. A subagent names its own type, so a session
- * that delegates to two kinds of subagent serves each of them once.
+ * The record kind a start burns.
+ *
+ * A subagent names its own delegation: the agent id when the harness gives one,
+ * the type behind it, and a single name for a harness that gives neither. Two
+ * delegations of one type are two subagents, and each is served.
  */
-export function sessionInjectionKind(kind: SessionContextKind, agentType?: string): string {
-  return kind === 'start' ? 'cortex' : `cortex:${agentType || 'unknown'}`;
+export function sessionInjectionKind(kind: SessionContextKind, agentId?: string, agentType?: string): string {
+  if (kind === 'start') return 'cortex';
+  return `cortex:${agentId?.trim() || agentType?.trim() || 'unknown'}`;
 }
 
 /**
@@ -324,9 +340,10 @@ export async function composeSessionContext(
   scope: ReadScope,
   leaves: RecallLeaves,
   capabilityOn: boolean,
-  input: { sessionId: string; kind: SessionContextKind; agentType?: string; now: number },
-): Promise<SessionContextAnswer> {
-  if (!capabilityOn) return { context: '', parts: [], skipped: ['capability'] };
+  input: { sessionId: string; kind: SessionContextKind; agentId?: string; agentType?: string; now: number },
+): Promise<RecallSessionBlock> {
+  const recordKind = sessionInjectionKind(input.kind, input.agentId, input.agentType);
+  if (!capabilityOn) return { context: '', parts: [], skipped: ['capability'], kind: recordKind };
 
   const skipped: RecallSkip[] = [];
   const contributions: Contribution<SessionContextPart>[] = [];
@@ -334,28 +351,36 @@ export async function composeSessionContext(
   const wantsInstructions = input.kind === 'start'
     ? leaves.instructionsAtSessionStart
     : leaves.instructionsAtSubagentStart;
-  if (wantsInstructions) {
-    try {
+  try {
+    if (!wantsInstructions) skipped.push('instructions:off');
+    else {
       const trimmed = (await newestInstructions(db, scope))?.content.trim() ?? '';
-      if (trimmed.length > 0) {
+      if (trimmed.length === 0) skipped.push('instructions:empty');
+      else {
         contributions.push({
           part: { kind: 'instructions' },
           text: input.kind === 'subagent' ? `${SUBAGENT_CORTEX_GUIDANCE}${JOIN}${trimmed}` : trimmed,
         });
       }
-    } catch {
-      skipped.push('instructions');
     }
+  } catch {
+    skipped.push('instructions');
   }
 
-  if (input.kind === 'start' && leaves.digestAtSessionStart) {
+  // A delegated agent inherits its parent's framing and is never handed the
+  // whole project again, so the digest is a session-start contributor alone.
+  if (input.kind === 'start') {
     try {
-      const served = digestForTier(await listDigests(db, scope), leaves.digestTier);
-      if (served !== null) {
-        contributions.push({
-          part: { kind: 'digest', tier: served.row.tier },
-          text: `${digestHeading(served.row.tier)}${served.row.content}`,
-        });
+      if (!leaves.digestAtSessionStart) skipped.push('digest:off');
+      else {
+        const served = digestForTier(await listDigests(db, scope), leaves.digestTier);
+        if (served === null) skipped.push('digest:empty');
+        else {
+          contributions.push({
+            part: { kind: 'digest', tier: served.row.tier },
+            text: `${digestHeading(served.row.tier)}${served.row.content}`,
+          });
+        }
       }
     } catch {
       skipped.push('digest');
@@ -363,15 +388,15 @@ export async function composeSessionContext(
   }
 
   const kept = partsWithinBound(contributions, SESSION_CONTEXT_MAX_CHARS);
-  if (kept.length === 0) return { context: '', parts: [], skipped };
+  if (kept.length === 0) return { context: '', parts: [], skipped, kind: recordKind };
 
-  const kind = sessionInjectionKind(input.kind, input.agentType);
-  if (!await recordSessionInjection(db, scope, input.sessionId, kind, input.now)) {
-    return { context: '', parts: [], skipped: [...skipped, 'repeat'] };
+  if (!await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now)) {
+    return { context: '', parts: [], skipped: [...skipped, 'repeat'], kind: recordKind };
   }
   return {
     context: kept.map((c) => c.text).join(JOIN),
     parts: kept.map((c) => c.part),
     skipped,
+    kind: recordKind,
   };
 }

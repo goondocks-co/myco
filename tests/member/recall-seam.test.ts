@@ -9,12 +9,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
+import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
+import { runGit } from '@myco/utils/git.js';
 import { setBufferedStdin } from '@myco/hooks/read-stdin.js';
 import { _resetManifestCache } from '@myco/hooks/normalize.js';
 import { writeHookResponse } from '@myco/hooks/response.js';
 import { runMemberHook, type HookOutcome, type HookRun } from '@myco/member/capture.js';
 import { resolveHookBudget, subRequestBudget } from '@myco/member/budget.js';
-import { RECALL_CAP_MS } from '@myco/member/recall.js';
+import { recallKind, RECALL_CAP_MS } from '@myco/member/recall.js';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
@@ -284,13 +286,24 @@ describe('the prompt hook', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The two start hooks
+// ---------------------------------------------------------------------------
+
+const admit = () => rig.env.sqlite
+  .query(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`)
+  .run(Date.now());
+const guidance = (content = 'Keep the plan current.') => rig.env.sqlite
+  .query(`INSERT INTO cortex_instructions (project_id, id, agent_id, content, input_hash, source_run_id, generated_at) VALUES ('proj_1', ?, 'agent_1', ?, 'h', NULL, ?)`)
+  .run(`ci_${content.length}`, content, Date.now());
+const delivered = () => readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, SESSION).delivered;
+const darkTo = (path: string): FetchLike => async (input, init) => {
+  const req = new Request(input, init);
+  if (new URL(req.url).pathname === path) throw new Error('connection refused');
+  return rig.fetch(req);
+};
+
 describe('the session-start hook', () => {
-  const admit = () => rig.env.sqlite
-    .query(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`)
-    .run(Date.now());
-  const guidance = (content = 'Keep the plan current.') => rig.env.sqlite
-    .query(`INSERT INTO cortex_instructions (project_id, id, agent_id, content, input_hash, source_run_id, generated_at) VALUES ('proj_1', ?, 'agent_1', ?, 'h', NULL, ?)`)
-    .run(`ci_${content.length}`, content, Date.now());
   const start = (fetchImpl: FetchLike) => runHook(
     'session-start',
     { session_id: SESSION, hook_event_name: 'SessionStart', transcript_path: transcript(), cwd: '/work/repo' },
@@ -310,20 +323,21 @@ describe('the session-start hook', () => {
     expect(spy.requests.map((r) => r.path).indexOf('/context/session'))
       .toBeLessThan(spy.requests.map((r) => r.path).indexOf('/events'));
 
-    const blocks = out.stdout.split('\n\n');
-    expect(blocks[0]).toBe('Keep the plan current.');
-    expect(blocks[blocks.length - 1]).toBe(`Session:: \`${SESSION}\``);
-    // A git checkout names its branch between them; anywhere else the two lines stand alone.
-    if (blocks.length === 3) expect(blocks[1]).toMatch(/^Branch:: `.+`$/);
-    expect(blocks.length).toBeGreaterThanOrEqual(2);
+    // The block, then the branch this checkout is on, then the session — each
+    // its own paragraph, in the order the harness has received them in.
+    expect(out.stdout).toBe([
+      'Keep the plan current.',
+      `Branch:: \`${runGit(['rev-parse', '--abbrev-ref', 'HEAD'], process.cwd())}\``,
+      `Session:: \`${SESSION}\``,
+    ].join('\n\n'));
     expect(rig.rows('sessions')).toBe(1);
   });
 
-  it('asks once per session: a second start finds the kind delivered and dials nothing', async () => {
+  it('marks the kind the Deployment named and asks once per session', async () => {
     admit();
     guidance();
     await start(rig.fetch);
-    expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, SESSION).delivered).toEqual(['cortex']);
+    expect(delivered()).toEqual(['cortex']);
 
     const spy = recordingFetch(rig.fetch);
     const again = await start(spy.fetch);
@@ -331,31 +345,55 @@ describe('the session-start hook', () => {
     expect(again.stdout).toBe('');
   });
 
-  it('writes no response and marks nothing delivered when the Project is served an empty block', async () => {
+  it('remembers a Project that is not admitted, and asks it nothing again', async () => {
     const spy = recordingFetch(rig.fetch);
     const out = await start(spy.fetch);
     expect(spy.requests.map((r) => r.path)).toContain('/context/session');
     expect(out.stdout).toBe('');
-    expect(out.stderr).toBe('');
-    expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, SESSION).delivered).toEqual([]);
+    // `capability` is settled for the life of the session, so the kind is marked.
+    expect(delivered()).toEqual(['cortex']);
+
+    const again = recordingFetch(rig.fetch);
+    await start(again.fetch);
+    expect(again.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
   });
 
-  it('latches the dark Deployment, writes one line, and leaves the event for the next probe', async () => {
+  it('asks again while the admitted Project simply holds nothing yet', async () => {
+    admit();
+    const first = recordingFetch(rig.fetch);
+    const out = await start(first.fetch);
+    expect(out.stdout).toBe('');
+    // Nothing settled: an artifact written later still reaches this session.
+    expect(delivered()).toEqual([]);
+
+    guidance();
+    const second = recordingFetch(rig.fetch);
+    const later = await start(second.fetch);
+    expect(second.requests.map((r) => r.path).filter((p) => p === '/context/session')).toHaveLength(1);
+    expect(later.stdout.startsWith('Keep the plan current.')).toBe(true);
+    expect(delivered()).toEqual(['cortex']);
+  });
+
+  it('is not called at all while the offline latch holds', async () => {
     admit();
     guidance();
-    const failing: FetchLike = async (input, init) => {
-      const req = new Request(input, init);
-      if (new URL(req.url).pathname === '/context/session') throw new Error('connection refused');
-      return rig.fetch(req);
-    };
-    const out = await start(failing);
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    spool.markOffline(Date.now());
+    const spy = recordingFetch(rig.fetch);
+    const out = await start(spy.fetch);
+    expect(spy.requests.map((r) => r.path)).toEqual([]);
+    expect(out.stdout).toBe('');
+    expect(delivered()).toEqual([]);
+  });
+
+  it('latches the dark Deployment, writes one line, and marks nothing', async () => {
+    admit();
+    guidance();
+    const out = await start(darkTo('/context/session'));
     expect(out.stderr).toContain('[myco] session-start: recall skipped (retry)');
     expect(out.stdout).toBe('');
-    const spool = new MemberSpool('proj_1', { mycoHome });
-    expect(spool.shouldDial(Date.now())).toBe(false);
-    expect(spool.depth(SESSION)).toBe(1);
-    // Nothing arrived, so the next invocation of this session asks again.
-    expect(readSessionState(spool.dir, SESSION).delivered).toEqual([]);
+    expect(delivered()).toEqual([]);
+    expect(new MemberSpool('proj_1', { mycoHome }).shouldDial(Date.now())).toBe(false);
   });
 
   it('asks for nothing when the session was dropped', async () => {
@@ -368,30 +406,42 @@ describe('the session-start hook', () => {
     expect(out.stderr).toContain('session-start: dropped');
     expect(spy.requests.map((r) => r.path)).toEqual([]);
   });
+
+  it('asks for nothing on behalf of a symbiont whose harness discards the answer', async () => {
+    admit();
+    guidance();
+    expect(HOOK_CONFIG['claude-code'].capabilities.sessionStartInjection).toBe(true);
+    expect(HOOK_CONFIG.windsurf.capabilities.sessionStartInjection).toBe(false);
+    const spy = recordingFetch(rig.fetch);
+    // Windsurf names its session on its own field, so the hook runs and the
+    // capability alone is what holds the call back.
+    await runHook(
+      'session-start',
+      { trajectory_id: SESSION, hook_event_name: 'SessionStart', transcript_path: transcript(), cwd: '/work/repo' },
+      { fetch: spy.fetch, symbiont: 'windsurf' },
+    );
+    expect(spy.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
+    // The event itself still travels.
+    expect(spy.requests.map((r) => r.path)).toContain('/events');
+  });
 });
 
 describe('the subagent-start hook', () => {
-  const admit = () => rig.env.sqlite
-    .query(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`)
-    .run(Date.now());
-  const guidance = () => rig.env.sqlite
-    .query(`INSERT INTO cortex_instructions (project_id, id, agent_id, content, input_hash, source_run_id, generated_at) VALUES ('proj_1', 'ci_1', 'agent_1', 'Keep the plan current.', 'h', NULL, ?)`)
-    .run(Date.now());
-  const delegate = (fetchImpl: FetchLike, symbiont: string) => runHook(
+  const delegate = (fetchImpl: FetchLike, over: Record<string, unknown> = {}, symbiont = 'claude-code') => runHook(
     'subagent-start',
-    { session_id: SESSION, hook_event_name: 'SubagentStart', transcript_path: transcript(), agent_id: 'a1', agent_type: 'code-reviewer' },
+    { session_id: SESSION, hook_event_name: 'SubagentStart', transcript_path: transcript(), agent_id: 'a1', agent_type: 'code-reviewer', ...over },
     { fetch: fetchImpl, symbiont },
   );
 
-  it('serves the delegated agent the guidance block, once per type', async () => {
+  it('serves the delegated agent the guidance block, and serves the next delegation of the same type too', async () => {
     admit();
     guidance();
     const spy = recordingFetch(rig.fetch);
-    const out = await delegate(spy.fetch, 'claude-code');
+    const out = await delegate(spy.fetch);
 
     const asked = spy.requests.filter((r) => r.path === '/context/session');
     expect(asked).toHaveLength(1);
-    expect(JSON.parse(asked[0].body!)).toEqual({ sessionId: SESSION, kind: 'subagent', agentType: 'code-reviewer' });
+    expect(JSON.parse(asked[0].body!)).toEqual({ sessionId: SESSION, kind: 'subagent', agentId: 'a1', agentType: 'code-reviewer' });
     expect(JSON.parse(out.stdout)).toEqual({
       hookSpecificOutput: {
         hookEventName: 'SubagentStart',
@@ -401,37 +451,67 @@ describe('the subagent-start hook', () => {
           + 'Keep the plan current.',
       },
     });
-    expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, SESSION).delivered).toEqual(['cortex:code-reviewer']);
+    expect(delivered()).toEqual(['cortex:a1']);
 
+    // A second delegation of the same type is a second subagent, and is served.
     const second = recordingFetch(rig.fetch);
-    await delegate(second.fetch, 'claude-code');
-    expect(second.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
+    const other = await delegate(second.fetch, { agent_id: 'a2' });
+    expect(second.requests.map((r) => r.path).filter((p) => p === '/context/session')).toHaveLength(1);
+    expect(JSON.parse(other.stdout).hookSpecificOutput.additionalContext).toContain('Keep the plan current.');
+    expect(delivered()).toEqual(['cortex:a1', 'cortex:a2']);
+
+    // The same delegation twice is one subagent.
+    const repeated = recordingFetch(rig.fetch);
+    await delegate(repeated.fetch, { agent_id: 'a1' });
+    expect(repeated.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
+  });
+
+  it('names the delegation the way the Deployment records it', async () => {
+    admit();
+    guidance();
+    // A harness naming no id falls to the type; one naming neither to a single name.
+    await delegate(rig.fetch, { agent_id: undefined, agent_type: 'explorer' });
+    expect(delivered()).toEqual(['cortex:explorer']);
+    await delegate(rig.fetch, { agent_id: undefined, agent_type: undefined });
+    expect(delivered()).toEqual(['cortex:explorer', 'cortex:unknown']);
+    // The member's own key and the kind the Deployment answers are the same name.
+    expect([
+      recallKind({ sessionId: SESSION, kind: 'start' }),
+      recallKind({ sessionId: SESSION, kind: 'subagent', agentId: ' a1 ', agentType: 'code-reviewer' }),
+      recallKind({ sessionId: SESSION, kind: 'subagent', agentType: 'explorer' }),
+      recallKind({ sessionId: SESSION, kind: 'subagent' }),
+    ]).toEqual(['cortex', 'cortex:a1', 'cortex:explorer', 'cortex:unknown']);
   });
 
   it('asks for nothing on behalf of a symbiont whose harness discards the answer', async () => {
     admit();
     guidance();
+    expect(HOOK_CONFIG.cursor.capabilities.subagentStartInjection).toBe(false);
     const spy = recordingFetch(rig.fetch);
-    const out = await delegate(spy.fetch, 'cursor');
+    const out = await delegate(spy.fetch, {}, 'cursor');
     expect(spy.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
     expect(out.stdout).toBe('');
     // The event itself still travels.
     expect(spy.requests.map((r) => r.path)).toContain('/events');
   });
 
-  it('latches the dark Deployment, writes one line, and leaves the event for the next probe', async () => {
+  it('is not called at all while the offline latch holds', async () => {
     admit();
     guidance();
-    const failing: FetchLike = async (input, init) => {
-      const req = new Request(input, init);
-      if (new URL(req.url).pathname === '/context/session') throw new Error('connection refused');
-      return rig.fetch(req);
-    };
-    const out = await delegate(failing, 'claude-code');
+    new MemberSpool('proj_1', { mycoHome }).markOffline(Date.now());
+    const spy = recordingFetch(rig.fetch);
+    const out = await delegate(spy.fetch);
+    expect(spy.requests.map((r) => r.path)).toEqual([]);
+    expect(out.stdout).toBe('');
+    expect(delivered()).toEqual([]);
+  });
+
+  it('latches the dark Deployment, writes one line, and keeps the event', async () => {
+    admit();
+    guidance();
+    const out = await delegate(darkTo('/context/session'));
     expect(out.stderr).toContain('[myco] subagent-start: recall skipped (retry)');
     expect(out.stdout).toBe('');
-    const spool = new MemberSpool('proj_1', { mycoHome });
-    expect(spool.shouldDial(Date.now())).toBe(false);
-    expect(spool.depth(SESSION)).toBe(1);
+    expect(delivered()).toEqual([]);
   });
 });
