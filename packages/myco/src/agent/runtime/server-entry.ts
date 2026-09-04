@@ -29,11 +29,11 @@ let inFlight: HeldRun | null = null;
  */
 installRunFailureHandlers(process, {
   held: () => inFlight,
-  onNamed: (error, named) => {
+  onNamed: (error, named, refused) => {
     fatal = error;
     inFlight = null;
     running = false;
-    console.log(JSON.stringify({ kind: 'server_entry_stopped', fatal, named }));
+    console.log(JSON.stringify({ kind: 'server_entry_stopped', fatal, named, refused: refused ?? null }));
     process.exit(named ? 1 : 0);
   },
 });
@@ -77,6 +77,11 @@ async function executeFromEnv(): Promise<void> {
     // A run this container never claimed is not its to fail: the hold is taken
     // once the claim lands, and a death before that names nothing.
     onClaimed: () => { inFlight = { client, budget, runId }; },
+    // The hold ends where the run posts its own ending, not where the post
+    // answers. The Deployment releases this container the instant that status
+    // lands, and the stop signal it sends arrives while the request is still
+    // open; a hold that outlived the post names a failure on a row that closed.
+    onClosing: () => { inFlight = null; },
     taskName,
     timeoutSeconds: Number.isFinite(Number(env('MYCO_TIMEOUT_SECONDS'))) ? Number(env('MYCO_TIMEOUT_SECONDS')) : 300,
     provider,
@@ -86,6 +91,8 @@ async function executeFromEnv(): Promise<void> {
     admission: env('MYCO_TASK_ADMISSION'),
   });
   // The run carries its own terminal status now; a later death has no row to name.
+  // The hold is already released at the post; this covers a return that reached
+  // no terminal post of its own.
   inFlight = null;
   running = false;
   console.log(JSON.stringify({ kind: 'server_run_finished', ...result }));
