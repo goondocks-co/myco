@@ -14,6 +14,7 @@ import {
   updateCloudflareDeployment,
   DEPLOY_CONFIG_NAME,
   DEFAULT_RUN_TIMEOUT_SECONDS,
+  ROLLOUT_START_WINDOW_SECONDS,
   ROLLOUT_WATCH_TIMEOUT_SECONDS,
   RUN_OVERRUN_MARGIN_MS,
 } from '@myco/server/cloudflare-lifecycle.js';
@@ -505,6 +506,68 @@ describe('update: the runs in flight and the rollout', () => {
     expect(lines.at(-1)).toBe('The rollout is still in progress; a run started now may land on an instance still on the old version.');
     expect(readDeploymentRecord(home)!.lastRollout).toBeUndefined();
     expect(drive.at).toBe(NOW + ROLLOUT_WATCH_TIMEOUT_SECONDS * 1000);
+  });
+
+  /** The application answering the version it already carried, poll after poll. */
+  const standing = (polls: number): string[] => Array.from({ length: polls }, () => rolloutInfo(31, 7, 7, RUNNING_IMAGE));
+
+  it('GATE: ends the watch inside the start window when the platform starts no rollout, and still records the settings it shipped', async () => {
+    const { home, options } = setup();
+    seed(home);
+    const lines: string[] = [];
+    const drive = clock();
+    // A container table that names the same resources by another spelling
+    // rolls nothing: the application keeps its version and its image.
+    await updateCloudflareDeployment({
+      ...options, runner: scripted({ info: [rolloutInfo(31, 7, 7, RUNNING_IMAGE)] }),
+      report: (l) => lines.push(l), clock: drive,
+    });
+
+    expect(lines.at(-1)).toBe('The platform started no rollout for this deploy: the container settings in force already match.');
+    expect(lines.some((l) => l.includes('still in progress'))).toBe(false);
+    expect(drive.at).toBe(NOW + ROLLOUT_START_WINDOW_SECONDS * 1000);
+    // The next deploy must not decide to roll again for the same settings.
+    expect(readDeploymentRecord(home)!.containersTable).toBe(settledContainers());
+    expect(readDeploymentRecord(home)!.lastRollout).toBeUndefined();
+    // The cadence is said once, so a silent three minutes reads as intended.
+    expect(lines.filter((l) => l === 'Watching the rollout; the platform reports the instances every 20 s.').length).toBe(1);
+  });
+
+  it('watches a rollout that starts inside the window through to completion', async () => {
+    const { home, options } = setup();
+    seed(home);
+    const lines: string[] = [];
+    const drive = clock();
+    // The version stands for three polls and advances at 60 s.
+    await updateCloudflareDeployment({
+      ...options,
+      runner: scripted({ info: [...standing(4), rolloutInfo(32, 7, 4), rolloutInfo(32, 7, 7)] }),
+      report: (l) => lines.push(l), clock: drive,
+    });
+
+    expect(lines).toContain('Rolling out: 4 of 7 instances on the new version');
+    expect(lines.at(-1)).toBe('Rollout complete.');
+    expect(drive.at).toBe(NOW + 80_000);
+    expect(readDeploymentRecord(home)!.lastRollout!.version).toBe(32);
+  });
+
+  it('GATE: a version that advances only at the edge of the start window is still watched to completion', async () => {
+    const { home, options } = setup();
+    seed(home);
+    const lines: string[] = [];
+    const drive = clock();
+    // Nine polls answer the standing version; the poll at the window's edge
+    // reads the new one, and that is a rollout, not the absence of one.
+    await updateCloudflareDeployment({
+      ...options,
+      runner: scripted({ info: [...standing(10), rolloutInfo(32, 7, 7)] }),
+      report: (l) => lines.push(l), clock: drive,
+    });
+
+    expect(lines.some((l) => l.includes('started no rollout'))).toBe(false);
+    expect(lines.at(-1)).toBe('Rollout complete.');
+    expect(drive.at).toBe(NOW + ROLLOUT_START_WINDOW_SECONDS * 1000);
+    expect(readDeploymentRecord(home)!.lastRollout!.version).toBe(32);
   });
 
   it('surfaces what wrangler said when the container application cannot be read, and claims no absent application', async () => {
