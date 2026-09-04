@@ -22,9 +22,10 @@ let inFlight: HeldRun | null = null;
  * stale sweep gives up on the run minutes later under a message that describes
  * the silence rather than the cause.
  *
- * A container holding no run stays up with its evidence in memory, so `/probe`
- * can still be asked what happened; one that has named its run has said
- * everything it has to say and leaves.
+ * The process leaves either way — a container that lingers through a scale-down
+ * is killed instead of stopping — and its exit code says which happened: a run
+ * named on its row is a failure this container caused, a death holding no run is
+ * an ordinary stop. `/probe` is served until the moment it goes.
  */
 installRunFailureHandlers(process, {
   held: () => inFlight,
@@ -33,7 +34,7 @@ installRunFailureHandlers(process, {
     inFlight = null;
     running = false;
     console.log(JSON.stringify({ kind: 'server_entry_stopped', fatal, named }));
-    if (named) process.exit(1);
+    process.exit(named ? 1 : 0);
   },
 });
 
@@ -69,11 +70,13 @@ async function executeFromEnv(): Promise<void> {
   }
   const client = new ServerClient({ serverUrl, token, projectId });
   const budget = { connectTimeoutMs: 10_000, requestTimeoutMs: 120_000 };
-  inFlight = { client, budget, runId };
   result = await runServerTask({
     client,
     budget,
     runId,
+    // A run this container never claimed is not its to fail: the hold is taken
+    // once the claim lands, and a death before that names nothing.
+    onClaimed: () => { inFlight = { client, budget, runId }; },
     taskName,
     timeoutSeconds: Number.isFinite(Number(env('MYCO_TIMEOUT_SECONDS'))) ? Number(env('MYCO_TIMEOUT_SECONDS')) : 300,
     provider,
@@ -108,5 +111,7 @@ console.log('harness entry up on 8080');
 
 executeFromEnv().catch((error) => {
   fatal = error instanceof Error ? error.message : String(error);
+  inFlight = null;
+  running = false;
   console.log(JSON.stringify({ kind: 'server_entry_failed', fatal }));
 });

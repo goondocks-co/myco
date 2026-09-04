@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   buildDigestInput, buildInstructionsInput, CONTENT_PREVIEW_MAX_CHARS, DIGEST_EXCERPT_MAX_CHARS,
-  DIGEST_FRESH_DIRECTION, DIGEST_MATERIAL_TIER, DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT,
+  DIGEST_FRESH_DIRECTION, DIGEST_FULL_READ_BODY_CHARS, DIGEST_MATERIAL_TIER, DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT,
   DIGEST_TIER_MIN_CONTEXT_TOKENS, MATERIAL_ROW_KEYS_ESTIMATE_CHARS, materialRowsForTier, preview,
   RECENT_PLAN_LIMIT, RECENT_SESSION_LIMIT, RECENT_WISDOM_SPORE_LIMIT, RUN_SESSION_LABEL_CHARS,
   RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS, SESSION_ROW_OVERHEAD_CHARS,
@@ -218,7 +218,10 @@ describe('the input a digest run is handed', () => {
     }
     expect(built.instruction).toContain(`at most ${DIGEST_SPORE_PAGE_LIMIT} previews`);
     expect(built.instruction).toContain(`at most ${DIGEST_SESSION_PAGE_LIMIT} sessions`);
-    expect(built.instruction).toContain(`at most ${SPORE_FULL_READ_BUDGET} spores in full`);
+    expect(built.instruction).toContain(`up to ${SPORE_FULL_READ_BUDGET} full reads`);
+    // The full reads spend against the same window the page ceilings are cut from.
+    expect(built.instruction).toContain(`bounded to ${DIGEST_FULL_READ_BODY_CHARS} characters`);
+    expect(DIGEST_FULL_READ_BODY_CHARS * SPORE_FULL_READ_BUDGET).toBeLessThanOrEqual(DIGEST_TIER_MIN_CONTEXT_TOKENS[DIGEST_MATERIAL_TIER]! * 4);
     expect(materialRowsForTier(10000, 200, 80)).toBeGreaterThan(materialRowsForTier(1500, 200, 80));
     // Every part of a row but its keys is cut to a constant, so the page ceilings are derived rather than guessed.
     expect(DIGEST_SESSION_PAGE_LIMIT).toBe(materialRowsForTier(DIGEST_MATERIAL_TIER, RUN_SESSION_SUMMARY_CHARS, SESSION_ROW_OVERHEAD_CHARS));

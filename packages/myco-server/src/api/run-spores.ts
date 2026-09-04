@@ -27,7 +27,7 @@ import {
   SPORE_BODY_CHARS, SPORE_FULL_READ_BUDGET, SPORE_PREVIEW_CHARS, SPORE_READ_TASKS, SPORE_STATUSES, SPORE_TOOL_TASKS,
   type ResolutionAction, type SporeRow,
 } from '../core/spores.js';
-import { DIGEST_SPORE_PAGE_LIMIT } from '../core/cortex-input.js';
+import { DIGEST_FULL_READ_BODY_CHARS, DIGEST_SPORE_PAGE_LIMIT } from '../core/cortex-input.js';
 import { DIGEST_TASK } from '../core/task-inputs.js';
 import { mintSporeId, overSporeCap, planSporeResolution, SPORE_CAP_REASON, sporeTags } from '../core/spore-writes.js';
 import { mutateState, type RunRow } from '../core/runs.js';
@@ -142,10 +142,13 @@ export async function handleRunSpore(env: ServerEnv, ctx: RouteContext): Promise
     listSupersedingSporeIds(env.db, scope, id),
     listSupersededSporeIds(env.db, scope, id),
   ]);
-  const truncated = spore.content.length > SPORE_BODY_CHARS;
+  // A digest run's reads spend against the same tier window its pages are cut
+  // from, so its bodies are the window's share rather than the sweep's own.
+  const bodyChars = run.task === DIGEST_TASK ? DIGEST_FULL_READ_BODY_CHARS : SPORE_BODY_CHARS;
+  const truncated = spore.content.length > bodyChars;
   return Response.json({
     persisted: true, held: true,
-    spore: truncated ? { ...spore, content: spore.content.slice(0, SPORE_BODY_CHARS) } : spore,
+    spore: truncated ? { ...spore, content: spore.content.slice(0, bodyChars) } : spore,
     truncated, supersededBy, supersedes,
   });
 }

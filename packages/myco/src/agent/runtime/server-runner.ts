@@ -20,7 +20,7 @@ import { loadAllTasks } from '../registry.js';
 import { composeHostedPrompt, composeTaskPrompt } from '../prompt-composition.js';
 import type { AgentHarness } from '../harness/types.js';
 import type { ProviderConfig } from '../types.js';
-import type { RunStore } from './run-store.js';
+import type { RunStatusOutcome, RunStore } from './run-store.js';
 import { createHttpRunStore, postRunControl, type RunClaimAdmission } from './run-store-http.js';
 import { INSTRUCTED_TASKS, materializedToolsForTask, type ServerToolContext } from './server-tools.js';
 
@@ -39,6 +39,17 @@ export const RUNTIME_STOP_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
 export const MAX_RUN_ERROR_CHARS = 2000;
 /** How many times a terminal status is offered to the Deployment before the run is left to the stale sweep. */
 export const TERMINAL_UPDATE_ATTEMPTS = 2;
+/**
+ * The budget a dying container gets to name its run.
+ *
+ * A platform taking a container away allows seconds, not minutes, between its
+ * signal and the kill. The run's own budget is sized for model calls; borrowing
+ * it here would spend the whole grace period on one attempt that the kill
+ * interrupts anyway, and the row would carry nothing.
+ */
+export const SIGNAL_BUDGET: RequestBudget = { connectTimeoutMs: 1_500, requestTimeoutMs: 4_000 };
+/** How a run the Deployment refused to close as completed is recorded by the container that ran it. */
+export const RUN_REFUSED_CLOSE_ERROR = 'the deployment refused to close this run';
 
 /** One failure message, bounded, whatever shape it arrived in. */
 export function runErrorText(reason: unknown): string {
@@ -62,6 +73,8 @@ export interface ServerTaskOptions {
   admission?: string;
   /** Test seam: the harness to execute with; resolved from the task's configuration when absent. */
   harness?: AgentHarness;
+  /** Called once the claim lands, so a container knows from which instant the run is its to fail. */
+  onClaimed?: () => void;
 }
 
 export interface ServerTaskResult {
@@ -83,13 +96,14 @@ export function claimAdmission(admission: string | undefined): RunClaimAdmission
  * rather than went away, and a single refused request would turn a named
  * failure into the stale sweep's silence.
  */
-async function recordTerminal(store: RunStore, runId: string, status: 'completed' | 'failed', completion: Record<string, unknown>): Promise<void> {
+async function recordTerminal(
+  store: RunStore, runId: string, status: 'completed' | 'failed', completion: Record<string, unknown>, attempts = TERMINAL_UPDATE_ATTEMPTS,
+): Promise<RunStatusOutcome> {
   for (let attempt = 1; ; attempt += 1) {
     try {
-      await store.updateRunStatus(runId, status, completion as never);
-      return;
+      return await store.updateRunStatus(runId, status, completion as never);
     } catch (error) {
-      if (attempt >= TERMINAL_UPDATE_ATTEMPTS) throw error;
+      if (attempt >= attempts) throw error;
     }
   }
 }
@@ -102,15 +116,21 @@ export interface HeldRun {
   agentId?: string;
 }
 
-/** Record one run's failure over the run-control surface, offered twice before the sweep is left to it. */
-export async function recordRunFailure(held: HeldRun, error: string): Promise<void> {
+/**
+ * Record one run's failure over the run-control surface.
+ *
+ * `attempts` is the caller's: a run failing on its own terms offers the status
+ * twice, and a container being taken away offers it once inside a budget short
+ * enough to finish before the kill.
+ */
+export async function recordRunFailure(held: HeldRun, error: string, attempts = TERMINAL_UPDATE_ATTEMPTS): Promise<void> {
   const store = createHttpRunStore({
     client: held.client,
     agentId: held.agentId ?? DEFAULT_AGENT_ID,
     admissionForTask: () => ({ capability: 'cortex' }),
     budget: held.budget,
   });
-  await recordTerminal(store, held.runId, 'failed', { completed_at: Date.now(), error: error.slice(0, MAX_RUN_ERROR_CHARS) });
+  await recordTerminal(store, held.runId, 'failed', { completed_at: Date.now(), error: error.slice(0, MAX_RUN_ERROR_CHARS) }, attempts);
 }
 
 /** Where a process's own deaths are announced. */
@@ -134,12 +154,18 @@ export interface RunFailureHandlers {
  * what happened. Every one of those deaths reaches the row here instead.
  */
 export function installRunFailureHandlers(events: ProcessEvents, handlers: RunFailureHandlers): void {
-  const name = async (error: string): Promise<void> => {
+  // One death, one attempt to name it. A platform sends SIGTERM then SIGINT, and
+  // sends SIGTERM again when the first is not answered; each extra pass would
+  // spend the grace period re-posting a status the first pass already carried.
+  let dying = false;
+  const name = async (error: string, budget?: RequestBudget): Promise<void> => {
+    if (dying) return;
+    dying = true;
     const held = handlers.held();
     let named = false;
     if (held !== null) {
       try {
-        await recordRunFailure(held, error);
+        await recordRunFailure(budget === undefined ? held : { ...held, budget }, error, budget === undefined ? TERMINAL_UPDATE_ATTEMPTS : 1);
         named = true;
       } catch {
         // The stale sweep closes the row when the Deployment is unreachable.
@@ -147,9 +173,12 @@ export function installRunFailureHandlers(events: ProcessEvents, handlers: RunFa
     }
     handlers.onNamed(error, named);
   };
-  events.on('uncaughtException', (reason) => { void name(runErrorText(reason)); });
-  events.on('unhandledRejection', (reason) => { void name(runErrorText(reason)); });
-  for (const signal of RUNTIME_STOP_SIGNALS) events.on(signal, () => { void name(RUN_REPLACED_ERROR); });
+  // A handler that threw would raise `unhandledRejection` and re-enter this same
+  // path; the latch above stops the loop and this stops the noise.
+  const start = (error: string, budget?: RequestBudget) => { void name(error, budget).catch(() => {}); };
+  events.on('uncaughtException', (reason) => { start(runErrorText(reason)); });
+  events.on('unhandledRejection', (reason) => { start(runErrorText(reason)); });
+  for (const signal of RUNTIME_STOP_SIGNALS) events.on(signal, () => { start(RUN_REPLACED_ERROR, SIGNAL_BUDGET); });
 }
 
 /**
@@ -215,6 +244,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     if ((claim as { claimed?: boolean } | undefined)?.claimed === false) {
       return { runId, status: 'skipped', reportCount: 0 };
     }
+    options.onClaimed?.();
 
     const counter = { reports: 0, writes: 0 };
     const toolContext = { client, budget, runId, agentId };
@@ -256,10 +286,16 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       // outcome only when it won.
       execution.catch(() => {});
       const result = await Promise.race([execution, deadline]);
-      await recordTerminal(store, runId, 'completed', {
+      const closed = await recordTerminal(store, runId, 'completed', {
         completed_at: Date.now(),
         tokens_used: result.usage?.totalTokens ?? null,
       });
+      // The Deployment decides whether a run closes; a container that logged its
+      // own word over the server's would report a run finished that the row calls
+      // failed, and the container's log is where a person looks first.
+      if (!closed.applied) {
+        return { runId, status: 'failed', error: closed.reason ?? RUN_REFUSED_CLOSE_ERROR, reportCount: counter.reports };
+      }
       return { runId, status: 'completed', reportCount: counter.reports };
     } finally {
       clearTimeout(timer);

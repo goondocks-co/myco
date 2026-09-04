@@ -193,9 +193,58 @@ describe('a run that dies names itself', () => {
     expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_taken'`).get())
       .toEqual({ status: 'failed', error: RUN_REPLACED_ERROR });
 
-    // A death with no run in flight leaves no row to name and says so.
+    // A platform that sends SIGTERM again, or SIGINT after it, is answered once:
+    // the row already carries what happened and the grace period is not spent twice.
+    for (const listener of [...(listeners.get('SIGTERM') ?? []), ...(listeners.get('SIGINT') ?? [])]) listener();
+    for (const listener of listeners.get('uncaughtException') ?? []) listener(new Error('and then this'));
+    await Bun.sleep(30);
+    expect(named).toHaveLength(1);
+  });
+
+  it('names nothing for a death in a container holding no run, and says so', async () => {
+    const listeners = new Map<string, Array<(reason?: unknown) => void>>();
+    const events = { on: (event: string, listener: (reason?: unknown) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]) };
+    const named: Array<{ error: string; named: boolean }> = [];
+    installRunFailureHandlers(events, { held: () => null, onNamed: (error, wasNamed) => { named.push({ error, named: wasNamed }); } });
     for (const listener of listeners.get('uncaughtException') ?? []) listener(new Error('nothing held'));
     await Bun.sleep(20);
-    expect(named[1]).toEqual({ error: 'nothing held', named: false });
+    expect(named).toEqual([{ error: 'nothing held', named: false }]);
+  });
+});
+
+describe('what the container makes of the deployment\'s answer', () => {
+  it('reports a run the deployment refused to close as the failure the row calls it', async () => {
+    // A Deployment that admits the claim and then refuses the close, answered in
+    // the wire's own shape.
+    const stub = {
+      request: async (_method: string, path: string, options: { body: string }) => {
+        const json = (() => {
+          if (path === '/runs/claim') return { persisted: true, claimed: true };
+          if (path === '/runs/update') {
+            const update = (JSON.parse(options.body) as { update?: { status?: string } }).update;
+            return update?.status === 'completed'
+              ? { persisted: true, changed: 1, applied: false, reason: 'postcondition' }
+              : { persisted: true, changed: 1 };
+          }
+          return { persisted: true };
+        })();
+        return { kind: 'json' as const, status: 200, json };
+      },
+    } as unknown as ServerClient;
+    const result = await runServerTask({ client: stub, budget, runId: 'run_refused', taskName: 'container-smoke', harness: fakeHarness('silent') });
+    expect(result).toEqual({ runId: 'run_refused', status: 'failed', error: 'postcondition', reportCount: 0 });
+  });
+
+  it('takes the run as its own only once the claim lands', async () => {
+    const { client } = await harness();
+    let claimed = 0;
+    await runServerTask({ client, budget, runId: 'run_claim_1', taskName: 'container-smoke', harness: fakeHarness('silent'), onClaimed: () => { claimed += 1; } });
+    expect(claimed).toBe(1);
+
+    // A second run of the same task inside the window is refused the claim, and the container never holds it.
+    let refusedClaims = 0;
+    const second = await runServerTask({ client, budget, runId: 'run_claim_1', taskName: 'container-smoke', harness: fakeHarness('silent'), onClaimed: () => { refusedClaims += 1; } });
+    expect(second.status).toBe('skipped');
+    expect(refusedClaims).toBe(0);
   });
 });

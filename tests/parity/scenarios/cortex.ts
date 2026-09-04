@@ -31,7 +31,7 @@ export const cortex: ParityScenario = {
     // A clean board: nothing another scenario left holds a place, no earlier
     // instructions run sets the per-day ceiling, and no artifact stands.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE status IN ('pending', 'running', 'queued')`);
-    await target.sql(`DELETE FROM agent_runs WHERE task = 'cortex-instructions'`);
+    await target.sql(`DELETE FROM agent_runs WHERE task IN ('cortex-instructions', 'digest-only')`);
     await target.sql(`DELETE FROM cortex_instructions WHERE project_id = ${lit(target.projectId)}`);
     await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.limits.concurrent_runs'`);
     // The digest injection switch is reset here rather than after the assertion
@@ -135,7 +135,7 @@ export const cortex: ParityScenario = {
     // A queued ask has its prompt rebuilt at the drain: a spore saved after it
     // queued is in the prompt the launch writes, under a hash that has moved.
     await leaf('agent.limits.concurrent_runs', 1);
-    await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at) VALUES (${lit(target.projectId)}, ${lit(`blocker-${stamp}`)}, 'myco-agent', 'digest-only', 'running', 0, ${Date.now()})`);
+    await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at) VALUES (${lit(target.projectId)}, ${lit(`blocker-${stamp}`)}, 'myco-agent', 'supersession-sweep', 'running', 0, ${Date.now()})`);
     await saveSpore(`the queue holds a run row ${stamp}`);
     const queued = await dispatch();
     expect(queued.body.queued).toBe(true);

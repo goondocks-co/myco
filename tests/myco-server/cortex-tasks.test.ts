@@ -22,8 +22,10 @@ import { insertSpore } from '@myco-server-worker/core/spores.js';
 import { RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_CLOSE_REPORTS, RUN_CLOSE_RULES } from '@myco-server-worker/core/run-postconditions.js';
 import { buildTaskInput } from '@myco-server-worker/core/task-inputs.js';
 import {
-  DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT, RUN_SESSION_LABEL_CHARS, RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS,
+  DIGEST_FULL_READ_BODY_CHARS, DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT, RUN_SESSION_LABEL_CHARS,
+  RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS,
 } from '@myco-server-worker/core/cortex-input.js';
+import { SPORE_BODY_CHARS } from '@myco-server-worker/core/spores.js';
 import { listInstructions } from '@myco-server-worker/read/cortex.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
@@ -494,6 +496,21 @@ describe('the digest a run writes', () => {
     expect((cortexSpores.spores as unknown[]).length).toBe(DIGEST_SPORE_PAGE_LIMIT + 1);
   });
 
+  it('cuts a digest run\'s full read to the window\'s share, and leaves the sweep its own bound', async () => {
+    const f = await fixture();
+    f.liveRun('run_digest', DIGEST_TASK, { input_hash: 'h' });
+    const second = await f.credential();
+    f.liveRun('run_sweep', 'supersession-sweep', {}, null, false, second.tokenId);
+    await f.spore('sp_long', 'x'.repeat(SPORE_BODY_CHARS + 1000));
+
+    const digestRead = await f.answered('/runs/spore', { runId: 'run_digest', id: 'sp_long' });
+    expect((digestRead.spore as { content: string }).content.length).toBe(DIGEST_FULL_READ_BODY_CHARS);
+    expect(digestRead.truncated).toBe(true);
+
+    const sweepRead = await f.answered('/runs/spore', { runId: 'run_sweep', id: 'sp_long' }, second.token);
+    expect((sweepRead.spore as { content: string }).content.length).toBe(SPORE_BODY_CHARS);
+  });
+
   it('carries the owner\'s from-scratch ask onto the run\'s own context, and never answers a digest ask unchanged', async () => {
     const f = await fixture();
     const first = await f.dispatch({ task: DIGEST_TASK, fresh: true });
@@ -504,13 +521,21 @@ describe('the digest a run writes', () => {
     expect(String(row.instruction)).toContain('write every tier from the material alone');
 
     // A second ask over material that has not moved still starts a run: the run
-    // itself judges tier by tier what is worth rewriting.
+    // itself judges tier by tier what is worth rewriting. The day's ceiling is
+    // what stops a second ask, not the material.
+    f.setting('agent.tasks', { [DIGEST_TASK]: { schedule: { maxRunsPerDay: 2 } } });
     const again = await f.dispatch({ task: DIGEST_TASK });
     expect(again.body.outcome).toBeUndefined();
     expect(String(again.body.runId)).toStartWith('run_');
     const plain = rowOf(again.body.runId);
     expect(JSON.parse(String(plain.runContext)).fresh).toBeUndefined();
     expect(String(plain.instruction)).not.toContain('write every tier from the material alone');
+  });
+
+  it('holds a digest ask to one a day, the dearest task the Deployment starts', async () => {
+    const f = await fixture();
+    expect((await f.dispatch({ task: DIGEST_TASK })).status).toBe(200);
+    expect(await f.dispatch({ task: DIGEST_TASK })).toMatchObject({ status: 409, body: { error: 'max_runs_per_day' } });
   });
 
   it('names the reports that close a digest run', () => {

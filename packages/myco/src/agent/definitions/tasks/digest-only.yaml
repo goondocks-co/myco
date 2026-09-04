@@ -68,6 +68,10 @@ prompt: |
   Preserve well-crafted existing content — integrate new material, don't
   rewrite from scratch.
 
+  A `null` digest from `vault_read_digest` means the project holds no extract at
+  that tier: write that tier fresh from the material rather than from a
+  neighbouring tier's text.
+
   If a tier genuinely has no new material to integrate, skip it — but
   do not skip tiers just to save turns. All 3 tiers should be kept current.
 

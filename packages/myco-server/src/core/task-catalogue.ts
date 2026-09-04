@@ -81,7 +81,13 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   // which is what makes a daily interval safe once it is on.
   'cortex-instructions': { enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 },
   'cortex-prompt-builder': null,
-  'digest-only': null,
+  // Declared and switched off, for the ceiling rather than the clock. A digest
+  // run is the dearest thing this Deployment starts — three tiers rewritten by a
+  // frontier model — and a task with no schedule has no per-day cap, so an
+  // owner's button could spend it again and again in an afternoon. The block
+  // gives the button its one-a-day ceiling and gives the owner the same override
+  // to lift it, while the clock runs nothing until they turn it on.
+  'digest-only': { enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 },
   'skill-survey': null,
   'skill-generate': null,
   'skill-evolve': null,
@@ -124,10 +130,13 @@ export const ACCELERATORS: Readonly<Record<string, (args: { projectId: string; l
  * The tasks a person asks for one at a time: they carry no schedule, and a
  * schedule appearing on one is a cost the Deployment would pay on the clock
  * without anyone deciding it should.
+ *
+ * `digest-only` is not among them any more: it carries a declared schedule that
+ * ships switched off, which is what gives an owner's ask a per-day ceiling and
+ * an override to lift it.
  */
 export const MANUAL_ONLY_TASKS: readonly string[] = [
   'vault-seed',
-  'digest-only',
   'extract-only',
   'supersession-sweep',
   'review-session',

@@ -30,7 +30,7 @@
  */
 import type { RelationalStore } from './adapters.js';
 import { digestForTier, listDigests } from './digests.js';
-import { countSpores, listSpores, SPORE_FULL_READ_BUDGET, SPORE_PREVIEW_CHARS } from './spores.js';
+import { countSpores, listSpores, SPORE_BODY_CHARS, SPORE_FULL_READ_BUDGET, SPORE_PREVIEW_CHARS } from './spores.js';
 import { DIGEST_TIERS, type RecallLeaves } from './recall.js';
 import type { ProjectCapability } from './settings.js';
 import { SERVED_TOOLS } from './tool-catalogue.js';
@@ -360,6 +360,20 @@ export function materialRowsForTier(tier: number, previewChars: number, overhead
 
 /** How many spore previews one page of `/runs/spores` hands a digest run. */
 export const DIGEST_SPORE_PAGE_LIMIT = materialRowsForTier(DIGEST_MATERIAL_TIER, SPORE_PREVIEW_CHARS, SPORE_ROW_OVERHEAD_CHARS);
+
+/**
+ * The largest body one of a digest run's full reads carries.
+ *
+ * The page ceilings are derived from the tier window, and the full reads spend
+ * against the same window: a dozen bodies at the sweep's own bound would carry
+ * more text than every preview the page ceiling allows. A digest run's share of
+ * the window is split across its budgeted reads, and the sweep keeps its own
+ * bound.
+ */
+export const DIGEST_FULL_READ_BODY_CHARS = Math.min(
+  SPORE_BODY_CHARS,
+  Math.floor((DIGEST_TIER_MIN_CONTEXT_TOKENS[DIGEST_MATERIAL_TIER]! * CHARS_PER_TOKEN) / SPORE_FULL_READ_BUDGET),
+);
 /** How many session rows one page of `/runs/sessions` hands a digest run. */
 export const DIGEST_SESSION_PAGE_LIMIT = materialRowsForTier(DIGEST_MATERIAL_TIER, RUN_SESSION_SUMMARY_CHARS, SESSION_ROW_OVERHEAD_CHARS);
 
@@ -473,7 +487,7 @@ export async function buildDigestInput(
     '## Material windows per tier',
     renderWindows(),
     `One page of \`vault_spores\` carries at most ${DIGEST_SPORE_PAGE_LIMIT} previews and one page of \`vault_sessions\` at most ${DIGEST_SESSION_PAGE_LIMIT} sessions; page with \`offset\` for the rest.`,
-    `This run may read at most ${SPORE_FULL_READ_BUDGET} spores in full with \`vault_spore\`; judge the rest by their previews.`,
+    `This run gets up to ${SPORE_FULL_READ_BUDGET} full reads with \`vault_spore\`, each bounded to ${DIGEST_FULL_READ_BODY_CHARS} characters; judge the rest by their previews.`,
   ];
 
   const body = parts.join('\n');
