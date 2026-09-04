@@ -14,7 +14,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
-import { runOrThrow, systemRunner, type CommandRunner } from './runner.js';
+import { CommandFailed, commandOutputTail, jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
 
 /** Wrangler refuses to guess between accounts, and guessing is what must not happen. */
 export class AccountNotSelected extends Error {
@@ -101,59 +101,15 @@ export function rollsContainers(pushedImage?: string, deployedImage?: string): b
 }
 
 /**
- * Where the document opening at `start` closes, or -1 when it never does.
- * Brackets inside a string are text, not structure.
- */
-function documentEnd(text: string, start: number): number {
-  const open = text[start]!;
-  const close = open === '[' ? ']' : '}';
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let at = start; at < text.length; at += 1) {
-    const char = text[at]!;
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (char === '\\') escaped = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') { inString = true; continue; }
-    if (char === open) depth += 1;
-    else if (char === close) {
-      depth -= 1;
-      if (depth === 0) return at + 1;
-    }
-  }
-  return -1;
-}
-
-/**
  * The JSON value in a wrangler answer.
  *
  * `npx` prints `npm notice` lines and wrangler its own configuration warnings
- * around the document, and a colour-coded warning opens with a bracket of its
- * own, so every line that could open a document is tried and each is read only
- * as far as its matching close — a trailer after the document is ignored the
- * same way a preamble before it is. An answer carrying no readable document
- * answers null rather than throwing: the caller decides what that means.
+ * around the document, and the reader every command here shares reads past
+ * both. An answer carrying no readable document answers null rather than
+ * throwing: the caller decides what that means.
  */
 export function wranglerJson<T>(stdout: string): T | null {
-  let offset = 0;
-  for (const line of stdout.split('\n')) {
-    const opens = line.length - line.trimStart().length;
-    const char = line[opens];
-    if (char === '[' || char === '{') {
-      const end = documentEnd(stdout, offset + opens);
-      if (end > 0) {
-        try {
-          return JSON.parse(stdout.slice(offset + opens, end)) as T;
-        } catch { /* a line that only looked like an opening bracket; keep looking */ }
-      }
-    }
-    offset += line.length + 1;
-  }
-  return null;
+  return jsonDocument<T>(stdout);
 }
 
 /**
@@ -233,27 +189,66 @@ interface LiveRunRow {
 /** Raised when the Deployment's runs cannot be read; a deploy that cannot see them must not read that as an empty Deployment. */
 export class LiveRunsUnreadable extends Error {
   constructor(readonly answer: string) {
-    super("the Deployment's runs could not be read; pass --no-drain to ship over whatever is running");
+    super(
+      "the Deployment's runs could not be read; pass --no-drain to ship over whatever is running"
+      + (answer === '' ? '' : `. The read answered: ${answer}`),
+    );
     this.name = 'LiveRunsUnreadable';
   }
 }
+
+/** How long the live-runs read waits before it asks a second time. */
+export const LIVE_RUNS_RETRY_MS = 3_000;
+
+/** How the read spends its retry pause when no caller hands it a clock. */
+const pause = (ms: number): Promise<void> => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
 
 /**
  * The runs the Deployment has in flight, read from its own database.
  *
  * A deploy holds no application credential, so this reads through the
  * operator's own wrangler login like every other command here. A command that
- * fails is raised and an answer that carries no readable document is raised
- * too: "nothing came back" and "nothing is running" are opposite facts, and a
+ * fails and an answer that carries no readable document both refuse the read:
+ * "nothing came back" and "nothing is running" are opposite facts, and a
  * deploy that confused them would ship straight over live work.
+ *
+ * Either answer is asked again once after a pause first. The database API
+ * answers a passing internal error in exactly the shape it answers a real
+ * one, and a deploy refused over an answer that comes back a second later
+ * costs the operator the whole run. Only a second bad answer raises, carrying
+ * what the command itself said.
  */
-export async function readLiveRuns(options: CloudflareOptions & { databaseName: string }): Promise<LiveRun[]> {
+export async function readLiveRuns(
+  options: CloudflareOptions & { databaseName: string; sleep?: (ms: number) => Promise<void> },
+): Promise<LiveRun[]> {
   const { runner, env } = resolved(options);
-  const result = await runOrThrow(runner, 'npx',
-    wrangler('d1', 'execute', options.databaseName, '--remote', '--json', '--command', LIVE_RUNS_QUERY, ...configArgs(options)),
-    { cwd: options.configDir, env });
-  const answers = wranglerJson<{ results?: LiveRunRow[] }[]>(result.stdout);
-  if (answers === null) throw new LiveRunsUnreadable(result.stdout);
+  const sleep = options.sleep ?? pause;
+  let answer = '';
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (attempt > 0) await sleep(LIVE_RUNS_RETRY_MS);
+    let stdout: string;
+    try {
+      const result = await runOrThrow(runner, 'npx',
+        wrangler('d1', 'execute', options.databaseName, '--remote', '--json', '--command', LIVE_RUNS_QUERY, ...configArgs(options)),
+        { cwd: options.configDir, env });
+      stdout = result.stdout;
+    } catch (err) {
+      if (!(err instanceof CommandFailed)) throw err;
+      answer = err.message;
+      continue;
+    }
+    const answers = wranglerJson<{ results?: LiveRunRow[] }[]>(stdout);
+    if (answers === null) {
+      answer = commandOutputTail(stdout) || stdout.trim();
+      continue;
+    }
+    return liveRunsIn(answers);
+  }
+  throw new LiveRunsUnreadable(answer);
+}
+
+/** The runs the answered rows name, skipping a row that names no run. */
+function liveRunsIn(answers: readonly { results?: LiveRunRow[] }[]): LiveRun[] {
   const runs: LiveRun[] = [];
   for (const answer of answers) {
     for (const row of answer.results ?? []) {

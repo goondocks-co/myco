@@ -147,12 +147,14 @@ async function waitForLiveRuns(
 ): Promise<void> {
   const report = options.report ?? console.log;
   const clock = options.clock ?? systemClock;
+  // The read spends its own retry pause on the same clock the wait polls on.
+  const read = (): Promise<LiveRun[]> => readLiveRuns({ ...options, sleep: (ms) => clock.sleep(ms) });
 
   if (options.drain === false) {
     // The read is a courtesy here rather than a gate: --no-drain is the escape
     // hatch, and a Deployment that cannot be read is exactly when it is used.
     try {
-      const live = await readLiveRuns(options);
+      const live = await read();
       const now = clock.now();
       for (const run of live) report(describeRun('Shipping over', run, now));
     } catch (err) {
@@ -162,7 +164,7 @@ async function waitForLiveRuns(
     return;
   }
 
-  let live = await readLiveRuns(options);
+  let live = await read();
   if (live.length === 0) return;
   const first = clock.now();
   for (const run of live) report(describeRun('Waiting for', run, first));
@@ -182,7 +184,7 @@ async function waitForLiveRuns(
       return;
     }
     await clock.sleep(LIVE_RUN_POLL_MS);
-    live = await readLiveRuns(options);
+    live = await read();
   }
   report('Nothing is running; the deploy proceeds.');
 }

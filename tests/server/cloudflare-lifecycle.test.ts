@@ -17,7 +17,7 @@ import {
   ROLLOUT_WATCH_TIMEOUT_SECONDS,
   RUN_OVERRUN_MARGIN_MS,
 } from '@myco/server/cloudflare-lifecycle.js';
-import { readDeploymentRecord, writeDeploymentRecord, wranglerJson } from '@myco/server/cloudflare.js';
+import { LIVE_RUNS_RETRY_MS, readDeploymentRecord, writeDeploymentRecord, wranglerJson } from '@myco/server/cloudflare.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS as SERVER_DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS as SERVER_RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
@@ -214,12 +214,16 @@ describe('update: the runs in flight and the rollout', () => {
     });
 
   /** Answers a queue in order and repeats its last answer once the queue is spent. */
-  const queue = (answers: readonly string[]) => {
+  const queue = <T>(answers: readonly T[]) => {
     let at = 0;
-    return (): string => answers[Math.min(at++, answers.length - 1)] ?? '';
+    return (): T => answers[Math.min(at++, answers.length - 1)]!;
   };
 
-  const scripted = (script: { d1?: readonly string[]; list?: readonly string[]; info?: readonly string[]; fail?: 'list' | 'info' }): CommandRunner => {
+  /** A scripted answer: stdout alone, or a whole result for a command that failed. */
+  const answered = (answer: string | Partial<CommandResult>): CommandResult =>
+    typeof answer === 'string' ? { code: 0, stdout: answer, stderr: '' } : { code: 0, stdout: '', stderr: '', ...answer };
+
+  const scripted = (script: { d1?: readonly (string | Partial<CommandResult>)[]; list?: readonly string[]; info?: readonly string[]; fail?: 'list' | 'info' }): CommandRunner => {
     const d1 = queue(script.d1 ?? [liveRuns([])]);
     const list = queue(script.list ?? [applications(31)]);
     const info = queue(script.info ?? [rolloutInfo(31, 7, 7, RUNNING_IMAGE), rolloutInfo(32, 7, 7)]);
@@ -227,7 +231,7 @@ describe('update: the runs in flight and the rollout', () => {
     return {
       async run(command, args, options) {
         const flat = args.join(' ');
-        if (flat.includes('d1 execute')) { calls.push({ args: [...args] }); return { code: 0, stdout: d1(), stderr: '' }; }
+        if (flat.includes('d1 execute')) { calls.push({ args: [...args] }); return answered(d1()); }
         if (flat.includes('containers list')) {
           calls.push({ args: [...args] });
           return script.fail === 'list' ? { code: 1, stdout: '', stderr: 'the account is not authorized to list containers' } : { code: 0, stdout: list(), stderr: '' };
@@ -315,6 +319,51 @@ describe('update: the runs in flight and the rollout', () => {
     await expect(updateCloudflareDeployment({
       ...options, runner: scripted({ d1: [unreadable] }), report: () => undefined, clock: clock(),
     })).rejects.toThrow(/could not be read; pass --no-drain/);
+    expect(flatCalls().some((a) => a.includes('containers build'))).toBe(false);
+  });
+
+  it('asks again after a pause when the first answer comes back unreadable, and ships on the second', async () => {
+    const { home, options } = setup();
+    seed(home);
+    const drive = clock();
+    const unreadable = 'npm notice run npx\nwrangler exited before it printed anything';
+    await updateCloudflareDeployment({
+      ...options, runner: scripted({ d1: [unreadable, liveRuns([])] }), report: () => undefined, clock: drive,
+    });
+    expect(flatCalls().filter((a) => a.includes('d1 execute')).length).toBe(2);
+    expect(drive.at).toBe(NOW + LIVE_RUNS_RETRY_MS);
+    expect(flatCalls().some((a) => a.includes('containers build'))).toBe(true);
+  });
+
+  it('GATE: a second bad answer refuses the deploy, naming the error the command printed', async () => {
+    const { home, options } = setup();
+    seed(home);
+    // The database API answers a passing internal error exactly like a real
+    // one: a JSON document on stdout, a configuration warning on stderr.
+    const apiError = {
+      code: 1,
+      stdout: JSON.stringify({
+        error: {
+          text: 'A request to the Cloudflare API (/accounts/a/d1/database/b/query) failed.',
+          notes: [{ text: 'internal error; reference = 7f3c1d2e [code: 7500]' }],
+          kind: 'error', name: 'APIError', code: 7400,
+        },
+      }),
+      stderr: '\u001b[33m\u25b2 \u001b[43;33m[\u001b[43;30mWARNING\u001b[43;33m]\u001b[0m Processing wrangler.deploy.toml configuration:\n\n    - Unexpected fields found\n',
+    };
+    const drive = clock();
+    await expect(updateCloudflareDeployment({
+      ...options, runner: scripted({ d1: [apiError] }), report: () => undefined, clock: drive,
+    })).rejects.toThrow(/could not be read; pass --no-drain/);
+
+    let raised = '';
+    try {
+      await updateCloudflareDeployment({ ...options, runner: scripted({ d1: [apiError] }), report: () => undefined, clock: clock() });
+    } catch (err) { raised = (err as Error).message; }
+    expect(raised).toContain('A request to the Cloudflare API');
+    expect(raised).toContain('internal error; reference = 7f3c1d2e');
+    expect(raised).not.toContain('Unexpected fields found');
+    expect(drive.at).toBe(NOW + LIVE_RUNS_RETRY_MS);
     expect(flatCalls().some((a) => a.includes('containers build'))).toBe(false);
   });
 
