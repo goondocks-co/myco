@@ -11,11 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     # GitHub Actions defaults to a 6-hour job timeout. We've hit
     # bun-test-doesn't-exit hangs (a test leaks a handle and the runner
-    # waits indefinitely for the event loop to drain). 25 minutes is
-    # generous for the suite — locally it runs in under 3 — and forces
+    # waits indefinitely for the event loop to drain). 40 minutes is
+    # generous for the suite — locally it runs in under 3, and a slow runner has
+    # spent 16 on the install and native build steps alone — and forces
     # a fast failure so we can grab logs and diagnose, rather than
     # waiting hours on a wedged runner.
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
