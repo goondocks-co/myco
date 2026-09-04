@@ -196,6 +196,20 @@ export interface TurnChild {
   toolCallCount: number;
 }
 
+/** One observation Myco added to a prompt. */
+export interface InjectedSpore {
+  id: string;
+  observationType: string;
+  preview: string;
+}
+
+/** What Myco added to a prompt: the observations it served, and when. */
+export interface TurnInjection {
+  sporeIds: string[];
+  createdAt: number;
+  spores: InjectedSpore[];
+}
+
 /** One turn's body; its tool calls are read on their own when opened. */
 export interface TurnDetail {
   prompt: TurnPrompt;
@@ -203,6 +217,8 @@ export interface TurnDetail {
   attachments: AttachmentRow[];
   /** The plans this turn produced. */
   plans: PlanRow[];
+  /** The observations Myco added to this prompt, or null when it added none. */
+  injection: TurnInjection | null;
   children: TurnChild[];
 }
 

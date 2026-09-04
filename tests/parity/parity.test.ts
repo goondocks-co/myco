@@ -6,11 +6,12 @@ import { backupRestore } from './scenarios/backup-restore.ts';
 import { sessionsTitling } from './scenarios/sessions-titling.ts';
 import { sessionTurns } from './scenarios/session-turns.ts';
 import { plans } from './scenarios/plans.ts';
+import { spores } from './scenarios/spores.ts';
 import { tick } from './scenarios/tick.ts';
 import { dispatchQueue } from './scenarios/dispatch-queue.ts';
 import { scheduledTasks } from './scenarios/scheduled-tasks.ts';
 
-const scenarios = [sessionsTitling, sessionTurns, plans, backupRestore, tick, dispatchQueue, scheduledTasks];
+const scenarios = [sessionsTitling, sessionTurns, plans, spores, backupRestore, tick, dispatchQueue, scheduledTasks];
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

@@ -6,6 +6,7 @@
  * preview, never a prompt's full text.
  */
 import type { RelationalStore } from '../core/adapters.js';
+import { injectionForPrompt, type PromptInjection } from '../core/injection.js';
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
 import { ATTACHMENT_QUERY, PLAN_QUERY, RESPONSE_QUERY, listChildren, type AttachmentRow, type PlanRow, type ResponseRow } from './children.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
@@ -59,6 +60,8 @@ export interface TurnDetail {
   attachments: AttachmentRow[];
   /** The plans this prompt produced, oldest update first. */
   plans: PlanRow[];
+  /** The observations Myco served with this prompt, with their spores hydrated; null when it served none. */
+  injection: PromptInjection | null;
   children: TurnChild[];
 }
 
@@ -145,10 +148,11 @@ export async function turnDetail(db: RelationalStore, scope: ReadScope, sessionI
   if (row === null) return null;
   const prompt = toPrompt(row);
   const body = { limit: TURN_BODY_LIMIT };
-  const [responses, attachments, plans, childRows] = await Promise.all([
+  const [responses, attachments, plans, injection, childRows] = await Promise.all([
     listChildren(db, RESPONSE_QUERY, scope, sessionId, { ...body, promptId }),
     listChildren(db, ATTACHMENT_QUERY, scope, sessionId, { ...body, promptId }),
     listChildren(db, PLAN_QUERY, scope, sessionId, { ...body, promptId }),
+    injectionForPrompt(db, scope, sessionId, promptId),
     db.prepare(`SELECT ${PROMPT_COLUMNS}, ${TOOL_CALL_COUNT} AS tool_call_count FROM prompt_batches pb
                  WHERE pb.project_id = ? AND pb.session_id = ? AND pb.parent_prompt_id = ?
                  ORDER BY pb.created_at ASC, pb.prompt_id ASC LIMIT ?`)
@@ -161,5 +165,5 @@ export async function turnDetail(db: RelationalStore, scope: ReadScope, sessionI
     const childResponses = await listChildren(db, RESPONSE_QUERY, scope, sessionId, { ...body, promptId: childPrompt.promptId });
     children.push({ prompt: childPrompt, responses: [...childResponses.rows], toolCallCount: child.tool_call_count as number });
   }
-  return { prompt, responses: [...responses.rows], attachments: [...attachments.rows], plans: [...plans.rows], children };
+  return { prompt, responses: [...responses.rows], attachments: [...attachments.rows], plans: [...plans.rows], injection, children };
 }

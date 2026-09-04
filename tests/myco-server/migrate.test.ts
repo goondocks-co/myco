@@ -220,7 +220,7 @@ describe('versioned schema steps', () => {
       'attachments', 'blob_reservations', 'blobs', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts', 'external_grants',
       'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'project_capabilities', 'projects',
       'prompt_batches', 'resolution_events', 'responses', 'skill_candidates', 'skill_lineage', 'skill_records',
-      'skill_usage', 'spores', 'tags', 'tool_calls', 'transcript_segments', 'transcripts',
+      'skill_usage', 'spore_injections', 'spores', 'tags', 'tool_calls', 'transcript_segments', 'transcripts',
     ]);
   });
 });

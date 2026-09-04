@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, ChevronDown, ChevronRight } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Bot, ChevronDown, ChevronRight, Sprout } from 'lucide-react';
 import { inlineLink } from '../ui/inline-link';
 import { Lightbox } from '../ui/lightbox';
 import { Skeleton } from '../ui/skeleton';
 import { Surface } from '../ui/surface';
-import { blobUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnRow } from '../../hooks/use-sessions';
+import { blobUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnInjection, type TurnRow } from '../../hooks/use-sessions';
 import { formatDateTime, formatRelative } from '../../lib/format';
 import { cn } from '../../lib/cn';
+import { Badge } from '../ui/badge';
+import { formatLabel } from '../spores/labels';
 import { PlanCard } from './PlanCard';
 import { TextOrBlob } from './stored-text';
 import { ToolCallList } from './ToolCallList';
@@ -92,6 +95,47 @@ function SteeringChild({ projectId, sessionId, child }: { projectId: string; ses
   );
 }
 
+/** What Myco added to this prompt: a collapsed line, opening on the observations it served, each a link to the observation itself. */
+function Injection({ projectId, injection }: { projectId: string; injection: TurnInjection }) {
+  const [open, setOpen] = useState(false);
+  const count = injection.spores.length;
+  const missing = injection.sporeIds.length - count;
+  if (injection.sporeIds.length === 0) return null;
+  return (
+    <div className="px-4 pb-3" data-testid="turn-injection">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 rounded-md border border-dashed border-[var(--ghost-border)] px-2.5 py-1.5 text-left font-sans text-xs text-on-surface-variant transition-colors hover:bg-surface-container/40"
+      >
+        {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+        <Sprout className="h-3.5 w-3.5 shrink-0 text-primary/60" />
+        <span>Myco added {count} observation{count === 1 ? '' : 's'}</span>
+        <span className="ml-auto shrink-0 font-mono text-[10px]" title={formatDateTime(injection.createdAt)}>{formatRelative(injection.createdAt)}</span>
+      </button>
+      {open && (
+        <ul className="mt-2 flex flex-col gap-1.5" aria-label="Observations added to this prompt">
+          {injection.spores.map((spore) => (
+            <li key={spore.id}>
+              <Link
+                to={`/p/${encodeURIComponent(projectId)}/spores/${encodeURIComponent(spore.id)}`}
+                className="block rounded-md border border-[var(--ghost-border)] px-2.5 py-1.5 transition-colors hover:bg-surface-container"
+              >
+                <Badge variant="secondary" className="font-mono text-[10px]">{formatLabel(spore.observationType)}</Badge>
+                <p className="m-0 mt-1 truncate font-sans text-xs text-on-surface">{spore.preview}</p>
+              </Link>
+            </li>
+          ))}
+          {missing > 0 && (
+            <li className="px-2.5 py-1.5 font-sans text-xs text-on-surface-variant">{missing} no longer in the vault</li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function TurnBody({ projectId, sessionId, turn }: { projectId: string; sessionId: string; turn: TurnRow }) {
   const detail = useTurnDetail(projectId, sessionId, turn.promptId, true);
   if (detail.isPending) return <div className="space-y-2 px-4 pb-3"><Skeleton className="h-3 w-3/4" /><Skeleton className="h-3 w-1/2" /></div>;
@@ -108,6 +152,7 @@ function TurnBody({ projectId, sessionId, turn }: { projectId: string; sessionId
           <Attachments projectId={projectId} attachments={body.attachments} />
         </div>
       )}
+      {body.injection !== null && <Injection projectId={projectId} injection={body.injection} />}
       {body.plans.length > 0 && (
         <div className="flex flex-col gap-2 px-4 pb-3" data-testid="turn-plans">
           {body.plans.map((plan) => <PlanCard key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} inTurn />)}
