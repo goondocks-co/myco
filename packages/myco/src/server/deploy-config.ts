@@ -8,9 +8,11 @@
  * added to the committed file reaches production on the next render instead of
  * waiting for someone to notice a hand-maintained copy drifted.
  */
+import { createHash } from 'node:crypto';
 import type { DeploymentRecord } from './cloudflare.js';
 import { WRANGLER_TEMPLATE } from './wrangler-template.js';
 
+const CONTAINERS_HEADER = '[[containers]]';
 const DATABASE_ID_PLACEHOLDER = '<YOUR_D1_DATABASE_ID>';
 const DOCKERFILE_IMAGE_LINE = 'image = "./harness/Dockerfile"';
 const FLEET_LINE_RE = /^max_instances = \d+$/m;
@@ -89,6 +91,34 @@ export function renderDeployConfig(record: DeploymentRecord): string {
   return `${header.join('\n')}\n${body}`;
 }
 
+/** Every `[[containers]]` line a rendered config carries: each table's header and its fields, trimmed, with comments and blank lines dropped. */
+function containersTableLines(config: string): string[] {
+  const kept: string[] = [];
+  let inside = false;
+  for (const raw of config.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('[')) inside = line === CONTAINERS_HEADER;
+    if (!inside || line === '' || line.startsWith('#')) continue;
+    kept.push(line);
+  }
+  return kept;
+}
+
+/**
+ * The identity of a deploy's container settings.
+ *
+ * The platform replaces the container instances when the `[[containers]]` table
+ * changes — the image line or any other field — so a deploy compares this
+ * against the one the record carries to decide whether it is rolling.
+ * Comments and indentation reach no instance and move it not at all; a field's
+ * value moves it.
+ */
+export function containersTableHash(config: string): string {
+  const lines = containersTableLines(config);
+  if (lines.length === 0) throw new Error('the rendered config carries no [[containers]] table; containersTableHash and wrangler.toml have drifted');
+  return createHash('sha256').update(lines.join('\n')).digest('hex');
+}
+
 /**
  * The committed configuration shaped for a local parity/dev boot:
  * `global_fetch_strictly_public` dropped (a scenario's loopback provider stub
@@ -98,7 +128,7 @@ export function renderDeployConfig(record: DeploymentRecord): string {
  * refusal where the binding is absent). A multi-line flags array or a second
  * flag fails loudly rather than shipping a silently different runtime.
  */
-const PARITY_DROPPED_HEADERS = ['[assets]', '[[containers]]'];
+const PARITY_DROPPED_HEADERS = ['[assets]', CONTAINERS_HEADER];
 
 /**
  * Whether a table is dropped for parity: the assets and the container, and the

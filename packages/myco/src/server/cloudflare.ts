@@ -90,14 +90,25 @@ export interface DeployResult {
 /** What a deploy passes wrangler to leave the container application's images and instances exactly as they stand. */
 export const CONTAINERS_ROLLOUT_NONE = '--containers-rollout=none';
 
+/** What a deploy carries into the container application: the image bytes, and the settings the rendered `[[containers]]` table holds. */
+export interface ContainerState {
+  image?: string;
+  containersTable?: string;
+}
+
 /**
- * Whether a deploy shipping `pushedImage` over `deployedImage` rolls the
- * container application. Identical bytes roll nothing, and a caller that has
- * to prepare for a rollout — reading the application's version before the
- * deploy, say — asks this before running one.
+ * Whether a deploy shipping `pushed` over `deployed` rolls the container
+ * application. The platform replaces the instances when the image bytes move
+ * or the `[[containers]]` table changes, so either moving rolls and identical
+ * bytes under identical settings roll nothing. A deployed state naming no
+ * image or no settings is one nothing can be compared against, and rolls.
+ *
+ * A caller that has to prepare for a rollout — reading the application's
+ * version before the deploy, say — asks this before running one.
  */
-export function rollsContainers(pushedImage?: string, deployedImage?: string): boolean {
-  return pushedImage === undefined || pushedImage !== deployedImage;
+export function rollsContainers(pushed: ContainerState, deployed: ContainerState): boolean {
+  if (pushed.image === undefined || pushed.image !== deployed.image) return true;
+  return deployed.containersTable === undefined || pushed.containersTable !== deployed.containersTable;
 }
 
 /**
@@ -119,15 +130,15 @@ export function wranglerJson<T>(stdout: string): T | null {
  * account holding some of what it was going to create, and the build is where
  * most failures are.
  *
- * A deploy that ships the image already running rolls nothing: replacing the
- * container instances would take every run in flight through a drain for bytes
- * identical to the ones already there. `pushedImage` is what the build just
- * put in the registry and `deployedImage` what the record named before it; the
- * two matching is exactly that case.
+ * A deploy that changes nothing the container instances carry rolls nothing:
+ * replacing them would take every run in flight through a drain to arrive at
+ * what is already there. `willRoll` is that decision, made by the caller
+ * holding the record the image and the container settings are compared
+ * against; a caller naming none rolls.
  */
-export async function deployWorker(options: CloudflareOptions & { dryRun?: boolean; pushedImage?: string; deployedImage?: string }): Promise<DeployResult> {
+export async function deployWorker(options: CloudflareOptions & { dryRun?: boolean; willRoll?: boolean }): Promise<DeployResult> {
   const { runner, env } = resolved(options);
-  const willRoll = rollsContainers(options.pushedImage, options.deployedImage);
+  const willRoll = options.willRoll ?? true;
   const args = wrangler(
     'deploy',
     ...configArgs(options),
@@ -508,6 +519,8 @@ export interface DeploymentRecord {
   harnessImage?: string;
   /** How many harness runtimes the Deployment may start at once — the container fleet, set by `myco server config --fleet`; the template's number until then. */
   fleet?: number;
+  /** The container settings the running instances carry: the hash of the rendered `[[containers]]` table the deploy that shipped them wrote. A record naming none carries settings nothing can be compared against, and the next deploy rolls. */
+  containersTable?: string;
   /** The last container rollout a deploy watched to its end: the application version the instances reached, and when they all carried it. Absent until one completes under a watch. */
   lastRollout?: { version: number; completedAt: string };
 }

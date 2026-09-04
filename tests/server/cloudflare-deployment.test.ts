@@ -21,8 +21,10 @@ import {
   applyMigrations,
   listAccounts,
   readDeploymentRecord,
+  rollsContainers,
   writeDeploymentRecord,
 } from '@myco/server/cloudflare.js';
+import { containersTableHash } from '@myco/server/deploy-config.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 
 let calls: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = [];
@@ -81,25 +83,49 @@ describe('deploy', () => {
     expect(calls[0]!.args).toContain('--dry-run');
   });
 
-  it('rolls nothing when the deploy ships the image already running, and rolls as usual when the bytes moved', async () => {
-    // Replacing the instances for identical bytes takes every run in flight
-    // through a drain and gains nothing.
-    const image = `registry.cloudflare.com/${'a'.repeat(32)}/myco-server-harnesscontainer@sha256:${'b'.repeat(64)}`;
-    const unchanged = await deployWorker({ ...base(), runner: runner(), pushedImage: image, deployedImage: image });
+  it('rolls nothing when the caller says the deploy changes nothing the instances carry', async () => {
+    // Replacing the instances to arrive at what they already carry takes every
+    // run in flight through a drain and gains nothing.
+    const unchanged = await deployWorker({ ...base(), runner: runner(), willRoll: false });
     expect(calls[0]!.args).toContain(CONTAINERS_ROLLOUT_NONE);
     // The caller watching the instances onto a new version is told there is nothing to watch.
     expect(unchanged.willRoll).toBe(false);
 
     calls = [];
-    const moved = await deployWorker({ ...base(), runner: runner(), pushedImage: image, deployedImage: `${image.slice(0, -1)}c` });
+    const moved = await deployWorker({ ...base(), runner: runner(), willRoll: true });
     expect(calls[0]!.args).not.toContain(CONTAINERS_ROLLOUT_NONE);
     expect(moved.willRoll).toBe(true);
 
-    // A first deploy has nothing deployed to compare against, and rolls.
+    // A caller naming no decision rolls.
     calls = [];
-    const first = await deployWorker({ ...base(), runner: runner(), pushedImage: image });
+    const unstated = await deployWorker({ ...base(), runner: runner() });
     expect(calls[0]!.args).not.toContain(CONTAINERS_ROLLOUT_NONE);
-    expect(first.willRoll).toBe(true);
+    expect(unstated.willRoll).toBe(true);
+  });
+
+  it('rolls on a moved image, on changed container settings, and on a record that names no settings', () => {
+    const image = `registry.cloudflare.com/${'a'.repeat(32)}/myco-server-harnesscontainer@sha256:${'b'.repeat(64)}`;
+    const table = 'f'.repeat(64);
+
+    expect(rollsContainers({ image, containersTable: table }, { image, containersTable: table })).toBe(false);
+    // The platform replaces the instances when the table changes, whatever the image says.
+    expect(rollsContainers({ image, containersTable: table }, { image, containersTable: 'e'.repeat(64) })).toBe(true);
+    expect(rollsContainers({ image, containersTable: table }, { image: `${image.slice(0, -1)}c`, containersTable: table })).toBe(true);
+    // A record written before the settings were ever recorded, and a first deploy with nothing deployed at all.
+    expect(rollsContainers({ image, containersTable: table }, { image })).toBe(true);
+    expect(rollsContainers({ image, containersTable: table }, {})).toBe(true);
+  });
+
+  it('reads the container settings past the comments and the indentation, and sees a changed value', () => {
+    const config = (fields: string) => `name = "myco-server"\n\n[[containers]]\n${fields}\n[triggers]\ncrons = [ "*/15 * * * *" ]\n`;
+    const settled = containersTableHash(config('class_name = "HarnessContainer"\nmax_instances = 12\ninstance_type = "standard-1"'));
+
+    expect(containersTableHash(config(
+      '# the harness container\n  class_name = "HarnessContainer"\n\nmax_instances = 12\n# the dev default is too small\ninstance_type = "standard-1"',
+    ))).toBe(settled);
+    expect(containersTableHash(config('class_name = "HarnessContainer"\nmax_instances = 12\ninstance_type = "standard"'))).not.toBe(settled);
+    // A config carrying no container table at all is drift, not a settled deploy.
+    expect(() => containersTableHash('name = "myco-server"\n')).toThrow(/no \[\[containers\]\] table/);
   });
 
   it('applies migrations against the remote database, never a local one', async () => {

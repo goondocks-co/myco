@@ -37,7 +37,7 @@ import {
   type DeploymentRecord,
   type LiveRun,
 } from './cloudflare.js';
-import { renderDeployConfig } from './deploy-config.js';
+import { containersTableHash, renderDeployConfig } from './deploy-config.js';
 
 export const DEPLOY_CONFIG_NAME = 'wrangler.deploy.toml';
 const WORKER_NAME = 'myco-server';
@@ -255,11 +255,17 @@ async function buildDeployArtifacts(options: LifecycleOptions): Promise<void> {
   await runOrThrow(runner, 'npm', ['run', 'harness:bundle'], { cwd: options.configDir });
 }
 
-/** Render the record's deploy config into the checkout and answer its path. */
-export function writeDeployConfig(record: DeploymentRecord, configDir: string): string {
+/**
+ * Render the record's deploy config into the checkout: its path, and the
+ * identity of the container settings it carries. Both come from the one
+ * render, so the file a deploy reads and the settings hash it compares can
+ * never describe different containers.
+ */
+export function writeDeployConfig(record: DeploymentRecord, configDir: string): { file: string; containersTable: string } {
   const file = path.join(configDir, DEPLOY_CONFIG_NAME);
-  writeFileSync(file, renderDeployConfig(record), { mode: 0o600 });
-  return file;
+  const config = renderDeployConfig(record);
+  writeFileSync(file, config, { mode: 0o600 });
+  return { file, containersTable: containersTableHash(config) };
 }
 
 export interface CreateResult {
@@ -310,11 +316,15 @@ export async function createCloudflareDeployment(options: LifecycleOptions): Pro
   await buildDeployArtifacts(options);
   record = { ...record, harnessImage: await buildAndPushHarnessImage({ ...options, workerName: WORKER_NAME }) };
   writeDeploymentRecord(record, options.mycoHome);
-  const configFile = writeDeployConfig(record, options.configDir);
+  const { file: configFile, containersTable } = writeDeployConfig(record, options.configDir);
   const withConfig = { ...options, configFile: path.basename(configFile) };
 
   await applyMigrations({ ...withConfig, databaseName: DATABASE_NAME });
-  const deployed = await deployWorker({ ...withConfig, pushedImage: record.harnessImage, ...(existing?.harnessImage === undefined ? {} : { deployedImage: existing.harnessImage }) });
+  const willRoll = rollsContainers(
+    { image: record.harnessImage, containersTable },
+    { image: existing?.harnessImage, containersTable: existing?.containersTable },
+  );
+  const deployed = await deployWorker({ ...withConfig, willRoll });
 
   // After the first deploy: a secret lands on the live Worker; putting one
   // ahead of a Worker that is not there yet is version-dependent behavior.
@@ -323,7 +333,7 @@ export async function createCloudflareDeployment(options: LifecycleOptions): Pro
     createdResources.push('worker secret SESSION_SECRET');
   }
 
-  record = { ...record, versionId: deployed.versionId, deployedAt: new Date().toISOString(), ...(record.url === undefined && deployed.url !== null ? { url: deployed.url } : {}) };
+  record = { ...record, containersTable, versionId: deployed.versionId, deployedAt: new Date().toISOString(), ...(record.url === undefined && deployed.url !== null ? { url: deployed.url } : {}) };
   writeDeploymentRecord(record, options.mycoHome);
   return { record, createdResources, versionId: deployed.versionId };
 }
@@ -347,19 +357,23 @@ export async function updateCloudflareDeployment(options: LifecycleOptions): Pro
   // name only through a config carrying its id. Rendering the record's config
   // here also refuses a record that cannot address its database before the
   // push rather than after it.
-  const configFile = path.basename(writeDeployConfig(record, options.configDir));
+  const configFile = path.basename(writeDeployConfig(record, options.configDir).file);
   await waitForLiveRuns({ ...options, configFile, databaseName: record.databaseName });
 
   const pinned = { ...record, harnessImage: await buildAndPushHarnessImage({ ...options, workerName: record.workerName }) };
   writeDeploymentRecord(pinned, options.mycoHome);
-  writeDeployConfig(pinned, options.configDir);
+  const { containersTable } = writeDeployConfig(pinned, options.configDir);
   const withConfig = { ...options, configFile };
   await applyMigrations({ ...withConfig, databaseName: record.databaseName });
 
   // The version the instances carry has to be read before the deploy: the
-  // rollout is over when they carry a later one. A push of the image already
-  // running rolls nothing, and asks the application nothing.
-  const willRoll = rollsContainers(pinned.harnessImage, record.harnessImage);
+  // rollout is over when they carry a later one. A deploy shipping the image
+  // already running under the container settings already in force rolls
+  // nothing, and asks the application nothing.
+  const willRoll = rollsContainers(
+    { image: pinned.harnessImage, containersTable },
+    { image: record.harnessImage, containersTable: record.containersTable },
+  );
   let applicationId: string | null = null;
   let before: ContainerRollout | null = null;
   let unreadable: string | null = null;
@@ -372,11 +386,11 @@ export async function updateCloudflareDeployment(options: LifecycleOptions): Pro
     }
   }
 
-  const deployed = await deployWorker({ ...withConfig, pushedImage: pinned.harnessImage, ...(record.harnessImage === undefined ? {} : { deployedImage: record.harnessImage }) });
+  const deployed = await deployWorker({ ...withConfig, willRoll });
 
   const report = options.report ?? console.log;
   let rollout: { version: number; completedAt: string } | null = null;
-  if (!deployed.willRoll) report('No container rollout (image unchanged).');
+  if (!deployed.willRoll) report('No container rollout (image and container settings unchanged).');
   else if (unreadable !== null) report(`The container application could not be read: ${unreadable}. The deploy shipped; the rollout is not watched.`);
   else if (applicationId === null) report('No container application answers yet; the instances carry the new image as they start.');
   else if (before === null) report('The container application did not say where it stands; the deploy shipped and the rollout is not watched.');
@@ -384,6 +398,7 @@ export async function updateCloudflareDeployment(options: LifecycleOptions): Pro
 
   writeDeploymentRecord({
     ...pinned,
+    containersTable,
     versionId: deployed.versionId,
     deployedAt: new Date().toISOString(),
     ...(rollout === null ? {} : { lastRollout: rollout }),

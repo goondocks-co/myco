@@ -17,8 +17,9 @@ import {
   ROLLOUT_WATCH_TIMEOUT_SECONDS,
   RUN_OVERRUN_MARGIN_MS,
 } from '@myco/server/cloudflare-lifecycle.js';
-import { LIVE_RUNS_RETRY_MS, readDeploymentRecord, writeDeploymentRecord, wranglerJson } from '@myco/server/cloudflare.js';
+import { CONTAINERS_ROLLOUT_NONE, LIVE_RUNS_RETRY_MS, readDeploymentRecord, writeDeploymentRecord, wranglerJson } from '@myco/server/cloudflare.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
+import { containersTableHash, renderDeployConfig } from '@myco/server/deploy-config.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS as SERVER_DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS as SERVER_RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
 import { TASK_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/task-catalogue.js';
@@ -79,6 +80,8 @@ describe('create', () => {
     expect(record.harnessImage).toBe(pinnedUri);
     expect(rendered).toContain(`image = "${pinnedUri}"`);
     expect(rendered).not.toContain('image = "./harness/Dockerfile"');
+    // The settings the instances now carry, for the next deploy to compare against.
+    expect(record.containersTable).toBe(containersTableHash(rendered));
 
     const flat = calls.map((c) => c.args.join(' '));
     const uiAt = flat.findIndex((a) => a.includes('run build:ui'));
@@ -252,12 +255,17 @@ describe('update: the runs in flight and the rollout', () => {
     return { now: () => at, sleep: async (ms: number) => { at += ms; }, get at() { return at; } };
   };
 
+  const seeded = (over: Partial<DeploymentRecord> = {}): DeploymentRecord => ({
+    accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs',
+    versionId: 'old', deployedAt: 'then', databaseId: DB_ID, storeId: STORE, ...over,
+  });
+
   const seed = (home: string, over: Partial<DeploymentRecord> = {}): void => {
-    writeDeploymentRecord({
-      accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs',
-      versionId: 'old', deployedAt: 'then', databaseId: DB_ID, storeId: STORE, ...over,
-    }, home);
+    writeDeploymentRecord(seeded(over), home);
   };
+
+  /** The container settings a deploy of the seeded record computes: what the record carries when nothing about the containers moved. */
+  const settledContainers = (): string => containersTableHash(renderDeployConfig(seeded({ harnessImage: PUSHED })));
 
   const flatCalls = (): string[] => calls.map((c) => c.args.join(' '));
 
@@ -512,14 +520,45 @@ describe('update: the runs in flight and the rollout', () => {
     expect(readDeploymentRecord(home)!.lastRollout).toBeUndefined();
   });
 
-  it('watches nothing when the deploy ships the image already running', async () => {
+  it('watches nothing when the deploy ships the image already running under the container settings already in force', async () => {
     const { home, options } = setup();
+    seed(home, { harnessImage: PUSHED, containersTable: settledContainers() });
+    const lines: string[] = [];
+    await updateCloudflareDeployment({ ...options, runner: scripted({}), report: (l) => lines.push(l), clock: clock() });
+    expect(lines).toContain('No container rollout (image and container settings unchanged).');
+    expect(flatCalls().some((a) => a.includes(CONTAINERS_ROLLOUT_NONE))).toBe(true);
+    expect(calls.some((c) => c.args.join(' ').includes('containers info'))).toBe(false);
+    expect(readDeploymentRecord(home)!.lastRollout).toBeUndefined();
+  });
+
+  it('GATE: rolls the container when its settings changed under the image already running, and watches the instances onto them', async () => {
+    const { home, options } = setup();
+    // The platform replaces the instances when the [[containers]] table
+    // changes; a deploy that asks for no rollout leaves them on the old settings.
+    seed(home, { harnessImage: PUSHED, containersTable: 'the settings that stood before the table was edited' });
+    const lines: string[] = [];
+    await updateCloudflareDeployment({ ...options, runner: scripted({}), report: (l) => lines.push(l), clock: clock() });
+    expect(flatCalls().some((a) => a.includes(CONTAINERS_ROLLOUT_NONE))).toBe(false);
+    expect(lines.at(-1)).toBe('Rollout complete.');
+    expect(readDeploymentRecord(home)!.lastRollout!.version).toBe(32);
+  });
+
+  it('rolls when the record names no container settings at all', async () => {
+    const { home, options } = setup();
+    // A record written before a deploy ever recorded the settings has nothing
+    // to compare against, and is not evidence that the instances are current.
     seed(home, { harnessImage: PUSHED });
     const lines: string[] = [];
     await updateCloudflareDeployment({ ...options, runner: scripted({}), report: (l) => lines.push(l), clock: clock() });
-    expect(lines).toContain('No container rollout (image unchanged).');
-    expect(calls.some((c) => c.args.join(' ').includes('containers info'))).toBe(false);
-    expect(readDeploymentRecord(home)!.lastRollout).toBeUndefined();
+    expect(flatCalls().some((a) => a.includes(CONTAINERS_ROLLOUT_NONE))).toBe(false);
+    expect(lines.at(-1)).toBe('Rollout complete.');
+  });
+
+  it('records the container settings it shipped, so the next deploy has them to compare against', async () => {
+    const { home, options } = setup();
+    seed(home);
+    await updateCloudflareDeployment({ ...options, runner: scripted({}), report: () => undefined, clock: clock() });
+    expect(readDeploymentRecord(home)!.containersTable).toBe(settledContainers());
   });
 
   it('reads both wrangler answers past whatever npm and wrangler printed around them', () => {
