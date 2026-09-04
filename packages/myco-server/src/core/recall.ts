@@ -1,0 +1,204 @@
+/**
+ * What a prompt is served at submit time: the plan-intent nudge and the
+ * session's unseen spores, composed into one block for the member's prompt
+ * hook.
+ *
+ * This module OWNS `session_injections`. One row per (project, session, kind)
+ * carries a contributor a session receives at most once; the `INSERT OR IGNORE`
+ * and the `meta.changes` it answers from are the pattern `core/injection.ts`
+ * already proves on both targets — the store decides, and the caller reads the
+ * decision off the write.
+ *
+ * The row holds NO foreign key to `sessions`: the prompt hook answers before
+ * the session's own event lands on the server, so a record may precede the
+ * session it names, and a key would refuse the common case.
+ *
+ * A record is at-most-once. An answer lost on the wire has burned the record
+ * with nothing delivered, which is the trade the primary key buys: a nudge
+ * repeated on every prompt of a session is worse than a nudge missed once.
+ *
+ * The gates run in a fixed order and the capability is total: a Project not
+ * admitted to `cortex` is served an empty block with `capability` named, and no
+ * contributor runs at all. Each contributor after it runs in its own try and
+ * names itself in `skipped` when it throws, so one failing contributor costs
+ * its own part rather than the whole answer.
+ *
+ * The nudge stands first in the text and is recorded LAST, after the spore
+ * selection has committed: a failure in the spore half then leaves the nudge
+ * unburned for the next prompt.
+ */
+import type { RelationalStore } from './adapters.js';
+import { INJECTION_LEAVES, injectionLeaves, selectSporesForPrompt, type InjectionLeaves } from './injection.js';
+import { leafValues } from './settings.js';
+import { sha256Hex } from '../hash.js';
+import type { ReadScope } from '../read/scope.js';
+
+/** The most text one prompt is served. A part that would cross it is dropped whole. */
+export const PROMPT_CONTEXT_MAX_CHARS = 10_000;
+
+/** The blank line between two parts of one served block. */
+const JOIN = '\n\n';
+
+/**
+ * Planning intent, as a fixed word-bounded keyword set rather than a model
+ * call. A detector that needs tuning is a maintenance treadmill, and this one
+ * gates a single sentence.
+ */
+const PLAN_INTENT_PATTERN =
+  /\b(plan|plans|planning|spec|specs|roadmap|milestone|milestones|phase|phases|design doc|implementation plan)\b/i;
+
+export function detectsPlanIntent(prompt: string): boolean {
+  return PLAN_INTENT_PATTERN.test(prompt);
+}
+
+/** The one sentence a session is served when its prompt carries planning intent. */
+export const PLAN_INTENT_NUDGE =
+  'Myco is where plans live — persist and update them with `myco_plans` (op: "save", with `status` transitions), and pick up an existing plan in a new session by its ID with op: "get".';
+
+/** The leaf default, applied where the Deployment has written none. */
+export const PLAN_NUDGE_DEFAULT = true;
+const PLAN_NUDGE_LEAF = 'cortex.plans.inject_intent_nudge_on_prompt_submit';
+
+/** The leaves prompt recall reads. */
+export const RECALL_LEAVES: readonly string[] = [...INJECTION_LEAVES, PLAN_NUDGE_LEAF];
+
+export interface RecallLeaves {
+  injection: InjectionLeaves;
+  planNudge: boolean;
+}
+
+/** Recall's leaves over the stored values, each defaulted. */
+export function recallLeaves(leaves: Record<string, unknown>): RecallLeaves {
+  const nudge = leaves[PLAN_NUDGE_LEAF];
+  return {
+    injection: injectionLeaves(leaves),
+    planNudge: typeof nudge === 'boolean' ? nudge : PLAN_NUDGE_DEFAULT,
+  };
+}
+
+const parse = (value: string | undefined): unknown => {
+  if (value === undefined) return undefined;
+  try { return JSON.parse(value); } catch { return undefined; }
+};
+
+/** The Deployment's stored recall leaves, defaulted. */
+export async function readRecallLeaves(db: RelationalStore): Promise<RecallLeaves> {
+  const byLeaf = await leafValues(db, RECALL_LEAVES);
+  return recallLeaves(Object.fromEntries(RECALL_LEAVES.map((leaf) => [leaf, parse(byLeaf.get(leaf))])));
+}
+
+/**
+ * Records that this session has been served `kind`, and answers whether the
+ * record is new. A second call for the same (project, session, kind) answers
+ * false, and the caller serves nothing.
+ */
+export async function recordSessionInjection(
+  db: RelationalStore,
+  scope: ReadScope,
+  sessionId: string,
+  kind: string,
+  now: number,
+): Promise<boolean> {
+  const written = await db
+    .prepare(`INSERT OR IGNORE INTO session_injections (project_id, session_id, kind, created_at) VALUES (?, ?, ?, ?)`)
+    .bind(scope.projectId, sessionId, kind, now)
+    .run();
+  return written.meta.changes === 1;
+}
+
+/** What one part of a served block is, named so a reader knows what it carries. */
+export type PromptContextPart =
+  | { kind: 'plan-nudge' }
+  | { kind: 'spores'; sporeIds: string[] };
+
+/** Which contributor served nothing through a failure of its own. */
+export type RecallSkip = 'capability' | 'spores' | 'plan-nudge';
+
+export interface PromptContext {
+  context: string;
+  parts: PromptContextPart[];
+  skipped: RecallSkip[];
+}
+
+/** One contributor's part and the text it puts into the served block. */
+export interface Contribution {
+  part: PromptContextPart;
+  text: string;
+}
+
+/**
+ * The contributions that fit under the bound, in order.
+ *
+ * A contribution that would cross the bound is dropped whole, along with
+ * everything after it, so a served block ends at a part boundary rather than
+ * mid-line. The nudge stands first, so an oversized spore block costs itself
+ * and leaves the sentence standing.
+ */
+export function partsWithinBound(
+  contributions: readonly Contribution[],
+  max: number = PROMPT_CONTEXT_MAX_CHARS,
+): Contribution[] {
+  const kept: Contribution[] = [];
+  let length = 0;
+  for (const contribution of contributions) {
+    const grown = length === 0 ? contribution.text.length : length + JOIN.length + contribution.text.length;
+    if (grown > max) break;
+    kept.push(contribution);
+    length = grown;
+  }
+  return kept;
+}
+
+/**
+ * The block one prompt is served, and the records of having served it.
+ *
+ * The prompt is named to the spore selector by `sha256` of the text the member
+ * sent, not by the prompt event's own content hash: a prompt long enough to
+ * spill carries its blob key as that hash, so one text inline and the same text
+ * spilled read as two different contents and each serves the session again.
+ */
+export async function composePromptContext(
+  db: RelationalStore,
+  scope: ReadScope,
+  leaves: RecallLeaves,
+  capabilityOn: boolean,
+  input: { sessionId: string; promptId: string; text: string; now: number },
+): Promise<PromptContext> {
+  if (!capabilityOn) return { context: '', parts: [], skipped: ['capability'] };
+
+  const skipped: RecallSkip[] = [];
+
+  let spores: Contribution | null = null;
+  try {
+    const selection = await selectSporesForPrompt(db, scope, leaves.injection, capabilityOn, {
+      sessionId: input.sessionId,
+      promptId: input.promptId,
+      promptHash: await sha256Hex(input.text),
+      prompt: input.text,
+      now: input.now,
+    });
+    if (selection.context.length > 0) {
+      spores = { part: { kind: 'spores', sporeIds: selection.spores.map((s) => s.id) }, text: selection.context };
+    }
+  } catch {
+    skipped.push('spores');
+  }
+
+  let nudge: Contribution | null = null;
+  try {
+    if (leaves.planNudge && detectsPlanIntent(input.text)
+      && await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now)) {
+      nudge = { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
+    }
+  } catch {
+    skipped.push('plan-nudge');
+  }
+
+  const kept = partsWithinBound([nudge, spores].filter((c): c is Contribution => c !== null));
+
+  return {
+    context: kept.map((c) => c.text).join(JOIN),
+    parts: kept.map((c) => c.part),
+    skipped,
+  };
+}

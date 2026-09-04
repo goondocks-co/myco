@@ -3,6 +3,10 @@
  * the declared credential, build the envelope(s), append them to the session
  * spool FIRST, drain under the hook's own budget, then write the hook
  * response. A hook's `main()` is a thin call into `runMemberHook`.
+ *
+ * Recall sits between the append and the drain: whatever a hook asks the server
+ * to serve it, capture is already on disk when the call goes out, so nothing a
+ * server says or fails to say can cost a record.
  */
 import { readHookInput } from '../hooks/input.js';
 import type { NormalizedHookInput } from '../hooks/normalize.js';
@@ -59,6 +63,17 @@ export interface HookOutcome {
    */
   record?: (state: SessionState) => void;
   response?: HookResponse;
+  /**
+   * What the server serves this hook, asked for AFTER the events and their
+   * receipts are on disk and before the drain. Its answer, when it gives one,
+   * replaces `response`.
+   *
+   * Capture is durable before any server call reaches this seam, so a slow, a
+   * failing or a hostile answer costs the served block alone: the events stay
+   * spooled, the receipts stay written, and the response the handler already
+   * built still reaches the harness.
+   */
+  context?: (run: HookRun) => Promise<HookResponse | undefined>;
   /** Dial even while the offline latch is set (Stop/SessionEnd always probe). */
   probe?: boolean;
   /** Work after the spool drain, inside the budget (transcript shipping). */
@@ -97,6 +112,14 @@ export async function runMemberHook(
     const outcome = await handle(run);
     response = outcome.response ?? {};
     spool.appendAndRecord(sessionId, outcome.events, outcome.record, now());
+    if (outcome.context) {
+      try {
+        const served = await outcome.context(run);
+        if (served !== undefined) response = served;
+      } catch (error) {
+        process.stderr.write(`[myco] ${hookName}: recall skipped (${(error as Error).message})\n`);
+      }
+    }
     if (budget.drains) {
       const fetchImpl = opts.fetch ?? globalThis.fetch;
       const root = refreshableRoot(credential);
