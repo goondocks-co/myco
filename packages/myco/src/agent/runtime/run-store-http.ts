@@ -196,7 +196,11 @@ export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
     },
 
     async updateRunStatus(runId, status, completion) {
-      await post('/runs/update', { runId, update: { status, ...toColumns(completion) } });
+      const answered = await post('/runs/update', { runId, update: { status, ...toColumns(completion) } });
+      // The server's close gate answers `applied: false` with what the run owed;
+      // silence about that would log a run as finished that the row calls failed.
+      const applied = answered.applied !== false;
+      return applied ? { applied } : { applied, ...(typeof answered.reason === 'string' ? { reason: answered.reason } : {}) };
     },
 
     async applyRunUpdate(runId, update) {

@@ -18,37 +18,41 @@ maxTurns: 28
 timeoutSeconds: 1800
 
 prompt: |
-  Regenerate digest extracts from current vault state.
+  Regenerate digest extracts from the project's current knowledge.
 
   ## Phase 1 — Assess Current State (budget: 4 turns)
 
-  1. Call `vault_state` for context
-  2. Call `vault_read_digest` (no tier param) to see current digest metadata
-     and assess whether any tiers exist and how fresh they are
-  3. Call `vault_spores` with status "active" to see current observations
-  4. Call `vault_sessions` to understand recent activity
+  1. Call `vault_read_digest` with no tier to see what each tier holds and when
+     it was written
+  2. Call `vault_spores` with status "active" to see the current observations as
+     previews
+  3. Call `vault_sessions` to see the project's settled sessions, newest first
 
-  If the current digest is very recent and no meaningful vault changes have
-  occurred since it was written (check spore counts and session dates), call
-  `vault_report` with action "skip" and reason "digest is already current",
-  then stop. Only proceed if there is genuine new material to incorporate.
+  If the current digest is recent and nothing meaningful has landed since it was
+  written (compare the spore previews and the session dates against the tiers'
+  generated times), call `vault_report` with action "skip" and a summary saying
+  the digest is already current, then stop. Only continue where there is genuine
+  new material.
 
-  ## Phase 2 — Survey New Material (budget: 5 turns)
+  ## Phase 2 — Read the New Material (budget: 6 turns)
 
-  Based on the spore types and tags you saw in Phase 1, construct targeted
-  search queries. Search for specific themes you identified, not generic
-  categories. For example, if Phase 1 showed new "gotcha" spores about SQLite
-  and new "decision" spores about caching, search for those specific topics.
+  Judge the previews from Phase 1 and pick the spores carrying material the
+  digest does not have. Page through `vault_spores` with `offset` when what you
+  need is past the first page, and narrow with `observation_type` or `search`
+  once a theme is clear.
 
-  Call `vault_search_semantic` with these targeted queries to gather the
-  material you will integrate into the digest.
+  Read in full, with `vault_spore`, only the spores you mean to write from. The
+  full reads are budgeted for the run — spend them on the bodies that will change
+  the text and judge the rest by their previews. Use `vault_sessions` for the
+  workstreams a body refers to.
 
-  The existing digest is your baseline — your goal is to integrate new
-  material into it, not start from scratch.
+  The existing digest is your baseline: integrate new material into it rather
+  than starting over, unless the instructions for this run tell you to write from
+  the material alone.
 
-  Prefer released/high-confidence observations when writing general guidance.
-  Keep unknown or unreconciled observations as useful recent context, but frame
-  them as needing verification instead of presenting them as shipped behavior.
+  Prefer settled, high-confidence observations when writing general guidance.
+  Keep unreconciled observations as recent context and frame them as needing
+  verification instead of presenting them as shipped behavior.
 
   ## Phase 3 — Update Extracts (budget: 25 turns)
 
@@ -64,6 +68,10 @@ prompt: |
   Preserve well-crafted existing content — integrate new material, don't
   rewrite from scratch.
 
+  A `null` digest from `vault_read_digest` means the project holds no extract at
+  that tier: write that tier fresh from the material rather than from a
+  neighbouring tier's text.
+
   If a tier genuinely has no new material to integrate, skip it — but
   do not skip tiers just to save turns. All 3 tiers should be kept current.
 
@@ -72,19 +80,16 @@ prompt: |
 
   ## Phase 4 — Report (budget: 1 turn)
 
-  Call `vault_report` with action "digest":
-  - Tiers updated: [list]
-  - Tiers skipped (already current): [list]
-  - Active spores used as substrate: N
-  - Key themes incorporated
+  Call `vault_report` with action "digest" and details carrying:
+  - `tiers_updated`: the tiers you wrote
+  - `tiers_skipped`: the tiers that were already current
+  - `spores_used`: how many spores you read in full
+  - `sessions_used`: how many sessions you drew on
 
 toolOverrides:
+  - vault_report
   - vault_spores
+  - vault_spore
   - vault_sessions
-  - vault_search_semantic
-  - vault_release_state
-  - vault_state
   - vault_read_digest
   - vault_write_digest
-  - vault_set_state
-  - vault_report

@@ -18,6 +18,7 @@ export const dispatchQueue: ParityScenario = {
       ['agent.provider.model', 'parity-model'],
       ['agent.provider.base_url', 'http://models.internal/v1'],
     ] as const) await leaf(name, value);
+    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'cortex', 1, ${now}, ${lit(MEMBER_ID)})`);
     // A clean queue: nothing another scenario launched under the recorder still holds a place.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE status IN ('pending', 'running', 'queued')`);
     await leaf('agent.limits.concurrent_runs', 1);
@@ -26,8 +27,9 @@ export const dispatchQueue: ParityScenario = {
       const res = await fetch(`${target.url}/api/harness/dispatch`, {
         method: 'POST',
         headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-        // A task with no per-day ceiling: the queue is the thing under test, not the clock's cap.
-        body: JSON.stringify({ task: 'digest-only', projectId: target.projectId, timeoutSeconds: 120 }),
+        // A task the catalogue declares no schedule for, so no per-day ceiling: the
+        // queue is the thing under test, not the clock's cap.
+        body: JSON.stringify({ task: 'cortex-prompt-builder', projectId: target.projectId, timeoutSeconds: 120 }),
       });
       expect(res.status).toBe(200);
       return (await res.json()) as { runId: string; queued?: boolean; heldBy?: string };

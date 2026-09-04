@@ -71,6 +71,20 @@ export interface RunAdmission {
   ownerOp?: string;
 }
 
+/**
+ * What a store answers a terminal status.
+ *
+ * A server decides whether a run may close as completed, and answers
+ * `applied: false` with what the run still owed when it may not. A runtime that
+ * threw the answer away would log a run as finished that the Deployment failed,
+ * and the two records of one run would disagree.
+ */
+export interface RunStatusOutcome {
+  applied: boolean;
+  /** Why the status did not land, in the server's own word. */
+  reason?: string;
+}
+
 export interface RunStore {
   // -- run lifecycle -------------------------------------------------------
   insertRun(row: RunInsert): Promise<void>;
@@ -94,7 +108,7 @@ export interface RunStore {
   ): Promise<{ claimed: true } | { claimed: false; running: RunningRunRef }>;
   getRun(runId: string): Promise<RunRow | null>;
   getRunningRunForTask(task: string, maxAgeSeconds?: number): Promise<RunningRunRef | null>;
-  updateRunStatus(runId: string, status: string, completion?: RunUpdate): Promise<void>;
+  updateRunStatus(runId: string, status: string, completion?: RunUpdate): Promise<RunStatusOutcome>;
   applyRunUpdate(runId: string, update: RunUpdate): Promise<void>;
   supersedeEquivalentResumableRuns(
     excludeRunId: string,

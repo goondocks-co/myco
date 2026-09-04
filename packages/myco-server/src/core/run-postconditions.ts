@@ -16,6 +16,11 @@
  * met a refusal — an unheld surface, a lost connection — closes failed by name
  * rather than completed on the strength of a report it filed anyway.
  *
+ * A task may name several reports, one of which says the run wrote nothing: a
+ * digest run that finds every tier current reports a skip, and that is as
+ * complete a pass as one that wrote three tiers. A run whose evidence is only
+ * such a skip owes no row.
+ *
  * A dry run reaches no artifact check: it does the work and writes nothing by
  * the dispatcher's decision, and that decision is on its own row.
  *
@@ -25,26 +30,37 @@
  */
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { listReports, type RunRow } from './runs.js';
+import { inputHashOf, listReports, type RunRow } from './runs.js';
+import { digestWrittenBy } from './digests.js';
 import { instructionsWrittenBy } from '../read/cortex.js';
+
+/** The report a run records to say it found nothing to write. */
+export const RUN_SKIP_ACTION = 'skip';
 
 /** What one task's run owes before it closes. */
 export interface RunCloseRule {
-  /** The report action the run must have recorded. */
-  report: string;
+  /** The report actions the run must have recorded one of. */
+  reports: readonly string[];
   /** Whether the row this run owed exists. Absent for a task whose product is the report itself. */
-  artifact?: (db: RelationalStore, scope: ReadScope, runId: string) => Promise<boolean>;
+  artifact?: (db: RelationalStore, scope: ReadScope, run: RunRow) => Promise<boolean>;
 }
 
 /** What each task's run must have left behind, by task. */
 export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
-  'supersession-sweep': { report: 'supersession' },
-  'cortex-instructions': { report: 'cortex_instructions', artifact: instructionsWrittenBy },
+  'supersession-sweep': { reports: ['supersession'] },
+  'cortex-instructions': {
+    reports: ['cortex_instructions'],
+    artifact: (db, scope, run) => instructionsWrittenBy(db, scope, run.id),
+  },
+  'digest-only': {
+    reports: ['digest', RUN_SKIP_ACTION],
+    artifact: (db, scope, run) => digestWrittenBy(db, scope, { runId: run.id, substrateHash: inputHashOf(run), since: run.startedAt }),
+  },
 };
 
-/** The report action a task's run must have recorded, by task. */
-export const RUN_CLOSE_REPORTS: Readonly<Record<string, string>> = Object.fromEntries(
-  Object.entries(RUN_CLOSE_RULES).map(([task, rule]) => [task, rule.report]),
+/** The report actions a task's run must have recorded one of, by task. */
+export const RUN_CLOSE_REPORTS: Readonly<Record<string, readonly string[]>> = Object.fromEntries(
+  Object.entries(RUN_CLOSE_RULES).map(([task, rule]) => [task, rule.reports]),
 );
 
 /** How a run that closed without the report its task owes is recorded. */
@@ -57,7 +73,9 @@ export async function runCloseRefusal(db: RelationalStore, scope: ReadScope, run
   const rule = run.task === null ? undefined : RUN_CLOSE_RULES[run.task];
   if (rule === undefined) return null;
   const reports = await listReports(db, scope, run.id);
-  if (!reports.some((report) => report.action === rule.report)) return RUN_CLOSE_ERROR;
+  const evidence = reports.filter((report) => rule.reports.includes(report.action));
+  if (evidence.length === 0) return RUN_CLOSE_ERROR;
   if (rule.artifact === undefined || run.dryRun === 1) return null;
-  return (await rule.artifact(db, scope, run.id)) ? null : RUN_CLOSE_ARTIFACT_ERROR;
+  if (evidence.every((report) => report.action === RUN_SKIP_ACTION)) return null;
+  return (await rule.artifact(db, scope, run)) ? null : RUN_CLOSE_ARTIFACT_ERROR;
 }

@@ -16,7 +16,7 @@ import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
 import { hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, projectAdmission, recordSkipped, taskEntriesSince } from './runs.js';
 import { leafValues, type ProjectCapability } from './settings.js';
-import { ACCELERATORS, admissionForTask, effectiveIntervalSeconds, PRE_CONDITIONS, resolveSchedule, scheduledTasks, scheduleOverride, type TaskSchedule } from './task-catalogue.js';
+import { ACCELERATORS, admissionForTask, effectiveIntervalSeconds, PRE_CONDITIONS, resolveSchedule, runTimeoutForTask, scheduledTasks, scheduleOverride, type TaskSchedule } from './task-catalogue.js';
 import { listProjects } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
 
@@ -145,7 +145,10 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
         : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
       try {
         // A skip-overlap task's write refuses beside another live run of it: two wakes deciding at once write one row.
-        const outcome = await dispatchPrepared(env, prepared.prepared, { serverUrl, actor: CLOCK_ACTOR, ...input }, now, { singleFlight: schedule.overlap === 'skip' });
+        const budget = runTimeoutForTask(task);
+        const outcome = await dispatchPrepared(env, prepared.prepared, {
+          serverUrl, actor: CLOCK_ACTOR, ...input, ...(budget === null ? {} : { timeoutSeconds: budget }),
+        }, now, { singleFlight: schedule.overlap === 'skip' });
         emit({ kind: 'task_scheduled', task, projectId: project.projectId, runId: outcome.runId, queued: outcome.queued });
         report.dispatched += 1;
       } catch (err) {

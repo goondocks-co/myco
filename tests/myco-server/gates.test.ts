@@ -649,6 +649,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/digest', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/digest', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
       },
+      'POST /runs/digest-write': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/digest-write', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/digest-write', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', tier: 5000, content: '# digest' }) }),
+      },
       'POST /spores/save': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -1071,6 +1076,7 @@ describe('gates', () => {
       'member POST /runs/admission',
       'member POST /runs/claim',
       'member POST /runs/digest',
+      'member POST /runs/digest-write',
       'member POST /runs/events',
       'member POST /runs/failed',
       'member POST /runs/get',
