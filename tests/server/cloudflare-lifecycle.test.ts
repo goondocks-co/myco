@@ -13,9 +13,15 @@ import {
   destroyCloudflareDeployment,
   updateCloudflareDeployment,
   DEPLOY_CONFIG_NAME,
+  DEFAULT_RUN_TIMEOUT_SECONDS,
+  ROLLOUT_WATCH_TIMEOUT_SECONDS,
+  RUN_OVERRUN_MARGIN_MS,
 } from '@myco/server/cloudflare-lifecycle.js';
-import { readDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
+import { readDeploymentRecord, writeDeploymentRecord, wranglerJson } from '@myco/server/cloudflare.js';
+import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS as SERVER_DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS as SERVER_RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
+import { TASK_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/task-catalogue.js';
 
 const ACCOUNT = 'a'.repeat(32);
 const DB_ID = '11111111-2222-4333-8444-555555555555';
@@ -172,5 +178,211 @@ describe('rollback', () => {
     const rolled = await rollbackCloudflareDeployment({ ...options, runner: runner() });
     expect(rolled.versionId).toBe(VERSION);
     expect(calls.some((c) => c.args.join(' ').includes('rollback ' + VERSION))).toBe(true);
+  });
+});
+
+/**
+ * What a deploy does around the container instances: it waits for the runs in
+ * flight before it pushes, and watches the instances onto the new version
+ * after it ships. Both read wrangler through the same fake runner; the clock is
+ * driven rather than spent.
+ */
+describe('update: the runs in flight and the rollout', () => {
+  const APP = 'a03d557a-1d5c-4f6d-abd9-9e9d7842bd8a';
+  const PUSHED = `registry.cloudflare.com/${ACCOUNT}/myco-server-harnesscontainer@sha256:${'e'.repeat(64)}`;
+
+  /** A `d1 execute --json` answer, as wrangler shapes one. */
+  const liveRuns = (runs: { id: string; task: string; started_at: number; run_context?: string }[]): string =>
+    JSON.stringify([{ results: runs, success: true, meta: { rows_read: runs.length } }]);
+
+  /** A `containers list --json` answer. */
+  const applications = (version: number): string =>
+    JSON.stringify([{ id: APP, name: 'myco-server-harnesscontainer', state: 'ready', instances: 7, version }]);
+
+  /** A `containers info --json` answer, with the fields the watch reads. */
+  const rolloutInfo = (version: number, instances: number, healthy: number): string =>
+    JSON.stringify({
+      id: APP,
+      name: 'myco-server-harnesscontainer',
+      version,
+      instances,
+      max_instances: 12,
+      health: { errors: [], instances: { active: 0, assigned: 0, healthy, stopped: 0, failed: 0, scheduling: 0, starting: 0 } },
+    });
+
+  /** Answers a queue in order and repeats its last answer once the queue is spent. */
+  const queue = (answers: readonly string[]) => {
+    let at = 0;
+    return (): string => answers[Math.min(at++, answers.length - 1)] ?? '';
+  };
+
+  const scripted = (script: { d1?: readonly string[]; list?: readonly string[]; info?: readonly string[] }): CommandRunner => {
+    const d1 = queue(script.d1 ?? [liveRuns([])]);
+    const list = queue(script.list ?? [applications(31)]);
+    const info = queue(script.info ?? [rolloutInfo(31, 7, 7), rolloutInfo(32, 7, 7)]);
+    const base = runner();
+    return {
+      async run(command, args, options) {
+        const flat = args.join(' ');
+        if (flat.includes('d1 execute')) { calls.push({ args: [...args] }); return { code: 0, stdout: d1(), stderr: '' }; }
+        if (flat.includes('containers list')) { calls.push({ args: [...args] }); return { code: 0, stdout: list(), stderr: '' }; }
+        if (flat.includes('containers info')) { calls.push({ args: [...args] }); return { code: 0, stdout: info(), stderr: '' }; }
+        return base.run(command, args, options);
+      },
+    };
+  };
+
+  const NOW = Date.parse('2026-09-04T12:00:00Z');
+  /** A clock a test drives: sleeping moves it rather than spending the time. */
+  const clock = (start = NOW) => {
+    let at = start;
+    return { now: () => at, sleep: async (ms: number) => { at += ms; }, get at() { return at; } };
+  };
+
+  const seed = (home: string, over: Partial<DeploymentRecord> = {}): void => {
+    writeDeploymentRecord({
+      accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs',
+      versionId: 'old', deployedAt: 'then', databaseId: DB_ID, storeId: STORE, ...over,
+    }, home);
+  };
+
+  it('names each running task, polls until none is left, and only then pushes', async () => {
+    const { home, options } = setup();
+    seed(home);
+    const lines: string[] = [];
+    const drive = clock();
+    const running = liveRuns([
+      { id: 'run_a', task: 'supersession-sweep', started_at: NOW - 120_000, run_context: JSON.stringify({ timeoutSeconds: 300 }) },
+      { id: 'run_b', task: 'digest-only', started_at: NOW - 60_000, run_context: JSON.stringify({ timeoutSeconds: 1800 }) },
+    ]);
+    await updateCloudflareDeployment({
+      ...options, runner: scripted({ d1: [running, running, liveRuns([])] }), report: (l) => lines.push(l), clock: drive,
+    });
+
+    expect(lines).toContain('Waiting for a running task: supersession-sweep, started 2 min ago, budget 5 min');
+    expect(lines).toContain('Waiting for a running task: digest-only, started 60 sec ago, budget 30 min');
+    expect(lines).toContain('Nothing is running; the deploy proceeds.');
+    // Two polls at fifteen seconds each, and the push waited for both.
+    expect(drive.at).toBe(NOW + 30_000);
+    const flat = calls.map((c) => c.args.join(' '));
+    const lastRead = flat.map((a, i) => (a.includes('d1 execute') ? i : -1)).filter((i) => i >= 0).at(-1)!;
+    expect(lastRead).toBeLessThan(flat.findIndex((a) => a.includes('containers build')));
+    expect(flat.filter((a) => a.includes('d1 execute')).length).toBe(3);
+  });
+
+  it('reads the running rows through the deploy config, remotely, as JSON', async () => {
+    const { home, options } = setup();
+    seed(home);
+    await updateCloudflareDeployment({ ...options, runner: scripted({}), report: () => undefined, clock: clock() });
+    const read = calls.map((c) => c.args).find((a) => a.join(' ').includes('d1 execute'))!;
+    expect(read.slice(0, 6)).toEqual(['wrangler', 'd1', 'execute', 'myco-server', '--remote', '--json']);
+    expect(read).toContain("SELECT id, task, started_at, run_context FROM agent_runs WHERE status = 'running'");
+    expect(read.join(' ')).toContain(`-c ${DEPLOY_CONFIG_NAME}`);
+  });
+
+  it('proceeds past a run that outlived its own budget, naming it', async () => {
+    const { home, options } = setup();
+    seed(home);
+    const lines: string[] = [];
+    const drive = clock();
+    // Started well past its budget plus the margin the Deployment allows it.
+    const stuck = liveRuns([{ id: 'run_c', task: 'cortex-instructions', started_at: NOW - 2_000_000, run_context: JSON.stringify({ timeoutSeconds: 900 }) }]);
+    await updateCloudflareDeployment({ ...options, runner: scripted({ d1: [stuck] }), report: (l) => lines.push(l), clock: drive });
+
+    expect(lines.some((l) => l.includes('outlived its own budget') && l.includes('cortex-instructions'))).toBe(true);
+    expect(drive.at).toBe(NOW);
+    expect(calls.some((c) => c.args.join(' ').includes('containers build'))).toBe(true);
+  });
+
+  it('gives a run whose context names no budget the dispatcher default', async () => {
+    const { home, options } = setup();
+    seed(home);
+    const lines: string[] = [];
+    const running = liveRuns([{ id: 'run_d', task: 'titling', started_at: NOW - 30_000 }]);
+    await updateCloudflareDeployment({
+      ...options, runner: scripted({ d1: [running, liveRuns([])] }), report: (l) => lines.push(l), clock: clock(),
+    });
+    expect(lines).toContain(`Waiting for a running task: titling, started 30 sec ago, budget ${DEFAULT_RUN_TIMEOUT_SECONDS / 60} min`);
+  });
+
+  it('--no-drain ships without waiting, and reads nothing', async () => {
+    const { home, options } = setup();
+    seed(home);
+    const lines: string[] = [];
+    await updateCloudflareDeployment({
+      ...options, drain: false, runner: scripted({ d1: [liveRuns([{ id: 'run_e', task: 'digest-only', started_at: NOW }])] }),
+      report: (l) => lines.push(l), clock: clock(),
+    });
+    expect(lines).toContain('Not waiting for the runs in flight: the platform drains what is running.');
+    expect(calls.some((c) => c.args.join(' ').includes('d1 execute'))).toBe(false);
+  });
+
+  it('watches the instances onto the new version, reports progress, and records the rollout', async () => {
+    const { home, options } = setup();
+    seed(home);
+    const lines: string[] = [];
+    const drive = clock();
+    await updateCloudflareDeployment({
+      ...options,
+      runner: scripted({ list: [applications(31)], info: [rolloutInfo(31, 7, 7), rolloutInfo(32, 7, 4), rolloutInfo(32, 7, 4), rolloutInfo(32, 7, 7)] }),
+      report: (l) => lines.push(l), clock: drive,
+    });
+
+    expect(lines).toContain('Rolling out: 4 of 7 instances on the new version');
+    // The line is printed when it changes, not once per poll.
+    expect(lines.filter((l) => l.startsWith('Rolling out')).length).toBe(1);
+    expect(lines.at(-1)).toBe('Rollout complete.');
+    expect(readDeploymentRecord(home)!.lastRollout).toEqual({ version: 32, completedAt: new Date(NOW + 40_000).toISOString() });
+    const info = calls.map((c) => c.args).filter((a) => a.join(' ').includes('containers info'));
+    expect(info[0]).toEqual(['wrangler', 'containers', 'info', APP, '--json']);
+    // The version standing before the deploy is read before the deploy runs.
+    const flat = calls.map((c) => c.args.join(' '));
+    expect(flat.findIndex((a) => a.includes('containers info'))).toBeLessThan(flat.findIndex((a) => /(^|\s)deploy(\s|$)/.test(a)));
+  });
+
+  it('names a rollout still in progress when the watch runs out of time, and records none', async () => {
+    const { home, options } = setup();
+    seed(home);
+    const lines: string[] = [];
+    const drive = clock();
+    await updateCloudflareDeployment({
+      ...options, runner: scripted({ info: [rolloutInfo(31, 7, 7), rolloutInfo(32, 7, 2)] }),
+      report: (l) => lines.push(l), clock: drive,
+    });
+    expect(lines.at(-1)).toBe('The rollout is still in progress; a run started now may land on an instance still on the old version.');
+    expect(readDeploymentRecord(home)!.lastRollout).toBeUndefined();
+    expect(drive.at).toBe(NOW + ROLLOUT_WATCH_TIMEOUT_SECONDS * 1000);
+  });
+
+  it('watches nothing when the deploy ships the image already running', async () => {
+    const { home, options } = setup();
+    seed(home, { harnessImage: PUSHED });
+    const lines: string[] = [];
+    await updateCloudflareDeployment({ ...options, runner: scripted({}), report: (l) => lines.push(l), clock: clock() });
+    expect(lines).toContain('No container rollout (image unchanged).');
+    expect(calls.some((c) => c.args.join(' ').includes('containers info'))).toBe(false);
+    expect(readDeploymentRecord(home)!.lastRollout).toBeUndefined();
+  });
+
+  it('reads both wrangler answers past whatever npm and wrangler printed first', () => {
+    const preamble = [
+      'npm notice run @goondocks/myco-monorepo@0.0.0-dev npx',
+      "npm notice run 'wrangler' d1 execute myco-server --remote --json",
+      '\u001b[33m\u25b2 \u001b[43;33m[\u001b[43;30mWARNING\u001b[43;33m]\u001b[0m Processing wrangler.toml configuration:',
+      // A warning whose colour codes were stripped opens with a bracket of its own.
+      '[WARNING] the "standard" instance_type has been renamed',
+      '',
+    ].join('\n');
+    const runs = wranglerJson<{ results: { id: string }[] }[]>(`${preamble}\n${liveRuns([{ id: 'run_f', task: 'titling', started_at: NOW }])}`);
+    expect(runs![0]!.results[0]!.id).toBe('run_f');
+    const info = wranglerJson<{ version: number; health: { instances: { healthy: number } } }>(`${preamble}\n${rolloutInfo(32, 7, 5)}`);
+    expect({ version: info!.version, healthy: info!.health.instances.healthy }).toEqual({ version: 32, healthy: 5 });
+    expect(wranglerJson('npm notice run npx\nnothing readable here')).toBeNull();
+  });
+
+  it('GATE: the budgets the wait and the watch mirror are the ones the Deployment enforces', () => {
+    expect(RUN_OVERRUN_MARGIN_MS).toBe(SERVER_RUN_OVERRUN_MARGIN_MS);
+    expect(DEFAULT_RUN_TIMEOUT_SECONDS).toBe(SERVER_DEFAULT_DISPATCH_TIMEOUT_SECONDS);
+    expect(ROLLOUT_WATCH_TIMEOUT_SECONDS).toBe(Math.max(...Object.values(TASK_RUN_TIMEOUT_SECONDS)));
   });
 });
