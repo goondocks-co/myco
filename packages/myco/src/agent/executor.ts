@@ -42,7 +42,7 @@ import {
 } from './instruction-builders.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { createLocalRunStore, openLocalVault } from './runtime/run-store-local.js';
-import { serializeRunStore, type RunStore, type ReportRow } from './runtime/run-store.js';
+import { serializeRunStore, type LocalRunStore, type RunStore, type ReportRow } from './runtime/run-store.js';
 import { resolveCost } from './cost/index.js';
 import {
   aggregateUsage,
@@ -962,7 +962,7 @@ export async function finalizeOnTaskSuccess(args: {
   instruction?: string;
   dryRun?: boolean;
   vaultDir?: string;
-  store: RunStore;
+  store: LocalRunStore;
 }): Promise<void> {
   if (args.dryRun) return;
 
@@ -1022,7 +1022,7 @@ function extractReportContent(
 }
 
 async function finalizeCortexInstructions(args: {
-  store: RunStore;
+  store: LocalRunStore;
   agentId: string;
   runId: string;
   runContext: RunOptions['runContext'];

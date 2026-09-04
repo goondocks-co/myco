@@ -233,7 +233,7 @@ describe('the write is the admission', () => {
     f.setting('agent.limits.concurrent_runs', 2);
     let raced = false;
     const racing: ServerEnv = { ...f.env, db: { ...f.env.db, prepare: (sql: string) => {
-      if (!raced && sql.includes(`SELECT ?, ?, ?, ?, ?, ?, 'pending'`)) {
+      if (!raced && sql.includes(`?, 'pending', ?`)) {
         raced = true;
         f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'live-2', 'myco-agent', 'digest-only', 'running', ?)`, [NOW]);
       }

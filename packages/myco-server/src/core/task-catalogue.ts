@@ -74,7 +74,12 @@ export interface TaskSchedule {
  */
 export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   'container-smoke': { intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 },
-  'cortex-instructions': null,
+  // Declared and switched off. 1.4 ran this every 8 hours against a local
+  // model-agnostic vault; a Deployment run is a container and a frontier model,
+  // so the cadence is daily and an owner turns it on after one measured run.
+  // A dispatch whose input matches the artifact already written costs nothing,
+  // which is what makes a daily interval safe once it is on.
+  'cortex-instructions': { enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 },
   'cortex-prompt-builder': null,
   'digest-only': null,
   'skill-survey': null,
@@ -94,9 +99,40 @@ export const PRE_CONDITIONS: Readonly<Record<string, (args: { projectId: string 
 /** Named accelerators: a count of pending work that shortens a task's interval. None yet; the Canopy task brings the first. */
 export const ACCELERATORS: Readonly<Record<string, (args: { projectId: string; limit: number }) => Promise<number>>> = {};
 
-/** Every task the clock schedules, with its schedule. */
-export function scheduledTasks(): Array<{ task: string; schedule: TaskSchedule }> {
-  return Object.entries(TASK_SCHEDULE).flatMap(([task, schedule]) => (schedule === null ? [] : [{ task, schedule }]));
+/**
+ * The tasks a person asks for one at a time: they carry no schedule, and a
+ * schedule appearing on one is a cost the Deployment would pay on the clock
+ * without anyone deciding it should.
+ */
+export const MANUAL_ONLY_TASKS: readonly string[] = [
+  'vault-seed',
+  'digest-only',
+  'extract-only',
+  'supersession-sweep',
+  'review-session',
+  'cortex-prompt-builder',
+];
+
+/** The schedule block an owner set for one task, or undefined where they set none. */
+export function scheduleOverride(task: string, overrides: Record<string, unknown>): unknown {
+  const entry = overrides[task];
+  return entry !== null && typeof entry === 'object' && !Array.isArray(entry) ? (entry as Record<string, unknown>).schedule : undefined;
+}
+
+/**
+ * Every task the clock schedules on this wake, with its schedule under the
+ * owner's overrides.
+ *
+ * A declaration switched off is absent rather than visited and skipped: the
+ * clock's list is what the Deployment actually runs, and an owner turns a
+ * declared task on through `agent.tasks.<task>.schedule.enabled`.
+ */
+export function scheduledTasks(overrides: Record<string, unknown> = {}): Array<{ task: string; schedule: TaskSchedule }> {
+  return Object.entries(TASK_SCHEDULE).flatMap(([task, declared]) => {
+    if (declared === null) return [];
+    const schedule = resolveSchedule(declared, scheduleOverride(task, overrides));
+    return schedule.enabled === false ? [] : [{ task, schedule }];
+  });
 }
 
 /**

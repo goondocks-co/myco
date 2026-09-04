@@ -308,7 +308,7 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/g/:groveSlug/p/:projectSlug` | REPLACE | UI | Blk | Project dashboard at a Deployment-relative project path; the Grove segment goes | #918 |
 | `sessions` | KEEP | UI, Core | Blk | Read API shipped (#904); UI in #918 | #918 |
 | `sessions/:id` | KEEP | UI, Core | Blk | Session detail — facts, children, transcript | #918 |
-| `cortex` | KEEP | UI, Core | Blk | Digest, instructions, Canopy map | #919 |
+| `cortex` | KEEP | UI, Core | Blk | Digest, instructions, Canopy map. The instructions tab carries a **Refresh instructions** control that dispatches `cortex-instructions` and names its outcome. 1.4's prompt-builder tab is DROPPED with the decision: recall injects the instructions at every session start, so a pasteable prompt has no consumer on a Deployment | #919, #1046 |
 | `skills` | KEEP | UI, Core | Blk | Needs the server-side skills tables | #919 |
 | `agent` | KEEP | UI, Core | Blk | `agent_runs` is rows, not files | #919 |
 | `agent/:id` | KEEP | UI, Core | Blk | Run detail with phases and write intents | #919 |
@@ -360,9 +360,9 @@ Task YAML, the phased executor, turn budgets, model routing, and the `agent_runs
 
 | Task | Disposition | Surface | Blk | Replacement / reason | Owner |
 |---|---|---|---|---|---|
-| `digest-only` | KEEP | Core | Blk | Recall depends on it | #919 |
-| `cortex-instructions` | KEEP | Core | Blk | Recall depends on it | #919 |
-| `cortex-prompt-builder` | KEEP | Core | Blk | Recall depends on it | #919 |
+| `digest-only` | KEEP | Core | Blk | Recall depends on it. Manual-only: on demand, no schedule | #919, #1046 |
+| `cortex-instructions` | KEEP | Core | Blk | Hosted: the server builds the input from its own reads, carries it on the run row as the run's instruction, and the run reads it back over `POST /runs/instruction`. The run holds `vault_report`, `vault_spores`, `vault_spore`, `vault_sessions` and `vault_read_digest`; its report with action `cortex_instructions` files the artifact through `POST /runs/instructions-write` under the hash the SERVER recorded, and is the run's close evidence. Scheduled every 24 h in `sleep`, one a day, **shipped switched off** — an owner turns it on with `agent.tasks.cortex-instructions.schedule.enabled` after one measured run. A dispatch whose input matches the artifact already written starts no run at all | #1046 |
+| `cortex-prompt-builder` | KEEP | Core | Blk | Manual-only and unserved: it carries no schedule and no hosted tool surface. Recall injects the instructions at every session start, so a pasteable prompt has no consumer on a Deployment; the task stays in the catalogue for an owner's explicit ask | #1046 |
 | `skill-survey` | KEEP | Core | Blk | Skill lifecycle | #919 |
 | `skill-generate` | KEEP | Core | Blk | Skill lifecycle | #919 |
 | `skill-evolve` | KEEP | Core | Blk | Skill lifecycle | #919 |
@@ -419,6 +419,7 @@ The port is settled by **#1091** as `ServerEnv.wake` — "wake me soon", called 
 | `content-claim-expiry` | DROP | — | Blk | Content claims are a Team Host publication mechanism; retired with Team | #925 |
 | `routed-transcript-cache-gc` | DROP | — | Blk | Routed capture is a Team Host mechanism; retired with Team | #925 |
 | `routed-event-dedup-prune` | DROP | — | Blk | Routed capture is a Team Host mechanism; retired with Team | #925 |
+| `cortex-instructions` (2.0) | NEW | Core | Blk | New in 2.0: the clock's daily dispatch of the instructions task, 24 h in `sleep`, one a day, shipped switched off. A wake over unmoved material records a `skipped` run naming `input_unchanged` rather than spending a model call | #1046 |
 
 ### 7.6 Data classes — vault schema v76, `packages/myco/src/db/`
 

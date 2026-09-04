@@ -172,12 +172,11 @@ describe('run lifecycle over HTTP', () => {
     expect(other).toEqual({ persisted: true, run: null });
   });
 
-  it('writes cortex instructions and replaces them on a second write', async () => {
-    const { post, sqlite } = await harness();
-    expect(await post('/runs/cortex-instructions', { agentId: AGENT, content: 'first', inputHash: 'h1' })).toEqual({ persisted: true });
-    await post('/runs/cortex-instructions', { agentId: AGENT, content: 'second', inputHash: 'h2' });
-    const rows = sqlite.query(`SELECT content FROM cortex_instructions`).all() as { content: string }[];
-    expect(rows).toEqual([{ content: 'second' }]);
+  it('serves no route a plain member could write instructions through: the artifact is the dispatched run\'s to file', async () => {
+    const { env, token, sqlite } = await harness();
+    const res = await worker.fetch(memberPost(token.token, { agentId: AGENT, content: 'first', inputHash: 'h1' }, '/runs/cortex-instructions'), env);
+    expect(res.status).toBe(401);
+    expect((sqlite.query(`SELECT COUNT(*) c FROM cortex_instructions`).get() as { c: number }).c).toBe(0);
   });
 });
 

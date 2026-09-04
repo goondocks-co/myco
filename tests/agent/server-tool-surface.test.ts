@@ -21,6 +21,13 @@ const UNSERVED: Readonly<Record<string, readonly string[]>> = {
   'title-summary': ['vault_unprocessed'],
 };
 
+/**
+ * Names the Deployment materializes that a served task declares nowhere, with
+ * why. Empty: every served task names its whole surface today, and a name
+ * arriving here has to earn its line.
+ */
+const UNDECLARED: Readonly<Record<string, readonly string[]>> = {};
+
 /** The tool surface a run of this task holds, by name. */
 function servedNames(taskName: string): string[] {
   const ctx = { client: {} as never, budget: { connectTimeoutMs: 1, requestTimeoutMs: 1 }, runId: 'run', agentId: 'agent' };
@@ -28,6 +35,17 @@ function servedNames(taskName: string): string[] {
 }
 
 const tasks = loadAllTasks(resolveDefinitionsDir());
+
+/**
+ * Every tool name a task definition declares: a single-query task names them in
+ * `toolOverrides`, a phased one in each phase's own list. A hosted run composes
+ * the phases into one prompt and holds the union, so the union is what the gate
+ * compares against.
+ */
+function declaredNames(taskName: string): string[] {
+  const task = tasks.get(taskName);
+  return [...new Set([...(task?.toolOverrides ?? []), ...(task?.phases ?? []).flatMap((phase) => phase.tools)])];
+}
 
 describe('the served tool surface', () => {
   it('holds every tool the served task definitions name, and always the report', () => {
@@ -37,12 +55,54 @@ describe('the served tool surface', () => {
       expect({ task: taskName, defined: task !== undefined }).toEqual({ task: taskName, defined: true });
       const served = new Set(servedNames(taskName));
       expect({ task: taskName, reports: served.has('vault_report') }).toEqual({ task: taskName, reports: true });
+      const declared = declaredNames(taskName);
+      expect({ task: taskName, declares: declared.length > 0 }).toEqual({ task: taskName, declares: true });
       const excused = new Set(UNSERVED[taskName] ?? []);
-      for (const declared of task!.toolOverrides ?? []) {
-        if (!served.has(declared) && !excused.has(declared)) missing.push(`${taskName} -> ${declared}`);
+      for (const name of declared) {
+        if (!served.has(name) && !excused.has(name)) missing.push(`${taskName} -> ${name}`);
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  /**
+   * The other direction: a tool a run holds and its definition never names is a
+   * capability the prompt was never told about. The model calls what it is told
+   * it has, so an undeclared tool is one that is paid for and never used.
+   */
+  it('materializes no tool the served task definitions leave undeclared', () => {
+    const extra: string[] = [];
+    for (const taskName of SERVED_TASKS) {
+      const declared = new Set(declaredNames(taskName));
+      const excused = new Set(UNDECLARED[taskName] ?? []);
+      for (const name of servedNames(taskName)) {
+        if (!declared.has(name) && !excused.has(name)) extra.push(`${taskName} -> ${name}`);
+      }
+    }
+    expect(extra).toEqual([]);
+  });
+
+  it('excuses only names the served tasks actually leave undeclared', () => {
+    for (const [taskName, names] of Object.entries(UNDECLARED)) {
+      const declared = new Set(declaredNames(taskName));
+      for (const name of names) expect({ taskName, name, declared: declared.has(name) }).toEqual({ taskName, name, declared: false });
+    }
+  });
+
+  /**
+   * A hosted run is one query with one turn budget. A phase gated on another
+   * phase's metadata, or run in map mode, has execution the container never
+   * performs, so the gate that would have applied silently does not.
+   */
+  it('serves only phased tasks whose phases run in order, with no metadata gate and no map phase', () => {
+    const offenders: string[] = [];
+    for (const taskName of SERVED_TASKS) {
+      for (const phase of tasks.get(taskName)?.phases ?? []) {
+        if (phase.mode === 'map') offenders.push(`${taskName} -> ${phase.name} is a map phase`);
+        if (phase.gateOnPriorMetadata !== undefined) offenders.push(`${taskName} -> ${phase.name} gates on prior metadata`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it('materializes more than the report for exactly the served tasks', () => {

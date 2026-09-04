@@ -9,7 +9,7 @@
 import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { createLocalRunStore } from '@myco/agent/runtime/run-store-local.js';
-import { serializeRunStore, type RunStore } from '@myco/agent/runtime/run-store.js';
+import { serializeRunStore, type LocalRunStore } from '@myco/agent/runtime/run-store.js';
 
 /**
  * `requestContext` omitted binds the store to ALL_PROJECTS_SCOPE, which is what
@@ -19,7 +19,7 @@ import { serializeRunStore, type RunStore } from '@myco/agent/runtime/run-store.
 export function testRunStore(
   requestContext: Parameters<typeof projectScopeFromRequestContext>[0],
   agentId: string,
-): RunStore {
+): LocalRunStore {
   const scope = requestContext
     ? projectScopeFromRequestContext(requestContext)
     : ALL_PROJECTS_SCOPE;

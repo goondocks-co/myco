@@ -11,8 +11,9 @@ import { recall } from './scenarios/recall.ts';
 import { tick } from './scenarios/tick.ts';
 import { dispatchQueue } from './scenarios/dispatch-queue.ts';
 import { scheduledTasks } from './scenarios/scheduled-tasks.ts';
+import { cortex } from './scenarios/cortex.ts';
 
-const scenarios = [sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks];
+const scenarios = [sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex];
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

@@ -34,7 +34,6 @@ import type { AgentStateRow } from '@myco/db/queries/agent-state.js';
 import type { RunInsert, RunRow, RunUpdate, RunningRunRef } from '@myco/db/queries/runs.js';
 import type { ReportRow } from '@myco/db/queries/reports.js';
 import type { RunEventInsert } from '@myco/db/queries/agent-run-events.js';
-import type { CortexInstructionsUpsert } from '@myco/db/queries/cortex-instructions.js';
 import type { RequestBudget } from '@myco/member/budget.js';
 import type { RawAnswer, ServerClient } from '@myco/member/transport.js';
 import type { RunAdmission, RunStore } from './run-store.js';
@@ -248,16 +247,6 @@ export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
         if (answered.applied === true) return;
       }
       throw new RunControlError('/runs/state/write', `value moved under ${HTTP_MUTATE_ATTEMPTS} attempts`);
-    },
-
-    async upsertCortexInstructions(row: CortexInstructionsUpsert) {
-      await post('/runs/cortex-instructions', {
-        agentId: row.agent_id,
-        content: row.content,
-        inputHash: row.input_hash,
-        generatedAt: row.generated_at,
-        sourceRunId: row.source_run_id ?? null,
-      });
     },
 
     async admitProject(): Promise<RunAdmission> {

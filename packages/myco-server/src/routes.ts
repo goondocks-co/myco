@@ -26,8 +26,9 @@ import {
 import {
   handleAdmitResume, handleAgents, handleClaimRun, handleGetRun, handleReadState, handleRecordFailure,
   handleRegisterAgent, handleRunAdmission,
-  handleRunReports, handleWriteReport, handleRecordRunEvents, handleSupersedeRuns, handleUpdateRun, handleUpsertCortexInstructions, handleWriteState,
+  handleRunReports, handleWriteReport, handleRecordRunEvents, handleSupersedeRuns, handleUpdateRun, handleWriteState,
 } from './api/runs.js';
+import { handleInstructionsWrite, handleRunDigest, handleRunInstruction, handleRunSessions } from './api/cortex-tasks.js';
 import {
   handleCredentialActivity, handleCredentials, handleInvitations, handleMembers, handleMintInvitation,
   handleRevokeCredential, handleRevokeInvitation, handleRevokeMember,
@@ -101,7 +102,6 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/runs/reports', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunReports },
   { method: 'POST', path: '/runs/report', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteReport },
   { method: 'POST', path: '/runs/events', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRecordRunEvents },
-  { method: 'POST', path: '/runs/cortex-instructions', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleUpsertCortexInstructions },
   // What a titling run reads and writes: admitted only to the harness credential that dispatched a live `title-summary` run bound to the named session.
   { method: 'POST', path: '/runs/session-material', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionMaterial },
   { method: 'POST', path: '/runs/session-title', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionTitle },
@@ -110,6 +110,13 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/runs/spore', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSpore },
   { method: 'POST', path: '/runs/spore-create', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSporeCreate },
   { method: 'POST', path: '/runs/spore-resolve', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSporeResolve },
+  // What a Cortex run reads and writes: the prompt the server built for it, the
+  // Project's settled sessions and its digest, and the one artifact it owes —
+  // admitted only to the harness credential that dispatched a live run of such a task.
+  { method: 'POST', path: '/runs/instruction', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunInstruction },
+  { method: 'POST', path: '/runs/instructions-write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleInstructionsWrite },
+  { method: 'POST', path: '/runs/sessions', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSessions },
+  { method: 'POST', path: '/runs/digest', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunDigest },
   { method: 'POST', path: '/spores/save', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSaveSpore },
   { method: 'POST', path: '/spores/list', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleListSpores },
   { method: 'POST', path: '/spores/get', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleGetSpore },
@@ -207,6 +214,7 @@ export const RETIRED_ROUTES: readonly RetiredRoute[] = [
   { method: 'POST', path: '/routed-capture/transcript', replacedBy: ['POST /blobs/{sha256}', 'transcript.segment'] },
   { method: 'POST', path: '/routed-capture/plan', replacedBy: ['plan'] },
   { method: 'POST', path: '/context/subagent', replacedBy: ['subagent.start'] },
+  { method: 'POST', path: '/runs/cortex-instructions', replacedBy: ['POST /runs/instructions-write'] },
 ];
 
 /**

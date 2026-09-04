@@ -24,7 +24,7 @@ import { heldRun, sessionNamedByRun } from './run-admission.js';
 import {
   countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds,
   listSupersedingSporeIds, resolveSpore, MAX_SPORE_CONTENT_BYTES, RESOLUTION_ACTIONS,
-  SPORE_BODY_CHARS, SPORE_FULL_READ_BUDGET, SPORE_PREVIEW_CHARS, SPORE_STATUSES, SPORE_TOOL_TASKS,
+  SPORE_BODY_CHARS, SPORE_FULL_READ_BUDGET, SPORE_PREVIEW_CHARS, SPORE_READ_TASKS, SPORE_STATUSES, SPORE_TOOL_TASKS,
   type ResolutionAction, type SporeRow,
 } from '../core/spores.js';
 import { mintSporeId, overSporeCap, planSporeResolution, SPORE_CAP_REASON, sporeTags } from '../core/spore-writes.js';
@@ -97,7 +97,7 @@ export async function handleRunSpores(env: ServerEnv, ctx: RouteContext): Promis
   if (!body) return Response.json(refused(ctx, BAD_BODY));
   const runId = str(body.runId);
   if (runId === null) return Response.json(refused(ctx, refusal('an inventory requires runId', 'parse')));
-  const run = await heldRun(env, ctx, runId, SPORE_TOOL_TASKS);
+  const run = await heldRun(env, ctx, runId, SPORE_READ_TASKS);
   if (run === null) return Response.json(UNHELD);
 
   const asked = body.status === undefined || body.status === null ? 'active' : body.status;
@@ -123,7 +123,7 @@ export async function handleRunSpore(env: ServerEnv, ctx: RouteContext): Promise
   const runId = str(body.runId);
   const id = str(body.id);
   if (runId === null || id === null) return Response.json(refused(ctx, refusal('a spore read requires runId and id', 'parse')));
-  const run = await heldRun(env, ctx, runId, SPORE_TOOL_TASKS);
+  const run = await heldRun(env, ctx, runId, SPORE_READ_TASKS);
   if (run === null) return Response.json(UNHELD);
 
   if ((await spendFullRead(env, ctx, run)) > SPORE_FULL_READ_BUDGET) {

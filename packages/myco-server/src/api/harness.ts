@@ -13,6 +13,7 @@ import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, DISPATCH_REFUSAL_MESSAGE, dispatchTas
 import { emit } from '../telemetry.js';
 import { taskEntriesSince } from '../core/runs.js';
 import { TASK_SCHEDULE } from '../core/task-catalogue.js';
+import { buildTaskInput } from '../core/task-inputs.js';
 import { badRequest, ok, readJsonObject } from './scope.js';
 
 const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
@@ -28,13 +29,27 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   const projectId = typeof body.projectId === 'string' && PROJECT_ID_SHAPE.test(body.projectId) ? body.projectId : null;
   if (task === null || projectId === null) return badRequest('dispatch requires task and projectId');
   const timeoutSeconds = typeof body.timeoutSeconds === 'number' && body.timeoutSeconds > 0 && body.timeoutSeconds <= 3600 ? body.timeoutSeconds : DEFAULT_DISPATCH_TIMEOUT_SECONDS;
+  const dryRun = body.dryRun === true;
 
+  // A task whose prompt the server builds is compared against the artifact the
+  // Project already holds. Equal means the ask is answered with an outcome and
+  // no run row at all — reads only, nothing spent — so it is decided ahead of
+  // the day's ceiling: a person asking about a still Project is told it is
+  // still, rather than told they have used up a run they never spent.
+  const built = await buildTaskInput(env, task, projectId, ctx.now);
+  if (built !== null && built.unchanged) {
+    emit({ kind: 'harness_unchanged', task, projectId, actor: ctx.member.id });
+    return ok({ outcome: 'unchanged' });
+  }
   // A person's ask bypasses the clock's interval, never its per-day ceiling: the cap is the day's spend, whoever asks.
   const ceiling = TASK_SCHEDULE[task]?.maxRunsPerDay;
   if (ceiling !== undefined && (await taskEntriesSince(env.db, { projectId }, task, ctx.now - 86_400_000)) >= ceiling) {
     return Response.json({ error: 'max_runs_per_day', message: `this task has run its ${ceiling} for the day` }, { status: 409 });
   }
-  const outcome = await dispatchTask(env, task, projectId, { serverUrl: ctx.url.origin, actor: ctx.member.id, timeoutSeconds }, ctx.now);
+  const input = built === null || built.unchanged
+    ? {}
+    : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
+  const outcome = await dispatchTask(env, task, projectId, { serverUrl: ctx.url.origin, actor: ctx.member.id, timeoutSeconds, ...input, options: { dryRun } }, ctx.now);
   if (!outcome.dispatched) {
     return badRequest(outcome.refusal === 'unsupported_provider'
       ? `${DISPATCH_REFUSAL_MESSAGE.unsupported_provider}, and the configured provider is ${outcome.providerType ?? 'another'}`

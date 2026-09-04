@@ -6,7 +6,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { admissionForTask, RETAINED_TASKS, TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
+import { admissionForTask, MANUAL_ONLY_TASKS, RETAINED_TASKS, scheduledTasks, TASK_ADMISSION, TASK_SCHEDULE } from '@myco-server-worker/core/task-catalogue.js';
 import { PROJECT_CAPABILITIES } from '@myco-server-worker/core/settings.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -43,5 +43,28 @@ describe('the task catalogue', () => {
     expect(admissionForTask('canopy-map')).toBeNull();
     expect(admissionForTask('invented-task')).toBeNull();
     expect(admissionForTask('digest-only')).toEqual({ kind: 'capability', capability: 'cortex' });
+  });
+
+  it('leaves every manual-only task without a schedule, so none of them reaches the clock', () => {
+    const scheduled = MANUAL_ONLY_TASKS.filter((task) => TASK_SCHEDULE[task] !== null);
+    expect(scheduled).toEqual([]);
+    for (const task of MANUAL_ONLY_TASKS) expect({ task, retained: RETAINED_TASKS.includes(task) }).toEqual({ task, retained: true });
+  });
+});
+
+describe('what the clock runs', () => {
+  it('runs the probe alone: the instructions schedule is declared and switched off', () => {
+    expect(scheduledTasks().map((t) => t.task)).toEqual(['container-smoke']);
+    expect(TASK_SCHEDULE['cortex-instructions']).toEqual({ enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 });
+  });
+
+  it('makes the declared schedule live when an owner switches it on', () => {
+    const live = scheduledTasks({ 'cortex-instructions': { schedule: { enabled: true } } });
+    expect(live.map((t) => t.task).sort()).toEqual(['container-smoke', 'cortex-instructions']);
+    expect(live.find((t) => t.task === 'cortex-instructions')!.schedule).toMatchObject({ enabled: true, intervalSeconds: 86_400, maxRunsPerDay: 1, overlap: 'skip' });
+  });
+
+  it('takes a switched-off override away from a task the Deployment otherwise runs', () => {
+    expect(scheduledTasks({ 'container-smoke': { schedule: { enabled: false } } })).toEqual([]);
   });
 });

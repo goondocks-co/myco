@@ -11,10 +11,12 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import { insertSpore } from '@myco-server-worker/core/spores.js';
+import { upsertDigest } from '@myco-server-worker/core/digests.js';
 import { ServerClient } from '@myco/member/transport.js';
 import {
-  materializedCreateSporeTool, materializedResolveSporeTool, materializedSessionMaterialTool,
-  materializedSporeTool, materializedSporesTool, materializedUpdateSessionTool,
+  materializedCreateSporeTool, materializedReadDigestTool, materializedReportTool, materializedResolveSporeTool,
+  materializedSessionMaterialTool, materializedSessionsTool, materializedSporeTool, materializedSporesTool,
+  materializedUpdateSessionTool,
 } from '@myco/agent/runtime/server-tools.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
@@ -41,7 +43,8 @@ async function setup() {
   await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_1', agentId: 'myco-agent', task: 'title-summary', provider: 'anthropic', model: null, runContext: JSON.stringify({ session_id: 's1', mode: 'claim' }), dispatchedBy: minted.tokenId, startedAt: now });
   await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_sweep', agentId: 'myco-agent', task: 'supersession-sweep', provider: 'anthropic', model: null, runContext: JSON.stringify({ session_id: 's1' }), dispatchedBy: minted.tokenId, startedAt: now });
   await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_smoke', agentId: 'myco-agent', task: 'container-smoke', provider: 'anthropic', model: null, runContext: null, dispatchedBy: minted.tokenId, startedAt: now });
-  e.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE id IN ('run_1', 'run_sweep', 'run_smoke')`);
+  await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_cortex', agentId: 'myco-agent', task: 'cortex-instructions', provider: 'anthropic', model: null, runContext: JSON.stringify({ input_hash: 'server-hash' }), dispatchedBy: minted.tokenId, startedAt: now });
+  e.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE id IN ('run_1', 'run_sweep', 'run_smoke', 'run_cortex')`);
   return { ...e, now, client: clientFor(minted.token) };
 }
 
@@ -115,7 +118,7 @@ describe('the sweep run\'s tools', () => {
       .toEqual([{ id: 'sp_a', status: 'consolidated' }, { id: 'sp_b', status: 'superseded' }, { id: 'sp_c', status: 'active' }]);
   });
 
-  it('answer a run that holds no spore surface as a tool error, writing nothing', async () => {
+  it('answer a run that holds no such surface as a tool error, writing nothing', async () => {
     const { client, sqlite } = await setup();
     const ctx = { client, budget, runId: 'run_smoke', agentId: 'myco-agent' };
     const counter = { writes: 0 };
@@ -125,8 +128,59 @@ describe('the sweep run\'s tools', () => {
       textOf(await materializedCreateSporeTool(ctx, counter).handler({ observation_type: 'gotcha', content: 'c' }, {})),
       textOf(await materializedResolveSporeTool(ctx, counter).handler({ spore_id: 'sp_a', action: 'obsolete', reason: 'r' }, {})),
     ];
-    expect(answers).toEqual(answers.map(() => ({ error: 'this run holds no spore surface' })));
+    expect(answers).toEqual(answers.map(() => ({ error: 'this run holds no such surface' })));
     expect(counter.writes).toBe(0);
     expect(sqlite.query(`SELECT COUNT(*) c FROM spores`).get()).toEqual({ c: 0 });
+  });
+});
+
+describe('the instructions run\'s tools', () => {
+  it('read the settled sessions and the digest, and never a session still in flight', async () => {
+    const { client, sqlite, db, now } = await setup();
+    const ctx = { client, budget, runId: 'run_cortex', agentId: 'myco-agent' };
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at) VALUES ('proj_1', 's_live', 'm1', 'tok_1', ?, ?, 'claude-code', ?)`, [now, now, now]);
+    await upsertDigest(db, { projectId: 'proj_1' }, { id: 'd1', agentId: 'myco-agent', tier: 5000, content: 'the digest', substrateHash: null, generatedAt: now });
+
+    const listed = textOf(await materializedSessionsTool(ctx).handler({ limit: 10 }, {}));
+    expect((listed.sessions as Array<{ id: string }>).map((s) => s.id)).toEqual(['s1']);
+
+    expect(textOf(await materializedReadDigestTool(ctx).handler({ tier: 5000 }, {})))
+      .toEqual({ digest: { tier: 5000, content: 'the digest', generatedAt: now } });
+    expect(textOf(await materializedReadDigestTool(ctx).handler({}, {})))
+      .toEqual({ tiers: [{ tier: 5000, generatedAt: now, contentLength: 10 }] });
+  });
+
+  it('files the artifact through the report, under the hash the run row carries', async () => {
+    const { client, sqlite } = await setup();
+    const ctx = { client, budget, runId: 'run_cortex', agentId: 'myco-agent' };
+    const counter = { reports: 0 };
+    const report = materializedReportTool(ctx, counter);
+    const answer = await report.handler({ action: 'cortex_instructions', summary: 'wrote them', details: { content: '# Start here' } }, {});
+    expect((answer as { content: Array<{ text: string }> }).content[0]!.text).toBe('report recorded: cortex_instructions');
+    expect(counter.reports).toBe(1);
+    expect(sqlite.query(`SELECT content, input_hash AS inputHash, source_run_id AS sourceRunId FROM cortex_instructions`).all())
+      .toEqual([{ content: '# Start here', inputHash: 'server-hash', sourceRunId: 'run_cortex' }]);
+    expect(sqlite.query(`SELECT action FROM agent_reports WHERE run_id = 'run_cortex'`).all()).toEqual([{ action: 'cortex_instructions' }]);
+  });
+
+  it('records the report even when the artifact is refused, and says so to the model', async () => {
+    const { client, sqlite } = await setup();
+    // A run of another task holds no instructions surface: the write is refused and the report still lands.
+    const ctx = { client, budget, runId: 'run_smoke', agentId: 'myco-agent' };
+    const counter = { reports: 0 };
+    const answer = await materializedReportTool(ctx, counter).handler({ action: 'cortex_instructions', summary: 'tried', details: { content: '# nope' } }, {});
+    expect(textOf(answer).error).toContain('holds no instructions surface');
+    expect(counter.reports).toBe(1);
+    expect(sqlite.query(`SELECT COUNT(*) c FROM cortex_instructions`).get()).toEqual({ c: 0 });
+    expect(sqlite.query(`SELECT action FROM agent_reports WHERE run_id = 'run_smoke'`).all()).toEqual([{ action: 'cortex_instructions' }]);
+  });
+
+  it('leaves an ordinary report alone', async () => {
+    const { client, sqlite } = await setup();
+    const ctx = { client, budget, runId: 'run_cortex', agentId: 'myco-agent' };
+    const counter = { reports: 0 };
+    await materializedReportTool(ctx, counter).handler({ action: 'skip', summary: 'nothing to do' }, {});
+    expect(sqlite.query(`SELECT COUNT(*) c FROM cortex_instructions`).get()).toEqual({ c: 0 });
+    expect(counter.reports).toBe(1);
   });
 });

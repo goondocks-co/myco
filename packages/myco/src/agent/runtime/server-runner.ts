@@ -17,11 +17,11 @@ import { inferHarnessFromProviderType } from '../provider-harness.js';
 import { HARNESS_CLAUDE_SDK } from '../types.js';
 import { loadAgentDefinition, loadSystemPrompt, resolveDefinitionsDir } from '../loader.js';
 import { loadAllTasks } from '../registry.js';
-import { composeTaskPrompt } from '../prompt-composition.js';
+import { composeHostedPrompt, composeTaskPrompt } from '../prompt-composition.js';
 import type { AgentHarness } from '../harness/types.js';
 import type { ProviderConfig } from '../types.js';
-import { createHttpRunStore, type RunClaimAdmission } from './run-store-http.js';
-import { materializedToolsForTask } from './server-tools.js';
+import { createHttpRunStore, postRunControl, type RunClaimAdmission } from './run-store-http.js';
+import { INSTRUCTED_TASKS, materializedToolsForTask, type ServerToolContext } from './server-tools.js';
 
 export { materializedReportTool } from './server-tools.js';
 
@@ -57,6 +57,19 @@ export interface ServerTaskResult {
 /** The claim's admission from the dispatch's word: the capture-driven marker, or a capability name. */
 export function claimAdmission(admission: string | undefined): RunClaimAdmission {
   return admission === CAPTURE_DRIVEN_ADMISSION ? { captureDriven: true } : { capability: admission ?? 'cortex' };
+}
+
+/**
+ * The prompt the server built for this run, for a task that carries one.
+ *
+ * A build runs to tens of kilobytes, which belongs on the run row rather than in
+ * a container's environment. A task the server builds no input for asks nothing,
+ * and a route that answers no instruction leaves the run with none.
+ */
+async function instructionForRun(ctx: ServerToolContext, taskName: string): Promise<string | undefined> {
+  if (!INSTRUCTED_TASKS.includes(taskName)) return undefined;
+  const answered = await postRunControl(ctx.client, ctx.budget, '/runs/instruction', { runId: ctx.runId });
+  return typeof answered.instruction === 'string' && answered.instruction.length > 0 ? answered.instruction : undefined;
 }
 
 /**
@@ -111,13 +124,17 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     }
 
     const counter = { reports: 0, writes: 0 };
-    const tools = materializedToolsForTask(taskName, { client, budget, runId, agentId }, counter);
+    const toolContext = { client, budget, runId, agentId };
+    const tools = materializedToolsForTask(taskName, toolContext, counter);
     const harness = options.harness ?? getAgentHarness(harnessId);
+    // The prompt the server built for this run rides the run row rather than the
+    // container's environment; the claim above is what admits this read.
+    const instruction = options.instruction ?? await instructionForRun(toolContext, taskName);
     const prompt = composeTaskPrompt({
       vaultContext: '',
       taskDisplayName: task.displayName ?? taskName,
-      taskPrompt: task.prompt ?? '',
-      instruction: options.instruction,
+      taskPrompt: composeHostedPrompt({ taskPrompt: task.prompt ?? '', phases: task.phases }),
+      instruction,
       params: options.params,
     });
 
