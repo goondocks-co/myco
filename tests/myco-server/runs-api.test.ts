@@ -387,3 +387,41 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     expect({ persisted: miss.persisted, changed: miss.changed, ended: ended.length, revoked: credRevokedAt(minted.tokenId) }).toEqual({ persisted: true, changed: 0, ended: 0, revoked: null });
   });
 });
+
+describe('POST /runs/update holds a run to what its task owes at close', () => {
+  const sweep = async () => {
+    const h = await harness();
+    h.sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`).run(Date.now());
+    expect(await h.post('/runs/claim', { id: 'r_sweep', agentId: AGENT, task: 'supersession-sweep', capability: 'vault_evolution' })).toMatchObject({ claimed: true });
+    return h;
+  };
+  const row = (h: Awaited<ReturnType<typeof harness>>) =>
+    h.sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'r_sweep'`).get() as { status: string; error: string | null };
+
+  it('records a sweep that closes without its report as a failure, and says the close did not land', async () => {
+    const h = await sweep();
+    expect(await h.post('/runs/update', { runId: 'r_sweep', update: { status: 'completed', completed_at: 42 } }))
+      .toEqual({ persisted: true, changed: 1, applied: false, reason: 'postcondition' });
+    expect(row(h)).toEqual({ status: 'failed', error: 'the run ended without its report' });
+    // Another report is not the one the task owes.
+    await h.post('/runs/report', { runId: 'r_sweep', agentId: AGENT, action: 'skip', summary: 'nothing found' });
+    expect(await h.post('/runs/update', { runId: 'r_sweep', update: { status: 'completed', completed_at: 43 } }))
+      .toMatchObject({ applied: false, reason: 'postcondition' });
+    expect(row(h).status).toBe('failed');
+  });
+
+  it('closes a sweep that recorded its report, whatever counts the report carries', async () => {
+    const h = await sweep();
+    await h.post('/runs/report', { runId: 'r_sweep', agentId: AGENT, action: 'supersession', summary: 'nothing to merge', details: JSON.stringify({ reviewed: 9, superseded: 0, consolidated: 0, obsoleted: 0 }) });
+    expect(await h.post('/runs/update', { runId: 'r_sweep', update: { status: 'completed', completed_at: 44 } }))
+      .toEqual({ persisted: true, changed: 1 });
+    expect(row(h)).toEqual({ status: 'completed', error: null });
+  });
+
+  it('holds only the tasks that owe a report, and never a run moving to a status other than completed', async () => {
+    const h = await sweep();
+    expect(await h.post('/runs/update', { runId: 'r_sweep', update: { status: 'skipped', completed_at: 45 } })).toEqual({ persisted: true, changed: 1 });
+    await h.post('/runs/claim', { id: 'r_digest', agentId: AGENT, task: 'digest', capability: 'cortex' });
+    expect(await h.post('/runs/update', { runId: 'r_digest', update: { status: 'completed', completed_at: 46 } })).toEqual({ persisted: true, changed: 1 });
+  });
+});

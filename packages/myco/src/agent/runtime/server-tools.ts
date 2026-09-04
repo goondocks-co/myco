@@ -3,20 +3,28 @@
  * call over the run-control routes, none reading a vault.
  *
  * Every run holds `vault_report`. A `title-summary` run holds two more — the
- * session material it reads and the title it writes — over routes that admit
- * only the credential that dispatched a live run of that task for that
- * session. The tools keep the names and argument shapes the task definition
- * has always used, so one definition serves both the local executor and this
- * runtime.
+ * session material it reads and the title it writes. A `supersession-sweep` run
+ * holds four — an inventory of previews, one spore in full, and the two writes —
+ * so a sweep surveys a whole vault by its previews and pulls bodies only for the
+ * clusters it means to resolve. Every route admits only the credential that
+ * dispatched a live run of that task. The tools keep the names and argument
+ * shapes the task definition has always used, so one definition serves both the
+ * local executor and this runtime.
  */
 import { z } from 'zod/v4';
 import type { RequestBudget } from '@myco/member/budget.js';
 import type { ServerClient } from '@myco/member/transport.js';
+import { RESOLUTION_ACTIONS, SPORE_STATUSES } from '@myco/constants/spore-status.js';
+import { OBSERVATION_TYPES } from '../../vault/types.js';
 import type { MycoToolDefinition } from '../tools/types.js';
 import { postRunControl, postRunReport, RunControlError } from './run-store-http.js';
 
 /** The task whose runs read and write one session's title over the run routes. */
 export const TITLE_SUMMARY_TASK = 'title-summary';
+/** The task whose runs read and resolve this Project's spores over the run routes. */
+export const SUPERSESSION_SWEEP_TASK = 'supersession-sweep';
+/** Every task this runtime materializes a tool surface for. */
+export const SERVED_TASKS: readonly string[] = [TITLE_SUMMARY_TASK, SUPERSESSION_SWEEP_TASK];
 
 export interface ServerToolContext {
   client: ServerClient;
@@ -102,11 +110,118 @@ export function materializedUpdateSessionTool(ctx: ServerToolContext, counter: {
   };
 }
 
+/** A tool answer a run may act on: the route served no run for this caller. */
+const NO_RUN = { error: 'this run holds no spore surface' };
+
+/**
+ * One call over a run route, answered as a tool result whatever happens: a
+ * refusal and a lost connection are the model's to act on, never a failed run.
+ */
+async function askRunControl(ctx: ServerToolContext, path: string, payload: Record<string, unknown>): Promise<Record<string, unknown> | { error: string }> {
+  try {
+    const answered = await postRunControl(ctx.client, ctx.budget, path, payload);
+    return answered.held === true ? answered : NO_RUN;
+  } catch (error) {
+    if (error instanceof RunControlError) return { error: error.message };
+    throw error;
+  }
+}
+
+const errored = (answered: Record<string, unknown> | { error: string }): answered is { error: string } => typeof (answered as { error?: unknown }).error === 'string';
+
+/** The Project's spores as one bounded line each, with the total behind the page. */
+export function materializedSporesTool(ctx: ServerToolContext): MycoToolDefinition {
+  return {
+    name: 'vault_spores',
+    description: 'List spores as previews — id, observation type, importance, created time, and the first 200 characters of the body — with the total behind the page. Read a body in full with vault_spore.',
+    inputSchema: {
+      status: z.enum(SPORE_STATUSES).optional().describe('Filter by status (default: active)'),
+      observation_type: z.string().optional().describe('Filter by observation type (e.g., gotcha, decision)'),
+      search: z.string().optional().describe('Keep only spores whose content or type contains this text'),
+      limit: z.number().optional().describe('Maximum number of spores to return (max 200)'),
+      offset: z.number().optional().describe('How many spores to skip, for paging through the total'),
+    },
+    annotations: { readOnlyHint: true },
+    handler: async (args: { status?: string; observation_type?: string; search?: string; limit?: number; offset?: number }) => {
+      const answered = await askRunControl(ctx, '/runs/spores', { runId: ctx.runId, ...args });
+      if (errored(answered)) return text(answered);
+      return text({ spores: answered.spores, total: answered.total });
+    },
+  };
+}
+
+/** One spore in full, with what supersedes it and what it grew out of. */
+export function materializedSporeTool(ctx: ServerToolContext): MycoToolDefinition {
+  return {
+    name: 'vault_spore',
+    description: 'Read one spore in full — its whole body, context, tags and properties — with the ids that supersede it and the ids it replaced.',
+    inputSchema: {
+      id: z.string().max(192).describe('ID of the spore to read'),
+    },
+    annotations: { readOnlyHint: true },
+    handler: async (args: { id: string }) => {
+      const answered = await askRunControl(ctx, '/runs/spore', { runId: ctx.runId, id: args.id });
+      if (errored(answered)) return text(answered);
+      if (answered.budget === 'spent') return text({ error: 'the full-read budget for this run is spent; judge the rest by their previews from vault_spores' });
+      if (answered.spore === null) return text({ error: `Spore not found: ${args.id}` });
+      return text({ spore: answered.spore, truncated: answered.truncated, superseded_by: answered.supersededBy, supersedes: answered.supersedes });
+    },
+  };
+}
+
+/** The spore a run records; its agent and session come from the run, never from the caller. */
+export function materializedCreateSporeTool(ctx: ServerToolContext, counter: { writes: number }): MycoToolDefinition {
+  return {
+    name: 'vault_create_spore',
+    description: 'Create a new spore (observation) in the vault. The agent_id is set automatically.',
+    inputSchema: {
+      observation_type: z.enum(OBSERVATION_TYPES).describe('Spore kind. Direct extraction: gotcha, bug_fix, decision, discovery, trade_off, cross-cutting. Synthesized (consolidation / seed): wisdom, pattern, architecture.'),
+      content: z.string().describe('The observation content in markdown'),
+      importance: z.number().optional().describe('Importance score 1-10 (default 5)'),
+      tags: z.array(z.string()).optional().describe('Tags for categorization'),
+      context: z.string().optional().describe('Additional context about the observation'),
+      properties: z.string().optional().describe('JSON metadata (e.g., {"consolidated_from": [...]} for wisdom spores)'),
+    },
+    annotations: { openWorldHint: true },
+    handler: async (args: { observation_type: string; content: string; importance?: number; tags?: string[]; context?: string; properties?: string }) => {
+      const answered = await askRunControl(ctx, '/runs/spore-create', { runId: ctx.runId, ...args });
+      if (errored(answered)) return text(answered);
+      counter.writes += 1;
+      return text({ spore: answered.spore });
+    },
+  };
+}
+
+/** The resolutions a run makes: one superseded, one obsolete, or a set consolidated into a wisdom spore this call records. */
+export function materializedResolveSporeTool(ctx: ServerToolContext, counter: { writes: number }): MycoToolDefinition {
+  return {
+    name: 'vault_resolve_spore',
+    description: 'Resolve a spore by updating its status and recording a resolution event.',
+    inputSchema: {
+      spore_id: z.string().max(192).describe('ID of the spore to resolve'),
+      action: z.enum(RESOLUTION_ACTIONS).describe('Resolution action: supersede (replaced by a newer spore), consolidate (merged into a wisdom note), or obsolete (no longer relevant, no replacement)'),
+      new_spore_id: z.string().max(192).optional().describe('ID of the replacement spore (required for supersede and consolidate)'),
+      reason: z.string().optional().describe('Explanation for the resolution'),
+    },
+    annotations: { destructiveHint: true },
+    handler: async (args: { spore_id: string; action: string; new_spore_id?: string; reason?: string }) => {
+      const answered = await askRunControl(ctx, '/runs/spore-resolve', { runId: ctx.runId, ...args });
+      if (errored(answered)) return text(answered);
+      if (answered.resolved !== true) return text({ error: `Spore not found: ${args.spore_id}` });
+      counter.writes += 1;
+      return text({ action: answered.action, spore: answered.spore });
+    },
+  };
+}
+
 /** The tools a run of `taskName` holds. */
 export function materializedToolsForTask(taskName: string, ctx: ServerToolContext, counter: { reports: number; writes: number }): MycoToolDefinition[] {
   const tools = [materializedReportTool(ctx, counter)];
   if (taskName === TITLE_SUMMARY_TASK) {
     tools.push(materializedSessionMaterialTool(ctx), materializedUpdateSessionTool(ctx, counter));
+  }
+  if (taskName === SUPERSESSION_SWEEP_TASK) {
+    tools.push(materializedSporesTool(ctx), materializedSporeTool(ctx), materializedCreateSporeTool(ctx, counter), materializedResolveSporeTool(ctx, counter));
   }
   return tools;
 }

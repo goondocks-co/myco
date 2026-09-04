@@ -35,6 +35,18 @@ export const MAX_SPORE_CONTENT_BYTES = 256 * 1024;
 export const DEFAULT_SPORE_LIMIT = 50;
 export const MAX_SPORE_LIMIT = 200;
 
+/** How much of a body an inventory listing carries, so a sweep can survey a whole vault without pulling it into a model's context. */
+export const SPORE_PREVIEW_CHARS = 200;
+
+/** How many spores one run may read in full, past which the surface answers that the budget is spent; a sweep judges by previews and spends its reads on the clusters it means to resolve. */
+export const SPORE_FULL_READ_BUDGET = 12;
+
+/** The largest body one full read carries, so a single spore cannot flood a model's context; a body longer than this arrives cut, and the answer says so. */
+export const SPORE_BODY_CHARS = SPORE_PREVIEW_CHARS * 40;
+
+/** The tasks whose runs hold the spore tools over the run routes. */
+export const SPORE_TOOL_TASKS: readonly string[] = ['supersession-sweep'];
+
 export interface SporeInsert {
   id: string;
   agentId: string;
@@ -140,7 +152,8 @@ function filters(scope: ReadScope, o: ListSporesOptions): { where: string; param
 /** The id breaks a tie on the instant, so two spores written in the same millisecond hold one order across every page of an offset walk. */
 export async function listSpores(db: RelationalStore, scope: ReadScope, o: ListSporesOptions = {}): Promise<SporeRow[]> {
   const { where, params } = filters(scope, o);
-  const limit = Math.min(o.limit ?? DEFAULT_SPORE_LIMIT, MAX_SPORE_LIMIT);
+  // A limit below one asks for a page, not for everything: clamped at both ends.
+  const limit = Math.min(Math.max(o.limit ?? DEFAULT_SPORE_LIMIT, 1), MAX_SPORE_LIMIT);
   const { results } = await db
     .prepare(`SELECT ${COLUMNS} FROM spores ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
     .bind(...params, limit, o.offset ?? 0).all<SporeRow>();

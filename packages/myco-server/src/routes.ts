@@ -40,6 +40,7 @@ import { handleRefresh } from './auth/refresh.js';
 import { handleBlob } from './ingest/blobs.js';
 import { handleHarnessDispatch, handleHarnessProbe } from './api/harness.js';
 import { handleSessionMaterial, handleSessionTitle } from './api/session-tasks.js';
+import { handleRunSpore, handleRunSporeCreate, handleRunSporeResolve, handleRunSpores } from './api/run-spores.js';
 import { handleEvents } from './ingest/events.js';
 import { handleGrantMcp, handleMcp } from './mcp/http.js';
 
@@ -103,6 +104,11 @@ export const ROUTES: readonly Route[] = [
   // What a titling run reads and writes: admitted only to the harness credential that dispatched a live `title-summary` run bound to the named session.
   { method: 'POST', path: '/runs/session-material', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionMaterial },
   { method: 'POST', path: '/runs/session-title', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionTitle },
+  // What a spore task's run reads and writes: an inventory of previews, one spore in full, and the two writes — admitted only to the harness credential that dispatched a live run of such a task.
+  { method: 'POST', path: '/runs/spores', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSpores },
+  { method: 'POST', path: '/runs/spore', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSpore },
+  { method: 'POST', path: '/runs/spore-create', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSporeCreate },
+  { method: 'POST', path: '/runs/spore-resolve', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSporeResolve },
   { method: 'POST', path: '/spores/save', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSaveSpore },
   { method: 'POST', path: '/spores/list', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleListSpores },
   { method: 'POST', path: '/spores/get', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleGetSpore },
