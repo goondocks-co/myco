@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import {
   AccountNotSelected,
   backupCloudflare,
+  CONTAINERS_ROLLOUT_NONE,
   cloudflareStatus,
   deployWorker,
   applyMigrations,
@@ -78,6 +79,23 @@ describe('deploy', () => {
   it('supports a dry run that creates nothing', async () => {
     await deployWorker({ ...base(), runner: runner(), dryRun: true });
     expect(calls[0]!.args).toContain('--dry-run');
+  });
+
+  it('rolls nothing when the deploy ships the image already running, and rolls as usual when the bytes moved', async () => {
+    // Replacing the instances for identical bytes takes every run in flight
+    // through a drain and gains nothing.
+    const image = `registry.cloudflare.com/${'a'.repeat(32)}/myco-server-harnesscontainer@sha256:${'b'.repeat(64)}`;
+    await deployWorker({ ...base(), runner: runner(), pushedImage: image, deployedImage: image });
+    expect(calls[0]!.args).toContain(CONTAINERS_ROLLOUT_NONE);
+
+    calls = [];
+    await deployWorker({ ...base(), runner: runner(), pushedImage: image, deployedImage: `${image.slice(0, -1)}c` });
+    expect(calls[0]!.args).not.toContain(CONTAINERS_ROLLOUT_NONE);
+
+    // A first deploy has nothing deployed to compare against, and rolls.
+    calls = [];
+    await deployWorker({ ...base(), runner: runner(), pushedImage: image });
+    expect(calls[0]!.args).not.toContain(CONTAINERS_ROLLOUT_NONE);
   });
 
   it('applies migrations against the remote database, never a local one', async () => {
