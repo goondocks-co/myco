@@ -248,6 +248,24 @@ describe('read/turns', () => {
     expect(await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(9))).toBeNull();
   });
 
+  it('carries what Myco added to a turn, hydrated, and null for a turn it added nothing to', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedTurns(sqlite);
+    sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1','a','built-in',1,0)`);
+    sqlite.run(`INSERT INTO spores (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, importance, created_at, embedded)
+      VALUES ('proj_1','sp1','agent_1',NULL,NULL,'decision','active','the selector reads recency',5,5,0)`);
+    sqlite.run(`INSERT INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, created_at)
+      VALUES ('proj_1','s1',?,'ph1',?,9)`, [UUID(1), JSON.stringify(['sp1', 'sp_gone'])]);
+
+    const detail = await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(1));
+    expect(detail?.injection).toEqual({
+      sporeIds: ['sp1', 'sp_gone'],
+      createdAt: 9,
+      spores: [{ id: 'sp1', observationType: 'decision', preview: 'the selector reads recency' }],
+    });
+    expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(4)))?.injection).toBeNull();
+  });
+
   it('narrows a child read to one prompt, and carries the prompt an attachment accompanies', async () => {
     const { db, sqlite } = sqliteEnv();
     seedTurns(sqlite);
@@ -382,7 +400,7 @@ describe('D1 adapter', () => {
 
 describe('schema v4', () => {
   it('adds a recency index on sessions and stamps the build version', () => {
-    expect(SERVER_SCHEMA_VERSION).toBe(16);
+    expect(SERVER_SCHEMA_VERSION).toBe(17);
     const v4 = SCHEMA_STEPS.find((s) => s.version === 4);
     expect(v4?.statements.some((s) => s.includes('idx_sessions_recent'))).toBe(true);
   });
@@ -402,7 +420,7 @@ describe('read/meta', () => {
   it('reports the schema version the database carries', async () => {
     const { db } = sqliteEnv();
     const { schemaVersion } = await import('@myco-server-worker/read/meta.js');
-    expect(await schemaVersion(db)).toBe(16);
+    expect(await schemaVersion(db)).toBe(17);
   });
 });
 

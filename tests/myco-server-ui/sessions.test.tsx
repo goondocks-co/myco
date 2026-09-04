@@ -260,6 +260,7 @@ describe('Session detail', () => {
       responses: [{ responseId: 'r1', promptId: P1, text: 'done', blobKey: null, createdAt: NOW - 1000, orderedAt: NOW - 1000 }],
       attachments: [{ attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW }],
       plans: [],
+      injection: null,
       children: [],
     }),
     [`/api/projects/x/sessions/s1/turns/${P3}`]: () => Response.json({
@@ -267,6 +268,7 @@ describe('Session detail', () => {
       responses: [],
       attachments: [],
       plans: [],
+      injection: null,
       children: [{ prompt: { promptId: P2, origin: 'user', promptKind: null, parentPromptId: P3, threadLabel: 'reviewer', text: 'steer it left', blobKey: null, createdAt: NOW - 900 }, responses: [{ responseId: 'r2', promptId: P2, text: 'steered', blobKey: null, createdAt: NOW - 800, orderedAt: NOW - 800 }], toolCallCount: 0 }],
     }),
     [`/api/projects/x/sessions/s1/turns/${P1}/tool-calls?limit=200`]: () => page([
@@ -423,7 +425,7 @@ describe('Session detail', () => {
       '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([turn({ promptId: P1, preview: 'Please rename the project card', toolCallCount: 1, responseCount: 1, planCount: 1, attachmentCount: 1 })]),
       [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
         prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: 'Please rename the project card', blobKey: null, createdAt: NOW - 3000 },
-        responses: [], attachments: [{ attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW }], plans: [plan()], children: [],
+        responses: [], attachments: [{ attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW }], plans: [plan()], injection: null, children: [],
       }),
       '/api/projects/x/sessions/s1/plans/plan-1/status': () => { status = 'completed'; return Response.json({ plan: plan() }); },
       '/api/members': () => Response.json({ members: [{ id: 'mem_1', label: 'chris', linked: true, createdAt: 0, revokedAt: null, revokedBy: null }] }),
@@ -441,6 +443,47 @@ describe('Session detail', () => {
     await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/plans/plan-1/status'));
     await within(first).findByText('Status set by chris');
     expect((await within(first).findByTestId('plan-plan-1')).textContent).toContain('completed');
+  });
+
+  it('shows what Myco added to a prompt as one collapsed line, opening on the observations it served', async () => {
+    server(detailRoutes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([turn({ promptId: P1, preview: 'Please rename the project card' })]),
+      [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+        prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: 'Please rename the project card', blobKey: null, createdAt: NOW - 3000 },
+        responses: [], attachments: [], plans: [],
+        injection: {
+          sporeIds: ['sp1', 'sp2', 'sp_gone'], createdAt: NOW - 3100,
+          spores: [
+            { id: 'sp1', observationType: 'decision', preview: 'the selector reads recency' },
+            { id: 'sp2', observationType: 'bug_fix', preview: 'the hook answers before the event lands' },
+          ],
+        },
+        children: [],
+      }),
+    }));
+    mount('/p/x/sessions/s1');
+    const first = await screen.findByTestId(`turn-${P1}`);
+    const row = await within(first).findByTestId('turn-injection');
+    expect(row.textContent).toContain('Myco added 2 observations');
+    expect(row.textContent).not.toContain('Myco added 3 observations');
+    expect(within(row).queryByText('the selector reads recency')).toBeNull();
+    fireEvent.click(within(row).getByRole('button'));
+    expect((await within(row).findByText('the selector reads recency')).textContent).toBeTruthy();
+    expect(within(row).getByText('Bug Fix')).toBeTruthy();
+    const links = within(row).getAllByRole('link');
+    expect(links.map((l) => l.getAttribute('href'))).toEqual(['/p/x/spores/sp1', '/p/x/spores/sp2']);
+    // The record names three; two are still there, and the line counts the third rather than the label overstating.
+    expect(within(row).getByText('1 no longer in the vault')).toBeTruthy();
+  });
+
+  it('shows no observation row on a turn Myco added nothing to', async () => {
+    server(detailRoutes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([turn({ promptId: P1, preview: 'Please rename the project card' })]),
+    }));
+    mount('/p/x/sessions/s1');
+    const first = await screen.findByTestId(`turn-${P1}`);
+    await within(first).findByTestId('turn-body');
+    expect(within(first).queryByTestId('turn-injection')).toBeNull();
   });
 
   it('lists captured plans as cards with their status, key and checklist progress', async () => {

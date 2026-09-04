@@ -434,6 +434,7 @@ Disposition here is about the **data class**, and separately about **migration**
 | `plans` | KEEP | MIGRATE | Core | Blk | | #924 |
 | `spores` | KEEP | MIGRATE | Core | Blk | Server tables land in #919 | #924 |
 | `resolution_events` | KEEP | MIGRATE | Core | Blk | Supersede/consolidate lineage | #924 |
+| `spore_injections` | KEEP | REBUILD | Core | Blk | What the prompt hook was served, per (session, prompt); 1.4 carries it on `activities` | #1044 |
 | `skill_records` | KEEP | MIGRATE | Core | Blk | | #924 |
 | `skill_candidates` | KEEP | MIGRATE | Core | Blk | | #924 |
 | `skill_lineage` | KEEP | MIGRATE | Core | Blk | | #924 |

@@ -42,7 +42,7 @@ const SEQUENCED = [
 
 const PROJECT_SCOPED = [
   'agent_runs', 'agent_state',
-  'spores', 'resolution_events', 'skill_records', 'skill_candidates', 'skill_lineage', 'skill_usage',
+  'spores', 'resolution_events', 'spore_injections', 'skill_records', 'skill_candidates', 'skill_lineage', 'skill_usage',
   'digest_extracts', 'cortex_instructions', 'knowledge_release_state',
   ...SEQUENCED,
 ] as const;
