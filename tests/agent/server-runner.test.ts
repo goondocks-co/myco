@@ -11,8 +11,8 @@ import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import worker from '@myco-server-worker/index.js';
 import { ServerClient } from '@myco/member/transport.js';
 import {
-  CAPTURE_DRIVEN_ADMISSION, installRunFailureHandlers, RUN_DEADLINE_ERROR, RUN_REPLACED_ERROR, runServerTask,
-  type HeldRun,
+  CAPTURE_DRIVEN_ADMISSION, installRunFailureHandlers, RUN_DEADLINE_ERROR, RUN_REFUSED_CLOSE_ERROR, RUN_REPLACED_ERROR,
+  runServerTask, type HeldRun,
 } from '@myco/agent/runtime/server-runner.js';
 import type { AgentHarness, HarnessExecuteInput } from '@myco/agent/harness/types.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
@@ -201,6 +201,53 @@ describe('a run that dies names itself', () => {
     expect(named).toHaveLength(1);
   });
 
+  it('answers no signal once the run has posted its own end: the release arrives, and nothing further reaches the row', async () => {
+    const { client, sqlite } = await harness();
+    const listeners = new Map<string, Array<(reason?: unknown) => void>>();
+    const events = { on: (event: string, listener: (reason?: unknown) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]) };
+    const named: Array<{ error: string; named: boolean }> = [];
+    let held: HeldRun | null = null;
+    installRunFailureHandlers(events, { held: () => held, onNamed: (error, wasNamed) => { named.push({ error, named: wasNamed }); } });
+
+    const result = await runServerTask({
+      client, budget, runId: 'run_closing', taskName: 'container-smoke', harness: fakeHarness('silent'),
+      onClaimed: () => { held = { client, budget, runId: 'run_closing' }; },
+      // The Deployment releases the container the instant the close lands, so
+      // the signal arrives while this very post is still open.
+      onClosing: () => { held = null; for (const listener of listeners.get('SIGTERM') ?? []) listener(); },
+    });
+    await Bun.sleep(60);
+    expect(result).toEqual({ runId: 'run_closing', status: 'completed', reportCount: 0 });
+    expect(named).toEqual([{ error: RUN_REPLACED_ERROR, named: false }]);
+    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_closing'`).get()).toEqual({ status: 'completed', error: null });
+  });
+
+  it('still names a signal that arrives before the run posts anything, and the close that follows finds the row terminal', async () => {
+    const { client, sqlite } = await harness();
+    const listeners = new Map<string, Array<(reason?: unknown) => void>>();
+    const events = { on: (event: string, listener: (reason?: unknown) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]) };
+    let held: HeldRun | null = null;
+    installRunFailureHandlers(events, { held: () => held, onNamed: () => { held = null; } });
+
+    const takenMidRun = {
+      async execute() {
+        for (const listener of listeners.get('SIGTERM') ?? []) listener();
+        await Bun.sleep(60);
+        return { finalText: 'done', turnsUsed: 1, usage: { totalTokens: 7 } as never };
+      },
+      supports: () => false,
+    } as unknown as AgentHarness;
+
+    const result = await runServerTask({
+      client, budget, runId: 'run_taken_early', taskName: 'container-smoke', harness: takenMidRun,
+      onClaimed: () => { held = { client, budget, runId: 'run_taken_early' }; },
+      onClosing: () => { held = null; },
+    });
+    expect(result).toEqual({ runId: 'run_taken_early', status: 'failed', error: RUN_REFUSED_CLOSE_ERROR, refused: 'terminal', reportCount: 0 });
+    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_taken_early'`).get())
+      .toEqual({ status: 'failed', error: RUN_REPLACED_ERROR });
+  });
+
   it('names nothing for a death in a container holding no run, and says so', async () => {
     const listeners = new Map<string, Array<(reason?: unknown) => void>>();
     const events = { on: (event: string, listener: (reason?: unknown) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]) };
@@ -232,7 +279,7 @@ describe('what the container makes of the deployment\'s answer', () => {
       },
     } as unknown as ServerClient;
     const result = await runServerTask({ client: stub, budget, runId: 'run_refused', taskName: 'container-smoke', harness: fakeHarness('silent') });
-    expect(result).toEqual({ runId: 'run_refused', status: 'failed', error: 'postcondition', reportCount: 0 });
+    expect(result).toEqual({ runId: 'run_refused', status: 'failed', error: RUN_REFUSED_CLOSE_ERROR, refused: 'postcondition', reportCount: 0 });
   });
 
   it('takes the run as its own only once the claim lands', async () => {

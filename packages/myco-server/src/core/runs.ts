@@ -6,9 +6,9 @@
  * `api/runs.ts` and this module is what those routes call. That arrangement is
  * the point: atomicity lives with the single writer instead of once per client.
  *
- * Two operations here are atomic in SQL rather than in JavaScript, and both are
- * atomic in the WHERE clause rather than by batching. A batch cannot supply
- * either one: its statements are fixed before it executes, so any decision taken
+ * Three operations here are atomic in SQL rather than in JavaScript, and each is
+ * atomic in the WHERE clause rather than by batching. A batch cannot supply any
+ * of them: its statements are fixed before it executes, so any decision taken
  * between a read and a write still happens in the caller, across an await, where
  * two concurrent phases interleave.
  *
@@ -18,6 +18,10 @@
  *   and cannot move into SQL, so the prior value becomes the guard and a refused
  *   update is retried FROM THE READ. Retrying from anywhere else re-applies a
  *   decision taken against a value that is no longer there.
+ * - `applyRunUpdate` guards a status change on the row not already being
+ *   terminal. A run closing releases the container that ran it, and that release
+ *   is what makes the container post an ending of its own, so the two writes
+ *   overlap by construction and only the WHERE clause can settle which lands.
  */
 import type { DispatchLimits } from './limits.js';
 import type { RelationalStore } from './adapters.js';
@@ -388,6 +392,11 @@ export async function listAgents(db: RelationalStore): Promise<AgentIdentity[]> 
 /** The statuses after which a run does no further work; the update surface releases run-scoped resources when one lands. */
 export const TERMINAL_RUN_STATUSES = ['completed', 'failed', 'skipped'] as const;
 
+/** Whether a run carrying this status has already ended. */
+export function isTerminalRunStatus(status: unknown): boolean {
+  return typeof status === 'string' && (TERMINAL_RUN_STATUSES as readonly string[]).includes(status);
+}
+
 export const RUN_UPDATE_COLUMNS = [
   'status', 'task', 'instruction', 'harness', 'provider', 'model', 'session_ref',
   'resumable', 'resume_status', 'resume_mode', 'resumed_at', 'resume_attempts',
@@ -476,6 +485,19 @@ export async function runInstruction(db: RelationalStore, scope: ReadScope, runI
  * Returns how many rows moved: 0 means the run is not in this scope, which a
  * caller must not read as success. An update naming no settable column is
  * refused rather than issued as an empty UPDATE.
+ *
+ * **The first terminal write wins.** An update naming `status` lands only on a
+ * run that has not already ended, and the guard is in the WHERE clause where the
+ * row's own status decides it. Both sides of a close are in flight at once: the
+ * update route releases the container the instant a terminal status lands, and
+ * the runtime answers that release with a terminal status of its own. A check
+ * read in JavaScript ahead of this write admits the second one, and the row then
+ * carries an ending that contradicts the artifact the run left behind.
+ *
+ * An update naming no `status` is unguarded, and applies to a terminal row: the
+ * tokens, the cost and the error detail a close measures ride the same write as
+ * that close or a write of their own, and both are the ending being described
+ * rather than a change of it.
  */
 export async function applyRunUpdate(
   db: RelationalStore,
@@ -485,9 +507,11 @@ export async function applyRunUpdate(
 ): Promise<number> {
   const columns = RUN_UPDATE_COLUMNS.filter((c) => c in update);
   if (columns.length === 0) return 0;
+  const guarded = 'status' in update;
+  const guard = guarded ? ` AND status NOT IN (${TERMINAL_RUN_STATUSES.map(() => '?').join(', ')})` : '';
   const result = await db
-    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')} WHERE project_id = ? AND id = ?`)
-    .bind(...columns.map((c) => update[c] ?? null), scope.projectId, runId)
+    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')} WHERE project_id = ? AND id = ?${guard}`)
+    .bind(...columns.map((c) => update[c] ?? null), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []))
     .run();
   return result.meta.changes;
 }

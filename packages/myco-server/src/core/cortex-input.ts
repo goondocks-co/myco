@@ -24,6 +24,15 @@
  * over the same store compose the same bytes, which is what makes the dedup that
  * keeps a daily run from spending dollars on unchanged material work at all.
  *
+ * **The tool surface is the served OPS, not the tool list.** A Deployment
+ * answers some ops of a served tool and names the rest as not yet served
+ * (`UNSERVED_OPS` in the catalogue), and an artifact teaching one of those would
+ * send every agent that reads it at a call that refuses. What the payload
+ * renders — the tools it names, the ops it lists under each, and the guidance
+ * sentences it carries — is cut to what the Deployment answers, and a tool with
+ * no answered op is named nowhere. Narrowing the surface moves the hash, so the
+ * next dispatch rebuilds the artifact against it.
+ *
  * **Known blind spot:** a body whose first 360 characters are identical hashes
  * the same however its tail moves, so an edit past the preview cut does not
  * trigger a rebuild on its own.
@@ -33,8 +42,8 @@ import { digestForTier, listDigests } from './digests.js';
 import { countSpores, listSpores, SPORE_BODY_CHARS, SPORE_FULL_READ_BUDGET, SPORE_PREVIEW_CHARS } from './spores.js';
 import { DIGEST_TIERS, type RecallLeaves } from './recall.js';
 import type { ProjectCapability } from './settings.js';
-import { SERVED_TOOLS } from './tool-catalogue.js';
-import { TOOL_DEFINITIONS } from '../mcp/definitions.js';
+import { isServedOp, NO_OP, SERVED_TOOLS, type ServedTool } from './tool-catalogue.js';
+import { TOOL_DEFINITIONS, type ToolDefinition } from '../mcp/definitions.js';
 import { listProjectPlans } from '../read/plans.js';
 import { listSessions } from '../read/sessions.js';
 import type { ReadScope } from '../read/scope.js';
@@ -109,16 +118,82 @@ export function preview(text: string | null, maxChars: number = CONTENT_PREVIEW_
   return `${(boundary > maxChars / 2 ? cut.slice(0, boundary) : cut).trimEnd()}…`;
 }
 
-/** The tools this Deployment serves, in the order the definitions declare them. */
-function servedToolNames(): string[] {
-  return TOOL_DEFINITIONS.filter((tool) => (SERVED_TOOLS as readonly string[]).includes(tool.name)).map((tool) => tool.name);
+/** The ops one definition declares, in its own order; `NO_OP` for a tool that declares none. */
+function declaredOps(tool: ToolDefinition): string[] {
+  const declared = tool.inputSchema.properties.op?.enum;
+  return declared === undefined ? [NO_OP] : declared.filter((value): value is string => typeof value === 'string');
+}
+
+/** Every tool this Deployment answers at least one op of, in definition order, each with the ops it answers and no op key for a tool that declares none. */
+function servedSurface(): Array<{ name: ServedTool; ops: string[] }> {
+  return TOOL_DEFINITIONS
+    .filter((tool) => (SERVED_TOOLS as readonly string[]).includes(tool.name))
+    .map((tool) => ({ name: tool.name, answered: declaredOps(tool).filter((op) => isServedOp(tool.name, op)) }))
+    .filter((tool) => tool.answered.length > 0)
+    .map((tool) => ({ name: tool.name, ops: tool.answered.filter((op) => op !== NO_OP) }));
+}
+
+/** One line per served tool: its name, and the ops the Deployment answers under it. */
+function toolSurfaceLines(): string[] {
+  return servedSurface().map(({ name, ops }) => (ops.length === 0
+    ? `- \`${name}\``
+    : `- \`${name}\` — ops: ${ops.map((op) => `\`${op}\``).join(', ')}`));
+}
+
+/** An `op: "name"` mention, as the guidance writes one. */
+const OP_MENTION = /\bop:\s*"([a-z_]+)"/g;
+
+/** Every op a fragment of guidance names. */
+function opsNamed(text: string): string[] {
+  return [...text.matchAll(OP_MENTION)].map((match) => match[1]!);
+}
+
+/** A clause promoted to the front of its sentence: the conjunction that joined it goes, and the opening verb of the clause it replaces comes with it. */
+function reopen(dropped: string, rebuilt: string): string {
+  const body = rebuilt.replace(/^(?:and|or)\s+/i, '');
+  const opener = /^(?:Use|Call|Pass|Prefer)\b/.exec(dropped)?.[0];
+  return opener === undefined || body.startsWith(opener)
+    ? `${body.charAt(0).toUpperCase()}${body.slice(1)}`
+    : `${opener} ${body}`;
+}
+
+/**
+ * One tool's guidance, cut to the ops this Deployment answers.
+ *
+ * The guidance is written as sentences whose clauses each teach one op, so a
+ * clause naming an op the Deployment does not answer is dropped and the rest of
+ * the sentence stands, closed. A sentence that keeps nothing goes whole, and a
+ * tool left with no sentence at all carries no guidance line — its ops are still
+ * named in the tool surface above. The last cut is on the finished line: anything
+ * still naming an unanswered op is dropped rather than sent.
+ */
+function guidanceForServedOps(guidance: string, served: readonly string[]): string | null {
+  const answered = (text: string) => opsNamed(text).every((op) => served.includes(op));
+  const kept: string[] = [];
+  for (const sentence of guidance.split(/(?<=\.)\s+/)) {
+    if (answered(sentence)) { kept.push(sentence); continue; }
+    const clauses = sentence.split(/,\s+/);
+    const keeping = clauses.filter(answered);
+    if (keeping.length === 0) continue;
+    const rebuilt = keeping.join(', ');
+    const rewritten = keeping[0] === clauses[0] ? rebuilt : reopen(clauses[0]!, rebuilt);
+    kept.push(/[.!?]$/.test(rewritten) ? rewritten : `${rewritten}.`);
+  }
+  const line = kept.join(' ');
+  return line === '' || !answered(line) ? null : line;
 }
 
 /** One line per served tool, the guidance the artifact must encode, highest signal first. */
 function retrievalGuidanceLines(): string[] {
+  const surface = new Map(servedSurface().map((tool) => [tool.name, tool.ops]));
   return TOOL_DEFINITIONS
-    .filter((tool) => (SERVED_TOOLS as readonly string[]).includes(tool.name) && tool.cortex !== undefined)
-    .map((tool) => ({ name: tool.name, guidance: tool.cortex!.guidance, priority: tool.cortex!.priority ?? 100 }))
+    .filter((tool) => surface.has(tool.name) && tool.cortex !== undefined)
+    .map((tool) => ({
+      name: tool.name,
+      guidance: guidanceForServedOps(tool.cortex!.guidance, surface.get(tool.name)!),
+      priority: tool.cortex!.priority ?? 100,
+    }))
+    .filter((entry): entry is { name: ServedTool; guidance: string; priority: number } => entry.guidance !== null)
     .sort((left, right) => left.priority - right.priority)
     .map((entry) => `- \`${entry.name}\`: ${entry.guidance}`);
 }
@@ -190,18 +265,25 @@ function runtimeConfig(options: InstructionsInputOptions): Record<string, unknow
   };
 }
 
-/** The authoring requirements the artifact is held to. Carried from 1.4, minus the guidance for surfaces this Deployment does not serve. */
+/**
+ * The authoring requirements the artifact is held to. Carried from 1.4, minus
+ * the guidance for surfaces this Deployment does not serve.
+ *
+ * They point the author at the tool surface below rather than at retrieval as a
+ * theme: what a Deployment answers is what the surface lists, and an emphasis
+ * naming a capability no listed op provides sends the artifact looking for one.
+ */
 function authoringRequirements(): string[] {
   return [
     '- Start with the heading `## Myco-Enabled Project`.',
-    '- Follow the heading with one brief sentence explaining that Myco provides project memory, prior decisions, plans, and retrieval tools for this repository.',
-    '- Teach the most useful current Myco tool behavior, especially retrieval and plan persistence. Name tools only (e.g. `myco_cortex`, `myco_plans`) — never shell command syntax; the host injects its own transport directive with the correct invocation for this machine.',
+    '- Follow the heading with one brief sentence explaining that Myco provides project memory, prior decisions, plans, and the tools below for this repository.',
+    '- Teach the most useful current Myco tool behavior, working from the tools below. Name tools only (e.g. `myco_cortex`, `myco_plans`) — never shell command syntax; the host injects its own transport directive with the correct invocation for this machine.',
     '- Treat "Current valid tool surface" and "Tool guidance to encode" below as authoritative. Recent sessions, spores, or digest excerpts may contain obsolete tool names; do not copy obsolete names into the final instructions.',
     '- Use the recent vault activity below to mention live project hotspots when that improves usefulness.',
     '- Do not introduce additional tool calls inside recent-workstream prose. Only name tool operations that appear in "Tool guidance to encode" or in the required plan-persistence, delegation, and spore-save guidance; never invent extra `myco_cortex` ops from recent context.',
     `- ${CORTEX_SKILLS_NOTE}`,
     `- ${RETIRED_TOOLS_NOTE}`,
-    '- Keep the heading and description brief so most of the budget goes to retrieval guidance.',
+    '- Keep the heading and description brief so most of the budget goes to the tool guidance.',
     '- Keep the output compact and ready for direct injection.',
     '- In the planning paragraph, teach `myco_cortex` op `"digest"` as the explicit, optional high-fidelity memory pull for large refactors, large features, broad planning, or unfamiliar cross-system changes. Recommend `myco_cortex({"op":"digest","tier":5000})` by default, and tier 10000 only when the agent has enough context budget and needs deeper historical background. Say not to pull the digest for narrow edits.',
     '- Include one delegation sentence: when composing a child-agent, subagent, teammate, worker session, or other spawned process prompt, and Myco has not already injected subagent-start Cortex context, tell the agent to refresh the current project instructions with `myco_cortex({"op":"instructions"})` and include the returned instructions verbatim in that agent\'s prompt, along with task-specific instructions. Do not assume the returned instructions have any particular heading or section name.',
@@ -245,11 +327,10 @@ export async function buildInstructionsInput(
   options: InstructionsInputOptions,
 ): Promise<InstructionsInput> {
   const material = await readMaterial(db, scope, options);
-  const servedTools = servedToolNames();
 
   const parts = [
     'Author compact session-start instructions for another coding agent.',
-    'Focus on teaching how to use the highest-signal Myco tools correctly, especially retrieval and plan persistence.',
+    'Focus on teaching how to use the highest-signal Myco tools correctly, working from the tools below.',
     'Do not restate AGENTS.md or static installation details.',
     '',
     '## Runtime config',
@@ -262,7 +343,8 @@ export async function buildInstructionsInput(
     ...capabilitySummary(),
     '',
     '## Current valid tool surface (authoritative)',
-    `Project tools: ${servedTools.map((name) => `\`${name}\``).join(', ')}.`,
+    'Project tools, with the operations this Deployment answers. Never name an operation that is not listed here.',
+    ...toolSurfaceLines(),
     '',
     '## Tool guidance to encode',
     ...retrievalGuidanceLines(),

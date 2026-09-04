@@ -177,7 +177,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Use when continuing related work or recovering recent implementation context. Use op: "get" for full session content returned by search.',
+      guidance: 'Use when continuing related work or recovering recent implementation context. Use op: "get" for full session content by id.',
       priority: 40,
     },
     inputSchema: {
@@ -227,7 +227,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Use op: "save" to capture durable decisions, gotchas, discoveries, or bug fixes. Use op: "get" for full spore content returned by search. Retire stale knowledge yourself rather than leaving it for the Myco agent: op: "supersede" when a newer spore replaces it, op: "consolidate" to merge several into one wisdom note, and op: "obsolete" (with a reason) when it is simply no longer relevant and has no replacement.',
+      guidance: 'Use op: "save" to capture durable decisions, gotchas, discoveries, or bug fixes. Use op: "get" for full spore content by id. Retire stale knowledge yourself rather than leaving it for the Myco agent: op: "supersede" when a newer spore replaces it, op: "consolidate" to merge several into one wisdom note, and op: "obsolete" (with a reason) when it is simply no longer relevant and has no replacement.',
       priority: 90,
     },
     inputSchema: {

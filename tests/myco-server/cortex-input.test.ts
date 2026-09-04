@@ -17,11 +17,22 @@ import {
 } from '@myco-server-worker/core/cortex-input.js';
 import { SPORE_FULL_READ_BUDGET } from '@myco-server-worker/core/spores.js';
 import { recallLeaves, type RecallLeaves } from '@myco-server-worker/core/recall.js';
-import { SERVED_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
+import { SERVED_TOOLS, type ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
+import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
+import { NO_OP, TOOL_REGISTRY } from '@myco-server-worker/mcp/registry.js';
 import { upsertDigest } from '@myco-server-worker/core/digests.js';
 import { insertSpore } from '@myco-server-worker/core/spores.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+
+/** The ops the registry answers, across every tool: what the prompt may teach. */
+const ANSWERED_OPS = Object.values(TOOL_REGISTRY)
+  .flatMap((entry) => Object.entries(entry.ops).filter(([, value]) => 'handler' in value).map(([op]) => op))
+  .filter((op) => op !== NO_OP);
+
+/** Every tool the registry answers at least one op of. */
+const answeredTools = (): ServedTool[] =>
+  SERVED_TOOLS.filter((name) => Object.values(TOOL_REGISTRY[name].ops).some((entry) => 'handler' in entry));
 
 const NOW = 1_800_000_000_000;
 const SCOPE = { projectId: 'proj_1' };
@@ -109,11 +120,49 @@ describe('the instructions input', () => {
     expect(excerpt.length).toBeLessThanOrEqual(DIGEST_EXCERPT_MAX_CHARS + 1);
   });
 
-  it('names the tools this Deployment serves, and no others', async () => {
+  it('names the tools this Deployment answers, and no others', async () => {
     const built = await fixture().build();
-    for (const name of SERVED_TOOLS) expect(built.instruction).toContain(`\`${name}\``);
+    for (const name of answeredTools()) expect(built.instruction).toContain(`\`${name}\``);
     expect(built.instruction).not.toContain('vault_search_fts');
     expect(built.instruction).not.toContain('myco_remember');
+  });
+
+  it('names a tool no op of which the registry answers nowhere in the prompt', async () => {
+    const built = await fixture().build();
+    const silent = SERVED_TOOLS.filter((name) => !answeredTools().includes(name));
+    expect(silent).toEqual(['myco_search']);
+    for (const name of silent) expect(built.instruction).not.toContain(name);
+  });
+
+  it('lists, under every tool it names, only the ops the registry answers', async () => {
+    const built = await fixture().build();
+    const surface = built.instruction.split('## Current valid tool surface (authoritative)\n')[1]!.split('\n\n')[0]!;
+    expect(surface).toContain('- `myco_cortex` — ops: `digest`, `instructions`, `projects_activity`');
+    expect(surface).toContain('- `myco_plans` — ops: `list`, `get`, `save`');
+    expect(surface).not.toContain('canopy_map');
+    expect(surface).not.toContain('`delete`');
+  });
+
+  it('teaches no op the Deployment does not answer, anywhere in the prompt', async () => {
+    const built = await fixture().build();
+    const named = [...built.instruction.matchAll(/"?\bop"?\s*:\s*"([a-z_]+)"/g)].map((m) => m[1]!);
+    expect(named.length).toBeGreaterThan(0);
+    const unanswered = [...new Set(named)].filter((op) => !ANSWERED_OPS.includes(op));
+    expect(unanswered).toEqual([]);
+    expect(named).toContain('digest');
+    expect(named).toContain('instructions');
+    for (const retired of ['canopy_map', 'canopy_entry', 'notifications', 'maintenance_summary']) {
+      expect({ op: retired, present: built.instruction.includes(retired) }).toEqual({ op: retired, present: false });
+    }
+  });
+
+  it('keeps the guidance of a tool whose ops are all answered, and rewrites the one whose ops are not', async () => {
+    const built = await fixture().build();
+    const guidance = built.instruction.split('## Tool guidance to encode\n')[1]!.split('\n\n')[0]!.split('\n');
+    const cortexLine = guidance.find((line) => line.startsWith('- `myco_cortex`'))!;
+    expect(cortexLine).toBe('- `myco_cortex`: Use op: "digest" for broad orientation, and op: "projects_activity" to see which projects are still active across the machine.');
+    const plansLine = guidance.find((line) => line.startsWith('- `myco_plans`'))!;
+    expect(plansLine).toContain(TOOL_DEFINITIONS.find((t) => t.name === 'myco_plans')!.cortex!.guidance);
   });
 
   it('renders the runtime config from the leaves recall resolves', async () => {

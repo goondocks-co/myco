@@ -399,6 +399,16 @@ describe('run lifecycle', () => {
     expect(await applyRunUpdate(db, OTHER, 'r1', { status: 'failed' })).toBe(0);
   });
 
+  it('refuses a status change on a run that has already ended, and applies a column that names no status', async () => {
+    const { db, sqlite } = store();
+    await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);
+    expect(await applyRunUpdate(db, SCOPE, 'r1', { status: 'completed', completed_at: NOW })).toBe(1);
+    expect(await applyRunUpdate(db, SCOPE, 'r1', { status: 'failed', completed_at: NOW + 1, error: 'replaced' })).toBe(0);
+    expect(await applyRunUpdate(db, SCOPE, 'r1', { tokens_used: 7 })).toBe(1);
+    expect(sqlite.query(`SELECT status, completed_at c, error, tokens_used t FROM agent_runs WHERE id = 'r1'`).get())
+      .toEqual({ status: 'completed', c: NOW, error: null, t: 7 });
+  });
+
   it('issues no statement for an update naming nothing settable', async () => {
     const { db } = store();
     await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);

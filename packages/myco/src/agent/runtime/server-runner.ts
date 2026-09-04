@@ -75,12 +75,24 @@ export interface ServerTaskOptions {
   harness?: AgentHarness;
   /** Called once the claim lands, so a container knows from which instant the run is its to fail. */
   onClaimed?: () => void;
+  /**
+   * Called at the instant this run posts its own ending, before the request goes.
+   *
+   * The Deployment releases the container as soon as a terminal status lands, and
+   * the release arrives as a stop signal while the post that caused it is still
+   * open. A container still holding the run at that moment names it failed on a
+   * row that already closed. Releasing the hold here leaves the signal handler
+   * with nothing to name, and the ending the run posted is the only one written.
+   */
+  onClosing?: () => void;
 }
 
 export interface ServerTaskResult {
   runId: string;
   status: 'completed' | 'failed' | 'skipped';
   error?: string;
+  /** The Deployment's word when it did not apply the terminal status this run posted; `error` then names the refusal itself. */
+  refused?: string;
   reportCount: number;
 }
 
@@ -108,6 +120,11 @@ async function recordTerminal(
   }
 }
 
+/** The Deployment's word when it did not apply a terminal status, or nothing when it did. */
+function refusalOf(outcome: RunStatusOutcome): string | undefined {
+  return outcome.applied ? undefined : outcome.reason ?? RUN_REFUSED_CLOSE_ERROR;
+}
+
 /** What a container holds while one run is in flight: enough to name that run's failure on its own row. */
 export interface HeldRun {
   client: ServerClient;
@@ -123,14 +140,14 @@ export interface HeldRun {
  * twice, and a container being taken away offers it once inside a budget short
  * enough to finish before the kill.
  */
-export async function recordRunFailure(held: HeldRun, error: string, attempts = TERMINAL_UPDATE_ATTEMPTS): Promise<void> {
+export async function recordRunFailure(held: HeldRun, error: string, attempts = TERMINAL_UPDATE_ATTEMPTS): Promise<RunStatusOutcome> {
   const store = createHttpRunStore({
     client: held.client,
     agentId: held.agentId ?? DEFAULT_AGENT_ID,
     admissionForTask: () => ({ capability: 'cortex' }),
     budget: held.budget,
   });
-  await recordTerminal(store, held.runId, 'failed', { completed_at: Date.now(), error: error.slice(0, MAX_RUN_ERROR_CHARS) }, attempts);
+  return recordTerminal(store, held.runId, 'failed', { completed_at: Date.now(), error: error.slice(0, MAX_RUN_ERROR_CHARS) }, attempts);
 }
 
 /** Where a process's own deaths are announced. */
@@ -141,8 +158,8 @@ export interface ProcessEvents {
 /** What the container does with a death: which run is in flight, and what to do once it has been named. */
 export interface RunFailureHandlers {
   held: () => HeldRun | null;
-  /** Called after the attempt to name the failure; `named` says whether a run row carries it. */
-  onNamed: (error: string, named: boolean) => void;
+  /** Called after the attempt to name the failure; `named` says whether a run row carries it, and `refused` carries the Deployment's word when it turned the status down. */
+  onNamed: (error: string, named: boolean, refused?: string) => void;
 }
 
 /**
@@ -163,15 +180,20 @@ export function installRunFailureHandlers(events: ProcessEvents, handlers: RunFa
     dying = true;
     const held = handlers.held();
     let named = false;
+    let refused: string | undefined;
     if (held !== null) {
       try {
-        await recordRunFailure(budget === undefined ? held : { ...held, budget }, error, budget === undefined ? TERMINAL_UPDATE_ATTEMPTS : 1);
-        named = true;
+        // A run whose own ending already landed answers this status with a
+        // refusal, and the row keeps the ending it carries; the container says
+        // which happened rather than reporting a failure it did not write.
+        const outcome = await recordRunFailure(budget === undefined ? held : { ...held, budget }, error, budget === undefined ? TERMINAL_UPDATE_ATTEMPTS : 1);
+        named = outcome.applied;
+        refused = refusalOf(outcome);
       } catch {
         // The stale sweep closes the row when the Deployment is unreachable.
       }
     }
-    handlers.onNamed(error, named);
+    handlers.onNamed(error, named, refused);
   };
   // A handler that threw would raise `unhandledRejection` and re-enter this same
   // path; the latch above stops the loop and this stops the noise.
@@ -286,6 +308,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       // outcome only when it won.
       execution.catch(() => {});
       const result = await Promise.race([execution, deadline]);
+      options.onClosing?.();
       const closed = await recordTerminal(store, runId, 'completed', {
         completed_at: Date.now(),
         tokens_used: result.usage?.totalTokens ?? null,
@@ -293,8 +316,9 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       // The Deployment decides whether a run closes; a container that logged its
       // own word over the server's would report a run finished that the row calls
       // failed, and the container's log is where a person looks first.
-      if (!closed.applied) {
-        return { runId, status: 'failed', error: closed.reason ?? RUN_REFUSED_CLOSE_ERROR, reportCount: counter.reports };
+      const refused = refusalOf(closed);
+      if (refused !== undefined) {
+        return { runId, status: 'failed', error: RUN_REFUSED_CLOSE_ERROR, refused, reportCount: counter.reports };
       }
       return { runId, status: 'completed', reportCount: counter.reports };
     } finally {
@@ -302,13 +326,15 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     }
   } catch (error) {
     const message = runErrorText(error);
+    let refused: string | undefined;
     try {
-      await recordTerminal(store, runId, 'failed', { completed_at: Date.now(), error: message });
+      options.onClosing?.();
+      refused = refusalOf(await recordTerminal(store, runId, 'failed', { completed_at: Date.now(), error: message }));
     } catch {
       // The terminal update is best-effort: the stale sweep closes the row
       // when the Deployment is unreachable, and the container's log holds
       // the message either way.
     }
-    return { runId, status: 'failed', error: message, reportCount: 0 };
+    return { runId, status: 'failed', error: message, ...(refused === undefined ? {} : { refused }), reportCount: 0 };
   }
 }
