@@ -23,6 +23,7 @@ import { listReports, type RunRow } from './runs.js';
 /** The report action a task's run must have recorded, by task. */
 export const RUN_CLOSE_REPORTS: Readonly<Record<string, string>> = {
   'supersession-sweep': 'supersession',
+  'cortex-instructions': 'cortex_instructions',
 };
 
 /** How a run that closed without what its task owes is recorded. */

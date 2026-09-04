@@ -27,10 +27,11 @@ schedule:
 
 prompt: |
   You are producing session-start instructions for another coding agent
-  working in this project. The final artifact is written in the `author`
-  phase via `vault_report` with action "cortex_instructions". The `research`
-  phase does NOT draft markdown — it produces a compact situation brief
-  that the author phase shapes into prose.
+  working in this project. Do the research first and the writing second:
+  produce a compact situation brief, then shape it into the final markdown.
+  Report the artifact once, via `vault_report` with action
+  "cortex_instructions" and the markdown in `details.content`. You have a
+  budget of 12 turns for the whole job — spend most of it on the writing.
 
   You will receive:
   - current context configuration and capability summary
@@ -67,26 +68,20 @@ phases:
         proposing X because plan Y already covers it">
 
       Use the pre-assembled input (digest, recent sessions, spores,
-      active plans) as your starting point. Use `vault_search_fts`,
-      `vault_spores`, `vault_session_summary_material`, and
-      `vault_sessions` only to confirm a hotspot is current or to
-      disambiguate. Prefer active plans and the last 3 settled sessions
-      as anchors. If the input names a hotspot, verify it's still live
-      before keeping it — stale hotspots (work that has shipped and
-      moved on) are worse than no hotspot. Use release state to distinguish
-      shipped guidance from active unreleased work; unknown evidence can still
-      be mentioned when it is the best current signal.
+      active plans) as your starting point. Use `vault_sessions`,
+      `vault_spores` and `vault_read_digest` only to confirm a hotspot
+      is current or to disambiguate. Prefer active
+      plans and the last 3 settled sessions as anchors. If the input
+      names a hotspot, verify it's still live before keeping it — stale
+      hotspots (work that has shipped and moved on) are worse than no
+      hotspot.
 
       If you cannot identify 2-3 genuine hotspots, emit fewer — never
       pad with boilerplate.
     tools:
       - vault_read_digest
       - vault_sessions
-      - vault_session_summary_material
       - vault_spores
-      - vault_search_fts
-      - vault_search_semantic
-      - vault_release_state
     maxTurns: 10
     required: true
     readOnly: true

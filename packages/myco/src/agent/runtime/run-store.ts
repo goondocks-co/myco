@@ -121,9 +121,6 @@ export interface RunStore {
     projectId: string,
   ): Promise<void>;
 
-  // -- derived outputs -----------------------------------------------------
-  upsertCortexInstructions(row: CortexInstructionsUpsert): Promise<void>;
-
   /**
    * Admission gate, asked before a run starts.
    *
@@ -138,6 +135,19 @@ export interface RunStore {
 }
 
 /**
+ * The store a local run holds, which owns one derived output the port does not.
+ *
+ * `cortex_instructions` is written by the executor after a local run succeeds,
+ * from the report the run recorded. A dispatched run has no such step: it writes
+ * the artifact itself, through a route admitted to that one run, at the moment
+ * it reports. The write therefore belongs to the local implementation alone,
+ * and a hosted store that carried it would offer a path with nothing behind it.
+ */
+export interface LocalRunStore extends RunStore {
+  upsertCortexInstructions(row: CortexInstructionsUpsert): Promise<void>;
+}
+
+/**
  * Wrap a store so no two of its operations overlap.
  *
  * Serialization is per wrapper instance, and the executor creates one per run —
@@ -147,7 +157,7 @@ export interface RunStore {
  * operation cannot wedge the queue: every link settles before the next starts,
  * and a failure propagates to its own caller only.
  */
-export function serializeRunStore(inner: RunStore): RunStore {
+export function serializeRunStore<Store extends RunStore>(inner: Store): Store {
   let chain: Promise<unknown> = Promise.resolve();
 
   const serialized = <Args extends unknown[], Result>(
@@ -162,7 +172,9 @@ export function serializeRunStore(inner: RunStore): RunStore {
     return result;
   };
 
+  const cortex = (inner as Partial<LocalRunStore>).upsertCortexInstructions;
   return {
+    ...(cortex === undefined ? {} : { upsertCortexInstructions: serialized(cortex) }),
     insertRun: serialized(inner.insertRun),
     claimRun: serialized(inner.claimRun),
     getRun: serialized(inner.getRun),
@@ -175,7 +187,6 @@ export function serializeRunStore(inner: RunStore): RunStore {
     getState: serialized(inner.getState),
     setState: serialized(inner.setState),
     mutateState: serialized(inner.mutateState),
-    upsertCortexInstructions: serialized(inner.upsertCortexInstructions),
     admitProject: serialized(inner.admitProject),
-  };
+  } as Store;
 }

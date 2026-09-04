@@ -22,10 +22,14 @@ import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
-import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, NO_LIMITS } from './runs.js';
+import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, skipQueued, NO_LIMITS } from './runs.js';
 import { deploymentSecretStore } from './secrets.js';
 import { leafValues } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
+import { buildTaskInput } from './task-inputs.js';
+
+/** The name a dispatch is left alone under when the Project has not moved past the artifact its task already wrote. */
+export const INPUT_UNCHANGED = 'input_unchanged';
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';
@@ -91,6 +95,20 @@ export interface LaunchSpec {
   runId?: string;
   /** The run is a queued row the drain is launching: it moves from `queued` rather than being recorded afresh. */
   fromQueue?: boolean;
+  /** The prompt the server built for this run, written on the run row and read back over `/runs/instruction`. */
+  instruction?: string;
+  /** The hash of the material behind `instruction`, recorded in the run's context so the write route reads it from the run rather than from the caller. */
+  inputHash?: string;
+  /** What the material behind the input counted, recorded beside the hash. */
+  counts?: Readonly<Record<string, number>>;
+  /** How this run differs from an ordinary one. */
+  options?: DispatchOptions;
+}
+
+/** What a caller asks of one dispatch beyond the task and its parameters. */
+export interface DispatchOptions {
+  /** The run does its work and writes nothing; its write routes answer `written: false`. */
+  dryRun?: boolean;
 }
 
 export interface Launched {
@@ -114,12 +132,13 @@ export type DispatchOutcome =
   | ({ dispatched: true; queued: true } & Queued)
   | { dispatched: false; refusal: DispatchRefusal; providerType?: string };
 
-/** What the queue keeps of a launch spec until the drain launches it. */
+/** What the queue keeps of a launch spec until the drain launches it. The instruction is not kept: a task that carries one has it rebuilt at launch. */
 interface StoredSpec {
   serverUrl: string;
   actor: string;
   timeoutSeconds: number;
   params?: Record<string, string>;
+  options?: DispatchOptions;
 }
 
 /** How many queued runs one drain considers; the next wake continues. */
@@ -177,9 +196,13 @@ export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatc
 export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, held: HeldBy, now: number, options: { singleFlight?: boolean } = {}): Promise<Queued> {
   await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now);
   const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
-  const stored: StoredSpec = { serverUrl: spec.serverUrl, actor: spec.actor, timeoutSeconds: spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS, ...(spec.params === undefined ? {} : { params: spec.params }) };
+  const stored: StoredSpec = {
+    serverUrl: spec.serverUrl, actor: spec.actor, timeoutSeconds: spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
+    ...(spec.params === undefined ? {} : { params: spec.params }),
+    ...(spec.options === undefined ? {} : { options: spec.options }),
+  };
   const scope = { projectId: prepared.projectId };
-  if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored) }, options))) {
+  if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored) }, options))) {
     if (options.singleFlight === true && (await getRun(env.db, scope, runId)) === null) throw new AlreadyRunning();
     throw new Error('run id already taken');
   }
@@ -220,8 +243,20 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
       if (held === 'fleet' || held === 'concurrent_runs') return launched;
       continue;
     }
+    // A task whose prompt the server builds has it built again here: the run
+    // launches with the vault as it stands at this instant, and a Project that
+    // has not moved past the artifact it already holds costs nothing.
+    const built = await buildTaskInput(env, queued.task, queued.projectId, now);
+    if (built !== null && built.unchanged) {
+      await skipQueued(env.db, scope, queued.id, now, INPUT_UNCHANGED);
+      emit({ kind: 'task_skipped', task: queued.task, projectId: queued.projectId, skip: INPUT_UNCHANGED });
+      continue;
+    }
+    const fresh: Pick<LaunchSpec, 'instruction' | 'inputHash' | 'counts'> = built === null || built.unchanged
+      ? {}
+      : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
     try {
-      await launchDispatch(env, prepared.prepared, { ...stored, runId: queued.id, fromQueue: true }, now, { limits });
+      await launchDispatch(env, prepared.prepared, { ...stored, ...fresh, runId: queued.id, fromQueue: true }, now, { limits });
       launched += 1;
     } catch (err) {
       // The write refused on a limit another launch reached first: the row stays queued for the next drain. A row no longer queued belongs to another drain; the next row still gets its turn.
@@ -298,15 +333,23 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   // The run's bound rides its context with the task's parameters, so the sweep
   // that fails a run whose runtime went away reads the same bound the runtime
   // received. A parameter reader ignores the key it does not name.
-  const runContext = JSON.stringify({ ...(spec.params ?? {}), timeoutSeconds });
+  // The hash of the material the server built this run's prompt from rides the
+  // context beside the bound, so the route that writes the run's artifact takes
+  // it from the row rather than from the runtime's word.
+  const runContext = JSON.stringify({
+    ...(spec.params ?? {}),
+    timeoutSeconds,
+    ...(spec.inputHash === undefined ? {} : { input_hash: spec.inputHash }),
+    ...(spec.counts === undefined ? {} : { counts: spec.counts }),
+  });
   const scope = { projectId: prepared.projectId };
   // A queued row moves to pending for this credential; any other id is recorded afresh. Either way the row exists before
   // the launch, and the write itself carries the limit check when limits are given. A write that changed nothing minted
   // a credential for no run: it is revoked here, and the caller learns whether a limit or the row's own state refused it.
   const admission = options.limits === undefined && options.singleFlight !== true ? undefined : { limits: options.limits ?? NO_LIMITS, now, singleFlight: options.singleFlight === true };
   const recorded = spec.fromQueue === true
-    ? await launchQueued(env.db, scope, runId, { task: prepared.task, dispatchedBy: minted.tokenId, startedAt: now, runContext, provider: prepared.providerType, model: prepared.model }, admission)
-    : await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }, admission);
+    ? await launchQueued(env.db, scope, runId, { task: prepared.task, dispatchedBy: minted.tokenId, startedAt: now, runContext, instruction: spec.instruction ?? null, provider: prepared.providerType, model: prepared.model }, admission)
+    : await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }, admission);
   if (!recorded) {
     await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, minted.tokenId, now);
     const existing = await getRun(env.db, scope, runId);

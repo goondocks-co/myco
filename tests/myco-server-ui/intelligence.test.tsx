@@ -155,18 +155,63 @@ describe('Skills', () => {
 });
 
 describe('Cortex', () => {
-  it('renders the current instructions with the run that produced them, and an empty digest as empty', async () => {
+  const instructionsRow = (over: Record<string, unknown> = {}) => ({
+    id: 'agent_1:instructions', agentId: 'agent_1', content: '# Start here\n\nUse `npm test`.',
+    inputHash: 'h', sourceRunId: 'run_9', generatedAt: NOW, counts: { sessions: 5, spores: 3, plans: 1 }, ...over,
+  });
+
+  it('renders the current instructions with the run that produced them, what they were written from, and an empty digest as empty', async () => {
     server(base({
-      '/api/projects/x/cortex/instructions': () => Response.json({ instructions: [{ id: 'agent_1:instructions', agentId: 'agent_1', content: '# Start here\n\nUse `npm test`.', inputHash: 'h', sourceRunId: 'run_9', generatedAt: NOW }] }),
+      '/api/projects/x/cortex/instructions': () => Response.json({ instructions: [instructionsRow()] }),
       '/api/projects/x/digests': () => Response.json({ digests: [] }),
     }));
     mount('/p/x/cortex');
     expect(await screen.findByText('Start here')).toBeTruthy();
     expect(screen.getByText('from run run_9').getAttribute('href')).toBe('/p/x/runs/run_9');
+    expect(screen.getByText('Written from 5 sessions, 3 spores, 1 plan')).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: 'Digest' }));
     expect(await screen.findByText(/No digest generated yet/)).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: 'Code map' }));
     expect(await screen.findByText(/not available on this deployment yet/)).toBeTruthy();
+  });
+
+  it('says nothing was written from when the run recorded no counts', async () => {
+    server(base({
+      '/api/projects/x/cortex/instructions': () => Response.json({ instructions: [instructionsRow({ counts: null })] }),
+      '/api/projects/x/digests': () => Response.json({ digests: [] }),
+    }));
+    mount('/p/x/cortex');
+    expect(await screen.findByText('Start here')).toBeTruthy();
+    expect(screen.queryByText(/Written from/)).toBeNull();
+  });
+
+  it('asks for the instructions again and names each outcome in the reader\'s words', async () => {
+    const answers: Response[] = [
+      Response.json({ runId: 'run_new', task: 'cortex-instructions', projectId: 'x', queued: false, timeoutSeconds: 300, provider: 'anthropic' }),
+      Response.json({ runId: 'run_q', task: 'cortex-instructions', projectId: 'x', queued: true, heldBy: 'concurrent_runs' }),
+      Response.json({ outcome: 'unchanged' }),
+      Response.json({ error: 'max_runs_per_day', message: 'ceiling met' }, { status: 409 }),
+    ];
+    server(base({
+      '/api/projects/x/cortex/instructions': () => Response.json({ instructions: [instructionsRow()] }),
+      '/api/projects/x/digests': () => Response.json({ digests: [] }),
+      '/api/harness/dispatch': () => answers.shift()!,
+    }));
+    mount('/p/x/cortex');
+    const press = async () => fireEvent.click(await screen.findByRole('button', { name: /Refresh instructions/ }));
+
+    await press();
+    expect(await screen.findByText(/Writing new instructions/)).toBeTruthy();
+    expect(screen.getByText('see the run').getAttribute('href')).toBe('/p/x/runs/run_new');
+
+    await press();
+    expect(await screen.findByText(/Waiting for a runtime/)).toBeTruthy();
+
+    await press();
+    expect(await screen.findByText('Nothing has changed since these were written')).toBeTruthy();
+
+    await press();
+    expect(await screen.findByText(/already been written once today/)).toBeTruthy();
   });
 
   it('shows a digest by tier and opens an earlier revision', async () => {

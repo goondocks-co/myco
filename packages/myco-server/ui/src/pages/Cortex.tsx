@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Loader2, Sparkles } from 'lucide-react';
 import { Badge } from '../components/ui/badge';
 import { inlineLink } from '../components/ui/inline-link';
 import { MarkdownContent } from '../components/ui/markdown-content';
@@ -8,8 +9,14 @@ import { PageHeader } from '../components/ui/page-header';
 import { PageLoading } from '../components/ui/page-loading';
 import { Panel } from '../components/ui/panel';
 import { SubtabPill } from '../components/ui/subtab-pill';
-import { useDigestRevisions, useDigests, useInstructions, type DigestRow } from '../hooks/use-intelligence';
+import {
+  INSTRUCTIONS_OUTCOME_TEXT, refusalText, useDigestRevisions, useDigests, useInstructions, useRefreshInstructions,
+  type DigestRow, type InstructionsCounts,
+} from '../hooks/use-intelligence';
+import { cn } from '../lib/cn';
 import { formatDateTime, formatRelative } from '../lib/format';
+
+const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
 
 const TABS = [
   { id: 'instructions', label: 'Instructions' },
@@ -41,26 +48,69 @@ export function Cortex() {
   );
 }
 
+/** What one instructions row was written from, when its run recorded it. */
+function writtenFrom(counts: InstructionsCounts | null): string | null {
+  if (counts === null) return null;
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  return `Written from ${plural(counts.sessions, 'session')}, ${plural(counts.spores, 'spore')}, ${plural(counts.plans, 'plan')}`;
+}
+
+/**
+ * Asks for this project's instructions to be written again, and says how it
+ * went. A run writes them, so a started run is named with a link to itself; a
+ * project that has not moved since the last write is told so and starts nothing.
+ */
+function RefreshInstructions({ projectId }: { projectId: string }) {
+  const refresh = useRefreshInstructions(projectId);
+  const answer = refresh.data;
+  const note = refresh.error ? refusalText(refresh.error) : answer ? INSTRUCTIONS_OUTCOME_TEXT[answer.outcome] : null;
+  const busy = refresh.isPending;
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <button
+        type="button"
+        aria-disabled={busy}
+        aria-busy={busy}
+        onClick={() => { if (!busy) refresh.mutate(); }}
+        className={cn(button, 'inline-flex h-8 items-center gap-2 font-medium', busy && 'opacity-60')}
+      >
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+        {busy ? 'Asking…' : 'Refresh instructions'}
+      </button>
+      {note !== null && (
+        <span className="font-sans text-xs text-tertiary" role="status">
+          {note}
+          {answer?.runId !== undefined && <> · <Link to={`/p/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(answer.runId)}`} className="underline">see the run</Link></>}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function Instructions({ projectId }: { projectId: string }) {
   const instructions = useInstructions(projectId);
   const runBase = `/p/${encodeURIComponent(projectId)}/runs`;
   return (
     <PageLoading isLoading={instructions.isPending} error={instructions.error}>
       {instructions.data && (instructions.data.instructions.length === 0 ? (
-        <Panel title="Instructions">
+        <Panel title="Instructions" actions={<RefreshInstructions projectId={projectId} />}>
           <p className="font-sans text-sm text-on-surface-variant">No instructions generated yet. They appear here once the instructions task has run.</p>
         </Panel>
       ) : (
         <div className="flex flex-col gap-4">
-          {instructions.data.instructions.map((row) => (
+          {instructions.data.instructions.map((row, index) => (
             <Panel key={row.id} eyebrow={row.agentId} title="Current instructions" actions={
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-start gap-2">
                 <Badge variant="secondary" title={formatDateTime(row.generatedAt)}>generated {formatRelative(row.generatedAt)}</Badge>
                 {row.sourceRunId !== null && (
                   <Link to={`${runBase}/${encodeURIComponent(row.sourceRunId)}`} className={inlineLink}>from run {row.sourceRunId}</Link>
                 )}
+                {index === 0 && <RefreshInstructions projectId={projectId} />}
               </div>
             }>
+              {writtenFrom(row.counts) !== null && (
+                <p className="mb-3 font-sans text-xs text-on-surface-variant">{writtenFrom(row.counts)}</p>
+              )}
               <MarkdownContent content={row.content} />
             </Panel>
           ))}

@@ -21,6 +21,15 @@ export async function listInstructions(db: RelationalStore, scope: ReadScope): P
   return results.map((r) => ({ ...r, sourceRunId: r.sourceRunId ?? null }));
 }
 
+/** The hash of the material behind the newest instructions the project holds, or null where it holds none. A dispatch compares its own build against this. */
+export async function newestInstructionsHash(db: RelationalStore, scope: ReadScope): Promise<string | null> {
+  const row = await db
+    .prepare(`SELECT input_hash AS inputHash FROM cortex_instructions WHERE project_id = ? ORDER BY generated_at DESC, id ASC LIMIT 1`)
+    .bind(scope.projectId)
+    .first<{ inputHash: string }>();
+  return row?.inputHash ?? null;
+}
+
 /** The newest instructions the project holds, whichever agent wrote it; ties fall to the lower id. */
 export async function newestInstructions(db: RelationalStore, scope: ReadScope): Promise<{ content: string; generatedAt: number } | null> {
   return db

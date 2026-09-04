@@ -136,8 +136,8 @@ function admissionParams(scope: ReadScope, task: string | null, runId: string, a
 }
 
 const RECORD_DISPATCH_SQL = `INSERT INTO agent_runs
-    (project_id, id, agent_id, task, provider, model, status, dry_run, started_at, run_context, dispatched_by)
-  SELECT ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?
+    (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, started_at, run_context, dispatched_by)
+  SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)${ADMISSION_WHERE}`;
 
 const RUN_REF_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
@@ -154,6 +154,10 @@ export interface DispatchRecord {
   task: string;
   provider: string | null;
   model: string | null;
+  /** The prompt the server built for this run, or null for a task the server builds no input for. The run reads it back over `/runs/instruction`. */
+  instruction?: string | null;
+  /** A run that does the work and writes nothing; its write routes answer `written: false`. */
+  dryRun?: boolean;
   /** The dispatch's parameters, which the run routes that serve one task read back; written here, by the server, and never by the runtime. */
   runContext: string | null;
   /** The credential the dispatch minted for this run. */
@@ -170,7 +174,8 @@ export interface DispatchRecord {
  */
 export async function recordDispatch(db: RelationalStore, scope: ReadScope, record: DispatchRecord, admission?: WriteAdmission): Promise<boolean> {
   const result = await db.prepare(RECORD_DISPATCH_SQL).bind(
-    scope.projectId, record.id, record.agentId, record.task, record.provider, record.model, record.startedAt, record.runContext, record.dispatchedBy,
+    scope.projectId, record.id, record.agentId, record.task, record.instruction ?? null, record.provider, record.model,
+    record.dryRun === true ? 1 : 0, record.startedAt, record.runContext, record.dispatchedBy,
     scope.projectId, record.id,
     ...admissionParams(scope, record.task, record.id, admission),
   ).run();
@@ -415,6 +420,19 @@ const RUN_SELECT = `SELECT id, agent_id AS agentId, task, status, run_context AS
 
 export async function getRun(db: RelationalStore, scope: ReadScope, runId: string): Promise<RunRow | null> {
   return db.prepare(RUN_SELECT).bind(scope.projectId, runId).first<RunRow>();
+}
+
+/**
+ * The instruction one run carries, read on its own.
+ *
+ * Kept out of `RUN_SELECT`: `getRun` runs on every served tool call
+ * (`api/run-admission.ts`), and an instruction is tens of kilobytes that no
+ * caller of it reads. A run asks for its own prompt once, at its start.
+ */
+export async function runInstruction(db: RelationalStore, scope: ReadScope, runId: string): Promise<string | null> {
+  const row = await db.prepare(`SELECT instruction FROM agent_runs WHERE project_id = ? AND id = ?`)
+    .bind(scope.projectId, runId).first<{ instruction: string | null }>();
+  return row?.instruction ?? null;
 }
 
 /**
@@ -669,36 +687,58 @@ export interface QueuedRecord {
   model: string | null;
   heldBy: string;
   queuedAt: number;
+  /** The prompt the server built at the dispatch. A task with an input builder has it rebuilt at launch, and this is what the rebuild replaces. */
+  instruction?: string | null;
+  /** A run that does the work and writes nothing. */
+  dryRun?: boolean;
   /** The launch spec as JSON: server URL, actor, bound and parameters. */
   dispatchSpec: string;
 }
 
 const RECORD_QUEUED_SQL = `INSERT INTO agent_runs
-    (project_id, id, agent_id, task, provider, model, status, dry_run, queued_at, held_by, dispatch_spec)
-  SELECT ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?
+    (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, queued_at, held_by, dispatch_spec)
+  SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
    AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND status IN ('pending', 'running', 'queued')))`;
 
 /** Record a dispatch the Deployment holds back: a run row in `queued`, with no credential until it launches. A single-flight task is refused while another run of it is live. */
 export async function recordQueued(db: RelationalStore, scope: ReadScope, record: QueuedRecord, options: { singleFlight?: boolean } = {}): Promise<boolean> {
   const result = await db.prepare(RECORD_QUEUED_SQL).bind(
-    scope.projectId, record.id, record.agentId, record.task, record.provider, record.model, record.queuedAt, record.heldBy, record.dispatchSpec,
+    scope.projectId, record.id, record.agentId, record.task, record.instruction ?? null, record.provider, record.model,
+    record.dryRun === true ? 1 : 0, record.queuedAt, record.heldBy, record.dispatchSpec,
     scope.projectId, record.id,
     options.singleFlight === true ? record.task : null, scope.projectId, record.task,
   ).run();
   return result.meta.changes === 1;
 }
 
-/** A queued run moves to `pending` for the credential its launch minted — once, and only from `queued`. */
+/**
+ * A queued run moves to `pending` for the credential its launch minted — once,
+ * and only from `queued`. The instruction is rewritten where the launch carries
+ * one: a task whose input the server builds has it rebuilt at the instant it
+ * launches, so a run started an hour after it queued reads the vault as it
+ * stands rather than as it stood.
+ */
 const LAUNCH_QUEUED_SQL = `UPDATE agent_runs
-   SET status = 'pending', dispatched_by = ?, started_at = ?, run_context = ?, provider = COALESCE(?, provider), model = COALESCE(?, model), held_by = NULL
+   SET status = 'pending', dispatched_by = ?, started_at = ?, run_context = ?, instruction = COALESCE(?, instruction),
+       provider = COALESCE(?, provider), model = COALESCE(?, model), held_by = NULL
  WHERE project_id = ? AND id = ? AND status = 'queued'${ADMISSION_WHERE}`;
 
-export async function launchQueued(db: RelationalStore, scope: ReadScope, runId: string, launch: { task: string; dispatchedBy: string; startedAt: number; runContext: string | null; provider: string | null; model: string | null }, admission?: WriteAdmission): Promise<boolean> {
+export async function launchQueued(db: RelationalStore, scope: ReadScope, runId: string, launch: { task: string; dispatchedBy: string; startedAt: number; runContext: string | null; instruction?: string | null; provider: string | null; model: string | null }, admission?: WriteAdmission): Promise<boolean> {
   const result = await db.prepare(LAUNCH_QUEUED_SQL).bind(
-    launch.dispatchedBy, launch.startedAt, launch.runContext, launch.provider, launch.model, scope.projectId, runId,
+    launch.dispatchedBy, launch.startedAt, launch.runContext, launch.instruction ?? null, launch.provider, launch.model, scope.projectId, runId,
     ...admissionParams(scope, launch.task, runId, admission),
   ).run();
+  return result.meta.changes === 1;
+}
+
+/** A queued run the Deployment decided not to launch is skipped by name, from `queued` alone; its context names why, as a clock's skip does. */
+export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: string, now: number, reason: string): Promise<boolean> {
+  const result = await db
+    .prepare(`UPDATE agent_runs SET status = 'skipped', completed_at = ?, run_context = ?, held_by = NULL, dispatch_spec = NULL
+       WHERE project_id = ? AND id = ? AND status = 'queued'`)
+    .bind(now, JSON.stringify({ reason }), scope.projectId, runId)
+    .run();
   return result.meta.changes === 1;
 }
 
