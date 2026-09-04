@@ -48,7 +48,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 68;
+const EMIT_CALLS = 71;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -599,11 +599,6 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ events: [{ runId: 'nope', eventType: 'phase_start' }] }) }),
       },
-      'POST /runs/cortex-instructions': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/cortex-instructions', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/cortex-instructions', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ agentId: 'agent_gate', content: 'c', inputHash: 'h' }) }),
-      },
       'POST /runs/session-material': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/session-material', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -633,6 +628,26 @@ describe('gates', () => {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/spore-resolve', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/spore-resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', action: 'obsolete', spore_id: 'nope', reason: 'gone' }) }),
+      },
+      'POST /runs/instruction': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/instruction', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/instruction', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
+      },
+      'POST /runs/instructions-write': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/instructions-write', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/instructions-write', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', content: '# instructions' }) }),
+      },
+      'POST /runs/sessions': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/sessions', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/sessions', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
+      },
+      'POST /runs/digest': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/digest', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/digest', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
       },
       'POST /spores/save': {
         shape: 'persisted',
@@ -921,6 +936,7 @@ describe('gates', () => {
       'POST /events/sync-transcript-prompts',
       'POST /routed-capture/plan',
       'POST /routed-capture/transcript',
+      'POST /runs/cortex-instructions',
       'POST /sessions/register',
       'POST /sessions/unregister',
     ]);
@@ -1054,15 +1070,18 @@ describe('gates', () => {
       'member POST /members/link-github',
       'member POST /runs/admission',
       'member POST /runs/claim',
-      'member POST /runs/cortex-instructions',
+      'member POST /runs/digest',
       'member POST /runs/events',
       'member POST /runs/failed',
       'member POST /runs/get',
+      'member POST /runs/instruction',
+      'member POST /runs/instructions-write',
       'member POST /runs/report',
       'member POST /runs/reports',
       'member POST /runs/resume-admission',
       'member POST /runs/session-material',
       'member POST /runs/session-title',
+      'member POST /runs/sessions',
       'member POST /runs/spore',
       'member POST /runs/spore-create',
       'member POST /runs/spore-resolve',

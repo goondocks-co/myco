@@ -61,6 +61,32 @@ export function composeTaskPrompt(input: TaskPromptInput): string {
   return parts.join(PROMPT_SECTION_SEPARATOR);
 }
 
+/** One phase, as a hosted run reads it: its name and the prose under it. */
+export interface HostedPhase {
+  name: string;
+  prompt: string;
+}
+
+const PROMPT_SECTION_HOSTED_PHASE = '## Phase: ';
+
+/**
+ * The task prose one hosted run receives.
+ *
+ * The container runs a task as a single query — one prompt, one turn budget —
+ * where the local executor runs a phase per turn budget with the prior phase's
+ * summary carried forward. A phased task therefore arrives here flattened: the
+ * task's own prompt first, then each phase's prompt in declaration order under
+ * its own heading, so the ordering the task author relied on survives as reading
+ * order. Pure: the same definition always composes the same prose.
+ */
+export function composeHostedPrompt(input: { taskPrompt: string; phases?: readonly HostedPhase[] }): string {
+  const parts = [input.taskPrompt.trim()];
+  for (const phase of input.phases ?? []) {
+    parts.push(`${PROMPT_SECTION_HOSTED_PHASE}${phase.name}\n${phase.prompt.trim()}`);
+  }
+  return parts.filter((part) => part !== '').join(PROMPT_SECTION_SEPARATOR);
+}
+
 // ---------------------------------------------------------------------------
 // Phase prompts
 // ---------------------------------------------------------------------------

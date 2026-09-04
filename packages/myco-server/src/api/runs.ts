@@ -22,8 +22,8 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
 import {
-  applyRunUpdate, claimRun, getRun, getState, insertReport, listAgents, listReports, mutateState,
-  projectAdmission, recordRunEvents, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns, TERMINAL_RUN_STATUSES, upsertAgent, upsertCortexInstructions,
+  applyRunUpdate, claimRun, DISPATCHER_OWNED_COLUMNS, getRun, getState, insertReport, listAgents, listReports, mutateState,
+  projectAdmission, recordRunEvents, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns, TERMINAL_RUN_STATUSES, upsertAgent,
   type RunInsert, type RunUpdate, type RunEventRowInsert,
 } from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
@@ -254,6 +254,16 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   }
   const runUpdate = update as RunUpdate;
   const scope = { projectId: ctx.projectId };
+  // On a run the server dispatched, the context and the dry-run flag are the
+  // dispatcher's own record of what it decided, and the task routes read both
+  // off the row. A runtime moving either would file its own hash as the
+  // Project's current one, or turn a dry run into a writing one — and the
+  // refusal names the columns rather than dropping them, so a caller learns
+  // what it may not set instead of watching a write silently do less.
+  const claimed = DISPATCHER_OWNED_COLUMNS.filter((c) => c in runUpdate);
+  if (claimed.length > 0 && (await getRun(env.db, scope, runId))?.dispatchedBy != null) {
+    return Response.json(refused(ctx, refusal(`a dispatched run's ${claimed.join(' and ')} belong to the dispatcher and may not be updated`, 'refused')));
+  }
   if (runUpdate.status === 'completed') {
     const run = await getRun(env.db, scope, runId);
     const missing = run === null ? null : await runCloseRefusal(env.db, scope, run);
@@ -353,22 +363,6 @@ export async function handleRunReports(env: ServerEnv, ctx: RouteContext): Promi
   const runId = str(body.runId);
   if (runId === null) return Response.json(refused(ctx, refusal('reports requires runId', 'parse')));
   return Response.json({ persisted: true, reports: await listReports(env.db, { projectId: ctx.projectId }, runId) });
-}
-
-/** Write the current Cortex instructions for an agent within this Project. */
-export async function handleUpsertCortexInstructions(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const agentId = str(body.agentId);
-  const content = str(body.content, MAX_STATE_BYTES);
-  const inputHash = str(body.inputHash);
-  const generatedAt = int(body.generatedAt) ?? ctx.now;
-  const sourceRunId = strOrNull(body.sourceRunId);
-  if (agentId === null || content === null || inputHash === null || sourceRunId === undefined) {
-    return Response.json(refused(ctx, refusal('cortex instructions require agentId, content and inputHash', 'parse')));
-  }
-  await upsertCortexInstructions(env.db, { projectId: ctx.projectId }, { agentId, content, inputHash, generatedAt, sourceRunId });
-  return Response.json({ persisted: true });
 }
 
 /** Whether this Project is admitted to a capability, answered without attempting a run. */

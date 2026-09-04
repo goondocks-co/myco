@@ -39,7 +39,17 @@ describe('harness properties', () => {
 
   // Create tools once — reused across annotation and YAML validation tests
   const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT });
-  const toolNameSet = new Set(tools.map(t => t.name));
+  /**
+   * Tool names a phase may declare that the LOCAL registry does not build.
+   *
+   * A served task's phase list is also the hosted tool surface's declaration
+   * (`tests/agent/server-tool-surface.test.ts`), and the Deployment materializes
+   * a few tools over its run routes that no local vault tool answers. Each is
+   * named here rather than left out of the phase list, so the hosted surface has
+   * a declaration to be checked against.
+   */
+  const HOSTED_ONLY_TOOLS = new Set(['vault_spore']);
+  const toolNameSet = new Set([...tools.map(t => t.name), ...HOSTED_ONLY_TOOLS]);
 
   // ---------------------------------------------------------------------------
   // Area 1: Tool Annotations

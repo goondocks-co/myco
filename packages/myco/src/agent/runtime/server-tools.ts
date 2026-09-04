@@ -6,7 +6,9 @@
  * session material it reads and the title it writes. A `supersession-sweep` run
  * holds four — an inventory of previews, one spore in full, and the two writes —
  * so a sweep surveys a whole vault by its previews and pulls bodies only for the
- * clusters it means to resolve. Every route admits only the credential that
+ * clusters it means to resolve. A `cortex-instructions` run holds four reads —
+ * spore previews, one spore in full, the settled sessions, and the digest — and
+ * files its artifact through its report. Every route admits only the credential that
  * dispatched a live run of that task. The tools keep the names and argument
  * shapes the task definition has always used, so one definition serves both the
  * local executor and this runtime.
@@ -23,8 +25,14 @@ import { postRunControl, postRunReport, RunControlError } from './run-store-http
 export const TITLE_SUMMARY_TASK = 'title-summary';
 /** The task whose runs read and resolve this Project's spores over the run routes. */
 export const SUPERSESSION_SWEEP_TASK = 'supersession-sweep';
+/** The task whose runs author this Project's session-start instructions. */
+export const CORTEX_INSTRUCTIONS_TASK = 'cortex-instructions';
 /** Every task this runtime materializes a tool surface for. */
-export const SERVED_TASKS: readonly string[] = [TITLE_SUMMARY_TASK, SUPERSESSION_SWEEP_TASK];
+export const SERVED_TASKS: readonly string[] = [TITLE_SUMMARY_TASK, SUPERSESSION_SWEEP_TASK, CORTEX_INSTRUCTIONS_TASK];
+/** The tasks whose prompt the server builds; a run of one reads it back over `/runs/instruction` rather than from its environment. */
+export const INSTRUCTED_TASKS: readonly string[] = [CORTEX_INSTRUCTIONS_TASK];
+/** The report action a `cortex-instructions` run records its artifact under; the same call files the artifact itself. */
+export const CORTEX_INSTRUCTIONS_ACTION = 'cortex_instructions';
 
 export interface ServerToolContext {
   client: ServerClient;
@@ -35,7 +43,22 @@ export interface ServerToolContext {
 
 const text = (value: unknown) => ({ content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }] });
 
-/** Reports over the run-control surface; the one tool every server run holds. */
+/** The instructions body a report carries, or null when the report is not the one that files an artifact. */
+function instructionsContentOf(args: { action: string; details?: Record<string, unknown> }): string | null {
+  if (args.action !== CORTEX_INSTRUCTIONS_ACTION) return null;
+  const content = args.details?.content;
+  return typeof content === 'string' && content.trim() !== '' ? content : null;
+}
+
+/**
+ * Reports over the run-control surface; the one tool every server run holds.
+ *
+ * A `cortex_instructions` report carrying a body files the artifact through the
+ * route admitted to this run BEFORE the report lands, and the report lands
+ * either way: the close gate reads the report as the run's evidence, and a
+ * report that vanished on a refused write would leave a run that did its work
+ * indistinguishable from one that did not.
+ */
 export function materializedReportTool(ctx: ServerToolContext, counter: { reports: number }): MycoToolDefinition {
   return {
     name: 'vault_report',
@@ -47,6 +70,18 @@ export function materializedReportTool(ctx: ServerToolContext, counter: { report
     },
     annotations: { readOnlyHint: true },
     handler: async (args: { action: string; summary: string; details?: Record<string, unknown> }) => {
+      const content = instructionsContentOf(args);
+      let failure: string | null = null;
+      if (content !== null) {
+        try {
+          const answered = await postRunControl(ctx.client, ctx.budget, '/runs/instructions-write', { runId: ctx.runId, content });
+          if (answered.held !== true) failure = 'this run holds no instructions surface; the artifact was not stored';
+          else if (answered.written !== true) failure = 'the artifact was not stored for this run';
+        } catch (error) {
+          if (!(error instanceof RunControlError)) throw error;
+          failure = error.message;
+        }
+      }
       await postRunReport(ctx.client, ctx.budget, {
         runId: ctx.runId,
         agentId: ctx.agentId,
@@ -55,7 +90,7 @@ export function materializedReportTool(ctx: ServerToolContext, counter: { report
         details: args.details === undefined ? null : JSON.stringify(args.details),
       });
       counter.reports += 1;
-      return text(`report recorded: ${args.action}`);
+      return failure === null ? text(`report recorded: ${args.action}`) : text({ error: failure });
     },
   };
 }
@@ -111,7 +146,7 @@ export function materializedUpdateSessionTool(ctx: ServerToolContext, counter: {
 }
 
 /** A tool answer a run may act on: the route served no run for this caller. */
-const NO_RUN = { error: 'this run holds no spore surface' };
+const NO_RUN = { error: 'this run holds no such surface' };
 
 /**
  * One call over a run route, answered as a tool result whatever happens: a
@@ -214,6 +249,40 @@ export function materializedResolveSporeTool(ctx: ServerToolContext, counter: { 
   };
 }
 
+/** The Project's settled sessions, newest first, each one line with the opening of its summary. */
+export function materializedSessionsTool(ctx: ServerToolContext): MycoToolDefinition {
+  return {
+    name: 'vault_sessions',
+    description: 'List this project\'s settled sessions, newest first — id, label, start and end, title, and the opening of the summary. Sessions still in flight are never listed.',
+    inputSchema: {
+      limit: z.number().optional().describe('Maximum number of sessions to return (max 50)'),
+    },
+    annotations: { readOnlyHint: true },
+    handler: async (args: { limit?: number }) => {
+      const answered = await askRunControl(ctx, '/runs/sessions', { runId: ctx.runId, ...args });
+      if (errored(answered)) return text(answered);
+      return text({ sessions: answered.sessions });
+    },
+  };
+}
+
+/** The Project's digest: one tier in full, or what each tier holds when no tier is named. */
+export function materializedReadDigestTool(ctx: ServerToolContext): MycoToolDefinition {
+  return {
+    name: 'vault_read_digest',
+    description: 'Read the current digest. With no arguments it returns what each tier holds; with a tier it returns that tier\'s content in full, falling back to the nearest tier the project has.',
+    inputSchema: {
+      tier: z.number().optional().describe('Tier to read in full (1500, 5000, or 10000). Omit for a summary of all tiers.'),
+    },
+    annotations: { readOnlyHint: true },
+    handler: async (args: { tier?: number }) => {
+      const answered = await askRunControl(ctx, '/runs/digest', { runId: ctx.runId, ...args });
+      if (errored(answered)) return text(answered);
+      return text(args.tier === undefined ? { tiers: answered.tiers } : { digest: answered.digest });
+    },
+  };
+}
+
 /** The tools a run of `taskName` holds. */
 export function materializedToolsForTask(taskName: string, ctx: ServerToolContext, counter: { reports: number; writes: number }): MycoToolDefinition[] {
   const tools = [materializedReportTool(ctx, counter)];
@@ -222,6 +291,9 @@ export function materializedToolsForTask(taskName: string, ctx: ServerToolContex
   }
   if (taskName === SUPERSESSION_SWEEP_TASK) {
     tools.push(materializedSporesTool(ctx), materializedSporeTool(ctx), materializedCreateSporeTool(ctx, counter), materializedResolveSporeTool(ctx, counter));
+  }
+  if (taskName === CORTEX_INSTRUCTIONS_TASK) {
+    tools.push(materializedSporesTool(ctx), materializedSporeTool(ctx), materializedSessionsTool(ctx), materializedReadDigestTool(ctx));
   }
   return tools;
 }

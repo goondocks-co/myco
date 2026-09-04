@@ -151,7 +151,7 @@ describe('one wake of the clock', () => {
     // The second wake reads the same answers the first read, and its write meets the first's row.
     let raced = false;
     const racing: ServerEnv = { ...f.env, db: { ...f.env.db, prepare: (sql: string) => {
-      if (!raced && sql.includes(`SELECT ?, ?, ?, ?, ?, ?, 'pending'`)) {
+      if (!raced && sql.includes(`?, 'pending', ?`)) {
         raced = true;
         f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?) ON CONFLICT DO NOTHING`, [HARNESS_AGENT_ID, NOW]);
         f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'other-wake', ?, 'container-smoke', 'pending', ?)`, [HARNESS_AGENT_ID, NOW]);

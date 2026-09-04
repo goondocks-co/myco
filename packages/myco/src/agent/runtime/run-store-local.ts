@@ -56,7 +56,7 @@ import {
   applyRunUpdate,
   supersedeEquivalentResumableRuns,
 } from '@myco/db/queries/runs.js';
-import type { RunStore } from './run-store.js';
+import type { LocalRunStore } from './run-store.js';
 
 /**
  * Open the local vault and bring its schema current.
@@ -95,7 +95,7 @@ export interface LocalRunStoreBinding {
   agentId: string;
 }
 
-export function createLocalRunStore(binding: LocalRunStoreBinding): RunStore {
+export function createLocalRunStore(binding: LocalRunStoreBinding): LocalRunStore {
   const { scope, agentId } = binding;
   return {
     async insertRun(row) {

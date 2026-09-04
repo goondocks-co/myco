@@ -11,11 +11,12 @@
  * twice schedules nothing twice.
  */
 import type { ServerEnv } from './adapters.js';
-import { AlreadyRunning, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch } from './harness.js';
+import { AlreadyRunning, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, type LaunchSpec } from './harness.js';
+import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
-import { hasLiveTaskRun, lastTaskEntryAt, projectAdmission, recordSkipped, taskEntriesSince } from './runs.js';
+import { hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, projectAdmission, recordSkipped, taskEntriesSince } from './runs.js';
 import { leafValues, type ProjectCapability } from './settings.js';
-import { ACCELERATORS, admissionForTask, effectiveIntervalSeconds, PRE_CONDITIONS, resolveSchedule, scheduledTasks, type TaskSchedule } from './task-catalogue.js';
+import { ACCELERATORS, admissionForTask, effectiveIntervalSeconds, PRE_CONDITIONS, resolveSchedule, scheduledTasks, scheduleOverride, type TaskSchedule } from './task-catalogue.js';
 import { listProjects } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
 
@@ -27,7 +28,7 @@ export const COLD_PROJECT_THRESHOLD_DAYS_DEFAULT = 14;
 export const ACTIVE_WINDOW_DAYS_DEFAULT = 14;
 
 /** Why the clock left a task alone this wake; a ceiling met is recorded on a run row, the rest are told. */
-export type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused';
+export type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged';
 
 export interface ScheduleReport {
   /** Dispatches the clock made, launched or queued. */
@@ -66,9 +67,7 @@ export async function scheduleLeaves(env: ServerEnv): Promise<ScheduleLeaves> {
 
 /** The schedule a task runs on for this Deployment: the declared block under the owner's override. */
 export function scheduleFor(task: string, declared: TaskSchedule, overrides: Record<string, unknown>): TaskSchedule {
-  const entry = overrides[task];
-  const override = entry !== null && typeof entry === 'object' && !Array.isArray(entry) ? (entry as Record<string, unknown>).schedule : undefined;
-  return resolveSchedule(declared, override);
+  return resolveSchedule(declared, scheduleOverride(task, overrides));
 }
 
 /**
@@ -111,11 +110,10 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
   const report: ScheduleReport = { dispatched: 0, skipped: 0 };
   const leaves = await scheduleLeaves(env);
   if (!leaves.enabled) return report;
-  const tasks = scheduledTasks();
+  const tasks = scheduledTasks(leaves.overrides);
   if (tasks.length === 0) return report;
   for (const project of await listProjects(env.db)) {
-    for (const { task, schedule: declared } of tasks) {
-      const schedule = scheduleFor(task, declared, leaves.overrides);
+    for (const { task, schedule } of tasks) {
       const skip = await decideTask(env, project.projectId, project.lastActivityAt, task, schedule, state, leaves, now);
       if (skip === 'max_runs_per_day') {
         await recordSkipped(env.db, { projectId: project.projectId }, { id: `run_${crypto.randomUUID()}`, agentId: HARNESS_AGENT_ID, task, reason: skip, at: now });
@@ -132,9 +130,22 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
         emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: 'refused', refusal: prepared.refusal });
         continue;
       }
+      // A task whose prompt the server builds is compared against the artifact
+      // it last wrote: a Project that has not moved leaves a skipped row naming
+      // that, and no model is called.
+      const built = await buildTaskInput(env, task, project.projectId, now);
+      if (built !== null && built.unchanged) {
+        await recordSkipped(env.db, { projectId: project.projectId }, { id: `run_${crypto.randomUUID()}`, agentId: HARNESS_AGENT_ID, task, reason: INPUT_UNCHANGED, at: now });
+        emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: INPUT_UNCHANGED });
+        report.skipped += 1;
+        continue;
+      }
+      const input: Pick<LaunchSpec, 'instruction' | 'inputHash' | 'counts'> = built === null || built.unchanged
+        ? {}
+        : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
       try {
         // A skip-overlap task's write refuses beside another live run of it: two wakes deciding at once write one row.
-        const outcome = await dispatchPrepared(env, prepared.prepared, { serverUrl, actor: CLOCK_ACTOR }, now, { singleFlight: schedule.overlap === 'skip' });
+        const outcome = await dispatchPrepared(env, prepared.prepared, { serverUrl, actor: CLOCK_ACTOR, ...input }, now, { singleFlight: schedule.overlap === 'skip' });
         emit({ kind: 'task_scheduled', task, projectId: project.projectId, runId: outcome.runId, queued: outcome.queued });
         report.dispatched += 1;
       } catch (err) {

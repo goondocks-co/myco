@@ -1,5 +1,5 @@
-import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
-import { fetchJson } from '../lib/api';
+import { type UseQueryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ApiError, fetchJson, postJson } from '../lib/api';
 import { usePaged } from './use-paged';
 
 export interface RunListRow {
@@ -171,6 +171,12 @@ export interface DigestRevisionRow {
   createdAt: number;
 }
 
+export interface InstructionsCounts {
+  sessions: number;
+  spores: number;
+  plans: number;
+}
+
 export interface InstructionsRow {
   id: string;
   agentId: string;
@@ -178,6 +184,8 @@ export interface InstructionsRow {
   inputHash: string;
   sourceRunId: string | null;
   generatedAt: number;
+  /** What the run that wrote these read; null when the run recorded no counts. */
+  counts: InstructionsCounts | null;
 }
 
 const seg = (value: string) => encodeURIComponent(value);
@@ -267,4 +275,51 @@ export function useDigestRevisions(projectId: string, agentId: string, tier: num
 
 export function useInstructions(projectId: string) {
   return useQuery({ queryKey: ['instructions', projectId], queryFn: ({ signal }) => fetchJson<{ instructions: InstructionsRow[] }>(`${project(projectId)}/cortex/instructions`, signal) });
+}
+
+/** The task that writes a project's session-start instructions. */
+export const INSTRUCTIONS_TASK = 'cortex-instructions';
+
+/** What the server answers when asked to write the instructions again: a run started, a run waiting, or nothing to do. */
+export type InstructionsOutcome = 'running' | 'queued' | 'unchanged';
+
+export const INSTRUCTIONS_OUTCOME_TEXT: Record<InstructionsOutcome, string> = {
+  running: 'Writing new instructions — they land in a few minutes',
+  queued: 'Waiting for a runtime — this starts as one frees up',
+  unchanged: 'Nothing has changed since these were written',
+};
+
+/** Why the ask went nowhere, in the reader's words. */
+export const INSTRUCTIONS_REFUSAL_TEXT: Record<string, string> = {
+  max_runs_per_day: 'These have already been written once today — ask again tomorrow',
+  harness_unavailable: 'This deployment has no way to write instructions yet',
+};
+
+export const INSTRUCTIONS_REFUSAL_FALLBACK = 'The instructions could not be written right now';
+
+export interface InstructionsRefreshAnswer {
+  outcome: InstructionsOutcome;
+  /** The run writing them, on `running` and `queued`. */
+  runId?: string;
+}
+
+/** The message for a refused ask, read off whatever the server answered. */
+export function refusalText(error: unknown): string {
+  const named = error instanceof ApiError && typeof (error.body as { error?: unknown } | null)?.error === 'string'
+    ? (error.body as { error: string }).error
+    : null;
+  return named === null ? INSTRUCTIONS_REFUSAL_FALLBACK : INSTRUCTIONS_REFUSAL_TEXT[named] ?? INSTRUCTIONS_REFUSAL_FALLBACK;
+}
+
+/** Asks the server to write this project's instructions again; on an answer, the stored instructions are read again. */
+export function useRefreshInstructions(projectId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (): Promise<InstructionsRefreshAnswer> => {
+      const answered = await postJson<{ outcome?: string; runId?: string; queued?: boolean }>('/api/harness/dispatch', { task: INSTRUCTIONS_TASK, projectId });
+      if (answered.outcome === 'unchanged') return { outcome: 'unchanged' };
+      return { outcome: answered.queued === true ? 'queued' : 'running', ...(answered.runId === undefined ? {} : { runId: answered.runId }) };
+    },
+    onSuccess: () => client.invalidateQueries({ queryKey: ['instructions', projectId] }),
+  });
 }
