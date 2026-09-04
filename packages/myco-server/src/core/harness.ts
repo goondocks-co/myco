@@ -22,14 +22,11 @@ import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
-import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, skipQueued, NO_LIMITS } from './runs.js';
+import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, skipQueued, NO_LIMITS } from './runs.js';
 import { deploymentSecretStore } from './secrets.js';
 import { leafValues } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
 import { buildTaskInput } from './task-inputs.js';
-
-/** The name a dispatch is left alone under when the Project has not moved past the artifact its task already wrote. */
-export const INPUT_UNCHANGED = 'input_unchanged';
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';

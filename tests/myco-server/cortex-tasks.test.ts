@@ -18,7 +18,7 @@ import { runScheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { getRun, upsertCortexInstructions } from '@myco-server-worker/core/runs.js';
 import { upsertDigest } from '@myco-server-worker/core/digests.js';
 import { insertSpore } from '@myco-server-worker/core/spores.js';
-import { RUN_CLOSE_REPORTS } from '@myco-server-worker/core/run-postconditions.js';
+import { RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_CLOSE_REPORTS, RUN_CLOSE_RULES } from '@myco-server-worker/core/run-postconditions.js';
 import { buildTaskInput } from '@myco-server-worker/core/task-inputs.js';
 import { listInstructions } from '@myco-server-worker/read/cortex.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
@@ -65,6 +65,13 @@ async function fixture(opts: { capability?: boolean } = {}) {
     );
     return id;
   };
+  /** A run the dispatcher recorded and the container has not claimed yet, under this fixture's credential so the claim route can move it. */
+  const pendingRun = (id: string, task: string, context: Record<string, unknown>, instruction: string | null, dryRun: boolean, dispatchedBy = minted.tokenId) =>
+    e.sqlite.run(
+      `INSERT INTO agent_runs (project_id, id, agent_id, task, instruction, status, dry_run, started_at, run_context, dispatched_by)
+       VALUES ('proj_1', ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+      [id, HARNESS_AGENT_ID, task, instruction, dryRun ? 1 : 0, Date.now(), JSON.stringify(context), dispatchedBy],
+    );
   /** A second harness credential: closing a run releases the one that dispatched it, so a test with two runs mints two. */
   const credential = () => issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, NOW);
   const session = (id: string, title: string, ended: boolean) =>
@@ -78,7 +85,9 @@ async function fixture(opts: { capability?: boolean } = {}) {
     content, context: null, filePath: null, tags: null, contentHash: null, properties: null, createdAt: NOW,
   });
   const runs = () => e.sqlite.query(`SELECT id, task, status, instruction, dry_run AS dryRun, run_context AS runContext FROM agent_runs ORDER BY COALESCE(queued_at, started_at), id`).all() as Array<Record<string, unknown>>;
-  return { ...e, env, bindings, launches, setting, call, answered, dispatch, liveRun, credential, session, spore, runs, tokenId: minted.tokenId, token: minted.token };
+  /** Close a run as the credential that dispatched it; closing releases that credential, so each run takes its own. */
+  const close = (runId: string, token?: string) => answered('/runs/update', { runId, update: { status: 'completed', completed_at: Date.now() } }, token);
+  return { ...e, env, bindings, launches, setting, call, answered, dispatch, liveRun, pendingRun, credential, close, session, spore, runs, tokenId: minted.tokenId, token: minted.token };
 }
 
 describe('the routes a Cortex run holds', () => {
@@ -119,6 +128,36 @@ describe('the routes a Cortex run holds', () => {
     expect(await f.answered('/runs/instructions-write', { runId: 'run_absent', content: '# nope' }))
       .toEqual({ persisted: true, held: false, written: false });
     expect(await listInstructions(f.db, SCOPE)).toEqual([]);
+  });
+
+  it('stays dry through the container\'s own claim: the claim never carries dry_run', async () => {
+    const f = await fixture();
+    // The dispatcher recorded a dry run; the container claims it the way the
+    // runtime does, naming no dryRun of its own.
+    f.pendingRun('run_dry_claim', TASK, { input_hash: 'server-hash' }, 'THE PROMPT', true);
+    expect(await f.answered('/runs/claim', { id: 'run_dry_claim', agentId: HARNESS_AGENT_ID, task: TASK, capability: 'cortex', harness: 'claude-sdk' }))
+      .toMatchObject({ persisted: true, claimed: true });
+    expect(f.runs().find((r) => r.id === 'run_dry_claim')).toMatchObject({ status: 'running', dryRun: 1 });
+    expect(await f.answered('/runs/instructions-write', { runId: 'run_dry_claim', content: '# nope' }))
+      .toEqual({ persisted: true, held: true, written: false });
+    expect(await listInstructions(f.db, SCOPE)).toEqual([]);
+  });
+
+  it('refuses the dispatcher\'s own columns on a dispatched run, by name', async () => {
+    const f = await fixture();
+    f.liveRun('run_owned', TASK, { input_hash: 'server-hash' }, 'THE PROMPT');
+    for (const update of [{ run_context: JSON.stringify({ input_hash: 'mine' }) }, { dry_run: 1 }, { run_context: '{}', dry_run: 1 }]) {
+      const answered = await f.answered('/runs/update', { runId: 'run_owned', update });
+      expect({ update, persisted: answered.persisted }).toEqual({ update, persisted: false });
+      expect(String(answered.reason)).toContain('belong to the dispatcher');
+    }
+    const held = f.runs().find((r) => r.id === 'run_owned')!;
+    expect({ hash: JSON.parse(String(held.runContext)).input_hash, dryRun: held.dryRun }).toEqual({ hash: 'server-hash', dryRun: 0 });
+    // Every other column still moves on the same run.
+    expect(await f.answered('/runs/update', { runId: 'run_owned', update: { tokens_used: 12 } })).toMatchObject({ persisted: true, changed: 1 });
+    // The columns stay settable on a run nothing dispatched.
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at) VALUES ('proj_1', 'run_local', ?, 'digest-only', 'running', 0, ?)`, [HARNESS_AGENT_ID, Date.now()]);
+    expect(await f.answered('/runs/update', { runId: 'run_local', update: { run_context: '{}' } })).toMatchObject({ persisted: true, changed: 1 });
   });
 
   it('serves the settled sessions within a clamped page, and never one still in flight', async () => {
@@ -206,6 +245,30 @@ describe('the clock and the queue', () => {
     expect(skipped).toHaveLength(1);
     expect({ status: skipped[0]!.status, context: JSON.parse(String(skipped[0]!.runContext)) }).toEqual({ status: 'skipped', context: { reason: 'input_unchanged' } });
     expect(f.launches.map((l) => l.envVars.MYCO_TASK)).not.toContain(TASK);
+
+    // The skip advanced the interval: a second wake inside it rebuilds nothing
+    // and leaves no second row. A whole payload rebuilt on every wake would be
+    // the cost the interval exists to bound.
+    expect(await runScheduledTasks(f.env, 'sleep', Date.now(), 'https://s')).toMatchObject({ skipped: 0 });
+    expect(f.runs().filter((r) => r.task === TASK)).toHaveLength(1);
+  });
+
+  it('stamps a start on a queued row it skips, so the run reads as something that happened', async () => {
+    const f = await fixture();
+    f.setting('agent.limits.concurrent_runs', 1);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'blocker', ?, 'digest-only', 'running', ?)`, [HARNESS_AGENT_ID, Date.now()]);
+    const queued = await f.dispatch();
+    const runId = String(queued.body.runId);
+    const built = await buildTaskInput(f.env, TASK, 'proj_1', Date.now());
+    await upsertCortexInstructions(f.db, SCOPE, {
+      agentId: HARNESS_AGENT_ID, content: '# held', inputHash: (built as { input: { inputHash: string } }).input.inputHash, generatedAt: NOW, sourceRunId: null,
+    });
+    f.sqlite.run(`UPDATE agent_runs SET status = 'completed' WHERE id = 'blocker'`);
+    await drainQueue(f.env, Date.now());
+    const row = f.sqlite.query(`SELECT status, started_at AS startedAt, completed_at AS completedAt FROM agent_runs WHERE id = ?`).get(runId) as { status: string; startedAt: number | null; completedAt: number | null };
+    expect(row.status).toBe('skipped');
+    expect(row.startedAt).toBeNumber();
+    expect(row.completedAt).toBeNumber();
   });
 
   it('rebuilds a queued dispatch at the drain: skipped when the Project stood still, launched with the fresh prompt when it moved', async () => {
@@ -244,21 +307,42 @@ describe('the clock and the queue', () => {
 });
 
 describe('what the instructions run owes before it closes', () => {
-  it('names the report the task must have recorded', () => {
+  it('names the report and the artifact the task must have left', () => {
     expect(RUN_CLOSE_REPORTS[TASK]).toBe('cortex_instructions');
+    expect(RUN_CLOSE_RULES[TASK]?.artifact).toBeFunction();
   });
 
-  it('fails a run that recorded none, and closes one that did', async () => {
+  it('fails a run that reported nothing', async () => {
     const f = await fixture();
     f.liveRun('run_silent', TASK, { input_hash: 'h' }, 'THE PROMPT');
-    const close = (runId: string) => f.answered('/runs/update', { runId, update: { status: 'completed', completed_at: Date.now() } });
-    expect(await close('run_silent')).toMatchObject({ persisted: true, applied: false, reason: 'postcondition' });
-    expect((await getRun(f.db, SCOPE, 'run_silent'))?.status).toBe('failed');
+    expect(await f.close('run_silent')).toMatchObject({ persisted: true, applied: false, reason: 'postcondition' });
+    const failed = await getRun(f.db, SCOPE, 'run_silent');
+    expect({ status: failed?.status, error: failed?.error }).toEqual({ status: 'failed', error: RUN_CLOSE_ERROR });
+  });
 
-    const second = await f.credential();
-    f.liveRun('run_reported', TASK, { input_hash: 'h' }, 'THE PROMPT', false, second.tokenId);
-    await f.answered('/runs/report', { runId: 'run_reported', agentId: HARNESS_AGENT_ID, action: 'cortex_instructions', summary: 'wrote them' }, second.token);
-    expect(await f.answered('/runs/update', { runId: 'run_reported', update: { status: 'completed', completed_at: Date.now() } }, second.token)).toMatchObject({ persisted: true, changed: 1 });
-    expect((await getRun(f.db, SCOPE, 'run_reported'))?.status).toBe('completed');
+  it('fails a run that reported without leaving the row: the report is a claim, the row is the evidence', async () => {
+    const f = await fixture();
+    const credential = await f.credential();
+    f.liveRun('run_claimed', TASK, { input_hash: 'h' }, 'THE PROMPT', false, credential.tokenId);
+    await f.answered('/runs/report', { runId: 'run_claimed', agentId: HARNESS_AGENT_ID, action: 'cortex_instructions', summary: 'said so' }, credential.token);
+    expect(await f.close('run_claimed', credential.token)).toMatchObject({ persisted: true, applied: false, reason: 'postcondition' });
+    const failed = await getRun(f.db, SCOPE, 'run_claimed');
+    expect({ status: failed?.status, error: failed?.error }).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
+  });
+
+  it('closes a run that reported and wrote, and a dry run that reported and could not', async () => {
+    const f = await fixture();
+    const wrote = await f.credential();
+    f.liveRun('run_wrote', TASK, { input_hash: 'h' }, 'THE PROMPT', false, wrote.tokenId);
+    await f.answered('/runs/instructions-write', { runId: 'run_wrote', content: '# Start here' }, wrote.token);
+    await f.answered('/runs/report', { runId: 'run_wrote', agentId: HARNESS_AGENT_ID, action: 'cortex_instructions', summary: 'wrote them' }, wrote.token);
+    expect(await f.close('run_wrote', wrote.token)).toMatchObject({ persisted: true, changed: 1 });
+    expect((await getRun(f.db, SCOPE, 'run_wrote'))?.status).toBe('completed');
+
+    const dry = await f.credential();
+    f.liveRun('run_dry_close', TASK, { input_hash: 'h' }, 'THE PROMPT', true, dry.tokenId);
+    await f.answered('/runs/report', { runId: 'run_dry_close', agentId: HARNESS_AGENT_ID, action: 'cortex_instructions', summary: 'would have written' }, dry.token);
+    expect(await f.close('run_dry_close', dry.token)).toMatchObject({ persisted: true, changed: 1 });
+    expect((await getRun(f.db, SCOPE, 'run_dry_close'))?.status).toBe('completed');
   });
 });

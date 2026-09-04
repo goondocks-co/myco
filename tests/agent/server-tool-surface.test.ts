@@ -21,6 +21,13 @@ const UNSERVED: Readonly<Record<string, readonly string[]>> = {
   'title-summary': ['vault_unprocessed'],
 };
 
+/**
+ * Names the Deployment materializes that a served task declares nowhere, with
+ * why. Empty: every served task names its whole surface today, and a name
+ * arriving here has to earn its line.
+ */
+const UNDECLARED: Readonly<Record<string, readonly string[]>> = {};
+
 /** The tool surface a run of this task holds, by name. */
 function servedNames(taskName: string): string[] {
   const ctx = { client: {} as never, budget: { connectTimeoutMs: 1, requestTimeoutMs: 1 }, runId: 'run', agentId: 'agent' };
@@ -56,6 +63,30 @@ describe('the served tool surface', () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  /**
+   * The other direction: a tool a run holds and its definition never names is a
+   * capability the prompt was never told about. The model calls what it is told
+   * it has, so an undeclared tool is one that is paid for and never used.
+   */
+  it('materializes no tool the served task definitions leave undeclared', () => {
+    const extra: string[] = [];
+    for (const taskName of SERVED_TASKS) {
+      const declared = new Set(declaredNames(taskName));
+      const excused = new Set(UNDECLARED[taskName] ?? []);
+      for (const name of servedNames(taskName)) {
+        if (!declared.has(name) && !excused.has(name)) extra.push(`${taskName} -> ${name}`);
+      }
+    }
+    expect(extra).toEqual([]);
+  });
+
+  it('excuses only names the served tasks actually leave undeclared', () => {
+    for (const [taskName, names] of Object.entries(UNDECLARED)) {
+      const declared = new Set(declaredNames(taskName));
+      for (const name of names) expect({ taskName, name, declared: declared.has(name) }).toEqual({ taskName, name, declared: false });
+    }
   });
 
   /**

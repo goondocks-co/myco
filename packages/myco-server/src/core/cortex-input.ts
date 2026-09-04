@@ -12,11 +12,19 @@
  * layer and the core stores that already own these tables, so a scope rule or a
  * gate fixed there reaches this payload too.
  *
- * **The hash covers the input, never the clock.** `inputHash` is taken over the
- * leaves, the Project's capabilities, the served tool names, the authoring
- * contract, and the material's ids and content previews. A timestamp inside it
- * would make every build differ and turn the dedup that keeps a daily run from
- * spending dollars on unchanged material into a no-op.
+ * **The hash IS the prompt.** `inputHash` is taken over the composed instruction
+ * itself, so anything that changes what the model is asked — the material, the
+ * leaves, the capability, the served tool surface, the guidance lines, the
+ * authoring requirements — moves it, and nothing else can. Hashing a chosen
+ * subset of the inputs instead leaves the static prose outside the hash, and an
+ * edit to the authoring requirements then never reaches a Project whose material
+ * has not moved. The composition carries no clock and no instant: two builds
+ * over the same store compose the same bytes, which is what makes the dedup that
+ * keeps a daily run from spending dollars on unchanged material work at all.
+ *
+ * **Known blind spot:** a body whose first 360 characters are identical hashes
+ * the same however its tail moves, so an edit past the preview cut does not
+ * trigger a rebuild on its own.
  */
 import type { RelationalStore } from './adapters.js';
 import { digestForTier, listDigests } from './digests.js';
@@ -44,15 +52,6 @@ export const CONTENT_PREVIEW_MAX_CHARS = 360;
 export const DIGEST_EXCERPT_MAX_CHARS = 1800;
 /** Indentation of the runtime config block the payload renders. */
 const JSON_INDENT = 2;
-
-/**
- * The authoring contract version.
- *
- * The authoring requirements are not hashed — they embed per-build material —
- * so a change to what the artifact must say bumps this instead, and every
- * Project rebuilds its instructions once.
- */
-export const PROMPT_CONTRACT = 3;
 
 export const CORTEX_SKILLS_NOTE = 'Project and Myco skills are already registered with the agent separately. Tell the agent to use the `myco` skill as the fuller workflow reference for design decisions, non-obvious debugging, prior-project context, plan work, durable knowledge capture, and delegation; keep the explicit tool guidance as the compact always-on version of that workflow. Do not instruct it to call `myco_skills`.';
 
@@ -231,34 +230,12 @@ async function readMaterial(db: RelationalStore, scope: ReadScope, options: Inst
 }
 
 /**
- * The bytes the hash is taken over.
- *
- * Every field here is a fact about the input: what the Deployment is configured
- * to serve, what it serves it with, and what the Project holds. Nothing here
- * moves on its own between two builds over the same material.
- */
-function hashedInput(material: Material, options: InstructionsInputOptions, servedTools: readonly string[]): string {
-  return JSON.stringify({
-    promptContract: PROMPT_CONTRACT,
-    cortex: runtimeConfig(options),
-    capabilities: Object.fromEntries(Object.entries(options.capabilities).sort(([a], [b]) => (a < b ? -1 : 1))),
-    servedTools,
-    sessions: material.sessions,
-    wisdom: material.wisdom,
-    decision: material.decision,
-    discovery: material.discovery,
-    plans: material.plans,
-    digest: material.digest,
-  });
-}
-
-/**
- * Build the instruction a `cortex-instructions` run receives, and the hash of
- * the material behind it.
+ * Build the instruction a `cortex-instructions` run receives, and its hash.
  *
  * The hash is what a second dispatch compares against the row the last run
- * wrote: equal means the Project has not moved, and the dispatch is answered
- * `unchanged` with no run started.
+ * wrote: equal means the prompt this build would send is the prompt behind the
+ * artifact already standing, and the dispatch is answered `unchanged` with no
+ * run started.
  */
 export async function buildInstructionsInput(
   db: RelationalStore,
@@ -307,9 +284,10 @@ export async function buildInstructionsInput(
     renderPlans(material),
   ];
 
+  const instruction = parts.join('\n');
   return {
-    instruction: parts.join('\n'),
-    inputHash: await sha256Hex(hashedInput(material, options, servedTools)),
+    instruction,
+    inputHash: await sha256Hex(instruction),
     counts: {
       sessions: material.sessions.length,
       spores: material.wisdom.length + material.decision.length + material.discovery.length,

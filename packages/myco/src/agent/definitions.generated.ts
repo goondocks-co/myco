@@ -179,11 +179,12 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
     "phases": [
       {
         "name": "research",
-        "prompt": "Produce a compact situation brief. DO NOT write the final markdown\n— that is the author phase's job.\n\nOutput exactly this structure as your phase summary:\n\n## Hotspots (2-3)\n- <named workstream, plan, or branch> — <one sentence on why a new\n  agent working in this repo should know about it>\n\n## Recent signal\n- <recent session title or spore worth citing> — <why it matters>\n\n## Tool-use hint\n- <one concrete hint a new agent would benefit from, grounded in\n  the recent activity above — e.g. \"check active plans before\n  proposing X because plan Y already covers it\">\n\nUse the pre-assembled input (digest, recent sessions, spores,\nactive plans) as your starting point. Use `vault_sessions`,\n`vault_spores` and `vault_read_digest` only to confirm a hotspot\nis current or to disambiguate. Prefer active\nplans and the last 3 settled sessions as anchors. If the input\nnames a hotspot, verify it's still live before keeping it — stale\nhotspots (work that has shipped and moved on) are worse than no\nhotspot.\n\nIf you cannot identify 2-3 genuine hotspots, emit fewer — never\npad with boilerplate.\n",
+        "prompt": "Produce a compact situation brief. DO NOT write the final markdown\n— that is the author phase's job.\n\nOutput exactly this structure as your phase summary:\n\n## Hotspots (2-3)\n- <named workstream, plan, or branch> — <one sentence on why a new\n  agent working in this repo should know about it>\n\n## Recent signal\n- <recent session title or spore worth citing> — <why it matters>\n\n## Tool-use hint\n- <one concrete hint a new agent would benefit from, grounded in\n  the recent activity above — e.g. \"check active plans before\n  proposing X because plan Y already covers it\">\n\nUse the pre-assembled input (digest, recent sessions, spores,\nactive plans) as your starting point. Use `vault_sessions`,\n`vault_spores`, `vault_spore` and `vault_read_digest` only to\nconfirm a hotspot is current or to disambiguate. Prefer active\nplans and the last 3 settled sessions as anchors. If the input\nnames a hotspot, verify it's still live before keeping it — stale\nhotspots (work that has shipped and moved on) are worse than no\nhotspot.\n\nIf you cannot identify 2-3 genuine hotspots, emit fewer — never\npad with boilerplate.\n",
         "tools": [
           "vault_read_digest",
           "vault_sessions",
-          "vault_spores"
+          "vault_spores",
+          "vault_spore"
         ],
         "maxTurns": 10,
         "required": true,

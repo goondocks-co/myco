@@ -24,6 +24,12 @@ import type { RelationalStore } from './adapters.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
 import { providerConfiguredFor, settingsWriter, type ProjectCapability } from './settings.js';
 
+/** The name a dispatch is left alone under when the Project has not moved past the artifact its task already wrote. */
+export const INPUT_UNCHANGED = 'input_unchanged';
+
+/** The context a skipped run carries: one shape, written by both skip paths and matched exactly by the interval clock. */
+export const skipContext = (reason: string): string => JSON.stringify({ reason });
+
 /** How many times a refused compare-and-swap is recomputed before the write is reported as contended. */
 export const MUTATE_ATTEMPTS = 5;
 
@@ -92,12 +98,16 @@ const CLAIM_SQL = `INSERT INTO agent_runs
 /**
  * The claim of a run the server dispatched: the row the dispatcher wrote moves
  * to `running`, and only for the credential the dispatch minted. Everything
- * the dispatch decided — agent, task, context, attribution — stays as written;
- * the runtime adds only what it knows: its harness, and a provider or model it
- * inferred where the dispatch named none.
+ * the dispatch decided — agent, task, context, attribution, and whether the run
+ * is dry — stays as written; the runtime adds only what it knows: its harness,
+ * and a provider or model it inferred where the dispatch named none.
+ *
+ * **`dry_run` is the dispatcher's.** A claim that carried it would let a runtime
+ * that names nothing turn a dry run into a real one, and the write routes that
+ * read `dry_run` off the row would then admit the write the dispatch refused.
  */
 const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
-   SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?), dry_run = ?
+   SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?)
  WHERE project_id = ? AND id = ? AND status = 'pending' AND dispatched_by = ?`;
 
 /**
@@ -229,7 +239,7 @@ export async function claimRun(
   }
   if (row.dispatchedBy !== null) {
     const dispatched = await db.prepare(CLAIM_DISPATCHED_SQL).bind(
-      row.harness, row.instruction, row.provider, row.model, row.dryRun ? 1 : 0,
+      row.harness, row.instruction, row.provider, row.model,
       scope.projectId, row.id, row.dispatchedBy,
     ).run();
     if (dispatched.meta.changes === 1) return { claimed: true };
@@ -390,6 +400,19 @@ export type RunUpdateColumn = (typeof RUN_UPDATE_COLUMNS)[number];
 
 /** Columns a run update may never set, named so the gate reads the same list the code does. */
 export const RUN_IMMUTABLE_COLUMNS = ['project_id', 'id', 'agent_id', 'dispatched_by'] as const;
+
+/**
+ * Columns the DISPATCHER owns on a run it recorded.
+ *
+ * A local run writes both itself, so they stay settable in general. On a run the
+ * server dispatched they are the server's own word about what it decided: the
+ * context carries the hash the artifact is filed under and the parameters the
+ * task routes read back, and `dry_run` says whether the run may write at all. A
+ * runtime that could move either would file its own hash as current, or turn the
+ * dispatch's dry run into a real one — and both read as the server's decision
+ * afterwards.
+ */
+export const DISPATCHER_OWNED_COLUMNS = ['run_context', 'dry_run'] as const;
 
 export type RunUpdate = Partial<Record<RunUpdateColumn, string | number | null>>;
 
@@ -732,12 +755,19 @@ export async function launchQueued(db: RelationalStore, scope: ReadScope, runId:
   return result.meta.changes === 1;
 }
 
-/** A queued run the Deployment decided not to launch is skipped by name, from `queued` alone; its context names why, as a clock's skip does. */
+/**
+ * A queued run the Deployment decided not to launch is skipped by name, from
+ * `queued` alone; its context names why, as a clock's skip does.
+ *
+ * The row takes a start where it has none: every run view reads `started_at`
+ * for when a run happened, and a skipped row without one renders as a run that
+ * never began.
+ */
 export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: string, now: number, reason: string): Promise<boolean> {
   const result = await db
-    .prepare(`UPDATE agent_runs SET status = 'skipped', completed_at = ?, run_context = ?, held_by = NULL, dispatch_spec = NULL
+    .prepare(`UPDATE agent_runs SET status = 'skipped', started_at = COALESCE(started_at, ?), completed_at = ?, run_context = ?, held_by = NULL, dispatch_spec = NULL
        WHERE project_id = ? AND id = ? AND status = 'queued'`)
-    .bind(now, JSON.stringify({ reason }), scope.projectId, runId)
+    .bind(now, now, skipContext(reason), scope.projectId, runId)
     .run();
   return result.meta.changes === 1;
 }
@@ -793,11 +823,25 @@ export async function markRecordedLaunch(db: RelationalStore, runId: string): Pr
 // What the clock reads before it schedules a task, per Project
 // ---------------------------------------------------------------------------
 
-/** When this task last entered the Project's run list — launched or queued — or null when it never has. */
+/**
+ * When this task last entered the Project's run list — launched, queued, or
+ * left alone over material that had not moved — or null when it never has.
+ *
+ * A skip counts here only under `INPUT_UNCHANGED`. That skip is the clock
+ * having done the work the interval is for: it rebuilt the task's input and
+ * found the Project standing where its artifact already stands. Excluding it
+ * would leave the interval unmoved, and every wake would rebuild the whole
+ * payload again. Every other skip is a gate the clock never got past, and must
+ * not push the next attempt out.
+ *
+ * The per-day ceiling is the opposite reading and keeps excluding every skip:
+ * a skip costs nothing, so it spends nothing of the day.
+ */
 export async function lastTaskEntryAt(db: RelationalStore, scope: ReadScope, task: string): Promise<number | null> {
   const row = await db.prepare(
-    `SELECT MAX(COALESCE(queued_at, started_at)) AS at FROM agent_runs WHERE project_id = ? AND task = ? AND status != 'skipped'`,
-  ).bind(scope.projectId, task).first<{ at: number | null }>();
+    `SELECT MAX(COALESCE(queued_at, started_at)) AS at FROM agent_runs
+      WHERE project_id = ? AND task = ? AND (status != 'skipped' OR run_context = ?)`,
+  ).bind(scope.projectId, task, skipContext(INPUT_UNCHANGED)).first<{ at: number | null }>();
   return row?.at ?? null;
 }
 
@@ -825,5 +869,5 @@ export async function recordSkipped(db: RelationalStore, scope: ReadScope, recor
     `INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at, completed_at, run_context)
        SELECT ?, ?, ?, ?, 'skipped', 0, ?, ?, ?
         WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`,
-  ).bind(scope.projectId, record.id, record.agentId, record.task, record.at, record.at, JSON.stringify({ reason: record.reason }), scope.projectId, record.id).run();
+  ).bind(scope.projectId, record.id, record.agentId, record.task, record.at, record.at, skipContext(record.reason), scope.projectId, record.id).run();
 }

@@ -22,7 +22,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
 import {
-  applyRunUpdate, claimRun, getRun, getState, insertReport, listAgents, listReports, mutateState,
+  applyRunUpdate, claimRun, DISPATCHER_OWNED_COLUMNS, getRun, getState, insertReport, listAgents, listReports, mutateState,
   projectAdmission, recordRunEvents, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns, TERMINAL_RUN_STATUSES, upsertAgent,
   type RunInsert, type RunUpdate, type RunEventRowInsert,
 } from '../core/runs.js';
@@ -254,6 +254,16 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   }
   const runUpdate = update as RunUpdate;
   const scope = { projectId: ctx.projectId };
+  // On a run the server dispatched, the context and the dry-run flag are the
+  // dispatcher's own record of what it decided, and the task routes read both
+  // off the row. A runtime moving either would file its own hash as the
+  // Project's current one, or turn a dry run into a writing one — and the
+  // refusal names the columns rather than dropping them, so a caller learns
+  // what it may not set instead of watching a write silently do less.
+  const claimed = DISPATCHER_OWNED_COLUMNS.filter((c) => c in runUpdate);
+  if (claimed.length > 0 && (await getRun(env.db, scope, runId))?.dispatchedBy != null) {
+    return Response.json(refused(ctx, refusal(`a dispatched run's ${claimed.join(' and ')} belong to the dispatcher and may not be updated`, 'refused')));
+  }
   if (runUpdate.status === 'completed') {
     const run = await getRun(env.db, scope, runId);
     const missing = run === null ? null : await runCloseRefusal(env.db, scope, run);

@@ -13,6 +13,9 @@ reasoningLevel: default
 maxTurns: 12
 timeoutSeconds: 180
 schedule:
+  # The LOCAL executor's schedule. A Deployment runs this task on the server
+  # catalogue's own block instead — 24 h in sleep, one a day, shipped switched
+  # off (`packages/myco-server/src/core/task-catalogue.ts`).
   enabled: true
   # 8h, not 4h. Session-start instructions reflect durable project state
   # plus a few recent hotspots that move over days, not hours; regenerating
@@ -69,8 +72,8 @@ phases:
 
       Use the pre-assembled input (digest, recent sessions, spores,
       active plans) as your starting point. Use `vault_sessions`,
-      `vault_spores` and `vault_read_digest` only to confirm a hotspot
-      is current or to disambiguate. Prefer active
+      `vault_spores`, `vault_spore` and `vault_read_digest` only to
+      confirm a hotspot is current or to disambiguate. Prefer active
       plans and the last 3 settled sessions as anchors. If the input
       names a hotspot, verify it's still live before keeping it — stale
       hotspots (work that has shipped and moved on) are worse than no
@@ -82,6 +85,7 @@ phases:
       - vault_read_digest
       - vault_sessions
       - vault_spores
+      - vault_spore
     maxTurns: 10
     required: true
     readOnly: true

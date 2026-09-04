@@ -21,7 +21,16 @@ export async function listInstructions(db: RelationalStore, scope: ReadScope): P
   return results.map((r) => ({ ...r, sourceRunId: r.sourceRunId ?? null }));
 }
 
-/** The hash of the material behind the newest instructions the project holds, or null where it holds none. A dispatch compares its own build against this. */
+/** Whether this run left the instructions row it owed. The close gate's evidence: a report is the model's claim, this is the row. */
+export async function instructionsWrittenBy(db: RelationalStore, scope: ReadScope, runId: string): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT 1 AS one FROM cortex_instructions WHERE project_id = ? AND source_run_id = ? LIMIT 1`)
+    .bind(scope.projectId, runId)
+    .first<{ one: number }>();
+  return row !== null;
+}
+
+/** The hash of the prompt behind the newest instructions the project holds, or null where it holds none. A dispatch compares its own build against this. */
 export async function newestInstructionsHash(db: RelationalStore, scope: ReadScope): Promise<string | null> {
   const row = await db
     .prepare(`SELECT input_hash AS inputHash FROM cortex_instructions WHERE project_id = ? ORDER BY generated_at DESC, id ASC LIMIT 1`)

@@ -16,6 +16,7 @@ import { recallLeaves, type RecallLeaves } from '@myco-server-worker/core/recall
 import { SERVED_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
 import { upsertDigest } from '@myco-server-worker/core/digests.js';
 import { insertSpore } from '@myco-server-worker/core/spores.js';
+import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
@@ -118,6 +119,18 @@ describe('the instructions input', () => {
 });
 
 describe('the input hash', () => {
+  it('is the hash of the prompt itself, so every line the model reads is covered', async () => {
+    const f = fixture();
+    f.session('One', 'first');
+    const built = await f.build();
+    expect(built.inputHash).toBe(await sha256Hex(built.instruction));
+    // The static prose is inside that: the guidance lines and the authoring
+    // requirements are part of the prompt, so an edit to either moves the hash
+    // with no second constant to remember to bump.
+    expect(built.instruction).toContain('## Authoring requirements');
+    expect(built.instruction).toContain('## Tool guidance to encode');
+  });
+
   it('stands still over the same material and never carries the clock', async () => {
     const f = fixture();
     f.session('One', 'first');

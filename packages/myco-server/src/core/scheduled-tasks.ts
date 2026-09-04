@@ -11,10 +11,10 @@
  * twice schedules nothing twice.
  */
 import type { ServerEnv } from './adapters.js';
-import { AlreadyRunning, dispatchPrepared, HARNESS_AGENT_ID, INPUT_UNCHANGED, prepareDispatch, type LaunchSpec } from './harness.js';
+import { AlreadyRunning, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, type LaunchSpec } from './harness.js';
 import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
-import { hasLiveTaskRun, lastTaskEntryAt, projectAdmission, recordSkipped, taskEntriesSince } from './runs.js';
+import { hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, projectAdmission, recordSkipped, taskEntriesSince } from './runs.js';
 import { leafValues, type ProjectCapability } from './settings.js';
 import { ACCELERATORS, admissionForTask, effectiveIntervalSeconds, PRE_CONDITIONS, resolveSchedule, scheduledTasks, scheduleOverride, type TaskSchedule } from './task-catalogue.js';
 import { listProjects } from '../read/sessions.js';
