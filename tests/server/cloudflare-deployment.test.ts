@@ -88,18 +88,18 @@ describe('deploy', () => {
     const unchanged = await deployWorker({ ...base(), runner: runner(), pushedImage: image, deployedImage: image });
     expect(calls[0]!.args).toContain(CONTAINERS_ROLLOUT_NONE);
     // The caller watching the instances onto a new version is told there is nothing to watch.
-    expect(unchanged.rolled).toBe(false);
+    expect(unchanged.willRoll).toBe(false);
 
     calls = [];
     const moved = await deployWorker({ ...base(), runner: runner(), pushedImage: image, deployedImage: `${image.slice(0, -1)}c` });
     expect(calls[0]!.args).not.toContain(CONTAINERS_ROLLOUT_NONE);
-    expect(moved.rolled).toBe(true);
+    expect(moved.willRoll).toBe(true);
 
     // A first deploy has nothing deployed to compare against, and rolls.
     calls = [];
     const first = await deployWorker({ ...base(), runner: runner(), pushedImage: image });
     expect(calls[0]!.args).not.toContain(CONTAINERS_ROLLOUT_NONE);
-    expect(first.rolled).toBe(true);
+    expect(first.willRoll).toBe(true);
   });
 
   it('applies migrations against the remote database, never a local one', async () => {

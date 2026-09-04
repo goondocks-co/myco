@@ -33,6 +33,7 @@ import {
   readDeploymentRecord,
   writeDeploymentRecord,
   type CloudflareOptions,
+  type ContainerRollout,
   type DeploymentRecord,
   type LiveRun,
 } from './cloudflare.js';
@@ -101,9 +102,31 @@ function describeDuration(ms: number): string {
   return `${Math.round(seconds / 60)} min`;
 }
 
+/** What went wrong, in the words the command that failed used. */
+function describeFailure(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** The budget a run gets: its own, or the dispatcher's default for a run that names none. */
 function budgetSeconds(run: LiveRun): number {
   return run.timeoutSeconds ?? DEFAULT_RUN_TIMEOUT_SECONDS;
+}
+
+/**
+ * When the Deployment stops treating a run as its own: its budget plus the
+ * overrun margin, counted from when it started. A run that has not started
+ * carries no start to count from, so it is counted from now — it has just been
+ * dispatched, and its whole budget is still ahead of it.
+ */
+function runDeadline(run: LiveRun, now: number): number {
+  return (run.startedAt ?? now) + budgetSeconds(run) * 1000 + RUN_OVERRUN_MARGIN_MS;
+}
+
+/** One run, named the way an operator watching a deploy would name it. */
+function describeRun(lead: string, run: LiveRun, now: number): string {
+  const kind = run.status === 'pending' ? 'queued' : 'running';
+  const when = run.startedAt === null ? 'not started yet' : `started ${describeDuration(now - run.startedAt)} ago`;
+  return `${lead} a ${kind} task: ${run.task}, ${when}, budget ${describeDuration(budgetSeconds(run) * 1000)}`;
 }
 
 /**
@@ -112,31 +135,50 @@ function budgetSeconds(run: LiveRun): number {
  *
  * The platform drains a replaced instance and the container application spares
  * a run inside its own budget, so this is not what keeps a run alive — it is
- * what keeps the operator's deploy from racing them. The bound is the runs read
- * at the first look: each is given its own budget plus the margin the
- * Deployment gives it, and past that the run has outlived what anyone promised
- * it, so the deploy goes ahead and the stale sweep owns the row.
+ * what keeps the operator's deploy from racing them. Each run read at the first
+ * look carries its own bound: its budget plus the margin the Deployment allows
+ * it. Past the last of those bounds the run has outlived what anyone promised
+ * it, so the deploy goes ahead and the stale sweep owns the row; a run
+ * dispatched while the wait was running was never one of the runs waited on,
+ * and is named as such.
  */
 async function waitForLiveRuns(
   options: LifecycleOptions & { configFile: string; databaseName: string },
 ): Promise<void> {
   const report = options.report ?? console.log;
   const clock = options.clock ?? systemClock;
+
   if (options.drain === false) {
+    // The read is a courtesy here rather than a gate: --no-drain is the escape
+    // hatch, and a Deployment that cannot be read is exactly when it is used.
+    try {
+      const live = await readLiveRuns(options);
+      const now = clock.now();
+      for (const run of live) report(describeRun('Shipping over', run, now));
+    } catch (err) {
+      report(`What is running could not be read (${describeFailure(err)}).`);
+    }
     report('Not waiting for the runs in flight: the platform drains what is running.');
     return;
   }
 
   let live = await readLiveRuns(options);
   if (live.length === 0) return;
-  for (const run of live) {
-    report(`Waiting for a running task: ${run.task}, started ${describeDuration(clock.now() - run.startedAt)} ago, budget ${describeDuration(budgetSeconds(run) * 1000)}`);
-  }
-  const deadline = Math.max(...live.map((run) => run.startedAt + budgetSeconds(run) * 1000 + RUN_OVERRUN_MARGIN_MS));
+  const first = clock.now();
+  for (const run of live) report(describeRun('Waiting for', run, first));
+  const bounds = new Map(live.map((run) => [run.id, runDeadline(run, first)]));
+  const deadline = Math.max(...bounds.values());
 
   while (live.length > 0) {
     if (clock.now() >= deadline) {
-      report(`A running task outlived its own budget (${live.map((run) => run.task).join(', ')}); the deploy proceeds and the stale sweep owns the run.`);
+      const overdue = live.filter((run) => bounds.has(run.id));
+      const fresh = live.filter((run) => !bounds.has(run.id));
+      if (overdue.length > 0) {
+        report(`A task outlived its own budget (${overdue.map((run) => run.task).join(', ')}); the deploy proceeds and the stale sweep owns the run.`);
+      }
+      if (fresh.length > 0) {
+        report(`${fresh.map((run) => run.task).join(', ')} started during the deploy; the platform drains what is running.`);
+      }
       return;
     }
     await clock.sleep(LIVE_RUN_POLL_MS);
@@ -150,10 +192,11 @@ async function waitForLiveRuns(
  *
  * `wrangler deploy` returns when the application has accepted the new image,
  * not when the instances carry it, and a run dispatched in between lands on an
- * instance the platform has yet to replace. The application answers its version
- * and how many of its instances are healthy; the rollout is over when the
- * version has moved past what stood before the deploy and every instance is
- * healthy again.
+ * instance the platform has yet to replace. A full instance count alone does
+ * not mean the rollout is done — the fleet standing untouched answers exactly
+ * that — so the application must also be describing the image the deploy just
+ * pushed. Where an answer names no image at all, the fleet must have been seen
+ * mid-replacement at least once before a full count is believed.
  *
  * The bound is the longest task budget: an instance carrying a run is spared
  * until that run's budget is spent, so a rollout cannot outlast it by anything
@@ -161,22 +204,39 @@ async function waitForLiveRuns(
  * this says where the rollout stands and answers nothing.
  */
 async function watchRollout(
-  options: LifecycleOptions & { applicationId: string; versionBefore: number },
+  options: LifecycleOptions & { applicationId: string; versionBefore: number; pushedImage: string },
 ): Promise<{ version: number; completedAt: string } | null> {
   const report = options.report ?? console.log;
   const clock = options.clock ?? systemClock;
   const deadline = clock.now() + ROLLOUT_WATCH_TIMEOUT_SECONDS * 1000;
   let said = '';
+  let sawReplacement = false;
+
+  /** Says a line once, however many polls answer the same thing. */
+  const sayOnce = (line: string): void => {
+    if (line === said) return;
+    report(line);
+    said = line;
+  };
 
   for (;;) {
-    const state = await containerRollout(options);
+    let state = null;
+    try {
+      state = await containerRollout(options);
+    } catch (err) {
+      sayOnce(`The container application could not be read: ${describeFailure(err)}`);
+    }
     if (state !== null && state.version > options.versionBefore) {
-      if (state.healthy >= state.instances) {
+      const everyInstanceHealthy = state.healthy >= state.instances;
+      const carriesPushedImage = state.image === null ? sawReplacement : state.image === options.pushedImage;
+      if (everyInstanceHealthy && carriesPushedImage) {
         report('Rollout complete.');
         return { version: state.version, completedAt: new Date(clock.now()).toISOString() };
       }
-      const line = `Rolling out: ${state.healthy} of ${state.instances} instances on the new version`;
-      if (line !== said) { report(line); said = line; }
+      if (!everyInstanceHealthy) {
+        sawReplacement = true;
+        sayOnce(`Rolling out: ${state.healthy} of ${state.instances} instances on the new version`);
+      }
     }
     if (clock.now() >= deadline) {
       report('The rollout is still in progress; a run started now may land on an instance still on the old version.');
@@ -298,16 +358,27 @@ export async function updateCloudflareDeployment(options: LifecycleOptions): Pro
   // rollout is over when they carry a later one. A push of the image already
   // running rolls nothing, and asks the application nothing.
   const willRoll = rollsContainers(pinned.harnessImage, record.harnessImage);
-  const applicationId = willRoll ? await containerApplicationId({ ...withConfig, workerName: record.workerName }) : null;
-  const before = applicationId === null ? null : await containerRollout({ ...withConfig, applicationId });
+  let applicationId: string | null = null;
+  let before: ContainerRollout | null = null;
+  let unreadable: string | null = null;
+  if (willRoll) {
+    try {
+      applicationId = await containerApplicationId({ ...withConfig, workerName: record.workerName });
+      if (applicationId !== null) before = await containerRollout({ ...withConfig, applicationId });
+    } catch (err) {
+      unreadable = describeFailure(err);
+    }
+  }
 
   const deployed = await deployWorker({ ...withConfig, pushedImage: pinned.harnessImage, ...(record.harnessImage === undefined ? {} : { deployedImage: record.harnessImage }) });
 
   const report = options.report ?? console.log;
   let rollout: { version: number; completedAt: string } | null = null;
-  if (!deployed.rolled) report('No container rollout (image unchanged).');
-  else if (applicationId === null || before === null) report('No container application answers yet; the instances carry the new image as they start.');
-  else rollout = await watchRollout({ ...withConfig, applicationId, versionBefore: before.version });
+  if (!deployed.willRoll) report('No container rollout (image unchanged).');
+  else if (unreadable !== null) report(`The container application could not be read: ${unreadable}. The deploy shipped; the rollout is not watched.`);
+  else if (applicationId === null) report('No container application answers yet; the instances carry the new image as they start.');
+  else if (before === null) report('The container application did not say where it stands; the deploy shipped and the rollout is not watched.');
+  else rollout = await watchRollout({ ...withConfig, applicationId, versionBefore: before.version, pushedImage: pinned.harnessImage });
 
   writeDeploymentRecord({
     ...pinned,

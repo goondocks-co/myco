@@ -40,10 +40,10 @@ Commands (Compose is the default target; --target cloudflare selects the Worker)
                                           Move to a new image; the container migrates on start.
                                           A failed update returns to the previous version.
   update --target cloudflare [--no-drain]
-                                          Move the Worker to this checkout. Waits for the tasks
-                                          running on the Deployment, then watches the new version
-                                          reach every instance. --no-drain ships without waiting;
-                                          the platform drains what is running.
+                                          Move the Worker to this checkout. Waits for the tasks the
+                                          Deployment has in flight, queued ones included, then
+                                          watches the new image reach every instance. --no-drain
+                                          ships over whatever is running; the platform drains it.
   rollback --target cloudflare [--version <id>] [--message <text>]
                                           Return the Worker to an earlier version. Defaults to the
                                           record's last recorded one — the version a failed update
@@ -129,7 +129,7 @@ export async function run(args: string[]): Promise<void> {
       console.log(`  Worker:     ${status.record.workerName} (account ${status.record.accountId})`);
       console.log(`  Deployed:   ${status.deployed ? status.versionId ?? 'yes' : 'no'}`);
       console.log(`  Recorded:   ${status.record.versionId ?? 'never'} at ${status.record.deployedAt}`);
-      if (status.record.lastRollout !== undefined) console.log(`  Instances:  on container version ${status.record.lastRollout.version} since ${status.record.lastRollout.completedAt}`);
+      if (status.record.lastRollout !== undefined) console.log(`  Rollout:    completed ${status.record.lastRollout.completedAt}`);
       if (status.record.url !== undefined) console.log(`  URL:        ${status.record.url}`);
       return;
     }
