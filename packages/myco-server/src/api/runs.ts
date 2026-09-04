@@ -33,6 +33,7 @@ import { admitResume, classifyFailure, type FailureObservation } from '../core/r
 /** The failure classes a harness may report; anything else is refused rather than mapped to a default. */
 const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
 import { releaseRun } from '../core/release.js';
+import { runCloseRefusal } from '../core/run-postconditions.js';
 import { HARNESS_MEMBER_ID } from '../core/harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
@@ -232,6 +233,11 @@ async function releaseDispatchedRun(env: ServerEnv, ctx: RouteContext, runId: st
  * A column outside `RUN_UPDATE_COLUMNS` is a refusal rather than a silent
  * ignore: a caller that believes it moved a run to another Project must be told
  * it did not, and an ignored field reads exactly like an applied one.
+ *
+ * A run closing as completed is held to what its task owes
+ * (`core/run-postconditions.ts`): a close the evidence does not support is
+ * recorded as a failure with what is missing, and the caller is told its update
+ * did not land as asked.
  */
 export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
@@ -247,7 +253,17 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
     return Response.json(refused(ctx, refusal(`update names columns it may not set: ${rejected.sort().join(', ')}`, 'refused')));
   }
   const runUpdate = update as RunUpdate;
-  const changed = await applyRunUpdate(env.db, { projectId: ctx.projectId }, runId, runUpdate);
+  const scope = { projectId: ctx.projectId };
+  if (runUpdate.status === 'completed') {
+    const run = await getRun(env.db, scope, runId);
+    const missing = run === null ? null : await runCloseRefusal(env.db, scope, run);
+    if (missing !== null) {
+      const failed = await applyRunUpdate(env.db, scope, runId, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: missing } as RunUpdate);
+      if (failed === 1) await releaseDispatchedRun(env, ctx, runId, 'failed');
+      return Response.json({ persisted: true, changed: failed, applied: false, reason: 'postcondition' });
+    }
+  }
+  const changed = await applyRunUpdate(env.db, scope, runId, runUpdate);
   if (changed === 1) await releaseDispatchedRun(env, ctx, runId, runUpdate.status);
   return Response.json({ persisted: true, changed });
 }

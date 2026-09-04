@@ -40,6 +40,9 @@ describe('POST /spores', () => {
     const filtered = await post('/spores/list', { observationType: 'decision' });
     expect({ n: (filtered.spores as unknown[]).length, total: filtered.total }).toEqual({ n: 1, total: 1 });
     expect(all.maxLimit).toBe(200);
+    // A limit below one asks for a page, not for every spore the Project holds.
+    const clamped = await post('/spores/list', { limit: -1 });
+    expect({ n: (clamped.spores as unknown[]).length, total: clamped.total }).toEqual({ n: 1, total: 2 });
   });
 
   it('refuses a supersede that names no successor, which would record lineage nothing can read', async () => {

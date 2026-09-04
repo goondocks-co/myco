@@ -370,7 +370,7 @@ Task YAML, the phased executor, turn budgets, model routing, and the `agent_runs
 | `title-summary` | KEEP | Core | Blk | Dispatched to the harness on a session's end and on an owner's ask, through the one dispatcher (§3.6); no direct provider call on the server — #1033's after-response call was a deviation, removed by #1045 S4 | #1045, #1091 |
 | `review-session` | KEEP | Core | Blk | | #919 |
 | `vault-evolve` | KEEP | Core | Blk | | #919 |
-| `supersession-sweep` | KEEP | Core | Blk | | #919 |
+| `supersession-sweep` | KEEP | Core | Blk | Served on the harness on demand: a run holds the spore tools over run routes — an inventory of previews, one spore in full, create, and resolve — so a sweep never pulls a whole vault into a model's context. Carries no schedule; one waits on measurement of what a pass costs and finds | #1044 |
 | `vault-seed` | KEEP | Core | Blk | | #919 |
 | `canopy-map` | REPLACE | Core | Blk | Grows a scan/diff phase using normal harness code-exploration tools and content hashes; maintains the map as a living document. **Gated on #910's accepted content prototype** | #920 |
 | `canopy-describe` | DROP | — | Blk | Per-file fan-out and entry embeddings retire. **Named cost:** semantic Canopy search ends and `canopy_entry` returns mechanical fields only | #920 |
