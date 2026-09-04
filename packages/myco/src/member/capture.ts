@@ -72,6 +72,9 @@ export interface HookOutcome {
    * failing or a hostile answer costs the served block alone: the events stay
    * spooled, the receipts stay written, and the response the handler already
    * built still reaches the harness.
+   *
+   * It runs only on a hook that drains and only when the offline latch admits a
+   * dial, so it never spends a budget the spool has already decided is wasted.
    */
   context?: (run: HookRun) => Promise<HookResponse | undefined>;
   /** Dial even while the offline latch is set (Stop/SessionEnd always probe). */
@@ -112,15 +115,18 @@ export async function runMemberHook(
     const outcome = await handle(run);
     response = outcome.response ?? {};
     spool.appendAndRecord(sessionId, outcome.events, outcome.record, now());
-    if (outcome.context) {
-      try {
-        const served = await outcome.context(run);
-        if (served !== undefined) response = served;
-      } catch (error) {
-        process.stderr.write(`[myco] ${hookName}: recall skipped (${(error as Error).message})\n`);
-      }
-    }
     if (budget.drains) {
+      // The seam is a dial like any other: a hook that never drains never asks
+      // the server for anything, and a latched spool costs one connect timeout
+      // per backoff window rather than one per prompt.
+      if (outcome.context && spool.shouldDial(now(), outcome.probe)) {
+        try {
+          const served = await outcome.context(run);
+          if (served !== undefined) response = served;
+        } catch (error) {
+          process.stderr.write(`[myco] ${hookName}: context skipped (${(error as Error).message})\n`);
+        }
+      }
       const fetchImpl = opts.fetch ?? globalThis.fetch;
       const root = refreshableRoot(credential);
       // A 401 on a live send: another hook may have rotated this root's token, so the registry is re-read and the record retried once.

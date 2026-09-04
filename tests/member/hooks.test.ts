@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 /** 1.4 wire paths no hook may dial; a path under one of these is the same violation. */
-const RETIRED = ['/sessions/register', '/sessions/unregister', '/events/stop', '/events/sync-transcript-prompts', '/context/subagent', '/canopy/inject', '/api/sessions'];
+const RETIRED = ['/sessions/register', '/sessions/unregister', '/events/stop', '/events/sync-transcript-prompts', '/context/subagent', '/context/resume', '/canopy/inject', '/api/sessions'];
 /** 1.4's session-start composition, matched exactly: `/context/prompt` beside it is the live recall route. */
 const RETIRED_EXACT = ['/context'];
 const dialled = () => fetchSpy.requests.map((r) => r.path);

@@ -20,15 +20,19 @@
  * The gates run in a fixed order and the capability is total: a Project not
  * admitted to `cortex` is served an empty block with `capability` named, and no
  * contributor runs at all. Each contributor after it runs in its own try and
- * names itself in `skipped` when it throws, so one failing contributor costs
- * its own part rather than the whole answer.
+ * names in `skipped` the gate it closed on, or itself when it throws, so one
+ * failing contributor costs its own part rather than the whole answer and an
+ * empty block always says which gate produced it.
  *
- * The nudge stands first in the text and is recorded LAST, after the spore
- * selection has committed: a failure in the spore half then leaves the nudge
- * unburned for the next prompt.
+ * The nudge stands FIRST in the text: it is one sentence a person is meant to
+ * act on, and a reader who meets it under a block of observations meets it
+ * last. The spore block, which is read rather than acted on, follows.
+ *
+ * The nudge is recorded LAST, after the spore selection has committed: a
+ * failure in the spore half then leaves the nudge unburned for the next prompt.
  */
 import type { RelationalStore } from './adapters.js';
-import { INJECTION_LEAVES, injectionLeaves, selectSporesForPrompt, type InjectionLeaves } from './injection.js';
+import { INJECTION_LEAVES, injectionLeaves, selectSporesForPrompt, type InjectionLeaves, type InjectionSkip } from './injection.js';
 import { leafValues } from './settings.js';
 import { sha256Hex } from '../hash.js';
 import type { ReadScope } from '../read/scope.js';
@@ -111,8 +115,23 @@ export type PromptContextPart =
   | { kind: 'plan-nudge' }
   | { kind: 'spores'; sporeIds: string[] };
 
-/** Which contributor served nothing through a failure of its own. */
-export type RecallSkip = 'capability' | 'spores' | 'plan-nudge';
+/** Why the nudge stood down when nothing went wrong. */
+export type NudgeSkip = 'off' | 'no_intent' | 'repeat';
+
+/**
+ * Why a contributor served nothing.
+ *
+ * A bare name is a throw inside that contributor. A qualified name is the gate
+ * it closed on: the selector's own gates travel under `spores:`, the nudge's
+ * under `plan-nudge:`. A caller reading an empty block therefore learns which
+ * gate closed rather than only that one did.
+ */
+export type RecallSkip =
+  | 'capability'
+  | 'spores'
+  | 'plan-nudge'
+  | `spores:${InjectionSkip}`
+  | `plan-nudge:${NudgeSkip}`;
 
 export interface PromptContext {
   context: string;
@@ -131,8 +150,11 @@ export interface Contribution {
  *
  * A contribution that would cross the bound is dropped whole, along with
  * everything after it, so a served block ends at a part boundary rather than
- * mid-line. The nudge stands first, so an oversized spore block costs itself
- * and leaves the sentence standing.
+ * mid-line.
+ *
+ * A dropped part is already recorded by the contributor that built it, and the
+ * session is not served it again: the records are at-most-once, and a part lost
+ * to the bound costs what a lost answer costs.
  */
 export function partsWithinBound(
   contributions: readonly Contribution[],
@@ -177,7 +199,8 @@ export async function composePromptContext(
       prompt: input.text,
       now: input.now,
     });
-    if (selection.context.length > 0) {
+    if (selection.skipped !== null) skipped.push(`spores:${selection.skipped}`);
+    else if (selection.context.length > 0) {
       spores = { part: { kind: 'spores', sporeIds: selection.spores.map((s) => s.id) }, text: selection.context };
     }
   } catch {
@@ -186,10 +209,10 @@ export async function composePromptContext(
 
   let nudge: Contribution | null = null;
   try {
-    if (leaves.planNudge && detectsPlanIntent(input.text)
-      && await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now)) {
-      nudge = { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
-    }
+    if (!leaves.planNudge) skipped.push('plan-nudge:off');
+    else if (!detectsPlanIntent(input.text)) skipped.push('plan-nudge:no_intent');
+    else if (!(await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now))) skipped.push('plan-nudge:repeat');
+    else nudge = { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
   } catch {
     skipped.push('plan-nudge');
   }

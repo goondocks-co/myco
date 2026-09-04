@@ -73,12 +73,18 @@ export const recall: ParityScenario = {
     expect(first.context).toContain(`the hook answers before the drain ${stamp}`);
     expect(first.context!.length).toBeLessThanOrEqual(10_000);
 
-    // The same prompt content again: nothing at all, whatever the pool holds.
-    expect(await served(session, p2, planning)).toEqual({ persisted: true, context: '', parts: [], skipped: [] });
+    // The same prompt content again: nothing at all, and every silence is named
+    // — the nudge's own record, and whichever spore gate the pool closed on.
+    const second = await served(session, p2, planning);
+    expect({ persisted: second.persisted, context: second.context, parts: second.parts })
+      .toEqual({ persisted: true, context: '', parts: [] });
+    expect(second.skipped).toContain('plan-nudge:repeat');
+    expect(second.skipped?.some((name) => name.startsWith('spores:'))).toBe(true);
 
     // A different prompt of the same session still carrying intent: no second nudge.
     const later = await served(session, p3, `and the plan for ${stamp} once more`);
     expect(later.parts?.map((p) => p.kind)).not.toContain('plan-nudge');
+    expect(later.skipped).toContain('plan-nudge:repeat');
     expect(await target.sql(`SELECT kind FROM session_injections WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`))
       .toEqual([{ kind: 'plan-nudge' }]);
 

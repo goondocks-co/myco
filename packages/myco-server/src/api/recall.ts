@@ -3,14 +3,14 @@
  *
  * The route answers within the hook's own budget, so it composes and answers in
  * one call and holds no state of its own beyond the records `core/recall.ts`
- * writes. `skipped` names every contributor that served nothing, so a caller
- * reads an empty block as a decision rather than a silence.
+ * writes. `skipped` names, for every contributor that served nothing, the gate
+ * it closed on — or the contributor alone when it failed — so a caller reads an
+ * empty block as a named decision rather than a silence.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { composePromptContext, readRecallLeaves } from '../core/recall.js';
 import { settingsWriter } from '../core/settings.js';
-import { MAX_BODY_BYTES } from '../ingest/body.js';
 import { refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 
@@ -19,6 +19,8 @@ const MAX_PROMPT_ID_CHARS = 192;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown, max: number): string | null => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : null);
+/** The prompt text, bounded already: the pipeline caps the whole body in bytes before this handler runs. */
+const promptText = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
 
 function parseBody(body: string): Record<string, unknown> | null {
   try {
@@ -37,7 +39,7 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
 
   const sessionId = str(body.sessionId, MAX_SESSION_CHARS);
   const promptId = str(body.promptId, MAX_PROMPT_ID_CHARS);
-  const text = str(body.text, MAX_BODY_BYTES);
+  const text = promptText(body.text);
   if (sessionId === null || promptId === null || text === null) {
     return Response.json(refused(ctx, refusal('prompt context requires sessionId, promptId and text', 'parse')));
   }

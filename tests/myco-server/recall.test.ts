@@ -98,19 +98,19 @@ describe('the plan nudge', () => {
     const first = await compose(db, { leaves: sporesOff, text: PLANNING_PROMPT, promptId: 'p1' });
     expect(first.context).toBe(PLAN_INTENT_NUDGE);
     expect(first.parts).toEqual([{ kind: 'plan-nudge' }]);
-    expect(first.skipped).toEqual([]);
+    expect(first.skipped).toEqual(['spores:disabled']);
 
     const again = await compose(db, { leaves: sporesOff, text: `${PLANNING_PROMPT} again`, promptId: 'p2' });
-    expect(again).toEqual({ context: '', parts: [], skipped: [] });
+    expect(again).toEqual({ context: '', parts: [], skipped: ['spores:disabled', 'plan-nudge:repeat'] });
 
     expect(sessionRows(sqlite)).toEqual([{ project_id: SCOPE.projectId, session_id: SESSION, kind: 'plan-nudge', created_at: NOW }]);
   });
 
-  it('stays silent for a prompt with no planning intent, and for a Deployment that switched it off', async () => {
+  it('names why it stayed silent: no intent in the prompt, or a Deployment that switched it off', async () => {
     const { db, sqlite } = store();
-    expect((await compose(db, { text: PROMPT })).parts).toEqual([]);
+    expect((await compose(db, { text: PROMPT })).skipped).toEqual(['spores:empty', 'plan-nudge:no_intent']);
     const nudgeOff: RecallLeaves = { injection: { enabled: false, maxPerPrompt: 3 }, planNudge: false };
-    expect((await compose(db, { leaves: nudgeOff, text: PLANNING_PROMPT })).parts).toEqual([]);
+    expect((await compose(db, { leaves: nudgeOff, text: PLANNING_PROMPT })).skipped).toEqual(['spores:disabled', 'plan-nudge:off']);
     expect(sessionRows(sqlite)).toEqual([]);
   });
 
@@ -145,12 +145,22 @@ describe('the composed block', () => {
     const first = await compose(db, { promptId: 'p1' });
     expect(first.parts).toEqual([{ kind: 'spores', sporeIds: ['a', 'b'] }]);
     const repeat = await compose(db, { promptId: 'p2' });
-    expect(repeat).toEqual({ context: '', parts: [], skipped: [] });
+    expect(repeat).toEqual({ context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:no_intent'] });
+  });
+
+  it('names the record\'s own gate when the pool still holds a spore the prompt content already spent', async () => {
+    const { db } = store();
+    const one: RecallLeaves = { injection: { enabled: true, maxPerPrompt: 1 }, planNudge: true };
+    await insertSpore(db, SCOPE, spore('a', { createdAt: NOW - 1 }));
+    await insertSpore(db, SCOPE, spore('b', { createdAt: NOW - 2 }));
+    expect((await compose(db, { leaves: one, promptId: 'p1' })).parts).toEqual([{ kind: 'spores', sporeIds: ['a'] }]);
+    // `b` is still in the pool; the record's key is what closes on the second call.
+    expect((await compose(db, { leaves: one, promptId: 'p2' })).skipped).toEqual(['spores:repeat', 'plan-nudge:no_intent']);
   });
 
   it('answers an empty block for a Project holding nothing to serve', async () => {
     const { db } = store();
-    expect(await compose(db)).toEqual({ context: '', parts: [], skipped: [] });
+    expect(await compose(db)).toEqual({ context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:no_intent'] });
   });
 
   it('names a contributor that failed and serves the rest', async () => {
@@ -222,7 +232,7 @@ describe('POST /context/prompt', () => {
     expect(String(first.context).length).toBeLessThanOrEqual(PROMPT_CONTEXT_MAX_CHARS);
 
     const second = await (await worker.fetch(post(token, { sessionId: 's1', promptId: 'p2', text: `${PLANNING_PROMPT} once more` }), e.env)).json();
-    expect(second).toEqual({ persisted: true, context: '', parts: [], skipped: [] });
+    expect(second).toEqual({ persisted: true, context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:repeat'] });
   });
 
   it('keeps one Project\'s records out of another\'s answer', async () => {

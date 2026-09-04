@@ -22,6 +22,10 @@ export const RECALL_CAP_MS = 1500;
  * follows it still ships records rather than spooling the turn whole. Anything
  * short of a served block — no room, a timeout, a refusal, an empty answer —
  * leaves the `Session::` line standing alone and writes one line to stderr.
+ *
+ * The outcome moves the offline latch the way a drain pass does: a dark
+ * Deployment is latched here, and an answer clears the latch so the drain that
+ * follows is not skipped against a server that has just replied.
  */
 function recall(session: string, promptId: string, text: string, response: HookResponse) {
   return async (run: HookRun): Promise<HookResponse | undefined> => {
@@ -32,9 +36,11 @@ function recall(session: string, promptId: string, text: string, response: HookR
       budget: subRequestBudget(run.budget, RECALL_CAP_MS, run.now()),
     }));
     if (answer.class !== 'acked') {
+      if (answer.class === 'retry') run.spool.markOffline(run.now(), answer.retryAfterMs);
       process.stderr.write(`[myco] user-prompt-submit: recall skipped (${answer.class})\n`);
       return undefined;
     }
+    run.spool.clearLatch();
     const served = typeof answer.body.context === 'string' ? answer.body.context : '';
     if (served.length === 0) return undefined;
     return { ...response, additionalContext: `${response.additionalContext}\n\n${served}` };

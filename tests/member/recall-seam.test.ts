@@ -85,19 +85,41 @@ const outcomeFor = (run: HookRun, context: HookOutcome['context']): HookOutcome 
 };
 
 describe('the recall seam', () => {
-  it('runs after the append: a seam that throws leaves the events, the receipts and the `Session::` line intact', async () => {
+  it('runs after the append: the spool already holds the event and its receipt when the seam is called', async () => {
+    const seen: Array<{ depth: number; receipted: boolean }> = [];
     const answered = await drive(
       { prompt: 'a typed prompt', transcript_path: transcript() },
-      (run) => outcomeFor(run, async () => { throw new Error('the deployment went dark'); }),
+      (run) => outcomeFor(run, async () => {
+        // Read the spool from INSIDE the seam: a seam moved above the append
+        // sees an empty spool and no receipt, and these assertions fail.
+        seen.push({ depth: run.spool.depth(run.sessionId), receipted: readSessionState(run.spool.dir, run.sessionId).prompts.typed !== undefined });
+        throw new Error('the deployment went dark');
+      }),
       rig.fetch,
     );
 
-    expect(answered.stderr).toContain('[myco] user-prompt-submit: recall skipped (the deployment went dark)');
+    expect(seen).toEqual([{ depth: 1, receipted: true }]);
+    expect(answered.stderr).toContain('[myco] user-prompt-submit: context skipped (the deployment went dark)');
     expect(answered.stdout).toBe(`Session:: \`${SESSION}\``);
-    // The prompt reached the server through the drain that followed the throw,
-    // and its receipt is on disk.
+    // A throw in the seam costs the served block alone: the drain that follows
+    // still ships the event, and its receipt stays on disk.
     expect(rig.rows('prompt_batches')).toBe(1);
     expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, SESSION).prompts.typed).toBeDefined();
+  });
+
+  it('is not called at all while the offline latch holds', async () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    spool.markOffline(Date.now());
+    let called = 0;
+    const answered = await drive(
+      { prompt: 'a typed prompt', transcript_path: transcript() },
+      (run) => outcomeFor(run, async () => { called += 1; return { additionalContext: 'served' }; }),
+      rig.fetch,
+    );
+    expect(called).toBe(0);
+    expect(answered.stdout).toBe(`Session:: \`${SESSION}\``);
+    // The latch holds the drain too, so the event stays spooled for the next probe.
+    expect(spool.depth(SESSION)).toBe(1);
   });
 
   it('replaces the response with what the seam answers', async () => {
@@ -217,7 +239,7 @@ describe('the prompt hook', () => {
     expect(rig.env.sqlite.query(`SELECT kind FROM session_injections`).all()).toEqual([{ kind: 'plan-nudge' }]);
   });
 
-  it('writes one line and keeps the `Session::` line when the Deployment refuses the call', async () => {
+  it('latches the dark Deployment, keeps the `Session::` line, and leaves the event for the next probe', async () => {
     const failing: FetchLike = async (input, init) => {
       const req = new Request(input, init);
       if (new URL(req.url).pathname === '/context/prompt') throw new Error('connection refused');
@@ -230,7 +252,24 @@ describe('the prompt hook', () => {
     );
     expect(out.stderr).toContain('[myco] user-prompt-submit: recall skipped (retry)');
     expect(out.stdout).toBe(`Session:: \`${SESSION}\``);
-    expect(rig.rows('prompt_batches')).toBe(1);
+
+    // A transport failure on recall is a failure of the whole Deployment: the
+    // latch is set and the drain behind it is skipped rather than spending a
+    // second connect timeout on the same dark server.
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    expect(spool.readLatch()).not.toBeNull();
+    expect(spool.depth(SESSION)).toBe(1);
+    expect(rig.rows('prompt_batches')).toBe(0);
+
+    // The next hook past the latch delivers what was held, and a served answer clears it.
+    spool.clearLatch();
+    await runHook(
+      'user-prompt-submit',
+      { session_id: SESSION, hook_event_name: 'UserPromptSubmit', transcript_path: transcript(), prompt: 'a second prompt' },
+      { fetch: rig.fetch },
+    );
+    expect(rig.rows('prompt_batches')).toBe(2);
+    expect(spool.readLatch()).toBeNull();
   });
 
   it('asks for nothing when the prompt was dropped', async () => {
