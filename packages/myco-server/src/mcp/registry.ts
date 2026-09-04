@@ -4,11 +4,13 @@
  * enum by `tests/myco-server/tool-parity.test.ts`: an op can be served or
  * named, never absent.
  *
- * A `notServed` entry names the issue that delivers the op, or `never` for an
- * op a Deployment does not offer. The tool answers it as a `not_served` error,
- * so a caller sees what is missing rather than an empty result.
+ * The handlers are here; the ops with no handler come from `UNSERVED_OPS` in
+ * the catalogue, which names the issue that delivers each one, or `never` for an
+ * op a Deployment does not offer. The tool answers those as a `not_served`
+ * error, so a caller sees what is missing rather than an empty result. One list
+ * of them serves this registry and the Cortex payload alike.
  */
-import { SERVED_TOOLS, type ServedTool } from '../core/tool-catalogue.js';
+import { NO_OP, SERVED_TOOLS, UNSERVED_OPS, type ServedTool } from '../core/tool-catalogue.js';
 import type { ToolContext } from './context.js';
 import { handleAgent } from './tools/agent.js';
 import { handleCortexDigest, handleCortexInstructions, handleCortexProjectsActivity } from './tools/cortex.js';
@@ -27,29 +29,27 @@ export interface ToolEntry {
   ops: Record<string, RegistryEntry>;
 }
 
-/** The op key of a tool without an op concept. */
-export const NO_OP = '*';
+export { NO_OP };
 
 const served = (handler: ToolHandler): RegistryEntry => ({ handler });
-const notServed = (by: string): RegistryEntry => ({ notServed: by });
+/** The catalogue's unserved ops for one tool, as registry entries; the issue it names rides the answer. */
+const notServed = (tool: ServedTool): Record<string, RegistryEntry> =>
+  Object.fromEntries(Object.entries(UNSERVED_OPS[tool] ?? {}).map(([op, by]) => [op, { notServed: by }]));
 
 export const TOOL_REGISTRY: Record<ServedTool, ToolEntry> = {
-  myco_search: { defaultOp: null, ops: { [NO_OP]: notServed('#1027') } },
+  myco_search: { defaultOp: null, ops: { ...notServed('myco_search') } },
   myco_cortex: {
     defaultOp: 'digest',
     ops: {
       digest: served(handleCortexDigest),
       instructions: served(handleCortexInstructions),
-      canopy_map: notServed('#920'),
-      canopy_entry: notServed('#920'),
-      notifications: notServed('#922'),
-      maintenance_summary: notServed('#923'),
       projects_activity: served(handleCortexProjectsActivity),
+      ...notServed('myco_cortex'),
     },
   },
   myco_plans: {
     defaultOp: 'list',
-    ops: { list: served(handlePlans), get: served(handlePlans), save: served(handlePlans), delete: notServed('never') },
+    ops: { list: served(handlePlans), get: served(handlePlans), save: served(handlePlans), ...notServed('myco_plans') },
   },
   myco_sessions: { defaultOp: 'list', ops: { list: served(handleSessions), get: served(handleSessions) } },
   myco_skills: { defaultOp: 'list', ops: { list: served(handleSkills), get: served(handleSkills) } },
