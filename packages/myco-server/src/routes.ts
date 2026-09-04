@@ -18,7 +18,7 @@ import {
 import { MAX_UPLOAD_BODY_BYTES } from './core/backup.js';
 import { handleBlobRead } from './api/blobs.js';
 import { handleGetSpore, handleListSpores, handleResolveSpore, handleSaveSpore } from './api/spores.js';
-import { handlePromptContext } from './api/recall.js';
+import { handlePromptContext, handleSessionContext } from './api/recall.js';
 import {
   handleProjectDigestRevisions, handleProjectDigests, handleProjectReleaseStates,
   handleProjectSkill, handleProjectSkills, handleProjectSpore, handleProjectSpores, handleProjectInstructions,
@@ -118,6 +118,9 @@ export const ROUTES: readonly Route[] = [
   // `quotaPrecheck: false`: the byte quota bounds what a member's capture may
   // write, and this route answers a read of the Project's own intelligence.
   { method: 'POST', path: '/context/prompt', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handlePromptContext },
+  // What a starting session or a starting subagent is served: the Project's
+  // instructions, and the preferred digest where a Deployment asks for it.
+  { method: 'POST', path: '/context/session', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionContext },
   { method: 'POST', path: '/runs/state/read', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleReadState },
   { method: 'POST', path: '/runs/state/write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteState },
   // The tool surface: the seven MCP tools over the Deployment for a member, the

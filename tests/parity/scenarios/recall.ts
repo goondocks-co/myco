@@ -2,11 +2,12 @@ import { expect } from 'bun:test';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
- * Prompt recall on both targets: a prompt carrying planning intent is served the
- * nudge and the session's unseen spores, the same prompt content is served
- * nothing a second time, the record of what the prompt was served reaches the
- * session explorer under that prompt, and a Project withdrawn from `cortex` is
- * served an empty block naming the gate.
+ * Recall on both targets: a prompt carrying planning intent is served the nudge
+ * and the session's unseen spores, the same prompt content is served nothing a
+ * second time, the record of what the prompt was served reaches the session
+ * explorer under that prompt, a starting session is served the Project's
+ * instructions once and every delegation of it is served too, and a Project
+ * withdrawn from `cortex` is served an empty block naming the gate.
  */
 export const recall: ParityScenario = {
   name: 'recall: the nudge and the unseen spores on a prompt, once per session, gated by the capability',
@@ -41,7 +42,7 @@ export const recall: ParityScenario = {
       expect(`cortex ${enabled}: ${res.status}`).toBe(`cortex ${enabled}: 200`);
     };
 
-    interface Served { persisted?: boolean; context?: string; parts?: Array<{ kind: string; sporeIds?: string[] }>; skipped?: string[] }
+    interface Served { persisted?: boolean; context?: string; parts?: Array<{ kind: string; sporeIds?: string[] }>; skipped?: string[]; kind?: string }
     const served = async (sessionId: string, promptId: string, text: string): Promise<Served> => {
       const res = await fetch(`${target.url}/context/prompt`, {
         method: 'POST',
@@ -51,6 +52,18 @@ export const recall: ParityScenario = {
       expect(res.status).toBe(200);
       return (await res.json()) as Served;
     };
+    const sessionBlock = async (payload: Record<string, unknown>): Promise<Served> => {
+      const res = await fetch(`${target.url}/context/session`, {
+        method: 'POST',
+        headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      expect(res.status).toBe(200);
+      return (await res.json()) as Served;
+    };
+    const servedAtStart = (sessionId: string) => sessionBlock({ sessionId, kind: 'start' });
+    const servedToSubagent = (sessionId: string, agentId: string, agentType: string) =>
+      sessionBlock({ sessionId, kind: 'subagent', agentId, agentType });
 
     const stamp = Date.now();
     const session = `parity-recall-${stamp}`;
@@ -95,11 +108,37 @@ export const recall: ParityScenario = {
     expect(turn.body.injection?.sporeIds).toContain(sporeId);
     expect(turn.body.injection?.spores.map((s) => s.id)).toContain(sporeId);
 
+    // A starting session is served the Project's instructions, trimmed and with
+    // no heading, and is served nothing a second time.
+    const guidance = `Keep the plan for ${stamp} current.`;
+    await target.sql(`INSERT INTO cortex_instructions (project_id, id, agent_id, content, input_hash, source_run_id, generated_at)
+      VALUES (${lit(target.projectId)}, ${lit(`ci-${stamp}`)}, 'user', ${lit(`  ${guidance}  `)}, ${lit(`h-${stamp}`)}, NULL, ${stamp})`);
+    const startSession = `parity-recall-start-${stamp}`;
+    const atStart = await servedAtStart(startSession);
+    expect(atStart.persisted).toBe(true);
+    expect(atStart.parts?.map((p) => p.kind)).toEqual(['instructions']);
+    expect(atStart.context).toBe(guidance);
+    expect(atStart.kind).toBe('cortex');
+    expect(await servedAtStart(startSession))
+      .toEqual({ persisted: true, context: '', parts: [], skipped: ['digest:off', 'repeat'], kind: 'cortex' });
+
+    // Two delegations of one type are two subagents, and each is served.
+    for (const agentId of ['a1', 'a2']) {
+      const delegated = await servedToSubagent(startSession, agentId, 'code-reviewer');
+      expect({ agentId, parts: delegated.parts?.map((p) => p.kind), kind: delegated.kind })
+        .toEqual({ agentId, parts: ['instructions'], kind: `cortex:${agentId}` });
+      expect(delegated.context?.endsWith(guidance)).toBe(true);
+    }
+    expect(await target.sql(`SELECT kind FROM session_injections WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(startSession)} ORDER BY kind`))
+      .toEqual([{ kind: 'cortex' }, { kind: 'cortex:a1' }, { kind: 'cortex:a2' }]);
+
     // A Project withdrawn from `cortex` is served an empty block naming the gate, and records nothing.
     await admit(false);
     const withdrawn = `parity-recall-off-${stamp}`;
     expect(await served(withdrawn, crypto.randomUUID(), planning))
       .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'] });
+    expect(await servedAtStart(withdrawn))
+      .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'], kind: 'cortex' });
     expect(await target.sql(`SELECT COUNT(*) AS n FROM session_injections WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(withdrawn)}`))
       .toEqual([{ n: 0 }]);
 

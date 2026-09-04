@@ -106,3 +106,30 @@ export async function listDigestRevisions(
     .bind(scope.projectId, agentId, tier, Math.min(limit, 200)).all<DigestRevisionRow>();
   return results;
 }
+
+/** The digest a requested tier is served, and whether the tier it carries is the one asked for. */
+export interface DigestChoice {
+  row: DigestRow;
+  fallback: boolean;
+}
+
+/**
+ * The digest served for `tier`: the newest row of that tier, and where the
+ * project holds no such tier, the newest row of the tier nearest to it.
+ *
+ * One rule, one place: the tool surface and session-start recall both serve a
+ * requested tier, and a project that holds only one tier is served that tier
+ * rather than nothing.
+ */
+export function digestForTier(rows: readonly DigestRow[], tier: number): DigestChoice | null {
+  const byTier = new Map<number, DigestRow>();
+  for (const row of rows) {
+    const held = byTier.get(row.tier);
+    if (held === undefined || row.generatedAt > held.generatedAt) byTier.set(row.tier, row);
+  }
+  const tiers = [...byTier.values()];
+  if (tiers.length === 0) return null;
+  const exact = tiers.find((t) => t.tier === tier);
+  if (exact) return { row: exact, fallback: false };
+  return { row: [...tiers].sort((a, b) => Math.abs(a.tier - tier) - Math.abs(b.tier - tier))[0], fallback: true };
+}
