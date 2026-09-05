@@ -24,6 +24,7 @@ import { linkStatement } from '@myco-server-worker/auth/identity-link.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
 import { httpHarnessLaunch } from '@myco-server-worker/platform/bun/harness-runner.js';
+import { RuntimeDraining } from '@myco-server-worker/core/harness.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { startSupervisor, type RunningSupervisor } from '@myco/agent/runtime/supervisor.js';
 
@@ -60,6 +61,8 @@ interface Seam {
   stopHarness(): Promise<void>;
   /** Bring a supervisor back at the same address the deployment already holds. */
   startHarness(): void;
+  /** Make the next launch start its child and then answer as one that timed out. */
+  loseNextAnswer(): void;
   probe(): Promise<{ draining: boolean; children: unknown[] }>;
   stop(): Promise<void>;
 }
@@ -112,12 +115,22 @@ async function boot(): Promise<Seam> {
   // The adapter is built before the socket is bound, and reads the port it
   // bound at each launch, exactly as the process entry wires it.
   let boundPort: number | null = null;
+  const launch = httpHarnessLaunch({
+    url: `http://127.0.0.1:${supervisorPort}`,
+    token: HARNESS_TOKEN,
+    callbackOrigin: () => `http://127.0.0.1:${boundPort!}`,
+  });
+  // A launch whose answer arrives past its deadline: the child is started, and
+  // the dispatcher hears nothing about it.
+  let loseAnswers = 0;
   const started = await serve({
-    harnessLaunch: httpHarnessLaunch({
-      url: `http://127.0.0.1:${supervisorPort}`,
-      token: HARNESS_TOKEN,
-      callbackOrigin: () => `http://127.0.0.1:${boundPort!}`,
-    }),
+    harnessLaunch: async (spec) => {
+      await launch(spec);
+      if (loseAnswers > 0) {
+        loseAnswers -= 1;
+        throw new RuntimeDraining(`the harness runtime at http://127.0.0.1:${supervisorPort} could not be reached: timed out`, 'unreachable');
+      }
+    },
     databasePath,
     blobDir: join(root, 'blobs'),
     port: 0,
@@ -167,6 +180,7 @@ async function boot(): Promise<Seam> {
     },
     childEnv: () => JSON.parse(readFileSync(envOut, 'utf8')) as Record<string, string>,
     stopHarness: async () => { await supervisor.stop(); },
+    loseNextAnswer: () => { loseAnswers += 1; },
     startHarness: () => {
       supervisor = startSupervisor({
         token: HARNESS_TOKEN, entry: STAND_IN, workDir, port: supervisorPort, hostname: '127.0.0.1',
@@ -241,6 +255,33 @@ describe('a dispatch that starts a real runtime', () => {
     expect(await seam.probe()).toEqual({ ok: true, draining: false, children: [] } as never);
   }, 60_000);
 
+  it('lands a run whose launch was answered too late, rather than failing a child that is running', async () => {
+    const seam = await boot();
+    // The launch starts a child that claims a second and a half from now, and
+    // then answers as one that timed out.
+    seam.loseNextAnswer();
+    process.env.STANDIN_CLAIM_DELAY_MS = '1500';
+    try {
+      const held = await seam.dispatch();
+      expect(held).toMatchObject({ queued: true, heldBy: 'runtime' });
+      const launched = seam.sql(`SELECT dispatched_by AS d FROM agent_runs WHERE id = '${held.runId}'`)[0]!.d as string;
+      // The credential the running child holds stays live on the queued row.
+      expect(launched).not.toBeNull();
+
+      // The drain offers it again; the supervisor is already running it, so the
+      // row goes back to pending under the credential that child holds.
+      expect((await seam.wake()).drained).toBe(1);
+      expect(seam.sql(`SELECT status, dispatched_by AS d FROM agent_runs WHERE id = '${held.runId}'`))
+        .toEqual([{ status: 'pending', d: launched }]);
+
+      // The child wakes, claims under it, and the run ends as any other does.
+      const row = await settled(seam, held.runId);
+      expect({ status: row.status, error: row.error }).toEqual({ status: 'completed', error: null });
+    } finally {
+      delete process.env.STANDIN_CLAIM_DELAY_MS;
+    }
+  }, 60_000);
+
   it('queues the dispatch while no runtime will take it, and drains it when one is back', async () => {
     const seam = await boot();
     await seam.stopHarness();
@@ -249,13 +290,21 @@ describe('a dispatch that starts a real runtime', () => {
     // full fleet either: the row says which of the two it is.
     const held = await seam.dispatch();
     expect(held).toMatchObject({ queued: true, heldBy: 'runtime' });
-    expect(seam.sql(`SELECT status, held_by AS heldBy, dispatched_by AS dispatchedBy FROM agent_runs WHERE id = '${held.runId}'`))
-      .toEqual([{ status: 'queued', heldBy: 'runtime', dispatchedBy: null }]);
+    // The row keeps the credential its launch minted: a launch that answered
+    // nothing may still have started a child, and the dispatcher cannot know.
+    const [waiting] = seam.sql(`SELECT status, held_by AS heldBy, dispatched_by AS dispatchedBy FROM agent_runs WHERE id = '${held.runId}'`);
+    expect(waiting).toMatchObject({ status: 'queued', heldBy: 'runtime' });
+    const carried = waiting!.dispatchedBy as string;
+    expect(seam.sql(`SELECT revoked_at AS r FROM member_credentials WHERE id = '${carried}'`)).toEqual([{ r: null }]);
     // Nothing failed, and nothing is running.
     expect(seam.sql(`SELECT COUNT(*) AS c FROM agent_runs WHERE status = 'failed'`)).toEqual([{ c: 0 }]);
 
     seam.startHarness();
     expect((await seam.wake()).drained).toBe(1);
+    // The relaunch starts a fresh child, and retires the credential of the
+    // attempt it replaced.
+    expect(seam.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = '${carried}'`))
+      .toEqual([{ revoked: 1 }]);
 
     const row = await settled(seam, held.runId);
     expect({ status: row.status, error: row.error }).toEqual({ status: 'completed', error: null });

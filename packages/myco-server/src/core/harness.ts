@@ -22,7 +22,7 @@ import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
-import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
+import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { deploymentSecretStore } from './secrets.js';
 import { leafValues } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
@@ -195,6 +195,18 @@ export type RuntimeUnavailable = 'draining' | 'unreachable';
  * queue rather than failing, and the next drain launches it; `runId` names the
  * row once `launchDispatch` has returned it.
  */
+/**
+ * The runtime is already running the run this launch names.
+ *
+ * A launch answered after its bound is re-queued and offered again, and the
+ * supervisor that started a child for it the first time refuses the second by
+ * run id. The run is running: the row keeps the credential that child holds,
+ * and the launch counts as landed.
+ */
+export class RuntimeAlreadyHolding extends Error {
+  constructor(message: string) { super(message); this.name = 'RuntimeAlreadyHolding'; }
+}
+
 export class RuntimeDraining extends Error {
   constructor(message: string, readonly why: RuntimeUnavailable = 'draining', readonly runId?: string) {
     super(message);
@@ -390,6 +402,10 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     ...(spec.replaces === undefined ? {} : { replaces: spec.replaces }),
   });
   const scope = { projectId: prepared.projectId };
+  // A re-queued row carries the credential of the child an earlier launch may
+  // have started; the launch below replaces it, and what becomes of it depends
+  // on whether that child is still running.
+  const carried = spec.fromQueue === true ? (await getRun(env.db, scope, runId))?.dispatchedBy ?? null : null;
   // A queued row moves to pending for this credential; any other id is recorded afresh. Either way the row exists before
   // the launch, and the write itself carries the limit check when limits are given. A write that changed nothing minted
   // a credential for no run: it is revoked here, and the caller learns whether a limit or the row's own state refused it.
@@ -409,7 +425,12 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     throw new LimitReached();
   }
   /** What a launch that reached a runtime answers, whether its own call said so or the row did. */
-  const landed = async (): Promise<Launched> => {
+  const landed = async (options: { retire?: string | null } = {}): Promise<Launched> => {
+    // A fresh child runs under the credential just minted; the one the row
+    // carried belongs to an attempt that is over.
+    if (options.retire != null && options.retire !== minted.tokenId) {
+      await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, options.retire, now);
+    }
     emit({ kind: 'harness_dispatch', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor });
     try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
     return { runId, task: prepared.task, projectId: prepared.projectId, timeoutSeconds, provider: prepared.providerType };
@@ -435,6 +456,14 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // The runtime is running this run already, under the credential it started
+    // with: the row goes back to naming that one, and the credential minted for
+    // this attempt is revoked unused.
+    if (error instanceof RuntimeAlreadyHolding) {
+      if (carried !== null) await restoreDispatchCredential(env.db, scope, runId, carried);
+      await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, minted.tokenId, now);
+      return landed();
+    }
     if (error instanceof RuntimeDraining) {
       // The row moves back to the queue FIRST. A launch that reached a runtime
       // and lost only its answer leaves a live child holding this credential on
@@ -442,7 +471,9 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
       // row that has moved says the run is running and keeps what it holds.
       const returned = await returnToQueue(env.db, scope, runId, { heldBy: 'runtime', dispatchSpec: JSON.stringify(storedSpecOf(spec)), now });
       if (returned) {
-        await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, minted.tokenId, now);
+        // The credential stays live on the row: a launch answered late may have
+        // started a child that claims under it. Its successor's launch revokes
+        // it, and the expiry revokes it where no successor comes.
         if (error.why === 'unreachable') {
           emit({ kind: 'harness_unreachable', runId, task: prepared.task, projectId: prepared.projectId, error: message });
         } else {
@@ -458,7 +489,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     await applyRunUpdate(env.db, scope, runId, { status: 'failed', completed_at: now, error: `${LAUNCH_REFUSED_ERROR}: ${message}`.slice(0, MAX_RUN_ERROR_CHARS) });
     throw error;
   }
-  return landed();
+  return landed({ retire: carried });
 }
 
 /** Prepare and launch in one call, for a caller with no claim of its own to make between them. */

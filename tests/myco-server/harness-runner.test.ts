@@ -9,7 +9,7 @@
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import { httpHarnessLaunch, LAUNCH_TIMEOUT_MS } from '@myco-server-worker/platform/bun/harness-runner.js';
-import { RuntimeDraining } from '@myco-server-worker/core/harness.js';
+import { RuntimeAlreadyHolding, RuntimeDraining } from '@myco-server-worker/core/harness.js';
 
 const TOKEN = 'supervisor-token';
 const CALLBACK = 'http://127.0.0.1:8787';
@@ -85,8 +85,12 @@ describe("a refusal reaches the dispatcher in the supervisor's own words", () =>
   const refusing = (status: number, body: Record<string, unknown>) =>
     httpHarnessLaunch({ url: supervisor(() => Response.json(body, { status })).url, token: TOKEN, callbackOrigin: origin });
 
-  it('throws the word for a run already running', async () => {
-    await expect(refusing(409, { refusal: 'duplicate' })(dispatch)).rejects.toThrow(/duplicate/);
+  it('is a launch that landed when the runtime is already running the run it names', async () => {
+    // The supervisor started a child for this run on an earlier attempt whose
+    // answer arrived late; the run is running, not refused.
+    const caught = await refusing(409, { refusal: 'duplicate' })(dispatch).then(() => null, (err: unknown) => err);
+    expect(caught).toBeInstanceOf(RuntimeAlreadyHolding);
+    expect((caught as Error).message).toContain('duplicate');
   });
 
   it('throws the word for a supervisor that is draining', async () => {
@@ -136,10 +140,10 @@ describe("a refusal reaches the dispatcher in the supervisor's own words", () =>
   });
 
   it('is a terminal failure for every other refusal', async () => {
-    for (const [status, body] of [[409, { refusal: 'duplicate' }], [500, { refusal: 'spawn', error: 'x' }], [400, { refusal: 'invalid' }], [401, {}], [502, { refusal: 'nope' }]] as const) {
+    for (const [status, body] of [[500, { refusal: 'spawn', error: 'x' }], [400, { refusal: 'invalid' }], [401, {}], [502, { refusal: 'nope' }], [409, { refusal: 'elsewhere' }]] as const) {
       const caught = await refusing(status, body)(dispatch).then(() => null, (err: unknown) => err);
-      expect({ status, draining: caught instanceof RuntimeDraining, error: caught instanceof Error })
-        .toEqual({ status, draining: false, error: true });
+      expect({ status, retryable: caught instanceof RuntimeDraining || caught instanceof RuntimeAlreadyHolding, error: caught instanceof Error })
+        .toEqual({ status, retryable: false, error: true });
     }
   });
 

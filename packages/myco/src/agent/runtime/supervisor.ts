@@ -15,11 +15,15 @@
  * A run's own ending is the runtime's to post, and a runtime that dies before
  * it can — killed inside its first second, out of memory, a bad image — leaves
  * a row live until a sweep gives up on it minutes later. The supervisor holds
- * that run's dispatch, so it posts the ending itself from the child's exit, and
- * waits for that post before it leaves. It posts only for a child it did not
- * ask to stop: a drained runtime exits non-zero after recording its own
- * reclaim, and the credential that run was launched with is revoked the instant
- * any ending lands, so a second post carries a credential the server refuses.
+ * that run's dispatch, so it posts the ending itself, and waits for that post
+ * before it leaves.
+ *
+ * The child's exit code says whether one is owed. The runtime has exactly two
+ * endings of its own — 0 for a run it finished, 1 for a run it named on the row
+ * itself — and posts nothing for either. Every other exit is a death the
+ * runtime did not describe: a kill, an out-of-memory, a signal inside the boot
+ * window before its own handlers are live. Those are posted, drain or no drain,
+ * which is what makes a hard death during a drain reach the row.
  *
  * The route authenticates before it reads anything: an unauthenticated body is
  * never buffered. The socket's `maxRequestBodySize` answers 413 to an oversize
@@ -141,11 +145,27 @@ export function runControlOf(envVars: Record<string, string>): RunControl | null
 /** How a run whose runtime died before it ended is recorded. */
 export const RUNTIME_DIED_ERROR = 'the runtime exited before the run ended';
 
+/**
+ * The exit codes a runtime uses for an ending it wrote itself.
+ *
+ * `server-entry.ts` leaves 0 for a run that finished and 1 for one it named on
+ * the row; anything else is a death it did not get to describe.
+ */
+export const RUNTIME_OWN_ENDINGS: ReadonlySet<number> = new Set([0, 1]);
+
 /** How long the supervisor gives the post that closes a run its child abandoned. */
 const CLOSE_TIMEOUT_MS = 5_000;
 
-/** How long a launch body may go without a further byte before the read is abandoned. */
-export const BODY_READ_TIMEOUT_MS = 10_000;
+/**
+ * How long a launch body may go without a further byte, and how long the whole
+ * body may take.
+ *
+ * Both sit inside the deadline the dispatcher gives the launch call
+ * (`LAUNCH_TIMEOUT_MS`), so the 408 reaches a real caller as an answer rather
+ * than after it has already given up.
+ */
+export const BODY_READ_TIMEOUT_MS = 2_000;
+export const BODY_TOTAL_TIMEOUT_MS = 5_000;
 
 /** Close a run its runtime left open, with that run's own credential. */
 async function closeAbandonedRun(control: RunControl, runId: string, code: number, now: number): Promise<Response> {
@@ -217,29 +237,40 @@ export type BodyRefusal = 'too-large' | 'stalled';
  * and then stops is given `timeoutMs` for its next byte and abandoned after it,
  * so a handler is never held by a body that does not end.
  */
-export async function readBounded(request: Request, limit: number, timeoutMs = BODY_READ_TIMEOUT_MS): Promise<{ ok: true; text: string } | { ok: false; why: BodyRefusal }> {
+export async function readBounded(
+  request: Request, limit: number, timeoutMs = BODY_READ_TIMEOUT_MS, totalMs = BODY_TOTAL_TIMEOUT_MS,
+): Promise<{ ok: true; text: string } | { ok: false; why: BodyRefusal }> {
   if (request.body === null) return { ok: true, text: '' };
   const reader = request.body.getReader();
+  // A caller that keeps sending a byte at a time passes every per-read deadline
+  // and never finishes; the whole body has a deadline of its own.
+  const by = Date.now() + totalMs;
   const chunks: Uint8Array[] = [];
   let size = 0;
-  for (;;) {
-    let step: { done: boolean; value?: Uint8Array };
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const stalled = new Promise<'stalled'>((resolve) => { timer = setTimeout(() => { resolve('stalled'); }, timeoutMs); });
-      const next = await Promise.race([reader.read(), stalled]);
-      if (next === 'stalled') return { ok: false, why: 'stalled' };
-      step = next;
-    } catch {
-      return { ok: true, text: '' };
-    } finally {
-      clearTimeout(timer);
+  try {
+    for (;;) {
+      let step: { done: boolean; value?: Uint8Array };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const remaining = Math.min(timeoutMs, by - Date.now());
+      if (remaining <= 0) return { ok: false, why: 'stalled' };
+      try {
+        const stalled = new Promise<'stalled'>((resolve) => { timer = setTimeout(() => { resolve('stalled'); }, remaining); });
+        const next = await Promise.race([reader.read(), stalled]);
+        if (next === 'stalled') return { ok: false, why: 'stalled' };
+        step = next;
+      } catch {
+        return { ok: true, text: '' };
+      } finally {
+        clearTimeout(timer);
+      }
+      if (step.done) break;
+      if (step.value === undefined) continue;
+      size += step.value.byteLength;
+      if (size > limit) return { ok: false, why: 'too-large' };
+      chunks.push(step.value);
     }
-    if (step.done) break;
-    if (step.value === undefined) continue;
-    size += step.value.byteLength;
-    if (size > limit) return { ok: false, why: 'too-large' };
-    chunks.push(step.value);
+  } finally {
+    reader.releaseLock();
   }
   const joined = new Uint8Array(size);
   let at = 0;
@@ -301,21 +332,21 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
   };
 
   const childExited = async (runId: string, code: number): Promise<void> => {
-    const stopped = draining;
     const decision = decideChildExit(state(), runId);
     const child = children.get(runId);
-    children.delete(runId);
+    // What the run held goes before the run leaves the map: the probe reports a
+    // run released only once its working directory and its kill are gone.
     if (child !== undefined) {
       attempt('backstop', runId, () => { child.cancelBackstop(); });
       attempt('workdir', runId, () => { rmSync(child.dir, { recursive: true, force: true }); });
     }
+    children.delete(runId);
     line({ kind: 'supervisor_child_exited', runId, code, running: decision.running.length });
-    // A child that left cleanly posted its own ending; any other exit may have
+    // A child that ended on its own terms wrote its own status; any other exit
     // left the run open, and this is the only process that can still close it.
-    // A child this supervisor asked to stop records its own reclaim and is left
-    // to it. The post is awaited: this process leaves behind the last child of a
-    // drain, so a post that must land has to land before that.
-    if (code !== 0 && !stopped && child?.control != null) {
+    // The post is awaited: this process leaves behind the last child of a drain,
+    // so a post that must land has to land before that.
+    if (!RUNTIME_OWN_ENDINGS.has(code) && child?.control != null) {
       try {
         const answered = await closeAbandonedRun(child.control, runId, code, Date.now());
         line({ kind: 'supervisor_run_closed', runId, code, status: answered.status });

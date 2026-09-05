@@ -830,11 +830,16 @@ export async function launchQueued(db: RelationalStore, scope: ReadScope, runId:
  *
  * `queued_at` is kept where the row already had one, so a run returned here
  * keeps its place in the queue's order rather than moving to the back of it.
- * The row is left as a queued row is written: the launch's own context is
- * dropped, and the drain rebuilds it when it launches.
+ * The launch's own context is dropped, and the drain rebuilds it when it
+ * launches.
+ *
+ * `dispatched_by` STAYS. A launch can be answered late — after the supervisor
+ * already started a child with that credential — and the child claims under it.
+ * The relaunch revokes it when it mints a successor, and the expiry revokes it
+ * when there will be no successor.
  */
 const RETURN_TO_QUEUE_SQL = `UPDATE agent_runs
-   SET status = 'queued', held_by = ?, dispatch_spec = ?, dispatched_by = NULL, started_at = NULL,
+   SET status = 'queued', held_by = ?, dispatch_spec = ?, started_at = NULL,
        run_context = NULL, queued_at = COALESCE(queued_at, ?)
  WHERE project_id = ? AND id = ? AND status = 'pending'`;
 
@@ -848,18 +853,33 @@ export async function returnToQueue(
 }
 
 /**
+ * Put a run's dispatching credential back, from `pending` alone.
+ *
+ * A relaunch of a run the runtime is already running mints a credential nothing
+ * will present: the child in flight claims under its own, and the row has to
+ * name that one for the claim to be admitted.
+ */
+export async function restoreDispatchCredential(db: RelationalStore, scope: ReadScope, runId: string, tokenId: string): Promise<boolean> {
+  const result = await db
+    .prepare(`UPDATE agent_runs SET dispatched_by = ? WHERE project_id = ? AND id = ? AND status = 'pending'`)
+    .bind(tokenId, scope.projectId, runId).run();
+  return result.meta.changes === 1;
+}
+
+/**
  * A queued run the Deployment decided not to launch is skipped by name, from
  * `queued` alone; its context names why, as a clock's skip does.
  *
- * The row takes a start where it has none: every run view reads `started_at`
- * for when a run happened, and a skipped row without one renders as a run that
- * never began.
+ * `started_at` is left as it is. A run that never ran has no start, and
+ * `taskRunsLastHour` counts starts: stamping one here would spend an hour of
+ * the task's rate on a run that did no work. A reader shows when such a row
+ * ended instead.
  */
 export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: string, now: number, reason: string): Promise<boolean> {
   const result = await db
-    .prepare(`UPDATE agent_runs SET status = 'skipped', started_at = COALESCE(started_at, ?), completed_at = ?, run_context = ?, held_by = NULL, dispatch_spec = NULL
+    .prepare(`UPDATE agent_runs SET status = 'skipped', completed_at = ?, run_context = ?, held_by = NULL, dispatch_spec = NULL
        WHERE project_id = ? AND id = ? AND status = 'queued'`)
-    .bind(now, now, skipContext(reason), scope.projectId, runId)
+    .bind(now, skipContext(reason), scope.projectId, runId)
     .run();
   return result.meta.changes === 1;
 }
@@ -868,15 +888,14 @@ export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: s
  * A queued run the Deployment can no longer launch is failed by name, from
  * `queued` alone.
  *
- * The row takes a start where it has none, as a skipped one does: every run
- * view reads `started_at` for when a run happened, and rendering it as a run
- * that happened requires one.
+ * `started_at` is left as it is, as it is for a skipped row: a run that never
+ * ran has no start, and `taskRunsLastHour` counts starts.
  */
-const FAIL_QUEUED_SQL = `UPDATE agent_runs SET status = 'failed', started_at = COALESCE(started_at, ?), completed_at = ?, error = ?, held_by = NULL
+const FAIL_QUEUED_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, held_by = NULL
   WHERE project_id = ? AND id = ? AND status = 'queued'`;
 
 export async function failQueuedRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string): Promise<boolean> {
-  const result = await db.prepare(FAIL_QUEUED_SQL).bind(now, now, error, scope.projectId, runId).run();
+  const result = await db.prepare(FAIL_QUEUED_SQL).bind(now, error, scope.projectId, runId).run();
   return result.meta.changes === 1;
 }
 
@@ -887,9 +906,12 @@ export interface QueuedRunRef {
   queuedAt: number;
   heldBy: string | null;
   dispatchSpec: string | null;
+  /** The credential a re-queued row still carries, for the child a late answer may have started; null for a row that never launched. */
+  dispatchedBy: string | null;
 }
 
-const QUEUED_RUNS_SQL = `SELECT project_id AS projectId, id, task, queued_at AS queuedAt, held_by AS heldBy, dispatch_spec AS dispatchSpec
+const QUEUED_RUNS_SQL = `SELECT project_id AS projectId, id, task, queued_at AS queuedAt, held_by AS heldBy,
+    dispatch_spec AS dispatchSpec, dispatched_by AS dispatchedBy
   FROM agent_runs WHERE status = 'queued' ORDER BY queued_at ASC, id ASC LIMIT ?`;
 
 /** Every queued run on the Deployment, oldest first: the drain's read, across Projects like the sweep's. */

@@ -18,8 +18,9 @@ import { platform } from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  DEFAULT_SUPERVISOR_HOSTNAME, MAX_LAUNCH_BODY_BYTES, startSupervisor, supervisorOptionsFromEnv,
-  SUPERVISOR_ONLY_ENV, type RunningSupervisor, type SpawnedChild, type SpawnPlan,
+  DEFAULT_SUPERVISOR_HOSTNAME, MAX_LAUNCH_BODY_BYTES, RUNTIME_DIED_ERROR, RUNTIME_OWN_ENDINGS,
+  startSupervisor, supervisorOptionsFromEnv, SUPERVISOR_ONLY_ENV,
+  type RunningSupervisor, type SpawnedChild, type SpawnPlan,
 } from '@myco/agent/runtime/supervisor.js';
 
 const TOKEN = 'supervisor-token';
@@ -548,19 +549,27 @@ describe('a run whose runtime died before it ended', () => {
     }
   });
 
-  it('is left alone when its runtime exited cleanly, which means the run posted its own ending', async () => {
-    const s = boot();
+  it('is closed when a hard death takes it during a drain, before this process leaves', async () => {
+    // A runtime the drain could not stop is killed at the backstop; the run it
+    // held is named on the row before the supervisor goes.
+    const s = boot({ overrunMarginMs: 120 });
     const deploy = deployment();
+    const out = join(s.root, 'killed.json');
     try {
       expect((await s.launch({
-        runId: 'run_clean',
-        timeoutSeconds: 120,
-        envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_run_clean', MYCO_PROJECT: 'proj_1', STANDIN_EXIT_CODE: '0' },
+        runId: 'run_killed',
+        timeoutSeconds: 0,
+        envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_killed', MYCO_PROJECT: 'proj_1', STANDIN_OUT: out, STANDIN_IGNORE_SIGTERM: '1' },
       })).status).toBe(202);
+      await until(() => existsSync(out), 'the child to run');
 
-      await until(async () => (await s.probe()).children.length === 0, 'the child to leave');
-      await Bun.sleep(200);
-      expect(deploy.posts).toEqual([]);
+      s.signal();
+      await until(() => s.exits.length > 0, 'the supervisor to leave');
+      // The post landed before the process left, not after it.
+      expect(deploy.posts).toHaveLength(1);
+      const update = deploy.posts[0]!.body.update as { status: string; error: string };
+      expect(update.status).toBe('failed');
+      expect(update.error).toContain(RUNTIME_DIED_ERROR);
     } finally {
       deploy.stop();
     }
@@ -577,6 +586,7 @@ describe('a run whose runtime died before it ended', () => {
       expect((await s.launch({
         runId: 'run_drained',
         timeoutSeconds: 120,
+        // Exit 1 is the runtime's own word for a run it named on the row itself.
         envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_drained', MYCO_PROJECT: 'proj_1', STANDIN_OUT: out, STANDIN_HOLD_SIGTERM: hold, STANDIN_EXIT_ON_SIGTERM: '1' },
       })).status).toBe(202);
       await until(() => existsSync(out), 'the child to run');
@@ -587,6 +597,26 @@ describe('a run whose runtime died before it ended', () => {
 
       await until(() => s.exits.length > 0, 'the supervisor to leave');
       // Nothing is posted over the ending that run wrote for itself.
+      expect(deploy.posts).toEqual([]);
+    } finally {
+      deploy.stop();
+    }
+  });
+
+  it('is left alone for either ending the runtime writes itself', async () => {
+    // 0 is a run that finished, 1 is a run the runtime named on the row.
+    expect([...RUNTIME_OWN_ENDINGS].sort()).toEqual([0, 1]);
+    const s = boot();
+    const deploy = deployment();
+    try {
+      for (const [runId, code] of [['run_zero', '0'], ['run_one', '1']] as const) {
+        expect((await s.launch({
+          runId, timeoutSeconds: 120,
+          envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_own', MYCO_PROJECT: 'proj_1', STANDIN_EXIT_CODE: code },
+        })).status).toBe(202);
+      }
+      await until(async () => (await s.probe()).children.length === 0, 'both children to leave');
+      await Bun.sleep(200);
       expect(deploy.posts).toEqual([]);
     } finally {
       deploy.stop();

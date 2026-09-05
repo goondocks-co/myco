@@ -125,7 +125,7 @@ function RunRow({ run, active, onOpen }: { run: RunListRow; active: boolean; onO
         </div>
       ) : (
         <div className="mt-1 flex gap-3 font-mono text-[11px] text-on-surface-variant">
-          <span>{formatRelative(run.startedAt)}</span>
+          <span>{formatRelative(run.startedAt ?? run.completedAt)}</span>
           <span>{formatDuration(run.startedAt, run.completedAt)}</span>
           <span>{formatTokens(run.tokensUsed)} tok</span>
           <span>{formatCost(run.costUsd, run.costSource)}</span>
@@ -176,7 +176,7 @@ function RunBody({ run, phases, reports, agentName }: { run: RunDetailRow; phase
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard label="Status" value={run.status} tone={run.status === 'failed' ? 'terra' : run.status === 'completed' ? 'sage' : 'ochre'} />
-        <MetricCard label="Started" value={formatRelative(run.startedAt)} sub={formatDateTime(run.startedAt)} />
+        <MetricCard label="Started" value={formatRelative(run.startedAt ?? run.completedAt)} sub={formatDateTime(run.startedAt ?? run.completedAt)} />
         <MetricCard label="Duration" value={formatDuration(run.startedAt, run.completedAt)} />
         <MetricCard label="Tokens" value={formatTokens(run.tokensUsed)} sub={formatCost(run.costUsd, run.costSource)} tone="ochre" />
       </div>

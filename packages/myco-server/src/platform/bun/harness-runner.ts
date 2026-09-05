@@ -8,11 +8,13 @@
  *
  * A refusal is thrown. A supervisor that is draining, restarting, or not
  * reachable is `RuntimeDraining` and the dispatcher returns the run to the
- * queue; every other refusal is terminal, and its word rides the failed row.
+ * queue; one already running the run a launch names is `RuntimeAlreadyHolding`,
+ * which the dispatcher counts as landed; every other refusal is terminal, and
+ * its word rides the failed row.
  * Unavailability is read from the status as well as the word: a 503 is a
  * runtime that is not serving whatever body it sent, including none.
  */
-import { RuntimeDraining } from '../../core/harness.js';
+import { RuntimeAlreadyHolding, RuntimeDraining } from '../../core/harness.js';
 import type { ServerEnv } from '../../core/adapters.js';
 
 export interface HttpHarnessOptions {
@@ -34,6 +36,10 @@ interface Refusal {
 
 /** The word a supervisor answers with while it is stopping. */
 const DRAINING = 'draining';
+
+/** The word a supervisor answers when it is already running the run a launch names, and the status it rides. */
+const DUPLICATE = 'duplicate';
+const CONFLICT_STATUS = 409;
 
 /** The status a runtime that is not serving answers with, whatever body it carries. */
 const UNAVAILABLE_STATUS = 503;
@@ -78,6 +84,7 @@ export function httpHarnessLaunch(options: HttpHarnessOptions): NonNullable<Serv
     const detail = text(body?.error);
     const message = `the harness runtime refused to launch ${spec.runId}: ${word}${detail === null ? '' : ` (${detail})`}`;
     if (answered.status === UNAVAILABLE_STATUS || word === DRAINING) throw new RuntimeDraining(message, 'draining');
+    if (answered.status === CONFLICT_STATUS && word === DUPLICATE) throw new RuntimeAlreadyHolding(message);
     throw new Error(message);
   };
 }

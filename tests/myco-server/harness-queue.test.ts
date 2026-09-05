@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
-import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, enqueueDispatch, HARNESS_MEMBER_ID, launchDispatch, LAUNCH_REFUSED_ERROR, LimitReached, MAX_RUN_ERROR_CHARS, prepareDispatch, RuntimeDraining } from '@myco-server-worker/core/harness.js';
+import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, enqueueDispatch, HARNESS_MEMBER_ID, launchDispatch, LAUNCH_REFUSED_ERROR, LimitReached, MAX_RUN_ERROR_CHARS, prepareDispatch, RuntimeAlreadyHolding, RuntimeDraining } from '@myco-server-worker/core/harness.js';
 import { HELD_BY_WORDS } from '@myco-server-worker/core/limits.js';
 import { agentRunRetention, QUEUE_EXPIRED_ERROR, QUEUE_MAX_AGE_MS, runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
 import { heldBy, readDispatchLimits } from '@myco-server-worker/core/limits.js';
@@ -310,17 +310,54 @@ describe('a runtime that is not taking runs', () => {
     expect(f.launches).toHaveLength(0);
 
     const row = f.run('run_held')!;
-    expect(row).toMatchObject({ status: 'queued', heldBy: 'runtime', dispatchedBy: null });
+    expect(row).toMatchObject({ status: 'queued', heldBy: 'runtime' });
     expect(JSON.parse(row.dispatchSpec as string)).toEqual({ serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 });
-    const credentials = f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE member_id = 'mem_harness'`).all() as Array<{ revoked_at: number | null }>;
-    expect(credentials.map((c) => c.revoked_at)).toEqual([NOW]);
+    // The credential stays live on the row: the launch may have been answered
+    // late, and a child started by it claims under exactly this one.
+    const first = row.dispatchedBy as string;
+    expect(first).not.toBeNull();
+    expect(f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(first)).toEqual({ revoked_at: null });
 
-    // The runtime comes back and the next drain launches exactly what queued.
+    // The runtime comes back and the next drain launches exactly what queued,
+    // retiring the credential of the attempt it replaces.
     stopping = false;
     expect(await drainQueue(f.env, NOW + 1)).toBe(1);
-    expect(f.run('run_held')?.status).toBe('pending');
+    const relaunched = f.run('run_held')!;
+    expect(relaunched.status).toBe('pending');
+    expect(relaunched.dispatchedBy).not.toBe(first);
+    expect(f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(first)).toEqual({ revoked_at: NOW + 1 });
     expect(f.launches.map((l) => l.runId)).toEqual(['run_held']);
     expect(f.launches[0]!.timeoutSeconds).toBe(120);
+  });
+
+  it('lands a relaunch the runtime is already running, and leaves that run its own credential', async () => {
+    // The launch deadline makes this ordinary: an answer arrives too late, the
+    // row is re-queued, and the runtime is still running the child it started.
+    let attempt = 0;
+    const f = fixture({
+      refuse: () => {
+        attempt += 1;
+        if (attempt === 1) return new RuntimeDraining('the harness runtime could not be reached', 'unreachable');
+        if (attempt === 2) return new RuntimeAlreadyHolding('the harness runtime refused to launch run_late: duplicate');
+        return undefined;
+      },
+    });
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    await dispatchPrepared(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120, runId: 'run_late' }, NOW);
+    const started = f.run('run_late')!.dispatchedBy as string;
+
+    // The drain offers it again and the runtime says it already has it.
+    expect(await drainQueue(f.env, NOW + 1)).toBe(1);
+    const row = f.run('run_late')!;
+    // The run is running, not failed, and the row names the credential the
+    // child in flight actually holds.
+    expect(row.status).toBe('pending');
+    expect(row.error).toBeNull();
+    expect(row.dispatchedBy).toBe(started);
+    expect(f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(started)).toEqual({ revoked_at: null });
+    // The credential minted for the refused attempt is revoked unused.
+    const live = f.sqlite.query(`SELECT id FROM member_credentials WHERE revoked_at IS NULL`).all() as Array<{ id: string }>;
+    expect(live.map((c) => c.id)).toEqual([started]);
   });
 
   it('ends this wake\'s drain rather than walking the queue, leaving every row behind it queued', async () => {
@@ -403,8 +440,16 @@ describe('a runtime that is not taking runs', () => {
     await enqueueDispatch(held.env, (prepared as { prepared: never }).prepared, { ...spec, runId: 'run_fresh' }, 'runtime', NOW);
 
     const rowOf = (id: string) => held.sqlite.query(`SELECT ${columns} FROM agent_runs WHERE id = ?`).get(id) as Record<string, unknown>;
-    // A returned row is a queued row: nothing of the launch it attempted survives on it.
-    expect(rowOf('run_returned')).toEqual(rowOf('run_fresh'));
+    const returned = rowOf('run_returned');
+    const fresh = rowOf('run_fresh');
+    // One column differs by design: a returned row keeps the credential a child
+    // an earlier launch may have started still claims under, where a row that
+    // never launched has none.
+    expect(returned.dispatched_by).not.toBeNull();
+    expect(fresh.dispatched_by).toBeNull();
+    // In everything else a returned row is a queued row: nothing of the launch
+    // it attempted survives on it.
+    expect({ ...returned, dispatched_by: null }).toEqual(fresh);
 
     // A row that already holds a place in line keeps it, rather than moving to the back.
     const drained = fixture({ refuse: () => draining() });
@@ -428,12 +473,26 @@ describe('a runtime that is not taking runs', () => {
     expect(lines.filter((l) => l.kind === 'harness_queue_expired'))
       .toEqual([{ kind: 'harness_queue_expired', runId: 'run_waited', task: 'container-smoke', projectId: 'proj_1' }]);
     expect(f.run('run_waited')).toMatchObject({ status: 'failed', error: QUEUE_EXPIRED_ERROR });
-    // The row takes a start, so a reader sees a run that happened rather than one that never began.
-    expect((f.sqlite.query(`SELECT started_at AS s FROM agent_runs WHERE id = 'run_waited'`).get() as { s: number | null }).s)
-      .toBe(NOW + QUEUE_MAX_AGE_MS);
     expect(f.run('run_recent')?.status).toBe('queued');
-    // A queued run holds no credential, so the sweep has nothing to revoke.
-    expect((f.sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get() as { c: number }).c).toBe(0);
+    // A run that never ran has no start, so a day of expiries does not spend
+    // the recovered runtime's hour under the per-hour limit.
+    expect((f.sqlite.query(`SELECT started_at AS s FROM agent_runs WHERE id = 'run_waited'`).get() as { s: number | null }).s).toBeNull();
+    expect(await dispatchLoad(f.env.db, 'container-smoke', NOW + QUEUE_MAX_AGE_MS))
+      .toEqual({ liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 });
+  });
+
+  it('revokes the credential a run kept for a child that never claimed, when it gives up on the run', async () => {
+    const f = fixture({ refuse: () => draining() });
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    await dispatchPrepared(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_forgotten' }, NOW);
+    const held = f.run('run_forgotten')!.dispatchedBy as string;
+    expect(f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(held)).toEqual({ revoked_at: null });
+
+    // Nothing launched it, so nothing is coming to retire what it holds.
+    expect(await runStaleSweep(f.env, NOW + QUEUE_MAX_AGE_MS)).toBe(1);
+    expect(f.run('run_forgotten')).toMatchObject({ status: 'failed', error: QUEUE_EXPIRED_ERROR });
+    expect(f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(held))
+      .toEqual({ revoked_at: NOW + QUEUE_MAX_AGE_MS });
   });
 
   it('prunes the revoked credentials its runs no longer name, and keeps the live ones', async () => {

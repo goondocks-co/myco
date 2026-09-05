@@ -10,6 +10,7 @@ import type { ServerEnv } from './adapters.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, HARNESS_MEMBER_ID, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 import { emit } from '../telemetry.js';
 import { failQueuedRun, failStaleRun, listLiveRunsAcrossProjects, listQueuedAcrossProjects, pruneRevokedCredentials, pruneTerminalRuns } from './runs.js';
+import { revokeCredentialOfMember } from '../auth/tokens.js';
 import { leafValues } from './settings.js';
 import { releaseRun } from './release.js';
 
@@ -84,8 +85,8 @@ export const QUEUE_EXPIRED_ERROR = 'no runtime took the run within a day';
  *
  * A live run whose runtime went away is failed by name and released as a
  * finished run is. A queued run nothing launched within `QUEUE_MAX_AGE_MS` is
- * failed by name too; it holds no credential and no container, so there is
- * nothing to release.
+ * failed by name too, and the credential a re-queued row kept live for a child
+ * that never claimed is revoked with it — no successor is coming to retire it.
  */
 export async function runStaleSweep(env: ServerEnv, now: number): Promise<number> {
   let changed = 0;
@@ -99,6 +100,7 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
   for (const queued of await listQueuedAcrossProjects(env.db, JOB_BATCH)) {
     if (now - queued.queuedAt < QUEUE_MAX_AGE_MS) continue;
     if (!(await failQueuedRun(env.db, { projectId: queued.projectId }, queued.id, now, QUEUE_EXPIRED_ERROR))) continue;
+    if (queued.dispatchedBy !== null) await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, queued.dispatchedBy, now);
     emit({ kind: 'harness_queue_expired', runId: queued.id, task: queued.task, projectId: queued.projectId });
     changed += 1;
   }
