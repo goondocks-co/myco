@@ -46,6 +46,15 @@ jobs:
       # Per-feature both-target parity scenarios (#1042): the Bun server
       # in-process and the Worker under wrangler dev with local D1.
       - run: npm run test:parity
+      # The Worker's own log from the parity run, kept when a scenario fails:
+      # a 500 or a dead dev server has its cause on the workerd side, not in
+      # the scenario's assertion.
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: parity-wrangler-logs
+          path: packages/myco-server/.wrangler/parity-dev-*.log
+          if-no-files-found: ignore
 
   # The self-hosted Deployment, on the platform it actually ships to.
   #
