@@ -31,6 +31,24 @@ async function wrangler(args: string[], env: Record<string, string | undefined> 
   return out;
 }
 
+/** How many times a `d1 execute` refused by the file lock is asked again. */
+export const LOCKED_RETRIES = 5;
+/** The first backoff; each retry waits twice the last. */
+export const LOCKED_BACKOFF_MS = 100;
+
+/**
+ * How long to wait before asking again, or null to raise what the command said.
+ *
+ * The dev worker holds the local D1 file, and a `d1 execute` issued while it is
+ * writing is refused rather than queued. Every other failure is the scenario's
+ * to see at once.
+ */
+export function lockedRetryWaitMs(said: string, attempt: number): number | null {
+  const locked = /database is locked|SQLITE_BUSY/i.test(said);
+  if (!locked || attempt >= LOCKED_RETRIES) return null;
+  return LOCKED_BACKOFF_MS * 2 ** attempt;
+}
+
 /** The shipped Worker under wrangler dev: real workerd, real migrations, local D1/R2, a throwaway state dir. */
 export async function bootCloudflare(): Promise<ParityTarget> {
   const tag = Math.random().toString(36).slice(2, 8);
@@ -39,8 +57,18 @@ export async function bootCloudflare(): Promise<ParityTarget> {
   const persistDir = path.join(SERVER_DIR, '.wrangler', `parity-state-${tag}`);
   fs.writeFileSync(configPath, parityWranglerConfig());
 
-  const d1 = (command: string) =>
-    wrangler(['d1', 'execute', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir, '--json', '--command', command]);
+  const d1 = async (command: string): Promise<string> => {
+    const args = ['d1', 'execute', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir, '--json', '--command', command];
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await wrangler(args);
+      } catch (error) {
+        const wait = lockedRetryWaitMs((error as Error).message, attempt);
+        if (wait === null) throw error;
+        await Bun.sleep(wait);
+      }
+    }
+  };
 
   const cleanup = () => {
     fs.rmSync(configPath, { force: true });
