@@ -257,51 +257,10 @@ export async function backupDeployment(options: BackupOptions): Promise<{ destin
   return { destination: options.destination };
 }
 
-export interface RestoreOptions extends DeploymentOptions {
-  /** Directory produced by {@link backupDeployment}. */
-  source: string;
-}
-
 /**
- * Replace a Deployment's data with a backup.
- *
- * The stack is stopped first. Copying a database under a running server would
- * leave its open connection reading pages that no longer describe the file.
- */
-export async function restoreDeployment(options: RestoreOptions): Promise<void> {
-  const { paths, runner } = resolved(options);
-  const snapshot = path.join(options.source, 'myco.sqlite');
-  if (!existsSync(snapshot)) {
-    throw new Error(`${options.source} holds no myco.sqlite; it is not a Deployment backup`);
-  }
-
-  await runOrThrow(runner, 'docker', composeArgs(paths, 'stop'), { cwd: paths.root });
-  await runOrThrow(runner, 'docker',
-    composeArgs(paths, 'cp', snapshot, 'server:/data/myco.sqlite'), { cwd: paths.root });
-  if (existsSync(path.join(options.source, 'blobs'))) {
-    await runOrThrow(runner, 'docker',
-      composeArgs(paths, 'cp', path.join(options.source, 'blobs'), 'server:/data/blobs'), { cwd: paths.root });
-  }
-  // Two things the copy leaves wrong, fixed as root before anything starts.
-  //
-  // `docker compose cp` writes as root, and the image runs unprivileged, so a
-  // copied database is read-only to the server — which surfaces as the
-  // container crash-looping on "attempt to write a readonly database" rather
-  // than as a failed restore.
-  //
-  // A WAL sidecar left in the volume belongs to the database the snapshot
-  // replaces, and SQLite replays it over the snapshot on open.
-  await runOrThrow(runner, 'docker',
-    composeArgs(paths, 'run', '--rm', '--user', 'root', '--entrypoint', 'sh', 'server', '-c',
-      `rm -f /data/myco.sqlite-wal /data/myco.sqlite-shm && chown -R ${RUNTIME_USER}:${RUNTIME_USER} /data`),
-    { cwd: paths.root });
-  await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
-}
-
-/**
- * What carries a run this deploy stopped waiting on. The harness shares the
- * server's network namespace, so a recreate stops it first and every runtime it
- * holds finishes inside its stop grace, posting its own ending.
+ * What carries a run a verb stopped waiting on. The harness shares the server's
+ * network namespace, so stopping or recreating the server stops it too, and
+ * every runtime it holds finishes inside its stop grace, posting its own ending.
  */
 const COMPOSE_SPARING = 'the harness finishes them inside its stop grace';
 
@@ -328,15 +287,89 @@ export async function readComposeLiveRuns(
   });
 }
 
-export interface UpdateOptions extends DeploymentOptions {
-  version?: string;
-  /** Skip returning to the previous version when the new one fails to come up. */
-  noRollback?: boolean;
-  /** Skip the wait for the runs in flight. They still finish inside the harness's stop grace, and the recreate waits behind them. */
+/** What a verb that replaces or restarts the stack offers over the runs in flight. */
+export interface DrainOptions {
+  /** Skip the wait for the runs in flight. They still finish inside the harness's stop grace, and the stack waits behind them. */
   noDrain?: boolean;
   /** Where the wait says where it is, as it gets there. */
   report?: (line: string) => void;
   clock?: Clock;
+}
+
+/**
+ * Wait for the runs in flight, unless the operator asked not to.
+ *
+ * Both verbs that take the server down go through here, so a Deployment cannot
+ * be replaced under a live run by one of them and not the other. `--no-drain`
+ * skips the wait and the read it needs: the escape hatch is used when the
+ * container cannot be reached, so it must not need the container to answer.
+ */
+async function drainLiveRuns(
+  target: { paths: DeploymentPaths; runner: CommandRunner },
+  options: DrainOptions,
+): Promise<void> {
+  if (options.noDrain === true) return;
+  const clock = options.clock ?? systemClock;
+  await waitForLiveRuns({
+    read: () => readComposeLiveRuns({ ...target, sleep: (ms) => clock.sleep(ms) }),
+    sparing: COMPOSE_SPARING,
+    clock,
+    ...(options.report === undefined ? {} : { report: options.report }),
+  });
+}
+
+export interface RestoreOptions extends DeploymentOptions, DrainOptions {
+  /** Directory produced by {@link backupDeployment}. */
+  source: string;
+}
+
+/**
+ * Replace a Deployment's data with a backup.
+ *
+ * The stack is stopped first. Copying a database under a running server would
+ * leave its open connection reading pages that no longer describe the file.
+ *
+ * The runs in flight are waited out before that stop: a restore replaces the
+ * database a live run is writing its own ending into, and the run would come
+ * back to a volume that never held it. A run dispatched during the wait
+ * finishes inside the harness's stop grace, which the stop gives it.
+ */
+export async function restoreDeployment(options: RestoreOptions): Promise<void> {
+  const { paths, runner } = resolved(options);
+  const snapshot = path.join(options.source, 'myco.sqlite');
+  if (!existsSync(snapshot)) {
+    throw new Error(`${options.source} holds no myco.sqlite; it is not a Deployment backup`);
+  }
+
+  await drainLiveRuns({ paths, runner }, options);
+  await runOrThrow(runner, 'docker', composeArgs(paths, 'stop'), { cwd: paths.root });
+  await runOrThrow(runner, 'docker',
+    composeArgs(paths, 'cp', snapshot, 'server:/data/myco.sqlite'), { cwd: paths.root });
+  if (existsSync(path.join(options.source, 'blobs'))) {
+    await runOrThrow(runner, 'docker',
+      composeArgs(paths, 'cp', path.join(options.source, 'blobs'), 'server:/data/blobs'), { cwd: paths.root });
+  }
+  // Two things the copy leaves wrong, fixed as root before anything starts.
+  //
+  // `docker compose cp` writes as root, and the image runs unprivileged, so a
+  // copied database is read-only to the server — which surfaces as the
+  // container crash-looping on "attempt to write a readonly database" rather
+  // than as a failed restore.
+  //
+  // A WAL sidecar left in the volume belongs to the database the snapshot
+  // replaces, and SQLite replays it over the snapshot on open.
+  await runOrThrow(runner, 'docker',
+    composeArgs(paths, 'run', '--rm', '--user', 'root', '--entrypoint', 'sh', 'server', '-c',
+      `rm -f /data/myco.sqlite-wal /data/myco.sqlite-shm && chown -R ${RUNTIME_USER}:${RUNTIME_USER} /data`),
+    { cwd: paths.root });
+  await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
+}
+
+
+export interface UpdateOptions extends DeploymentOptions, DrainOptions {
+  version?: string;
+  /** Skip returning to the previous version when the new one fails to come up. */
+  noRollback?: boolean;
 }
 
 /** The version a bundle is pinned to, or null when it tracks the default tag. */
@@ -404,17 +437,8 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
   const previous = pinnedVersion(paths);
 
   // Recreating the server stops the harness with it, so the runs in flight are
-  // waited out first. --no-drain skips the wait and the read it needs, which is
-  // what makes it the escape hatch for a container that cannot be reached.
-  if (options.noDrain !== true) {
-    const clock = options.clock ?? systemClock;
-    await waitForLiveRuns({
-      read: () => readComposeLiveRuns({ paths, runner, sleep: (ms) => clock.sleep(ms) }),
-      sparing: COMPOSE_SPARING,
-      clock,
-      ...(options.report === undefined ? {} : { report: options.report }),
-    });
-  }
+  // waited out first.
+  await drainLiveRuns({ paths, runner }, options);
 
   // The requested version travels as an environment override for the pull and
   // the recreate, and is written into the bundle only once both succeed.

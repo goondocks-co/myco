@@ -123,9 +123,39 @@ describe('restore', () => {
     const p = paths();
     await restoreDeployment({ paths: p, runner: runner(), source: backupDir() });
 
-    const verbs = calls.map((c) => c.args.find((a) => ['stop', 'cp', 'run', 'up'].includes(a)));
+    const verbs = calls.filter((c) => !c.args.includes('--live-runs'))
+      .map((c) => c.args.find((a) => ['stop', 'cp', 'run', 'up'].includes(a)));
     expect(verbs[0]).toBe('stop');
     expect(verbs.at(-1)).toBe('up');
+  });
+
+  it('waits for what is running before it stops, and a run arriving mid-wait is left to the grace', async () => {
+    const p = paths();
+    const lines: string[] = [];
+    const live = JSON.stringify([{ id: 'run_a', task: 'digest-only', status: 'running', started_at: 0, run_context: JSON.stringify({ timeoutSeconds: 1800 }) }]);
+    let answers = [live, '[]'];
+    const scripted: CommandRunner = {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        return { code: 0, stdout: args.includes('--live-runs') ? answers.shift() ?? '[]' : '', stderr: '' };
+      },
+    };
+
+    await restoreDeployment({ paths: p, runner: scripted, source: backupDir(), report: (l) => lines.push(l), clock: clock() });
+
+    // A restore replaces the database a live run writes its own ending into.
+    const flat = calls.map((c) => c.args.join(' '));
+    expect(flat.findIndex((a) => a.includes('--live-runs'))).toBe(0);
+    expect(flat.findIndex((a) => a.includes('--live-runs'))).toBeLessThan(flat.findIndex((a) => a.includes('stop')));
+    expect(lines).toContain('Waiting for a running task: digest-only, started 0 sec ago, budget 30 min');
+    expect(lines).toContain('Nothing is running; the deploy proceeds.');
+  });
+
+  it('--no-drain asks the container nothing at all', async () => {
+    const p = paths();
+    await restoreDeployment({ paths: p, runner: runner(), source: backupDir(), noDrain: true, report: () => undefined });
+    expect(calls.filter((c) => c.args.includes('--live-runs'))).toHaveLength(0);
+    expect(argvText()).toContain('stop');
   });
 
   it('GATE: clears the WAL sidecar, which describes the replaced database', async () => {

@@ -56,7 +56,11 @@ Commands (Compose is the default target; --target cloudflare selects the Worker)
                                           record's last recorded one — the version a failed update
                                           left serving.
   backup --to <dir>                       Snapshot the database and blobs.
-  restore --from <dir>                    Replace the Deployment's data with a backup.
+  restore --from <dir> [--no-drain]       Replace the Deployment's data with a backup. Waits for the
+                                          tasks this Deployment has in flight, queued ones included,
+                                          before it stops. --no-drain skips the wait; the runs still
+                                          finish inside the harness's stop grace, and the stop waits
+                                          behind them.
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
   adopt                                   Write a bundle for a stack this machine did not provision.
   destroy [--data] [--yes]                Stop and remove the stack, at once — it does not wait for
@@ -234,7 +238,7 @@ export async function run(args: string[]): Promise<void> {
       if (!flags.has('yes')) {
         fail(`restore replaces this Deployment's database and blobs with ${from}. Re-run with --yes to confirm.`);
       }
-      await restoreDeployment({ source: from! });
+      await restoreDeployment({ source: from!, noDrain: flags.has('no-drain') });
       console.log('Deployment restored and restarted.');
       return;
     }
