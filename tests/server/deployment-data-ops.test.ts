@@ -47,8 +47,12 @@ afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true
 const scratch = () => { const d = mkdtempSync(join(tmpdir(), 'myco-dataops-')); roots.push(d); return d; };
 
 let calls: { command: string; args: string[] }[] = [];
-/** The live-runs read answers an empty Deployment; every other command succeeds saying nothing. */
-const answer = (args: readonly string[]) => (args.includes('--live-runs') ? '[]' : '');
+/** The live-runs read answers an empty Deployment, `config --services` the bundle's two; every other command succeeds saying nothing. */
+const answer = (args: readonly string[]) =>
+  args.includes('--live-runs') ? '[]' : args.includes('--services') ? 'server\nharness\n' : '';
+
+/** The reads a verb performs to find out what it is acting on, as against the acts themselves. */
+const isPlumbing = (args: readonly string[]) => args.includes('--live-runs') || args.includes('--services') || args.includes('ps');
 const runner = (): CommandRunner => ({
   async run(command, args) { calls.push({ command, args: [...args] }); return { code: 0, stdout: answer(args), stderr: '' }; },
 });
@@ -138,7 +142,7 @@ describe('restore', () => {
     const p = bundle();
     await restoreDeployment({ paths: p, runner: runner(), source: backupDir() });
 
-    const verbs = calls.filter((c) => !c.args.includes('--live-runs') && !c.args.includes(HARNESS_SERVICE_NAME))
+    const verbs = calls.filter((c) => !isPlumbing(c.args) && !c.args.includes(HARNESS_SERVICE_NAME))
       .map((c) => c.args.find((a) => ['stop', 'cp', 'run', 'up'].includes(a)));
     expect(verbs[0]).toBe('stop');
     expect(verbs.at(-1)).toBe('up');
@@ -152,7 +156,7 @@ describe('restore', () => {
     const scripted: CommandRunner = {
       async run(command, args) {
         calls.push({ command, args: [...args] });
-        return { code: 0, stdout: args.includes('--live-runs') ? answers.shift() ?? '[]' : '', stderr: '' };
+        return { code: 0, stdout: args.includes('--live-runs') ? answers.shift() ?? '[]' : answer(args), stderr: '' };
       },
     };
 
@@ -160,7 +164,7 @@ describe('restore', () => {
 
     // A restore replaces the database a live run writes its own ending into.
     const flat = calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
-    expect(flat[0]!).toContain('--live-runs');
+    expect(flat.find((a) => a.includes('--live-runs') || a === 'stop')).toContain('--live-runs');
     // The harness goes down while the server is still serving; a whole-stack
     // stop takes the server first and leaves the harness with nothing to post to.
     expect(flat.filter((a) => a === STOP_HARNESS || a === 'stop').slice(0, 2)).toEqual([STOP_HARNESS, 'stop']);
@@ -175,7 +179,7 @@ describe('restore', () => {
 
     expect(calls.filter((c) => c.args.includes('--live-runs'))).toHaveLength(1);
     expect(lines).toContain('Not waiting for the runs in flight: the harness is stopped first and finishes them inside its stop grace.');
-    const verbs = calls.filter((c) => !c.args.includes('--live-runs')).map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
+    const verbs = calls.filter((c) => !isPlumbing(c.args)).map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
     expect(verbs[0]).toBe(STOP_HARNESS);
     expect(verbs[1]).toBe('stop');
   });
@@ -194,7 +198,7 @@ describe('update', () => {
     materializeBundle(p);
     await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
 
-    expect(calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '))).toEqual([
+    expect(calls.filter((c) => !c.args.includes('--services')).map((c) => c.args.slice(COMPOSE_HEAD).join(' '))).toEqual([
       'exec --no-TTY --user myco server bun run /app/server.js --live-runs',
       STOP_HARNESS,
       'pull',
@@ -221,18 +225,25 @@ describe('update', () => {
     expect(readFileSync(join(p.secretsDir, 'harness_token'), 'utf8')).toBe(token);
   });
 
-  it('leaves an older bundle unstopped where it declares no harness, rather than failing on a service Compose cannot find', async () => {
+  it('leaves a bundle that declares no harness unstopped, rather than failing on a service Compose cannot find', async () => {
     const p = paths();
     materializeBundle(p);
-    writeFileSync(p.composeFile, 'services:\n  server:\n    image: x\n');
-    // The refresh runs before the stop, so the service is there by then.
-    await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
-    expect(argvText()).toContain(STOP_HARNESS);
+    // Compose answers the union of the bundle and the override; a Deployment
+    // provisioned before the harness existed answers one service.
+    const oneService: CommandRunner = {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        return { code: 0, stdout: args.includes('--services') ? 'server\n' : answer(args), stderr: '' };
+      },
+    };
+    await recreateDeployment({ paths: p, runner: oneService });
+    expect(argvText()).not.toContain(STOP_HARNESS);
 
     calls = [];
-    writeFileSync(p.composeFile, 'services:\n  server:\n    image: x\n');
-    await recreateDeployment({ paths: p, runner: runner() });
-    expect(argvText()).not.toContain(STOP_HARNESS);
+    // The update rewrites the bundle from the shipped template first, so the
+    // service is there by the time it stops anything.
+    await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
+    expect(argvText()).toContain(STOP_HARNESS);
   });
 
   it('GATE: a failed pull leaves the bundle unpinned rather than lying', async () => {
@@ -391,7 +402,7 @@ describe('the update waits for what is running', () => {
   const scripted = (answers: string[]): CommandRunner => ({
     async run(command, args) {
       calls.push({ command, args: [...args] });
-      if (!args.includes('--live-runs')) return { code: 0, stdout: '', stderr: '' };
+      if (!args.includes('--live-runs')) return { code: 0, stdout: answer(args), stderr: '' };
       const next = answers.shift() ?? '[]';
       return next.startsWith('!')
         ? { code: 1, stdout: '', stderr: next.slice(1) }
@@ -399,6 +410,7 @@ describe('the update waits for what is running', () => {
     },
   });
   const reads = () => calls.filter((c) => c.args.includes('--live-runs')).length;
+  const acts = () => calls.filter((c) => !isPlumbing(c.args)).map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
 
   it('names each task in flight, polls until none is left, and only then pulls', async () => {
     const p = paths();
@@ -473,7 +485,7 @@ describe('the update waits for what is running', () => {
     expect(drive.at).toBe(0);
     expect(lines).toContain('Shipping over a running task: digest-only, started 0 sec ago, budget 30 min');
     expect(lines).toContain('Not waiting for the runs in flight: the harness is stopped first and finishes them inside its stop grace.');
-    expect(calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' ')).filter((a) => a === STOP_HARNESS || a === 'pull')).toEqual([STOP_HARNESS, 'pull']);
+    expect(acts().filter((a) => a === STOP_HARNESS || a === 'pull')).toEqual([STOP_HARNESS, 'pull']);
   });
 
   it('--no-drain ships when the runs cannot be read at all, saying so', async () => {
@@ -539,7 +551,7 @@ describe('the update waits for what is running', () => {
 describe('the harness goes down before the server', () => {
   /** Where `stop harness` and the first command that takes the server down land, in call order. */
   const order = (): { harnessAt: number; serverAt: number } => {
-    const verbs = calls.filter((c) => !c.args.includes('--live-runs')).map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
+    const verbs = calls.filter((c) => !isPlumbing(c.args)).map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
     return {
       harnessAt: verbs.indexOf(STOP_HARNESS),
       serverAt: verbs.findIndex((a) => a === 'stop' || a.startsWith('up ')),
@@ -623,7 +635,7 @@ describe('a failed verb brings the harness back', () => {
         : { code: 0, stdout: answer(args), stderr: '' };
     },
   });
-  const verbs = () => calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
+  const verbs = () => calls.filter((c) => !isPlumbing(c.args)).map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
 
   it('restarts it when the pull fails and no version was named to roll back to', async () => {
     const p = bundle();
@@ -645,7 +657,24 @@ describe('a failed verb brings the harness back', () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'myco.sqlite'), 'snapshot');
     await expect(restoreDeployment({ paths: p, runner: failing('cp'), source: dir, report: () => undefined })).rejects.toThrow(/cp failed/);
-    expect(verbs()).toContain('start harness');
+    // A restore stops every service, and Compose refuses to start a container
+    // whose network namespace target is down: the whole stack comes back.
+    expect(verbs()).toContain('up --detach');
+    expect(verbs()).not.toContain('start harness');
+  });
+
+  it('GATE: names the whole Deployment when a failed restore cannot bring it back either', async () => {
+    const p = bundle();
+    const dir = join(scratch(), 'from');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'myco.sqlite'), 'snapshot');
+    let raised: unknown = null;
+    try {
+      await restoreDeployment({ paths: p, runner: failing('cp', 'up'), source: dir, report: () => undefined });
+    } catch (err) { raised = err; }
+
+    expect(raised).toBeInstanceOf(HarnessLeftStopped);
+    expect((raised as Error).message).toContain('This Deployment was stopped for this');
   });
 
   it('GATE: names both facts when the restart itself fails, so the operator is not left reading the wrong failure', async () => {
@@ -694,7 +723,7 @@ describe('the live-runs read cannot hang', () => {
     async run(command, args) {
       calls.push({ command, args: [...args] });
       if (args.includes('--live-runs')) throw new CommandTimedOut(command, args, LIVE_RUNS_EXEC_TIMEOUT_MS);
-      return { code: 0, stdout: '', stderr: '' };
+      return { code: 0, stdout: answer(args), stderr: '' };
     },
   });
 
@@ -747,7 +776,7 @@ describe('update on images this machine already holds', () => {
     const p = bundle();
     await updateDeployment({ paths: p, runner: runner(), noPull: true, version: 'local', report: () => undefined });
 
-    const verbs = calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
+    const verbs = calls.filter((c) => !isPlumbing(c.args)).map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
     expect(verbs).not.toContain('pull');
     expect(verbs).toContain('up --detach --wait');
     expect(pinnedVersion(p)).toBe('local');
@@ -756,6 +785,6 @@ describe('update on images this machine already holds', () => {
   it('pulls by default, so a registry outage is a failure and not a silent stale deploy', async () => {
     const p = bundle();
     await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
-    expect(calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '))).toContain('pull');
+    expect(calls.filter((c) => !isPlumbing(c.args)).map((c) => c.args.slice(COMPOSE_HEAD).join(' '))).toContain('pull');
   });
 });

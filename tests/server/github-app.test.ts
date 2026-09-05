@@ -24,6 +24,8 @@ const runner = (answer: (call: Call) => Partial<CommandResult> = () => ({})): Co
   async run(command, args, options) {
     const call = { command, args: [...args], options };
     calls.push(call);
+    // Compose answers the union of the bundle and the operator's override.
+    if (args.includes('--services')) return { code: 0, stdout: 'server\nharness\n', stderr: '' };
     return { code: 0, stdout: '', stderr: '', ...answer(call) };
   },
 });
@@ -101,7 +103,8 @@ describe('installing the credentials', () => {
   it('Cloudflare: one `secret bulk` naming the Worker, both values on stdin, the account pinned, no cwd, after the wrangler presence check', async () => {
     const r = runner();
     await installSignInSecrets({ kind: 'cloudflare', record: RECORD }, { clientId: 'Iv1.x', clientSecret: 's' }, r);
-    expect(calls.map((c) => [c.command, ...c.args])).toEqual([
+    // The service list Compose is asked for is a read, not an act.
+    expect(calls.filter((c) => !c.args.includes('--services')).map((c) => [c.command, ...c.args])).toEqual([
       ['npx', '--no-install', 'wrangler', '--version'],
       ['npx', 'wrangler', 'secret', 'bulk', '--name', 'myco-server'],
     ]);
@@ -133,7 +136,8 @@ describe('installing the credentials', () => {
     // The harness goes down on its own first: Compose takes the namespace owner
     // down ahead of it, and a recreate that starts with `up` kills the server
     // while the harness is still holding runs.
-    expect(calls.map((c) => [c.command, ...c.args])).toEqual([
+    // The service list Compose is asked for is a read, not an act.
+    expect(calls.filter((c) => !c.args.includes('--services')).map((c) => [c.command, ...c.args])).toEqual([
       ['docker', 'compose', '--file', paths.composeFile, '--file', paths.overrideFile, '--project-name', 'myco', 'stop', '--timeout', String(HARNESS_STOP_GRACE_SECONDS), 'harness'],
       ['docker', 'compose', '--file', paths.composeFile, '--file', paths.overrideFile, '--project-name', 'myco', 'up', '--detach', '--force-recreate', '--wait'],
     ]);

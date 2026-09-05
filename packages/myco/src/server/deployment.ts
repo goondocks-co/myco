@@ -12,7 +12,7 @@ import { mkdirSync, existsSync, writeFileSync, readFileSync, rmSync, chmodSync, 
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { resolveMycoHome } from '../paths/home.js';
-import { jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
+import { isCommandFailure, jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
 import { readLiveRunsTwice, systemClock, waitForLiveRuns, type Clock, type LiveRun, type LiveRunRow } from './live-runs.js';
 import { COMPOSE_OVERRIDE_TEMPLATE, COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from './compose-template.js';
 import { ensureServerLayout } from './layout.js';
@@ -114,7 +114,10 @@ function composeArgs(paths: DeploymentPaths, ...rest: string[]): string[] {
   return [
     'compose',
     '--file', paths.composeFile,
-    '--file', paths.overrideFile,
+    // Compose refuses a `--file` naming a path that is not there. The path
+    // resolution writes this file into any bundle missing it, and this is what
+    // covers a caller holding paths it resolved for itself.
+    ...(existsSync(paths.overrideFile) ? ['--file', paths.overrideFile] : []),
     '--project-name', COMPOSE_PROJECT,
     ...rest,
   ];
@@ -217,12 +220,43 @@ export async function createDeployment(options: CreateOptions = {}): Promise<{ r
     ...(options.version ? { MYCO_VERSION: options.version } : {}),
   });
 
-  await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
+  // `create` converges an existing Deployment as well as provisioning a new
+  // one, and the `up` recreates the server. On a stack already running, that is
+  // the same recreate every other verb performs, and it takes the harness first.
+  const target = { paths, runner, ...(options.report === undefined ? {} : { report: options.report }) };
+  const up = (): Promise<unknown> => runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
+  const live = await deploymentStatus({ paths, runner });
+  if (live.services.length === 0) await up();
+  else await withHarnessStopped(target, up);
   return { root: paths.root, port };
 }
 
 /** The word Compose reports for a service the bundle declares but no container exists for. */
 export const SERVICE_ABSENT = 'absent';
+
+/** One container as `compose ps --format json` describes it. */
+interface ComposePsRow {
+  Service?: unknown;
+  State?: unknown;
+}
+
+/**
+ * The rows `compose ps --format json` answered, in both shapes it uses.
+ *
+ * Compose from v2.21 prints one JSON object per line; before that it printed a
+ * single JSON array. A reader that knows one shape reports an empty stack on
+ * the other, which reads as a Deployment that is not running.
+ */
+function composePsRows(stdout: string): ComposePsRow[] {
+  const document = jsonDocument<ComposePsRow[] | ComposePsRow>(stdout);
+  if (Array.isArray(document)) return document;
+  const rows: ComposePsRow[] = [];
+  for (const line of stdout.split('\n')) {
+    const row = jsonDocument<ComposePsRow>(line);
+    if (row !== null && !Array.isArray(row)) rows.push(row);
+  }
+  return rows;
+}
 
 export interface DeploymentStatus {
   provisioned: boolean;
@@ -252,20 +286,17 @@ export async function deploymentStatus(options: DeploymentOptions = {}): Promise
 
   const result = await runner.run('docker', composeArgs(paths, 'ps', '--all', '--format', 'json'), { cwd: paths.root });
   const reported = new Map<string, string>();
-  for (const line of result.stdout.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('{'))) {
-    try {
-      const row = JSON.parse(line) as { Service?: unknown; State?: unknown };
-      const service = String(row.Service ?? '');
-      if (service !== '') reported.set(service, String(row.State ?? SERVICE_ABSENT));
-    } catch { /* a line compose ps did not format as JSON */ }
+  for (const row of composePsRows(result.stdout)) {
+    const service = String(row.Service ?? '');
+    if (service !== '') reported.set(service, String(row.State ?? SERVICE_ABSENT));
   }
 
-  const declared = declaredServices(paths);
-  const states = declared.map((service) => ({ service, state: reported.get(service) ?? SERVICE_ABSENT }));
+  const declared = await declaredServices({ paths, runner });
+  const states = (declared ?? []).map((service) => ({ service, state: reported.get(service) ?? SERVICE_ABSENT }));
   const services = [...reported.entries()].filter(([, state]) => state === 'running').map(([service]) => service);
-  // A bundle whose services cannot be read answers on what is running, which is
-  // all there is to go on.
-  const running = declared.length === 0
+  // A bundle whose services could not be read answers on what is running, which
+  // is all there is to go on.
+  const running = declared === null || declared.length === 0
     ? services.length > 0
     : states.every((entry) => entry.state === 'running');
 
@@ -396,7 +427,7 @@ const COMPOSE_SPARING = 'the harness is stopped first and finishes them inside i
  * Compose refuses a service it cannot find; the file on disk decides.
  */
 async function stopHarness(target: HarnessTarget): Promise<void> {
-  if (!declaresHarness(target.paths)) return;
+  if (!await declaresHarness(target)) return;
   const say = target.report ?? console.log;
   // The stop can take the whole grace, and a verb silent for that long reads as
   // a hung command.
@@ -413,46 +444,62 @@ interface HarnessTarget {
   report?: (line: string) => void;
 }
 
-/** Every service the bundle on disk declares, in file order. */
-function declaredServices(paths: DeploymentPaths): string[] {
-  if (!existsSync(paths.composeFile)) return [];
-  const file = readFileSync(paths.composeFile, 'utf8');
-  const start = file.search(/^services:$/m);
-  if (start < 0) return [];
-  const body = file.slice(start).split('\n').slice(1);
-  const names: string[] = [];
-  for (const line of body) {
-    if (/^\S/.test(line)) break;
-    const named = /^ {2}([A-Za-z0-9][A-Za-z0-9_-]*):$/.exec(line);
-    if (named !== null) names.push(named[1]!);
+/**
+ * Every service this bundle declares, asked of Compose itself.
+ *
+ * Compose merges the bundle and the operator's override and answers the union,
+ * which is the set every verb acts on. Null is "the services could not be
+ * read": each caller decides what to do with that.
+ */
+async function declaredServices(target: HarnessTarget): Promise<string[] | null> {
+  if (!existsSync(target.paths.composeFile)) return [];
+  try {
+    const result = await runOrThrow(target.runner, 'docker',
+      composeArgs(target.paths, 'config', '--services'), { cwd: target.paths.root });
+    return result.stdout.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+  } catch (err) {
+    if (!isCommandFailure(err)) throw err;
+    return null;
   }
-  return names;
 }
 
-/** Whether the bundle on disk declares the harness; one written before it existed does not, and Compose refuses a service it cannot find. */
-function declaresHarness(paths: DeploymentPaths): boolean {
-  return declaredServices(paths).includes(HARNESS_SERVICE);
+/** Whether this bundle declares the harness. One written before it existed does not, and Compose refuses a service it cannot find. */
+async function declaresHarness(target: HarnessTarget): Promise<boolean> {
+  return (await declaredServices(target))?.includes(HARNESS_SERVICE) ?? false;
 }
 
 /**
  * Bring the harness back.
  *
  * `docker compose stop` sets the container's manual-stop flag, and
- * `restart: unless-stopped` honours it: nothing brings the harness back on its
- * own after a verb stopped it. A verb that stopped it and then failed would
- * leave a Deployment that serves and runs nothing at all.
+ * `restart: unless-stopped` honours it, so bringing the harness back is an
+ * explicit act. A Deployment whose harness is down serves and runs nothing.
  */
 async function startHarness(target: HarnessTarget): Promise<void> {
-  if (!declaresHarness(target.paths)) return;
+  if (!await declaresHarness(target)) return;
   await runOrThrow(target.runner, 'docker', composeArgs(target.paths, 'start', HARNESS_SERVICE), { cwd: target.paths.root });
 }
 
-/** Raised when a verb failed AND could not put the harness back, which leaves the Deployment running nothing. */
+/** Raised when a verb failed AND could not put back what it stopped, which leaves the Deployment running nothing. */
 export class HarnessLeftStopped extends Error {
-  constructor(readonly cause: Error, readonly restartFailure: Error) {
-    super(`${cause.message}\nThe harness was stopped for this and could not be restarted, so this Deployment runs nothing until it is: ${restartFailure.message}`);
+  constructor(readonly cause: Error, readonly restartFailure: Error, stopped = 'The harness') {
+    super(`${cause.message}\n${stopped} was stopped for this and could not be brought back, so this Deployment runs nothing until it is: ${restartFailure.message}`);
     this.name = 'HarnessLeftStopped';
   }
+}
+
+/** What a failed verb brings back, and the words the failure carries when that does not work either. */
+interface Recovery {
+  stopped: string;
+  run(): Promise<void>;
+}
+
+/** Every service, started. What a verb that stopped the whole stack has to run: Compose refuses to start a container whose network namespace target is down. */
+function stackRecovery(target: HarnessTarget): Recovery {
+  return {
+    stopped: 'This Deployment',
+    run: async () => { await runOrThrow(target.runner, 'docker', composeArgs(target.paths, 'up', '--detach'), { cwd: target.paths.root }); },
+  };
 }
 
 /**
@@ -461,17 +508,18 @@ export class HarnessLeftStopped extends Error {
  * Every path out that does not itself bring the harness back goes through here,
  * so no verb can leave it down by forgetting. A step that succeeds ends in an
  * `up`, which starts the harness with everything else; a step that throws is
- * followed by an explicit start before the failure is rethrown.
+ * followed by the recovery for what that verb took down.
  */
-async function withHarnessStopped<T>(target: HarnessTarget, body: () => Promise<T>): Promise<T> {
+async function withHarnessStopped<T>(target: HarnessTarget, body: () => Promise<T>, recovery?: Recovery): Promise<T> {
+  const recover = recovery ?? { stopped: 'The harness', run: () => startHarness(target) };
   await stopHarness(target);
   try {
     return await body();
   } catch (err) {
     try {
-      await startHarness(target);
+      await recover.run();
     } catch (restartFailure) {
-      throw new HarnessLeftStopped(err as Error, restartFailure as Error);
+      throw new HarnessLeftStopped(err as Error, restartFailure as Error, recover.stopped);
     }
     throw err;
   }
@@ -486,8 +534,8 @@ async function withHarnessStopped<T>(target: HarnessTarget, body: () => Promise<
  * second bad answer refuses the deploy — "nothing came back" and "nothing is
  * running" are opposite facts, and a deploy that confused them would recreate
  * straight over live work. A container that answers nothing is one of those bad
- * answers: an `exec` into a wedged server would otherwise hold the verb open
- * with no bound at all.
+ * answers: the read carries a window, past which the container's silence is
+ * one more answer the deploy refuses.
  */
 export async function readComposeLiveRuns(
   options: DeploymentOptions & { sleep?: (ms: number) => Promise<void> },
@@ -558,7 +606,8 @@ export async function restoreDeployment(options: RestoreOptions): Promise<void> 
   }
 
   await drainLiveRuns({ paths, runner }, options);
-  await withHarnessStopped({ paths, runner, ...(options.report === undefined ? {} : { report: options.report }) }, async () => {
+  const target = { paths, runner, ...(options.report === undefined ? {} : { report: options.report }) };
+  await withHarnessStopped(target, async () => {
   await runOrThrow(runner, 'docker', composeArgs(paths, 'stop'), { cwd: paths.root });
   await runOrThrow(runner, 'docker',
     composeArgs(paths, 'cp', snapshot, 'server:/data/myco.sqlite'), { cwd: paths.root });
@@ -580,7 +629,7 @@ export async function restoreDeployment(options: RestoreOptions): Promise<void> 
       `rm -f /data/myco.sqlite-wal /data/myco.sqlite-shm && chown -R ${RUNTIME_USER}:${RUNTIME_USER} /data`),
     { cwd: paths.root });
     await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
-  });
+  }, stackRecovery(target));
 }
 
 
@@ -685,23 +734,23 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
   const target = { paths, runner, ...(options.report === undefined ? {} : { report: options.report }) };
   await withHarnessStopped(target, async () => {
     try {
-      // A pull refused for a tag that only exists on this daemon is not a
-      // failure to report; it is a deployment whose images arrived another way.
+      // A tag that exists only on this daemon resolves at no registry, and a
+      // deployment whose images arrived another way skips the pull.
       if (options.noPull !== true) await runOrThrow(runner, 'docker', composeArgs(paths, 'pull'), { cwd: paths.root, env });
       await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root, env });
     } catch (err) {
       // `up` recreates the container before it waits for health, so a version
       // that starts and fails its healthcheck has already replaced the one that
-      // worked. Returning to the previous pin is what makes that recoverable
-      // without an operator reconstructing which tag was running.
+      // worked. Returning to the previous pin puts the Deployment back on the
+      // tag that served, with no operator reconstruction of which one it was.
       if (options.noRollback === true || options.version === undefined) throw err;
 
       writePin(paths, previous);
       try {
         await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
       } catch (rollbackFailure) {
-        // A rollback reported as done and never performed sends an operator
-        // looking at the wrong version for the failure.
+        // The return is reported only when it happened; the failure names both
+        // the update and the return.
         throw new UpdateRollbackFailed(previous, err as Error, rollbackFailure as Error);
       }
       throw new UpdateRolledBack(previous, err as Error);

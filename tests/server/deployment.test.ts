@@ -27,6 +27,8 @@ import {
   DEFAULT_PORT,
   SERVICE_ABSENT,
   signInConfigured,
+  backupDeployment,
+  updateDeployment,
 } from '@myco/server/deployment.js';
 import { COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
@@ -35,17 +37,30 @@ const roots: string[] = [];
 afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
 
 let calls: { command: string; args: string[] }[] = [];
+/** Compose answers the union of the bundle and the override when asked for its services. */
+const SERVICES = 'server\nharness\n';
 const runner = (result: Partial<CommandResult> = {}): CommandRunner => ({
   async run(command, args) {
     calls.push({ command, args: [...args] });
+    if (args.includes('--services')) return { code: 0, stdout: SERVICES, stderr: '' };
+    if (args.includes('--live-runs')) return { code: 0, stdout: '[]', stderr: '' };
     return { code: 0, stdout: '', stderr: '', ...result };
   },
 });
+/** The reads a verb performs to find out what it is acting on, as against the acts themselves. */
+const acts = () => calls.filter((c) => !c.args.includes('--services') && !c.args.includes('ps') && !c.args.includes('--live-runs'));
 
 function paths() {
   const home = mkdtempSync(join(tmpdir(), 'myco-deploy-'));
   roots.push(home);
   return resolveDeploymentPaths(home);
+}
+
+/** A directory of its own for a test that writes outside the bundle. */
+function scratchDir() {
+  const dir = mkdtempSync(join(tmpdir(), 'myco-scratch-'));
+  roots.push(dir);
+  return dir;
 }
 
 beforeEach(() => { calls = []; });
@@ -109,9 +124,9 @@ describe('create', () => {
     const p = paths();
     await createDeployment({ paths: p, runner: runner(), port: 9001 });
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.command).toBe('docker');
-    expect(calls[0]!.args).toEqual([
+    expect(acts()).toHaveLength(1);
+    expect(acts()[0]!.command).toBe('docker');
+    expect(acts()[0]!.args).toEqual([
       'compose', '--file', p.composeFile, '--file', p.overrideFile, '--project-name', COMPOSE_PROJECT,
       'up', '--detach', '--wait',
     ]);
@@ -209,7 +224,7 @@ describe('status', () => {
     expect(status.states).toEqual([{ service: 'server', state: 'running' }, { service: 'harness', state: 'running' }]);
     // A container that exited is listed only with --all, and a stack whose
     // harness exited serves and runs nothing.
-    expect(calls[0]!.args).toContain('--all');
+    expect(calls.find((c) => c.args.includes('ps'))!.args).toContain('--all');
   });
 
   it('GATE: a stack whose harness exited is not running, and names it', async () => {
@@ -232,7 +247,7 @@ describe('status', () => {
     expect(status.states.find((s) => s.service === 'harness')).toEqual({ service: 'harness', state: SERVICE_ABSENT });
   });
 
-  it('survives a line compose ps did not format as JSON, and answers on what is up for a bundle it cannot read', async () => {
+  it('survives a line compose ps did not format as JSON', async () => {
     const p = paths();
     materializeBundle(p);
     const status = await deploymentStatus({
@@ -240,12 +255,40 @@ describe('status', () => {
       runner: runner({ stdout: 'warning: something\n{"Service":"server","State":"running"}\n{"Service":"harness","State":"running"}\n' }),
     });
     expect(status.services.sort()).toEqual(['harness', 'server']);
+  });
 
-    // A bundle whose services cannot be read has only what is up to go on.
-    const opaque = paths();
-    materializeBundle(opaque);
-    writeFileSync(opaque.composeFile, '# a bundle this reader cannot parse\n');
-    const fallback = await deploymentStatus({ paths: opaque, runner: runner({ stdout: '{"Service":"server","State":"running"}\n' }) });
+  it('reads the single JSON array Compose printed before v2.21 as well as the object-per-line it prints now', async () => {
+    const p = paths();
+    materializeBundle(p);
+    // A reader that knows one shape reports an empty stack on the other, which
+    // reads as a Deployment that is not running.
+    const asArray = await deploymentStatus({
+      paths: p,
+      runner: runner({ stdout: '[{"Service":"server","State":"running"},{"Service":"harness","State":"running"}]\n' }),
+    });
+    expect({ running: asArray.running, services: asArray.services.sort() }).toEqual({ running: true, services: ['harness', 'server'] });
+
+    const asLines = await deploymentStatus({
+      paths: p,
+      runner: runner({ stdout: '{"Service":"server","State":"running"}\n{"Service":"harness","State":"exited"}\n' }),
+    });
+    expect({ running: asLines.running, states: asLines.states }).toEqual({
+      running: false,
+      states: [{ service: 'server', state: 'running' }, { service: 'harness', state: 'exited' }],
+    });
+  });
+
+  it('answers on what is up when the services could not be read at all', async () => {
+    const p = paths();
+    materializeBundle(p);
+    const unreadable: CommandRunner = {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        if (args.includes('--services')) return { code: 1, stdout: '', stderr: 'services could not be read' };
+        return { code: 0, stdout: '{"Service":"server","State":"running"}\n', stderr: '' };
+      },
+    };
+    const fallback = await deploymentStatus({ paths: p, runner: unreadable });
     expect({ running: fallback.running, states: fallback.states }).toEqual({ running: true, states: [] });
   });
 });
@@ -318,11 +361,11 @@ describe('destroy', () => {
     materializeBundle(p);
     await destroyDeployment({ paths: p, runner: runner() });
 
-    expect(calls[0]!.args).toEqual([
+    expect(acts()[0]!.args).toEqual([
       'compose', '--file', p.composeFile, '--file', p.overrideFile, '--project-name', COMPOSE_PROJECT,
       'down', '--remove-orphans', '--timeout', String(DESTROY_STOP_TIMEOUT_SECONDS),
     ]);
-    expect(calls[0]!.args).not.toContain('--volumes');
+    expect(acts()[0]!.args).not.toContain('--volumes');
   });
 
   it('names its own stop window rather than waiting out the harness grace', async () => {
@@ -333,7 +376,7 @@ describe('destroy', () => {
     // Without a window of its own the stack takes the harness's stop grace, and
     // an operator's destroy blocks for the length of a task budget.
     expect(DESTROY_STOP_TIMEOUT_SECONDS).toBeLessThan(HARNESS_STOP_GRACE_SECONDS);
-    expect(calls[0]!.args).not.toContain('--live-runs');
+    expect(acts()[0]!.args).not.toContain('--live-runs');
   });
 
   it('removes the volume only when asked', async () => {
@@ -346,5 +389,60 @@ describe('destroy', () => {
   it('is a no-op on a stack that was never provisioned', async () => {
     await destroyDeployment({ paths: paths(), runner: runner() });
     expect(calls).toHaveLength(0);
+  });
+});
+
+/**
+ * A bundle written before the override file existed.
+ *
+ * Every verb names both files, and Compose refuses a `--file` naming a path
+ * that is not there — so a Deployment provisioned by an earlier version has to
+ * be repaired by whichever verb touches it first, not by `create` alone.
+ */
+describe('an older bundle is repaired by whatever verb reaches it', () => {
+  /** A bundle as an earlier version left it: compose.yaml, secrets, .env, and no override. */
+  const older = () => {
+    const home = mkdtempSync(join(tmpdir(), 'myco-older-'));
+    roots.push(home);
+    const p = resolveDeploymentPaths(home);
+    materializeBundle(p, { MYCO_PORT: '8787' });
+    rmSync(p.overrideFile);
+    return { home, paths: p };
+  };
+
+  it('names only the file that is there while the override is missing', async () => {
+    const { paths: p } = older();
+    await destroyDeployment({ paths: p, runner: runner() });
+    expect(acts()[0]!.args.filter((a) => a === '--file')).toHaveLength(1);
+    expect(acts()[0]!.args).not.toContain(p.overrideFile);
+  });
+
+  it('writes the override the moment any verb resolves the bundle, and names it from then on', async () => {
+    const { home } = older();
+    // Resolving the paths is the first thing every verb does.
+    const repaired = resolveDeploymentPaths(home);
+    expect(existsSync(repaired.overrideFile)).toBe(true);
+
+    await destroyDeployment({ paths: repaired, runner: runner() });
+    expect(acts()[0]!.args.filter((a) => a === '--file')).toHaveLength(2);
+    expect(acts()[0]!.args).toContain(repaired.overrideFile);
+  });
+
+  it('carries status, backup, destroy and update through without a Compose file-not-found', async () => {
+    for (const verb of [
+      (p: ReturnType<typeof resolveDeploymentPaths>) => deploymentStatus({ paths: p, runner: runner() }),
+      (p: ReturnType<typeof resolveDeploymentPaths>) => backupDeployment({ paths: p, runner: runner(), destination: join(scratchDir(), 'backup') }),
+      (p: ReturnType<typeof resolveDeploymentPaths>) => destroyDeployment({ paths: p, runner: runner() }),
+      (p: ReturnType<typeof resolveDeploymentPaths>) => updateDeployment({ paths: p, runner: runner(), report: () => undefined }),
+    ]) {
+      calls = [];
+      const { paths: p } = older();
+      await verb(p);
+      for (const call of calls) {
+        const named = call.args.filter((a) => a.endsWith('.yaml'));
+        expect({ argv: call.args.join(' '), missing: named.filter((f) => !existsSync(f)) })
+          .toEqual({ argv: call.args.join(' '), missing: [] });
+      }
+    }
   });
 });

@@ -30,8 +30,8 @@ const instructions = (text: string): string[] =>
 
 describe('the image hands PID 1 to the entrypoint as root', () => {
   it('declares no USER in the runtime stage, so the entrypoint can read the mounted secrets', () => {
-    // A `USER myco` above the ENTRYPOINT takes the copy away, and every secret
-    // a native daemon bind-mounts becomes unreadable to the process that needs it.
+    // Reading a bind-mounted secret owned by the operator's own uid takes root,
+    // and the entrypoint drops as soon as it has copied them.
     expect(instructions(runtimeStage()).filter((line) => /^USER\b/.test(line))).toEqual([]);
   });
 
