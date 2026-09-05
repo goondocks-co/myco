@@ -13,7 +13,7 @@
 import { randomBytes } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { runOrThrow, systemRunner } from './runner.js';
+import { describeFailure, runOrThrow, systemRunner } from './runner.js';
 import {
   applyMigrations,
   cloudflareStatus,
@@ -35,31 +35,22 @@ import {
   type CloudflareOptions,
   type ContainerRollout,
   type DeploymentRecord,
-  type LiveRun,
 } from './cloudflare.js';
+import { systemClock, waitForLiveRuns, type Clock } from './live-runs.js';
 import { containersTableHash, renderDeployConfig } from './deploy-config.js';
+
+// The wait, its bounds, and the clock are one implementation for both targets.
+export { DEFAULT_RUN_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS } from './live-runs.js';
+export type { Clock } from './live-runs.js';
+
+/** What carries a run this deploy stopped waiting on: the platform drains a replaced instance, and the container application spares a run inside its own budget. */
+const CLOUDFLARE_SPARING = 'the platform drains what is running';
 
 export const DEPLOY_CONFIG_NAME = 'wrangler.deploy.toml';
 const WORKER_NAME = 'myco-server';
 const DATABASE_NAME = 'myco-server';
 const BUCKET_NAME = 'myco-server-blobs';
 const WRAP_KEY_SECRET = 'myco-secret-wrap-key';
-
-/**
- * How long a run may outlive its own bound before the Deployment gives up on
- * it. Mirrors `RUN_OVERRUN_MARGIN_MS` in
- * `packages/myco-server/src/core/harness.ts`; this package ships to operator
- * machines and imports nothing from the Worker, so the number is copied and
- * held equal by `tests/server/cloudflare-lifecycle.test.ts`.
- */
-export const RUN_OVERRUN_MARGIN_MS = 120_000;
-
-/**
- * The budget a run carries when its context names none. Mirrors
- * `DEFAULT_DISPATCH_TIMEOUT_SECONDS` in
- * `packages/myco-server/src/core/harness.ts`, held equal by the same test.
- */
-export const DEFAULT_RUN_TIMEOUT_SECONDS = 300;
 
 /**
  * The longest a rollout is watched. Mirrors the largest budget in
@@ -81,21 +72,8 @@ export const ROLLOUT_WATCH_TIMEOUT_SECONDS = 1800;
  */
 export const ROLLOUT_START_WINDOW_SECONDS = 180;
 
-/** How often the wait asks the Deployment what is still running. */
-const LIVE_RUN_POLL_MS = 15_000;
 /** How often the watch asks the container application where the rollout stands. */
 const ROLLOUT_POLL_MS = 20_000;
-
-/** How the wait and the watch spend time; a test drives both without spending any. */
-export interface Clock {
-  now(): number;
-  sleep(ms: number): Promise<void>;
-}
-
-const systemClock: Clock = {
-  now: () => Date.now(),
-  sleep: (ms) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }),
-};
 
 export interface LifecycleOptions extends Omit<CloudflareOptions, 'configFile'> {
   mycoHome?: string;
@@ -106,98 +84,23 @@ export interface LifecycleOptions extends Omit<CloudflareOptions, 'configFile'> 
   clock?: Clock;
 }
 
-/** A duration in the words an operator waiting on it would use. */
-function describeDuration(ms: number): string {
-  const seconds = Math.max(0, Math.round(ms / 1000));
-  if (seconds < 90) return `${seconds} sec`;
-  return `${Math.round(seconds / 60)} min`;
-}
-
-/** What went wrong, in the words the command that failed used. */
-function describeFailure(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-/** The budget a run gets: its own, or the dispatcher's default for a run that names none. */
-function budgetSeconds(run: LiveRun): number {
-  return run.timeoutSeconds ?? DEFAULT_RUN_TIMEOUT_SECONDS;
-}
-
-/**
- * When the Deployment stops treating a run as its own: its budget plus the
- * overrun margin, counted from when it started. A run that has not started
- * carries no start to count from, so it is counted from now — it has just been
- * dispatched, and its whole budget is still ahead of it.
- */
-function runDeadline(run: LiveRun, now: number): number {
-  return (run.startedAt ?? now) + budgetSeconds(run) * 1000 + RUN_OVERRUN_MARGIN_MS;
-}
-
-/** One run, named the way an operator watching a deploy would name it. */
-function describeRun(lead: string, run: LiveRun, now: number): string {
-  const kind = run.status === 'pending' ? 'queued' : 'running';
-  const when = run.startedAt === null ? 'not started yet' : `started ${describeDuration(now - run.startedAt)} ago`;
-  return `${lead} a ${kind} task: ${run.task}, ${when}, budget ${describeDuration(budgetSeconds(run) * 1000)}`;
-}
-
 /**
  * Wait for the runs in flight to end before the deploy replaces the instances
  * carrying them.
  *
- * The platform drains a replaced instance and the container application spares
- * a run inside its own budget, so this is not what keeps a run alive — it is
- * what keeps the operator's deploy from racing them. Each run read at the first
- * look carries its own bound: its budget plus the margin the Deployment allows
- * it. Past the last of those bounds the run has outlived what anyone promised
- * it, so the deploy goes ahead and the stale sweep owns the row; a run
- * dispatched while the wait was running was never one of the runs waited on,
- * and is named as such.
+ * The read spends its own retry pause on the same clock the wait polls on.
  */
-async function waitForLiveRuns(
+async function waitForCloudflareLiveRuns(
   options: LifecycleOptions & { configFile: string; databaseName: string },
 ): Promise<void> {
-  const report = options.report ?? console.log;
   const clock = options.clock ?? systemClock;
-  // The read spends its own retry pause on the same clock the wait polls on.
-  const read = (): Promise<LiveRun[]> => readLiveRuns({ ...options, sleep: (ms) => clock.sleep(ms) });
-
-  if (options.drain === false) {
-    // The read is a courtesy here rather than a gate: --no-drain is the escape
-    // hatch, and a Deployment that cannot be read is exactly when it is used.
-    try {
-      const live = await read();
-      const now = clock.now();
-      for (const run of live) report(describeRun('Shipping over', run, now));
-    } catch (err) {
-      report(`What is running could not be read (${describeFailure(err)}).`);
-    }
-    report('Not waiting for the runs in flight: the platform drains what is running.');
-    return;
-  }
-
-  let live = await read();
-  if (live.length === 0) return;
-  const first = clock.now();
-  for (const run of live) report(describeRun('Waiting for', run, first));
-  const bounds = new Map(live.map((run) => [run.id, runDeadline(run, first)]));
-  const deadline = Math.max(...bounds.values());
-
-  while (live.length > 0) {
-    if (clock.now() >= deadline) {
-      const overdue = live.filter((run) => bounds.has(run.id));
-      const fresh = live.filter((run) => !bounds.has(run.id));
-      if (overdue.length > 0) {
-        report(`A task outlived its own budget (${overdue.map((run) => run.task).join(', ')}); the deploy proceeds and the stale sweep owns the run.`);
-      }
-      if (fresh.length > 0) {
-        report(`${fresh.map((run) => run.task).join(', ')} started during the deploy; the platform drains what is running.`);
-      }
-      return;
-    }
-    await clock.sleep(LIVE_RUN_POLL_MS);
-    live = await read();
-  }
-  report('Nothing is running; the deploy proceeds.');
+  await waitForLiveRuns({
+    read: () => readLiveRuns({ ...options, sleep: (ms) => clock.sleep(ms) }),
+    sparing: CLOUDFLARE_SPARING,
+    clock,
+    ...(options.drain === undefined ? {} : { drain: options.drain }),
+    ...(options.report === undefined ? {} : { report: options.report }),
+  });
 }
 
 /**
@@ -389,7 +292,7 @@ export async function updateCloudflareDeployment(options: LifecycleOptions): Pro
   // here also refuses a record that cannot address its database before the
   // push rather than after it.
   const configFile = path.basename(writeDeployConfig(record, options.configDir).file);
-  await waitForLiveRuns({ ...options, configFile, databaseName: record.databaseName });
+  await waitForCloudflareLiveRuns({ ...options, configFile, databaseName: record.databaseName });
 
   const pinned = { ...record, harnessImage: await buildAndPushHarnessImage({ ...options, workerName: record.workerName }) };
   writeDeploymentRecord(pinned, options.mycoHome);

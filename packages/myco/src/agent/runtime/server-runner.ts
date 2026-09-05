@@ -26,9 +26,14 @@ import { loadAllTasks } from '../registry.js';
 import { composeHostedPrompt, composeTaskPrompt } from '../prompt-composition.js';
 import type { AgentHarness } from '../harness/types.js';
 import type { ProviderConfig } from '../types.js';
-import type { RunStatusOutcome, RunStore } from './run-store.js';
-import { createHttpRunStore, postRunControl, type RunClaimAdmission } from './run-store-http.js';
+import { MAX_RUN_ERROR_CHARS, type RunStatusOutcome, type RunStore } from './run-store.js';
+
+export { MAX_RUN_ERROR_CHARS } from './run-store.js';
+import { createHttpRunStore, NoProviderConfiguredError, postRunControl, ProjectNotAdmittedError, type RunClaimAdmission } from './run-store-http.js';
 import { INSTRUCTED_TASKS, materializedToolsForTask, type ServerToolContext } from './server-tools.js';
+import { onStopSignals, type ProcessEvents } from './process-signals.js';
+
+export { RUNTIME_STOP_SIGNALS, type ProcessEvents } from './process-signals.js';
 
 export { materializedReportTool } from './server-tools.js';
 
@@ -39,10 +44,6 @@ export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 export const RUN_DEADLINE_ERROR = 'the run reached its deadline';
 /** How a run the platform took the runtime away from, before the run reached its own end, is recorded. */
 export const RUN_RECLAIMED_ERROR = 'the platform reclaimed the runtime before the run ended';
-/** The signals a platform sends a container it is draining. */
-export const RUNTIME_STOP_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
-/** How much of a failure message rides the run row. */
-export const MAX_RUN_ERROR_CHARS = 2000;
 /** How many times a terminal status is offered to the Deployment before the run is left to the stale sweep. */
 export const TERMINAL_UPDATE_ATTEMPTS = 2;
 /**
@@ -108,9 +109,20 @@ export interface ServerTaskOptions {
   onClosing?: () => void;
 }
 
+/**
+ * What became of the run's own record of itself: an ending the Deployment
+ * applied, one it refused or this process could not send, or no claim — and
+ * where there was no claim, which of the three ways. Only a contended claim
+ * leaves the row to somebody else; the other two leave a row nothing is coming
+ * back for, which its supervisor closes.
+ */
+export type RunEnding = 'posted' | 'unposted' | 'unknown-task' | 'claim-refused' | 'claim-contended';
+
 export interface ServerTaskResult {
   runId: string;
   status: 'completed' | 'failed' | 'skipped';
+  /** Whether the row carries this run's ending. */
+  ending: RunEnding;
   error?: string;
   /** The Deployment's word when it did not apply the terminal status this run posted; `error` then names the refusal itself. */
   refused?: string;
@@ -176,17 +188,12 @@ export async function recordRunFailure(
         update: { status: 'failed', completed_at: Date.now(), error: error.slice(0, MAX_RUN_ERROR_CHARS) },
         ...(options.replaced === true ? { replaced: true } : {}),
       });
-      const applied = answered.applied !== false;
+      const applied = answered.applied === true;
       return applied ? { applied } : { applied, ...(typeof answered.reason === 'string' ? { reason: answered.reason } : {}) };
     } catch (failure) {
       if (attempt >= attempts) throw failure;
     }
   }
-}
-
-/** Where a process's own deaths are announced. */
-export interface ProcessEvents {
-  on(event: string, listener: (reason?: unknown) => void): unknown;
 }
 
 /** What the container does with a death or a drain: which run is in flight, and what to do once the runtime is leaving. */
@@ -267,7 +274,7 @@ export function installRunFailureHandlers(events: ProcessEvents, handlers: RunFa
   };
   events.on('uncaughtException', (reason) => { start(runErrorText(reason)); });
   events.on('unhandledRejection', (reason) => { start(runErrorText(reason)); });
-  for (const signal of RUNTIME_STOP_SIGNALS) events.on(signal, () => { drain(); });
+  onStopSignals(events, (ordinal) => { if (ordinal === 1) drain(); });
 }
 
 /**
@@ -307,7 +314,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     const definition = loadAgentDefinition(definitionsDir);
     const task = loadAllTasks(definitionsDir).get(taskName);
     if (task === undefined) {
-      return { runId, status: 'failed', error: `unknown task: ${taskName}`, reportCount: 0 };
+      return { runId, status: 'failed', ending: 'unknown-task', error: `unknown task: ${taskName}`, reportCount: 0 };
     }
     const systemPrompt = loadSystemPrompt(definitionsDir, definition.systemPromptPath);
 
@@ -317,21 +324,35 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     const harnessId = (options.provider?.type === undefined ? HARNESS_CLAUDE_SDK : inferHarnessFromProviderType(options.provider.type)) ?? HARNESS_CLAUDE_SDK;
     // No started_at: the server stamps its own clock. The run's context is the
     // dispatch's parameters, which the run routes that serve one task read back.
-    const claim = await store.claimRun(
-      {
-        id: runId,
-        agent_id: agentId,
-        task: taskName,
-        status: 'running',
-        harness: harnessId,
-        provider: options.provider?.type ?? null,
-        model: options.model ?? null,
-        run_context: options.params === undefined ? null : JSON.stringify(options.params),
-      },
-      { taskName, maxAgeSeconds: 0 },
-    );
+    let claim: Awaited<ReturnType<typeof store.claimRun>>;
+    try {
+      claim = await store.claimRun(
+        {
+          id: runId,
+          agent_id: agentId,
+          task: taskName,
+          status: 'running',
+          harness: harnessId,
+          provider: options.provider?.type ?? null,
+          model: options.model ?? null,
+          run_context: options.params === undefined ? null : JSON.stringify(options.params),
+        },
+        { taskName, maxAgeSeconds: 0 },
+      );
+    } catch (error) {
+      // A Project the Deployment has not admitted, and a Deployment with no
+      // model to call, are settled answers an operator clears: the run is
+      // nobody's, and its supervisor names it on the row.
+      if (error instanceof ProjectNotAdmittedError || error instanceof NoProviderConfiguredError) {
+        return { runId, status: 'skipped', ending: 'claim-refused', error: error.message, reportCount: 0 };
+      }
+      throw error;
+    }
     if ((claim as { claimed?: boolean } | undefined)?.claimed === false) {
-      return { runId, status: 'skipped', reportCount: 0 };
+      // The row is held by another attempt: it names a credential this process
+      // does not hold, or a runtime is already running it. The run is not this
+      // process's to end.
+      return { runId, status: 'skipped', ending: 'claim-contended', reportCount: 0 };
     }
     options.onClaimed?.();
 
@@ -385,23 +406,25 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       // failed, and the container's log is where a person looks first.
       const refused = refusalOf(closed);
       if (refused !== undefined) {
-        return { runId, status: 'failed', error: RUN_REFUSED_CLOSE_ERROR, refused, reportCount: counter.reports };
+        return { runId, status: 'failed', ending: 'unposted', error: RUN_REFUSED_CLOSE_ERROR, refused, reportCount: counter.reports };
       }
-      return { runId, status: 'completed', reportCount: counter.reports };
+      return { runId, status: 'completed', ending: 'posted', reportCount: counter.reports };
     } finally {
       clearTimeout(timer);
     }
   } catch (error) {
     const message = runErrorText(error);
     let refused: string | undefined;
+    let ending: RunEnding = 'unposted';
     try {
       options.onClosing?.();
       refused = refusalOf(await recordTerminal(store, runId, 'failed', { completed_at: Date.now(), error: message }));
+      if (refused === undefined) ending = 'posted';
     } catch {
       // The terminal update is best-effort: the stale sweep closes the row
       // when the Deployment is unreachable, and the container's log holds
       // the message either way.
     }
-    return { runId, status: 'failed', error: message, ...(refused === undefined ? {} : { refused }), reportCount: 0 };
+    return { runId, status: 'failed', ending, error: message, ...(refused === undefined ? {} : { refused }), reportCount: 0 };
   }
 }

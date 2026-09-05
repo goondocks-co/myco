@@ -9,18 +9,28 @@
 import type { RelationalStore } from './adapters.js';
 import { leafValues } from './settings.js';
 
-/** The name of the limit that holds a queued run, as the row records it and the dashboard reads it. */
-export type HeldBy = 'concurrent_runs' | 'task_concurrent_runs' | 'task_runs_per_hour' | 'fleet';
+/**
+ * What holds a queued run, as the row records it and the dashboard reads it.
+ *
+ * Three are limits an owner sets, one is the size of what the operator
+ * deployed, and `runtime` is none of those: it is a runtime that will not take
+ * a run at this instant, which clears on its own rather than by raising
+ * anything.
+ */
+export type HeldBy = 'concurrent_runs' | 'task_concurrent_runs' | 'task_runs_per_hour' | 'fleet' | 'runtime';
 
-/** The three limits an owner sets in Settings. The fleet is not one: it is the size of what the operator deployed, and it reaches the server with the deploy config. */
-export const LIMIT_LEAVES: Readonly<Record<Exclude<HeldBy, 'fleet'>, string>> = {
+/** The holds that describe the Deployment rather than one task: a run behind any of them is behind every later run too. */
+export const DEPLOYMENT_WIDE_HOLDS: ReadonlySet<HeldBy> = new Set<HeldBy>(['fleet', 'concurrent_runs', 'runtime']);
+
+/** The three limits an owner sets in Settings. The fleet is the size of what the operator deployed; a runtime hold is not a limit at all. */
+export const LIMIT_LEAVES: Readonly<Record<Exclude<HeldBy, 'fleet' | 'runtime'>, string>> = {
   concurrent_runs: 'agent.limits.concurrent_runs',
   task_concurrent_runs: 'agent.limits.task_concurrent_runs',
   task_runs_per_hour: 'agent.limits.task_runs_per_hour',
 };
 
-/** Each limit as set, or null where the Deployment sets none. */
-export type DispatchLimits = Readonly<Record<HeldBy, number | null>>;
+/** Each limit as set, or null where the Deployment sets none. A runtime hold has no number to compare against and is absent here. */
+export type DispatchLimits = Readonly<Record<Exclude<HeldBy, 'runtime'>, number | null>>;
 
 /** What the Deployment is doing when a dispatch asks to run. */
 export interface DispatchLoad {
@@ -54,8 +64,9 @@ export async function readDispatchLimits(env: { db: RelationalStore; fleet?: num
  * The first limit the load is at, or null when the dispatch may launch now.
  * Pure: the same load and limits always name the same holder, and the order
  * is the order the row names it in — the fleet first, as the hardest bound.
+ * A runtime hold is never decided here; it is what a launch answers.
  */
-export function heldBy(load: DispatchLoad, limits: DispatchLimits): HeldBy | null {
+export function heldBy(load: DispatchLoad, limits: DispatchLimits): Exclude<HeldBy, 'runtime'> | null {
   if (limits.fleet !== null && load.liveRuns >= limits.fleet) return 'fleet';
   if (limits.concurrent_runs !== null && load.liveRuns >= limits.concurrent_runs) return 'concurrent_runs';
   if (limits.task_concurrent_runs !== null && load.liveTaskRuns >= limits.task_concurrent_runs) return 'task_concurrent_runs';
@@ -69,4 +80,5 @@ export const HELD_BY_WORDS: Readonly<Record<HeldBy, string>> = {
   task_concurrent_runs: 'the limit on runs of this task at once',
   task_runs_per_hour: 'the limit on runs of this task per hour',
   fleet: 'the size of the fleet',
+  runtime: 'the runtime is not taking a run right now',
 };

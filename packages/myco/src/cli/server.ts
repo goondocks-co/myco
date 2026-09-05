@@ -12,6 +12,7 @@ import {
   removeBundle,
   resolveDeploymentPaths,
   bundleContents,
+  signInConfigured,
   backupDeployment,
   restoreDeployment,
   updateDeployment,
@@ -19,7 +20,7 @@ import {
   adoptDeployment,
 } from '../server/deployment.js';
 import { CommandFailed } from '../server/runner.js';
-import { UpdateRolledBack } from '../server/deployment.js';
+import { ComposeFilesUnreadable, HarnessLeftStopped, RestoreLeftIncomplete, UpdateRolledBack, UpdateRollbackFailed } from '../server/deployment.js';
 import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
 import { WranglerAbsent, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
@@ -30,15 +31,25 @@ import { parseFlags } from './shared.js';
 export const SERVER_HELP = `Usage: myco server <command>
 
 Commands (Compose is the default target; --target cloudflare selects the Worker):
-  create [--port <n>] [--version <tag>]   Provision and start the Deployment.
+  create [--port <n>] [--version <tag>] [--fleet <n>] [--origin <url>]
+                                          Provision and start the Deployment. --fleet sets how many
+                                          runtimes may run at once (default 4); --origin is the
+                                          address members reach it at when a proxy fronts it.
   create --target cloudflare --account-id <id> --dir <packages/myco-server checkout>
                                           Provision D1/R2/secrets store, install generated secrets,
                                           migrate, deploy, and write the deployment record.
   status                                  Report what is provisioned and running.
                                           With --target cloudflare: the record and the deployed version.
-  update [--version <tag>] [--no-rollback]
+  update [--version <tag>] [--no-rollback] [--no-drain] [--no-pull]
                                           Move to a new image; the container migrates on start.
-                                          A failed update returns to the previous version.
+                                          A failed update returns to the previous version. Waits for
+                                          the tasks this Deployment is running or about to start
+                                          before it recreates; work queued behind a limit waits for
+                                          the next wake either way. --no-drain skips the wait; the
+                                          harness is still stopped first, so live runs finish inside
+                                          its stop grace before the server is touched. --no-pull
+                                          recreates on the images this machine already holds, for a
+                                          tag built here or loaded from a file.
   update --target cloudflare [--no-drain]
                                           Move the Worker to this checkout. Waits for the tasks the
                                           Deployment has in flight, queued ones included, then
@@ -49,10 +60,15 @@ Commands (Compose is the default target; --target cloudflare selects the Worker)
                                           record's last recorded one — the version a failed update
                                           left serving.
   backup --to <dir>                       Snapshot the database and blobs.
-  restore --from <dir>                    Replace the Deployment's data with a backup.
+  restore --from <dir> [--no-drain]       Replace the Deployment's data with a backup. Waits for the
+                                          tasks this Deployment is running or about to start before
+                                          it stops. --no-drain skips the wait; the harness is still
+                                          stopped first, so live runs finish inside its stop grace
+                                          before the server is touched.
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
   adopt                                   Write a bundle for a stack this machine did not provision.
-  destroy [--data] [--yes]                Stop and remove the stack. --data also removes the volume.
+  destroy [--data] [--yes]                Stop and remove the stack, at once — it does not wait for
+                                          the runs in flight. --data also removes the volume.
                                           With --target cloudflare: removes the Worker only; data stands.
   config [--out <path>] [--fleet <n>]     Render the Cloudflare deploy config from the committed
                                           configuration and this machine's deployment record.
@@ -166,12 +182,18 @@ export async function run(args: string[]): Promise<void> {
     }
 
     if (command === 'create') {
-      const portFlag = flags.get('port');
-      const port = portFlag === undefined ? undefined : Number(portFlag);
-      if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
-        fail(`--port must be a port number, and is ${JSON.stringify(portFlag)}`);
+      // The port is decided in one place, for the flag and for the bundle's own
+      // `.env` alike. The flag travels as the operator typed it, so a refusal
+      // names that and not what a conversion made of it.
+      const port = flags.get('port');
+      const fleetFlag = flags.get('fleet');
+      const fleet = fleetFlag === undefined ? undefined : Number(fleetFlag);
+      if (fleetFlag !== undefined && (fleetFlag === 'true' || !Number.isInteger(fleet) || fleet! < 1)) {
+        fail('--fleet needs a whole number of runtimes, 1 or more.');
       }
-      const created = await createDeployment({ port, version: flags.get('version') });
+      const originFlag = flags.get('origin');
+      if (originFlag === '' || originFlag === 'true') fail('--origin needs the address members reach this Deployment at.');
+      const created = await createDeployment({ port, fleet, origin: originFlag, version: flags.get('version') });
       console.log('\nDeployment started.');
       console.log(`  Directory:  ${created.root}`);
       console.log(`  Address:    http://127.0.0.1:${created.port}`);
@@ -189,12 +211,27 @@ export async function run(args: string[]): Promise<void> {
       console.log('\nDeployment');
       console.log(`  Directory:  ${paths.root}`);
       console.log(`  Bundle:     ${bundleContents(paths).join(', ')}`);
-      console.log(`  Running:    ${status.running ? status.services.join(', ') : 'no'}`);
+      // Every declared service, with its state: a stack whose harness exited
+      // serves and runs nothing, and naming only what is up hides that.
+      console.log(status.servicesError === undefined
+        ? `  Services:   ${status.states.map((s) => `${s.service} (${s.state})`).join(', ')}`
+        : `  Services:   could not read compose.yaml/compose.override.yaml: ${status.servicesError}`);
+      console.log(`  Running:    ${status.running ? 'yes' : 'no'}`);
+      // A bundle with no sign-in credential answers every owner route
+      // anonymously, dispatch included, and says nothing about why.
+      console.log(signInConfigured(paths)
+        ? '  Sign-in:    configured'
+        : '  Sign-in:    not configured — owner routes answer anonymous until `myco server github-app`');
       return;
     }
 
     if (command === 'update') {
-      await updateDeployment({ version: flags.get('version'), noRollback: flags.has('no-rollback') });
+      await updateDeployment({
+        version: flags.get('version'),
+        noRollback: flags.has('no-rollback'),
+        noDrain: flags.has('no-drain'),
+        noPull: flags.has('no-pull'),
+      });
       console.log('Deployment updated. The container applied any migrations its volume was behind.');
       return;
     }
@@ -215,7 +252,7 @@ export async function run(args: string[]): Promise<void> {
       if (!flags.has('yes')) {
         fail(`restore replaces this Deployment's database and blobs with ${from}. Re-run with --yes to confirm.`);
       }
-      await restoreDeployment({ source: from! });
+      await restoreDeployment({ source: from!, noDrain: flags.has('no-drain') });
       console.log('Deployment restored and restarted.');
       return;
     }
@@ -224,7 +261,7 @@ export async function run(args: string[]): Promise<void> {
       if (!flags.has('yes')) {
         fail('rotate replaces the session secret, which ends every signed-in session. Re-run with --yes to confirm.');
       }
-      const rotated = await rotateSecrets();
+      const rotated = await rotateSecrets({ report: (line) => console.log(line) });
       console.log(`Rotated: ${rotated.join(', ')}`);
       console.log('Every signed-in session has ended.');
       return;
@@ -298,7 +335,8 @@ export async function run(args: string[]): Promise<void> {
   } catch (err) {
     // A rolled-back update is a failure, and the operator needs to know the
     // Deployment is serving again on the version it started from.
-    if (err instanceof UpdateRolledBack) fail(err.message);
+    if (err instanceof UpdateRolledBack || err instanceof UpdateRollbackFailed || err instanceof HarnessLeftStopped) fail(err.message);
+    if (err instanceof RestoreLeftIncomplete || err instanceof ComposeFilesUnreadable) fail(err.message);
     if (err instanceof RegistrationRefused || err instanceof WranglerAbsent) fail(err.message);
     if (err instanceof DeployConfigIncomplete) fail(err.message);
     // A Compose failure is the operator's to read, verbatim.

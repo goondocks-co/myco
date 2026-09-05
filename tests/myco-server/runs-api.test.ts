@@ -11,6 +11,7 @@ import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import worker from '@myco-server-worker/index.js';
+import { STALE_CREDENTIAL_REFUSAL } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
 
 const AGENT = 'agent_1';
@@ -159,7 +160,7 @@ describe('run lifecycle over HTTP', () => {
   it('applies an update of settable columns and reports rows moved', async () => {
     const { post } = await harness();
     await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } })).toEqual({ persisted: true, changed: 1 });
+    expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } })).toEqual({ persisted: true, changed: 1, applied: true });
     const got = await post('/runs/get', { runId: 'r1' });
     expect((got.run as { status: string; completedAt: number }).status).toBe('completed');
   });
@@ -167,7 +168,7 @@ describe('run lifecycle over HTTP', () => {
   it('keeps the ending a run already carries, whichever ending landed first', async () => {
     const { post, sqlite } = await harness();
     await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } })).toEqual({ persisted: true, changed: 1 });
+    expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } })).toEqual({ persisted: true, changed: 1, applied: true });
     // The close releases the container, the container answers the release with an
     // ending of its own, and both writes are open at once. The row keeps the first.
     expect(await post('/runs/update', { runId: 'r1', update: { status: 'failed', completed_at: 43, error: 'the runtime was replaced while the run was in flight' } }))
@@ -176,7 +177,7 @@ describe('run lifecycle over HTTP', () => {
       .toEqual({ status: 'completed', c: 42, error: null });
 
     await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    expect(await post('/runs/update', { runId: 'r2', update: { status: 'failed', completed_at: 50, error: 'boom' } })).toEqual({ persisted: true, changed: 1 });
+    expect(await post('/runs/update', { runId: 'r2', update: { status: 'failed', completed_at: 50, error: 'boom' } })).toEqual({ persisted: true, changed: 1, applied: true });
     expect(await post('/runs/update', { runId: 'r2', update: { status: 'completed', completed_at: 51 } }))
       .toEqual({ persisted: true, changed: 0, applied: false, reason: 'terminal' });
     expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'r2'`).get()).toEqual({ status: 'failed', error: 'boom' });
@@ -185,8 +186,8 @@ describe('run lifecycle over HTTP', () => {
   it('applies a repeat of the ending a run already carries, so a retried close is not a refusal', async () => {
     const { post, sqlite } = await harness();
     await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } })).toEqual({ persisted: true, changed: 1 });
-    expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 43 } })).toEqual({ persisted: true, changed: 0 });
+    expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } })).toEqual({ persisted: true, changed: 1, applied: true });
+    expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 43 } })).toEqual({ persisted: true, changed: 0, applied: true });
     expect(sqlite.query(`SELECT status, completed_at c FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ status: 'completed', c: 42 });
   });
 
@@ -194,7 +195,7 @@ describe('run lifecycle over HTTP', () => {
     const { post, sqlite } = await harness();
     await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } });
-    expect(await post('/runs/update', { runId: 'r1', update: { tokens_used: 99, cost_usd: 1 } })).toEqual({ persisted: true, changed: 1 });
+    expect(await post('/runs/update', { runId: 'r1', update: { tokens_used: 99, cost_usd: 1 } })).toEqual({ persisted: true, changed: 1, applied: true });
     expect(sqlite.query(`SELECT status, tokens_used t FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ status: 'completed', t: 99 });
   });
 
@@ -260,7 +261,7 @@ describe('failure and resume admission over HTTP', () => {
 
     await post('/runs/claim', claim('r2'));
     expect((await post('/runs/failed', { runId: 'r2', errorClass: 'other', error: 'first' })).changed).toBe(1);
-    expect(await post('/runs/failed', { runId: 'r2', errorClass: 'other', error: 'second' })).toEqual({ persisted: true, changed: 0 });
+    expect(await post('/runs/failed', { runId: 'r2', errorClass: 'other', error: 'second' })).toEqual({ persisted: true, changed: 0, applied: true });
     expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'r2'`).get()).toEqual({ status: 'failed', error: 'first' });
   });
 
@@ -367,7 +368,8 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     // The runtime member claims only a run the server dispatched under its credential: the dispatch record comes first.
     const dispatch = (runId: string, credential: { tokenId: string }) =>
       recordDispatch(fixture.db, { projectId: 'proj_1' }, { id: runId, agentId: AGENT, task: 'digest', provider: null, model: null, runContext: null, dispatchedBy: credential.tokenId, startedAt: now });
-    return { ...fixture, env, minted, ended, post, credRevokedAt, dispatch };
+    const run = (runId: string) => fixture.sqlite.query(`SELECT status, dispatched_by AS dispatchedBy FROM agent_runs WHERE id = ?`).get(runId) as { status: string; dispatchedBy: string | null } | null;
+    return { ...fixture, env, minted, ended, post, credRevokedAt, dispatch, run };
   }
 
   it('releases the container hold, revokes its own credential, and admits no further write on it', async () => {
@@ -393,19 +395,64 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     const claim = await post(minted.token, '/runs/claim', { id: 'run_t2', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(claim.claimed).toBe(true);
     const terminal = await post(minted.token, '/runs/update', { runId: 'run_t2', update: { status: 'skipped', completed_at: Date.now() } });
-    expect({ persisted: terminal.persisted, changed: terminal.changed }).toEqual({ persisted: true, changed: 1 });
+    expect({ persisted: terminal.persisted, changed: terminal.changed, applied: terminal.applied }).toEqual({ persisted: true, changed: 1, applied: true });
     expect(typeof credRevokedAt(minted.tokenId)).toBe('number');
   });
 
-  it("keys the release on the run's own dispatched_by: a sibling run's terminal write releases nothing", async () => {
-    const { db, minted, ended, post, credRevokedAt, dispatch } = await dispatchedRun();
+  it('answers the credential refusal before it answers what the row already ended as', async () => {
+    // A stale post to a run that has already closed learns which of the two it
+    // is: the credential is the caller's problem, and the ending is not its
+    // business at all.
+    const { db, minted, post, dispatch, run } = await dispatchedRun();
+    const sibling = await issueMemberToken(db, { memberId: 'mem_harness', machineId: 'harness' }, Date.now());
+    await dispatch('run_t7', sibling);
+    expect((await post(sibling.token, '/runs/claim', { id: 'run_t7', agentId: AGENT, task: 'digest', capability: 'cortex' })).claimed).toBe(true);
+    expect((await post(sibling.token, '/runs/update', { runId: 'run_t7', update: { status: 'completed', completed_at: Date.now() } })).applied).toBe(true);
+    expect(run('run_t7')?.status).toBe('completed');
+
+    for (const path of ['/runs/update', '/runs/failed']) {
+      const body = path === '/runs/update'
+        ? { runId: 'run_t7', update: { status: 'failed', completed_at: Date.now() } }
+        : { runId: 'run_t7', errorClass: 'other', error: 'stale' };
+      const answered = await post(minted.token, path, body);
+      expect({ path, persisted: answered.persisted, reason: answered.reason })
+        .toEqual({ path, persisted: false, reason: STALE_CREDENTIAL_REFUSAL });
+    }
+  });
+
+  it('refuses a failure recorded under a credential the row does not name, and queues no successor for it', async () => {
+    const { db, minted, post, dispatch, run, sqlite } = await dispatchedRun();
+    const sibling = await issueMemberToken(db, { memberId: 'mem_harness', machineId: 'harness' }, Date.now());
+    await dispatch('run_t6', sibling);
+    expect((await post(sibling.token, '/runs/claim', { id: 'run_t6', agentId: AGENT, task: 'digest', capability: 'cortex' })).claimed).toBe(true);
+
+    // `/runs/failed` writes a terminal status and can ask for a successor; it
+    // is keyed on the row's credential exactly as the update route is.
+    const failed = await post(minted.token, '/runs/failed', { runId: 'run_t6', errorClass: 'other', error: 'stale', replaced: true });
+    expect({ persisted: failed.persisted, reason: failed.reason }).toEqual({ persisted: false, reason: STALE_CREDENTIAL_REFUSAL });
+    expect(run('run_t6')?.status).toBe('running');
+    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(1);
+  });
+
+  it("refuses a status write under a credential the run's row does not name, and leaves the row as it stands", async () => {
+    // The shape a relaunch makes: an earlier attempt's runtime, or the
+    // supervisor closing for it, posting onto a row that has moved on. Ending
+    // that run would kill work its successor is doing.
+    const { db, minted, ended, post, credRevokedAt, dispatch, run } = await dispatchedRun();
     const sibling = await issueMemberToken(db, { memberId: 'mem_harness', machineId: 'harness' }, Date.now());
     await dispatch('run_t3', sibling);
     const claim = await post(sibling.token, '/runs/claim', { id: 'run_t3', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(claim.claimed).toBe(true);
+
     const terminal = await post(minted.token, '/runs/update', { runId: 'run_t3', update: { status: 'completed', completed_at: Date.now() } });
-    expect({ persisted: terminal.persisted, changed: terminal.changed, ended: ended.length }).toEqual({ persisted: true, changed: 1, ended: 0 });
+    expect({ persisted: terminal.persisted, reason: terminal.reason }).toEqual({ persisted: false, reason: STALE_CREDENTIAL_REFUSAL });
+    expect({ status: run('run_t3')?.status, ended: ended.length }).toEqual({ status: 'running', ended: 0 });
     expect({ writer: credRevokedAt(minted.tokenId), dispatcher: credRevokedAt(sibling.tokenId) }).toEqual({ writer: null, dispatcher: null });
+
+    // The credential the row does name closes it.
+    const own = await post(sibling.token, '/runs/update', { runId: 'run_t3', update: { status: 'completed', completed_at: Date.now() } });
+    expect({ persisted: own.persisted, applied: own.applied }).toEqual({ persisted: true, applied: true });
+    expect(run('run_t3')?.status).toBe('completed');
   });
 
   it('leaves any other member credential untouched at its terminal writes', async () => {
@@ -462,14 +509,14 @@ describe('POST /runs/update holds a run to what its task owes at close', () => {
     const h = await sweep();
     await h.post('/runs/report', { runId: 'r_sweep', agentId: AGENT, action: 'supersession', summary: 'nothing to merge', details: JSON.stringify({ reviewed: 9, superseded: 0, consolidated: 0, obsoleted: 0 }) });
     expect(await h.post('/runs/update', { runId: 'r_sweep', update: { status: 'completed', completed_at: 44 } }))
-      .toEqual({ persisted: true, changed: 1 });
+      .toEqual({ persisted: true, changed: 1, applied: true });
     expect(row(h)).toEqual({ status: 'completed', error: null });
   });
 
   it('holds only the tasks that owe a report, and never a run moving to a status other than completed', async () => {
     const h = await sweep();
-    expect(await h.post('/runs/update', { runId: 'r_sweep', update: { status: 'skipped', completed_at: 45 } })).toEqual({ persisted: true, changed: 1 });
+    expect(await h.post('/runs/update', { runId: 'r_sweep', update: { status: 'skipped', completed_at: 45 } })).toEqual({ persisted: true, changed: 1, applied: true });
     await h.post('/runs/claim', { id: 'r_digest', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    expect(await h.post('/runs/update', { runId: 'r_digest', update: { status: 'completed', completed_at: 46 } })).toEqual({ persisted: true, changed: 1 });
+    expect(await h.post('/runs/update', { runId: 'r_digest', update: { status: 'completed', completed_at: 46 } })).toEqual({ persisted: true, changed: 1, applied: true });
   });
 });

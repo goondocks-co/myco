@@ -28,14 +28,14 @@ import {
   type RunInsert, type RunUpdate, type RunEventRowInsert,
 } from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
-import type { RunAdmissionGate } from '../core/runs.js';
+import type { RunAdmissionGate, RunRow } from '../core/runs.js';
 import { admitResume, classifyFailure, type FailureObservation } from '../core/resume.js';
 
 /** The failure classes a harness may report; anything else is refused rather than mapped to a default. */
 const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
 import { releaseRun } from '../core/release.js';
 import { runCloseRefusal } from '../core/run-postconditions.js';
-import { HARNESS_MEMBER_ID, requeueReplaced } from '../core/harness.js';
+import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
@@ -259,7 +259,7 @@ const asksReplaced = (body: Record<string, unknown>, status: unknown): boolean =
 /** The answer a status change gets on a run that has already ended under a DIFFERENT ending: nothing moved, and the row's own ending stands. */
 const TERMINAL_ANSWER = { persisted: true, changed: 0, applied: false, reason: 'terminal' } as const;
 /** The answer a status change gets on a run already carrying that very status: nothing moved, and nothing needs to. */
-const SETTLED_ANSWER = { persisted: true, changed: 0 } as const;
+const SETTLED_ANSWER = { persisted: true, changed: 0, applied: true } as const;
 
 /**
  * What a status write answers on a run that has already ended, or nothing when
@@ -274,6 +274,51 @@ const SETTLED_ANSWER = { persisted: true, changed: 0 } as const;
 function endedAnswer(status: string | undefined, posted: unknown): Response | null {
   if (!isTerminalRunStatus(status)) return null;
   return Response.json(status === posted ? SETTLED_ANSWER : TERMINAL_ANSWER);
+}
+
+/**
+ * What a terminal write answers when the caller is not the credential the run
+ * is running under, or nothing when it is.
+ *
+ * Ending a run requires holding the credential its row names, exactly as
+ * claiming it does. A launch answered too late is re-queued and offered again
+ * under a fresh credential, so an earlier attempt's runtime — or the supervisor
+ * closing for it — reaches this surface holding one the row has moved past; the
+ * work its successor is doing is what the refusal protects. Every route that
+ * writes a terminal status funnels through here, which
+ * `tests/meta/queued-run-release-chokepoint.test.ts` holds.
+ */
+function foreignCredentialAnswer(ctx: RouteContext, before: RunRow | null): Response | null {
+  if (ctx.memberId !== HARNESS_MEMBER_ID || before === null) return null;
+  if (before.dispatchedBy === ctx.tokenId) return null;
+  return Response.json(refused(ctx, refusal(STALE_CREDENTIAL_REFUSAL, 'refused')));
+}
+
+/** Either the refusal a write is answered with, or how many rows it moved. */
+type RunWrite = { refused: Response } | { changed: number };
+
+/**
+ * Write a run's status as the caller, and release what the run held.
+ *
+ * The guard and the write are one act here, which is what keeps them together:
+ * no route in this file reaches `applyRunUpdate` or `recordReplacedRun` on its
+ * own, and `tests/meta/queued-run-release-chokepoint.test.ts` holds that. A
+ * route that wrote a run terminal beside this one would be a route the
+ * credential rule does not reach.
+ */
+async function endRunAsCaller(
+  env: ServerEnv, ctx: RouteContext, runId: string, before: RunRow | null,
+  update: RunUpdate, options: { replaced?: boolean } = {},
+): Promise<RunWrite> {
+  const foreign = foreignCredentialAnswer(ctx, before);
+  if (foreign !== null) return { refused: foreign };
+  const scope = { projectId: ctx.projectId };
+  const changed = await applyRunUpdate(env.db, scope, runId, update);
+  if (changed === 1) {
+    await releaseDispatchedRun(env, ctx, runId, update.status);
+    if (options.replaced === true) await recordReplacedRun(env, ctx, runId);
+  }
+  return { changed };
 }
 
 /**
@@ -313,37 +358,41 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   const scope = { projectId: ctx.projectId };
   // On a run the server dispatched, the context and the dry-run flag are the
   // dispatcher's own record of what it decided, and the task routes read both
-  // off the row. A runtime moving either would file its own hash as the
-  // Project's current one, or turn a dry run into a writing one — and the
-  // refusal names the columns rather than dropping them, so a caller learns
-  // what it may not set instead of watching a write silently do less.
+  // off the row: filing a hash as the Project's current one, and turning a dry
+  // run into a writing one, each require moving a column that is not the
+  // runtime's. The refusal names the columns rather than dropping them, so a
+  // caller learns what it may not set instead of watching a write do less.
   const claimed = DISPATCHER_OWNED_COLUMNS.filter((c) => c in runUpdate);
   if (claimed.length > 0 && (await getRun(env.db, scope, runId))?.dispatchedBy != null) {
     return Response.json(refused(ctx, refusal(`a dispatched run's ${claimed.join(' and ')} belong to the dispatcher and may not be updated`, 'refused')));
   }
   const guarded = 'status' in runUpdate;
   const before = guarded ? await getRun(env.db, scope, runId) : null;
+  // Before anything else this route answers: a caller holding a credential the
+  // row does not name learns that, rather than learning what the row ended as.
+  const foreign = guarded ? foreignCredentialAnswer(ctx, before) : null;
+  if (foreign !== null) return foreign;
   const settled = endedAnswer(before?.status, runUpdate.status);
   if (settled !== null) return settled;
   if (runUpdate.status === 'completed') {
     const missing = before === null ? null : await runCloseRefusal(env.db, scope, before);
     if (missing !== null) {
-      const failed = await applyRunUpdate(env.db, scope, runId, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: missing } as RunUpdate);
-      if (failed === 1) await releaseDispatchedRun(env, ctx, runId, 'failed');
-      const raced = failed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
+      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: missing } as RunUpdate);
+      if ('refused' in written) return written.refused;
+      const raced = written.changed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
       if (raced !== null) return raced;
-      return Response.json({ persisted: true, changed: failed, applied: false, reason: 'postcondition' });
+      return Response.json({ persisted: true, changed: written.changed, applied: false, reason: 'postcondition' });
     }
   }
-  const changed = await applyRunUpdate(env.db, scope, runId, runUpdate);
-  if (changed === 1) {
-    await releaseDispatchedRun(env, ctx, runId, runUpdate.status);
-    if (asksReplaced(body, runUpdate.status)) await recordReplacedRun(env, ctx, runId);
-    return Response.json({ persisted: true, changed });
-  }
+  const written = await endRunAsCaller(env, ctx, runId, guarded ? before : null, runUpdate, { replaced: asksReplaced(body, runUpdate.status) });
+  if ('refused' in written) return written.refused;
+  const changed = written.changed;
+  if (changed === 1) return Response.json({ persisted: true, changed, applied: true });
   const raced = guarded ? endedAnswer((await getRun(env.db, scope, runId))?.status, runUpdate.status) : null;
   if (raced !== null) return raced;
-  return Response.json({ persisted: true, changed });
+  // A write that moved nothing says so: reporting a run as ended requires this
+  // route to say the write landed.
+  return Response.json({ persisted: true, changed, applied: false });
 }
 
 /** Retire the resumability of failed runs equivalent to this one. */
@@ -486,13 +535,14 @@ export async function handleRecordFailure(env: ServerEnv, ctx: RouteContext): Pr
   // ended under another status answers the same refusal the update route gives:
   // `changed: 0` alone reads exactly like a run in another Project.
   const scope = { projectId: ctx.projectId };
-  const ended = endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed');
+  const before = await getRun(env.db, scope, runId);
+  const foreign = foreignCredentialAnswer(ctx, before);
+  if (foreign !== null) return foreign;
+  const ended = endedAnswer(before?.status, 'failed');
   if (ended !== null) return ended;
-  const changed = await applyRunUpdate(env.db, scope, runId, update as RunUpdate);
-  if (changed === 1) {
-    await releaseDispatchedRun(env, ctx, runId, 'failed');
-    if (body.replaced === true) await recordReplacedRun(env, ctx, runId);
-  }
+  const written = await endRunAsCaller(env, ctx, runId, before, update as RunUpdate, { replaced: body.replaced === true });
+  if ('refused' in written) return written.refused;
+  const changed = written.changed;
   const raced = changed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
   if (raced !== null) return raced;
   return Response.json({ persisted: true, changed, ...decision });

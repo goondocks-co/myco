@@ -18,9 +18,13 @@ import {
   ROLLOUT_WATCH_TIMEOUT_SECONDS,
   RUN_OVERRUN_MARGIN_MS,
 } from '@myco/server/cloudflare-lifecycle.js';
+import { LIVE_RUN_POLL_MS } from '@myco/server/live-runs.js';
 import { CONTAINERS_ROLLOUT_NONE, LIVE_RUNS_RETRY_MS, readDeploymentRecord, writeDeploymentRecord, wranglerJson } from '@myco/server/cloudflare.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 import { containersTableHash, renderDeployConfig } from '@myco/server/deploy-config.js';
+import { liveRunsIn, waitForLiveRuns } from '@myco/server/live-runs.js';
+import { COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
+import { WRANGLER_TEMPLATE } from '@myco/server/wrangler-template.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS as SERVER_DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS as SERVER_RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
 import { TASK_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/task-catalogue.js';
@@ -304,7 +308,7 @@ describe('update: the runs in flight and the rollout', () => {
     const pending = liveRuns([{ id: 'run_p', task: 'digest-only', status: 'pending', started_at: null, run_context: JSON.stringify({ timeoutSeconds: 30 }) }]);
     await updateCloudflareDeployment({ ...options, runner: scripted({ d1: [pending] }), report: (l) => lines.push(l), clock: drive });
 
-    expect(lines).toContain('Waiting for a queued task: digest-only, not started yet, budget 30 sec');
+    expect(lines).toContain('Waiting for a task about to start: digest-only, not started yet, budget 30 sec');
     expect(drive.at).toBe(NOW + 150_000);
     expect(lines.some((l) => l.includes('outlived its own budget') && l.includes('digest-only'))).toBe(true);
   });
@@ -315,8 +319,10 @@ describe('update: the runs in flight and the rollout', () => {
     await updateCloudflareDeployment({ ...options, runner: scripted({}), report: () => undefined, clock: clock() });
     const read = calls.map((c) => c.args).find((a) => a.join(' ').includes('d1 execute'))!;
     expect(read.slice(0, 6)).toEqual(['wrangler', 'd1', 'execute', 'myco-server', '--remote', '--json']);
-    // The server counts both states as live (core/runs.ts, LIVE_RUNS_SQL); so does the deploy.
-    expect(read).toContain("SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running')");
+    // A deploy waits for what a recreate would interrupt: the dispatcher's two
+    // live states, and a queued row whose child is still working under the
+    // credential it names.
+    expect(read).toContain("SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running') OR (status = 'queued' AND dispatched_by IS NOT NULL)");
     expect(read.join(' ')).toContain(`-c ${DEPLOY_CONFIG_NAME}`);
   });
 
@@ -647,5 +653,69 @@ describe('update: the runs in flight and the rollout', () => {
     expect(RUN_OVERRUN_MARGIN_MS).toBe(SERVER_RUN_OVERRUN_MARGIN_MS);
     expect(DEFAULT_RUN_TIMEOUT_SECONDS).toBe(SERVER_DEFAULT_DISPATCH_TIMEOUT_SECONDS);
     expect(ROLLOUT_WATCH_TIMEOUT_SECONDS).toBe(Math.max(...Object.values(TASK_RUN_TIMEOUT_SECONDS)));
+  });
+
+  it('GATE: both targets spare a run for the same window, and the Compose bundle renders it', () => {
+    // The two targets spare a run in flight by different mechanisms — the
+    // platform's rollout grace there, the harness's stop grace here — and a
+    // window shorter than the longest task budget kills a run inside its bound
+    // on whichever target drifted.
+    const longest = Math.max(...Object.values(TASK_RUN_TIMEOUT_SECONDS));
+    const wrangler = Number(/^rollout_active_grace_period = (\d+)$/m.exec(WRANGLER_TEMPLATE)?.[1]);
+    expect(HARNESS_STOP_GRACE_SECONDS).toBe(ROLLOUT_WATCH_TIMEOUT_SECONDS);
+    expect(HARNESS_STOP_GRACE_SECONDS).toBe(longest);
+    expect(HARNESS_STOP_GRACE_SECONDS).toBe(wrangler);
+    // The rendered bundle carries the number, not just the constant. The
+    // harness is the last service, so its block runs to the end of the file.
+    const harness = COMPOSE_TEMPLATE.slice(COMPOSE_TEMPLATE.indexOf('\n  harness:'));
+    expect(harness).toContain(`stop_grace_period: ${HARNESS_STOP_GRACE_SECONDS}s`);
+  });
+});
+
+/**
+ * A row the queue took back while its runtime kept working.
+ *
+ * The dispatcher can requeue a row whose child is already running, so such a
+ * row is in flight even though nothing ever claimed it. It carries no start,
+ * and it is not the stale sweep's to clear.
+ */
+/**
+ * The rows a deploy waits on when the queue took one back.
+ *
+ * `returnToQueue` leaves such a row carrying the start its launch stamped and
+ * the context that launch was given, so the wait bounds it exactly as it bounds
+ * a running one — its own start, its own budget. What it cannot invent is a
+ * clock a row does not carry.
+ */
+describe('the wait on a requeued row', () => {
+  const NOW_Q = Date.parse('2026-09-04T12:00:00Z');
+  const drive = () => { let at = NOW_Q; return { now: () => at, sleep: async (ms: number) => { at += ms; }, get at() { return at; } }; };
+  const rows = (over: Record<string, unknown>) => JSON.stringify([{
+    results: [{
+      id: 'run_q', task: 'digest-only', status: 'queued',
+      // The shape the write leaves: launched ten minutes ago on its own budget.
+      started_at: NOW_Q - 600_000,
+      run_context: JSON.stringify({ timeoutSeconds: TASK_RUN_TIMEOUT_SECONDS['digest-only'] }), ...over,
+    }],
+    success: true,
+  }]);
+
+  it('names it as claimed by no runtime, and bounds it by its own launch and its own budget', async () => {
+    const lines: string[] = [];
+    const clock = drive();
+    const live = liveRunsIn(JSON.parse(rows({}))[0].results);
+    expect({ status: live[0]!.status, startedAt: live[0]!.startedAt })
+      .toEqual({ status: 'queued', startedAt: NOW_Q - 600_000 });
+
+    await waitForLiveRuns({ read: async () => live, sparing: 'the platform drains what is running', clock, report: (l) => lines.push(l) });
+
+    expect(lines[0]).toBe('Waiting for a task the queue took back while its runtime kept working: digest-only, started 10 min ago, budget 30 min');
+    // Its own start plus its own budget, not the default one: the wait gives
+    // the child the rest of the budget its launch carried.
+    const deadline = (NOW_Q - 600_000) + TASK_RUN_TIMEOUT_SECONDS['digest-only']! * 1000 + RUN_OVERRUN_MARGIN_MS;
+    expect(clock.at).toBeGreaterThanOrEqual(deadline);
+    expect(clock.at).toBeLessThan(deadline + LIVE_RUN_POLL_MS);
+    expect(lines).toContain("A task the queue took back outlived its own budget (digest-only); the deploy proceeds and the queue's expiry owns the row.");
+    expect(lines.some((l) => l.includes('the stale sweep owns the run'))).toBe(false);
   });
 });

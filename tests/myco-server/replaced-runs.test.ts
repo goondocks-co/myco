@@ -188,7 +188,7 @@ describe('what a runtime may add to a run it did not dispatch', () => {
     expect(await post('/runs/update', {
       runId: 'run_live', replaced: true,
       update: { status: 'failed', completed_at: Date.now(), error: 'the platform reclaimed the runtime before the run ended' },
-    })).toEqual({ persisted: true, changed: 1 });
+    })).toEqual({ persisted: true, changed: 1, applied: true });
     expect(contextOf('run_live')).toEqual({ timeoutSeconds: 120, input_hash: 'h', replaced: true });
     const successor = rows().find((r) => r.id !== 'run_live');
     expect(successor?.task).toBe('container-smoke');
@@ -206,7 +206,7 @@ describe('what a runtime may add to a run it did not dispatch', () => {
     const { post, sqlite, rows } = await runtime();
     sqlite.run(`UPDATE agent_runs SET run_context = '7' WHERE id = 'run_live'`);
     expect(await post('/runs/update', { runId: 'run_live', replaced: true, update: { status: 'failed', completed_at: Date.now(), error: 'reclaimed' } }))
-      .toEqual({ persisted: true, changed: 1 });
+      .toEqual({ persisted: true, changed: 1, applied: true });
     expect((sqlite.query(`SELECT run_context c FROM agent_runs WHERE id = 'run_live'`).get() as { c: string }).c).toBe('7');
     expect(rows()).toHaveLength(1);
   });
@@ -220,7 +220,7 @@ describe('what a runtime may add to a run it did not dispatch', () => {
       runId: 'run_live', replaced: true, update: { status: 'failed', completed_at: Date.now(), error: 'not mine to say' },
     }, '/runs/update'), bindings as never)).json() as Record<string, unknown>;
     // The status it posted stands; the word it may not say changed nothing.
-    expect(answered).toEqual({ persisted: true, changed: 1 });
+    expect(answered).toEqual({ persisted: true, changed: 1, applied: true });
     expect(contextOf('run_live')).toEqual({ timeoutSeconds: 120, input_hash: 'h' });
     expect(rows()).toHaveLength(1);
     expect(sqlite.query(`SELECT status FROM agent_runs WHERE id = 'run_live'`).get()).toEqual({ status: 'failed' });
@@ -229,7 +229,7 @@ describe('what a runtime may add to a run it did not dispatch', () => {
   it('leaves the context alone on a failure that names no deployment', async () => {
     const { post, contextOf, rows } = await runtime();
     expect(await post('/runs/update', { runId: 'run_live', update: { status: 'failed', error: 'the provider closed the stream' } }))
-      .toEqual({ persisted: true, changed: 1 });
+      .toEqual({ persisted: true, changed: 1, applied: true });
     expect(contextOf('run_live')).toEqual({ timeoutSeconds: 120, input_hash: 'h' });
     expect(rows()).toHaveLength(1);
   });

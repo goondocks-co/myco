@@ -109,23 +109,44 @@ const CLAIM_SQL = `INSERT INTO agent_runs
  * **`dry_run` is the dispatcher's.** A claim that carried it would let a runtime
  * that names nothing turn a dry run into a real one, and the write routes that
  * read `dry_run` off the row would then admit the write the dispatch refused.
+ *
+ * A `queued` row is claimable on the same terms. A launch answered after its
+ * own deadline is taken back into the queue while the child it started is still
+ * running, and that child claims under the credential the row still names; the
+ * row keeps the start its launch stamped, and drops the holder that described a
+ * run that is now running.
  */
 const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
-   SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?)
- WHERE project_id = ? AND id = ? AND status = 'pending' AND dispatched_by = ?`;
+   SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?),
+       started_at = COALESCE(started_at, ?), held_by = NULL
+ WHERE project_id = ? AND id = ? AND status IN ('pending', 'queued') AND dispatched_by = ?`;
+
+/**
+ * The one exclusion rule: a run is never counted by a limit it is itself being
+ * admitted against.
+ *
+ * A row already in the table — one the queue took back, carrying the start of
+ * the launch that went out for it — is admitted against the OTHER runs, so
+ * admitting it a second time requires leaving it out of every count. The read a
+ * dispatcher takes first and the write that decides share this text, which is
+ * what holds them to one answer. A caller with no row to leave out binds null.
+ */
+export const NOT_THE_RUN_ADMITTED = '(? IS NULL OR id != ?)';
 
 /**
  * The limit check, as part of the write that launches: each limit is either
  * unset (its parameter NULL) or compared against the count the same statement
  * reads, so two launches deciding at once cannot both pass a limit of one.
- * Bound as: fleet, fleet, concurrent, concurrent, task-concurrent, task,
- * task-concurrent, per-hour, task, hour-start, per-hour.
+ *
+ * Bound as: fleet, run, run, fleet; concurrent, run, run, concurrent;
+ * task-concurrent, task, run, run, task-concurrent; per-hour, task, run, run,
+ * hour-start, per-hour; single, project, task, run.
  */
 const ADMISSION_WHERE = `
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND task = ?) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND started_at IS NOT NULL AND started_at >= ?) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND task = ? AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) < ?)
    AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND status IN ('pending', 'running', 'queued') AND id != ?))`;
 
 /**
@@ -146,7 +167,13 @@ function admissionParams(scope: ReadScope, task: string | null, runId: string, a
   const l = admission?.limits ?? NO_LIMITS;
   const hourStart = (admission?.now ?? 0) - 3_600_000;
   const single = admission?.singleFlight === true ? task : null;
-  return [l.fleet, l.fleet, l.concurrent_runs, l.concurrent_runs, l.task_concurrent_runs, task, l.task_concurrent_runs, l.task_runs_per_hour, task, hourStart, l.task_runs_per_hour, single, scope.projectId, task, runId];
+  return [
+    l.fleet, runId, runId, l.fleet,
+    l.concurrent_runs, runId, runId, l.concurrent_runs,
+    l.task_concurrent_runs, task, runId, runId, l.task_concurrent_runs,
+    l.task_runs_per_hour, task, runId, runId, hourStart, l.task_runs_per_hour,
+    single, scope.projectId, task, runId,
+  ];
 }
 
 const RECORD_DISPATCH_SQL = `INSERT INTO agent_runs
@@ -243,7 +270,7 @@ export async function claimRun(
   }
   if (row.dispatchedBy !== null) {
     const dispatched = await db.prepare(CLAIM_DISPATCHED_SQL).bind(
-      row.harness, row.instruction, row.provider, row.model,
+      row.harness, row.instruction, row.provider, row.model, row.startedAt,
       scope.projectId, row.id, row.dispatchedBy,
     ).run();
     if (dispatched.meta.changes === 1) return { claimed: true };
@@ -672,9 +699,19 @@ export interface LiveRunRef {
   dispatchedBy: string | null;
 }
 
+/**
+ * Which runs are in flight.
+ *
+ * A `pending` row counts as one: the dispatcher writes the row before the
+ * runtime starts. Every reader of the fleet shares this predicate — the sweep,
+ * the drain's load, and the read a deploy makes before it recreates the
+ * container — and each projects the columns it needs from it.
+ */
+export const LIVE_RUN_STATUSES = "status IN ('pending', 'running')";
+
 const LIVE_RUNS_SQL = `SELECT project_id AS projectId, id, task, status, started_at AS startedAt,
     run_context AS runContext, dispatched_by AS dispatchedBy
-  FROM agent_runs WHERE status IN ('pending', 'running')
+  FROM agent_runs WHERE ${LIVE_RUN_STATUSES}
   ORDER BY started_at ASC, id ASC LIMIT ?`;
 
 export async function listLiveRunsAcrossProjects(db: RelationalStore, limit: number): Promise<LiveRunRef[]> {
@@ -684,7 +721,7 @@ export async function listLiveRunsAcrossProjects(db: RelationalStore, limit: num
 
 /** A live run whose runtime went away is failed exactly once; a run that landed terminal on its own in the meantime is left as it landed. */
 const FAIL_STALE_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?
-  WHERE project_id = ? AND id = ? AND status IN ('pending', 'running')`;
+  WHERE project_id = ? AND id = ? AND ${LIVE_RUN_STATUSES}`;
 
 export async function failStaleRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string): Promise<boolean> {
   const result = await db.prepare(FAIL_STALE_SQL).bind(now, error, scope.projectId, runId).run();
@@ -723,9 +760,30 @@ export async function pruneTerminalRuns(db: RelationalStore, cutoffMs: number, l
   return removed;
 }
 
+/**
+ * Revoked harness credentials past the cutoff, and referenced by no run.
+ *
+ * A dispatch mints one credential per run and revokes it at close, so the table
+ * grows with every run the Deployment has ever made. A credential a run row
+ * still names is left: `agent_runs.dispatched_by` references it, and the run
+ * retention pass above is what clears that reference.
+ */
+const REVOKED_CREDENTIALS_SQL = `DELETE FROM member_credentials
+  WHERE id IN (
+    SELECT c.id FROM member_credentials c
+     WHERE c.member_id = ? AND c.revoked_at IS NOT NULL AND c.revoked_at < ?
+       AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.dispatched_by = c.id)
+     ORDER BY c.revoked_at ASC LIMIT ?)`;
+
+/** Remove revoked credentials of one member older than the cutoff, up to `limit`. Answers how many went. */
+export async function pruneRevokedCredentials(db: RelationalStore, memberId: string, cutoffMs: number, limit: number): Promise<number> {
+  const result = await db.prepare(REVOKED_CREDENTIALS_SQL).bind(memberId, cutoffMs, limit).run();
+  return result.meta.changes ?? 0;
+}
+
 /** A run inside its bound, anywhere on the Deployment: one exists or none does. The bound is the run's own, from its context, or the dispatcher's default. */
 const RUN_INSIDE_BOUND_SQL = `SELECT 1 AS one FROM agent_runs
-  WHERE status IN ('pending', 'running') AND started_at IS NOT NULL
+  WHERE ${LIVE_RUN_STATUSES} AND started_at IS NOT NULL
     AND ? < started_at + COALESCE(json_extract(run_context, '$.timeoutSeconds'), ?) * 1000 + ?
   LIMIT 1`;
 
@@ -792,29 +850,104 @@ export async function launchQueued(db: RelationalStore, scope: ReadScope, runId:
 }
 
 /**
- * A queued run the Deployment decided not to launch is skipped by name, from
- * `queued` alone; its context names why, as a clock's skip does.
+ * A run whose runtime would not take it goes back to the queue, from `pending`
+ * alone: the launch credential is dropped from the row, it takes the holder
+ * that describes why, and it carries the launch spec the drain relaunches it
+ * from.
  *
- * The row takes a start where it has none: every run view reads `started_at`
- * for when a run happened, and a skipped row without one renders as a run that
- * never began.
+ * `queued_at` is kept where the row already had one, so a run returned here
+ * keeps its place in the queue's order rather than moving to the back of it.
+ * The launch's own context is dropped, and the drain rebuilds it when it
+ * launches.
+ *
+ * The caller names the credential the row is to carry. A launch can be answered
+ * late — after the supervisor has already started a child under the credential
+ * that launch carried — and the child claims under it, so the row goes on
+ * naming one live credential; whichever one it stops naming is retired by the
+ * caller in the same breath.
+ *
+ * `started_at` and `run_context` STAY. The attempt did start: the row's start
+ * is the instant its launch went out, and its context carries the bound that
+ * launch carries. A deploy bounds such a row from those two, so sparing a child
+ * that is working requires both to survive the write — the default budget, or a
+ * clock reset to when the row first joined the queue, each bound it to an
+ * instant already past.
  */
-export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: string, now: number, reason: string): Promise<boolean> {
-  const result = await db
-    .prepare(`UPDATE agent_runs SET status = 'skipped', started_at = COALESCE(started_at, ?), completed_at = ?, run_context = ?, held_by = NULL, dispatch_spec = NULL
-       WHERE project_id = ? AND id = ? AND status = 'queued'`)
-    .bind(now, now, skipContext(reason), scope.projectId, runId)
+const RETURN_TO_QUEUE_SQL = `UPDATE agent_runs
+   SET status = 'queued', held_by = ?, dispatch_spec = ?, dispatched_by = ?,
+       queued_at = COALESCE(queued_at, ?)
+ WHERE project_id = ? AND id = ? AND status = 'pending'`;
+
+export async function returnToQueue(
+  db: RelationalStore, scope: ReadScope, runId: string,
+  hold: { heldBy: string; dispatchSpec: string; credential: string | null; now: number },
+): Promise<boolean> {
+  const result = await db.prepare(RETURN_TO_QUEUE_SQL)
+    .bind(hold.heldBy, hold.dispatchSpec, hold.credential, hold.now, scope.projectId, runId)
     .run();
   return result.meta.changes === 1;
 }
 
-/** A queued run the Deployment can no longer launch is failed by name, from `queued` alone. */
-const FAIL_QUEUED_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, held_by = NULL
-  WHERE project_id = ? AND id = ? AND status = 'queued'`;
+/** What ending a queued row did: whether the write landed, and the credential that row named when it did. */
+export interface QueuedRunEnd {
+  applied: boolean;
+  displaced: string | null;
+}
 
-export async function failQueuedRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string): Promise<boolean> {
-  const result = await db.prepare(FAIL_QUEUED_SQL).bind(now, error, scope.projectId, runId).run();
+/**
+ * Put a run's dispatching credential back, from `pending` alone.
+ *
+ * A relaunch of a run the runtime is already running mints a credential nothing
+ * will present: the child in flight claims under its own, and the row has to
+ * name that one for the claim to be admitted.
+ */
+export async function restoreDispatchCredential(db: RelationalStore, scope: ReadScope, runId: string, tokenId: string): Promise<boolean> {
+  const result = await db
+    .prepare(`UPDATE agent_runs SET dispatched_by = ? WHERE project_id = ? AND id = ? AND status = 'pending'`)
+    .bind(tokenId, scope.projectId, runId).run();
   return result.meta.changes === 1;
+}
+
+/**
+ * A queued run the Deployment decided not to launch is skipped by name, from
+ * `queued` alone; its context names why, as a clock's skip does.
+ *
+ * `started_at` is left as it is. A run that never ran has no start, and
+ * `taskRunsLastHour` counts starts: stamping one here would spend an hour of
+ * the task's rate on a run that did no work. A reader shows when such a row
+ * ended instead.
+ *
+ * The write answers with the credential the row named at the instant it landed,
+ * so a caller retires what its own write displaced rather than what it read
+ * before it — a drain that relaunched and re-queued the row in between leaves
+ * the row naming a different credential from the one the caller saw.
+ */
+export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: string, now: number, reason: string): Promise<QueuedRunEnd> {
+  const row = await db
+    .prepare(`UPDATE agent_runs SET status = 'skipped', completed_at = ?, run_context = ?, held_by = NULL, dispatch_spec = NULL
+       WHERE project_id = ? AND id = ? AND status = 'queued'
+     RETURNING dispatched_by AS displaced`)
+    .bind(now, skipContext(reason), scope.projectId, runId)
+    .first<{ displaced: string | null }>();
+  return { applied: row !== null, displaced: row?.displaced ?? null };
+}
+
+/**
+ * A queued run the Deployment can no longer launch is failed by name, from
+ * `queued` alone.
+ *
+ * `started_at` is left as it is, as it is for a skipped row: a run that never
+ * ran has no start, and `taskRunsLastHour` counts starts. The write answers
+ * with the credential the row named at the instant it landed, for the same
+ * reason a skip does.
+ */
+const FAIL_QUEUED_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, held_by = NULL
+  WHERE project_id = ? AND id = ? AND status = 'queued'
+RETURNING dispatched_by AS displaced`;
+
+export async function failQueuedRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string): Promise<QueuedRunEnd> {
+  const row = await db.prepare(FAIL_QUEUED_SQL).bind(now, error, scope.projectId, runId).first<{ displaced: string | null }>();
+  return { applied: row !== null, displaced: row?.displaced ?? null };
 }
 
 export interface QueuedRunRef {
@@ -824,9 +957,12 @@ export interface QueuedRunRef {
   queuedAt: number;
   heldBy: string | null;
   dispatchSpec: string | null;
+  /** The credential a re-queued row still carries, for the child a late answer may have started; null for a row that never launched. */
+  dispatchedBy: string | null;
 }
 
-const QUEUED_RUNS_SQL = `SELECT project_id AS projectId, id, task, queued_at AS queuedAt, held_by AS heldBy, dispatch_spec AS dispatchSpec
+const QUEUED_RUNS_SQL = `SELECT project_id AS projectId, id, task, queued_at AS queuedAt, held_by AS heldBy,
+    dispatch_spec AS dispatchSpec, dispatched_by AS dispatchedBy
   FROM agent_runs WHERE status = 'queued' ORDER BY queued_at ASC, id ASC LIMIT ?`;
 
 /** Every queued run on the Deployment, oldest first: the drain's read, across Projects like the sweep's. */
@@ -840,13 +976,18 @@ export async function hasQueuedRun(db: RelationalStore): Promise<boolean> {
 }
 
 /** What the Deployment is doing for one task: the counts admission compares against the limits. */
-export async function dispatchLoad(db: RelationalStore, task: string, now: number): Promise<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }> {
+export async function dispatchLoad(db: RelationalStore, task: string, now: number, exclude?: string): Promise<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }> {
+  // The same rule the write applies (`NOT_THE_RUN_ADMITTED`): the row being
+  // admitted is not counted by any of these. A caller with no row to leave out
+  // binds null, and every count is then of everything.
+  const other = exclude ?? null;
   const row = await db.prepare(
     `SELECT
-       (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) AS liveRuns,
-       (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND task = ?) AS liveTaskRuns,
-       (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND started_at IS NOT NULL AND started_at >= ?) AS taskRunsLastHour`,
-  ).bind(task, task, now - 3_600_000).first<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }>();
+       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) AS liveRuns,
+       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ? AND ${NOT_THE_RUN_ADMITTED}) AS liveTaskRuns,
+       (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) AS taskRunsLastHour`,
+  ).bind(other, other, task, other, other, task, other, other, now - 3_600_000)
+    .first<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }>();
   return row ?? { liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 };
 }
 

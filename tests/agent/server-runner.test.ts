@@ -6,12 +6,12 @@
 import { describe, expect, it } from 'bun:test';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID, MAX_RUN_ERROR_CHARS as SERVER_MAX_RUN_ERROR_CHARS } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import worker from '@myco-server-worker/index.js';
 import { ServerClient } from '@myco/member/transport.js';
 import {
-  CAPTURE_DRIVEN_ADMISSION, installRunFailureHandlers, RECLAIM_WARNING_MS, RUN_DEADLINE_ERROR, RUN_REFUSED_CLOSE_ERROR,
+  CAPTURE_DRIVEN_ADMISSION, installRunFailureHandlers, MAX_RUN_ERROR_CHARS, RECLAIM_WARNING_MS, RUN_DEADLINE_ERROR, RUN_REFUSED_CLOSE_ERROR,
   RUN_RECLAIMED_ERROR, runServerTask, type HeldRun,
 } from '@myco/agent/runtime/server-runner.js';
 import type { AgentHarness, HarnessExecuteInput } from '@myco/agent/harness/types.js';
@@ -57,7 +57,8 @@ describe('runServerTask', () => {
   it('claims, executes with the materialized report surface, lands the report, and completes the run', async () => {
     const { client, sqlite } = await harness();
     const result = await runServerTask({ client, budget, runId: 'run_smoke_1', taskName: 'container-smoke', harness: fakeHarness('reports') });
-    expect(result).toEqual({ runId: 'run_smoke_1', status: 'completed', reportCount: 1 });
+    // The Deployment applied the ending this run posted, which is what `ending` says.
+    expect(result).toEqual({ runId: 'run_smoke_1', status: 'completed', ending: 'posted', reportCount: 1 });
 
     const run = sqlite.query(`SELECT status, task, tokens_used t FROM agent_runs WHERE id = 'run_smoke_1'`).get() as { status: string; task: string; t: number };
     expect(run).toEqual({ status: 'completed', task: 'container-smoke', t: 42 });
@@ -205,7 +206,7 @@ describe('a run that dies names itself', () => {
       onClosing: () => { held = null; },
     });
     await Bun.sleep(30);
-    expect(result).toEqual({ runId: 'run_drained', status: 'completed', reportCount: 0 });
+    expect(result).toEqual({ runId: 'run_drained', status: 'completed', ending: 'posted', reportCount: 0 });
     expect(named).toEqual([]);
     expect(seen).toEqual(['draining']);
     expect(sqlite.query(`SELECT status, error, run_context c FROM agent_runs WHERE id = 'run_drained'`).get())
@@ -293,7 +294,8 @@ describe('what the container makes of the deployment\'s answer', () => {
       },
     } as unknown as ServerClient;
     const result = await runServerTask({ client: stub, budget, runId: 'run_refused', taskName: 'container-smoke', harness: fakeHarness('silent') });
-    expect(result).toEqual({ runId: 'run_refused', status: 'failed', error: RUN_REFUSED_CLOSE_ERROR, refused: 'postcondition', reportCount: 0 });
+    // The row does not carry this run's ending, and the exit code says so.
+    expect(result).toEqual({ runId: 'run_refused', status: 'failed', ending: 'unposted', error: RUN_REFUSED_CLOSE_ERROR, refused: 'postcondition', reportCount: 0 });
   });
 
   it('takes the run as its own only once the claim lands', async () => {
@@ -307,5 +309,13 @@ describe('what the container makes of the deployment\'s answer', () => {
     const second = await runServerTask({ client, budget, runId: 'run_claim_1', taskName: 'container-smoke', harness: fakeHarness('silent'), onClaimed: () => { refusedClaims += 1; } });
     expect(second.status).toBe('skipped');
     expect(refusedClaims).toBe(0);
+  });
+});
+
+describe('how much of a failure rides a run row', () => {
+  it('is the same bound wherever the failure is written', () => {
+    // The runtime bounds the failures it posts; the Deployment bounds the
+    // refusal it writes when the runtime never started. One row, one column.
+    expect(MAX_RUN_ERROR_CHARS).toBe(SERVER_MAX_RUN_ERROR_CHARS);
   });
 });

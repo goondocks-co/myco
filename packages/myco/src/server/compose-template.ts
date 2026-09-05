@@ -8,21 +8,50 @@
  * publish spec that loses its loopback qualifier fails there, and a template
  * that drifts from the file fails here.
  */
+
+/**
+ * How long the harness is given to finish the runs it holds when the stack
+ * stops.
+ *
+ * Mirrors `ROLLOUT_WATCH_TIMEOUT_SECONDS` in `cloudflare-lifecycle.ts`, the
+ * `rollout_active_grace_period` the Worker's container table carries, and the
+ * largest budget in `TASK_RUN_TIMEOUT_SECONDS`
+ * (`packages/myco-server/src/core/task-catalogue.ts`). This package ships to
+ * operator machines and imports nothing from the server, so the number is
+ * copied and held equal by `tests/server/cloudflare-lifecycle.test.ts`.
+ *
+ * On this target the grace is what spares a run inside its own budget: a verb
+ * that takes the server down stops the harness on its own first, and every
+ * runtime it holds finishes in this window with the server still serving.
+ */
+export const HARNESS_STOP_GRACE_SECONDS = 1800;
+
 export const COMPOSE_TEMPLATE = `# Self-hosted Myco Deployment.
 #
-# One service. Embedded SQLite on the mounted volume, no separate database
-# service, matching the acceptance in #913.
+# Two services on one network namespace. Embedded SQLite on the mounted volume,
+# and no separate database service.
 #
-# The published port is loopback-qualified. \`\${MYCO_PORT}:\${MYCO_PORT}\` binds
+# Every published port is loopback-qualified. \`\${MYCO_PORT}:\${MYCO_PORT}\` binds
 # every interface on the host and the container receives no signal that it
-# happened, so condition 4 of #909's C-local contract is verified against this
-# file rather than at startup. \`tests/myco-server/contract/compose-publish.test.ts\`
+# happened, so no runtime check inside it can tell the difference: this file is
+# what decides it, and \`tests/myco-server/contract/compose-publish.test.ts\`
 # fails when a published port loses its \`127.0.0.1:\` prefix.
 #
-# Remote access is an operator-run reverse proxy in front of this, per #909's
-# C-remote half: HTTPS terminated there, MYCO_TRANSPORT=proxy, and the trusted
-# hop count declared. The published port stays loopback either way, keeping the
-# proxy-to-backend leg off the network.
+# Remote access is an operator-run reverse proxy in front of this: HTTPS
+# terminated there, MYCO_TRANSPORT=proxy, and the trusted hop count declared.
+# The published port stays loopback either way, keeping the proxy-to-backend leg
+# off the network.
+#
+# The harness holds the runtimes and shares the SERVER's network namespace, so
+# the two reach each other over the loopback and neither publishes a port for
+# it. Operate this stack through \`myco server\`, never one service on its own.
+# Compose brings the namespace owner down FIRST, so a plain \`up\` or \`stop\` of
+# the whole stack kills the server while the harness is still holding runs: the
+# verbs stop the harness on its own first, which spends its grace with the
+# server still serving. An out-of-band restart of the server container leaves
+# the harness attached to a namespace that is gone, and it stays that way until
+# the whole stack is restarted; the harness healthcheck cannot reach the server
+# then, and reports unhealthy.
 
 services:
   server:
@@ -31,6 +60,12 @@ services:
 
     ports:
       - "127.0.0.1:\${MYCO_PORT:-8787}:\${MYCO_PORT:-8787}"
+
+    # A model server running on the host is reached at host.docker.internal:PORT.
+    # Docker Engine on Linux resolves that name only where this line declares it,
+    # and the harness reaches it through the namespace it shares.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     environment:
       MYCO_DATABASE: /data/myco.sqlite
@@ -43,6 +78,17 @@ services:
       # the restriction that a host process gets from binding loopback itself.
       # \`compose-publish.test.ts\` gates that pairing.
       MYCO_BIND: all
+      # The address this Deployment is reached at, which the clock hands to the
+      # work it schedules. Behind a reverse proxy it is the public address.
+      MYCO_ORIGIN: \${MYCO_ORIGIN:-http://127.0.0.1:\${MYCO_PORT:-8787}}
+      # How many runtimes may run at once. The dispatcher queues past it; the
+      # harness enforces no second count.
+      MYCO_FLEET: \${MYCO_FLEET:-4}
+      # The harness, on the shared loopback. The launch endpoint spawns
+      # processes with a caller-chosen environment, so it is authenticated with
+      # the token file both services mount.
+      MYCO_HARNESS: http://127.0.0.1:8080
+      MYCO_HARNESS_TOKEN_FILE: /run/secrets/myco_harness_token
       # Source identity. \`socket\` for a deployment reached directly; \`proxy\`
       # additionally requires MYCO_TRUSTED_HEADER and MYCO_TRUSTED_HOPS. A
       # deployment declaring neither establishes no identity and serves only
@@ -64,6 +110,7 @@ services:
       - myco_secret_wrap_key
       - myco_session_secret
       - myco_github_client_secret
+      - myco_harness_token
 
     volumes:
       - myco-data:/data
@@ -94,6 +141,75 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  harness:
+    image: ghcr.io/goondocks-co/myco-harness:\${MYCO_VERSION:-latest}
+    # One long-lived supervisor that starts one runtime per run. The image's own
+    # command runs a single runtime, which is what the hosted target starts one
+    # container of per run.
+    command: ["bun", "run", "supervisor.js"]
+    restart: unless-stopped
+    depends_on:
+      - server
+
+    # Root, so the launch token is root's to read: the supervisor drops each
+    # runtime child to the image's unprivileged user, and a child that could
+    # read the token could launch runs of its own.
+    user: "0:0"
+
+    # The server's namespace, not one of its own: the server reaches the
+    # supervisor at 127.0.0.1:8080 and a runtime reaches the server at
+    # 127.0.0.1:\${MYCO_PORT}, which the Host allowlist admits. Compose refuses
+    # \`ports:\` and \`networks:\` on a service sharing another's namespace, and
+    # this service declares neither. Compose also takes the namespace owner down
+    # first, which is why the verbs stop this service on its own before they
+    # touch the server.
+    network_mode: "service:server"
+
+    environment:
+      MYCO_SUPERVISOR_PORT: 8080
+      MYCO_HARNESS_TOKEN_FILE: /run/secrets/myco_harness_token
+      MYCO_WORK_DIR: /work
+
+    secrets:
+      - myco_harness_token
+
+    # A runtime gets its own directory under this one. On tmpfs: what a run
+    # writes lives as long as the run and never reaches the volume. The mode is
+    # world-writable with the sticky bit, which is what lets the image's
+    # unprivileged user create its per-run directories.
+    tmpfs: ["/work:mode=1777"]
+
+    healthcheck:
+      # Both halves of what makes this service useful: the supervisor answering
+      # its own probe, and the SERVER answering over the shared loopback. A
+      # wedged supervisor fails the first; a harness whose namespace went away
+      # with an out-of-band restart of the server container still answers its
+      # own probe and fails the second. Bodies are discarded: a healthcheck's
+      # output is kept in the container's health log, and \`/probe\` names run ids.
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8080/probe && curl -fsS -o /dev/null -H 'Host: 127.0.0.1:\${MYCO_PORT:-8787}' http://127.0.0.1:\${MYCO_PORT:-8787}/health"]
+      interval: 30s
+      # Two requests, not one.
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    # SIGTERM makes the supervisor refuse new launches and wait for the runtimes
+    # it holds. The window covers the longest task budget, and the verbs spend
+    # it while the server is still serving, so a run in flight when the stack is
+    # updated finishes and posts its own ending.
+    stop_grace_period: ${HARNESS_STOP_GRACE_SECONDS}s
+
+    deploy:
+      resources:
+        limits:
+          memory: \${MYCO_HARNESS_MEMORY_LIMIT:-4g}
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   myco-data:
 
@@ -104,4 +220,39 @@ secrets:
     file: ./secrets/session_secret
   myco_github_client_secret:
     file: ./secrets/github_client_secret
+  myco_harness_token:
+    file: ./secrets/harness_token
+`;
+
+/**
+ * The operator's own layer over the bundle, written once and never rewritten.
+ *
+ * Every verb names both files, which turns off Compose's own override
+ * discovery, and every update rewrites `compose.yaml` from the template above —
+ * so anything an operator adds to that file is lost on the next update. This
+ * file is where those additions live.
+ */
+export const COMPOSE_OVERRIDE_TEMPLATE = `# Your own layer over the Myco bundle.
+#
+# \`myco server update\` rewrites compose.yaml from the shipped template on every
+# run; this file it writes once and never touches again. Anything Compose
+# accepts belongs here — a host mapping the container needs, an image policy for
+# a tag this machine builds itself, a network a reverse proxy shares.
+#
+# Merged over compose.yaml by every \`myco server\` verb. Examples:
+#
+# services:
+#   server:
+#     extra_hosts:
+#       - "auth.internal:10.0.0.5"
+#     networks:
+#       - proxy
+#   harness:
+#     pull_policy: never
+#
+# networks:
+#   proxy:
+#     external: true
+
+services: {}
 `;

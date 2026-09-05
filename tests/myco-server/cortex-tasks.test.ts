@@ -16,7 +16,7 @@ import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, drainQueue, HARNESS_AGENT_ID, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { TASK_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/task-catalogue.js';
 import { runScheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
-import { getRun, upsertCortexInstructions } from '@myco-server-worker/core/runs.js';
+import { dispatchLoad, getRun, upsertCortexInstructions } from '@myco-server-worker/core/runs.js';
 import { listDigests, upsertDigest } from '@myco-server-worker/core/digests.js';
 import { insertSpore } from '@myco-server-worker/core/spores.js';
 import { RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_CLOSE_REPORTS, RUN_CLOSE_RULES } from '@myco-server-worker/core/run-postconditions.js';
@@ -305,7 +305,7 @@ describe('the clock and the queue', () => {
     expect(f.runs().filter((r) => r.task === TASK)).toHaveLength(1);
   });
 
-  it('stamps a start on a queued row it skips, so the run reads as something that happened', async () => {
+  it('gives a queued row it skips an end but no start, so the skip spends none of the task\'s hour', async () => {
     const f = await fixture();
     f.setting('agent.limits.concurrent_runs', 1);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'blocker', ?, 'digest-only', 'running', ?)`, [HARNESS_AGENT_ID, Date.now()]);
@@ -319,8 +319,12 @@ describe('the clock and the queue', () => {
     await drainQueue(f.env, Date.now());
     const row = f.sqlite.query(`SELECT status, started_at AS startedAt, completed_at AS completedAt FROM agent_runs WHERE id = ?`).get(runId) as { status: string; startedAt: number | null; completedAt: number | null };
     expect(row.status).toBe('skipped');
-    expect(row.startedAt).toBeNumber();
+    // A run that never ran has no start. `taskRunsLastHour` counts starts, so a
+    // stamp here would hold the task's next hour against work nothing did; a
+    // reader shows when the row ended instead.
+    expect(row.startedAt).toBeNull();
     expect(row.completedAt).toBeNumber();
+    expect(await dispatchLoad(f.env.db, TASK, Date.now())).toMatchObject({ taskRunsLastHour: 0 });
   });
 
   it('rebuilds a queued dispatch at the drain: skipped when the Project stood still, launched with the fresh prompt when it moved', async () => {

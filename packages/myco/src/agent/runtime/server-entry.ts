@@ -1,10 +1,15 @@
 /**
- * The harness container entry: reads its dispatch from the environment, runs
- * one task through the lean runner, and serves the container port so the
- * Durable Object's hold and probes have something to talk to.
+ * The harness runtime entry: reads its dispatch from the environment and runs
+ * one task through the lean runner.
+ *
+ * It also serves a port, so the Durable Object's hold and probes have something
+ * to talk to. `MYCO_RUNTIME_PORT` decides which, and a launch that shares a
+ * network namespace with other runtimes sets it to the no-listener word.
  */
 import { ServerClient } from '@myco/member/transport.js';
-import { installRunFailureHandlers, runServerTask, type HeldRun, type ServerTaskResult } from './server-runner.js';
+import { installRunFailureHandlers, runServerTask, type HeldRun, type RunEnding, type ServerTaskResult } from './server-runner.js';
+import { runtimePortFrom } from './runtime-port.js';
+import { RUNTIME_EXIT } from './process-signals.js';
 import type { ProviderConfig } from '../types.js';
 
 const startedAt = Date.now();
@@ -45,14 +50,21 @@ installRunFailureHandlers(process, {
     // under a post that never answers.
     if (closing && result === null) return;
     console.log(JSON.stringify({ kind: 'server_entry_drained', ran: result }));
-    process.exit(0);
+    // A drain that found no run in flight is a stop that arrived before this
+    // process could claim: the row is as the dispatcher wrote it, and the code
+    // says so, so the supervisor names it a run this deployment took back and
+    // the Deployment queues one in its place. A drain after a run finished
+    // reports what that run's ending was.
+    process.exit(result === null ? RUNTIME_EXIT.unclaimed : EXIT_FOR_ENDING[result.ending]);
   },
   onNamed: (error, named, refused) => {
     fatal = error;
     inFlight = null;
     running = false;
     console.log(JSON.stringify({ kind: 'server_entry_stopped', fatal, named, refused: refused ?? null }));
-    process.exit(named ? 1 : 0);
+    // A failure this process wrote on the row is an ending; one it could not
+    // write is not, and the supervisor closes the run in its place.
+    process.exit(named ? RUNTIME_EXIT.named : RUNTIME_EXIT.unposted);
   },
 });
 
@@ -67,7 +79,10 @@ async function executeFromEnv(): Promise<void> {
   const projectId = env('MYCO_PROJECT');
   const runId = env('MYCO_RUN_ID');
   const taskName = env('MYCO_TASK');
-  if (!serverUrl || !token || !projectId || !runId || !taskName) return;
+  if (!serverUrl || !token || !projectId || !runId || !taskName) {
+    console.log(JSON.stringify({ kind: 'server_entry_undispatched' }));
+    return;
+  }
   // A runtime told to stop before it claimed anything runs nothing: the row
   // stays as the dispatcher wrote it, for the Deployment to launch again.
   if (stopping) return;
@@ -119,32 +134,69 @@ async function executeFromEnv(): Promise<void> {
   inFlight = null;
   running = false;
   console.log(JSON.stringify({ kind: 'server_run_finished', ...result }));
-  // The drain was waiting on exactly this: the run carries its own ending, and
-  // the container the platform asked for has nothing left to hold.
-  if (stopping) process.exit(0);
+  leaveWith(EXIT_FOR_ENDING[result.ending]);
 }
 
-Bun.serve({
-  port: 8080,
-  hostname: '0.0.0.0',
-  fetch: async (req) => {
-    const path = new URL(req.url).pathname;
-    if (path === '/probe') {
-      return Response.json({ ok: true, startedAt, uptimeMs: Date.now() - startedAt, pid: process.pid, running, draining: stopping, result, fatal, dispatched: process.env.MYCO_RUN_ID ?? null });
-    }
-    if (path === '/spawn') {
-      const child = Bun.spawn(['sh', '-c', 'echo child-ok'], { stdout: 'pipe' });
-      const [code, out] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-      return Response.json({ code, out: out.trim() });
-    }
-    return new Response('not found', { status: 404 });
-  },
-});
-console.log('harness entry up on 8080');
+/**
+ * Leave, where leaving is this process's to decide.
+ *
+ * A runtime serving no listener is one a supervisor holds by its process alone:
+ * it leaves the moment its run is done, and the code is what the supervisor
+ * reads to decide whether that run still owes the Deployment an ending. A
+ * runtime serving a port is held by the platform that probes it, and stays up
+ * until that platform stops it or asks it to drain.
+ */
+function leaveWith(code: number): void {
+  if (runtimePort === null || stopping) process.exit(code);
+}
 
-executeFromEnv().catch((error) => {
-  fatal = error instanceof Error ? error.message : String(error);
-  inFlight = null;
-  running = false;
-  console.log(JSON.stringify({ kind: 'server_entry_failed', fatal }));
-});
+/** What each ending leaves the process to say on its way out. */
+const EXIT_FOR_ENDING: Readonly<Record<RunEnding, number>> = {
+  posted: RUNTIME_EXIT.ran,
+  unposted: RUNTIME_EXIT.unposted,
+  'unknown-task': RUNTIME_EXIT.unknownTask,
+  'claim-refused': RUNTIME_EXIT.claimRefused,
+  'claim-contended': RUNTIME_EXIT.claimContended,
+};
+
+// A runtime the platform probes and holds serves its own port. A runtime the
+// self-hosted supervisor starts shares one network namespace with its siblings,
+// where a fixed port is a collision rather than an address, and its launch says
+// so: it serves no listener and is known by the process the supervisor holds.
+const runtimePort = runtimePortFrom(process.env.MYCO_RUNTIME_PORT);
+if (runtimePort !== null) {
+  Bun.serve({
+    port: runtimePort,
+    hostname: '0.0.0.0',
+    fetch: async (req) => {
+      const path = new URL(req.url).pathname;
+      if (path === '/probe') {
+        return Response.json({ ok: true, startedAt, uptimeMs: Date.now() - startedAt, pid: process.pid, running, draining: stopping, result, fatal, dispatched: process.env.MYCO_RUN_ID ?? null });
+      }
+      if (path === '/spawn') {
+        const child = Bun.spawn(['sh', '-c', 'echo child-ok'], { stdout: 'pipe' });
+        const [code, out] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+        return Response.json({ code, out: out.trim() });
+      }
+      return new Response('not found', { status: 404 });
+    },
+  });
+  console.log(`harness entry up on ${runtimePort}`);
+}
+
+executeFromEnv().then(
+  () => {
+    // A run this process claimed has already said what became of it. Reaching
+    // here means it claimed nothing: no dispatch in the environment, or a stop
+    // signal before the claim. A runtime the platform holds by its port stays
+    // up, and `leaveWith` is what decides which of the two this is.
+    leaveWith(RUNTIME_EXIT.unclaimed);
+  },
+  (error: unknown) => {
+    fatal = error instanceof Error ? error.message : String(error);
+    inFlight = null;
+    running = false;
+    console.log(JSON.stringify({ kind: 'server_entry_failed', fatal }));
+    leaveWith(RUNTIME_EXIT.unposted);
+  },
+);

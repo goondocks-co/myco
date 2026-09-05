@@ -14,7 +14,14 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
-import { CommandFailed, commandOutputTail, jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
+import { jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
+import { LIVE_RUNS_QUERY, readLiveRunsTwice, type LiveRun, type LiveRunRow } from './live-runs.js';
+
+// The wait policy and its read shape are one implementation for both targets;
+// this module keeps the names it published so the Worker's callers reach them
+// where they already do.
+export { LIVE_RUNS_RETRY_MS, LiveRunsUnreadable } from './live-runs.js';
+export type { LiveRun } from './live-runs.js';
 
 /** Wrangler refuses to guess between accounts, and guessing is what must not happen. */
 export class AccountNotSelected extends Error {
@@ -167,124 +174,25 @@ export function harnessImageUri(buildOutput: string, accountId: string, workerNa
   return `registry.cloudflare.com/${accountId}/${harnessApplicationName(workerName)}@sha256:${digest}`;
 }
 
-/** A run the Deployment has in flight, as its own database holds it. */
-export interface LiveRun {
-  id: string;
-  task: string;
-  /** `pending` for a run whose container has not been launched yet, `running` for one under way. */
-  status: 'pending' | 'running';
-  /** Epoch milliseconds, or null for a run that has not started — a `pending` row is written before its container is launched. */
-  startedAt: number | null;
-  /** The budget the dispatcher wrote into the run's context, or null for a run that carries none. */
-  timeoutSeconds: number | null;
-}
-
-/**
- * What the wait reads.
- *
- * `pending` counts as in flight exactly as `running` does: the dispatcher
- * writes the row before it launches the container, and that run — dispatched,
- * not yet started — is the one a deploy is most likely to lose. The server's
- * own live-run reads use the same pair (`core/runs.ts`, `LIVE_RUNS_SQL`).
- */
-const LIVE_RUNS_QUERY = "SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running')";
-
-interface LiveRunRow {
-  id?: unknown;
-  task?: unknown;
-  status?: unknown;
-  started_at?: unknown;
-  run_context?: unknown;
-}
-
-/** Raised when the Deployment's runs cannot be read; a deploy that cannot see them must not read that as an empty Deployment. */
-export class LiveRunsUnreadable extends Error {
-  constructor(readonly answer: string) {
-    super(
-      "the Deployment's runs could not be read; pass --no-drain to ship over whatever is running"
-      + (answer === '' ? '' : `. The read answered: ${answer}`),
-    );
-    this.name = 'LiveRunsUnreadable';
-  }
-}
-
-/** How long the live-runs read waits before it asks a second time. */
-export const LIVE_RUNS_RETRY_MS = 3_000;
-
-/** How the read spends its retry pause when no caller hands it a clock. */
-const pause = (ms: number): Promise<void> => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
-
 /**
  * The runs the Deployment has in flight, read from its own database.
  *
  * A deploy holds no application credential, so this reads through the
- * operator's own wrangler login like every other command here. A command that
- * fails and an answer that carries no readable document both refuse the read:
- * "nothing came back" and "nothing is running" are opposite facts, and a
- * deploy that confused them would ship straight over live work.
- *
- * Either answer is asked again once after a pause first. The database API
- * answers a passing internal error in exactly the shape it answers a real
- * one, and a deploy refused over an answer that comes back a second later
- * costs the operator the whole run. Only a second bad answer raises, carrying
- * what the command itself said.
+ * operator's own wrangler login like every other command here. The read shape
+ * — asked twice, refusing on a second bad answer — is the one both targets
+ * use, and only the command differs.
  */
 export async function readLiveRuns(
   options: CloudflareOptions & { databaseName: string; sleep?: (ms: number) => Promise<void> },
 ): Promise<LiveRun[]> {
   const { runner, env } = resolved(options);
-  const sleep = options.sleep ?? pause;
-  let answer = '';
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (attempt > 0) await sleep(LIVE_RUNS_RETRY_MS);
-    let stdout: string;
-    try {
-      const result = await runOrThrow(runner, 'npx',
-        wrangler('d1', 'execute', options.databaseName, '--remote', '--json', '--command', LIVE_RUNS_QUERY, ...configArgs(options)),
-        { cwd: options.configDir, env });
-      stdout = result.stdout;
-    } catch (err) {
-      if (!(err instanceof CommandFailed)) throw err;
-      answer = err.message;
-      continue;
-    }
-    const answers = wranglerJson<{ results?: LiveRunRow[] }[]>(stdout);
-    if (answers === null) {
-      answer = commandOutputTail(stdout) || stdout.trim();
-      continue;
-    }
-    return liveRunsIn(answers);
-  }
-  throw new LiveRunsUnreadable(answer);
-}
-
-/** The runs the answered rows name, skipping a row that names no run. */
-function liveRunsIn(answers: readonly { results?: LiveRunRow[] }[]): LiveRun[] {
-  const runs: LiveRun[] = [];
-  for (const answer of answers) {
-    for (const row of answer.results ?? []) {
-      if (typeof row.id !== 'string') continue;
-      runs.push({
-        id: row.id,
-        task: typeof row.task === 'string' && row.task !== '' ? row.task : 'a run without a task',
-        status: row.status === 'pending' ? 'pending' : 'running',
-        startedAt: typeof row.started_at === 'number' ? row.started_at : null,
-        timeoutSeconds: runContextTimeout(row.run_context),
-      });
-    }
-  }
-  return runs;
-}
-
-/** The budget a run's context names, or null when the context holds none the harness would honour. */
-function runContextTimeout(runContext: unknown): number | null {
-  if (typeof runContext !== 'string' || runContext === '') return null;
-  try {
-    const parsed = JSON.parse(runContext) as { timeoutSeconds?: unknown };
-    return typeof parsed.timeoutSeconds === 'number' && parsed.timeoutSeconds > 0 ? parsed.timeoutSeconds : null;
-  } catch {
-    return null;
-  }
+  return readLiveRunsTwice({
+    ask: async () => (await runOrThrow(runner, 'npx',
+      wrangler('d1', 'execute', options.databaseName, '--remote', '--json', '--command', LIVE_RUNS_QUERY, ...configArgs(options)),
+      { cwd: options.configDir, env })).stdout,
+    rowsIn: (output) => wranglerJson<{ results?: LiveRunRow[] }[]>(output)?.flatMap((answer) => answer.results ?? []) ?? null,
+    ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
+  });
 }
 
 /** Where a rollout stands: the image and version the application carries, how many instances it has, and how many answer healthy. */

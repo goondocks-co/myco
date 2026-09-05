@@ -7,8 +7,9 @@
  * nothing left to do.
  */
 import type { ServerEnv } from './adapters.js';
-import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS } from './harness.js';
-import { failStaleRun, listLiveRunsAcrossProjects, pruneTerminalRuns } from './runs.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, endQueuedRun, HARNESS_MEMBER_ID, RUN_OVERRUN_MARGIN_MS } from './harness.js';
+import { emit } from '../telemetry.js';
+import { failStaleRun, listLiveRunsAcrossProjects, listQueuedAcrossProjects, pruneRevokedCredentials, pruneTerminalRuns } from './runs.js';
 import { leafValues } from './settings.js';
 import { releaseRun } from './release.js';
 
@@ -34,10 +35,18 @@ export async function runRetentionDays(env: ServerEnv): Promise<number> {
   return Math.min(RUN_RETENTION_DAYS_MAX, Math.max(RUN_RETENTION_DAYS_MIN, Math.floor(parsed)));
 }
 
-/** No terminal, non-resumable run outlives the retention window; its turns and reports go with it. */
+/**
+ * No terminal, non-resumable run outlives the retention window; its turns and
+ * reports go with it, and so do the dispatch credentials no surviving run names.
+ *
+ * The credentials are pruned in the same pass and against the same window: one
+ * is minted per run and revoked when that run closes, so the table grows once
+ * per run the Deployment has ever made.
+ */
 export async function agentRunRetention(env: ServerEnv, now: number): Promise<number> {
-  const days = await runRetentionDays(env);
-  return pruneTerminalRuns(env.db, now - days * DAY_MS, JOB_BATCH);
+  const cutoff = now - (await runRetentionDays(env)) * DAY_MS;
+  const runs = await pruneTerminalRuns(env.db, cutoff, JOB_BATCH);
+  return runs + await pruneRevokedCredentials(env.db, HARNESS_MEMBER_ID, cutoff, JOB_BATCH);
 }
 
 /** The bound a dispatched run carries in its context, or the dispatcher's default when it carries none. */
@@ -59,7 +68,25 @@ export function staleAfter(startedAt: number, runContext: string | null): number
 
 export const STALE_RUN_ERROR = 'the runtime went away';
 
-/** No run the runtime left behind stays live past its bound: each is failed by name and released as a finished run is. */
+/**
+ * How long a dispatch may wait in the queue before the Deployment gives up on it.
+ *
+ * A queued run waits for capacity. Capacity that never returns — a harness that
+ * is gone rather than busy — ends here: the row is failed by name and the
+ * reader is told. `QUEUE_EXPIRED_ERROR` names this bound in words, and a test
+ * holds the two in step.
+ */
+export const QUEUE_MAX_AGE_MS = DAY_MS;
+export const QUEUE_EXPIRED_ERROR = 'no runtime took the run within a day';
+
+/**
+ * No run stays waiting past its bound.
+ *
+ * A live run whose runtime went away is failed by name and released as a
+ * finished run is. A queued run nothing launched within `QUEUE_MAX_AGE_MS` is
+ * ended through the queue's own release, which retires what its row still
+ * holds.
+ */
 export async function runStaleSweep(env: ServerEnv, now: number): Promise<number> {
   let changed = 0;
   for (const run of await listLiveRunsAcrossProjects(env.db, JOB_BATCH)) {
@@ -67,6 +94,12 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
     const scope = { projectId: run.projectId };
     if (!(await failStaleRun(env.db, scope, run.id, now, STALE_RUN_ERROR))) continue;
     await releaseRun(env, scope, run, now, { drain: false });
+    changed += 1;
+  }
+  for (const queued of await listQueuedAcrossProjects(env.db, JOB_BATCH)) {
+    if (now - queued.queuedAt < QUEUE_MAX_AGE_MS) continue;
+    if (!(await endQueuedRun(env, { projectId: queued.projectId }, queued, now, { failed: QUEUE_EXPIRED_ERROR }))) continue;
+    emit({ kind: 'harness_queue_expired', runId: queued.id, task: queued.task, projectId: queued.projectId });
     changed += 1;
   }
   return changed;

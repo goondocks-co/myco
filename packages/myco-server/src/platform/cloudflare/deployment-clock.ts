@@ -17,6 +17,45 @@ export const CLOCK_NAME = 'deployment';
 /** How soon `ensure` wakes when no alarm is set. */
 const ENSURE_SOON_MS = 1_000;
 
+/**
+ * The clock that ticks only when a caller asks it to.
+ *
+ * A Deployment's clock arms its own next alarm, so one wake produces the next
+ * without anyone asking. A test target driving ticks by route needs its ticks
+ * to be exactly the wakes it posts — an alarm firing between two assertions is
+ * a tick the scenario did not ask for and cannot see.
+ */
+export const CLOCK_MANUAL = 'manual';
+
+/** Whether this clock keeps an alarm of its own. */
+export function clockArmsAlarms(bindings: { CLOCK_MODE?: string }): boolean {
+  return bindings.CLOCK_MODE !== CLOCK_MANUAL;
+}
+
+/** What a clock holds an alarm in. */
+export interface AlarmStore {
+  getAlarm(): Promise<number | null>;
+  setAlarm(at: number): Promise<void>;
+  deleteAlarm(): Promise<void>;
+}
+
+/** Hold the instant a tick asked for, or none: deep sleep and a manual clock both arm nothing. */
+export async function armNextWake(
+  storage: AlarmStore, bindings: { CLOCK_MODE?: string }, now: number, nextWakeMs: number | null,
+): Promise<void> {
+  if (nextWakeMs === null || !clockArmsAlarms(bindings)) {
+    await storage.deleteAlarm();
+    return;
+  }
+  await storage.setAlarm(now + nextWakeMs);
+}
+
+/** Wake soon, unless an alarm is already set or this clock keeps none. */
+export async function armSoon(storage: AlarmStore, bindings: { CLOCK_MODE?: string }, now: number): Promise<void> {
+  if (!clockArmsAlarms(bindings)) return;
+  if ((await storage.getAlarm()) === null) await storage.setAlarm(now + ENSURE_SOON_MS);
+}
+
 /** The cron floor's wake: the clock's tick, on a configuration that declares a clock. */
 export async function wakeClock(bindings: CloudflareBindings): Promise<void> {
   const clock = bindings.CLOCK;
@@ -29,14 +68,13 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
   async wake(): Promise<TickReport> {
     const now = Date.now();
     const report = await runTick(serverEnvFromBindings(this.env), now);
-    if (report.nextWakeMs === null) await this.ctx.storage.deleteAlarm();
-    else await this.ctx.storage.setAlarm(now + report.nextWakeMs);
+    await armNextWake(this.ctx.storage, this.env, now, report.nextWakeMs);
     return report;
   }
 
   /** Wake soon, unless an alarm is already set. */
   async ensure(): Promise<void> {
-    if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + ENSURE_SOON_MS);
+    await armSoon(this.ctx.storage, this.env, Date.now());
   }
 
   override async alarm(): Promise<void> {

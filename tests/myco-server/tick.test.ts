@@ -4,6 +4,8 @@
  * bound in place — what it never touches — as much as what it removes.
  */
 import { describe, expect, it } from 'bun:test';
+import { armNextWake, armSoon, CLOCK_MANUAL, clockArmsAlarms } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
 import { JOB_BATCH, RUN_RETENTION_DAYS_DEFAULT, STALE_RUN_ERROR, staleAfter, timeoutSecondsOf } from '@myco-server-worker/core/jobs-run.js';
@@ -218,5 +220,65 @@ describe('a job that throws', () => {
     expect(report.jobs.map((j) => j.name)).toEqual(SERVER_JOBS.filter((j) => j.runsThrough !== 'idle').map((j) => j.name));
     expect(report.jobs[0]).toMatchObject({ name: 'agent-run-retention', failed: expect.any(String) });
     expect(report.jobs[1]).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null });
+  });
+});
+
+/**
+ * The clock's alarm, and the mode that keeps none.
+ *
+ * A Deployment's clock arms the next alarm from each tick's answer, so one wake
+ * produces the next. A target driving ticks by route needs its ticks to be
+ * exactly the wakes it posts: an alarm firing between two assertions is a tick
+ * nobody asked for, and the scenario reads its effects as its own.
+ */
+describe('what a clock arms', () => {
+  const store = () => {
+    const calls: string[] = [];
+    let alarm: number | null = null;
+    return {
+      calls,
+      get alarm() { return alarm; },
+      getAlarm: async () => alarm,
+      setAlarm: async (at: number) => { calls.push(`set ${at}`); alarm = at; },
+      deleteAlarm: async () => { calls.push('delete'); alarm = null; },
+    };
+  };
+
+  it('holds the instant the tick asked for, and none for deep sleep', async () => {
+    const automatic = store();
+    await armNextWake(automatic, {}, 1_000, 60_000);
+    expect(automatic.calls).toEqual(['set 61000']);
+
+    const sleeping = store();
+    await armNextWake(sleeping, {}, 1_000, null);
+    expect(sleeping.calls).toEqual(['delete']);
+  });
+
+  it('arms nothing at all when the clock is the caller\'s to drive', async () => {
+    expect(clockArmsAlarms({ CLOCK_MODE: CLOCK_MANUAL })).toBe(false);
+    expect(clockArmsAlarms({})).toBe(true);
+
+    const manual = store();
+    await armNextWake(manual, { CLOCK_MODE: CLOCK_MANUAL }, 1_000, 60_000);
+    // No alarm is set, and any alarm left behind goes.
+    expect(manual.calls).toEqual(['delete']);
+    expect(manual.alarm).toBeNull();
+
+    await armSoon(manual, { CLOCK_MODE: CLOCK_MANUAL }, 1_000);
+    expect(manual.calls).toEqual(['delete']);
+  });
+
+  it('wakes soon on a clock holding no alarm, and leaves one that is already set', async () => {
+    const empty = store();
+    await armSoon(empty, {}, 1_000);
+    expect(empty.calls).toEqual(['set 2000']);
+
+    await armSoon(empty, {}, 5_000);
+    expect(empty.calls).toEqual(['set 2000']);
+  });
+
+  it('refuses a manual clock beside a runtime that starts real containers', () => {
+    expect(() => serverEnvFromBindings({ ...sqliteEnv().env, CLOCK_MODE: CLOCK_MANUAL, HARNESS: {} } as never))
+      .toThrow(/CLOCK_MODE=manual is refused beside a bound HARNESS/);
   });
 });

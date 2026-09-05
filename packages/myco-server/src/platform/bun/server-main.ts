@@ -28,6 +28,9 @@ import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { serve } from '../../entry/bun.js';
 import { SCHEMA_STEPS } from '../../db/schema.js';
+import { LIVE_RUN_STATUSES } from '../../core/runs.js';
+import { httpHarnessLaunch } from './harness-runner.js';
+import { RuntimeDraining } from '../../core/harness.js';
 
 class StartupError extends Error {}
 
@@ -62,6 +65,40 @@ function positiveInt(name: string, fallback: number): number {
     throw new StartupError(`${name} must be a non-negative integer, and is ${JSON.stringify(raw)}`);
   }
   return parsed;
+}
+
+/**
+ * The runtime this deployment launches runs on, or none.
+ *
+ * `MYCO_HARNESS` names the harness supervisor's address, and a deployment that
+ * names one must also name the token file both services mount. Absent, nothing
+ * is bound and every dispatch answers that no runtime is available.
+ */
+function harnessLaunchFromEnv(callbackOrigin: () => string): ReturnType<typeof httpHarnessLaunch> | undefined {
+  const url = process.env.MYCO_HARNESS;
+  if (url === undefined || url === '') return undefined;
+  const named = `MYCO_HARNESS must be an http:// or https:// URL naming the harness runtime, and is ${JSON.stringify(url)}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new StartupError(named);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new StartupError(named);
+  const token = secretOf('MYCO_HARNESS_TOKEN', true);
+  if (token === undefined || token === '') {
+    throw new StartupError('MYCO_HARNESS_TOKEN_FILE names an empty file, and the harness launch endpoint is authenticated');
+  }
+  return httpHarnessLaunch({ url, token, callbackOrigin });
+}
+
+/** What this process is once it serves. */
+export interface StartedDeployment {
+  /** The port the socket bound, which is the port the runtime calls back to. */
+  port: number;
+  stop(): Promise<void>;
+  /** The launch this process bound, or nothing when it names no runtime. */
+  harnessLaunch?: ReturnType<typeof httpHarnessLaunch>;
 }
 
 /**
@@ -115,10 +152,62 @@ export function migrateOnly(databasePath: string): number {
   }
 }
 
-export async function main(): Promise<void> {
+/**
+ * The rows a deploy reads to learn what this Deployment still has in flight.
+ *
+ * The columns are the ones the operator's CLI reads: every row it answers
+ * carries the start of the launch that went out for it and that launch's own
+ * budget, which is what the wait bounds it by. The states are the
+ * dispatcher's own (`core/runs.ts`) plus one a deploy must not ship over: a
+ * queued row that names a credential is a run whose child may be working under
+ * it, taken back into the queue by a launch answered too late. The fleet count
+ * reads the dispatcher's states alone; this read is about what a recreate would
+ * interrupt. The CLI holds the same query text for the hosted target, and
+ * `tests/server/deployment-data-ops.test.ts` holds the two identical.
+ */
+export const LIVE_RUNS_QUERY = `SELECT id, task, status, started_at, run_context FROM agent_runs`
+  + ` WHERE ${LIVE_RUN_STATUSES} OR (status = 'queued' AND dispatched_by IS NOT NULL)`;
+
+/**
+ * What this Deployment has in flight, as the rows themselves.
+ *
+ * A second reader beside the serving process, and read-only: the volume runs in
+ * WAL mode (`platform/bun/database.ts`), which admits a reader while the server
+ * writes, the busy timeout covers a checkpoint holding the file as this opens
+ * it, and a path naming no volume is refused rather than created empty.
+ *
+ * Read-only carries one cost, and it is the one to want: a volume left with a
+ * hot journal by a writer that died cannot be recovered by this reader, so the
+ * read fails and the deploy refuses rather than a deploy proceeding on a volume
+ * whose true contents nobody has established.
+ */
+export function liveRuns(databasePath: string): unknown[] {
+  const sqlite = new Database(databasePath, { readonly: true });
+  try {
+    sqlite.exec('PRAGMA busy_timeout = 5000');
+    return sqlite.query(LIVE_RUNS_QUERY).all() as unknown[];
+  } finally {
+    sqlite.close();
+  }
+}
+
+/** What a process that died before it served says on its way out: a read command names the read, a start names the start. */
+export function exitFailureLine(argv: readonly string[], message: string): string {
+  return `${argv.includes('--live-runs') ? 'myco-server could not read the volume' : 'myco-server failed to start'}: ${message}\n`;
+}
+
+export async function main(): Promise<StartedDeployment | undefined> {
   if (process.argv.includes('--migrate-only')) {
     migrateOnly(requireEnv('MYCO_DATABASE'));
-    return;
+    return undefined;
+  }
+
+  // A deploy asks the running container what it is carrying before it recreates
+  // it. One document on stdout, and a volume that cannot be read exits non-zero
+  // with the one line the caller refuses the deploy over.
+  if (process.argv.includes('--live-runs')) {
+    process.stdout.write(`${JSON.stringify(liveRuns(requireEnv('MYCO_DATABASE')))}\n`);
+    return undefined;
   }
 
   const transport = process.env.MYCO_TRANSPORT ?? 'loopback';
@@ -161,13 +250,25 @@ export async function main(): Promise<void> {
     throw new StartupError(`MYCO_UI_DIR names ${uiDir}, which holds no index.html`);
   }
 
+  const port = positiveInt('MYCO_PORT', 8787);
+  // The requested port is not the bound one where the kernel chooses it, and a
+  // runtime told the wrong address posts its ending nowhere. The origin is read
+  // at each launch, from the socket, and a launch before the socket is bound is
+  // one the queue holds rather than one the row fails on.
+  let boundPort: number | null = null;
+  const harnessLaunch = harnessLaunchFromEnv(() => {
+    if (boundPort === null) throw new RuntimeDraining('the deployment has not bound its port, so no runtime can be told where to call back');
+    return `http://127.0.0.1:${boundPort}`;
+  });
+
   const started = await serve({
     bind,
     uiDir,
     databasePath: requireEnv('MYCO_DATABASE'),
     blobDir: requireEnv('MYCO_BLOB_DIR'),
-    port: positiveInt('MYCO_PORT', 8787),
+    port,
     transport,
+    ...(harnessLaunch === undefined ? {} : { harnessLaunch }),
     sourceFrom,
     header: process.env.MYCO_TRUSTED_HEADER,
     origin: process.env.MYCO_ORIGIN,
@@ -178,6 +279,7 @@ export async function main(): Promise<void> {
     GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET: secretOf('GITHUB_CLIENT_SECRET', false),
   });
+  boundPort = started.port;
 
   // SIGTERM is the orchestrator asking for a drain, and the drain is what is
   // awaited here: exiting on the same tick as the stop call ends the process
@@ -192,14 +294,15 @@ export async function main(): Promise<void> {
       void started.stop().then(() => process.exit(0), () => process.exit(1));
     });
   }
+
+  return { port: started.port, stop: started.stop, ...(harnessLaunch === undefined ? {} : { harnessLaunch }) };
 }
 
 if (import.meta.main) {
   main().catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
     // One line, no stack: a stack in a container log discloses paths and
     // surrounding source to whoever can read the log.
-    process.stderr.write(`myco-server failed to start: ${message}\n`);
+    process.stderr.write(exitFailureLine(process.argv, err instanceof Error ? err.message : String(err)));
     process.exit(1);
   });
 }

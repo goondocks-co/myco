@@ -61,6 +61,14 @@ describe('Compose publishes only on loopback (C-local condition 4)', () => {
     expect(ports.filter((p) => p.startsWith('localhost:'))).toEqual([]);
   });
 
+  it('publishes nothing from the service sharing the server namespace', () => {
+    // Compose refuses a `ports:` entry on a service with `network_mode:
+    // service:`, and the harness is reached over that shared loopback.
+    const harness = yaml.slice(yaml.indexOf('\n  harness:\n'));
+    expect(harness).toContain('network_mode: "service:server"');
+    expect(publishedPorts(harness)).toEqual([]);
+  });
+
   it('CONTROL: the parser catches an unqualified port', () => {
     // A gate that cannot fail is not a gate.
     const bad = ['services:', '  server:', '    ports:', '      - "8787:8787"'].join('\n');
