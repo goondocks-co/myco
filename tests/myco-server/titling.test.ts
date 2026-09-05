@@ -12,6 +12,7 @@ import {
 } from '@myco-server-worker/core/titling.js';
 import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MATERIAL_EXCERPT_CHARS } from '@myco-server-worker/constants.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
+import { LAUNCH_REFUSED_ERROR } from '@myco-server-worker/core/harness.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 const NOW = 1_700_000_000_000;
@@ -192,9 +193,9 @@ describe('titleSession', () => {
     h.prompt('s1', 'p1', 'hello', NOW - 9000);
     expect((await h.title('s1')).outcome).toBe('error');
     expect(h.row('s1')).toEqual(untouched);
-    // The dispatch's row records the refusal rather than sitting pending forever.
+    // The dispatch's row records the refusal, in the runtime's own words, rather than sitting pending forever.
     const failedRows = h.sqlite.query(`SELECT status, error FROM agent_runs`).all() as Array<{ status: string; error: string | null }>;
-    expect(failedRows).toEqual([{ status: 'failed', error: 'the runtime refused to start' }]);
+    expect(failedRows).toEqual([{ status: 'failed', error: `${LAUNCH_REFUSED_ERROR}: container refused to start` }]);
     // The session's own attempt is still open, and an owner may ask at once.
     expect((await h.ask('s1')).outcome).toBe('error');
     expect(h.row('s1')).toEqual(untouched);

@@ -90,7 +90,7 @@ export const replacedRun: ParityScenario = {
         }),
       });
       expect(`/runs/update: ${res.status}`).toBe('/runs/update: 200');
-      expect(await res.json()).toEqual({ persisted: true, changed: 1 });
+      expect(await res.json()).toEqual({ persisted: true, changed: 1, applied: true });
     };
 
     // A first ask launches; a second meets the day's ceiling of one.

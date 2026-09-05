@@ -16,13 +16,13 @@
  * only into the launched runtime's environment, under the variable its harness
  * reads, and never into telemetry or an answer.
  */
-import { heldBy, readDispatchLimits, type DispatchLimits, type HeldBy } from './limits.js';
+import { DEPLOYMENT_WIDE_HOLDS, heldBy, readDispatchLimits, type DispatchLimits, type HeldBy } from './limits.js';
 import type { ServerEnv } from './adapters.js';
 import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
-import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
+import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { deploymentSecretStore } from './secrets.js';
 import { leafValues } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
@@ -39,6 +39,10 @@ const SUBSCRIPTION_TOKEN_PREFIX = 'sk-ant-oat';
 export const DEFAULT_DISPATCH_TIMEOUT_SECONDS = 300;
 /** How long a run may outlive its own bound before the Deployment treats its runtime as gone: the hosted hold releases the container at this margin, and the sweep fails the run at the same one. */
 export const RUN_OVERRUN_MARGIN_MS = 120_000;
+/** How much of a runtime's refusal rides the run row; the runtime bounds its own failures at the same length (`MAX_RUN_ERROR_CHARS` in packages/myco/src/agent/runtime/server-runner.ts). */
+export const MAX_RUN_ERROR_CHARS = 2000;
+/** What a run whose runtime would not start carries, before the refusal's own word. */
+export const LAUNCH_REFUSED_ERROR = 'the runtime refused to start';
 /** The admission a capture-driven task carries into its container, in place of a capability name. */
 export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 /** How many runs of one task a Project may have re-queued in a day in place of runs the platform replaced. */
@@ -149,6 +153,22 @@ interface StoredSpec {
   replaces?: string;
 }
 
+/** What the queue keeps of a dispatch, from the launch spec it carries. */
+function storedSpecOf(spec: LaunchSpec): StoredSpec {
+  return {
+    serverUrl: spec.serverUrl, actor: spec.actor, timeoutSeconds: spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
+    ...(spec.params === undefined ? {} : { params: spec.params }),
+    ...(spec.options === undefined ? {} : { options: spec.options }),
+    ...(spec.replaces === undefined ? {} : { replaces: spec.replaces }),
+  };
+}
+
+/** What a status write presenting a credential the run's row does not name is refused with. */
+export const STALE_CREDENTIAL_REFUSAL = 'this run is dispatched under another credential';
+
+/** How a queued row whose launch spec cannot be read is failed. */
+export const NO_LAUNCH_ERROR = 'the queued dispatch carries no launch';
+
 /** How many queued runs one drain considers; the next wake continues. */
 export const DRAIN_BATCH = 200;
 
@@ -168,12 +188,59 @@ export class NotQueued extends Error {
 }
 
 /**
+ * Why a runtime is not taking a run, when the answer is not the run's fault.
+ *
+ * `draining` is the shape of every deploy: the harness stops before the server
+ * rolls, and it clears on its own. `unreachable` is a runtime that answered
+ * nothing at all, which is a fault an operator has to see.
+ */
+export type RuntimeUnavailable = 'draining' | 'unreachable';
+
+/**
+ * The runtime is not taking runs at this instant. The run goes back to the
+ * queue rather than failing, and the next drain launches it; `runId` names the
+ * row once `launchDispatch` has returned it.
+ */
+/**
+ * The runtime is already running the run this launch names.
+ *
+ * A launch answered after its bound is re-queued and offered again, and the
+ * supervisor that started a child for it the first time refuses the second by
+ * run id. The run is running: the row keeps the credential that child holds,
+ * and the launch counts as landed.
+ */
+/**
+ * The runtime refused a launch on terms that end the run, and the row carries
+ * that refusal. A caller reading this knows the run is answered; a throw of any
+ * other kind reaches it from before the row write.
+ */
+export class LaunchRefused extends Error {
+  constructor(message: string, options: { cause: unknown }) { super(message, options); this.name = 'LaunchRefused'; }
+}
+
+export class RuntimeAlreadyHolding extends Error {
+  constructor(message: string) { super(message); this.name = 'RuntimeAlreadyHolding'; }
+}
+
+export class RuntimeDraining extends Error {
+  constructor(message: string, readonly why: RuntimeUnavailable = 'draining', readonly runId?: string) {
+    super(message);
+    this.name = 'RuntimeDraining';
+  }
+}
+
+/**
  * Whether a prepared dispatch may launch now, or which limit holds it.
  * Reads the limits and the load fresh on every ask, so a limit changed in
  * Settings applies to the next dispatch and the next drain alike.
  */
-export async function admitDispatch(env: ServerEnv, task: string, now: number, limits?: DispatchLimits): Promise<HeldBy | null> {
-  const [read, load] = await Promise.all([limits === undefined ? readDispatchLimits(env) : Promise.resolve(limits), dispatchLoad(env.db, task, now)]);
+export async function admitDispatch(env: ServerEnv, task: string, now: number, limits?: DispatchLimits, exclude?: string): Promise<HeldBy | null> {
+  const [read, load] = await Promise.all([
+    limits === undefined ? readDispatchLimits(env) : Promise.resolve(limits),
+    // A row already in the table is admitted against the others; a fresh
+    // dispatch has none to leave out.
+    dispatchLoad(env.db, task, now, exclude),
+  ]);
   return heldBy(load, read);
 }
 
@@ -190,6 +257,10 @@ export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatc
   try {
     return { queued: false, ...(await launchDispatch(env, prepared, spec, now, { limits, singleFlight: options.singleFlight })) };
   } catch (err) {
+    // The launch already returned the row to the queue; the dispatch waits there rather than being written twice.
+    if (err instanceof RuntimeDraining && err.runId !== undefined) {
+      return { queued: true, runId: err.runId, task: prepared.task, projectId: prepared.projectId, heldBy: 'runtime' };
+    }
     if (!(err instanceof LimitReached)) throw err;
     const holder = (await admitDispatch(env, prepared.task, now, limits)) ?? 'concurrent_runs';
     return { queued: true, ...(await enqueueDispatch(env, prepared, spec, holder, now, options)) };
@@ -204,12 +275,7 @@ export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatc
 export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, held: HeldBy, now: number, options: { singleFlight?: boolean } = {}): Promise<Queued> {
   await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now);
   const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
-  const stored: StoredSpec = {
-    serverUrl: spec.serverUrl, actor: spec.actor, timeoutSeconds: spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
-    ...(spec.params === undefined ? {} : { params: spec.params }),
-    ...(spec.options === undefined ? {} : { options: spec.options }),
-    ...(spec.replaces === undefined ? {} : { replaces: spec.replaces }),
-  };
+  const stored = storedSpecOf(spec);
   const scope = { projectId: prepared.projectId };
   if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored) }, options))) {
     if (options.singleFlight === true && (await getRun(env.db, scope, runId)) === null) throw new AlreadyRunning();
@@ -218,6 +284,56 @@ export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch
   emit({ kind: 'harness_queued', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor, heldBy: held });
   try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
   return { runId, task: prepared.task, projectId: prepared.projectId, heldBy: held };
+}
+
+/**
+ * Retire a harness credential.
+ *
+ * A run's credential exists for that run alone, and the row is what says which
+ * one that is. The rule this function exists to make true: a credential is
+ * revoked at the moment the row stops naming it, and at no other moment — so
+ * every write that changes what a row names retires what it named before, in
+ * the same breath, through here.
+ *
+ * What the gate over this holds is the dispatcher's own paths: no other caller
+ * in `src/` reaches `revokeCredentialOfMember` for a harness credential except
+ * the release a terminal run goes through. An operator revoking a credential by
+ * id, or revoking the harness member itself, still reaches `auth/tokens.ts`
+ * directly — that is an operator ending a credential the row still names, and
+ * the run it names is left to the stale sweep, which closes it by its bound
+ * like any run whose runtime went away.
+ */
+async function retireDispatchCredential(env: ServerEnv, tokenId: string | null, now: number): Promise<void> {
+  if (tokenId === null) return;
+  await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, tokenId, now);
+}
+
+/**
+ * End a queued run, and release what it holds.
+ *
+ * A queued row can carry the credential of a launch that may have started a
+ * child; ending the row is the last moment anything can retire it, and after
+ * the retention pass deletes the row nothing names it at all. Every terminal
+ * transition of a queued row goes through here, which is what makes that true
+ * of all of them rather than of the ones somebody remembered. The transition
+ * itself reports what the row named, so the retirement follows the write rather
+ * than a read that may be older than it.
+ */
+export async function endQueuedRun(
+  env: ServerEnv,
+  scope: { projectId: string },
+  run: { id: string },
+  now: number,
+  outcome: { failed: string } | { skipped: string },
+): Promise<boolean> {
+  // Retiring the right credential requires the write's own answer: a drain that
+  // relaunched and re-queued this row between the caller's read and this write
+  // leaves the row naming one the caller never saw.
+  const ended = 'failed' in outcome
+    ? await failQueuedRun(env.db, scope, run.id, now, outcome.failed)
+    : await skipQueued(env.db, scope, run.id, now, outcome.skipped);
+  if (ended.applied) await retireDispatchCredential(env, ended.displaced, now);
+  return ended.applied;
 }
 
 /**
@@ -232,24 +348,24 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
   for (const queued of await listQueuedAcrossProjects(env.db, DRAIN_BATCH)) {
     const scope = { projectId: queued.projectId };
     if (queued.task === null || queued.dispatchSpec === null) {
-      await failQueuedRun(env.db, scope, queued.id, now, 'the queued dispatch carries no launch');
+      await endQueuedRun(env, scope, queued, now, { failed: NO_LAUNCH_ERROR });
       continue;
     }
     let stored: StoredSpec;
     try { stored = JSON.parse(queued.dispatchSpec) as StoredSpec; } catch {
-      await failQueuedRun(env.db, scope, queued.id, now, 'the queued dispatch carries no launch');
+      await endQueuedRun(env, scope, queued, now, { failed: NO_LAUNCH_ERROR });
       continue;
     }
     const prepared = await prepareDispatch(env, queued.task, queued.projectId);
     if (!prepared.ok) {
       if (prepared.refusal === 'harness_unavailable') return launched;
-      await failQueuedRun(env.db, scope, queued.id, now, DISPATCH_REFUSAL_MESSAGE[prepared.refusal]);
+      await endQueuedRun(env, scope, queued, now, { failed: DISPATCH_REFUSAL_MESSAGE[prepared.refusal] });
       continue;
     }
-    const held = await admitDispatch(env, queued.task, now, limits);
+    const held = await admitDispatch(env, queued.task, now, limits, queued.id);
     if (held !== null) {
       // A Deployment-wide holder holds every later row too; a per-task holder holds only this task's.
-      if (held === 'fleet' || held === 'concurrent_runs') return launched;
+      if (DEPLOYMENT_WIDE_HOLDS.has(held)) return launched;
       continue;
     }
     // A task whose prompt the server builds has it built again here: the run
@@ -257,7 +373,7 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
     // has not moved past the artifact it already holds costs nothing.
     const built = await buildTaskInput(env, queued.task, queued.projectId, now, { fresh: stored.options?.fresh === true });
     if (built !== null && built.unchanged) {
-      await skipQueued(env.db, scope, queued.id, now, INPUT_UNCHANGED);
+      await endQueuedRun(env, scope, queued, now, { skipped: INPUT_UNCHANGED });
       emit({ kind: 'task_skipped', task: queued.task, projectId: queued.projectId, skip: INPUT_UNCHANGED });
       continue;
     }
@@ -268,11 +384,30 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
       await launchDispatch(env, prepared.prepared, { ...stored, ...rebuilt, runId: queued.id, fromQueue: true }, now, { limits });
       launched += 1;
     } catch (err) {
-      // The write refused on a limit another launch reached first: the row stays queued for the next drain. A row no longer queued belongs to another drain; the next row still gets its turn.
-      if (err instanceof LimitReached && (await admitDispatch(env, queued.task, now, limits)) !== null) {
-        const holder = await admitDispatch(env, queued.task, now, limits);
-        if (holder === 'fleet' || holder === 'concurrent_runs') return launched;
+      // A runtime that is not taking runs takes none of the rows after this one either; this wake ends and the next retries.
+      if (err instanceof RuntimeDraining) return launched;
+      // Another drain took this row between the read and the write. It is that
+      // drain's now; the rows after it are still this one's to try.
+      if (err instanceof NotQueued) {
+        emit({ kind: 'harness_drain_raced', runId: queued.id, task: queued.task, projectId: queued.projectId });
+        continue;
       }
+      // The write refused on a limit another launch reached first: the row stays queued for the next drain. A Deployment-wide holder holds every later row too.
+      if (err instanceof LimitReached) {
+        const holder = await admitDispatch(env, queued.task, now, limits, queued.id);
+        if (holder !== null && DEPLOYMENT_WIDE_HOLDS.has(holder)) return launched;
+        continue;
+      }
+      const detail = (err instanceof Error ? err.message : String(err)).slice(0, MAX_RUN_ERROR_CHARS);
+      // The launch met terms that end the run: the row carries the refusal, and
+      // the rows after it still get their turn.
+      if (err instanceof LaunchRefused) {
+        emit({ kind: 'harness_drain_refused', runId: queued.id, task: queued.task, projectId: queued.projectId, error: detail });
+        continue;
+      }
+      // Anything else reaches this drain from before the row write: the row is
+      // as the queue left it, and the next wake offers it again.
+      emit({ kind: 'harness_drain_failed', runId: queued.id, task: queued.task, projectId: queued.projectId, error: detail });
     }
   }
   return launched;
@@ -354,15 +489,29 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     ...(spec.replaces === undefined ? {} : { replaces: spec.replaces }),
   });
   const scope = { projectId: prepared.projectId };
+  // A re-queued row carries the credential of the child an earlier launch may
+  // have started; the launch below replaces it, and what becomes of it depends
+  // on whether that child is still running.
   // A queued row moves to pending for this credential; any other id is recorded afresh. Either way the row exists before
-  // the launch, and the write itself carries the limit check when limits are given. A write that changed nothing minted
-  // a credential for no run: it is revoked here, and the caller learns whether a limit or the row's own state refused it.
+  // the launch, and the write itself carries the limit check when limits are given.
   const admission = options.limits === undefined && options.singleFlight !== true ? undefined : { limits: options.limits ?? NO_LIMITS, now, singleFlight: options.singleFlight === true };
-  const recorded = spec.fromQueue === true
-    ? await launchQueued(env.db, scope, runId, { task: prepared.task, dispatchedBy: minted.tokenId, startedAt: now, runContext, instruction: spec.instruction ?? null, provider: prepared.providerType, model: prepared.model }, admission)
-    : await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }, admission);
+  // Nothing names this credential until the write lands, so a store that throws
+  // anywhere between the mint and that write retires it on its way out.
+  let carried: string | null;
+  let recorded: boolean;
+  try {
+    carried = spec.fromQueue === true ? (await getRun(env.db, scope, runId))?.dispatchedBy ?? null : null;
+    recorded = spec.fromQueue === true
+      ? await launchQueued(env.db, scope, runId, { task: prepared.task, dispatchedBy: minted.tokenId, startedAt: now, runContext, instruction: spec.instruction ?? null, provider: prepared.providerType, model: prepared.model }, admission)
+      : await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }, admission);
+  } catch (error) {
+    await retireDispatchCredential(env, minted.tokenId, now);
+    throw error;
+  }
   if (!recorded) {
-    await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, minted.tokenId, now);
+    // No row names this credential: the write above changed nothing, and the
+    // caller learns whether a limit or the row's own state refused it.
+    await retireDispatchCredential(env, minted.tokenId, now);
     const existing = await getRun(env.db, scope, runId);
     if (spec.fromQueue === true) {
       if (existing === null || existing.status !== 'queued') throw new NotQueued();
@@ -372,6 +521,19 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     if (options.singleFlight === true && (await hasLiveTaskRun(env.db, scope, prepared.task))) throw new AlreadyRunning();
     throw new LimitReached();
   }
+  /**
+   * What a launch that reached a runtime answers.
+   *
+   * The row names `minted` from the write above; `carried` is what it named
+   * before, and no attempt is coming back for it.
+   */
+  const landed = async (options: { retire?: string | null } = {}): Promise<Launched> => {
+    if (options.retire !== minted.tokenId) await retireDispatchCredential(env, options.retire ?? null, now);
+    emit({ kind: 'harness_dispatch', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor });
+    try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
+    return { runId, task: prepared.task, projectId: prepared.projectId, timeoutSeconds, provider: prepared.providerType };
+  };
+
   try {
     await env.harnessLaunch({
     runId,
@@ -391,12 +553,50 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     },
   });
   } catch (error) {
-    await applyRunUpdate(env.db, scope, runId, { status: 'failed', completed_at: now, error: 'the runtime refused to start' });
-    throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    // The runtime is running this run already, under the credential it started
+    // with: the row names that one again, and the one minted here named nothing.
+    if (error instanceof RuntimeAlreadyHolding) {
+      // The restore writes from `pending` alone. Where it landed the row names
+      // `carried`; where it did not, the row has moved — a sweep, a terminal
+      // write — and what it names now is what decides. Either way the row's own
+      // credential is kept and the other retired.
+      const restored = carried !== null && await restoreDispatchCredential(env.db, scope, runId, carried);
+      const names = restored ? carried : (await getRun(env.db, scope, runId))?.dispatchedBy ?? null;
+      for (const token of new Set([minted.tokenId, carried])) {
+        if (token !== null && token !== names) await retireDispatchCredential(env, token, now);
+      }
+      return landed();
+    }
+    if (error instanceof RuntimeDraining) {
+      // The row goes back to the queue naming the oldest credential still in
+      // play: where a launch is answered late, that is the one its child holds.
+      // `returnToQueue` writes from `pending` alone, so a row a claim has
+      // already moved keeps what it holds and this branch does not apply.
+      const keeps = carried ?? minted.tokenId;
+      const returned = await returnToQueue(env.db, scope, runId, {
+        heldBy: 'runtime', dispatchSpec: JSON.stringify(storedSpecOf(spec)), credential: keeps, now,
+      });
+      if (returned) {
+        await retireDispatchCredential(env, keeps === minted.tokenId ? null : minted.tokenId, now);
+        if (error.why === 'unreachable') {
+          emit({ kind: 'harness_unreachable', runId, task: prepared.task, projectId: prepared.projectId, error: message });
+        } else {
+          emit({ kind: 'harness_draining', runId, task: prepared.task, projectId: prepared.projectId, error: message });
+        }
+        throw new RuntimeDraining(message, error.why, runId);
+      }
+      // The row moved on: the credential the launch just minted is the one its
+      // child claims under, and the one an earlier attempt left is dead.
+      return landed({ retire: carried });
+    }
+    // The run is over, so the row names neither of them any more.
+    await retireDispatchCredential(env, minted.tokenId, now);
+    await retireDispatchCredential(env, carried, now);
+    await applyRunUpdate(env.db, scope, runId, { status: 'failed', completed_at: now, error: `${LAUNCH_REFUSED_ERROR}: ${message}`.slice(0, MAX_RUN_ERROR_CHARS) });
+    throw new LaunchRefused(message, { cause: error });
   }
-  emit({ kind: 'harness_dispatch', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor });
-  try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
-  return { runId, task: prepared.task, projectId: prepared.projectId, timeoutSeconds, provider: prepared.providerType };
+  return landed({ retire: carried });
 }
 
 /** Prepare and launch in one call, for a caller with no claim of its own to make between them. */
@@ -464,7 +664,10 @@ function contextField<T>(runContext: string | null, key: string, ofType: (value:
  * Two caps hold the rest: a run already answered by a successor is never
  * answered twice, and a Project gets `REPLACED_REQUEUES_PER_DAY` of one task in
  * a day, so a Deployment rolling again and again does not turn one ask into a
- * stream of runs.
+ * stream of runs. The per-run cap and the per-task one are different bounds: a
+ * drain that takes several un-claimed runs of one task away files a reclaim for
+ * each, and they share that task's day between them — the first two are
+ * answered and any beyond them are not.
  */
 export async function requeueReplaced(env: ServerEnv, replaced: ReplacedRun, now: number): Promise<RequeueOutcome> {
   const { run, projectId } = replaced;

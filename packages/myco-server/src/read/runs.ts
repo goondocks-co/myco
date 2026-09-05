@@ -21,7 +21,7 @@ export interface RunListRow {
   failed: boolean;
   /** When a queued run entered the queue; null for a run that launched at once. */
   queuedAt: number | null;
-  /** The limit that holds a queued run, by name; null once it launches. */
+  /** What holds a queued run, by name — a limit, the fleet, or the runtime itself; null once it launches. */
   heldBy: string | null;
   /** How many queued runs are ahead of a queued run; null for any other. */
   position: number | null;

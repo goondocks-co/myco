@@ -15,6 +15,7 @@ import {
 } from '@myco/server/github-app.js';
 import { putWorkerSecrets, writeDeploymentRecord, WranglerAbsent } from '@myco/server/cloudflare.js';
 import { materializeBundle, resolveDeploymentPaths } from '@myco/server/deployment.js';
+import { HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
 import { systemRunner, type CommandRunner, type CommandResult, type RunOptions } from '@myco/server/runner.js';
 
 interface Call { command: string; args: string[]; options?: RunOptions }
@@ -23,6 +24,8 @@ const runner = (answer: (call: Call) => Partial<CommandResult> = () => ({})): Co
   async run(command, args, options) {
     const call = { command, args: [...args], options };
     calls.push(call);
+    // Compose answers the union of the bundle and the operator's override.
+    if (args.includes('--services')) return { code: 0, stdout: 'server\nharness\n', stderr: '' };
     return { code: 0, stdout: '', stderr: '', ...answer(call) };
   },
 });
@@ -100,7 +103,8 @@ describe('installing the credentials', () => {
   it('Cloudflare: one `secret bulk` naming the Worker, both values on stdin, the account pinned, no cwd, after the wrangler presence check', async () => {
     const r = runner();
     await installSignInSecrets({ kind: 'cloudflare', record: RECORD }, { clientId: 'Iv1.x', clientSecret: 's' }, r);
-    expect(calls.map((c) => [c.command, ...c.args])).toEqual([
+    // The service list Compose is asked for is a read, not an act.
+    expect(calls.filter((c) => !c.args.includes('--services')).map((c) => [c.command, ...c.args])).toEqual([
       ['npx', '--no-install', 'wrangler', '--version'],
       ['npx', 'wrangler', 'secret', 'bulk', '--name', 'myco-server'],
     ]);
@@ -129,7 +133,14 @@ describe('installing the credentials', () => {
     const env = readFileSync(paths.envFile, 'utf8');
     expect(env.split('\n').filter(Boolean).sort()).toEqual(['GITHUB_CLIENT_ID=Iv1.x', 'MYCO_PORT=18787', 'MYCO_VERSION=2.0.0']);
     expect(env).not.toContain('s3cr3t');
-    expect(calls.map((c) => [c.command, ...c.args])).toEqual([['docker', 'compose', '--file', paths.composeFile, '--project-name', 'myco', 'up', '--detach', '--force-recreate', '--wait']]);
+    // The harness goes down on its own first: Compose takes the namespace owner
+    // down ahead of it, and a recreate that starts with `up` kills the server
+    // while the harness is still holding runs.
+    // The service list Compose is asked for is a read, not an act.
+    expect(calls.filter((c) => !c.args.includes('--services')).map((c) => [c.command, ...c.args])).toEqual([
+      ['docker', 'compose', '--file', paths.composeFile, '--file', paths.overrideFile, '--project-name', 'myco', 'stop', '--timeout', String(HARNESS_STOP_GRACE_SECONDS), 'harness'],
+      ['docker', 'compose', '--file', paths.composeFile, '--file', paths.overrideFile, '--project-name', 'myco', 'up', '--detach', '--force-recreate', '--wait'],
+    ]);
   });
 
   it('the real runner hands `input` to the child on stdin', async () => {

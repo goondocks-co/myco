@@ -25,12 +25,13 @@ const STATUS_TABS = [
 
 const STATUS_TONE: Record<string, StatusTone> = { queued: 'outline', skipped: 'outline', running: 'ochre', completed: 'sage', failed: 'terracotta' };
 
-/** Each limit that can hold a queued run, in the reader's words. */
+/** Each thing that can hold a queued run, in the reader's words. */
 const HELD_BY_WORDS: Record<string, string> = {
   concurrent_runs: 'the limit on runs at once',
   task_concurrent_runs: 'the limit on runs of this task at once',
   task_runs_per_hour: 'the limit on runs of this task per hour',
   fleet: 'the size of the fleet',
+  runtime: 'the runtime is not taking a run right now',
 };
 
 /** What a deploy did to a run, in the reader's words: nothing for an ordinary run. */
@@ -124,7 +125,7 @@ function RunRow({ run, active, onOpen }: { run: RunListRow; active: boolean; onO
         </div>
       ) : (
         <div className="mt-1 flex gap-3 font-mono text-[11px] text-on-surface-variant">
-          <span>{formatRelative(run.startedAt)}</span>
+          <span>{formatRelative(run.startedAt ?? run.completedAt)}</span>
           <span>{formatDuration(run.startedAt, run.completedAt)}</span>
           <span>{formatTokens(run.tokensUsed)} tok</span>
           <span>{formatCost(run.costUsd, run.costSource)}</span>
@@ -175,7 +176,7 @@ function RunBody({ run, phases, reports, agentName }: { run: RunDetailRow; phase
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard label="Status" value={run.status} tone={run.status === 'failed' ? 'terra' : run.status === 'completed' ? 'sage' : 'ochre'} />
-        <MetricCard label="Started" value={formatRelative(run.startedAt)} sub={formatDateTime(run.startedAt)} />
+        <MetricCard label="Started" value={formatRelative(run.startedAt ?? run.completedAt)} sub={formatDateTime(run.startedAt ?? run.completedAt)} />
         <MetricCard label="Duration" value={formatDuration(run.startedAt, run.completedAt)} />
         <MetricCard label="Tokens" value={formatTokens(run.tokensUsed)} sub={formatCost(run.costUsd, run.costSource)} tone="ochre" />
       </div>

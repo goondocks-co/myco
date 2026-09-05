@@ -152,7 +152,7 @@ describe('POST /runs/session-title', () => {
     h.prompt('s1', 'p1', 'hello', NOW - 9000);
     h.sqlite.run(`UPDATE sessions SET titled_at = ? WHERE session_id = 's1'`, [NOW]);
     await h.claim(h.harness, 'run_1', 'title-summary', { session_id: 's1', mode: 'claim' });
-    expect(await h.post(h.harnessToken, '/runs/update', { runId: 'run_1', update: { status: 'failed', error: 'provider unreachable', completed_at: NOW } })).toEqual({ persisted: true, changed: 1 });
+    expect(await h.post(h.harnessToken, '/runs/update', { runId: 'run_1', update: { status: 'failed', error: 'provider unreachable', completed_at: NOW } })).toEqual({ persisted: true, changed: 1, applied: true });
     expect(h.row('s1')).toEqual({ title: null, summary: null, titled_at: NOW, titled_by: null });
     // The terminal status revoked the run's credential: the routes answer 401, not a held run.
     const res = await worker.fetch(new Request('https://s/runs/session-title', { method: 'POST', headers: memberHeaders(h.harnessToken), body: JSON.stringify({ runId: 'run_1', sessionId: 's1', title: 'Late', summary: 'late' }) }), h.env);

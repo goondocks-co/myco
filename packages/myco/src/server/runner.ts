@@ -17,11 +17,13 @@ export interface CommandResult {
   stderr: string;
 }
 
-/** How a command is run: where, with what environment, and what it reads on stdin. A secret travels on stdin, never in argv. */
+/** How a command is run: where, with what environment, what it reads on stdin, and how long it may take. A secret travels on stdin, never in argv. */
 export interface RunOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   input?: string;
+  /** Past this the child is killed and the call rejects. Absent, the command may take as long as it takes. */
+  timeoutMs?: number;
 }
 
 export interface CommandRunner {
@@ -41,10 +43,24 @@ export function systemRunner(): CommandRunner {
         });
         let stdout = '';
         let stderr = '';
+        // A command that answers nothing holds its caller forever, and the
+        // callers here are operator verbs with a person waiting on them. The
+        // kill is SIGKILL: the window has already passed, and a child that
+        // ignores SIGTERM would extend it.
+        let timedOut = false;
+        const timer = options?.timeoutMs === undefined ? null : setTimeout(() => {
+          timedOut = true;
+          child.kill('SIGKILL');
+        }, options.timeoutMs);
+        const settled = (): void => { if (timer !== null) clearTimeout(timer); };
         child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
         child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-        child.on('error', reject);
-        child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+        child.on('error', (err) => { settled(); reject(err); });
+        child.on('close', (code) => {
+          settled();
+          if (timedOut) reject(new CommandTimedOut(command, args, options!.timeoutMs!));
+          else resolve({ code: code ?? -1, stdout, stderr });
+        });
         if (options?.input !== undefined && child.stdin) {
           child.stdin.on('error', () => undefined);
           child.stdin.end(options.input);
@@ -176,6 +192,19 @@ export function commandFailureDetail(result: CommandResult): string {
   return result.stderr.trim() || result.stdout.trim();
 }
 
+/** What went wrong, in the words the thing that failed used. */
+export function describeFailure(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Raised when a command answered nothing inside the window its caller gave it; the child is killed first. */
+export class CommandTimedOut extends Error {
+  constructor(readonly command: string, readonly args: readonly string[], readonly timeoutMs: number) {
+    super(`${command} ${args.join(' ')} answered nothing in ${Math.round(timeoutMs / 1000)} s and was killed`);
+    this.name = 'CommandTimedOut';
+  }
+}
+
 /** Raised with what the command itself said, which is what an operator needs to see. */
 export class CommandFailed extends Error {
   constructor(readonly command: string, readonly args: readonly string[], readonly result: CommandResult) {
@@ -186,6 +215,11 @@ export class CommandFailed extends Error {
   get stdout(): string { return this.result.stdout; }
 
   get stderr(): string { return this.result.stderr; }
+}
+
+/** Whether an error is the command's own answer — a refusal or a silence — rather than a fault in the caller. */
+export function isCommandFailure(err: unknown): err is CommandFailed | CommandTimedOut {
+  return err instanceof CommandFailed || err instanceof CommandTimedOut;
 }
 
 export async function runOrThrow(

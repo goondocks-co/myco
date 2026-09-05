@@ -13,7 +13,7 @@ import type {
 } from '../../core/adapters.js';
 import { cloudflareSourceOf } from './source.js';
 import type { HarnessContainer } from './harness-container.js';
-import { CLOCK_NAME, type DeploymentClock } from './deployment-clock.js';
+import { CLOCK_MANUAL, CLOCK_NAME, type DeploymentClock } from './deployment-clock.js';
 import { markRecordedLaunch } from '../../core/runs.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
 
@@ -37,6 +37,8 @@ export interface CloudflareBindings extends OwnerBindings {
   CLOCK?: DurableObjectNamespace<DeploymentClock>;
   /** `record`: a launch that records the run and starts nothing — the parity harness's runtime, never an operator's. Refused beside a real runtime. */
   HARNESS_LAUNCH_MODE?: string;
+  /** `manual` for a Deployment whose clock ticks only when a caller asks; refused beside a runtime that runs real containers. */
+  CLOCK_MODE?: string;
   /** The origin this Deployment is reached at, rendered into the deploy config from the deployment record. */
   MYCO_ORIGIN?: string;
   /** The container fleet's size, rendered into the deploy config beside `max_instances` from the same record. */
@@ -118,6 +120,9 @@ function fleetOf(value: string | undefined): number | null {
 export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: DeferredWork): ServerEnv {
   if (bindings.HARNESS_LAUNCH_MODE === 'record' && bindings.HARNESS !== undefined) {
     throw new Error('HARNESS_LAUNCH_MODE=record is refused beside a bound HARNESS: a Deployment records launches or runs them, never both');
+  }
+  if (bindings.CLOCK_MODE === CLOCK_MANUAL && bindings.HARNESS !== undefined) {
+    throw new Error('CLOCK_MODE=manual is refused beside a bound HARNESS: a Deployment that starts runtimes keeps its own clock');
   }
   return {
     ...(bindings.HARNESS_LAUNCH_MODE === 'record' && bindings.HARNESS === undefined ? { harnessLaunch: recordingLaunch(bindings) } : {}),

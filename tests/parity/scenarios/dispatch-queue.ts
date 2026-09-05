@@ -83,6 +83,32 @@ export const dispatchQueue: ParityScenario = {
     expect(await rows([back])).toEqual([{ id: back, status: 'pending', heldBy: null, harness: 'record', credentialed: 1 }]);
     expect(await listed('queued')).toEqual([]);
 
+    // A queued run the Deployment can no longer prepare is ended where it
+    // waits, and the credential its own row names goes with it. The write that
+    // does both answers with what it displaced (`UPDATE … RETURNING`), which
+    // this proves on each target's store rather than on one of them.
+    const stranded = `run_parity_stranded`;
+    const credential = `mt_parity_stranded`;
+    await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, lineage_root, lineage_started_at, predecessor_id, first_used_at)
+      VALUES (${lit(credential)}, 'mem_harness', 'harness', ${lit(`h_${credential}`)}, ${now}, ${now + 3_600_000}, NULL, 0, ${lit(credential)}, ${now}, NULL, NULL)`);
+    await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, dispatched_by)
+      VALUES (${lit(target.projectId)}, ${lit(stranded)}, 'myco-agent', 'cortex-prompt-builder', 'queued', ${now}, 'runtime',
+              ${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 120 }))}, ${lit(credential)})`);
+
+    // With no provider named, the drain can prepare nothing and gives up on it.
+    await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.provider.type'`);
+    try {
+      await wake();
+      expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
+        .toEqual([{ status: 'failed', error: 'no provider is configured; Settings names one before a dispatch can run' }]);
+      expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
+        .toEqual([{ revoked: 1 }]);
+    } finally {
+      // The scenarios after this one dispatch, and a Deployment with no provider
+      // dispatches nothing.
+      await leaf('agent.provider.type', 'openai-compatible');
+    }
+
     // Nothing this scenario launched stays live for the next one to count.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id IN (${ids.map(lit).join(', ')})`);
   },

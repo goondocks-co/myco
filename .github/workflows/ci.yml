@@ -46,6 +46,15 @@ jobs:
       # Per-feature both-target parity scenarios (#1042): the Bun server
       # in-process and the Worker under wrangler dev with local D1.
       - run: npm run test:parity
+      # The Worker's own log from the parity run, kept when a scenario fails:
+      # a 500 or a dead dev server has its cause on the workerd side, not in
+      # the scenario's assertion.
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: parity-wrangler-logs
+          path: packages/myco-server/.wrangler/parity-dev-*.log
+          if-no-files-found: ignore
 
   # The self-hosted Deployment, on the platform it actually ships to.
   #
@@ -55,13 +64,21 @@ jobs:
   # an operator meets it. None of those are exercised by driving the handler
   # directly.
   #
-  # It also holds the image multi-architecture. A Dockerfile that quietly stops
-  # building for one of the two would pass every other job.
+  # It also holds both shipped images multi-architecture — the server's and the
+  # harness's. A Dockerfile that quietly stops building for one of the two
+  # architectures would pass every other job.
   self-hosted-container:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: npm ci
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
@@ -90,6 +107,18 @@ jobs:
           assert found == ['linux/amd64', 'linux/arm64'], f'expected both architectures, got {found}'
           EOF
 
+      # The harness image carries the runtime entry and the supervisor that
+      # starts one runtime per run; both are bundled from source, so the build
+      # proves the bundle as well as the Dockerfile.
+      - name: Bundle the harness entries
+        run: npm run harness:bundle -w @goondocks/myco-server
+
+      - name: Build the harness image for both architectures
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -f packages/myco-server/harness/Dockerfile \
+            -t myco-harness:ci packages/myco-server/harness
+
       - name: Run the native image and smoke it
         run: |
           set -eu
@@ -106,8 +135,15 @@ jobs:
           done
           docker logs myco-ci
 
-          # Serves on the published loopback port.
+          # Serves on the published loopback port, with no secrets mounted at
+          # all: a deployment establishes its sign-in credential later.
           [ "$code" = "200" ] || { echo "health was $code, expected 200"; exit 1; }
+
+          # The entrypoint starts as root to copy its mounted secrets somewhere
+          # the runtime user owns, and drops before it migrates or serves. The
+          # image carries no ps, so the owner of PID 1 is read from /proc.
+          served=$(docker exec myco-ci stat -c '%U:%u' /proc/1)
+          [ "$served" = "myco:10001" ] || { echo "PID 1 runs as $served, expected myco:10001"; exit 1; }
 
           # The Host allowlist is what protects a container: its socket sees
           # every address the publish spec forwards, so a forged Host is

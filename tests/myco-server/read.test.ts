@@ -5,6 +5,7 @@ import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { clampLimit, decodeCursor, encodeCursor, page, DEFAULT_PAGE, MAX_PAGE } from '@myco-server-worker/read/scope.js';
 
 import { archiveProject, getSession, listProjects, listSessions, projectStats, renameProject, sessionLabel, unarchiveProject, LABEL_MAX_CHARS } from '@myco-server-worker/read/sessions.js';
+import { activityFeed } from '@myco-server-worker/read/activity.js';
 
 function seedSessions(sqlite: import('bun:sqlite').Database) {
   sqlite.run(`INSERT OR REPLACE INTO projects (project_id, name, created_at) VALUES ('proj_1','One',1), ('proj_2','Two',2)`);
@@ -471,5 +472,28 @@ describe('paging is stable under live capture', () => {
     const second = await listSessions(db, { projectId: 'proj_1' }, { limit: 3, cursor: first.cursor! });
     const seen = [...first.rows, ...second.rows].map((r) => r.sessionId).sort();
     expect(seen).toEqual(['s1', 's2', 's3', 's4', 's5', 's6']);
+  });
+});
+
+describe('read/activity', () => {
+  /** A project with one run per shape a run's clock can take. */
+  const seedRuns = (sqlite: import('bun:sqlite').Database) => {
+    sqlite.run(`INSERT OR REPLACE INTO projects (project_id, name, created_at) VALUES ('proj_1','One',1)`);
+    sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('a','a','built-in',1,1)`);
+    const insert = `INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, queued_at) VALUES ('proj_1', ?, 'a', 'container-smoke', ?, ?, ?, ?)`;
+    sqlite.run(insert, ['ran', 'completed', 300, 400, null]);
+    // A queued run the Deployment gave up on: it never started, so it has an
+    // end and a place in the queue and nothing else.
+    sqlite.run(insert, ['expired', 'failed', null, 200, 100]);
+    // A queued run still waiting: no start and no end, only its place.
+    sqlite.run(insert, ['waiting', 'queued', null, null, 50]);
+  };
+
+  it('shows a run by whichever clock it has, so a run that never started is not lost from the feed', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedRuns(sqlite);
+    const feed = await activityFeed(db, { projectId: 'proj_1' });
+    expect(feed.filter((f) => f.type === 'run').map((f) => [f.id, f.at]))
+      .toEqual([['ran', 300], ['expired', 200], ['waiting', 50]]);
   });
 });

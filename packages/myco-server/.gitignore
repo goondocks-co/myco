@@ -4,5 +4,6 @@ wrangler.deploy.toml
 wrangler.smoke.toml
 wrangler.parity-*.toml
 harness/entry.js
+harness/supervisor.js
 harness/definitions/
 harness/prompts/
