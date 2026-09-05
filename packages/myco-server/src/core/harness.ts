@@ -391,6 +391,10 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     },
   });
   } catch (error) {
+    // The run is over before it began, and the credential minted for it is
+    // usable until it is revoked; a runtime that never started is never going
+    // to present it.
+    await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, minted.tokenId, now);
     await applyRunUpdate(env.db, scope, runId, { status: 'failed', completed_at: now, error: 'the runtime refused to start' });
     throw error;
   }

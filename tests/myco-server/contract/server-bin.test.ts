@@ -20,6 +20,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main, migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
+import { bunPlatform } from '@myco-server-worker/platform/bun/env.js';
 
 const roots: string[] = [];
 const scratch = () => {
@@ -34,6 +35,7 @@ const TOUCHED = [
   'MYCO_DATABASE', 'MYCO_BLOB_DIR', 'MYCO_PORT', 'MYCO_TRANSPORT',
   'MYCO_SOURCE_FROM', 'MYCO_TRUSTED_HEADER', 'MYCO_TRUSTED_HOPS',
   'SECRET_WRAP_KEY', 'SECRET_WRAP_KEY_FILE',
+  'MYCO_HARNESS', 'MYCO_HARNESS_TOKEN', 'MYCO_HARNESS_TOKEN_FILE',
 ] as const;
 afterEach(() => { for (const key of TOUCHED) delete process.env[key]; });
 
@@ -134,6 +136,72 @@ describe('secrets arrive as files', () => {
     process.env.MYCO_DATABASE = join(root, 'myco.sqlite');
     process.env.MYCO_BLOB_DIR = join(root, 'blobs');
     await expect(main()).rejects.toThrow(/SECRET_WRAP_KEY_FILE/);
+  });
+});
+
+/**
+ * The one seam that makes a self-hosted deployment able to run anything.
+ *
+ * `MYCO_HARNESS` names the supervisor this deployment launches runtimes
+ * through. The endpoint spawns processes with a caller-chosen environment, so
+ * it is authenticated, and a deployment that names a supervisor without a token
+ * would answer every dispatch with a refusal it only discovered at launch time.
+ */
+describe('the harness runtime', () => {
+  const volume = () => {
+    const root = scratch();
+    return { MYCO_DATABASE: join(root, 'myco.sqlite'), MYCO_BLOB_DIR: join(root, 'blobs') };
+  };
+  const tokenFile = (contents: string): string => {
+    const path = join(scratch(), 'harness_token');
+    writeFileSync(path, contents);
+    return path;
+  };
+
+  it('refuses an address that is not an http or https URL', async () => {
+    for (const address of ['harness:8080', 'ws://harness:8080', '/run/harness.sock']) {
+      Object.assign(process.env, volume(), { MYCO_HARNESS: address, MYCO_HARNESS_TOKEN: 'tok' });
+      await expect(main()).rejects.toThrow(/MYCO_HARNESS must be an http/);
+    }
+  });
+
+  it('refuses a deployment that names a supervisor and no token', async () => {
+    Object.assign(process.env, volume(), { MYCO_HARNESS: 'http://127.0.0.1:8080' });
+    await expect(main()).rejects.toThrow(/MYCO_HARNESS_TOKEN/);
+  });
+
+  it('refuses a token file it cannot read, and one that holds nothing', async () => {
+    Object.assign(process.env, volume(), {
+      MYCO_HARNESS: 'http://127.0.0.1:8080',
+      MYCO_HARNESS_TOKEN_FILE: join(scratch(), 'absent'),
+    });
+    await expect(main()).rejects.toThrow(/MYCO_HARNESS_TOKEN_FILE/);
+
+    Object.assign(process.env, volume(), {
+      MYCO_HARNESS: 'http://127.0.0.1:8080',
+      MYCO_HARNESS_TOKEN_FILE: tokenFile('   \n'),
+    });
+    await expect(main()).rejects.toThrow(/MYCO_HARNESS_TOKEN_FILE names an empty file/);
+  });
+
+  it('starts with a supervisor address and the token file both services mount', async () => {
+    const env = volume();
+    Object.assign(process.env, env, {
+      MYCO_PORT: '0',
+      MYCO_HARNESS: 'http://127.0.0.1:8080',
+      MYCO_HARNESS_TOKEN_FILE: tokenFile('  supervisor-token  \n'),
+    });
+    migrateOnly(env.MYCO_DATABASE);
+    expect(await main()).toBeUndefined();
+  });
+
+  it('reports the capability present once a launch is bound, naming what an operator sets', () => {
+    const absent = bunPlatform({ sqlite: undefined as never, blobDir: '/tmp/x' }).capabilities();
+    expect(absent.find((c) => c.capability === 'harness-runtime'))
+      .toEqual({ capability: 'harness-runtime', label: 'Harness runtime', present: false, operatorNames: ['MYCO_HARNESS', 'MYCO_HARNESS_TOKEN_FILE'] });
+
+    const bound = bunPlatform({ sqlite: undefined as never, blobDir: '/tmp/x', harnessLaunch: async () => {} }).capabilities();
+    expect(bound.find((c) => c.capability === 'harness-runtime')?.present).toBe(true);
   });
 });
 

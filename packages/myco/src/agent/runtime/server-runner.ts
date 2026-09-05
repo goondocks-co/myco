@@ -29,6 +29,9 @@ import type { ProviderConfig } from '../types.js';
 import type { RunStatusOutcome, RunStore } from './run-store.js';
 import { createHttpRunStore, postRunControl, type RunClaimAdmission } from './run-store-http.js';
 import { INSTRUCTED_TASKS, materializedToolsForTask, type ServerToolContext } from './server-tools.js';
+import { RUNTIME_STOP_SIGNALS, type ProcessEvents } from './process-signals.js';
+
+export { RUNTIME_STOP_SIGNALS, type ProcessEvents } from './process-signals.js';
 
 export { materializedReportTool } from './server-tools.js';
 
@@ -39,8 +42,6 @@ export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 export const RUN_DEADLINE_ERROR = 'the run reached its deadline';
 /** How a run the platform took the runtime away from, before the run reached its own end, is recorded. */
 export const RUN_RECLAIMED_ERROR = 'the platform reclaimed the runtime before the run ended';
-/** The signals a platform sends a container it is draining. */
-export const RUNTIME_STOP_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
 /** How much of a failure message rides the run row. */
 export const MAX_RUN_ERROR_CHARS = 2000;
 /** How many times a terminal status is offered to the Deployment before the run is left to the stale sweep. */
@@ -182,11 +183,6 @@ export async function recordRunFailure(
       if (attempt >= attempts) throw failure;
     }
   }
-}
-
-/** Where a process's own deaths are announced. */
-export interface ProcessEvents {
-  on(event: string, listener: (reason?: unknown) => void): unknown;
 }
 
 /** What the container does with a death or a drain: which run is in flight, and what to do once the runtime is leaving. */

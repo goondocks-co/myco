@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { serve } from '../../entry/bun.js';
 import { SCHEMA_STEPS } from '../../db/schema.js';
+import { httpHarnessLaunch } from './harness-runner.js';
 
 class StartupError extends Error {}
 
@@ -62,6 +63,38 @@ function positiveInt(name: string, fallback: number): number {
     throw new StartupError(`${name} must be a non-negative integer, and is ${JSON.stringify(raw)}`);
   }
   return parsed;
+}
+
+/**
+ * The runtime this deployment launches runs on, or none.
+ *
+ * `MYCO_HARNESS` names the harness supervisor's address. The launch endpoint
+ * spawns processes with a caller-chosen environment, so it is authenticated,
+ * and a deployment that names a supervisor must also name the token file both
+ * services mount. Absent, nothing is bound and every dispatch answers that no
+ * runtime is available.
+ *
+ * The callback origin is this process's own loopback: the runtime shares the
+ * network namespace and reaches the deployment there, and the Host allowlist
+ * admits it. A request's origin is never the callback address — the allowlist
+ * admits a Host carrying no port, which would make one port 80.
+ */
+function harnessLaunchFromEnv(port: number): ReturnType<typeof httpHarnessLaunch> | undefined {
+  const url = process.env.MYCO_HARNESS;
+  if (url === undefined || url === '') return undefined;
+  const named = `MYCO_HARNESS must be an http:// or https:// URL naming the harness runtime, and is ${JSON.stringify(url)}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new StartupError(named);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new StartupError(named);
+  const token = secretOf('MYCO_HARNESS_TOKEN', true);
+  if (token === undefined || token === '') {
+    throw new StartupError('MYCO_HARNESS_TOKEN_FILE names an empty file, and the harness launch endpoint is authenticated');
+  }
+  return httpHarnessLaunch({ url, token, callbackOrigin: `http://127.0.0.1:${port}` });
 }
 
 /**
@@ -161,13 +194,17 @@ export async function main(): Promise<void> {
     throw new StartupError(`MYCO_UI_DIR names ${uiDir}, which holds no index.html`);
   }
 
+  const port = positiveInt('MYCO_PORT', 8787);
+  const harnessLaunch = harnessLaunchFromEnv(port);
+
   const started = await serve({
     bind,
     uiDir,
     databasePath: requireEnv('MYCO_DATABASE'),
     blobDir: requireEnv('MYCO_BLOB_DIR'),
-    port: positiveInt('MYCO_PORT', 8787),
+    port,
     transport,
+    ...(harnessLaunch === undefined ? {} : { harnessLaunch }),
     sourceFrom,
     header: process.env.MYCO_TRUSTED_HEADER,
     origin: process.env.MYCO_ORIGIN,

@@ -1,5 +1,8 @@
-# The harness container image: the lean runner entry bundled to one file,
-# plus the Claude Code CLI the harness adapter spawns. Runs as the image's
+# The harness image: the lean runner entry and the supervisor that starts one
+# runtime per run, each bundled to one file, plus the Claude Code CLI the
+# harness adapter spawns. The Cloudflare container runs the entry directly, one
+# container per run; the self-hosted stack overrides the command to run the
+# supervisor, which spawns the entry beside it. Runs as the image's
 # non-root user — the CLI refuses permission-bypass under root. Cloudflare
 # Containers run amd64; the platform builds/pulls accordingly. Build first:
 #   npm run harness:bundle   (in packages/myco-server)
@@ -12,6 +15,7 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 ENV PATH="/home/bun/.local/bin:${PATH}"
 WORKDIR /app
 COPY --chown=bun:bun entry.js .
+COPY --chown=bun:bun supervisor.js .
 COPY --chown=bun:bun definitions ./definitions
 COPY --chown=bun:bun prompts ./prompts
 EXPOSE 8080

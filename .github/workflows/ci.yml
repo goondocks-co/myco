@@ -55,13 +55,21 @@ jobs:
   # an operator meets it. None of those are exercised by driving the handler
   # directly.
   #
-  # It also holds the image multi-architecture. A Dockerfile that quietly stops
-  # building for one of the two would pass every other job.
+  # It also holds both shipped images multi-architecture — the server's and the
+  # harness's. A Dockerfile that quietly stops building for one of the two
+  # architectures would pass every other job.
   self-hosted-container:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: npm ci
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
@@ -89,6 +97,18 @@ jobs:
           print('platforms:', found)
           assert found == ['linux/amd64', 'linux/arm64'], f'expected both architectures, got {found}'
           EOF
+
+      # The harness image carries the runtime entry and the supervisor that
+      # starts one runtime per run; both are bundled from source, so the build
+      # proves the bundle as well as the Dockerfile.
+      - name: Bundle the harness entries
+        run: npm run harness:bundle -w @goondocks/myco-server
+
+      - name: Build the harness image for both architectures
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -f packages/myco-server/harness/Dockerfile \
+            -t myco-harness:ci packages/myco-server/harness
 
       - name: Run the native image and smoke it
         run: |

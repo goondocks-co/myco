@@ -18,13 +18,16 @@ const NOW = 1_800_000_000_000;
 const ORIGIN = 'https://s';
 type Launch = { runId: string; timeoutSeconds: number; envVars: Record<string, string> };
 
-function fixture(opts: { bound?: boolean } = {}) {
+function fixture(opts: { bound?: boolean; refuse?: string } = {}) {
   const e = sqliteEnv();
   const launches: Launch[] = [];
   const wakes: number[] = [];
   const HARNESS = opts.bound === false ? undefined : {
     idFromName: (name: string) => ({ name }),
-    get: () => ({ launch: async (spec: Launch) => { launches.push(spec); } }),
+    get: () => ({ launch: async (spec: Launch) => {
+      if (opts.refuse !== undefined) throw new Error(opts.refuse);
+      launches.push(spec);
+    } }),
   };
   const base = serverEnvFromBindings({ ...e.env, ...(HARNESS === undefined ? {} : { HARNESS }) } as never);
   const env: ServerEnv = { ...base, wake: async () => { wakes.push(Date.now()); } };
@@ -243,5 +246,21 @@ describe('the write is the admission', () => {
     expect(outcome).toMatchObject({ queued: true, heldBy: 'concurrent_runs' });
     expect(f.run((outcome as { runId: string }).runId)?.status).toBe('queued');
     expect(f.launches).toHaveLength(0);
+  });
+
+  it('revokes the credential a run whose runtime refused to start minted, along with failing its row', async () => {
+    const f = fixture({ refuse: 'the harness runtime refused to launch run_refused: draining' });
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    expect(prepared.ok).toBe(true);
+    const spec = { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120, runId: 'run_refused' };
+
+    // The supervisor's own word reaches the caller; the row carries the server's.
+    await expect(launchDispatch(f.env, (prepared as { prepared: never }).prepared, spec, NOW)).rejects.toThrow(/draining/);
+    expect(f.run('run_refused')).toMatchObject({ status: 'failed', error: 'the runtime refused to start' });
+
+    // A run that never started never presents the credential minted for it.
+    const credentials = f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE member_id = 'mem_harness'`).all() as Array<{ revoked_at: number | null }>;
+    expect(credentials).toHaveLength(1);
+    expect(credentials[0]!.revoked_at).toBe(NOW);
   });
 });

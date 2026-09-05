@@ -1,10 +1,14 @@
 /**
- * The harness container entry: reads its dispatch from the environment, runs
- * one task through the lean runner, and serves the container port so the
- * Durable Object's hold and probes have something to talk to.
+ * The harness runtime entry: reads its dispatch from the environment and runs
+ * one task through the lean runner.
+ *
+ * It also serves a port, so the Durable Object's hold and probes have something
+ * to talk to. `MYCO_RUNTIME_PORT` decides which, and a launch that shares a
+ * network namespace with other runtimes sets it to the no-listener word.
  */
 import { ServerClient } from '@myco/member/transport.js';
 import { installRunFailureHandlers, runServerTask, type HeldRun, type ServerTaskResult } from './server-runner.js';
+import { runtimePortFrom } from './runtime-port.js';
 import type { ProviderConfig } from '../types.js';
 
 const startedAt = Date.now();
@@ -124,23 +128,30 @@ async function executeFromEnv(): Promise<void> {
   if (stopping) process.exit(0);
 }
 
-Bun.serve({
-  port: 8080,
-  hostname: '0.0.0.0',
-  fetch: async (req) => {
-    const path = new URL(req.url).pathname;
-    if (path === '/probe') {
-      return Response.json({ ok: true, startedAt, uptimeMs: Date.now() - startedAt, pid: process.pid, running, draining: stopping, result, fatal, dispatched: process.env.MYCO_RUN_ID ?? null });
-    }
-    if (path === '/spawn') {
-      const child = Bun.spawn(['sh', '-c', 'echo child-ok'], { stdout: 'pipe' });
-      const [code, out] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-      return Response.json({ code, out: out.trim() });
-    }
-    return new Response('not found', { status: 404 });
-  },
-});
-console.log('harness entry up on 8080');
+// A runtime the platform probes and holds serves its own port. A runtime the
+// self-hosted supervisor starts shares one network namespace with its siblings,
+// where a fixed port is a collision rather than an address, and its launch says
+// so: it serves no listener and is known by the process the supervisor holds.
+const runtimePort = runtimePortFrom(process.env.MYCO_RUNTIME_PORT);
+if (runtimePort !== null) {
+  Bun.serve({
+    port: runtimePort,
+    hostname: '0.0.0.0',
+    fetch: async (req) => {
+      const path = new URL(req.url).pathname;
+      if (path === '/probe') {
+        return Response.json({ ok: true, startedAt, uptimeMs: Date.now() - startedAt, pid: process.pid, running, draining: stopping, result, fatal, dispatched: process.env.MYCO_RUN_ID ?? null });
+      }
+      if (path === '/spawn') {
+        const child = Bun.spawn(['sh', '-c', 'echo child-ok'], { stdout: 'pipe' });
+        const [code, out] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+        return Response.json({ code, out: out.trim() });
+      }
+      return new Response('not found', { status: 404 });
+    },
+  });
+  console.log(`harness entry up on ${runtimePort}`);
+}
 
 executeFromEnv().catch((error) => {
   fatal = error instanceof Error ? error.message : String(error);
