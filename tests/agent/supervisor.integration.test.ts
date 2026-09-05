@@ -18,10 +18,11 @@ import { platform } from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  DEFAULT_SUPERVISOR_HOSTNAME, MAX_LAUNCH_BODY_BYTES, RUNTIME_DIED_ERROR, RUNTIME_OWN_ENDINGS,
+  DEFAULT_SUPERVISOR_HOSTNAME, MAX_LAUNCH_BODY_BYTES, RUNTIME_DIED_ERROR,
   startSupervisor, supervisorOptionsFromEnv, SUPERVISOR_ONLY_ENV,
   type RunningSupervisor, type SpawnedChild, type SpawnPlan,
 } from '@myco/agent/runtime/supervisor.js';
+import { RUNTIME_EXIT, RUNTIME_OWN_ENDINGS } from '@myco/agent/runtime/process-signals.js';
 
 const TOKEN = 'supervisor-token';
 
@@ -586,8 +587,8 @@ describe('a run whose runtime died before it ended', () => {
       expect((await s.launch({
         runId: 'run_drained',
         timeoutSeconds: 120,
-        // Exit 1 is the runtime's own word for a run it named on the row itself.
-        envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_drained', MYCO_PROJECT: 'proj_1', STANDIN_OUT: out, STANDIN_HOLD_SIGTERM: hold, STANDIN_EXIT_ON_SIGTERM: '1' },
+        // The code a drained runtime leaves with once it has named its own row.
+        envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_drained', MYCO_PROJECT: 'proj_1', STANDIN_OUT: out, STANDIN_HOLD_SIGTERM: hold, STANDIN_EXIT_ON_SIGTERM: String(RUNTIME_EXIT.named) },
       })).status).toBe(202);
       await until(() => existsSync(out), 'the child to run');
 
@@ -603,21 +604,38 @@ describe('a run whose runtime died before it ended', () => {
     }
   });
 
-  it('is left alone for either ending the runtime writes itself', async () => {
-    // 0 is a run that finished, 1 is a run the runtime named on the row.
-    expect([...RUNTIME_OWN_ENDINGS].sort()).toEqual([0, 1]);
+  it('is left alone for either ending the runtime writes itself, and posted for every other code', async () => {
+    // Only these two mean the row already carries an ending. `1` is what a
+    // bundle that would not start answers, so it is not one of them.
+    expect([...RUNTIME_OWN_ENDINGS].sort()).toEqual([RUNTIME_EXIT.ran, RUNTIME_EXIT.named]);
+    expect(RUNTIME_OWN_ENDINGS.has(1)).toBe(false);
+
     const s = boot();
     const deploy = deployment();
     try {
-      for (const [runId, code] of [['run_zero', '0'], ['run_one', '1']] as const) {
+      for (const code of [RUNTIME_EXIT.ran, RUNTIME_EXIT.named]) {
         expect((await s.launch({
-          runId, timeoutSeconds: 120,
-          envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_own', MYCO_PROJECT: 'proj_1', STANDIN_EXIT_CODE: code },
+          runId: `run_own_${code}`, timeoutSeconds: 120,
+          envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_own', MYCO_PROJECT: 'proj_1', STANDIN_EXIT_CODE: String(code) },
         })).status).toBe(202);
       }
       await until(async () => (await s.probe()).children.length === 0, 'both children to leave');
       await Bun.sleep(200);
       expect(deploy.posts).toEqual([]);
+
+      // A runtime that could not start, and one that ended with a failure it
+      // could not post, each leave a run this supervisor has to close.
+      for (const code of [1, RUNTIME_EXIT.unposted]) {
+        expect((await s.launch({
+          runId: `run_owed_${code}`, timeoutSeconds: 120,
+          envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_owed', MYCO_PROJECT: 'proj_1', STANDIN_EXIT_CODE: String(code) },
+        })).status).toBe(202);
+      }
+      await until(() => deploy.posts.length === 2, 'both runs to be closed');
+      expect(deploy.posts.map((p) => p.body.runId).sort()).toEqual(['run_owed_1', `run_owed_${RUNTIME_EXIT.unposted}`]);
+      for (const post of deploy.posts) {
+        expect((post.body.update as { status: string }).status).toBe('failed');
+      }
     } finally {
       deploy.stop();
     }

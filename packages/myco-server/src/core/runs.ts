@@ -109,10 +109,17 @@ const CLAIM_SQL = `INSERT INTO agent_runs
  * **`dry_run` is the dispatcher's.** A claim that carried it would let a runtime
  * that names nothing turn a dry run into a real one, and the write routes that
  * read `dry_run` off the row would then admit the write the dispatch refused.
+ *
+ * A `queued` row is claimable on the same terms. A launch answered after its
+ * own deadline is taken back into the queue while the child it started is still
+ * running, and that child claims under the credential the row still names; the
+ * row takes the start it has none of, and drops the holder that described a run
+ * that is now running.
  */
 const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
-   SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?)
- WHERE project_id = ? AND id = ? AND status = 'pending' AND dispatched_by = ?`;
+   SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?),
+       started_at = COALESCE(started_at, ?), held_by = NULL
+ WHERE project_id = ? AND id = ? AND status IN ('pending', 'queued') AND dispatched_by = ?`;
 
 /**
  * The limit check, as part of the write that launches: each limit is either
@@ -243,7 +250,7 @@ export async function claimRun(
   }
   if (row.dispatchedBy !== null) {
     const dispatched = await db.prepare(CLAIM_DISPATCHED_SQL).bind(
-      row.harness, row.instruction, row.provider, row.model,
+      row.harness, row.instruction, row.provider, row.model, row.startedAt,
       scope.projectId, row.id, row.dispatchedBy,
     ).run();
     if (dispatched.meta.changes === 1) return { claimed: true };

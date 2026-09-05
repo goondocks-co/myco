@@ -9,6 +9,7 @@
 import { ServerClient } from '@myco/member/transport.js';
 import { installRunFailureHandlers, runServerTask, type HeldRun, type ServerTaskResult } from './server-runner.js';
 import { runtimePortFrom } from './runtime-port.js';
+import { RUNTIME_EXIT } from './process-signals.js';
 import type { ProviderConfig } from '../types.js';
 
 const startedAt = Date.now();
@@ -56,7 +57,9 @@ installRunFailureHandlers(process, {
     inFlight = null;
     running = false;
     console.log(JSON.stringify({ kind: 'server_entry_stopped', fatal, named, refused: refused ?? null }));
-    process.exit(named ? 1 : 0);
+    // A failure this process wrote on the row is an ending; one it could not
+    // write is not, and the supervisor closes the run in its place.
+    process.exit(named ? RUNTIME_EXIT.named : RUNTIME_EXIT.unposted);
   },
 });
 

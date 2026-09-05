@@ -18,12 +18,12 @@
  * that run's dispatch, so it posts the ending itself, and waits for that post
  * before it leaves.
  *
- * The child's exit code says whether one is owed. The runtime has exactly two
- * endings of its own — 0 for a run it finished, 1 for a run it named on the row
- * itself — and posts nothing for either. Every other exit is a death the
- * runtime did not describe: a kill, an out-of-memory, a signal inside the boot
- * window before its own handlers are live. Those are posted, drain or no drain,
- * which is what makes a hard death during a drain reach the row.
+ * The child's exit code says whether one is owed: `RUNTIME_OWN_ENDINGS` are the
+ * two the runtime uses for a row that already carries an ending, and every
+ * other code is a death it did not describe — a kill, an out-of-memory, a
+ * signal inside the boot window, a bundle that would not start. Those are
+ * posted, drain or no drain, which is what makes a hard death during a drain
+ * reach the row.
  *
  * The route authenticates before it reads anything: an unauthenticated body is
  * never buffered. The socket's `maxRequestBodySize` answers 413 to an oversize
@@ -45,7 +45,9 @@ import { fileURLToPath } from 'node:url';
 import { MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { NO_RUNTIME_LISTENER } from './runtime-port.js';
 import { MAX_RUN_ERROR_CHARS } from './run-store.js';
-import { onStopSignals, type ProcessEvents } from './process-signals.js';
+import { onStopSignals, RUNTIME_OWN_ENDINGS, type ProcessEvents } from './process-signals.js';
+
+export { RUNTIME_EXIT, RUNTIME_OWN_ENDINGS } from './process-signals.js';
 import {
   BACKSTOP_RETRY_MS, bearerMatches, childDeadline, childLaunchPlan, decideChildExit, decideLaunch, decideSignal,
   DEFAULT_RUNTIME_USER, LAUNCH_REFUSAL_STATUS, readableBy, type LaunchTools, type RuntimeUser, type SupervisorState,
@@ -111,6 +113,8 @@ export interface SupervisorOptions {
   backstopRetryMs?: number;
   /** How long a launch body may go without a further byte before the read is abandoned. */
   bodyReadTimeoutMs?: number;
+  /** How long the whole launch body may take. */
+  bodyTotalTimeoutMs?: number;
   /** Where stop signals are listened for. */
   events?: ProcessEvents;
   /** How the process leaves once the drain is complete. */
@@ -144,14 +148,6 @@ export function runControlOf(envVars: Record<string, string>): RunControl | null
 
 /** How a run whose runtime died before it ended is recorded. */
 export const RUNTIME_DIED_ERROR = 'the runtime exited before the run ended';
-
-/**
- * The exit codes a runtime uses for an ending it wrote itself.
- *
- * `server-entry.ts` leaves 0 for a run that finished and 1 for one it named on
- * the row; anything else is a death it did not get to describe.
- */
-export const RUNTIME_OWN_ENDINGS: ReadonlySet<number> = new Set([0, 1]);
 
 /** How long the supervisor gives the post that closes a run its child abandoned. */
 const CLOSE_TIMEOUT_MS = 5_000;
@@ -362,7 +358,7 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
     // at all, whatever length it declares or declines to.
     if (!bearerMatches(request.headers.get('authorization'), options.token)) return new Response(null, { status: 401 });
 
-    const read = await readBounded(request, MAX_LAUNCH_BODY_BYTES, options.bodyReadTimeoutMs);
+    const read = await readBounded(request, MAX_LAUNCH_BODY_BYTES, options.bodyReadTimeoutMs, options.bodyTotalTimeoutMs);
     // Bodiless either way: a caller that sent too much, and one that stopped
     // sending, each learn only that this body was not taken.
     if (!read.ok) return new Response(null, { status: read.why === 'stalled' ? 408 : 413 });

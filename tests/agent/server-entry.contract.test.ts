@@ -8,9 +8,11 @@
  * hold renewing against a socket that is not there.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_PROBE_PORT, runtimePortFrom } from '@myco/agent/runtime/runtime-port.js';
+import { RUNTIME_EXIT, RUNTIME_OWN_ENDINGS } from '@myco/agent/runtime/process-signals.js';
 
 const ENTRY = fileURLToPath(new URL('../../packages/myco/src/agent/runtime/server-entry.ts', import.meta.url));
 
@@ -70,5 +72,23 @@ describe('the runtime entry on its port', () => {
 
   it('names the container port as the one a launch that says nothing gets', () => {
     expect(runtimePortFrom(undefined)).toBe(RUNTIME_PROBE_PORT);
+  });
+});
+
+describe('what this runtime tells its supervisor by leaving', () => {
+  it('leaves with a code that says whether the run it held carries an ending', () => {
+    // The two the supervisor reads as an ending already written, and the one it
+    // reads as a failure this process could not post.
+    expect(RUNTIME_EXIT).toEqual({ ran: 0, named: 2, unposted: 3 });
+    expect([...RUNTIME_OWN_ENDINGS].sort()).toEqual([RUNTIME_EXIT.ran, RUNTIME_EXIT.named]);
+    // `1` is a process that never got as far as holding a run.
+    expect(RUNTIME_OWN_ENDINGS.has(1)).toBe(false);
+  });
+
+  it('uses those codes where it names a run and where it cannot', () => {
+    const source = readFileSync(ENTRY, 'utf8');
+    // The one exit that reports what became of a named run.
+    expect(source).toContain('process.exit(named ? RUNTIME_EXIT.named : RUNTIME_EXIT.unposted)');
+    expect(source).not.toMatch(/process\.exit\(named \? 1 : 0\)/);
   });
 });

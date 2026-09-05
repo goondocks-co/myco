@@ -33,8 +33,8 @@ export async function activityFeed(db: RelationalStore, scope: ReadScope, limit?
           FROM sessions s WHERE s.project_id = ? ORDER BY at_ms DESC LIMIT ?)
       UNION ALL SELECT * FROM (
         SELECT 'run' AS type, id, COALESCE(task, 'run') || ' — ' || status AS summary,
-               COALESCE(resumed_at, started_at) AS at_ms, NULL AS session_id, NULL AS title, NULL AS first_prompt, NULL AS agent
-          FROM agent_runs WHERE project_id = ? AND started_at IS NOT NULL ORDER BY at_ms DESC LIMIT ?)
+               COALESCE(resumed_at, started_at, completed_at, queued_at) AS at_ms, NULL AS session_id, NULL AS title, NULL AS first_prompt, NULL AS agent
+          FROM agent_runs WHERE project_id = ? AND COALESCE(resumed_at, started_at, completed_at, queued_at) IS NOT NULL ORDER BY at_ms DESC LIMIT ?)
       UNION ALL SELECT * FROM (
         SELECT 'spore' AS type, id, observation_type || ': ' || substr(content, 1, 80) AS summary,
                created_at AS at_ms, session_id, NULL AS title, NULL AS first_prompt, NULL AS agent

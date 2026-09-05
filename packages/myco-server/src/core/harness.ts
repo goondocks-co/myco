@@ -163,6 +163,9 @@ function storedSpecOf(spec: LaunchSpec): StoredSpec {
   };
 }
 
+/** How a queued row whose launch spec cannot be read is failed. */
+export const NO_LAUNCH_ERROR = 'the queued dispatch carries no launch';
+
 /** How many queued runs one drain considers; the next wake continues. */
 export const DRAIN_BATCH = 200;
 
@@ -267,6 +270,31 @@ export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch
 }
 
 /**
+ * End a queued run, and release what it holds.
+ *
+ * A queued row can carry the credential of a launch that may have started a
+ * child; ending the row is the last moment anything can retire it, and after
+ * the retention pass deletes the row nothing names it at all. Every terminal
+ * transition of a queued row goes through here, which is what makes that true
+ * of all of them rather than of the ones somebody remembered.
+ */
+export async function endQueuedRun(
+  env: ServerEnv,
+  scope: { projectId: string },
+  run: { id: string; dispatchedBy: string | null },
+  now: number,
+  outcome: { failed: string } | { skipped: string },
+): Promise<boolean> {
+  const applied = 'failed' in outcome
+    ? await failQueuedRun(env.db, scope, run.id, now, outcome.failed)
+    : await skipQueued(env.db, scope, run.id, now, outcome.skipped);
+  if (applied && run.dispatchedBy !== null) {
+    await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, run.dispatchedBy, now);
+  }
+  return applied;
+}
+
+/**
  * Launch every queued run the limits now admit, oldest first. Each is prepared
  * again — a provider changed after it queued applies, and a refusal fails the
  * row by its own message — and admitted again against the load as it stands
@@ -278,18 +306,18 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
   for (const queued of await listQueuedAcrossProjects(env.db, DRAIN_BATCH)) {
     const scope = { projectId: queued.projectId };
     if (queued.task === null || queued.dispatchSpec === null) {
-      await failQueuedRun(env.db, scope, queued.id, now, 'the queued dispatch carries no launch');
+      await endQueuedRun(env, scope, queued, now, { failed: NO_LAUNCH_ERROR });
       continue;
     }
     let stored: StoredSpec;
     try { stored = JSON.parse(queued.dispatchSpec) as StoredSpec; } catch {
-      await failQueuedRun(env.db, scope, queued.id, now, 'the queued dispatch carries no launch');
+      await endQueuedRun(env, scope, queued, now, { failed: NO_LAUNCH_ERROR });
       continue;
     }
     const prepared = await prepareDispatch(env, queued.task, queued.projectId);
     if (!prepared.ok) {
       if (prepared.refusal === 'harness_unavailable') return launched;
-      await failQueuedRun(env.db, scope, queued.id, now, DISPATCH_REFUSAL_MESSAGE[prepared.refusal]);
+      await endQueuedRun(env, scope, queued, now, { failed: DISPATCH_REFUSAL_MESSAGE[prepared.refusal] });
       continue;
     }
     const held = await admitDispatch(env, queued.task, now, limits);
@@ -303,7 +331,7 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
     // has not moved past the artifact it already holds costs nothing.
     const built = await buildTaskInput(env, queued.task, queued.projectId, now, { fresh: stored.options?.fresh === true });
     if (built !== null && built.unchanged) {
-      await skipQueued(env.db, scope, queued.id, now, INPUT_UNCHANGED);
+      await endQueuedRun(env, scope, queued, now, { skipped: INPUT_UNCHANGED });
       emit({ kind: 'task_skipped', task: queued.task, projectId: queued.projectId, skip: INPUT_UNCHANGED });
       continue;
     }
@@ -481,7 +509,9 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
         }
         throw new RuntimeDraining(message, error.why, runId);
       }
-      return landed();
+      // The row moved on: the credential the launch just minted is the one its
+      // child claims under, and the one an earlier attempt left is dead.
+      return landed({ retire: carried });
     }
     // The credential is usable until it is revoked, and a runtime that never
     // started never presents it.

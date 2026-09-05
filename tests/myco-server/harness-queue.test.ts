@@ -6,11 +6,11 @@
 import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
-import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, enqueueDispatch, HARNESS_MEMBER_ID, launchDispatch, LAUNCH_REFUSED_ERROR, LimitReached, MAX_RUN_ERROR_CHARS, prepareDispatch, RuntimeAlreadyHolding, RuntimeDraining } from '@myco-server-worker/core/harness.js';
+import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, enqueueDispatch, HARNESS_MEMBER_ID, launchDispatch, LAUNCH_REFUSED_ERROR, LimitReached, MAX_RUN_ERROR_CHARS, NO_LAUNCH_ERROR, prepareDispatch, RuntimeAlreadyHolding, RuntimeDraining } from '@myco-server-worker/core/harness.js';
 import { HELD_BY_WORDS } from '@myco-server-worker/core/limits.js';
 import { agentRunRetention, QUEUE_EXPIRED_ERROR, QUEUE_MAX_AGE_MS, runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
 import { heldBy, readDispatchLimits } from '@myco-server-worker/core/limits.js';
-import { claimRun, dispatchLoad, launchQueued, recordDispatch } from '@myco-server-worker/core/runs.js';
+import { claimRun, dispatchLoad, launchQueued, listQueuedAcrossProjects, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { seedCredential } from './helpers/d1.js';
@@ -429,6 +429,8 @@ describe('a runtime that is not taking runs', () => {
     // The credential the runtime is presenting is not taken from under it.
     expect(f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(row.dispatchedBy as string))
       .toEqual({ revoked_at: null });
+    // Every credential but that one is retired: the row names one child.
+    expect((f.sqlite.query(`SELECT COUNT(*) c FROM member_credentials WHERE revoked_at IS NULL`).get() as { c: number }).c).toBe(1);
   });
 
   it('writes the row a fresh queued dispatch writes, and keeps a re-queued run\'s place in line', async () => {
@@ -479,6 +481,62 @@ describe('a runtime that is not taking runs', () => {
     expect((f.sqlite.query(`SELECT started_at AS s FROM agent_runs WHERE id = 'run_waited'`).get() as { s: number | null }).s).toBeNull();
     expect(await dispatchLoad(f.env.db, 'container-smoke', NOW + QUEUE_MAX_AGE_MS))
       .toEqual({ liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 });
+  });
+
+  it('retires the credential of the attempt before, when a relaunch lands on a row a claim already moved', async () => {
+    // The relaunch's own answer is lost, but the child it started claims first:
+    // the row is running under the new credential, and the one the queue carried
+    // belongs to an attempt that is over.
+    let attempts = 0;
+    const f = fixture({ refuse: () => (attempts += 1) === 1 ? draining() : undefined });
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    await dispatchPrepared(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_raced' }, NOW);
+    const carried = f.run('run_raced')!.dispatchedBy as string;
+
+    const original = f.env.harnessLaunch!;
+    const racing: ServerEnv = {
+      ...f.env,
+      harnessLaunch: async (spec: Launch) => {
+        f.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE id = ?`, [spec.runId]);
+        await original(spec);
+        throw new RuntimeDraining('the harness runtime could not be reached', 'unreachable');
+      },
+    };
+    const queuedRow = (await listQueuedAcrossProjects(f.env.db, 10))[0]!;
+    const stored = JSON.parse(queuedRow.dispatchSpec!) as { serverUrl: string; actor: string; timeoutSeconds: number };
+    await launchDispatch(racing, (prepared as { prepared: never }).prepared, { ...stored, runId: 'run_raced', fromQueue: true }, NOW + 1);
+
+    const row = f.run('run_raced')!;
+    expect(row.status).toBe('running');
+    expect(row.dispatchedBy).not.toBe(carried);
+    expect(f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(carried)).toEqual({ revoked_at: NOW + 1 });
+    expect(f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(row.dispatchedBy as string)).toEqual({ revoked_at: null });
+  });
+
+  it('retires the credential a queued row carries at every way that row can end', async () => {
+    const credentialOf = (f: ReturnType<typeof fixture>, id: string) => f.run(id)!.dispatchedBy as string;
+    const revokedAt = (f: ReturnType<typeof fixture>, id: string) =>
+      (f.sqlite.query(`SELECT revoked_at AS r FROM member_credentials WHERE id = ?`).get(id) as { r: number | null }).r;
+
+    // The drain gives up on a row whose Project lost the capability its task needs.
+    const refused = fixture({ refuse: () => draining() });
+    const preparedRefused = await prepareDispatch(refused.env, 'container-smoke', 'proj_1');
+    await dispatchPrepared(refused.env, (preparedRefused as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_refused_later' }, NOW);
+    const refusedCredential = credentialOf(refused, 'run_refused_later');
+    refused.clear('agent.provider.type');
+    expect(await drainQueue(refused.env, NOW + 1)).toBe(0);
+    expect(refused.run('run_refused_later')?.status).toBe('failed');
+    expect(revokedAt(refused, refusedCredential)).toBe(NOW + 1);
+
+    // The drain gives up on a row whose launch spec it cannot read.
+    const unreadable = fixture({ refuse: () => draining() });
+    const preparedUnreadable = await prepareDispatch(unreadable.env, 'container-smoke', 'proj_1');
+    await dispatchPrepared(unreadable.env, (preparedUnreadable as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_unreadable' }, NOW);
+    const unreadableCredential = credentialOf(unreadable, 'run_unreadable');
+    unreadable.sqlite.run(`UPDATE agent_runs SET dispatch_spec = 'not json' WHERE id = 'run_unreadable'`);
+    expect(await drainQueue(unreadable.env, NOW + 1)).toBe(0);
+    expect(unreadable.run('run_unreadable')).toMatchObject({ status: 'failed', error: NO_LAUNCH_ERROR });
+    expect(revokedAt(unreadable, unreadableCredential)).toBe(NOW + 1);
   });
 
   it('revokes the credential a run kept for a child that never claimed, when it gives up on the run', async () => {

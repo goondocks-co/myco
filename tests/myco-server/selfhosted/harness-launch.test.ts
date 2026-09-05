@@ -282,6 +282,31 @@ describe('a dispatch that starts a real runtime', () => {
     }
   }, 60_000);
 
+  it('lets the child of a launch the queue took back claim the row it is still named on', async () => {
+    const seam = await boot();
+    // Short enough that the child claims while the row is still queued: the
+    // launch's answer is lost, the row goes back to the queue, and the child it
+    // started reaches the deployment before any drain does.
+    seam.loseNextAnswer();
+    process.env.STANDIN_CLAIM_DELAY_MS = '250';
+    try {
+      const held = await seam.dispatch();
+      expect(held).toMatchObject({ queued: true, heldBy: 'runtime' });
+
+      // The claim lands on the queued row, which becomes a run like any other.
+      const row = await settled(seam, held.runId);
+      expect({ status: row.status, error: row.error }).toEqual({ status: 'completed', error: null });
+      const [ended] = seam.sql(`SELECT held_by AS heldBy, started_at AS startedAt, queued_at AS queuedAt FROM agent_runs WHERE id = '${held.runId}'`);
+      // The holder that described a waiting run is gone, it has the start every
+      // reader needs, and it keeps the place it took in the queue.
+      expect(ended!.heldBy).toBeNull();
+      expect(ended!.startedAt).not.toBeNull();
+      expect(ended!.queuedAt).not.toBeNull();
+    } finally {
+      delete process.env.STANDIN_CLAIM_DELAY_MS;
+    }
+  }, 60_000);
+
   it('queues the dispatch while no runtime will take it, and drains it when one is back', async () => {
     const seam = await boot();
     await seam.stopHarness();
