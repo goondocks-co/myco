@@ -135,6 +135,15 @@ describe('the harness rides in the server\'s network namespace', () => {
     expect(service('harness')).toContain('MYCO_HARNESS_TOKEN_FILE: /run/secrets/myco_harness_token');
   });
 
+  it('resolves the host on every daemon, so a model server on it is reached the same way', () => {
+    // Docker Desktop resolves host.docker.internal on its own; Docker Engine on
+    // Linux resolves it only where a service declares this mapping, and a
+    // provider base_url naming the host fails to connect at dispatch without it.
+    expect(service('server')).toMatch(/^\s+extra_hosts:\n\s+- "host\.docker\.internal:host-gateway"$/m);
+    // The harness reaches it through the namespace it shares with the server.
+    expect(service('harness')).not.toContain('extra_hosts');
+  });
+
   it('gives the server the origin and the fleet its scheduled work and its dispatcher read', () => {
     expect(service('server')).toContain('MYCO_ORIGIN: ${MYCO_ORIGIN:-http://127.0.0.1:${MYCO_PORT:-8787}}');
     expect(service('server')).toContain('MYCO_FLEET: ${MYCO_FLEET:-4}');

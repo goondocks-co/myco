@@ -61,6 +61,12 @@ services:
     ports:
       - "127.0.0.1:\${MYCO_PORT:-8787}:\${MYCO_PORT:-8787}"
 
+    # A model server running on the host is reached at host.docker.internal:PORT.
+    # Docker Engine on Linux resolves that name only where this line declares it,
+    # and the harness reaches it through the namespace it shares.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     environment:
       MYCO_DATABASE: /data/myco.sqlite
       MYCO_BLOB_DIR: /data/blobs
