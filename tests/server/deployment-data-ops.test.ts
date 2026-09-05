@@ -19,6 +19,9 @@ import {
   HarnessLeftStopped,
   UpdateRollbackFailed,
   LIVE_RUNS_EXEC_TIMEOUT_MS,
+  ComposeFilesUnreadable,
+  RestoreLeftIncomplete,
+  createDeployment,
   restoreDeployment,
   updateDeployment,
   rotateSecrets,
@@ -228,8 +231,10 @@ describe('update', () => {
   it('leaves a bundle that declares no harness unstopped, rather than failing on a service Compose cannot find', async () => {
     const p = paths();
     materializeBundle(p);
-    // Compose answers the union of the bundle and the override; a Deployment
-    // provisioned before the harness existed answers one service.
+    // A Deployment provisioned before the harness existed: its own files name
+    // one service, and Compose reads the same one.
+    writeFileSync(p.composeFile, 'services:\n  server:\n    image: x\n');
+    writeFileSync(p.overrideFile, 'services: {}\n');
     const oneService: CommandRunner = {
       async run(command, args) {
         calls.push({ command, args: [...args] });
@@ -786,5 +791,148 @@ describe('update on images this machine already holds', () => {
     const p = bundle();
     await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
     expect(calls.filter((c) => !isPlumbing(c.args)).map((c) => c.args.slice(COMPOSE_HEAD).join(' '))).toContain('pull');
+  });
+});
+
+/**
+ * The guard on which services a verb stops and starts.
+ *
+ * It runs on the bundle's own files, which answer the same way every time. An
+ * answer of "no harness" reached by a read that failed would recreate the
+ * server under a harness holding runs, and report nothing about it.
+ */
+describe('a bundle the files and Compose disagree about stops the verb', () => {
+  const bundle = () => { const p = paths(); materializeBundle(p); return p; };
+  const backup = () => {
+    const dir = join(scratch(), 'from');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'myco.sqlite'), 'snapshot');
+    return dir;
+  };
+  /** Compose refuses the bundle the way it does an override with a typo in it. */
+  const refusing = (): CommandRunner => ({
+    async run(command, args) {
+      calls.push({ command, args: [...args] });
+      if (args.includes('--services')) {
+        return { code: 1, stdout: '', stderr: 'validating compose.override.yaml: services.server Additional property extra_host is not allowed' };
+      }
+      if (args.includes('ps')) return { code: 0, stdout: '{"Service":"server","State":"running"}\n{"Service":"harness","State":"running"}\n', stderr: '' };
+      return { code: 0, stdout: answer(args), stderr: '' };
+    },
+  });
+  const touched = () => calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' ')).filter((a) => a === 'stop' || a === STOP_HARNESS || a.startsWith('up ') || a === 'pull');
+
+  const verbs: [string, (p: ReturnType<typeof paths>, r: CommandRunner) => Promise<unknown>][] = [
+    ['update', (p, r) => updateDeployment({ paths: p, runner: r, report: () => undefined })],
+    ['recreate', (p, r) => recreateDeployment({ paths: p, runner: r })],
+    ['rotate', (p, r) => rotateSecrets({ paths: p, runner: r, report: () => undefined })],
+    ['restore', (p, r) => restoreDeployment({ paths: p, runner: r, source: backup(), report: () => undefined })],
+    ['create on a running stack', (p, r) => createDeployment({ paths: p, runner: r, report: () => undefined })],
+  ];
+
+  for (const [name, run] of verbs) {
+    it(`${name} refuses by name before it touches a container`, async () => {
+      calls = [];
+      const p = bundle();
+      let raised: unknown = null;
+      try { await run(p, refusing()); } catch (err) { raised = err; }
+
+      expect(raised).toBeInstanceOf(ComposeFilesUnreadable);
+      expect((raised as Error).message).toContain('fix compose.override.yaml or remove it');
+      expect(touched()).toEqual([]);
+    });
+  }
+
+  it('refuses when Compose reads a different set of services than the files declare', async () => {
+    const p = bundle();
+    const disagreeing: CommandRunner = {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        return { code: 0, stdout: args.includes('--services') ? 'server\n' : answer(args), stderr: '' };
+      },
+    };
+    await expect(recreateDeployment({ paths: p, runner: disagreeing })).rejects.toThrow(ComposeFilesUnreadable);
+    expect(touched()).toEqual([]);
+  });
+
+  it('names the harness a service the override adds, and stops it', async () => {
+    const p = bundle();
+    writeFileSync(p.overrideFile, 'services:\n  sidecar:\n    image: x\n');
+    const withSidecar: CommandRunner = {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        return { code: 0, stdout: args.includes('--services') ? 'server\nharness\nsidecar\n' : answer(args), stderr: '' };
+      },
+    };
+    await recreateDeployment({ paths: p, runner: withSidecar });
+    expect(touched()).toEqual([STOP_HARNESS, 'up --detach --force-recreate --wait']);
+  });
+});
+
+/**
+ * A restore that stopped part-way.
+ *
+ * Once the snapshot is in the volume it sits beside the write-ahead log of the
+ * database it replaces, and the root fix-up that clears that log has not run.
+ * Starting the server then replays the old log over the snapshot.
+ */
+describe('a restore never boots a half-replaced volume', () => {
+  const bundle = () => { const p = paths(); materializeBundle(p); return p; };
+  const backup = (withBlobs: boolean) => {
+    const dir = join(scratch(), 'from');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'myco.sqlite'), 'snapshot');
+    if (withBlobs) mkdirSync(join(dir, 'blobs'), { recursive: true });
+    return dir;
+  };
+  /** Fails the nth command carrying `verb`, counting from one. */
+  const failingOn = (verb: string, nth: number): CommandRunner => {
+    let seen = 0;
+    return {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        if (args.includes(verb)) {
+          seen += 1;
+          if (seen === nth) return { code: 1, stdout: '', stderr: `${verb} failed` };
+        }
+        return { code: 0, stdout: answer(args), stderr: '' };
+      },
+    };
+  };
+  const started = () => calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' ')).filter((a) => a.startsWith('up '));
+
+  it('brings the stack back when the copy failed before anything went in', async () => {
+    const p = bundle();
+    await expect(restoreDeployment({ paths: p, runner: failingOn('cp', 1), source: backup(false), report: () => undefined }))
+      .rejects.toThrow(/cp failed/);
+    expect(started()).toEqual(['up --detach']);
+  });
+
+  it('GATE: leaves the stack down when the blobs copy failed after the database went in', async () => {
+    const p = bundle();
+    let raised: unknown = null;
+    try {
+      await restoreDeployment({ paths: p, runner: failingOn('cp', 2), source: backup(true), report: () => undefined });
+    } catch (err) { raised = err; }
+
+    expect(raised).toBeInstanceOf(RestoreLeftIncomplete);
+    expect((raised as Error).message).toContain('Copied in before it stopped: myco.sqlite');
+    expect((raised as Error).message).toContain('myco server restore --from');
+    expect((raised as Error).message).toContain('myco server destroy --data');
+    expect(started()).toEqual([]);
+  });
+
+  it('GATE: leaves the stack down when the root fix-up failed with both copies in', async () => {
+    const p = bundle();
+    let raised: unknown = null;
+    try {
+      // The root fix-up is the one-off container: it clears the write-ahead log
+      // of the database the snapshot replaces.
+      await restoreDeployment({ paths: p, runner: failingOn('--rm', 1), source: backup(true), report: () => undefined });
+    } catch (err) { raised = err; }
+
+    expect(raised).toBeInstanceOf(RestoreLeftIncomplete);
+    expect((raised as Error).message).toContain('myco.sqlite, blobs');
+    expect(started()).toEqual([]);
   });
 });

@@ -20,7 +20,7 @@ import {
   adoptDeployment,
 } from '../server/deployment.js';
 import { CommandFailed } from '../server/runner.js';
-import { HarnessLeftStopped, UpdateRolledBack, UpdateRollbackFailed } from '../server/deployment.js';
+import { ComposeFilesUnreadable, HarnessLeftStopped, RestoreLeftIncomplete, UpdateRolledBack, UpdateRollbackFailed } from '../server/deployment.js';
 import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
 import { WranglerAbsent, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
@@ -214,7 +214,9 @@ export async function run(args: string[]): Promise<void> {
       console.log(`  Bundle:     ${bundleContents(paths).join(', ')}`);
       // Every declared service, with its state: a stack whose harness exited
       // serves and runs nothing, and naming only what is up hides that.
-      console.log(`  Services:   ${status.states.map((s) => `${s.service} (${s.state})`).join(', ')}`);
+      console.log(status.servicesError === undefined
+        ? `  Services:   ${status.states.map((s) => `${s.service} (${s.state})`).join(', ')}`
+        : `  Services:   could not read compose.yaml/compose.override.yaml: ${status.servicesError}`);
       console.log(`  Running:    ${status.running ? 'yes' : 'no'}`);
       // A bundle with no sign-in credential answers every owner route
       // anonymously, dispatch included, and says nothing about why.
@@ -335,6 +337,7 @@ export async function run(args: string[]): Promise<void> {
     // A rolled-back update is a failure, and the operator needs to know the
     // Deployment is serving again on the version it started from.
     if (err instanceof UpdateRolledBack || err instanceof UpdateRollbackFailed || err instanceof HarnessLeftStopped) fail(err.message);
+    if (err instanceof RestoreLeftIncomplete || err instanceof ComposeFilesUnreadable) fail(err.message);
     if (err instanceof RegistrationRefused || err instanceof WranglerAbsent) fail(err.message);
     if (err instanceof DeployConfigIncomplete) fail(err.message);
     // A Compose failure is the operator's to read, verbatim.

@@ -12,9 +12,8 @@
  * file already present at the destination, the source stays in place for the
  * operator to reconcile.
  */
-import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync } from 'node:fs';
 import path from 'node:path';
-import { COMPOSE_OVERRIDE_TEMPLATE } from './compose-template.js';
 
 function moveIfAbsent(from: string, to: string): void {
   if (!existsSync(from) || existsSync(to)) return;
@@ -27,15 +26,7 @@ function moveIfAbsent(from: string, to: string): void {
   }
 }
 
-/**
- * Move a single-directory layout into the per-target subtrees, and give a
- * bundle written before the override file one. A no-op when neither applies.
- *
- * Every verb resolves its paths through here before its first Compose call, so
- * a bundle from an earlier version is repaired by whichever verb touches it
- * first rather than by `create` alone. An override already on disk is the
- * operator's and is left exactly as it is.
- */
+/** Move a single-directory layout into the per-target subtrees; a no-op when none is present. */
 export function ensureServerLayout(mycoHome: string): void {
   const root = path.join(mycoHome, 'server');
   if (!existsSync(root)) return;
@@ -43,10 +34,4 @@ export function ensureServerLayout(mycoHome: string): void {
     moveIfAbsent(path.join(root, name), path.join(root, 'compose', name));
   }
   moveIfAbsent(path.join(root, 'cloudflare.json'), path.join(root, 'cloudflare', 'record.json'));
-
-  const bundle = path.join(root, 'compose');
-  const override = path.join(bundle, 'compose.override.yaml');
-  if (existsSync(path.join(bundle, 'compose.yaml')) && !existsSync(override)) {
-    writeFileSync(override, COMPOSE_OVERRIDE_TEMPLATE, { mode: 0o600 });
-  }
 }

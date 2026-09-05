@@ -29,6 +29,7 @@ import {
   signInConfigured,
   backupDeployment,
   updateDeployment,
+  repairBundle,
 } from '@myco/server/deployment.js';
 import { COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
@@ -278,18 +279,16 @@ describe('status', () => {
     });
   });
 
-  it('answers on what is up when the services could not be read at all', async () => {
+  it('GATE: says it could not read the bundle rather than calling it running', async () => {
     const p = paths();
     materializeBundle(p);
-    const unreadable: CommandRunner = {
-      async run(command, args) {
-        calls.push({ command, args: [...args] });
-        if (args.includes('--services')) return { code: 1, stdout: '', stderr: 'services could not be read' };
-        return { code: 0, stdout: '{"Service":"server","State":"running"}\n', stderr: '' };
-      },
-    };
-    const fallback = await deploymentStatus({ paths: p, runner: unreadable });
-    expect({ running: fallback.running, states: fallback.states }).toEqual({ running: true, states: [] });
+    // A bundle whose own files do not say what it is made of is not something
+    // to report as running off whatever containers happen to be up.
+    writeFileSync(p.composeFile, '# a bundle this reader cannot parse\n');
+    const status = await deploymentStatus({ paths: p, runner: runner({ stdout: '{"Service":"server","State":"running"}\n' }) });
+    expect({ running: status.running, states: status.states }).toEqual({ running: false, states: [] });
+    expect(status.servicesError).toContain('declares no services');
+    expect(status.services).toEqual(['server']);
   });
 });
 
@@ -410,22 +409,29 @@ describe('an older bundle is repaired by whatever verb reaches it', () => {
     return { home, paths: p };
   };
 
-  it('names only the file that is there while the override is missing', async () => {
-    const { paths: p } = older();
-    await destroyDeployment({ paths: p, runner: runner() });
-    expect(acts()[0]!.args.filter((a) => a === '--file')).toHaveLength(1);
-    expect(acts()[0]!.args).not.toContain(p.overrideFile);
+  it('GATE: resolving paths writes nothing; a read of the Cloudflare record must not touch the Compose bundle', () => {
+    const { home, paths: p } = older();
+    expect(existsSync(p.overrideFile)).toBe(false);
+    resolveDeploymentPaths(home);
+    resolveDeploymentPaths(home);
+    expect(existsSync(p.overrideFile)).toBe(false);
   });
 
-  it('writes the override the moment any verb resolves the bundle, and names it from then on', async () => {
-    const { home } = older();
-    // Resolving the paths is the first thing every verb does.
-    const repaired = resolveDeploymentPaths(home);
-    expect(existsSync(repaired.overrideFile)).toBe(true);
+  it('repairs the bundle before its first compose call, and names both files from then on', async () => {
+    const { paths: p } = older();
+    await destroyDeployment({ paths: p, runner: runner() });
 
-    await destroyDeployment({ paths: repaired, runner: runner() });
+    expect(existsSync(p.overrideFile)).toBe(true);
     expect(acts()[0]!.args.filter((a) => a === '--file')).toHaveLength(2);
-    expect(acts()[0]!.args).toContain(repaired.overrideFile);
+    expect(acts()[0]!.args).toContain(p.overrideFile);
+  });
+
+  it('leaves an override the operator already wrote exactly as it is', () => {
+    const { paths: p } = older();
+    writeFileSync(p.overrideFile, 'services:\n  server:\n    extra_hosts: ["a:1.2.3.4"]\n');
+    const mine = readFileSync(p.overrideFile, 'utf8');
+    repairBundle(p);
+    expect(readFileSync(p.overrideFile, 'utf8')).toBe(mine);
   });
 
   it('carries status, backup, destroy and update through without a Compose file-not-found', async () => {
@@ -444,5 +450,57 @@ describe('an older bundle is repaired by whatever verb reaches it', () => {
           .toEqual({ argv: call.args.join(' '), missing: [] });
       }
     }
+  });
+});
+
+/**
+ * `create` converges an existing Deployment as well as provisioning a new one,
+ * so its `up` is a recreate like any other and takes the harness first.
+ */
+describe('create on a stack that is already running', () => {
+  /** Answers `ps` with the services named as running, and everything else the way the shared runner does. */
+  const withRunning = (...running: string[]): CommandRunner => ({
+    async run(command, args) {
+      calls.push({ command, args: [...args] });
+      if (args.includes('--services')) return { code: 0, stdout: SERVICES, stderr: '' };
+      if (args.includes('ps')) {
+        return { code: 0, stdout: ['server', 'harness'].map((s) => JSON.stringify({ Service: s, State: running.includes(s) ? 'running' : 'exited' })).join('\n'), stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    },
+  });
+  const verbs = () => calls.filter((c) => !c.args.includes('--services') && !c.args.includes('ps')).map((c) => c.args.slice(7).join(' '));
+
+  it('GATE: stops the harness before it recreates the server', async () => {
+    const p = paths();
+    await createDeployment({ paths: p, runner: withRunning('server', 'harness'), report: () => undefined });
+    expect(verbs()).toEqual([`stop --timeout ${HARNESS_STOP_GRACE_SECONDS} harness`, 'up --detach --wait']);
+  });
+
+  it('gives a harness whose server is down the short window rather than the whole grace', async () => {
+    const p = paths();
+    await createDeployment({ paths: p, runner: withRunning('harness'), report: () => undefined });
+    // A harness with no server to post an ending to has nothing to spend the
+    // grace on, and an operator waiting on `create` would spend it with it.
+    expect(verbs()).toEqual([`stop --timeout ${DESTROY_STOP_TIMEOUT_SECONDS} harness`, 'up --detach --wait']);
+  });
+
+  it('starts a stack that is not running without stopping anything', async () => {
+    const p = paths();
+    await createDeployment({ paths: p, runner: withRunning(), report: () => undefined });
+    expect(verbs()).toEqual(['up --detach --wait']);
+  });
+
+  it('GATE: refuses when it cannot see what is running rather than reading that as an empty stack', async () => {
+    const p = paths();
+    const blind: CommandRunner = {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        if (args.includes('ps')) return { code: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon' };
+        return { code: 0, stdout: args.includes('--services') ? SERVICES : '', stderr: '' };
+      },
+    };
+    await expect(createDeployment({ paths: p, runner: blind, report: () => undefined })).rejects.toThrow(/Cannot connect to the Docker daemon/);
+    expect(verbs()).toEqual([]);
   });
 });
