@@ -21,6 +21,8 @@ import {
 import { CONTAINERS_ROLLOUT_NONE, LIVE_RUNS_RETRY_MS, readDeploymentRecord, writeDeploymentRecord, wranglerJson } from '@myco/server/cloudflare.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 import { containersTableHash, renderDeployConfig } from '@myco/server/deploy-config.js';
+import { COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
+import { WRANGLER_TEMPLATE } from '@myco/server/wrangler-template.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS as SERVER_DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS as SERVER_RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
 import { TASK_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/task-catalogue.js';
@@ -647,5 +649,21 @@ describe('update: the runs in flight and the rollout', () => {
     expect(RUN_OVERRUN_MARGIN_MS).toBe(SERVER_RUN_OVERRUN_MARGIN_MS);
     expect(DEFAULT_RUN_TIMEOUT_SECONDS).toBe(SERVER_DEFAULT_DISPATCH_TIMEOUT_SECONDS);
     expect(ROLLOUT_WATCH_TIMEOUT_SECONDS).toBe(Math.max(...Object.values(TASK_RUN_TIMEOUT_SECONDS)));
+  });
+
+  it('GATE: both targets spare a run for the same window, and the Compose bundle renders it', () => {
+    // The two targets spare a run in flight by different mechanisms — the
+    // platform's rollout grace there, the harness's stop grace here — and a
+    // window shorter than the longest task budget kills a run inside its bound
+    // on whichever target drifted.
+    const longest = Math.max(...Object.values(TASK_RUN_TIMEOUT_SECONDS));
+    const wrangler = Number(/^rollout_active_grace_period = (\d+)$/m.exec(WRANGLER_TEMPLATE)?.[1]);
+    expect(HARNESS_STOP_GRACE_SECONDS).toBe(ROLLOUT_WATCH_TIMEOUT_SECONDS);
+    expect(HARNESS_STOP_GRACE_SECONDS).toBe(longest);
+    expect(HARNESS_STOP_GRACE_SECONDS).toBe(wrangler);
+    // The rendered bundle carries the number, not just the constant. The
+    // harness is the last service, so its block runs to the end of the file.
+    const harness = COMPOSE_TEMPLATE.slice(COMPOSE_TEMPLATE.indexOf('\n  harness:'));
+    expect(harness).toContain(`stop_grace_period: ${HARNESS_STOP_GRACE_SECONDS}s`);
   });
 });

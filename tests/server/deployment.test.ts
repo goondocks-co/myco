@@ -20,6 +20,7 @@ import {
   resolveDeploymentPaths,
   GENERATED_SECRETS,
   COMPOSE_PROJECT,
+  DEFAULT_FLEET,
 } from '@myco/server/deployment.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 
@@ -70,6 +71,20 @@ describe('bundle materialization', () => {
     expect(readFileSync(join(p.secretsDir, 'github_client_secret'), 'utf8')).toBe('');
   });
 
+  it('generates the launch token both services mount, 0600 like every other generated secret', () => {
+    const p = paths();
+    materializeBundle(p);
+    const file = join(p.secretsDir, 'harness_token');
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(readFileSync(file, 'utf8').length).toBeGreaterThan(0);
+
+    // Regenerating it on a second create would leave the two services holding
+    // different tokens until both are recreated.
+    const before = readFileSync(file, 'utf8');
+    materializeBundle(p);
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
   it('GATE: re-materializing keeps existing secrets rather than rotating them', () => {
     const p = paths();
     materializeBundle(p);
@@ -99,6 +114,34 @@ describe('create', () => {
     const p = paths();
     await createDeployment({ paths: p, runner: runner(), port: 9002 });
     expect(readFileSync(p.envFile, 'utf8')).toContain('MYCO_PORT=9002');
+  });
+
+  it('writes a fleet the bundle reads, defaulting when the operator names none', async () => {
+    const p = paths();
+    await createDeployment({ paths: p, runner: runner() });
+    expect(readFileSync(p.envFile, 'utf8')).toContain(`MYCO_FLEET=${DEFAULT_FLEET}`);
+
+    const named = paths();
+    await createDeployment({ paths: named, runner: runner(), fleet: 2 });
+    expect(readFileSync(named.envFile, 'utf8')).toContain('MYCO_FLEET=2');
+  });
+
+  it('refuses a fleet that is not a count of runtimes, before it starts anything', async () => {
+    for (const fleet of [0, -1, 2.5]) {
+      const p = paths();
+      await expect(createDeployment({ paths: p, runner: runner(), fleet })).rejects.toThrow(/whole number of runtimes/);
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it('writes an origin only when one is given; the bundle falls back to the loopback publish', async () => {
+    const p = paths();
+    await createDeployment({ paths: p, runner: runner(), origin: 'https://myco.example.com' });
+    expect(readFileSync(p.envFile, 'utf8')).toContain('MYCO_ORIGIN=https://myco.example.com');
+
+    const bare = paths();
+    await createDeployment({ paths: bare, runner: runner() });
+    expect(readFileSync(bare.envFile, 'utf8')).not.toContain('MYCO_ORIGIN');
   });
 });
 

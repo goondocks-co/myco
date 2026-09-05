@@ -30,7 +30,10 @@ import { parseFlags } from './shared.js';
 export const SERVER_HELP = `Usage: myco server <command>
 
 Commands (Compose is the default target; --target cloudflare selects the Worker):
-  create [--port <n>] [--version <tag>]   Provision and start the Deployment.
+  create [--port <n>] [--version <tag>] [--fleet <n>] [--origin <url>]
+                                          Provision and start the Deployment. --fleet sets how many
+                                          runtimes may run at once (default 4); --origin is the
+                                          address members reach it at when a proxy fronts it.
   create --target cloudflare --account-id <id> --dir <packages/myco-server checkout>
                                           Provision D1/R2/secrets store, install generated secrets,
                                           migrate, deploy, and write the deployment record.
@@ -171,7 +174,14 @@ export async function run(args: string[]): Promise<void> {
       if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
         fail(`--port must be a port number, and is ${JSON.stringify(portFlag)}`);
       }
-      const created = await createDeployment({ port, version: flags.get('version') });
+      const fleetFlag = flags.get('fleet');
+      const fleet = fleetFlag === undefined ? undefined : Number(fleetFlag);
+      if (fleetFlag !== undefined && (fleetFlag === 'true' || !Number.isInteger(fleet) || fleet! < 1)) {
+        fail('--fleet needs a whole number of runtimes, 1 or more.');
+      }
+      const originFlag = flags.get('origin');
+      if (originFlag === '' || originFlag === 'true') fail('--origin needs the address members reach this Deployment at.');
+      const created = await createDeployment({ port, fleet, origin: originFlag, version: flags.get('version') });
       console.log('\nDeployment started.');
       console.log(`  Directory:  ${created.root}`);
       console.log(`  Address:    http://127.0.0.1:${created.port}`);

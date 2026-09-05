@@ -32,6 +32,7 @@ export const RUNTIME_USER = 'myco';
 export const GENERATED_SECRETS = {
   secret_wrap_key: 32,
   session_secret: 32,
+  harness_token: 32,
 } as const;
 
 /** Secrets an operator supplies; created empty so a bind mount never fails on a missing file. */
@@ -101,15 +102,28 @@ export function materializeBundle(paths: DeploymentPaths, env: Record<string, st
 export interface CreateOptions extends DeploymentOptions {
   port?: number;
   version?: string;
+  /** How many runtimes the Deployment may run at once; the dispatcher queues past it. */
+  fleet?: number;
+  /** The address members and the Deployment's own scheduled work reach it at; the loopback publish otherwise. */
+  origin?: string;
 }
+
+/** How many runtimes a Deployment runs at once when its operator names no count. */
+export const DEFAULT_FLEET = 4;
 
 /** Provision and start. Idempotent: an existing bundle keeps its secrets. */
 export async function createDeployment(options: CreateOptions = {}): Promise<{ root: string; port: number }> {
   const { paths, runner } = resolved(options);
   const port = options.port ?? 8787;
+  const fleet = options.fleet ?? DEFAULT_FLEET;
+  if (!Number.isInteger(fleet) || fleet < 1) {
+    throw new Error(`the fleet is a whole number of runtimes, 1 or more, and is ${JSON.stringify(options.fleet)}`);
+  }
 
   materializeBundle(paths, {
     MYCO_PORT: String(port),
+    MYCO_FLEET: String(fleet),
+    ...(options.origin !== undefined && options.origin !== '' ? { MYCO_ORIGIN: options.origin } : {}),
     ...(options.version ? { MYCO_VERSION: options.version } : {}),
   });
 
