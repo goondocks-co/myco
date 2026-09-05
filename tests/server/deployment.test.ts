@@ -490,15 +490,17 @@ describe('create on a stack that is already running', () => {
     },
   });
   const verbs = () => calls.filter((c) => !c.args.includes('--services') && !c.args.includes('ps')).map((c) => c.args.slice(7).join(' '));
+  /** A Deployment this create converges rather than provisions. */
+  const provisioned = () => { const p = paths(); materializeBundle(p); calls = []; return p; };
 
   it('GATE: stops the harness before it recreates the server', async () => {
-    const p = paths();
+    const p = provisioned();
     await createDeployment({ paths: p, runner: withRunning('server', 'harness'), report: () => undefined });
     expect(verbs()).toEqual([`stop --timeout ${HARNESS_STOP_GRACE_SECONDS} harness`, 'up --detach --wait']);
   });
 
   it('gives a harness whose server is down the short window rather than the whole grace', async () => {
-    const p = paths();
+    const p = provisioned();
     const lines: string[] = [];
     await createDeployment({ paths: p, runner: withRunning('harness'), report: (l) => lines.push(l) });
     // A harness with no server to post an ending to has nothing to spend the
@@ -508,7 +510,7 @@ describe('create on a stack that is already running', () => {
   });
 
   it('GATE: gives a harness that is not running the short window too, and says so', async () => {
-    const p = paths();
+    const p = provisioned();
     const lines: string[] = [];
     await createDeployment({ paths: p, runner: withRunning('server'), report: (l) => lines.push(l) });
     // The whole grace is worth spending only on a harness that is running.
@@ -517,13 +519,13 @@ describe('create on a stack that is already running', () => {
   });
 
   it('starts a stack that is not running without stopping anything', async () => {
-    const p = paths();
+    const p = provisioned();
     await createDeployment({ paths: p, runner: withRunning(), report: () => undefined });
     expect(verbs()).toEqual(['up --detach --wait']);
   });
 
   it('GATE: refuses when it cannot see what is running rather than reading that as an empty stack', async () => {
-    const p = paths();
+    const p = provisioned();
     const blind: CommandRunner = {
       async run(command, args) {
         calls.push({ command, args: [...args] });
@@ -533,5 +535,25 @@ describe('create on a stack that is already running', () => {
     };
     await expect(createDeployment({ paths: p, runner: blind, report: () => undefined })).rejects.toThrow(/Cannot connect to the Docker daemon/);
     expect(verbs()).toEqual([]);
+  });
+});
+
+describe('create on a bundle Compose refuses', () => {
+  it('GATE: refuses before it rewrites the file the running containers started from', async () => {
+    const p = paths();
+    materializeBundle(p);
+    writeFileSync(p.composeFile, 'services:\n  server:\n    image: from-an-older-cli\n');
+    const before = readFileSync(p.composeFile, 'utf8');
+    calls = [];
+    const refusing: CommandRunner = {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        if (args.includes('ps')) return { code: 0, stdout: '{"Service":"server","State":"running"}\n', stderr: '' };
+        if (args.includes('--services')) return { code: 1, stdout: '', stderr: 'validating compose.override.yaml' };
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    };
+    await expect(createDeployment({ paths: p, runner: refusing, report: () => undefined })).rejects.toThrow(/could not be read/);
+    expect(readFileSync(p.composeFile, 'utf8')).toBe(before);
   });
 });

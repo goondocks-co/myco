@@ -140,9 +140,10 @@ function composeArgs(paths: DeploymentPaths, ...rest: string[]): string[] {
 /**
  * Give a bundle written by an earlier version what every verb now names.
  *
- * Every verb that changes the Deployment calls this before its first Compose
- * invocation; a verb that only reads writes nothing, and the argv names the
- * override only while it is there. Only `create` and `adopt` write the whole
+ * `create`, `adopt`, `update`, `recreate`, `rotate` and `restore` call this
+ * before their first Compose invocation. A verb that only reads writes nothing,
+ * and `destroy` needs no override to take down what exists; the argv names the
+ * file only while it is there. Only `create` and `adopt` write the whole
  * bundle, so a Deployment provisioned before the override file existed is
  * repaired by whichever changing verb reaches it. An override already on disk
  * is the operator's and is left exactly as it is.
@@ -229,6 +230,14 @@ export async function createDeployment(options: CreateOptions = {}): Promise<{ r
   const port = options.port ?? portIn(envValue(paths, 'MYCO_PORT'));
   const fleet = options.fleet ?? (envValue(paths, 'MYCO_FLEET') === null ? DEFAULT_FLEET : null);
 
+  // `create` converges an existing Deployment as well as provisioning a new one,
+  // and the `up` recreates the server. A Deployment already running is read
+  // before its bundle is rewritten: a create about to be refused must leave the
+  // file its containers started from alone. A bundle not yet there has nothing
+  // to read.
+  const live = existsSync(paths.composeFile) ? await runningServices({ paths, runner }) : [];
+  if (live.length > 0) await assertComposeReadable({ paths, runner });
+
   materializeBundle(paths, {
     MYCO_PORT: String(port),
     ...(fleet === null ? {} : { MYCO_FLEET: String(fleet) }),
@@ -236,11 +245,9 @@ export async function createDeployment(options: CreateOptions = {}): Promise<{ r
     ...(options.version ? { MYCO_VERSION: options.version } : {}),
   });
 
-  // `create` converges an existing Deployment as well as provisioning a new
-  // one, and the `up` recreates the server. On a stack already running, that is
-  // the same recreate every other verb performs, and it takes the harness first.
+  // On a stack already running the `up` is the same recreate every other verb
+  // performs, and it takes the harness first.
   const up = (): Promise<unknown> => runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
-  const live = await runningServices({ paths, runner });
   if (live.length === 0) return await up().then(() => ({ root: paths.root, port }));
 
   // The whole grace is only worth spending on a harness that is running with a
@@ -455,6 +462,9 @@ export async function backupDeployment(options: BackupOptions): Promise<{ destin
 /** The service holding the runtimes. It shares the server's network namespace. */
 const HARNESS_SERVICE = 'harness';
 
+/** The service every Deployment has; a set without it is not this Deployment's. */
+const SERVER_SERVICE = 'server';
+
 /** How long the live-runs read gives the running container to answer. */
 export const LIVE_RUNS_EXEC_TIMEOUT_MS = 30_000;
 
@@ -519,14 +529,22 @@ export class ComposeFilesUnreadable extends Error {
  * harness holding runs, and say nothing about it.
  */
 async function composeServices(target: HarnessTarget): Promise<string[]> {
+  let named: string[];
   try {
     const result = await runOrThrow(target.runner, 'docker',
       composeArgs(target.paths, 'config', '--services'), { cwd: target.paths.root });
-    return result.stdout.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+    named = result.stdout.split('\n').map((line) => line.trim()).filter((line) => line !== '');
   } catch (err) {
     if (!isCommandFailure(err)) throw err;
     throw new ComposeFilesUnreadable((err as Error).message);
   }
+  // Every Deployment has a server. An answer that is empty, truncated, or
+  // filtered down by a profile exits zero and names a set this Deployment is
+  // not; acting on one recreates the server under a live harness.
+  if (!named.includes(SERVER_SERVICE)) {
+    throw new ComposeFilesUnreadable(`Compose named ${named.length === 0 ? 'no services' : `[${named.join(', ')}]`} and not \`${SERVER_SERVICE}\``);
+  }
+  return named;
 }
 
 /** Refuse now, before any container is touched, if Compose cannot read this bundle. */

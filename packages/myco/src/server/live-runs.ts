@@ -16,8 +16,8 @@ import { commandOutputTail, describeFailure, isCommandFailure } from './runner.j
 export interface LiveRun {
   id: string;
   task: string;
-  /** `pending` for a run whose runtime has not been launched yet, `running` for one under way. */
-  status: 'pending' | 'running';
+  /** `pending` for a run whose runtime has not been launched yet, `running` for one under way, `queued` for one the queue took back with its runtime still working. */
+  status: 'pending' | 'running' | 'queued';
   /** Epoch milliseconds, or null for a run that has not started — a `pending` row is written before its runtime is launched. */
   startedAt: number | null;
   /** The budget the dispatcher wrote into the run's context, or null for a run that carries none. */
@@ -68,7 +68,7 @@ export function liveRunsIn(rows: readonly LiveRunRow[]): LiveRun[] {
     runs.push({
       id: row.id,
       task: typeof row.task === 'string' && row.task !== '' ? row.task : 'a run without a task',
-      status: row.status === 'pending' ? 'pending' : 'running',
+      status: row.status === 'pending' || row.status === 'queued' ? row.status : 'running',
       startedAt: typeof row.started_at === 'number' ? row.started_at : null,
       timeoutSeconds: runContextTimeout(row.run_context),
     });
@@ -186,11 +186,16 @@ function runDeadline(run: LiveRun, now: number): number {
  * One run, named the way an operator watching a deploy would name it.
  *
  * A `pending` row is a run the dispatcher has already admitted and is about to
- * launch. A row whose status is `queued` is held behind a limit and is not one
- * of these: the next wake drains it, and no deploy waits for it.
+ * launch. A `queued` row reaches here only with a runtime already working
+ * under it; one held behind a limit and never dispatched waits for the next
+ * wake, and no deploy waits for it.
  */
 function describeRun(lead: string, run: LiveRun, now: number): string {
-  const kind = run.status === 'pending' ? 'task about to start' : 'running task';
+  const kind = run.status === 'pending'
+    ? 'task about to start'
+    : run.status === 'queued'
+      ? 'task the queue took back while its runtime kept working'
+      : 'running task';
   const when = run.startedAt === null ? 'not started yet' : `started ${describeDuration(now - run.startedAt)} ago`;
   return `${lead} a ${kind}: ${run.task}, ${when}, budget ${describeDuration(budgetSeconds(run) * 1000)}`;
 }

@@ -22,6 +22,7 @@ import {
   ComposeFilesUnreadable,
   RestoreLeftIncomplete,
   createDeployment,
+  deploymentStatus,
   restoreDeployment,
   updateDeployment,
   rotateSecrets,
@@ -880,18 +881,56 @@ describe('a bundle the files and Compose disagree about stops the verb', () => {
     }
   });
 
-  it('leaves the harness alone when Compose does not name it, whatever the bundle file says', async () => {
+  it('takes an answer naming the server and no harness at its word', async () => {
     const p = bundle();
-    // The shipped bundle declares the harness; Compose is the authority, and it
-    // does not name it here.
-    const oneService: CommandRunner = {
+    // A Deployment provisioned before the harness existed; Compose is the
+    // authority, and it names one service.
+    const answered = (services: string): CommandRunner => ({
       async run(command, args) {
         calls.push({ command, args: [...args] });
-        return { code: 0, stdout: args.includes('--services') ? 'server\n' : answer(args), stderr: '' };
+        return { code: 0, stdout: args.includes('--services') ? services : answer(args), stderr: '' };
       },
-    };
-    await recreateDeployment({ paths: p, runner: oneService });
+    });
+    await recreateDeployment({ paths: p, runner: answered('server\n') });
     expect(touched()).toEqual(['up --detach --force-recreate --wait']);
+  });
+
+  it('GATE: an answer that does not name the server is a failed read, whatever its exit code', async () => {
+    // Empty, truncated, or filtered down by a profile: all exit zero and all
+    // name a set this Deployment is not. Acting on one recreates the server
+    // under a live harness and says nothing.
+    const answered = (services: string): CommandRunner => ({
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        return { code: 0, stdout: args.includes('--services') ? services : answer(args), stderr: '' };
+      },
+    });
+    for (const [what, services] of [['nothing at all', ''], ['a truncated answer', 'harness\n'], ['some other set', 'sidecar\nharness\n']] as const) {
+      calls = [];
+      const p = bundle();
+      let raised: unknown = null;
+      try { await recreateDeployment({ paths: p, runner: answered(services) }); } catch (err) { raised = err; }
+
+      expect({ what, kind: (raised as Error | null)?.name ?? null }).toEqual({ what, kind: 'ComposeFilesUnreadable' });
+      expect({ what, said: (raised as Error).message }).toEqual({ what, said: expect.stringContaining('and not `server`') });
+      expect({ what, argv: touched() }).toEqual({ what, argv: [] });
+    }
+  });
+
+  it('GATE: status says it could not read a set that does not name the server', async () => {
+    const p = bundle();
+    const status = await deploymentStatus({
+      paths: p,
+      runner: {
+        async run(command, args) {
+          calls.push({ command, args: [...args] });
+          if (args.includes('--services')) return { code: 0, stdout: 'harness\n', stderr: '' };
+          return { code: 0, stdout: '{"Service":"harness","State":"running"}\n', stderr: '' };
+        },
+      },
+    });
+    expect({ running: status.running, states: status.states }).toEqual({ running: false, states: [] });
+    expect(status.servicesError).toContain('and not `server`');
   });
 });
 
