@@ -39,9 +39,13 @@ Commands (Compose is the default target; --target cloudflare selects the Worker)
                                           migrate, deploy, and write the deployment record.
   status                                  Report what is provisioned and running.
                                           With --target cloudflare: the record and the deployed version.
-  update [--version <tag>] [--no-rollback]
+  update [--version <tag>] [--no-rollback] [--no-drain]
                                           Move to a new image; the container migrates on start.
-                                          A failed update returns to the previous version.
+                                          A failed update returns to the previous version. Waits for
+                                          the tasks this Deployment has in flight, queued ones
+                                          included, before it recreates. --no-drain skips the wait;
+                                          the runs still finish inside the harness's stop grace, and
+                                          the recreate waits behind them.
   update --target cloudflare [--no-drain]
                                           Move the Worker to this checkout. Waits for the tasks the
                                           Deployment has in flight, queued ones included, then
@@ -55,7 +59,8 @@ Commands (Compose is the default target; --target cloudflare selects the Worker)
   restore --from <dir>                    Replace the Deployment's data with a backup.
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
   adopt                                   Write a bundle for a stack this machine did not provision.
-  destroy [--data] [--yes]                Stop and remove the stack. --data also removes the volume.
+  destroy [--data] [--yes]                Stop and remove the stack, at once — it does not wait for
+                                          the runs in flight. --data also removes the volume.
                                           With --target cloudflare: removes the Worker only; data stands.
   config [--out <path>] [--fleet <n>]     Render the Cloudflare deploy config from the committed
                                           configuration and this machine's deployment record.
@@ -204,7 +209,11 @@ export async function run(args: string[]): Promise<void> {
     }
 
     if (command === 'update') {
-      await updateDeployment({ version: flags.get('version'), noRollback: flags.has('no-rollback') });
+      await updateDeployment({
+        version: flags.get('version'),
+        noRollback: flags.has('no-rollback'),
+        noDrain: flags.has('no-drain'),
+      });
       console.log('Deployment updated. The container applied any migrations its volume was behind.');
       return;
     }

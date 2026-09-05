@@ -148,9 +148,45 @@ export function migrateOnly(databasePath: string): number {
   }
 }
 
+/**
+ * The rows a deploy reads to learn what this Deployment still has in flight.
+ *
+ * A `pending` row counts as in flight exactly as a `running` one does: the
+ * dispatcher writes the row before it launches the runtime, and that run is the
+ * one a deploy is most likely to lose. The operator's CLI holds the same query
+ * text for the hosted target, and `tests/server/deployment-data-ops.test.ts`
+ * holds the two identical.
+ */
+export const LIVE_RUNS_QUERY = "SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running')";
+
+/**
+ * What this Deployment has in flight, as the rows themselves.
+ *
+ * A second reader beside the serving process: the volume runs in WAL mode
+ * (`platform/bun/database.ts`), which admits a reader while the server writes,
+ * and the busy timeout covers a checkpoint holding the file as this opens it.
+ */
+export function liveRuns(databasePath: string): unknown[] {
+  const sqlite = new Database(databasePath);
+  try {
+    sqlite.exec('PRAGMA busy_timeout = 5000');
+    return sqlite.query(LIVE_RUNS_QUERY).all() as unknown[];
+  } finally {
+    sqlite.close();
+  }
+}
+
 export async function main(): Promise<void> {
   if (process.argv.includes('--migrate-only')) {
     migrateOnly(requireEnv('MYCO_DATABASE'));
+    return;
+  }
+
+  // A deploy asks the running container what it is carrying before it recreates
+  // it. One document on stdout, and a volume that cannot be read exits non-zero
+  // with the one line the caller refuses the deploy over.
+  if (process.argv.includes('--live-runs')) {
+    process.stdout.write(`${JSON.stringify(liveRuns(requireEnv('MYCO_DATABASE')))}\n`);
     return;
   }
 

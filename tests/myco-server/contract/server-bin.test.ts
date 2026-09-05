@@ -19,7 +19,7 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { main, migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
+import { LIVE_RUNS_QUERY, main, migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import { bunPlatform } from '@myco-server-worker/platform/bun/env.js';
 
 const roots: string[] = [];
@@ -214,5 +214,75 @@ describe('bind mode', () => {
       MYCO_BIND: 'everywhere',
     });
     await expect(main()).rejects.toThrow(/MYCO_BIND/);
+  });
+});
+
+/**
+ * What a deploy asks the running container before it recreates it.
+ *
+ * The self-hosted update reads this through `docker compose exec`, and a run it
+ * cannot see is a run the recreate ships over.
+ */
+describe('the live-runs read', () => {
+  /** A migrated volume holding one run per status named. */
+  const volumeWith = (runs: { id: string; status: string; task: string | null; startedAt: number | null; context: string | null }[]): string => {
+    const path = join(scratch(), 'myco.sqlite');
+    migrateOnly(path);
+    const sqlite = new Database(path);
+    sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'p', 1)`).run();
+    sqlite.query(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1', 'a', 'built-in', 1, 1)`).run();
+    for (const run of runs) {
+      sqlite.query(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, run_context)
+        VALUES ('proj_1', ?, 'agent_1', ?, ?, ?, ?)`)
+        .run(run.id, run.task, run.status, run.startedAt, run.context);
+    }
+    sqlite.close();
+    return path;
+  };
+
+  /** Drives the flag and answers what the process printed. */
+  const read = async (databasePath: string): Promise<string> => {
+    const argv = process.argv;
+    const write = process.stdout.write.bind(process.stdout);
+    let printed = '';
+    process.argv = [...argv, '--live-runs'];
+    process.stdout.write = ((chunk: string) => { printed += String(chunk); return true; }) as typeof process.stdout.write;
+    try {
+      process.env.MYCO_DATABASE = databasePath;
+      await main();
+    } finally {
+      process.argv = argv;
+      process.stdout.write = write;
+    }
+    return printed;
+  };
+
+  it('prints one JSON array of the runs in flight, with the columns the wait reads', async () => {
+    const path = volumeWith([
+      { id: 'run_r', status: 'running', task: 'digest-only', startedAt: 1_700_000_000_000, context: JSON.stringify({ timeoutSeconds: 1800 }) },
+      { id: 'run_p', status: 'pending', task: 'titling', startedAt: null, context: null },
+      { id: 'run_done', status: 'completed', task: 'titling', startedAt: 1, context: null },
+    ]);
+
+    const rows = JSON.parse(await read(path)) as Record<string, unknown>[];
+    // A dispatched run counts as in flight before its runtime starts; a
+    // terminal one does not.
+    expect(rows.map((r) => r.id).sort()).toEqual(['run_p', 'run_r']);
+    expect(rows.find((r) => r.id === 'run_r')).toEqual({
+      id: 'run_r', task: 'digest-only', status: 'running', started_at: 1_700_000_000_000, run_context: JSON.stringify({ timeoutSeconds: 1800 }),
+    });
+    expect(Object.keys(rows[0]!).sort()).toEqual(['id', 'run_context', 'started_at', 'status', 'task']);
+  });
+
+  it('prints an empty array for a Deployment running nothing', async () => {
+    expect(JSON.parse(await read(volumeWith([])))).toEqual([]);
+  });
+
+  it('selects only the two states the dispatcher treats as in flight', () => {
+    expect(LIVE_RUNS_QUERY).toContain("status IN ('pending', 'running')");
+  });
+
+  it('refuses a volume it cannot read rather than answering an empty Deployment', async () => {
+    await expect(read(join(scratch(), 'absent.sqlite'))).rejects.toThrow();
   });
 });

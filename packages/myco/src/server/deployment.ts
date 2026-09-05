@@ -12,7 +12,8 @@ import { mkdirSync, existsSync, writeFileSync, readFileSync, rmSync, chmodSync, 
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { resolveMycoHome } from '../paths/home.js';
-import { runOrThrow, systemRunner, type CommandRunner } from './runner.js';
+import { jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
+import { readLiveRunsTwice, systemClock, waitForLiveRuns, type Clock, type LiveRun, type LiveRunRow } from './live-runs.js';
 import { COMPOSE_TEMPLATE } from './compose-template.js';
 import { ensureServerLayout } from './layout.js';
 
@@ -34,6 +35,15 @@ export const GENERATED_SECRETS = {
   session_secret: 32,
   harness_token: 32,
 } as const;
+
+/**
+ * How long `destroy` gives the stack to stop.
+ *
+ * The harness holds a long stop grace so a run in flight survives an update.
+ * An operator taking the Deployment down is asking for it to stop now, so this
+ * verb names its own window rather than inheriting that one.
+ */
+export const DESTROY_STOP_TIMEOUT_SECONDS = 10;
 
 /** Secrets an operator supplies; created empty so a bind mount never fails on a missing file. */
 export const SUPPLIED_SECRETS = ['github_client_secret'] as const;
@@ -163,17 +173,20 @@ export interface DestroyOptions extends DeploymentOptions {
 }
 
 /**
- * Stop and remove the stack.
+ * Stop and remove the stack, at once.
  *
  * The volume is kept unless `removeData` is set. Data preservation is Myco's
  * core contract, and a `destroy` that takes the vault with it by default gives
  * an operator no way to unmake a mistake.
+ *
+ * This does not wait for the runs in flight, and it does not give the harness
+ * its stop grace: a run live at `destroy` is a run cut off.
  */
 export async function destroyDeployment(options: DestroyOptions = {}): Promise<void> {
   const { paths, runner } = resolved(options);
   if (!existsSync(paths.composeFile)) return;
 
-  const args = composeArgs(paths, 'down', '--remove-orphans');
+  const args = composeArgs(paths, 'down', '--remove-orphans', '--timeout', String(DESTROY_STOP_TIMEOUT_SECONDS));
   if (options.removeData === true) args.push('--volumes');
   await runOrThrow(runner, 'docker', args, { cwd: paths.root });
 }
@@ -285,10 +298,45 @@ export async function restoreDeployment(options: RestoreOptions): Promise<void> 
   await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
 }
 
+/**
+ * What carries a run this deploy stopped waiting on. The harness shares the
+ * server's network namespace, so a recreate stops it first and every runtime it
+ * holds finishes inside its stop grace, posting its own ending.
+ */
+const COMPOSE_SPARING = 'the harness finishes them inside its stop grace';
+
+/**
+ * The runs the Deployment has in flight, read from the running container.
+ *
+ * The server binary answers its own volume: `exec` runs it beside the serving
+ * process, past the entrypoint, so no migration runs and the image's own
+ * `MYCO_DATABASE` and unprivileged user apply. The read is asked twice and a
+ * second bad answer refuses the deploy — "nothing came back" and "nothing is
+ * running" are opposite facts, and a deploy that confused them would recreate
+ * straight over live work.
+ */
+export async function readComposeLiveRuns(
+  options: DeploymentOptions & { sleep?: (ms: number) => Promise<void> },
+): Promise<LiveRun[]> {
+  const { paths, runner } = resolved(options);
+  return readLiveRunsTwice({
+    ask: async () => (await runOrThrow(runner, 'docker',
+      composeArgs(paths, 'exec', '--no-TTY', 'server', 'bun', 'run', '/app/server.js', '--live-runs'),
+      { cwd: paths.root })).stdout,
+    rowsIn: (output) => jsonDocument<LiveRunRow[]>(output),
+    ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
+  });
+}
+
 export interface UpdateOptions extends DeploymentOptions {
   version?: string;
   /** Skip returning to the previous version when the new one fails to come up. */
   noRollback?: boolean;
+  /** Skip the wait for the runs in flight. They still finish inside the harness's stop grace, and the recreate waits behind them. */
+  noDrain?: boolean;
+  /** Where the wait says where it is, as it gets there. */
+  report?: (line: string) => void;
+  clock?: Clock;
 }
 
 /** The version a bundle is pinned to, or null when it tracks the default tag. */
@@ -354,6 +402,19 @@ export class UpdateRolledBack extends Error {
 export async function updateDeployment(options: UpdateOptions = {}): Promise<void> {
   const { paths, runner } = resolved(options);
   const previous = pinnedVersion(paths);
+
+  // Recreating the server stops the harness with it, so the runs in flight are
+  // waited out first. --no-drain skips the wait and the read it needs, which is
+  // what makes it the escape hatch for a container that cannot be reached.
+  if (options.noDrain !== true) {
+    const clock = options.clock ?? systemClock;
+    await waitForLiveRuns({
+      read: () => readComposeLiveRuns({ paths, runner, sleep: (ms) => clock.sleep(ms) }),
+      sparing: COMPOSE_SPARING,
+      clock,
+      ...(options.report === undefined ? {} : { report: options.report }),
+    });
+  }
 
   // The requested version travels as an environment override for the pull and
   // the recreate, and is written into the bundle only once both succeed.

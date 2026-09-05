@@ -26,16 +26,26 @@ import {
   COMPOSE_PROJECT,
 } from '@myco/server/deployment.js';
 import type { CommandRunner } from '@myco/server/runner.js';
+import { LIVE_RUNS_QUERY, LIVE_RUNS_RETRY_MS, LIVE_RUN_POLL_MS, LiveRunsUnreadable } from '@myco/server/live-runs.js';
+import { LIVE_RUNS_QUERY as SERVER_LIVE_RUNS_QUERY } from '@myco-server-worker/platform/bun/server-main.js';
 
 const roots: string[] = [];
 afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
 const scratch = () => { const d = mkdtempSync(join(tmpdir(), 'myco-dataops-')); roots.push(d); return d; };
 
 let calls: { command: string; args: string[] }[] = [];
+/** The live-runs read answers an empty Deployment; every other command succeeds saying nothing. */
+const answer = (args: readonly string[]) => (args.includes('--live-runs') ? '[]' : '');
 const runner = (): CommandRunner => ({
-  async run(command, args) { calls.push({ command, args: [...args] }); return { code: 0, stdout: '', stderr: '' }; },
+  async run(command, args) { calls.push({ command, args: [...args] }); return { code: 0, stdout: answer(args), stderr: '' }; },
 });
 beforeEach(() => { calls = []; });
+
+/** A clock a test drives: the read's retry pause moves it rather than spending the time. */
+const clock = (start = 0) => {
+  let at = start;
+  return { now: () => at, sleep: async (ms: number) => { at += ms; }, get at() { return at; } };
+};
 
 const paths = () => resolveDeploymentPaths(scratch());
 /** Every argv this run produced, flattened, for substring assertions. */
@@ -127,13 +137,14 @@ describe('restore', () => {
 });
 
 describe('update', () => {
-  it('pulls then recreates, and does not migrate itself', async () => {
+  it('reads what is running, then pulls, then recreates, and does not migrate itself', async () => {
     const p = paths();
     materializeBundle(p);
-    await updateDeployment({ paths: p, runner: runner() });
+    await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
 
-    expect(calls[0]!.args).toContain('pull');
-    expect(calls[1]!.args).toEqual(expect.arrayContaining(['up', '--detach', '--wait']));
+    expect(calls[0]!.args).toContain('--live-runs');
+    expect(calls[1]!.args).toContain('pull');
+    expect(calls[2]!.args).toEqual(expect.arrayContaining(['up', '--detach', '--wait']));
     // Migration is the container entrypoint's, before the listener binds.
     expect(argvText()).not.toContain('--migrate-only');
   });
@@ -146,7 +157,7 @@ describe('update', () => {
         calls.push({ command, args: [...args] });
         return args.includes('pull')
           ? { code: 1, stdout: '', stderr: 'not found' }
-          : { code: 0, stdout: '', stderr: '' };
+          : { code: 0, stdout: answer(args), stderr: '' };
       },
     };
 
@@ -222,7 +233,7 @@ describe('rollback', () => {
       calls.push({ command, args: [...args] });
       return args.includes(verb)
         ? { code: 1, stdout: '', stderr: `${verb} failed` }
-        : { code: 0, stdout: '', stderr: '' };
+        : { code: 0, stdout: answer(args), stderr: '' };
     },
   });
 
@@ -271,5 +282,120 @@ describe('rollback', () => {
 
     expect(pinnedVersion(p)).toBeNull();
     expect(readFileSync(p.envFile, 'utf8')).toContain('MYCO_PORT=8787');
+  });
+});
+
+/**
+ * The wait a Compose update performs before it recreates.
+ *
+ * The harness shares the server's network namespace, so recreating the server
+ * stops the harness with it. The runs in flight are waited out first, and the
+ * harness's stop grace carries whatever the wait gave up on.
+ */
+describe('the update waits for what is running', () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: 'run_a', task: 'digest-only', status: 'running', started_at: 0, run_context: JSON.stringify({ timeoutSeconds: 1800 }), ...over,
+  });
+  /** Answers the live-runs read from a queue, one entry per read, and succeeds at everything else. */
+  const scripted = (answers: string[]): CommandRunner => ({
+    async run(command, args) {
+      calls.push({ command, args: [...args] });
+      if (!args.includes('--live-runs')) return { code: 0, stdout: '', stderr: '' };
+      const next = answers.shift() ?? '[]';
+      return next.startsWith('!')
+        ? { code: 1, stdout: '', stderr: next.slice(1) }
+        : { code: 0, stdout: next, stderr: '' };
+    },
+  });
+  const reads = () => calls.filter((c) => c.args.includes('--live-runs')).length;
+
+  it('names each task in flight, polls until none is left, and only then pulls', async () => {
+    const p = paths();
+    materializeBundle(p);
+    const lines: string[] = [];
+    const drive = clock();
+    await updateDeployment({
+      paths: p, runner: scripted([JSON.stringify([row()]), JSON.stringify([row()]), '[]']),
+      report: (l) => lines.push(l), clock: drive,
+    });
+
+    expect(lines).toContain('Waiting for a running task: digest-only, started 0 sec ago, budget 30 min');
+    expect(lines).toContain('Nothing is running; the deploy proceeds.');
+    expect(drive.at).toBe(LIVE_RUN_POLL_MS * 2);
+    expect(reads()).toBe(3);
+    const flat = calls.map((c) => c.args.join(' '));
+    expect(flat.findIndex((a) => a.includes('--live-runs'))).toBeLessThan(flat.findIndex((a) => a.includes('pull')));
+  });
+
+  it('asks the running container itself, past the entrypoint and without a TTY', async () => {
+    const p = paths();
+    materializeBundle(p);
+    await updateDeployment({ paths: p, runner: scripted(['[]']), report: () => undefined, clock: clock() });
+
+    const read = calls.find((c) => c.args.includes('--live-runs'))!.args;
+    // Naming the binary runs it beside the serving process; the entrypoint
+    // would migrate the volume a second time on the way in.
+    expect(read.slice(-5)).toEqual(['server', 'bun', 'run', '/app/server.js', '--live-runs']);
+    expect(read).toContain('--no-TTY');
+    expect(read.slice(0, 5)).toEqual(['compose', '--file', p.composeFile, '--project-name', COMPOSE_PROJECT]);
+  });
+
+  it('asks again after a pause when the first answer carries no document, and ships on the second', async () => {
+    const p = paths();
+    materializeBundle(p);
+    const drive = clock();
+    await updateDeployment({
+      paths: p, runner: scripted(['bun: command not found', '[]']), report: () => undefined, clock: drive,
+    });
+
+    expect(reads()).toBe(2);
+    expect(drive.at).toBe(LIVE_RUNS_RETRY_MS);
+    expect(argvText()).toContain('pull');
+  });
+
+  it('GATE: a second bad answer refuses the deploy and recreates nothing, naming what the command said', async () => {
+    const p = paths();
+    materializeBundle(p);
+    // "Nothing came back" and "nothing is running" are opposite facts.
+    await expect(updateDeployment({
+      paths: p, runner: scripted(['!Error: No such service: server', '!Error: No such service: server']),
+      report: () => undefined, clock: clock(),
+    })).rejects.toThrow(LiveRunsUnreadable);
+
+    expect(argvText()).not.toContain('pull');
+    expect(argvText()).not.toContain('--force-recreate');
+  });
+
+  it('--no-drain asks the container nothing at all', async () => {
+    const p = paths();
+    materializeBundle(p);
+    await updateDeployment({ paths: p, runner: scripted(['!Error: No such service: server']), noDrain: true, report: () => undefined });
+
+    // The escape hatch is used when the container cannot be reached, so it must
+    // not need the container to work.
+    expect(reads()).toBe(0);
+    expect(argvText()).toContain('pull');
+  });
+
+  it('names the harness grace, not a platform, for a run it stopped waiting on', async () => {
+    const p = paths();
+    materializeBundle(p);
+    const lines: string[] = [];
+    const overdue = row({ id: 'run_o', task: 'cortex-instructions', started_at: -200_000, run_context: JSON.stringify({ timeoutSeconds: 100 }) });
+    const fresh = row({ id: 'run_f', task: 'titling', started_at: 0, run_context: JSON.stringify({ timeoutSeconds: 300 }) });
+    await updateDeployment({
+      paths: p,
+      runner: scripted([JSON.stringify([overdue]), JSON.stringify([overdue, fresh]), JSON.stringify([overdue, fresh])]),
+      report: (l) => lines.push(l), clock: clock(),
+    });
+
+    expect(lines).toContain('A task outlived its own budget (cortex-instructions); the deploy proceeds and the stale sweep owns the run.');
+    expect(lines).toContain('titling started during the deploy; the harness finishes them inside its stop grace.');
+  });
+
+  it('reads the same rows the hosted target reads', async () => {
+    // Two query texts across a package boundary the server cannot be imported
+    // across; a column added to one and not the other reads a different fleet.
+    expect(SERVER_LIVE_RUNS_QUERY).toBe(LIVE_RUNS_QUERY);
   });
 });

@@ -21,7 +21,9 @@ import {
   GENERATED_SECRETS,
   COMPOSE_PROJECT,
   DEFAULT_FLEET,
+  DESTROY_STOP_TIMEOUT_SECONDS,
 } from '@myco/server/deployment.js';
+import { HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 
 const roots: string[] = [];
@@ -182,9 +184,20 @@ describe('destroy', () => {
 
     expect(calls[0]!.args).toEqual([
       'compose', '--file', p.composeFile, '--project-name', COMPOSE_PROJECT,
-      'down', '--remove-orphans',
+      'down', '--remove-orphans', '--timeout', String(DESTROY_STOP_TIMEOUT_SECONDS),
     ]);
     expect(calls[0]!.args).not.toContain('--volumes');
+  });
+
+  it('names its own stop window rather than waiting out the harness grace', async () => {
+    const p = paths();
+    materializeBundle(p);
+    await destroyDeployment({ paths: p, runner: runner() });
+
+    // Without a window of its own the stack takes the harness's stop grace, and
+    // an operator's destroy blocks for the length of a task budget.
+    expect(DESTROY_STOP_TIMEOUT_SECONDS).toBeLessThan(HARNESS_STOP_GRACE_SECONDS);
+    expect(calls[0]!.args).not.toContain('--live-runs');
   });
 
   it('removes the volume only when asked', async () => {

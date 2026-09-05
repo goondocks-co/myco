@@ -176,6 +176,11 @@ export function commandFailureDetail(result: CommandResult): string {
   return result.stderr.trim() || result.stdout.trim();
 }
 
+/** What went wrong, in the words the thing that failed used. */
+export function describeFailure(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** Raised with what the command itself said, which is what an operator needs to see. */
 export class CommandFailed extends Error {
   constructor(readonly command: string, readonly args: readonly string[], readonly result: CommandResult) {
