@@ -235,15 +235,24 @@ export async function createDeployment(options: CreateOptions = {}): Promise<{ r
   // before its bundle is rewritten: a create about to be refused must leave the
   // file its containers started from alone. A bundle not yet there has nothing
   // to read.
-  const live = existsSync(paths.composeFile) ? await runningServices({ paths, runner }) : [];
-  if (live.length > 0) await assertComposeReadable({ paths, runner });
+  const bundle = (): void => {
+    materializeBundle(paths, {
+      MYCO_PORT: String(port),
+      ...(fleet === null ? {} : { MYCO_FLEET: String(fleet) }),
+      ...(options.origin !== undefined && options.origin !== '' ? { MYCO_ORIGIN: options.origin } : {}),
+      ...(options.version ? { MYCO_VERSION: options.version } : {}),
+    });
+  };
 
-  materializeBundle(paths, {
-    MYCO_PORT: String(port),
-    ...(fleet === null ? {} : { MYCO_FLEET: String(fleet) }),
-    ...(options.origin !== undefined && options.origin !== '' ? { MYCO_ORIGIN: options.origin } : {}),
-    ...(options.version ? { MYCO_VERSION: options.version } : {}),
-  });
+  // Containers can be running with no file to address them by — a wiped
+  // MYCO_HOME, a deleted compose.yaml — and that stack is exactly the one this
+  // verb exists to take back. The bundle is written first there, so the read
+  // has something to read; with a file already on disk the read comes first, so
+  // a create about to be refused leaves it as its containers started from it.
+  if (!existsSync(paths.composeFile)) bundle();
+  const live = await runningServices({ paths, runner });
+  if (live.length > 0) await assertComposeReadable({ paths, runner });
+  bundle();
 
   // On a stack already running the `up` is the same recreate every other verb
   // performs, and it takes the harness first.

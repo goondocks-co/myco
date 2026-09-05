@@ -21,6 +21,7 @@ import {
 import { CONTAINERS_ROLLOUT_NONE, LIVE_RUNS_RETRY_MS, readDeploymentRecord, writeDeploymentRecord, wranglerJson } from '@myco/server/cloudflare.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 import { containersTableHash, renderDeployConfig } from '@myco/server/deploy-config.js';
+import { liveRunsIn, waitForLiveRuns } from '@myco/server/live-runs.js';
 import { COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
 import { WRANGLER_TEMPLATE } from '@myco/server/wrangler-template.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
@@ -668,4 +669,45 @@ describe('update: the runs in flight and the rollout', () => {
     const harness = COMPOSE_TEMPLATE.slice(COMPOSE_TEMPLATE.indexOf('\n  harness:'));
     expect(harness).toContain(`stop_grace_period: ${HARNESS_STOP_GRACE_SECONDS}s`);
   });
+});
+
+/**
+ * A row the queue took back while its runtime kept working.
+ *
+ * The dispatcher can requeue a row whose child is already running, so such a
+ * row is in flight even though nothing ever claimed it. It carries no start,
+ * and it is not the stale sweep's to clear.
+ */
+describe('the wait on a requeued row', () => {
+  const NOW_Q = Date.parse('2026-09-04T12:00:00Z');
+  const drive = () => { let at = NOW_Q; return { now: () => at, sleep: async (ms: number) => { at += ms; }, get at() { return at; } }; };
+  const rows = (over: Record<string, unknown>) => JSON.stringify([{
+    results: [{ id: 'run_q', task: 'digest-only', status: 'queued', started_at: null, run_context: JSON.stringify({ timeoutSeconds: 300 }), ...over }],
+    success: true,
+  }]);
+
+  it('names it as claimed by no runtime, and counts its bound from when the queue took it', async () => {
+    const lines: string[] = [];
+    const clock = drive();
+    // Budget 300 s plus the 120 s margin: counted from the queue this bound is
+    // already past, and counted from now it would hold the deploy for 7 min.
+    const live = liveRunsIn(JSON.parse(rows({ queued_at: NOW_Q - 600_000 }))[0].results);
+    expect({ status: live[0]!.status, queuedAt: live[0]!.queuedAt }).toEqual({ status: 'queued', queuedAt: NOW_Q - 600_000 });
+
+    await waitForLiveRuns({ read: async () => live, sparing: 'the platform drains what is running', clock, report: (l) => lines.push(l) });
+
+    expect(lines[0]).toBe('Waiting for a task the queue took back while its runtime kept working: digest-only, claimed by no runtime yet, queued 10 min ago, budget 5 min');
+    expect(lines).toContain("A task the queue took back outlived its own budget (digest-only); the deploy proceeds and the queue's expiry owns the row.");
+    expect(lines.some((l) => l.includes('the stale sweep owns the run'))).toBe(false);
+    expect(clock.at).toBe(NOW_Q);
+  });
+
+  it('names a row carrying no queue time without inventing one', async () => {
+    const live = liveRunsIn(JSON.parse(rows({}))[0].results);
+    expect(live[0]!.queuedAt).toBeNull();
+    const lines: string[] = [];
+    await waitForLiveRuns({ read: async () => live, sparing: 'the platform drains what is running', clock: drive(), report: (l) => lines.push(l) });
+    expect(lines[0]).toBe('Waiting for a task the queue took back while its runtime kept working: digest-only, claimed by no runtime yet, budget 5 min');
+  });
+
 });

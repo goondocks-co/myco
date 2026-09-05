@@ -20,6 +20,8 @@ export interface LiveRun {
   status: 'pending' | 'running' | 'queued';
   /** Epoch milliseconds, or null for a run that has not started — a `pending` row is written before its runtime is launched. */
   startedAt: number | null;
+  /** When the queue took the row, in epoch milliseconds; what a `queued` row is counted from, carrying no start of its own. */
+  queuedAt: number | null;
   /** The budget the dispatcher wrote into the run's context, or null for a run that carries none. */
   timeoutSeconds: number | null;
 }
@@ -46,6 +48,7 @@ export interface LiveRunRow {
   task?: unknown;
   status?: unknown;
   started_at?: unknown;
+  queued_at?: unknown;
   run_context?: unknown;
 }
 
@@ -70,6 +73,7 @@ export function liveRunsIn(rows: readonly LiveRunRow[]): LiveRun[] {
       task: typeof row.task === 'string' && row.task !== '' ? row.task : 'a run without a task',
       status: row.status === 'pending' || row.status === 'queued' ? row.status : 'running',
       startedAt: typeof row.started_at === 'number' ? row.started_at : null,
+      queuedAt: typeof row.queued_at === 'number' ? row.queued_at : null,
       timeoutSeconds: runContextTimeout(row.run_context),
     });
   }
@@ -174,12 +178,15 @@ function budgetSeconds(run: LiveRun): number {
 
 /**
  * When the Deployment stops treating a run as its own: its budget plus the
- * overrun margin, counted from when it started. A run that has not started
- * carries no start to count from, so it is counted from now — it has just been
- * dispatched, and its whole budget is still ahead of it.
+ * overrun margin, counted from when it started. A `pending` run has just been
+ * dispatched and its whole budget is still ahead of it, so it is counted from
+ * now. A `queued` run reaching the wait has a runtime already working under it
+ * and carries no start either, so it is counted from when the queue took the
+ * row — a fresh full budget would hold the deploy open for work that began
+ * long before it.
  */
 function runDeadline(run: LiveRun, now: number): number {
-  return (run.startedAt ?? now) + budgetSeconds(run) * 1000 + RUN_OVERRUN_MARGIN_MS;
+  return (run.startedAt ?? run.queuedAt ?? now) + budgetSeconds(run) * 1000 + RUN_OVERRUN_MARGIN_MS;
 }
 
 /**
@@ -196,7 +203,13 @@ function describeRun(lead: string, run: LiveRun, now: number): string {
     : run.status === 'queued'
       ? 'task the queue took back while its runtime kept working'
       : 'running task';
-  const when = run.startedAt === null ? 'not started yet' : `started ${describeDuration(now - run.startedAt)} ago`;
+  const when = run.startedAt !== null
+    ? `started ${describeDuration(now - run.startedAt)} ago`
+    // A queued row's runtime never claimed it, so there is no start to name —
+    // only when the queue took the row.
+    : run.status === 'queued'
+      ? `claimed by no runtime yet${run.queuedAt === null ? '' : `, queued ${describeDuration(now - run.queuedAt)} ago`}`
+      : 'not started yet';
   return `${lead} a ${kind}: ${run.task}, ${when}, budget ${describeDuration(budgetSeconds(run) * 1000)}`;
 }
 
@@ -255,8 +268,16 @@ export async function waitForLiveRuns(options: WaitOptions): Promise<void> {
     if (clock.now() >= deadline) {
       const overdue = live.filter((run) => bounds.has(run.id));
       const fresh = live.filter((run) => !bounds.has(run.id));
-      if (overdue.length > 0) {
-        report(`A task outlived its own budget (${overdue.map((run) => run.task).join(', ')}); the deploy proceeds and the stale sweep owns the run.`);
+      // Which part of the Deployment owns a row past its bound depends on the
+      // row: the stale sweep reads the two live statuses, and a row the queue
+      // took back is left to the expiry that clears the queue.
+      const swept = overdue.filter((run) => run.status !== 'queued');
+      const expiring = overdue.filter((run) => run.status === 'queued');
+      if (swept.length > 0) {
+        report(`A task outlived its own budget (${swept.map((run) => run.task).join(', ')}); the deploy proceeds and the stale sweep owns the run.`);
+      }
+      if (expiring.length > 0) {
+        report(`A task the queue took back outlived its own budget (${expiring.map((run) => run.task).join(', ')}); the deploy proceeds and the queue's expiry owns the row.`);
       }
       if (fresh.length > 0) {
         report(`${fresh.map((run) => run.task).join(', ')} started during the deploy; ${options.sparing}.`);

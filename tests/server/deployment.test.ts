@@ -524,6 +524,25 @@ describe('create on a stack that is already running', () => {
     expect(verbs()).toEqual(['up --detach --wait']);
   });
 
+  it('GATE: stops the harness on a stack running with no compose file to address it by', async () => {
+    // A wiped MYCO_HOME or a deleted compose.yaml leaves containers running
+    // with nothing naming them — the stack this verb exists to take back.
+    const p = paths();
+    calls = [];
+    const argv = () => calls.map((c) => c.args.slice(7).join(' '));
+    await createDeployment({ paths: p, runner: withRunning('server', 'harness'), report: () => undefined });
+
+    // The bundle is written first here, so the read has something to read.
+    expect(existsSync(p.composeFile)).toBe(true);
+    expect(argv()).toEqual([
+      'ps --all --format json',
+      'config --services',
+      'config --services',
+      `stop --timeout ${HARNESS_STOP_GRACE_SECONDS} harness`,
+      'up --detach --wait',
+    ]);
+  });
+
   it('GATE: refuses when it cannot see what is running rather than reading that as an empty stack', async () => {
     const p = provisioned();
     const blind: CommandRunner = {
