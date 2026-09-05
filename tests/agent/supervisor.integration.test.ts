@@ -467,7 +467,10 @@ describe('what the supervisor does with a child it cannot be rid of', () => {
   unprivileged('keeps launching after a working directory it could not remove (root ignores the mode this rests on)', async () => {
     const s = boot();
     const out = join(s.root, 'stale.json');
-    expect((await s.launch({ runId: 'run_stale', timeoutSeconds: 120, envVars: { STANDIN_OUT: out, STANDIN_EXIT_MS: '20' } })).status).toBe(202);
+    // Long enough that the directory's mode is changed while the child is
+    // provably still running, so the removal it leaves behind is the one that
+    // fails rather than one that ran before the test was ready.
+    expect((await s.launch({ runId: 'run_stale', timeoutSeconds: 120, envVars: { STANDIN_OUT: out, STANDIN_EXIT_MS: '1500' } })).status).toBe(202);
     await until(() => existsSync(out), 'the child to run');
 
     chmodSync(s.workDir, 0o500);

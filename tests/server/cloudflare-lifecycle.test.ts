@@ -696,7 +696,7 @@ describe('the wait on a requeued row', () => {
       // The shape the write leaves: launched ten minutes ago on its own budget,
       // having waited two hours in the queue before that.
       started_at: NOW_Q - 600_000, queued_at: NOW_Q - 7_200_000,
-      run_context: JSON.stringify({ timeoutSeconds: 1800 }), ...over,
+      run_context: JSON.stringify({ timeoutSeconds: TASK_RUN_TIMEOUT_SECONDS['digest-only'] }), ...over,
     }],
     success: true,
   }]);
@@ -713,18 +713,10 @@ describe('the wait on a requeued row', () => {
     expect(lines[0]).toBe('Waiting for a task the queue took back while its runtime kept working: digest-only, started 10 min ago, budget 30 min');
     // Its own start plus its own budget, not the default one and not the two
     // hours it spent waiting: the wait gives the child the rest of its budget.
-    const deadline = (NOW_Q - 600_000) + 1_800_000 + RUN_OVERRUN_MARGIN_MS;
+    const deadline = (NOW_Q - 600_000) + TASK_RUN_TIMEOUT_SECONDS['digest-only']! * 1000 + RUN_OVERRUN_MARGIN_MS;
     expect(clock.at).toBeGreaterThanOrEqual(deadline);
     expect(clock.at).toBeLessThan(deadline + LIVE_RUN_POLL_MS);
     expect(lines).toContain("A task the queue took back outlived its own budget (digest-only); the deploy proceeds and the queue's expiry owns the row.");
     expect(lines.some((l) => l.includes('the stale sweep owns the run'))).toBe(false);
-  });
-
-  it('counts a row that names neither clock from now, rather than inventing one', async () => {
-    const live = liveRunsIn(JSON.parse(rows({ started_at: null, queued_at: null }))[0].results);
-    expect({ startedAt: live[0]!.startedAt, queuedAt: live[0]!.queuedAt }).toEqual({ startedAt: null, queuedAt: null });
-    const lines: string[] = [];
-    await waitForLiveRuns({ read: async () => live, sparing: 'the platform drains what is running', clock: drive(), report: (l) => lines.push(l) });
-    expect(lines[0]).toBe('Waiting for a task the queue took back while its runtime kept working: digest-only, claimed by no runtime yet, budget 30 min');
   });
 });

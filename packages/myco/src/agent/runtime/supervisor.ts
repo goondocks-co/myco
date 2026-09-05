@@ -391,13 +391,13 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
     }
     children.delete(runId);
     line({ kind: 'supervisor_child_exited', runId, code, running: decision.running.length });
+    // A run another attempt holds is that attempt's to end; this supervisor says
+    // which run it was and writes nothing for it.
+    if (code === RUNTIME_EXIT.claimContended) line({ kind: 'supervisor_run_contended', runId, code });
     // A child that ended on its own terms wrote its own status; any other exit
     // left the run open, and this is the only process that can still close it.
     // The post is awaited: this process leaves behind the last child of a drain,
     // so a post that must land has to land before that.
-    if (code === RUNTIME_EXIT.claimContended) {
-      line({ kind: 'supervisor_run_contended', runId, code });
-    }
     const close = child?.control == null ? null : closeForExit(code, decision.exit || draining, child.control.task);
     if (close !== null && child?.control != null) {
       try {

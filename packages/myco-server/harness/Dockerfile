@@ -11,10 +11,14 @@
 # is what keeps a mounted secret out of a run's reach. The CLI therefore lives
 # outside either home, root-owned and readable by both.
 #
+# The runtime this image runs is the one the repository pins (`.bun-version`),
+# which a gate holds; the server image takes its own from the same pin.
+#
 # Cloudflare Containers run amd64; the platform builds/pulls accordingly.
 # Build first:
 #   npm run harness:bundle   (in packages/myco-server)
-FROM oven/bun:1.3.14-slim
+ARG BUN_VERSION=1.3.13
+FROM oven/bun:${BUN_VERSION}-slim
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates util-linux \
   && rm -rf /var/lib/apt/lists/*
 ENV HOME=/home/bun

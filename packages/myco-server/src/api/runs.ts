@@ -368,6 +368,10 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   }
   const guarded = 'status' in runUpdate;
   const before = guarded ? await getRun(env.db, scope, runId) : null;
+  // Before anything else this route answers: a caller holding a credential the
+  // row does not name learns that, rather than learning what the row ended as.
+  const foreign = guarded ? foreignCredentialAnswer(ctx, before) : null;
+  if (foreign !== null) return foreign;
   const settled = endedAnswer(before?.status, runUpdate.status);
   if (settled !== null) return settled;
   if (runUpdate.status === 'completed') {
@@ -532,6 +536,8 @@ export async function handleRecordFailure(env: ServerEnv, ctx: RouteContext): Pr
   // `changed: 0` alone reads exactly like a run in another Project.
   const scope = { projectId: ctx.projectId };
   const before = await getRun(env.db, scope, runId);
+  const foreign = foreignCredentialAnswer(ctx, before);
+  if (foreign !== null) return foreign;
   const ended = endedAnswer(before?.status, 'failed');
   if (ended !== null) return ended;
   const written = await endRunAsCaller(env, ctx, runId, before, update as RunUpdate, { replaced: body.replaced === true });

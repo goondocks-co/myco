@@ -225,8 +225,13 @@ export class RuntimeDraining extends Error {
  * Reads the limits and the load fresh on every ask, so a limit changed in
  * Settings applies to the next dispatch and the next drain alike.
  */
-export async function admitDispatch(env: ServerEnv, task: string, now: number, limits?: DispatchLimits): Promise<HeldBy | null> {
-  const [read, load] = await Promise.all([limits === undefined ? readDispatchLimits(env) : Promise.resolve(limits), dispatchLoad(env.db, task, now)]);
+export async function admitDispatch(env: ServerEnv, task: string, now: number, limits?: DispatchLimits, exclude?: string): Promise<HeldBy | null> {
+  const [read, load] = await Promise.all([
+    limits === undefined ? readDispatchLimits(env) : Promise.resolve(limits),
+    // A row already in the table is admitted against the others; a fresh
+    // dispatch has none to leave out.
+    dispatchLoad(env.db, task, now, exclude),
+  ]);
   return heldBy(load, read);
 }
 
@@ -301,20 +306,25 @@ async function retireDispatchCredential(env: ServerEnv, tokenId: string | null, 
  * child; ending the row is the last moment anything can retire it, and after
  * the retention pass deletes the row nothing names it at all. Every terminal
  * transition of a queued row goes through here, which is what makes that true
- * of all of them rather than of the ones somebody remembered.
+ * of all of them rather than of the ones somebody remembered. The transition
+ * itself reports what the row named, so the retirement follows the write rather
+ * than a read that may be older than it.
  */
 export async function endQueuedRun(
   env: ServerEnv,
   scope: { projectId: string },
-  run: { id: string; dispatchedBy: string | null },
+  run: { id: string },
   now: number,
   outcome: { failed: string } | { skipped: string },
 ): Promise<boolean> {
-  const applied = 'failed' in outcome
+  // What the write displaced, never what the caller read before it: a drain
+  // that relaunched and re-queued this row in between left it naming a
+  // different credential from the one in the caller's hand.
+  const ended = 'failed' in outcome
     ? await failQueuedRun(env.db, scope, run.id, now, outcome.failed)
     : await skipQueued(env.db, scope, run.id, now, outcome.skipped);
-  if (applied) await retireDispatchCredential(env, run.dispatchedBy, now);
-  return applied;
+  if (ended.applied) await retireDispatchCredential(env, ended.displaced, now);
+  return ended.applied;
 }
 
 /**
@@ -343,7 +353,7 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
       await endQueuedRun(env, scope, queued, now, { failed: DISPATCH_REFUSAL_MESSAGE[prepared.refusal] });
       continue;
     }
-    const held = await admitDispatch(env, queued.task, now, limits);
+    const held = await admitDispatch(env, queued.task, now, limits, queued.id);
     if (held !== null) {
       // A Deployment-wide holder holds every later row too; a per-task holder holds only this task's.
       if (DEPLOYMENT_WIDE_HOLDS.has(held)) return launched;
@@ -368,8 +378,8 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
       // A runtime that is not taking runs takes none of the rows after this one either; this wake ends and the next retries.
       if (err instanceof RuntimeDraining) return launched;
       // The write refused on a limit another launch reached first: the row stays queued for the next drain. A row no longer queued belongs to another drain; the next row still gets its turn.
-      if (err instanceof LimitReached && (await admitDispatch(env, queued.task, now, limits)) !== null) {
-        const holder = await admitDispatch(env, queued.task, now, limits);
+      if (err instanceof LimitReached && (await admitDispatch(env, queued.task, now, limits, queued.id)) !== null) {
+        const holder = await admitDispatch(env, queued.task, now, limits, queued.id);
         if (holder !== null && DEPLOYMENT_WIDE_HOLDS.has(holder)) return launched;
       }
     }

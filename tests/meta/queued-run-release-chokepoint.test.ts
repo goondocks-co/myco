@@ -89,24 +89,40 @@ describe('meta: ending a queued run', () => {
     // Structure, not proximity: the write and the release are reachable from
     // one function, so a route cannot write a run terminal beside the guard.
     const api = readFileSync(join(SRC, 'api', 'runs.ts'), 'utf8');
-    const wrapper = api.slice(api.indexOf('async function endRunAsCaller'));
-    const body = wrapper.slice(0, wrapper.indexOf('\n}\n') + 3);
-    expect(body).toContain('foreignCredentialAnswer(');
+    // The wrapper's own span, by position: a line that merely reads the same as
+    // one inside it is not inside it.
+    const from = api.indexOf('async function endRunAsCaller');
+    expect(from).toBeGreaterThan(-1);
+    const to = from + api.slice(from).indexOf('\n}\n') + 3;
+    expect(api.slice(from, to)).toContain('foreignCredentialAnswer(');
 
     const offenders: string[] = [];
     for (const file of files(join(SRC, 'api'))) {
       const relative = file.slice(SRC.length);
       const source = readFileSync(file, 'utf8');
-      for (const [index, lineText] of source.split('\n').entries()) {
-        // A declaration is not a call.
-        if (/\bfunction \w+\(/.test(lineText)) continue;
-        for (const name of ['applyRunUpdate', 'recordReplacedRun', 'failQueuedRun', 'skipQueued']) {
-          if (!new RegExp(`\\b${name}\\s*\\(`).test(lineText)) continue;
-          const insideWrapper = relative === 'api/runs.ts' && body.includes(lineText.trim());
-          if (!insideWrapper) offenders.push(`${relative}:${index + 1}: ${name}`);
+      const inWrapper = (at: number) => relative === 'api/runs.ts' && at >= from && at < to;
+      for (const name of ['applyRunUpdate', 'recordReplacedRun', 'failQueuedRun', 'skipQueued']) {
+        for (const match of source.matchAll(new RegExp(`\\b${name}\\s*\\(`, 'g'))) {
+          const at = match.index;
+          // A declaration is not a call.
+          if (/\bfunction \s*$/.test(source.slice(Math.max(0, at - 20), at))) continue;
+          if (!inWrapper(at)) offenders.push(`${relative}@${at}: ${name}`);
         }
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it('runs both shipped images on the bun this repository pins', () => {
+    const root = fileURLToPath(new URL('../../', import.meta.url));
+    const pinned = readFileSync(join(root, '.bun-version'), 'utf8').trim();
+    expect(pinned).toMatch(/^\d+\.\d+\.\d+$/);
+    for (const image of ['packages/myco-server/Dockerfile', 'packages/myco-server/harness/Dockerfile']) {
+      const text = readFileSync(join(root, image), 'utf8');
+      // The version is an argument with the pin as its default, and the image
+      // is built from it — never a literal tag beside the pin.
+      expect({ image, arg: new RegExp(`^ARG BUN_VERSION=${pinned}$`, 'm').test(text) }).toEqual({ image, arg: true });
+      expect({ image, literal: /FROM oven\/bun:\d/.test(text) }).toEqual({ image, literal: false });
+    }
   });
 });

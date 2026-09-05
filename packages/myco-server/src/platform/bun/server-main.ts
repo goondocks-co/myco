@@ -155,8 +155,9 @@ export function migrateOnly(databasePath: string): number {
 /**
  * The rows a deploy reads to learn what this Deployment still has in flight.
  *
- * The columns are the ones the operator's CLI reads — a queued row is bounded
- * from `queued_at`, a started one from `started_at` — and the states are the
+ * The columns are the ones the operator's CLI reads — every row it answers
+ * carries the start of the launch that went out for it, and its own budget —
+ * and the states are the
  * dispatcher's own (`core/runs.ts`) plus one a deploy must not ship over: a
  * queued row that names a credential is a run whose child may be working under
  * it, taken back into the queue by a launch answered too late. The fleet count

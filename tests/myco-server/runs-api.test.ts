@@ -399,6 +399,27 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     expect(typeof credRevokedAt(minted.tokenId)).toBe('number');
   });
 
+  it('answers the credential refusal before it answers what the row already ended as', async () => {
+    // A stale post to a run that has already closed learns which of the two it
+    // is: the credential is the caller's problem, and the ending is not its
+    // business at all.
+    const { db, minted, post, dispatch, run } = await dispatchedRun();
+    const sibling = await issueMemberToken(db, { memberId: 'mem_harness', machineId: 'harness' }, Date.now());
+    await dispatch('run_t7', sibling);
+    expect((await post(sibling.token, '/runs/claim', { id: 'run_t7', agentId: AGENT, task: 'digest', capability: 'cortex' })).claimed).toBe(true);
+    expect((await post(sibling.token, '/runs/update', { runId: 'run_t7', update: { status: 'completed', completed_at: Date.now() } })).applied).toBe(true);
+    expect(run('run_t7')?.status).toBe('completed');
+
+    for (const path of ['/runs/update', '/runs/failed']) {
+      const body = path === '/runs/update'
+        ? { runId: 'run_t7', update: { status: 'failed', completed_at: Date.now() } }
+        : { runId: 'run_t7', errorClass: 'other', error: 'stale' };
+      const answered = await post(minted.token, path, body);
+      expect({ path, persisted: answered.persisted, reason: answered.reason })
+        .toEqual({ path, persisted: false, reason: STALE_CREDENTIAL_REFUSAL });
+    }
+  });
+
   it('refuses a failure recorded under a credential the row does not name, and queues no successor for it', async () => {
     const { db, minted, post, dispatch, run, sqlite } = await dispatchedRun();
     const sibling = await issueMemberToken(db, { memberId: 'mem_harness', machineId: 'harness' }, Date.now());

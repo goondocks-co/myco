@@ -113,8 +113,8 @@ const CLAIM_SQL = `INSERT INTO agent_runs
  * A `queued` row is claimable on the same terms. A launch answered after its
  * own deadline is taken back into the queue while the child it started is still
  * running, and that child claims under the credential the row still names; the
- * row takes the start it has none of, and drops the holder that described a run
- * that is now running.
+ * row keeps the start its launch stamped, and drops the holder that described a
+ * run that is now running.
  */
 const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
    SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?),
@@ -125,14 +125,19 @@ const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
  * The limit check, as part of the write that launches: each limit is either
  * unset (its parameter NULL) or compared against the count the same statement
  * reads, so two launches deciding at once cannot both pass a limit of one.
- * Bound as: fleet, fleet, concurrent, concurrent, task-concurrent, task,
- * task-concurrent, per-hour, task, hour-start, per-hour.
+ *
+ * Every count is of OTHER runs. A row the queue took back carries the start of
+ * the launch that went out for it, so counting itself in the trailing hour
+ * would hold that row for an hour against its own attempt.
+ *
+ * Bound as: fleet, fleet, concurrent, concurrent, task-concurrent, task, run,
+ * task-concurrent, per-hour, task, run, hour-start, per-hour.
  */
 const ADMISSION_WHERE = `
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) < ?)
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND task = ?) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND started_at IS NOT NULL AND started_at >= ?) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND task = ? AND id != ?) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND id != ? AND started_at IS NOT NULL AND started_at >= ?) < ?)
    AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND status IN ('pending', 'running', 'queued') AND id != ?))`;
 
 /**
@@ -153,7 +158,12 @@ function admissionParams(scope: ReadScope, task: string | null, runId: string, a
   const l = admission?.limits ?? NO_LIMITS;
   const hourStart = (admission?.now ?? 0) - 3_600_000;
   const single = admission?.singleFlight === true ? task : null;
-  return [l.fleet, l.fleet, l.concurrent_runs, l.concurrent_runs, l.task_concurrent_runs, task, l.task_concurrent_runs, l.task_runs_per_hour, task, hourStart, l.task_runs_per_hour, single, scope.projectId, task, runId];
+  return [
+    l.fleet, l.fleet, l.concurrent_runs, l.concurrent_runs,
+    l.task_concurrent_runs, task, runId, l.task_concurrent_runs,
+    l.task_runs_per_hour, task, runId, hourStart, l.task_runs_per_hour,
+    single, scope.projectId, task, runId,
+  ];
 }
 
 const RECORD_DISPATCH_SQL = `INSERT INTO agent_runs
@@ -868,6 +878,12 @@ export async function returnToQueue(
   return result.meta.changes === 1;
 }
 
+/** What ending a queued row did: whether the write landed, and the credential that row named when it did. */
+export interface QueuedRunEnd {
+  applied: boolean;
+  displaced: string | null;
+}
+
 /**
  * Put a run's dispatching credential back, from `pending` alone.
  *
@@ -890,14 +906,20 @@ export async function restoreDispatchCredential(db: RelationalStore, scope: Read
  * `taskRunsLastHour` counts starts: stamping one here would spend an hour of
  * the task's rate on a run that did no work. A reader shows when such a row
  * ended instead.
+ *
+ * The write answers with the credential the row named at the instant it landed,
+ * so a caller retires what its own write displaced rather than what it read
+ * before it — a drain that relaunched and re-queued the row in between leaves
+ * the row naming a different credential from the one the caller saw.
  */
-export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: string, now: number, reason: string): Promise<boolean> {
-  const result = await db
+export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: string, now: number, reason: string): Promise<QueuedRunEnd> {
+  const row = await db
     .prepare(`UPDATE agent_runs SET status = 'skipped', completed_at = ?, run_context = ?, held_by = NULL, dispatch_spec = NULL
-       WHERE project_id = ? AND id = ? AND status = 'queued'`)
+       WHERE project_id = ? AND id = ? AND status = 'queued'
+     RETURNING dispatched_by AS displaced`)
     .bind(now, skipContext(reason), scope.projectId, runId)
-    .run();
-  return result.meta.changes === 1;
+    .first<{ displaced: string | null }>();
+  return { applied: row !== null, displaced: row?.displaced ?? null };
 }
 
 /**
@@ -905,14 +927,17 @@ export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: s
  * `queued` alone.
  *
  * `started_at` is left as it is, as it is for a skipped row: a run that never
- * ran has no start, and `taskRunsLastHour` counts starts.
+ * ran has no start, and `taskRunsLastHour` counts starts. The write answers
+ * with the credential the row named at the instant it landed, for the same
+ * reason a skip does.
  */
 const FAIL_QUEUED_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, held_by = NULL
-  WHERE project_id = ? AND id = ? AND status = 'queued'`;
+  WHERE project_id = ? AND id = ? AND status = 'queued'
+RETURNING dispatched_by AS displaced`;
 
-export async function failQueuedRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string): Promise<boolean> {
-  const result = await db.prepare(FAIL_QUEUED_SQL).bind(now, error, scope.projectId, runId).run();
-  return result.meta.changes === 1;
+export async function failQueuedRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string): Promise<QueuedRunEnd> {
+  const row = await db.prepare(FAIL_QUEUED_SQL).bind(now, error, scope.projectId, runId).first<{ displaced: string | null }>();
+  return { applied: row !== null, displaced: row?.displaced ?? null };
 }
 
 export interface QueuedRunRef {
@@ -941,13 +966,18 @@ export async function hasQueuedRun(db: RelationalStore): Promise<boolean> {
 }
 
 /** What the Deployment is doing for one task: the counts admission compares against the limits. */
-export async function dispatchLoad(db: RelationalStore, task: string, now: number): Promise<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }> {
+export async function dispatchLoad(db: RelationalStore, task: string, now: number, exclude?: string): Promise<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }> {
+  // A row already in the table is admitted against the OTHERS. A re-queued run
+  // carries the start of the launch that went out for it, and a fresh dispatch
+  // has no row here to leave out.
+  const other = exclude ?? null;
   const row = await db.prepare(
     `SELECT
-       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES}) AS liveRuns,
-       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ?) AS liveTaskRuns,
-       (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND started_at IS NOT NULL AND started_at >= ?) AS taskRunsLastHour`,
-  ).bind(task, task, now - 3_600_000).first<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }>();
+       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND (? IS NULL OR id != ?)) AS liveRuns,
+       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ? AND (? IS NULL OR id != ?)) AS liveTaskRuns,
+       (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND (? IS NULL OR id != ?) AND started_at IS NOT NULL AND started_at >= ?) AS taskRunsLastHour`,
+  ).bind(other, other, task, other, other, task, other, other, now - 3_600_000)
+    .first<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }>();
   return row ?? { liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 };
 }
 

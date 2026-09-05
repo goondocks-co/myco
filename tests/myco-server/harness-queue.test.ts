@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
-import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, enqueueDispatch, HARNESS_MEMBER_ID, launchDispatch, LAUNCH_REFUSED_ERROR, LimitReached, MAX_RUN_ERROR_CHARS, NO_LAUNCH_ERROR, prepareDispatch, RUN_OVERRUN_MARGIN_MS, RuntimeAlreadyHolding, RuntimeDraining } from '@myco-server-worker/core/harness.js';
+import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, endQueuedRun, enqueueDispatch, HARNESS_MEMBER_ID, launchDispatch, LAUNCH_REFUSED_ERROR, LimitReached, MAX_RUN_ERROR_CHARS, NO_LAUNCH_ERROR, prepareDispatch, RUN_OVERRUN_MARGIN_MS, RuntimeAlreadyHolding, RuntimeDraining } from '@myco-server-worker/core/harness.js';
 import { agentRunRetention, QUEUE_EXPIRED_ERROR, QUEUE_MAX_AGE_MS, runStaleSweep, STALE_RUN_ERROR } from '@myco-server-worker/core/jobs-run.js';
 import { heldBy, HELD_BY_WORDS, readDispatchLimits } from '@myco-server-worker/core/limits.js';
 import { claimRun, dispatchLoad, launchQueued, listQueuedAcrossProjects, recordDispatch } from '@myco-server-worker/core/runs.js';
@@ -373,6 +373,28 @@ describe('a runtime that is not taking runs', () => {
     expect((f.sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE status = 'failed'`).get() as { c: number }).c).toBe(0);
   });
 
+  it('does not count itself against its task\'s hour when the queue takes it back', async () => {
+    // The row keeps the start of the launch that went out for it, so admitting
+    // it again requires counting the other runs of its task, not this one.
+    let stopping = true;
+    const f = fixture({ refuse: () => (stopping ? draining() : undefined) });
+    f.setting('agent.limits.task_runs_per_hour', 1);
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    await dispatchPrepared(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_hourly' }, NOW);
+    expect(f.run('run_hourly')).toMatchObject({ status: 'queued', heldBy: 'runtime' });
+    expect((f.sqlite.query(`SELECT started_at AS s FROM agent_runs WHERE id = 'run_hourly'`).get() as { s: number }).s).toBe(NOW);
+
+    // The runtime comes back inside the same hour: the row is admitted against
+    // the other runs of its task, of which there are none.
+    stopping = false;
+    expect(await drainQueue(f.env, NOW + 1_000)).toBe(1);
+    expect(f.run('run_hourly')?.status).toBe('pending');
+
+    // Another run of the same task is still held by the hour the first spent.
+    const second = await dispatchPrepared(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_hourly_2' }, NOW + 2_000);
+    expect(second).toMatchObject({ queued: true, heldBy: 'task_runs_per_hour' });
+  });
+
   it('is a hold of its own, worded as itself rather than as the size of the fleet', async () => {
     const f = fixture({ refuse: () => draining() });
     const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
@@ -559,6 +581,25 @@ describe('a runtime that is not taking runs', () => {
     expect(f.run('run_operator')?.status).toBe('pending');
     expect(await runStaleSweep(f.env, NOW + 60_000 + RUN_OVERRUN_MARGIN_MS)).toBe(1);
     expect(f.run('run_operator')).toMatchObject({ status: 'failed', error: STALE_RUN_ERROR });
+  });
+
+  it('retires the credential its own write displaced, not the one it read before it', async () => {
+    // A drain that relaunched and re-queued the row between the sweep's read
+    // and its write leaves the row naming a credential the sweep never saw.
+    const f = fixture({ refuse: () => draining() });
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    await dispatchPrepared(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_moved' }, NOW);
+    const stale = f.run('run_moved')!.dispatchedBy as string;
+
+    // The row moves to a fresh credential; the caller still holds the old one.
+    seedCredential(f.sqlite, { id: 'cred_fresh', memberId: 'mem_harness', machineId: 'harness' });
+    f.sqlite.run(`UPDATE agent_runs SET dispatched_by = 'cred_fresh' WHERE id = 'run_moved'`);
+
+    expect(await endQueuedRun(f.env, { projectId: 'proj_1' }, { id: 'run_moved' }, NOW + 5, { failed: QUEUE_EXPIRED_ERROR })).toBe(true);
+    // What the row named when the write landed is retired; the one the caller
+    // read is left to whatever else still names it.
+    expect(f.sqlite.query(`SELECT revoked_at AS r FROM member_credentials WHERE id = 'cred_fresh'`).get()).toEqual({ r: NOW + 5 });
+    expect(f.sqlite.query(`SELECT revoked_at AS r FROM member_credentials WHERE id = ?`).get(stale)).toEqual({ r: null });
   });
 
   it('retires the credential a queued row carries at every way that row can end', async () => {

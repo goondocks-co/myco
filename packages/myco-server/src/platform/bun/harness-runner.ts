@@ -11,6 +11,11 @@
  * queue; one already running the run a launch names is `RuntimeAlreadyHolding`,
  * which the dispatcher counts as landed; every other refusal is terminal, and
  * its word rides the failed row.
+ *
+ * A 401 is among the terminal ones on purpose. Both services mount the same
+ * secret, so a supervisor refusing this deployment's token is a stack whose two
+ * halves disagree: an operator's fix, not a wait. Telling that operator
+ * promptly requires the row to fail rather than sit in the queue for its day.
  * Unavailability is read from the status as well as the word: a 503 is a
  * runtime that is not serving whatever body it sent, including none.
  */

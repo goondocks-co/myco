@@ -18,9 +18,9 @@ export interface LiveRun {
   task: string;
   /** `pending` for a run whose runtime has not been launched yet, `running` for one under way, `queued` for one the queue took back with its runtime still working. */
   status: 'pending' | 'running' | 'queued';
-  /** Epoch milliseconds, or null for a run that has not started — a `pending` row is written before its runtime is launched. */
+  /** Epoch milliseconds. Every row this read answers carries one: both writers of a live row stamp the instant its launch went out. */
   startedAt: number | null;
-  /** When the queue took the row, in epoch milliseconds; what a `queued` row is counted from, carrying no start of its own. */
+  /** When the row first joined the queue, in epoch milliseconds, for a run that waited; null for one that never did. */
   queuedAt: number | null;
   /** The budget the dispatcher wrote into the run's context, or null for a run that carries none. */
   timeoutSeconds: number | null;
@@ -178,15 +178,13 @@ function budgetSeconds(run: LiveRun): number {
 
 /**
  * When the Deployment stops treating a run as its own: its budget plus the
- * overrun margin, counted from when it started. A `pending` run has just been
- * dispatched and its whole budget is still ahead of it, so it is counted from
- * now. A `queued` run reaching the wait has a runtime already working under it
- * and carries no start either, so it is counted from when the queue took the
- * row — a fresh full budget would hold the deploy open for work that began
- * long before it.
+ * overrun margin, counted from when its launch went out. A `queued` row reaches
+ * this wait only after a launch, and keeps that launch's start and budget, so
+ * it is bounded exactly as a running one is. A row this read answers without a
+ * start is one no launch was written for, and it is counted from now.
  */
 function runDeadline(run: LiveRun, now: number): number {
-  return (run.startedAt ?? run.queuedAt ?? now) + budgetSeconds(run) * 1000 + RUN_OVERRUN_MARGIN_MS;
+  return (run.startedAt ?? now) + budgetSeconds(run) * 1000 + RUN_OVERRUN_MARGIN_MS;
 }
 
 /**
@@ -205,11 +203,7 @@ function describeRun(lead: string, run: LiveRun, now: number): string {
       : 'running task';
   const when = run.startedAt !== null
     ? `started ${describeDuration(now - run.startedAt)} ago`
-    // A queued row's runtime never claimed it, so there is no start to name —
-    // only when the queue took the row.
-    : run.status === 'queued'
-      ? `claimed by no runtime yet${run.queuedAt === null ? '' : `, queued ${describeDuration(now - run.queuedAt)} ago`}`
-      : 'not started yet';
+    : 'not started yet';
   return `${lead} a ${kind}: ${run.task}, ${when}, budget ${describeDuration(budgetSeconds(run) * 1000)}`;
 }
 
