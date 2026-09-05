@@ -23,6 +23,7 @@ import {
   RestoreLeftIncomplete,
   createDeployment,
   deploymentStatus,
+  GENERATED_SECRETS,
   restoreDeployment,
   updateDeployment,
   rotateSecrets,
@@ -1058,13 +1059,78 @@ describe('the readability check comes before anything else', () => {
   it('reads, drains, rewrites, stops the harness, pulls and recreates, in that order', async () => {
     const p = bundle();
     await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
+    // Two reads, and both refuse: the bundle the pull and the recreate run on is
+    // a different file from the one read before the drain.
     expect(calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '))).toEqual([
       'config --services',
       'exec --no-TTY --user myco server bun run /app/server.js --live-runs',
+      'config --services',
       'config --services',
       STOP_HARNESS,
       'pull',
       'up --detach --wait',
     ]);
+  });
+});
+
+/**
+ * Nothing is written that a refusal would strand.
+ *
+ * A verb that replaces a key or a credential on disk and is then refused
+ * leaves a Deployment serving on something its bundle no longer holds.
+ */
+describe('no verb writes before it can still refuse', () => {
+  const bundle = () => { const p = paths(); materializeBundle(p); return p; };
+  const refusing = (): CommandRunner => ({
+    async run(command, args) {
+      calls.push({ command, args: [...args] });
+      if (args.includes('--services')) return { code: 1, stdout: '', stderr: 'validating compose.override.yaml' };
+      return { code: 0, stdout: answer(args), stderr: '' };
+    },
+  });
+
+  it('GATE: a refused rotate leaves every key as it was', async () => {
+    const p = bundle();
+    const before = Object.keys(GENERATED_SECRETS).map((name) => readFileSync(join(p.secretsDir, name), 'utf8'));
+    await expect(rotateSecrets({ paths: p, runner: refusing(), report: () => undefined })).rejects.toThrow(ComposeFilesUnreadable);
+    expect(Object.keys(GENERATED_SECRETS).map((name) => readFileSync(join(p.secretsDir, name), 'utf8'))).toEqual(before);
+  });
+
+  it('GATE: a refused adopt leaves the bundle as its containers know it', async () => {
+    const p = bundle();
+    writeFileSync(p.composeFile, 'services:\n  server:\n    image: from-an-older-cli\n');
+    const before = readFileSync(p.composeFile, 'utf8');
+    await expect(adoptDeployment({ paths: p, runner: refusing() })).rejects.toThrow(ComposeFilesUnreadable);
+    expect(readFileSync(p.composeFile, 'utf8')).toBe(before);
+  });
+
+  it('GATE: the update refuses on the bundle it rewrote, before it stops anything', async () => {
+    const p = bundle();
+    // The pre-rewrite read answers; the read of the rewritten bundle does not.
+    let reads = 0;
+    const secondRefuses: CommandRunner = {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        if (!args.includes('--services')) return { code: 0, stdout: answer(args), stderr: '' };
+        reads += 1;
+        return reads === 1
+          ? { code: 0, stdout: 'server\nharness\n', stderr: '' }
+          : { code: 1, stdout: '', stderr: 'validating compose.override.yaml' };
+      },
+    };
+    await expect(updateDeployment({ paths: p, runner: secondRefuses, report: () => undefined })).rejects.toThrow(ComposeFilesUnreadable);
+    expect(calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' ')).filter((a) => a === STOP_HARNESS || a === 'pull')).toEqual([]);
+  });
+
+  it('GATE: a port is refused the same way whichever surface named it', async () => {
+    // `--port 0` is a port number in neither place; Compose publishes it as an
+    // ephemeral pick nothing can address.
+    for (const port of [0, -1, 70000, 1.5]) {
+      const p = paths();
+      await expect(createDeployment({ paths: p, runner: runner(), port })).rejects.toThrow(/between 1 and 65535/);
+    }
+    const named = paths();
+    materializeBundle(named, { MYCO_PORT: '0' });
+    await expect(createDeployment({ paths: named, runner: runner() })).rejects.toThrow(/MYCO_PORT=0/);
   });
 });

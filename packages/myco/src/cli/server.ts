@@ -182,11 +182,10 @@ export async function run(args: string[]): Promise<void> {
     }
 
     if (command === 'create') {
+      // The port is decided in one place, for the flag and for the bundle's own
+      // `.env` alike; `createDeployment` refuses a value that is not one.
       const portFlag = flags.get('port');
       const port = portFlag === undefined ? undefined : Number(portFlag);
-      if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
-        fail(`--port must be a port number, and is ${JSON.stringify(portFlag)}`);
-      }
       const fleetFlag = flags.get('fleet');
       const fleet = fleetFlag === undefined ? undefined : Number(fleetFlag);
       if (fleetFlag !== undefined && (fleetFlag === 'true' || !Number.isInteger(fleet) || fleet! < 1)) {

@@ -203,12 +203,20 @@ export const DEFAULT_FLEET = 4;
  */
 export const DEFAULT_PORT = 8787;
 
-/** The port a bundle's `.env` names, or the default; a value that is not a port is refused rather than silently becoming one. */
-function portIn(value: string | null): number {
-  if (value === null || value === '') return DEFAULT_PORT;
+/**
+ * The port a value names, or the default when it names none.
+ *
+ * The one place a port is decided, whichever surface the value came from: a
+ * flag and an `.env` line are the same question, and 0 is a port number in
+ * neither — Compose publishes it as an ephemeral pick nothing can address.
+ */
+function portIn(value: string | number | null | undefined, source: 'flag' | 'env'): number {
+  if (value === null || value === undefined || value === '') return DEFAULT_PORT;
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error(`the bundle's .env names MYCO_PORT=${value}, which is not a port; correct it or pass --port`);
+    throw new Error(source === 'flag'
+      ? `the port is a number between 1 and 65535, and is ${JSON.stringify(String(value))}`
+      : `the bundle's .env names MYCO_PORT=${String(value)}, which is not a port; correct it or pass --port`);
   }
   return port;
 }
@@ -227,7 +235,9 @@ export async function createDeployment(options: CreateOptions = {}): Promise<{ r
     throw new Error(`the origin is an http:// or https:// URL naming the address members reach this Deployment at, and is ${JSON.stringify(options.origin)}`);
   }
 
-  const port = options.port ?? portIn(envValue(paths, 'MYCO_PORT'));
+  const port = options.port === undefined
+    ? portIn(envValue(paths, 'MYCO_PORT'), 'env')
+    : portIn(options.port, 'flag');
   const fleet = options.fleet ?? (envValue(paths, 'MYCO_FLEET') === null ? DEFAULT_FLEET : null);
 
   // `create` converges an existing Deployment as well as provisioning a new one,
@@ -510,7 +520,7 @@ async function stopHarness(target: HarnessTarget, services: string[]): Promise<v
 }
 
 /** What a verb needs to take the harness down and put it back. */
-interface HarnessTarget {
+export interface HarnessTarget {
   paths: DeploymentPaths;
   runner: CommandRunner;
   report?: (line: string) => void;
@@ -557,7 +567,7 @@ async function composeServices(target: HarnessTarget): Promise<string[]> {
 }
 
 /** Refuse now, before any container is touched, if Compose cannot read this bundle. */
-async function assertComposeReadable(target: HarnessTarget): Promise<void> {
+export async function assertComposeReadable(target: HarnessTarget): Promise<void> {
   await composeServices(target);
 }
 
@@ -854,6 +864,9 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
   // service, so a Deployment provisioned by an older CLI would pull an image
   // and run the same one service. Secrets on disk are kept and `.env` survives.
   materializeBundle(paths);
+  // The bundle the pull and the recreate will run on is a different file from
+  // the one read above; both reads refuse.
+  await assertComposeReadable({ paths, runner });
 
   // The requested version travels as an environment override for the pull and
   // the recreate, and is written into the bundle only once both succeed.
@@ -903,6 +916,9 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
 export async function rotateSecrets(options: DeploymentOptions = {}): Promise<string[]> {
   const { paths, runner } = resolved(options);
   repairBundle(paths);
+  // Refused before the keys are replaced: a rotation the recreate then refuses
+  // leaves the Deployment serving on a wrap key its bundle no longer holds.
+  await assertComposeReadable({ paths, runner });
   const rotated: string[] = [];
   for (const [name, bytes] of Object.entries(GENERATED_SECRETS)) {
     writeFileSync(path.join(paths.secretsDir, name), crypto.randomBytes(bytes).toString('base64'), { mode: 0o600 });
@@ -921,6 +937,9 @@ export async function rotateSecrets(options: DeploymentOptions = {}): Promise<st
  */
 export async function adoptDeployment(options: DeploymentOptions = {}): Promise<{ adopted: boolean; services: string[] }> {
   const { paths, runner } = resolved(options);
+  // A bundle already on disk is read before it is rewritten, so an adopt about
+  // to be refused leaves it as the running containers know it.
+  if (existsSync(paths.composeFile)) await assertComposeReadable({ paths, runner });
   materializeBundle(paths);
 
   const status = await deploymentStatus({ paths, runner });
