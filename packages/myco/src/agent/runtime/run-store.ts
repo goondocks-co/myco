@@ -45,6 +45,9 @@ import type { ReportRow } from '@myco/db/queries/reports.js';
 import type { RunEventInsert } from '@myco/db/queries/agent-run-events.js';
 import type { CortexInstructionsUpsert } from '@myco/db/queries/cortex-instructions.js';
 
+/** How much of a failure message rides a run row, wherever the failure is written. */
+export const MAX_RUN_ERROR_CHARS = 2000;
+
 export type { RunInsert, RunRow, RunUpdate, RunningRunRef, ReportRow, RunEventInsert, CortexInstructionsUpsert };
 
 /**

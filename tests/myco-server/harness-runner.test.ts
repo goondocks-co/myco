@@ -111,8 +111,32 @@ describe("a refusal reaches the dispatcher in the supervisor's own words", () =>
     await expect(refusing(503, { refusal: 'draining' })(dispatch)).rejects.toBeInstanceOf(RuntimeDraining);
   });
 
+  it('reads a runtime that is not serving from the status alone, whatever body it carries', async () => {
+    // A supervisor mid-restart, a proxy in front of it, a body that is not JSON:
+    // 503 is the answer of something that is not serving, not of a run that failed.
+    for (const body of [{}, { refusal: 'unknown' }, { error: 'gateway' }]) {
+      await expect(refusing(503, body)(dispatch)).rejects.toBeInstanceOf(RuntimeDraining);
+    }
+  });
+
+  it('reads the draining word as retryable whatever status carries it', async () => {
+    await expect(refusing(500, { refusal: 'draining' })(dispatch)).rejects.toBeInstanceOf(RuntimeDraining);
+    await expect(refusing(409, { refusal: 'draining' })(dispatch)).rejects.toBeInstanceOf(RuntimeDraining);
+  });
+
+  it('tells a runtime that answered nothing apart from one that answered that it is stopping', async () => {
+    const stopping = await refusing(503, { refusal: 'draining' })(dispatch).then(() => null, (err: unknown) => err);
+    expect((stopping as RuntimeDraining).why).toBe('draining');
+
+    const stand = supervisor(() => Response.json({}, { status: 202 }));
+    for (const server of servers.splice(0)) server.stop(true);
+    const gone = await httpHarnessLaunch({ url: stand.url, token: TOKEN, callbackOrigin: origin })(dispatch)
+      .then(() => null, (err: unknown) => err);
+    expect((gone as RuntimeDraining).why).toBe('unreachable');
+  });
+
   it('is a terminal failure for every other refusal', async () => {
-    for (const [status, body] of [[409, { refusal: 'duplicate' }], [500, { refusal: 'spawn', error: 'x' }], [400, { refusal: 'invalid' }], [401, {}]] as const) {
+    for (const [status, body] of [[409, { refusal: 'duplicate' }], [500, { refusal: 'spawn', error: 'x' }], [400, { refusal: 'invalid' }], [401, {}], [502, { refusal: 'nope' }]] as const) {
       const caught = await refusing(status, body)(dispatch).then(() => null, (err: unknown) => err);
       expect({ status, draining: caught instanceof RuntimeDraining, error: caught instanceof Error })
         .toEqual({ status, draining: false, error: true });

@@ -7,6 +7,8 @@ import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, enqueueDispatch, HARNESS_MEMBER_ID, launchDispatch, LAUNCH_REFUSED_ERROR, LimitReached, MAX_RUN_ERROR_CHARS, prepareDispatch, RuntimeDraining } from '@myco-server-worker/core/harness.js';
+import { HELD_BY_WORDS } from '@myco-server-worker/core/limits.js';
+import { agentRunRetention, QUEUE_EXPIRED_ERROR, QUEUE_MAX_AGE_MS, runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
 import { heldBy, readDispatchLimits } from '@myco-server-worker/core/limits.js';
 import { claimRun, dispatchLoad, launchQueued, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
@@ -281,8 +283,20 @@ describe('the write is the admission', () => {
  * terminal would fail the dispatch that caused the wake and then walk the queue
  * failing every row behind it.
  */
+/** Every line the emit surface wrote while `act` ran. */
+async function emitted(act: () => Promise<unknown>): Promise<Record<string, unknown>[]> {
+  const lines: Record<string, unknown>[] = [];
+  const log = console.log;
+  console.log = (text?: unknown) => {
+    try { lines.push(JSON.parse(String(text)) as Record<string, unknown>); } catch { /* not a telemetry line */ }
+  };
+  try { await act(); } finally { console.log = log; }
+  return lines;
+}
+
 describe('a runtime that is not taking runs', () => {
   const draining = () => new RuntimeDraining('the harness runtime refused to launch: draining');
+  const unreachable = () => new RuntimeDraining('the harness runtime at http://127.0.0.1:8080 could not be reached: ConnectionRefused', 'unreachable');
 
   it('leaves the dispatch queued under the fleet, with its launch intact and no credential of its own', async () => {
     let stopping = true;
@@ -292,11 +306,11 @@ describe('a runtime that is not taking runs', () => {
     const spec = { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120, runId: 'run_held' };
 
     const outcome = await dispatchPrepared(f.env, (prepared as { prepared: never }).prepared, spec, NOW);
-    expect(outcome).toEqual({ queued: true, runId: 'run_held', task: 'container-smoke', projectId: 'proj_1', heldBy: 'fleet' });
+    expect(outcome).toEqual({ queued: true, runId: 'run_held', task: 'container-smoke', projectId: 'proj_1', heldBy: 'runtime' });
     expect(f.launches).toHaveLength(0);
 
     const row = f.run('run_held')!;
-    expect(row).toMatchObject({ status: 'queued', heldBy: 'fleet', dispatchedBy: null });
+    expect(row).toMatchObject({ status: 'queued', heldBy: 'runtime', dispatchedBy: null });
     expect(JSON.parse(row.dispatchSpec as string)).toEqual({ serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 });
     const credentials = f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE member_id = 'mem_harness'`).all() as Array<{ revoked_at: number | null }>;
     expect(credentials.map((c) => c.revoked_at)).toEqual([NOW]);
@@ -321,5 +335,118 @@ describe('a runtime that is not taking runs', () => {
     expect(f.launches).toHaveLength(0);
     // No row fails: the queue keeps them all for the next wake.
     expect((f.sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE status = 'failed'`).get() as { c: number }).c).toBe(0);
+  });
+
+  it('is a hold of its own, worded as itself rather than as the size of the fleet', async () => {
+    const f = fixture({ refuse: () => draining() });
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    await dispatchPrepared(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_worded' }, NOW);
+    expect(f.run('run_worded')?.heldBy).toBe('runtime');
+    // A reader is told the runtime is not taking a run, never that a bound is full.
+    expect(HELD_BY_WORDS.runtime).toBe('the runtime is not taking a run right now');
+    expect(HELD_BY_WORDS.runtime).not.toBe(HELD_BY_WORDS.fleet);
+  });
+
+  it('names a runtime that answered nothing at all apart from one that is stopping', async () => {
+    const gone = fixture({ refuse: () => unreachable() });
+    const preparedGone = await prepareDispatch(gone.env, 'container-smoke', 'proj_1');
+    const goneLines = await emitted(() => dispatchPrepared(gone.env, (preparedGone as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_gone' }, NOW));
+    expect(goneLines.filter((l) => l.kind === 'harness_unreachable'))
+      .toEqual([{ kind: 'harness_unreachable', runId: 'run_gone', task: 'container-smoke', projectId: 'proj_1', error: expect.stringContaining('could not be reached') as never }]);
+    expect(goneLines.some((l) => l.kind === 'harness_draining')).toBe(false);
+
+    const stopping = fixture({ refuse: () => draining() });
+    const preparedStopping = await prepareDispatch(stopping.env, 'container-smoke', 'proj_1');
+    const stoppingLines = await emitted(() => dispatchPrepared(stopping.env, (preparedStopping as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_stopping' }, NOW));
+    expect(stoppingLines.map((l) => l.kind)).toContain('harness_draining');
+    expect(stoppingLines.some((l) => l.kind === 'harness_unreachable')).toBe(false);
+  });
+
+  it('leaves a run alone when the launch answer was lost after its runtime claimed it', async () => {
+    // The launch reached a runtime, the child claimed the run, and only the
+    // answer went missing: the row has moved past `pending` and holds a live
+    // credential the runtime is using.
+    let claimed = false;
+    const f = fixture({
+      refuse: () => {
+        if (claimed) return undefined;
+        claimed = true;
+        return draining();
+      },
+    });
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const original = f.env.harnessLaunch!;
+    const env = {
+      ...f.env,
+      harnessLaunch: async (spec: Launch) => {
+        f.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE id = ?`, [spec.runId]);
+        await original(spec);
+      },
+    };
+
+    const launched = await launchDispatch(env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_claimed' }, NOW);
+    expect(launched.runId).toBe('run_claimed');
+    const row = f.run('run_claimed')!;
+    expect(row.status).toBe('running');
+    expect(row.dispatchedBy).not.toBeNull();
+    // The credential the runtime is presenting is not taken from under it.
+    expect(f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(row.dispatchedBy as string))
+      .toEqual({ revoked_at: null });
+  });
+
+  it('writes the row a fresh queued dispatch writes, and keeps a re-queued run\'s place in line', async () => {
+    const columns = `project_id, agent_id, task, instruction, status, harness, provider, model, started_at, queued_at, held_by, dispatch_spec, completed_at, tokens_used, error, dry_run, run_context, dispatched_by`;
+    const held = fixture({ refuse: () => draining() });
+    const prepared = await prepareDispatch(held.env, 'container-smoke', 'proj_1');
+    const spec = { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120, runId: 'run_returned' };
+    await dispatchPrepared(held.env, (prepared as { prepared: never }).prepared, spec, NOW);
+    await enqueueDispatch(held.env, (prepared as { prepared: never }).prepared, { ...spec, runId: 'run_fresh' }, 'runtime', NOW);
+
+    const rowOf = (id: string) => held.sqlite.query(`SELECT ${columns} FROM agent_runs WHERE id = ?`).get(id) as Record<string, unknown>;
+    // A returned row is a queued row: nothing of the launch it attempted survives on it.
+    expect(rowOf('run_returned')).toEqual(rowOf('run_fresh'));
+
+    // A row that already holds a place in line keeps it, rather than moving to the back.
+    const drained = fixture({ refuse: () => draining() });
+    const preparedAgain = await prepareDispatch(drained.env, 'container-smoke', 'proj_1');
+    await enqueueDispatch(drained.env, (preparedAgain as { prepared: never }).prepared, { ...spec, runId: 'run_waiting' }, 'runtime', NOW);
+    expect(await drainQueue(drained.env, NOW + 60_000)).toBe(0);
+    expect(drained.run('run_waiting')).toMatchObject({ status: 'queued', queuedAt: NOW, heldBy: 'runtime' });
+  });
+
+  it('gives up on a run nothing launched within the bound, and says so in those words', async () => {
+    const f = fixture({ refuse: () => draining() });
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    await enqueueDispatch(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_waited' }, 'runtime', NOW);
+    await enqueueDispatch(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_recent' }, 'runtime', NOW + QUEUE_MAX_AGE_MS);
+
+    // The bound and the words it is reported in move together.
+    expect(QUEUE_MAX_AGE_MS).toBe(86_400_000);
+    expect(QUEUE_EXPIRED_ERROR).toBe('no runtime took the run within a day');
+
+    expect(await runStaleSweep(f.env, NOW + QUEUE_MAX_AGE_MS)).toBe(1);
+    expect(f.run('run_waited')).toMatchObject({ status: 'failed', error: QUEUE_EXPIRED_ERROR });
+    expect(f.run('run_recent')?.status).toBe('queued');
+    // A queued run holds no credential, so the sweep has nothing to revoke.
+    expect((f.sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get() as { c: number }).c).toBe(0);
+  });
+
+  it('prunes the revoked credentials its runs no longer name, and keeps the live ones', async () => {
+    const f = fixture();
+    const day = 86_400_000;
+    const old = NOW - 40 * day;
+    for (const [id, revokedAt] of [['cred_old', old], ['cred_recent', NOW], ['cred_live', null]] as const) {
+      seedCredential(f.sqlite, { id, memberId: 'mem_harness', machineId: 'harness' });
+      f.sqlite.run(`UPDATE member_credentials SET revoked_at = ? WHERE id = ?`, [revokedAt, id]);
+    }
+    // A credential an unpruned run still names is held by the reference itself.
+    seedCredential(f.sqlite, { id: 'cred_named', memberId: 'mem_harness', machineId: 'harness' });
+    f.sqlite.run(`UPDATE member_credentials SET revoked_at = ? WHERE id = 'cred_named'`, [old]);
+    f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, dispatched_by) VALUES ('proj_1', 'r_named', 'myco-agent', 'container-smoke', 'running', ?, 'cred_named')`, [NOW]);
+
+    await agentRunRetention(f.env, NOW);
+    expect((f.sqlite.query(`SELECT id FROM member_credentials ORDER BY id`).all() as Array<{ id: string }>).map((r) => r.id))
+      .toEqual(['cred_live', 'cred_named', 'cred_recent']);
   });
 });

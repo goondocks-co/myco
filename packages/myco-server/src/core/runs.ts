@@ -733,9 +733,30 @@ export async function pruneTerminalRuns(db: RelationalStore, cutoffMs: number, l
   return removed;
 }
 
+/**
+ * Revoked harness credentials past the cutoff, and referenced by no run.
+ *
+ * A dispatch mints one credential per run and revokes it at close, so the table
+ * grows with every run the Deployment has ever made. A credential a run row
+ * still names is left: `agent_runs.dispatched_by` references it, and the run
+ * retention pass above is what clears that reference.
+ */
+const REVOKED_CREDENTIALS_SQL = `DELETE FROM member_credentials
+  WHERE id IN (
+    SELECT c.id FROM member_credentials c
+     WHERE c.member_id = ? AND c.revoked_at IS NOT NULL AND c.revoked_at < ?
+       AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.dispatched_by = c.id)
+     ORDER BY c.revoked_at ASC LIMIT ?)`;
+
+/** Remove revoked credentials of one member older than the cutoff, up to `limit`. Answers how many went. */
+export async function pruneRevokedCredentials(db: RelationalStore, memberId: string, cutoffMs: number, limit: number): Promise<number> {
+  const result = await db.prepare(REVOKED_CREDENTIALS_SQL).bind(memberId, cutoffMs, limit).run();
+  return result.meta.changes ?? 0;
+}
+
 /** A run inside its bound, anywhere on the Deployment: one exists or none does. The bound is the run's own, from its context, or the dispatcher's default. */
 const RUN_INSIDE_BOUND_SQL = `SELECT 1 AS one FROM agent_runs
-  WHERE status IN ('pending', 'running') AND started_at IS NOT NULL
+  WHERE ${LIVE_RUN_STATUSES} AND started_at IS NOT NULL
     AND ? < started_at + COALESCE(json_extract(run_context, '$.timeoutSeconds'), ?) * 1000 + ?
   LIMIT 1`;
 
@@ -809,10 +830,12 @@ export async function launchQueued(db: RelationalStore, scope: ReadScope, runId:
  *
  * `queued_at` is kept where the row already had one, so a run returned here
  * keeps its place in the queue's order rather than moving to the back of it.
+ * The row is left as a queued row is written: the launch's own context is
+ * dropped, and the drain rebuilds it when it launches.
  */
 const RETURN_TO_QUEUE_SQL = `UPDATE agent_runs
    SET status = 'queued', held_by = ?, dispatch_spec = ?, dispatched_by = NULL, started_at = NULL,
-       queued_at = COALESCE(queued_at, ?)
+       run_context = NULL, queued_at = COALESCE(queued_at, ?)
  WHERE project_id = ? AND id = ? AND status = 'pending'`;
 
 export async function returnToQueue(
@@ -876,8 +899,8 @@ export async function hasQueuedRun(db: RelationalStore): Promise<boolean> {
 export async function dispatchLoad(db: RelationalStore, task: string, now: number): Promise<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }> {
   const row = await db.prepare(
     `SELECT
-       (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) AS liveRuns,
-       (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND task = ?) AS liveTaskRuns,
+       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES}) AS liveRuns,
+       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ?) AS liveTaskRuns,
        (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND started_at IS NOT NULL AND started_at >= ?) AS taskRunsLastHour`,
   ).bind(task, task, now - 3_600_000).first<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }>();
   return row ?? { liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 };

@@ -16,7 +16,7 @@
  * only into the launched runtime's environment, under the variable its harness
  * reads, and never into telemetry or an answer.
  */
-import { heldBy, readDispatchLimits, type DispatchLimits, type HeldBy } from './limits.js';
+import { DEPLOYMENT_WIDE_HOLDS, heldBy, readDispatchLimits, type DispatchLimits, type HeldBy } from './limits.js';
 import type { ServerEnv } from './adapters.js';
 import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
@@ -182,12 +182,24 @@ export class NotQueued extends Error {
 }
 
 /**
- * The runtime is not taking runs at this instant — draining, restarting, or not
- * reachable. The run goes back to the queue rather than failing, and the next
- * drain launches it; `runId` names the row once `launchDispatch` has returned it.
+ * Why a runtime would not take a run, when the answer is not the run's fault.
+ *
+ * `draining` is the shape of every deploy: the harness stops before the server
+ * rolls, and it clears on its own. `unreachable` is a runtime that answered
+ * nothing at all, which is a fault an operator has to see.
+ */
+export type RuntimeUnavailable = 'draining' | 'unreachable';
+
+/**
+ * The runtime is not taking runs at this instant. The run goes back to the
+ * queue rather than failing, and the next drain launches it; `runId` names the
+ * row once `launchDispatch` has returned it.
  */
 export class RuntimeDraining extends Error {
-  constructor(message: string, readonly runId?: string) { super(message); this.name = 'RuntimeDraining'; }
+  constructor(message: string, readonly why: RuntimeUnavailable = 'draining', readonly runId?: string) {
+    super(message);
+    this.name = 'RuntimeDraining';
+  }
 }
 
 /**
@@ -215,7 +227,7 @@ export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatc
   } catch (err) {
     // The launch already returned the row to the queue; the dispatch waits there rather than being written twice.
     if (err instanceof RuntimeDraining && err.runId !== undefined) {
-      return { queued: true, runId: err.runId, task: prepared.task, projectId: prepared.projectId, heldBy: 'fleet' };
+      return { queued: true, runId: err.runId, task: prepared.task, projectId: prepared.projectId, heldBy: 'runtime' };
     }
     if (!(err instanceof LimitReached)) throw err;
     const holder = (await admitDispatch(env, prepared.task, now, limits)) ?? 'concurrent_runs';
@@ -271,7 +283,7 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
     const held = await admitDispatch(env, queued.task, now, limits);
     if (held !== null) {
       // A Deployment-wide holder holds every later row too; a per-task holder holds only this task's.
-      if (held === 'fleet' || held === 'concurrent_runs') return launched;
+      if (DEPLOYMENT_WIDE_HOLDS.has(held)) return launched;
       continue;
     }
     // A task whose prompt the server builds has it built again here: the run
@@ -295,7 +307,7 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
       // The write refused on a limit another launch reached first: the row stays queued for the next drain. A row no longer queued belongs to another drain; the next row still gets its turn.
       if (err instanceof LimitReached && (await admitDispatch(env, queued.task, now, limits)) !== null) {
         const holder = await admitDispatch(env, queued.task, now, limits);
-        if (holder === 'fleet' || holder === 'concurrent_runs') return launched;
+        if (holder !== null && DEPLOYMENT_WIDE_HOLDS.has(holder)) return launched;
       }
     }
   }
@@ -396,6 +408,13 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     if (options.singleFlight === true && (await hasLiveTaskRun(env.db, scope, prepared.task))) throw new AlreadyRunning();
     throw new LimitReached();
   }
+  /** What a launch that reached a runtime answers, whether its own call said so or the row did. */
+  const landed = async (): Promise<Launched> => {
+    emit({ kind: 'harness_dispatch', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor });
+    try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
+    return { runId, task: prepared.task, projectId: prepared.projectId, timeoutSeconds, provider: prepared.providerType };
+  };
+
   try {
     await env.harnessLaunch({
     runId,
@@ -415,23 +434,31 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     },
   });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof RuntimeDraining) {
+      // The row moves back to the queue FIRST. A launch that reached a runtime
+      // and lost only its answer leaves a live child holding this credential on
+      // a row already claimed: `returnToQueue` writes from `pending` alone, so a
+      // row that has moved says the run is running and keeps what it holds.
+      const returned = await returnToQueue(env.db, scope, runId, { heldBy: 'runtime', dispatchSpec: JSON.stringify(storedSpecOf(spec)), now });
+      if (returned) {
+        await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, minted.tokenId, now);
+        if (error.why === 'unreachable') {
+          emit({ kind: 'harness_unreachable', runId, task: prepared.task, projectId: prepared.projectId, error: message });
+        } else {
+          emit({ kind: 'harness_draining', runId, task: prepared.task, projectId: prepared.projectId, error: message });
+        }
+        throw new RuntimeDraining(message, error.why, runId);
+      }
+      return landed();
+    }
     // The credential is usable until it is revoked, and a runtime that never
     // started never presents it.
     await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, minted.tokenId, now);
-    const message = error instanceof Error ? error.message : String(error);
-    // A runtime that is not taking runs at this instant is a fleet with no free
-    // slot: the row waits in the queue and the next drain launches it.
-    if (error instanceof RuntimeDraining) {
-      await returnToQueue(env.db, scope, runId, { heldBy: 'fleet', dispatchSpec: JSON.stringify(storedSpecOf(spec)), now });
-      emit({ kind: 'harness_queued', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor, heldBy: 'fleet' });
-      throw new RuntimeDraining(message, runId);
-    }
     await applyRunUpdate(env.db, scope, runId, { status: 'failed', completed_at: now, error: `${LAUNCH_REFUSED_ERROR}: ${message}`.slice(0, MAX_RUN_ERROR_CHARS) });
     throw error;
   }
-  emit({ kind: 'harness_dispatch', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor });
-  try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
-  return { runId, task: prepared.task, projectId: prepared.projectId, timeoutSeconds, provider: prepared.providerType };
+  return landed();
 }
 
 /** Prepare and launch in one call, for a caller with no claim of its own to make between them. */

@@ -25,12 +25,13 @@ const STATUS_TABS = [
 
 const STATUS_TONE: Record<string, StatusTone> = { queued: 'outline', skipped: 'outline', running: 'ochre', completed: 'sage', failed: 'terracotta' };
 
-/** Each limit that can hold a queued run, in the reader's words. */
+/** Each thing that can hold a queued run, in the reader's words. */
 const HELD_BY_WORDS: Record<string, string> = {
   concurrent_runs: 'the limit on runs at once',
   task_concurrent_runs: 'the limit on runs of this task at once',
   task_runs_per_hour: 'the limit on runs of this task per hour',
   fleet: 'the size of the fleet',
+  runtime: 'the runtime is not taking a run right now',
 };
 
 /** What a deploy did to a run, in the reader's words: nothing for an ordinary run. */

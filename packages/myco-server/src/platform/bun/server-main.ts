@@ -169,6 +169,11 @@ export const LIVE_RUNS_QUERY = `SELECT id, task, status, started_at, run_context
  * WAL mode (`platform/bun/database.ts`), which admits a reader while the server
  * writes, the busy timeout covers a checkpoint holding the file as this opens
  * it, and a path naming no volume is refused rather than created empty.
+ *
+ * Read-only carries one cost, and it is the one to want: a volume left with a
+ * hot journal by a writer that died cannot be recovered by this reader, so the
+ * read fails and the deploy refuses rather than a deploy proceeding on a volume
+ * whose true contents nobody has established.
  */
 export function liveRuns(databasePath: string): unknown[] {
   const sqlite = new Database(databasePath, { readonly: true });

@@ -23,6 +23,9 @@ export type LaunchRefusal = keyof typeof LAUNCH_REFUSAL_STATUS;
 /** The run ids a launch may name: one path segment, which is what a working directory can be named after. */
 export const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
+/** How often the kill is offered again to a child that is still there. */
+export const BACKSTOP_RETRY_MS = 5_000;
+
 /**
  * How long a child may outlive its own bound before the supervisor kills it.
  *
@@ -97,4 +100,88 @@ export function bearerMatches(header: string | null | undefined, token: string):
   const offered = Buffer.from(match[1]!.trim(), 'utf8');
   const held = Buffer.from(token, 'utf8');
   return offered.length === held.length && timingSafeEqual(offered, held);
+}
+
+/**
+ * The unprivileged user a child runs as when this supervisor can drop privilege.
+ *
+ * An account of the image's own, owning nothing: the launch token is mounted in
+ * the filesystem the children share, and a uid a host is unlikely to also use
+ * is what keeps a mounted secret out of a run's reach.
+ */
+export const DEFAULT_RUNTIME_USER = 'runtime';
+
+/** Who a child is dropped to, and where that user's home is. */
+export interface RuntimeUser {
+  name: string;
+  uid: number;
+  gid: number;
+  home: string;
+}
+
+/** The tools a supervisor found on its PATH; either absent, the plan says what it can still do. */
+export interface LaunchTools {
+  /** Starts the child in a session of its own, so a signal reaches its whole tree. */
+  setsid: string | null;
+  /** Drops the child to another user before it executes. */
+  setpriv: string | null;
+}
+
+/** How one child is started, and what that gives the supervisor over it. */
+export interface ChildLaunchPlan {
+  cmd: string[];
+  /** Whether the child leads a process group, so a signal to `-pid` reaches its children too. */
+  groupLed: boolean;
+  /** Whether the child runs as a different user from this process. */
+  dropped: boolean;
+}
+
+/**
+ * The command that starts one child.
+ *
+ * `setsid` puts the child in a session of its own so the tree it starts — the
+ * agent CLI among it — is signalled with it. `setpriv` drops it to the
+ * unprivileged user, so a child cannot read what the supervisor's own user can:
+ * the launch token is mounted in the same filesystem.
+ */
+export function childLaunchPlan(options: {
+  runtimeCommand: string;
+  entry: string;
+  tools: LaunchTools;
+  /** The user to drop to, or null when this process is already unprivileged. */
+  runAs: RuntimeUser | null;
+}): ChildLaunchPlan {
+  const { tools, runAs } = options;
+  const dropped = runAs !== null && tools.setpriv !== null;
+  return {
+    cmd: [
+      ...(tools.setsid === null ? [] : [tools.setsid]),
+      ...(dropped ? [tools.setpriv!, `--reuid=${runAs!.name}`, `--regid=${runAs!.name}`, '--init-groups'] : []),
+      options.runtimeCommand,
+      options.entry,
+    ],
+    groupLed: tools.setsid !== null,
+    dropped,
+  };
+}
+
+/** A file's ownership and permission bits, as `statSync` reports them. */
+export interface FileOwnership {
+  mode: number;
+  uid: number;
+  gid: number;
+}
+
+/**
+ * Whether `runtime` could read this file.
+ *
+ * The launch token is mounted in the filesystem the children run in, so
+ * dropping their user protects it only while its bits actually withhold it.
+ */
+export function readableBy(file: FileOwnership, runtime: RuntimeUser): boolean {
+  const mode = file.mode & 0o777;
+  if ((mode & 0o004) !== 0) return true;
+  if ((mode & 0o040) !== 0 && file.gid === runtime.gid) return true;
+  if ((mode & 0o400) !== 0 && file.uid === runtime.uid) return true;
+  return false;
 }

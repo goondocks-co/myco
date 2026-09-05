@@ -26,7 +26,9 @@ import { loadAllTasks } from '../registry.js';
 import { composeHostedPrompt, composeTaskPrompt } from '../prompt-composition.js';
 import type { AgentHarness } from '../harness/types.js';
 import type { ProviderConfig } from '../types.js';
-import type { RunStatusOutcome, RunStore } from './run-store.js';
+import { MAX_RUN_ERROR_CHARS, type RunStatusOutcome, type RunStore } from './run-store.js';
+
+export { MAX_RUN_ERROR_CHARS } from './run-store.js';
 import { createHttpRunStore, postRunControl, type RunClaimAdmission } from './run-store-http.js';
 import { INSTRUCTED_TASKS, materializedToolsForTask, type ServerToolContext } from './server-tools.js';
 import { onStopSignals, type ProcessEvents } from './process-signals.js';
@@ -42,8 +44,6 @@ export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 export const RUN_DEADLINE_ERROR = 'the run reached its deadline';
 /** How a run the platform took the runtime away from, before the run reached its own end, is recorded. */
 export const RUN_RECLAIMED_ERROR = 'the platform reclaimed the runtime before the run ended';
-/** How much of a failure message rides the run row. */
-export const MAX_RUN_ERROR_CHARS = 2000;
 /** How many times a terminal status is offered to the Deployment before the run is left to the stale sweep. */
 export const TERMINAL_UPDATE_ATTEMPTS = 2;
 /**

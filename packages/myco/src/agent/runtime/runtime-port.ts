@@ -16,8 +16,8 @@ export const NO_RUNTIME_LISTENER = 'none';
 /** The highest port a listener can bind. */
 const MAX_PORT = 65_535;
 
-/** A port, in decimal, and nothing else: `0x1f` and `1e3` are not ports. */
-const DECIMAL_PORT = /^\d{1,5}$/;
+/** A port, in decimal and in one spelling: `0x1f`, `1e3` and `0080` are not ports. */
+const DECIMAL_PORT = /^(0|[1-9]\d{0,4})$/;
 
 /** The port a runtime should serve on, or `null` for no listener. A value that is neither is refused rather than taken as the default. */
 export function runtimePortFrom(value: string | undefined): number | null {

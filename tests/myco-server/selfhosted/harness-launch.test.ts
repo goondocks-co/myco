@@ -245,11 +245,12 @@ describe('a dispatch that starts a real runtime', () => {
     const seam = await boot();
     await seam.stopHarness();
 
-    // A runtime that is not there is not a run that failed.
+    // A runtime that is not there is not a run that failed, and it is not a
+    // full fleet either: the row says which of the two it is.
     const held = await seam.dispatch();
-    expect(held).toMatchObject({ queued: true, heldBy: 'fleet' });
+    expect(held).toMatchObject({ queued: true, heldBy: 'runtime' });
     expect(seam.sql(`SELECT status, held_by AS heldBy, dispatched_by AS dispatchedBy FROM agent_runs WHERE id = '${held.runId}'`))
-      .toEqual([{ status: 'queued', heldBy: 'fleet', dispatchedBy: null }]);
+      .toEqual([{ status: 'queued', heldBy: 'runtime', dispatchedBy: null }]);
     // Nothing failed, and nothing is running.
     expect(seam.sql(`SELECT COUNT(*) AS c FROM agent_runs WHERE status = 'failed'`)).toEqual([{ c: 0 }]);
 

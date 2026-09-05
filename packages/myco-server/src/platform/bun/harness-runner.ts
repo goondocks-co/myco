@@ -9,6 +9,8 @@
  * A refusal is thrown. A supervisor that is draining, restarting, or not
  * reachable is `RuntimeDraining` and the dispatcher returns the run to the
  * queue; every other refusal is terminal, and its word rides the failed row.
+ * Unavailability is read from the status as well as the word: a 503 is a
+ * runtime that is not serving whatever body it sent, including none.
  */
 import { RuntimeDraining } from '../../core/harness.js';
 import type { ServerEnv } from '../../core/adapters.js';
@@ -31,6 +33,9 @@ interface Refusal {
 /** The word a supervisor answers with while it is stopping. */
 const DRAINING = 'draining';
 
+/** The status a runtime that is not serving answers with, whatever body it carries. */
+const UNAVAILABLE_STATUS = 503;
+
 const text = (value: unknown): string | null => (typeof value === 'string' && value.trim() !== '' ? value.trim() : null);
 
 export function httpHarnessLaunch(options: HttpHarnessOptions): NonNullable<ServerEnv['harnessLaunch']> {
@@ -51,14 +56,14 @@ export function httpHarnessLaunch(options: HttpHarnessOptions): NonNullable<Serv
     } catch (error) {
       // A supervisor between restarts answers nothing, which is the same "not
       // now" as the word it answers while it stops.
-      throw new RuntimeDraining(`the harness runtime at ${options.url} could not be reached: ${error instanceof Error ? error.message : String(error)}`);
+      throw new RuntimeDraining(`the harness runtime at ${options.url} could not be reached: ${error instanceof Error ? error.message : String(error)}`, 'unreachable');
     }
     if (answered.ok) return;
     const body = await answered.json().catch(() => null) as Refusal | null;
     const word = text(body?.refusal) ?? `status ${answered.status}`;
     const detail = text(body?.error);
     const message = `the harness runtime refused to launch ${spec.runId}: ${word}${detail === null ? '' : ` (${detail})`}`;
-    if (word === DRAINING) throw new RuntimeDraining(message);
+    if (answered.status === UNAVAILABLE_STATUS || word === DRAINING) throw new RuntimeDraining(message, 'draining');
     throw new Error(message);
   };
 }

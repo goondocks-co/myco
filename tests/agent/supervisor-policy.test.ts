@@ -7,8 +7,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
-  bearerMatches, childDeadline, CHILD_OVERRUN_MARGIN_MS, decideChildExit, decideLaunch, decideSignal,
-  LAUNCH_REFUSAL_STATUS, RUN_ID_PATTERN, type SupervisorState,
+  bearerMatches, childDeadline, CHILD_OVERRUN_MARGIN_MS, childLaunchPlan, decideChildExit, decideLaunch, decideSignal,
+  LAUNCH_REFUSAL_STATUS, readableBy, RUN_ID_PATTERN, type RuntimeUser, type SupervisorState,
 } from '@myco/agent/runtime/supervisor-policy.js';
 import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
 
@@ -116,5 +116,55 @@ describe('when a child has outlived its run', () => {
 
   it('holds the same margin the Deployment gives a run before it treats its runtime as gone', () => {
     expect(CHILD_OVERRUN_MARGIN_MS).toBe(RUN_OVERRUN_MARGIN_MS);
+  });
+});
+
+describe('how a child is started', () => {
+  const tools = { setsid: '/usr/bin/setsid', setpriv: '/usr/bin/setpriv' };
+  const bun: RuntimeUser = { name: 'bun', uid: 1000, gid: 1000, home: '/home/bun' };
+  const base = { runtimeCommand: '/usr/local/bin/bun', entry: '/app/entry.js' };
+
+  it('drops the child to the unprivileged user and leads a process group where it can', () => {
+    expect(childLaunchPlan({ ...base, tools, runAs: bun })).toEqual({
+      cmd: ['/usr/bin/setsid', '/usr/bin/setpriv', '--reuid=bun', '--regid=bun', '--init-groups', '/usr/local/bin/bun', '/app/entry.js'],
+      groupLed: true,
+      dropped: true,
+    });
+  });
+
+  it('runs the child as this process where there is nobody to drop to', () => {
+    expect(childLaunchPlan({ ...base, tools, runAs: null })).toEqual({
+      cmd: ['/usr/bin/setsid', '/usr/local/bin/bun', '/app/entry.js'],
+      groupLed: true,
+      dropped: false,
+    });
+  });
+
+  it('starts the child directly where neither tool is there, and says so in what it can do', () => {
+    expect(childLaunchPlan({ ...base, tools: { setsid: null, setpriv: null }, runAs: bun })).toEqual({
+      cmd: ['/usr/local/bin/bun', '/app/entry.js'],
+      groupLed: false,
+      dropped: false,
+    });
+    expect(childLaunchPlan({ ...base, tools: { setsid: null, setpriv: '/usr/bin/setpriv' }, runAs: bun }))
+      .toMatchObject({ groupLed: false, dropped: true });
+  });
+});
+
+describe('whether the launch token is withheld from a child', () => {
+  const bun: RuntimeUser = { name: 'bun', uid: 1000, gid: 1000, home: '/home/bun' };
+
+  it('is withheld by a secret only its owner reads, owned by somebody else', () => {
+    expect(readableBy({ mode: 0o100600, uid: 0, gid: 0 }, bun)).toBe(false);
+    expect(readableBy({ mode: 0o100640, uid: 0, gid: 0 }, bun)).toBe(false);
+  });
+
+  it('is reachable when the bits or the ownership hand it over', () => {
+    // World-readable, however it is owned.
+    expect(readableBy({ mode: 0o100644, uid: 0, gid: 0 }, bun)).toBe(true);
+    // Group-readable and the child shares the group.
+    expect(readableBy({ mode: 0o100640, uid: 0, gid: 1000 }, bun)).toBe(true);
+    // Owned by the child's own user.
+    expect(readableBy({ mode: 0o100600, uid: 1000, gid: 0 }, bun)).toBe(true);
   });
 });
