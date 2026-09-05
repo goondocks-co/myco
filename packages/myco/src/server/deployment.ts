@@ -140,13 +140,13 @@ function composeArgs(paths: DeploymentPaths, ...rest: string[]): string[] {
 /**
  * Give a bundle written by an earlier version what every verb now names.
  *
- * `create`, `adopt`, `update`, `recreate`, `rotate` and `restore` call this
- * before their first Compose invocation. A verb that only reads writes nothing,
- * and `destroy` needs no override to take down what exists; the argv names the
- * file only while it is there. Only `create` and `adopt` write the whole
- * bundle, so a Deployment provisioned before the override file existed is
- * repaired by whichever changing verb reaches it. An override already on disk
- * is the operator's and is left exactly as it is.
+ * Reading the service set repairs the bundle first, so a Deployment
+ * provisioned before the override file existed is repaired by whichever
+ * changing verb reaches it, and no verb can act on one without it. The rule is
+ * in that read and nowhere else: a verb that only reports reads without
+ * repairing and writes nothing, and `destroy` needs no override to take down
+ * what exists — the argv names the file only while it is there. An override
+ * already on disk is the operator's and is left exactly as it is.
  */
 export function repairBundle(paths: DeploymentPaths): void {
   if (!existsSync(paths.composeFile) || existsSync(paths.overrideFile)) return;
@@ -214,8 +214,8 @@ export const DEFAULT_PORT = 8787;
  */
 function portIn(value: string | number | null | undefined, source: 'flag' | 'env'): number {
   if (value === null || value === undefined) return DEFAULT_PORT;
-  // An `.env` line that is not there names no port; a flag that is there and
-  // carries nothing is a typo, not a request for the default.
+  // `MYCO_PORT=` with nothing after it: an `.env` line carrying no value names
+  // no port. A flag carrying none is a typo, and falls through to the refusal.
   if (value === '' && source === 'env') return DEFAULT_PORT;
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -375,7 +375,8 @@ export async function deploymentStatus(options: DeploymentOptions = {}): Promise
   // rather than answering on whatever containers happen to be up.
   let declared: string[];
   try {
-    declared = await composeServices({ paths, runner });
+    // A verb that only reports the Deployment writes nothing into its bundle.
+    declared = await readComposeServices({ paths, runner });
   } catch (err) {
     if (!(err instanceof ComposeFilesUnreadable)) throw err;
     return { provisioned: true, running: false, services, states: [], servicesError: err.detail, raw: result.stdout };
@@ -535,7 +536,6 @@ export interface HarnessTarget {
   graceNote?: string;
 }
 
-/** Raised when Compose cannot say what this Deployment is made of; a verb that guessed would act on the wrong services. */
 /** The bundle's two files, as an operator would name them. */
 const BUNDLE_FILES = ['compose.yaml', 'compose.override.yaml'] as const;
 
@@ -545,6 +545,7 @@ function fileNamedIn(detail: string): string {
   return named.length === 1 ? `fix ${named[0]!} or restore it from a bundle that works` : 'fix compose.yaml and compose.override.yaml, or remove the override';
 }
 
+/** Raised when Compose cannot say what this Deployment is made of; a verb that guessed would act on the wrong services. */
 export class ComposeFilesUnreadable extends Error {
   /**
    * `detail` is what an operator reads; `said` is the command's own words,
@@ -567,6 +568,16 @@ export class ComposeFilesUnreadable extends Error {
  * harness holding runs, and say nothing about it.
  */
 async function composeServices(target: HarnessTarget): Promise<string[]> {
+  // The repair is part of reading, so no verb can act on this Deployment
+  // without it: Compose refuses a `--file` naming a path that is not there, and
+  // the argv names both files. A verb that only reports reads through
+  // {@link reportComposeServices} and writes nothing.
+  repairBundle(target.paths);
+  return readComposeServices(target);
+}
+
+/** The same read, leaving the bundle exactly as it found it. What a verb that only reports the Deployment uses. */
+async function readComposeServices(target: HarnessTarget): Promise<string[]> {
   let named: string[];
   try {
     const result = await runOrThrow(target.runner, 'docker',
@@ -739,7 +750,6 @@ export interface RestoreOptions extends DeploymentOptions, DrainOptions {
  */
 export async function restoreDeployment(options: RestoreOptions): Promise<void> {
   const { paths, runner } = resolved(options);
-  repairBundle(paths);
   const snapshot = path.join(options.source, 'myco.sqlite');
   if (!existsSync(snapshot)) {
     throw new Error(`${options.source} holds no myco.sqlite; it is not a Deployment backup`);
@@ -840,7 +850,6 @@ export function writeSignInSecrets(paths: DeploymentPaths, secrets: SignInSecret
 /** Recreate the containers so they read the bundle's current secrets and env; a plain `up` leaves a running container on the bytes it started with. */
 export async function recreateDeployment(options: DeploymentOptions = {}): Promise<void> {
   const { paths, runner } = resolved(options);
-  repairBundle(paths);
   await withHarnessStopped({ paths, runner, ...(options.report === undefined ? {} : { report: options.report }) }, () =>
     runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--force-recreate', '--wait'), { cwd: paths.root }));
 }
@@ -873,7 +882,6 @@ export class UpdateRolledBack extends Error {
  */
 export async function updateDeployment(options: UpdateOptions = {}): Promise<void> {
   const { paths, runner } = resolved(options);
-  repairBundle(paths);
   const previous = pinnedVersion(paths);
 
   // Refused before anything moves: a bundle Compose cannot read must not be
@@ -939,7 +947,6 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
  */
 export async function rotateSecrets(options: DeploymentOptions = {}): Promise<string[]> {
   const { paths, runner } = resolved(options);
-  repairBundle(paths);
   // The keys are replaced only once the recreate that applies them is known to
   // be possible: a Deployment must never serve on a wrap key its bundle no
   // longer holds.
@@ -962,7 +969,6 @@ export async function rotateSecrets(options: DeploymentOptions = {}): Promise<st
  */
 export async function adoptDeployment(options: DeploymentOptions = {}): Promise<{ adopted: boolean; services: string[] }> {
   const { paths, runner } = resolved(options);
-  repairBundle(paths);
   // A stack whose bundle Compose cannot read is the stack this verb exists to
   // take over, so an unreadable one is replaced from the shipped template
   // rather than refused. The operator's override, the secrets and `.env` stand;

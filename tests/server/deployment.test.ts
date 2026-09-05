@@ -12,6 +12,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, statSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createDeployment,
   deploymentStatus,
@@ -574,5 +575,34 @@ describe('create on a bundle Compose refuses', () => {
     };
     await expect(createDeployment({ paths: p, runner: refusing, report: () => undefined })).rejects.toThrow(/could not be read/);
     expect(readFileSync(p.composeFile, 'utf8')).toBe(before);
+  });
+});
+
+/**
+ * The repair is part of reading the service set, and nowhere else.
+ *
+ * It was a pair of calls each verb had to remember — repair, then read — and
+ * forgetting one produced a verb that refused a bundle Compose could have read
+ * and a verb whose pre-check read a different file set than its recreate.
+ */
+describe('no verb repairs the bundle on its own', () => {
+  const source = (file: string) =>
+    readFileSync(fileURLToPath(new URL(`../../packages/myco/src/server/${file}`, import.meta.url)), 'utf8');
+
+  it('GATE: repairBundle is called from the read alone', () => {
+    const deployment = source('deployment.ts');
+    // Every line that calls it, with the line that declares it dropped.
+    const callers = deployment.split('\n')
+      .map((line, at) => ({ line: line.trim(), at }))
+      .filter(({ line }) => /\brepairBundle\(/.test(line) && !line.startsWith('export function repairBundle'));
+    expect(callers.map(({ line }) => line)).toEqual(['repairBundle(target.paths);']);
+
+    // And that one call sits in the read every changing verb goes through.
+    const owner = deployment.slice(0, deployment.split('\n').slice(0, callers[0]!.at).join('\n').length);
+    expect(owner.lastIndexOf('async function composeServices')).toBeGreaterThan(owner.lastIndexOf('async function readComposeServices'));
+  });
+
+  it('GATE: nothing outside deployment.ts calls it', () => {
+    expect(source('github-app.ts')).not.toContain('repairBundle');
   });
 });
