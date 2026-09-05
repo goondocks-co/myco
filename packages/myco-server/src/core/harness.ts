@@ -209,6 +209,15 @@ export type RuntimeUnavailable = 'draining' | 'unreachable';
  * run id. The run is running: the row keeps the credential that child holds,
  * and the launch counts as landed.
  */
+/**
+ * The runtime refused a launch on terms that end the run, and the row carries
+ * that refusal. A caller reading this knows the run is answered; a throw of any
+ * other kind reaches it from before the row write.
+ */
+export class LaunchRefused extends Error {
+  constructor(message: string, options: { cause: unknown }) { super(message, options); this.name = 'LaunchRefused'; }
+}
+
 export class RuntimeAlreadyHolding extends Error {
   constructor(message: string) { super(message); this.name = 'RuntimeAlreadyHolding'; }
 }
@@ -389,14 +398,16 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
         if (holder !== null && DEPLOYMENT_WIDE_HOLDS.has(holder)) return launched;
         continue;
       }
-      // Anything else came from the launch itself, which failed the row on its
-      // way out: the run is answered, and the rows after it still get their
-      // turn. It is named rather than swallowed, so a refusal nobody expected
-      // is readable in the log instead of being a wake that quietly did less.
-      emit({
-        kind: 'harness_drain_refused', runId: queued.id, task: queued.task, projectId: queued.projectId,
-        error: (err instanceof Error ? err.message : String(err)).slice(0, MAX_RUN_ERROR_CHARS),
-      });
+      const detail = (err instanceof Error ? err.message : String(err)).slice(0, MAX_RUN_ERROR_CHARS);
+      // The launch met terms that end the run: the row carries the refusal, and
+      // the rows after it still get their turn.
+      if (err instanceof LaunchRefused) {
+        emit({ kind: 'harness_drain_refused', runId: queued.id, task: queued.task, projectId: queued.projectId, error: detail });
+        continue;
+      }
+      // Anything else reaches this drain from before the row write: the row is
+      // as the queue left it, and the next wake offers it again.
+      emit({ kind: 'harness_drain_failed', runId: queued.id, task: queued.task, projectId: queued.projectId, error: detail });
     }
   }
   return launched;
@@ -481,16 +492,25 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   // A re-queued row carries the credential of the child an earlier launch may
   // have started; the launch below replaces it, and what becomes of it depends
   // on whether that child is still running.
-  const carried = spec.fromQueue === true ? (await getRun(env.db, scope, runId))?.dispatchedBy ?? null : null;
   // A queued row moves to pending for this credential; any other id is recorded afresh. Either way the row exists before
-  // the launch, and the write itself carries the limit check when limits are given. A write that changed nothing minted
-  // a credential for no run: it is revoked here, and the caller learns whether a limit or the row's own state refused it.
+  // the launch, and the write itself carries the limit check when limits are given.
   const admission = options.limits === undefined && options.singleFlight !== true ? undefined : { limits: options.limits ?? NO_LIMITS, now, singleFlight: options.singleFlight === true };
-  const recorded = spec.fromQueue === true
-    ? await launchQueued(env.db, scope, runId, { task: prepared.task, dispatchedBy: minted.tokenId, startedAt: now, runContext, instruction: spec.instruction ?? null, provider: prepared.providerType, model: prepared.model }, admission)
-    : await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }, admission);
+  // Nothing names this credential until the write lands, so a store that throws
+  // anywhere between the mint and that write retires it on its way out.
+  let carried: string | null;
+  let recorded: boolean;
+  try {
+    carried = spec.fromQueue === true ? (await getRun(env.db, scope, runId))?.dispatchedBy ?? null : null;
+    recorded = spec.fromQueue === true
+      ? await launchQueued(env.db, scope, runId, { task: prepared.task, dispatchedBy: minted.tokenId, startedAt: now, runContext, instruction: spec.instruction ?? null, provider: prepared.providerType, model: prepared.model }, admission)
+      : await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }, admission);
+  } catch (error) {
+    await retireDispatchCredential(env, minted.tokenId, now);
+    throw error;
+  }
   if (!recorded) {
-    // No row names this credential: the write above changed nothing.
+    // No row names this credential: the write above changed nothing, and the
+    // caller learns whether a limit or the row's own state refused it.
     await retireDispatchCredential(env, minted.tokenId, now);
     const existing = await getRun(env.db, scope, runId);
     if (spec.fromQueue === true) {
@@ -574,7 +594,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     await retireDispatchCredential(env, minted.tokenId, now);
     await retireDispatchCredential(env, carried, now);
     await applyRunUpdate(env.db, scope, runId, { status: 'failed', completed_at: now, error: `${LAUNCH_REFUSED_ERROR}: ${message}`.slice(0, MAX_RUN_ERROR_CHARS) });
-    throw error;
+    throw new LaunchRefused(message, { cause: error });
   }
   return landed({ retire: carried });
 }

@@ -97,12 +97,17 @@ export const dispatchQueue: ParityScenario = {
 
     // With no provider named, the drain can prepare nothing and gives up on it.
     await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.provider.type'`);
-    await wake();
-    expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
-      .toEqual([{ status: 'failed', error: 'no provider is configured; Settings names one before a dispatch can run' }]);
-    expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
-      .toEqual([{ revoked: 1 }]);
-    await leaf('agent.provider.type', 'openai-compatible');
+    try {
+      await wake();
+      expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
+        .toEqual([{ status: 'failed', error: 'no provider is configured; Settings names one before a dispatch can run' }]);
+      expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
+        .toEqual([{ revoked: 1 }]);
+    } finally {
+      // The scenarios after this one dispatch, and a Deployment with no provider
+      // dispatches nothing.
+      await leaf('agent.provider.type', 'openai-compatible');
+    }
 
     // Nothing this scenario launched stays live for the next one to count.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id IN (${ids.map(lit).join(', ')})`);

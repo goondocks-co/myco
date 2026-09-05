@@ -373,6 +373,38 @@ describe('a runtime that is not taking runs', () => {
     expect((f.sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE status = 'failed'`).get() as { c: number }).c).toBe(0);
   });
 
+  it('retires a credential no row ever named, when the write for it throws', async () => {
+    const f = fixture();
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    await enqueueDispatch(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'q_throws' }, 'fleet', NOW);
+
+    // The store fails the write that would have named the credential.
+    const broken: ServerEnv = { ...f.env, db: { ...f.env.db, prepare: (sql: string) => {
+      if (sql.includes(`SET status = 'pending'`)) throw new Error('the store is unreachable');
+      return f.env.db.prepare(sql);
+    } } };
+
+    const lines = await emitted(async () => { expect(await drainQueue(broken, NOW + 1)).toBe(0); });
+    // The row is as the queue left it, and the drain says the write never landed.
+    expect(f.run('q_throws')).toMatchObject({ status: 'queued', heldBy: 'fleet', dispatchedBy: null });
+    expect(lines.filter((l) => l.kind === 'harness_drain_failed').map((l) => l.runId)).toEqual(['q_throws']);
+    expect(lines.some((l) => l.kind === 'harness_drain_refused')).toBe(false);
+    // Nothing names the credential minted for that write, and it is revoked.
+    const credentials = f.sqlite.query(`SELECT revoked_at AS r FROM member_credentials WHERE member_id = 'mem_harness'`).all() as Array<{ r: number | null }>;
+    expect(credentials.map((c) => c.r)).toEqual([NOW + 1]);
+  });
+
+  it('says the row carries the refusal when the launch itself ended the run', async () => {
+    const f = fixture({ refuse: () => new Error('the harness runtime refused to launch: spawn') });
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    await enqueueDispatch(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'q_refused' }, 'fleet', NOW);
+
+    const lines = await emitted(async () => { expect(await drainQueue(f.env, NOW + 1)).toBe(0); });
+    expect(f.run('q_refused')?.status).toBe('failed');
+    expect(lines.filter((l) => l.kind === 'harness_drain_refused').map((l) => l.runId)).toEqual(['q_refused']);
+    expect(lines.some((l) => l.kind === 'harness_drain_failed')).toBe(false);
+  });
+
   it('leaves a row another drain took to that drain, and carries on with the rest', async () => {
     const f = fixture();
     const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
