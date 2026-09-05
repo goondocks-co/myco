@@ -446,7 +446,8 @@ describe('what the supervisor does with a child it cannot be rid of', () => {
     expect((await s.probe()).children.map((c) => c.runId)).toEqual(['run_stubborn']);
   });
 
-  it('keeps launching after a working directory it could not remove', async () => {
+  const unprivileged = process.getuid?.() === 0 ? it.skip : it;
+  unprivileged('keeps launching after a working directory it could not remove (root ignores the mode this rests on)', async () => {
     const s = boot();
     const out = join(s.root, 'stale.json');
     expect((await s.launch({ runId: 'run_stale', timeoutSeconds: 120, envVars: { STANDIN_OUT: out, STANDIN_EXIT_MS: '20' } })).status).toBe(202);
@@ -479,7 +480,9 @@ describe('what the supervisor does with a child it cannot be rid of', () => {
       try { process.kill(pid, 0); return false; } catch { return true; }
     };
     await until(() => gone(kid), 'the grandchild to be killed with its runtime');
-    expect((await s.probe()).children).toEqual([]);
+    // The child dies with its group too, and the run is released when the
+    // supervisor observes that — which is after the grandchild is already gone.
+    await until(async () => (await s.probe()).children.length === 0, 'the run to be released');
   });
 });
 
@@ -557,7 +560,9 @@ describe('a run whose runtime died before it ended', () => {
 });
 
 describe('what the operator has to supply', () => {
-  const withEnv = (env: Record<string, string | undefined>) => () => supervisorOptionsFromEnv(env);
+  /** An unprivileged supervisor, whatever user happens to be running this suite. */
+  const asUser = { uid: 1000, tools: { setsid: null, setpriv: null }, passwd: () => '' };
+  const withEnv = (env: Record<string, string | undefined>) => () => supervisorOptionsFromEnv(env, asUser);
 
   it('refuses to start without a token file: the launch endpoint is authenticated', () => {
     expect(withEnv({})).toThrow(/MYCO_HARNESS_TOKEN_FILE/);
@@ -584,11 +589,39 @@ describe('what the operator has to supply', () => {
     const path = join(root, 'token');
     writeFileSync(path, `  ${TOKEN}  \n`);
 
-    const options = supervisorOptionsFromEnv({ MYCO_HARNESS_TOKEN_FILE: path });
+    const options = supervisorOptionsFromEnv({ MYCO_HARNESS_TOKEN_FILE: path }, asUser);
+    expect(options.runAs).toBeNull();
     expect(options.token).toBe(TOKEN);
     expect(options.port).toBe(8080);
     expect(options.entry.endsWith('entry.js')).toBe(true);
     expect(options.workDir).toBe(tmpdir());
+  });
+
+  it('drops its children when it is root, and refuses when it cannot', () => {
+    const root = scratch();
+    const path = join(root, 'token');
+    writeFileSync(path, TOKEN);
+    chmodSync(path, 0o600);
+    const passwd = () => 'root:x:0:0::/root:/bin/sh\nruntime:x:10002:10002::/home/runtime:/usr/sbin/nologin\n';
+    const tools = { setsid: '/usr/bin/setsid', setpriv: '/usr/bin/setpriv' };
+    const env = { MYCO_HARNESS_TOKEN_FILE: path };
+
+    // A token owned by whoever runs this suite is not readable by uid 10002.
+    expect(supervisorOptionsFromEnv(env, { uid: 0, tools, passwd }).runAs)
+      .toEqual({ name: 'runtime', uid: 10_002, gid: 10_002, home: '/home/runtime' });
+
+    // Nothing to drop with.
+    expect(() => supervisorOptionsFromEnv(env, { uid: 0, tools: { setsid: tools.setsid, setpriv: null }, passwd }))
+      .toThrow(/setpriv is not on its PATH/);
+
+    // Nobody to drop to.
+    expect(() => supervisorOptionsFromEnv({ ...env, MYCO_RUNTIME_USER: 'nobody-here' }, { uid: 0, tools, passwd }))
+      .toThrow(/no account for/);
+
+    // A secret the dropped user could read protects nothing, so it is refused by name.
+    chmodSync(path, 0o644);
+    expect(() => supervisorOptionsFromEnv(env, { uid: 0, tools, passwd }))
+      .toThrow(/which runtime can read/);
   });
 
   it('takes the port, the entry, and the working root the operator named', () => {
@@ -601,9 +634,9 @@ describe('what the operator has to supply', () => {
       MYCO_SUPERVISOR_PORT: '9111',
       MYCO_HARNESS_ENTRY: '/app/entry.js',
       MYCO_WORK_DIR: '/work',
-    })).toMatchObject({ port: 9111, entry: '/app/entry.js', workDir: '/work' });
+    }, asUser)).toMatchObject({ port: 9111, entry: '/app/entry.js', workDir: '/work' });
 
-    expect(() => supervisorOptionsFromEnv({ MYCO_HARNESS_TOKEN_FILE: path, MYCO_SUPERVISOR_PORT: 'eighty-eighty' }))
+    expect(() => supervisorOptionsFromEnv({ MYCO_HARNESS_TOKEN_FILE: path, MYCO_SUPERVISOR_PORT: 'eighty-eighty' }, asUser))
       .toThrow(/MYCO_SUPERVISOR_PORT/);
   });
 });

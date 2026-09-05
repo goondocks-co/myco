@@ -431,7 +431,10 @@ export function runtimeUserOf(name: string, passwd: string): RuntimeUser | null 
  * against. A root supervisor is refused when it cannot drop its children, or
  * when the user it would drop them to could read that token anyway.
  */
-export function supervisorOptionsFromEnv(env: Record<string, string | undefined> = process.env): SupervisorOptions {
+export function supervisorOptionsFromEnv(
+  env: Record<string, string | undefined> = process.env,
+  machine: { uid?: number; tools?: LaunchTools; passwd?: () => string } = {},
+): SupervisorOptions {
   const tokenPath = env.MYCO_HARNESS_TOKEN_FILE;
   if (tokenPath === undefined || tokenPath === '') {
     throw new SupervisorStartupError('MYCO_HARNESS_TOKEN_FILE is not set, and the launch endpoint is authenticated');
@@ -455,16 +458,19 @@ export function supervisorOptionsFromEnv(env: Record<string, string | undefined>
     ? fileURLToPath(new URL(DEFAULT_ENTRY, import.meta.url))
     : env.MYCO_HARNESS_ENTRY;
 
-  const tools: LaunchTools = { setsid: Bun.which('setsid'), setpriv: Bun.which('setpriv') };
+  const tools: LaunchTools = machine.tools ?? { setsid: Bun.which('setsid'), setpriv: Bun.which('setpriv') };
   const userName = env.MYCO_RUNTIME_USER === undefined || env.MYCO_RUNTIME_USER === '' ? DEFAULT_RUNTIME_USER : env.MYCO_RUNTIME_USER;
   let runAs: RuntimeUser | null = null;
-  if (process.getuid?.() === 0) {
+  // Only a root supervisor has a privilege to drop; one already unprivileged
+  // shares its own user with its children and says so.
+  if ((machine.uid ?? process.getuid?.()) === 0) {
     if (tools.setpriv === null) {
       throw new SupervisorStartupError('this supervisor runs as root and setpriv is not on its PATH, so a child cannot be dropped to an unprivileged user');
     }
-    let passwd = '';
-    try { passwd = readFileSync('/etc/passwd', 'utf8'); } catch { passwd = ''; }
-    runAs = runtimeUserOf(userName, passwd);
+    const readPasswd = machine.passwd ?? (() => {
+      try { return readFileSync('/etc/passwd', 'utf8'); } catch { return ''; }
+    });
+    runAs = runtimeUserOf(userName, readPasswd());
     if (runAs === null) throw new SupervisorStartupError(`MYCO_RUNTIME_USER names ${userName}, which this machine has no account for`);
     const file = statSync(tokenPath);
     if (readableBy({ mode: file.mode, uid: file.uid, gid: file.gid }, runAs)) {
