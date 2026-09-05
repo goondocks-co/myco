@@ -140,10 +140,11 @@ function composeArgs(paths: DeploymentPaths, ...rest: string[]): string[] {
 /**
  * Give a bundle written by an earlier version what every verb now names.
  *
- * Each verb calls this before its first Compose invocation. Compose refuses a
- * `--file` naming a path that is not there, and only `create` and `adopt`
- * write the whole bundle, so a Deployment provisioned before the override file
- * existed is repaired by whichever verb reaches it. An override already on disk
+ * Every verb that changes the Deployment calls this before its first Compose
+ * invocation; a verb that only reads writes nothing, and the argv names the
+ * override only while it is there. Only `create` and `adopt` write the whole
+ * bundle, so a Deployment provisioned before the override file existed is
+ * repaired by whichever changing verb reaches it. An override already on disk
  * is the operator's and is left exactly as it is.
  */
 export function repairBundle(paths: DeploymentPaths): void {
@@ -242,10 +243,20 @@ export async function createDeployment(options: CreateOptions = {}): Promise<{ r
   const live = await runningServices({ paths, runner });
   if (live.length === 0) return await up().then(() => ({ root: paths.root, port }));
 
-  // A harness whose server is not running has nothing to post an ending to, so
-  // it gets the window an operator's stop gets rather than the whole grace.
-  const grace = live.includes('server') ? HARNESS_STOP_GRACE_SECONDS : DESTROY_STOP_TIMEOUT_SECONDS;
-  const target = { paths, runner, graceSeconds: grace, ...(options.report === undefined ? {} : { report: options.report }) };
+  // The whole grace is only worth spending on a harness that is running with a
+  // server to post its endings to. Anything else gets the window an operator's
+  // stop gets, and says why.
+  const idle = !live.includes(HARNESS_SERVICE)
+    ? 'the harness is not running'
+    : !live.includes('server')
+      ? 'the server is not running, so the harness has nothing to post to'
+      : null;
+  const target = {
+    paths,
+    runner,
+    ...(idle === null ? {} : { graceSeconds: DESTROY_STOP_TIMEOUT_SECONDS, graceNote: idle }),
+    ...(options.report === undefined ? {} : { report: options.report }),
+  };
   await withHarnessStopped(target, up);
   return { root: paths.root, port };
 }
@@ -317,7 +328,6 @@ export interface DeploymentStatus {
  */
 export async function deploymentStatus(options: DeploymentOptions = {}): Promise<DeploymentStatus> {
   const { paths, runner } = resolved(options);
-  repairBundle(paths);
   if (!existsSync(paths.composeFile)) {
     return { provisioned: false, running: false, services: [], states: [], raw: '' };
   }
@@ -329,14 +339,17 @@ export async function deploymentStatus(options: DeploymentOptions = {}): Promise
     if (service !== '') reported.set(service, String(row.State ?? SERVICE_ABSENT));
   }
 
-  const declared = declaredServices(paths);
   const services = [...reported.entries()].filter(([, state]) => state === 'running').map(([service]) => service);
-  // A bundle whose own files do not say what it is made of cannot be called
-  // running: the report says so instead of answering on what happens to be up.
-  if ('error' in declared) {
-    return { provisioned: true, running: false, services, states: [], servicesError: declared.error, raw: result.stdout };
+  // A bundle Compose cannot read cannot be called running: the report says so
+  // rather than answering on whatever containers happen to be up.
+  let declared: string[];
+  try {
+    declared = await composeServices({ paths, runner });
+  } catch (err) {
+    if (!(err instanceof ComposeFilesUnreadable)) throw err;
+    return { provisioned: true, running: false, services, states: [], servicesError: err.detail, raw: result.stdout };
   }
-  const states = declared.services.map((service) => ({ service, state: reported.get(service) ?? SERVICE_ABSENT }));
+  const states = declared.map((service) => ({ service, state: reported.get(service) ?? SERVICE_ABSENT }));
   const running = states.length > 0 && states.every((entry) => entry.state === 'running');
 
   return { provisioned: true, running, services, states, raw: result.stdout };
@@ -366,7 +379,6 @@ export interface DestroyOptions extends DeploymentOptions {
  */
 export async function destroyDeployment(options: DestroyOptions = {}): Promise<void> {
   const { paths, runner } = resolved(options);
-  repairBundle(paths);
   if (!existsSync(paths.composeFile)) return;
 
   const args = composeArgs(paths, 'down', '--remove-orphans', '--timeout', String(DESTROY_STOP_TIMEOUT_SECONDS));
@@ -425,7 +437,6 @@ export interface BackupOptions extends DeploymentOptions {
  */
 export async function backupDeployment(options: BackupOptions): Promise<{ destination: string }> {
   const { paths, runner } = resolved(options);
-  repairBundle(paths);
   mkdirSync(options.destination, { recursive: true, mode: 0o700 });
 
   await runOrThrow(runner, 'docker',
@@ -467,13 +478,13 @@ const COMPOSE_SPARING = 'the harness is stopped first and finishes them inside i
  * A bundle written before the harness existed declares no such service, and
  * Compose refuses a service it cannot find; the file on disk decides.
  */
-async function stopHarness(target: HarnessTarget): Promise<void> {
-  if (!declaresHarness(target.paths)) return;
+async function stopHarness(target: HarnessTarget, services: string[]): Promise<void> {
+  if (!services.includes(HARNESS_SERVICE)) return;
   const say = target.report ?? console.log;
   const grace = target.graceSeconds ?? HARNESS_STOP_GRACE_SECONDS;
   // The stop can take the whole grace, and a verb silent for that long reads as
   // a hung command.
-  say(`Stopping the harness; the runs it holds finish inside its grace of ${Math.round(grace / 60)} min.`);
+  say(`Stopping the harness; ${target.graceNote ?? `the runs it holds finish inside its grace of ${Math.round(grace / 60)} min`}.`);
   await runOrThrow(target.runner, 'docker',
     composeArgs(target.paths, 'stop', '--timeout', String(grace), HARNESS_SERVICE),
     { cwd: target.paths.root });
@@ -484,11 +495,13 @@ interface HarnessTarget {
   paths: DeploymentPaths;
   runner: CommandRunner;
   report?: (line: string) => void;
-  /** How long the harness gets to finish what it holds. The whole grace, or the short window for a harness with no server to post to. */
+  /** How long the harness gets to finish what it holds. The whole grace, or the short window for a harness with nothing to finish. */
   graceSeconds?: number;
+  /** What the stop is waiting on, in the words the operator reads. */
+  graceNote?: string;
 }
 
-/** Raised when the bundle's own files do not say what this Deployment is made of; a verb that guessed would act on the wrong services. */
+/** Raised when Compose cannot say what this Deployment is made of; a verb that guessed would act on the wrong services. */
 export class ComposeFilesUnreadable extends Error {
   constructor(readonly detail: string) {
     super(`the Compose files could not be read: ${detail}; fix compose.override.yaml or remove it`);
@@ -496,75 +509,29 @@ export class ComposeFilesUnreadable extends Error {
   }
 }
 
-/** The service names a Compose document declares, or the reason it says nothing. */
-function servicesIn(file: string, required: boolean): { services: string[] } | { error: string } {
-  if (!existsSync(file)) return required ? { error: `${file} is not there` } : { services: [] };
-  const text = readFileSync(file, 'utf8');
-  const start = text.search(/^services:/m);
-  if (start < 0) return required ? { error: `${file} declares no services` } : { services: [] };
-  const names: string[] = [];
-  for (const line of text.slice(start).split('\n').slice(1)) {
-    if (/^\S/.test(line)) break;
-    if (/^\s*(#|$)/.test(line)) continue;
-    const named = /^ {2}([A-Za-z0-9][A-Za-z0-9_-]*):/.exec(line);
-    if (named !== null) names.push(named[1]!);
-  }
-  return { services: names };
-}
-
 /**
- * Every service this Deployment is made of, read from the bundle and the
- * operator's layer over it.
+ * Every service this Deployment is made of, as Compose reads it.
  *
- * The files decide, and they decide the same way every time: this guards which
- * services a verb stops and starts, and a guard answering "no harness" because
- * a read failed would recreate the server under a harness holding runs.
+ * Compose is the authority on what its own files mean: it merges the bundle
+ * and the operator's layer, and it accepts indentation, flow style, anchors and
+ * profiles that no reader here would. A read that fails refuses the verb —
+ * answering "no harness" from a failed read would recreate the server under a
+ * harness holding runs, and say nothing about it.
  */
-function declaredServices(paths: DeploymentPaths): { services: string[] } | { error: string } {
-  const bundle = servicesIn(paths.composeFile, true);
-  if ('error' in bundle) return bundle;
-  const override = servicesIn(paths.overrideFile, false);
-  if ('error' in override) return override;
-  return { services: [...new Set([...bundle.services, ...override.services])] };
-}
-
-/** Whether this Deployment declares the harness. One provisioned before it existed does not, and Compose refuses a service it cannot find. */
-function declaresHarness(paths: DeploymentPaths): boolean {
-  const declared = declaredServices(paths);
-  if ('error' in declared) throw new ComposeFilesUnreadable(declared.error);
-  return declared.services.includes(HARNESS_SERVICE);
-}
-
-/**
- * Check the bundle against Compose's own reading of it, before any container is
- * touched.
- *
- * The file read above is what the guards run on, and Compose is the authority
- * on what those files mean: an override with a typo, or one declaring a service
- * this reader does not see, makes the verb refuse rather than act on a set that
- * is not the Deployment's.
- */
-async function assertComposeReadable(target: HarnessTarget): Promise<void> {
-  const declared = declaredServices(target.paths);
-  if ('error' in declared) throw new ComposeFilesUnreadable(declared.error);
-
-  let answered: string[];
+async function composeServices(target: HarnessTarget): Promise<string[]> {
   try {
     const result = await runOrThrow(target.runner, 'docker',
       composeArgs(target.paths, 'config', '--services'), { cwd: target.paths.root });
-    answered = result.stdout.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+    return result.stdout.split('\n').map((line) => line.trim()).filter((line) => line !== '');
   } catch (err) {
     if (!isCommandFailure(err)) throw err;
     throw new ComposeFilesUnreadable((err as Error).message);
   }
+}
 
-  const missing = answered.filter((service) => !declared.services.includes(service));
-  const extra = declared.services.filter((service) => !answered.includes(service));
-  if (missing.length > 0 || extra.length > 0) {
-    throw new ComposeFilesUnreadable(
-      `Compose reads ${answered.join(', ') || 'no services'} where these files declare ${declared.services.join(', ') || 'none'}`,
-    );
-  }
+/** Refuse now, before any container is touched, if Compose cannot read this bundle. */
+async function assertComposeReadable(target: HarnessTarget): Promise<void> {
+  await composeServices(target);
 }
 
 /**
@@ -574,8 +541,8 @@ async function assertComposeReadable(target: HarnessTarget): Promise<void> {
  * `restart: unless-stopped` honours it, so bringing the harness back is an
  * explicit act. A Deployment whose harness is down serves and runs nothing.
  */
-async function startHarness(target: HarnessTarget): Promise<void> {
-  if (!declaresHarness(target.paths)) return;
+async function startHarness(target: HarnessTarget, services: string[]): Promise<void> {
+  if (!services.includes(HARNESS_SERVICE)) return;
   await runOrThrow(target.runner, 'docker', composeArgs(target.paths, 'start', HARNESS_SERVICE), { cwd: target.paths.root });
 }
 
@@ -600,7 +567,7 @@ export class RestoreLeftIncomplete extends Error {
   constructor(readonly cause: Error, readonly source: string, readonly copied: string[]) {
     super(
       `the restore failed after it had begun replacing this Deployment's data, and the stack is left stopped: ${cause.message}`
-      + `\nCopied in before it stopped: ${copied.join(', ')}.`
+      + `\nBegun before it stopped, the last of them possibly part-written: ${copied.join(', ')}.`
       + `\nStarting the server on the volume as it stands would replay the old write-ahead log over the snapshot.`
       + `\nRun \`myco server restore --from ${source}\` again to finish it, or \`myco server destroy --data\` to remove the volume and start over.`,
     );
@@ -616,15 +583,14 @@ export class RestoreLeftIncomplete extends Error {
  * `up`, which starts the harness with everything else; a step that throws is
  * followed by the recovery for what that verb took down.
  *
- * The bundle is checked first: a verb acts on the services its own files name,
- * and refuses while those files and Compose disagree.
+ * The service set is read first: a verb acts on what Compose says this
+ * Deployment is made of, and refuses while that cannot be read.
  */
 async function withHarnessStopped<T>(target: HarnessTarget, body: () => Promise<T>, recovery?: Recovery): Promise<T> {
-  const recover = recovery ?? { stopped: 'The harness', run: () => startHarness(target) };
-  // Nothing is touched until the files and Compose agree on what this
-  // Deployment is made of.
-  await assertComposeReadable(target);
-  await stopHarness(target);
+  // Nothing is touched until Compose has said what this Deployment is made of.
+  const services = await composeServices(target);
+  const recover = recovery ?? { stopped: 'The harness', run: () => startHarness(target, services) };
+  await stopHarness(target, services);
   try {
     return await body();
   } catch (err) {
@@ -720,13 +686,19 @@ export async function restoreDeployment(options: RestoreOptions): Promise<void> 
     throw new Error(`${options.source} holds no myco.sqlite; it is not a Deployment backup`);
   }
 
+  await assertComposeReadable({ paths, runner });
   await drainLiveRuns({ paths, runner }, options);
   const target = { paths, runner, ...(options.report === undefined ? {} : { report: options.report }) };
 
-  // What has gone into the volume so far. Once anything has, the volume is
-  // mid-replacement and starting the server on it is not a recovery: the
-  // snapshot sits beside the write-ahead log of the database it replaces.
+  // What has been written into the volume, or begun to be. A copy is named
+  // before it is attempted: a `cp` that failed part-way leaves a truncated
+  // database beside the write-ahead log of the one it replaces, which is the
+  // state starting the server must never happen from.
   const copied: string[] = [];
+  const copying = async (what: string, run: () => Promise<unknown>): Promise<void> => {
+    copied.push(what);
+    await run();
+  };
   const recovery: Recovery = {
     stopped: 'This Deployment',
     refuse: (cause) => (copied.length > 0 ? new RestoreLeftIncomplete(cause, options.source, copied) : null),
@@ -738,13 +710,11 @@ export async function restoreDeployment(options: RestoreOptions): Promise<void> 
 
   await withHarnessStopped(target, async () => {
   await runOrThrow(runner, 'docker', composeArgs(paths, 'stop'), { cwd: paths.root });
-  await runOrThrow(runner, 'docker',
-    composeArgs(paths, 'cp', snapshot, 'server:/data/myco.sqlite'), { cwd: paths.root });
-  copied.push('myco.sqlite');
+  await copying('myco.sqlite', () => runOrThrow(runner, 'docker',
+    composeArgs(paths, 'cp', snapshot, 'server:/data/myco.sqlite'), { cwd: paths.root }));
   if (existsSync(path.join(options.source, 'blobs'))) {
-    await runOrThrow(runner, 'docker',
-      composeArgs(paths, 'cp', path.join(options.source, 'blobs'), 'server:/data/blobs'), { cwd: paths.root });
-    copied.push('blobs');
+    await copying('blobs', () => runOrThrow(runner, 'docker',
+      composeArgs(paths, 'cp', path.join(options.source, 'blobs'), 'server:/data/blobs'), { cwd: paths.root }));
   }
   // Two things the copy leaves wrong, fixed as root before anything starts.
   //
@@ -755,10 +725,10 @@ export async function restoreDeployment(options: RestoreOptions): Promise<void> 
   //
   // A WAL sidecar left in the volume belongs to the database the snapshot
   // replaces, and SQLite replays it over the snapshot on open.
-  await runOrThrow(runner, 'docker',
+  await copying('the write-ahead log and the ownership fix-up', () => runOrThrow(runner, 'docker',
     composeArgs(paths, 'run', '--rm', '--user', 'root', '--entrypoint', 'sh', 'server', '-c',
       `rm -f /data/myco.sqlite-wal /data/myco.sqlite-shm && chown -R ${RUNTIME_USER}:${RUNTIME_USER} /data`),
-    { cwd: paths.root });
+    { cwd: paths.root }));
     await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
   }, recovery);
 }
@@ -847,6 +817,9 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
   repairBundle(paths);
   const previous = pinnedVersion(paths);
 
+  // Refused before anything moves: a bundle Compose cannot read must not be
+  // exec'd into, and must not be rewritten under running containers either.
+  await assertComposeReadable({ paths, runner });
   await drainLiveRuns({ paths, runner }, options);
 
   // The bundle is rewritten from the shipped template before the pull. A new

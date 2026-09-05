@@ -631,6 +631,18 @@ describe('the harness goes down before the server', () => {
  */
 describe('a failed verb brings the harness back', () => {
   const bundle = () => { const p = paths(); materializeBundle(p); return p; };
+  /** Fails whichever command the predicate names, and succeeds at everything else. */
+  const failingIf = (fails: (argv: string) => boolean): CommandRunner => ({
+    async run(command, args) {
+      calls.push({ command, args: [...args] });
+      return fails(args.slice(COMPOSE_HEAD).join(' '))
+        ? { code: 1, stdout: '', stderr: 'the stack could not be stopped' }
+        : { code: 0, stdout: answer(args), stderr: '' };
+    },
+  });
+  /** The whole-stack stop, as against the harness's own. */
+  const stacksStop = (argv: string) => argv === 'stop';
+
   /** Fails every command carrying `verb`; `alsoFails` names a second one. */
   const failing = (verb: string, alsoFails: string | null = null): CommandRunner => ({
     async run(command, args) {
@@ -656,14 +668,15 @@ describe('a failed verb brings the harness back', () => {
     expect(verbs()).toContain('start harness');
   });
 
-  it('restarts it when a restore fails part-way', async () => {
+  it('restarts it when a restore fails before it has begun copying', async () => {
     const p = bundle();
     const dir = join(scratch(), 'from');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'myco.sqlite'), 'snapshot');
-    await expect(restoreDeployment({ paths: p, runner: failing('cp'), source: dir, report: () => undefined })).rejects.toThrow(/cp failed/);
     // A restore stops every service, and Compose refuses to start a container
     // whose network namespace target is down: the whole stack comes back.
+    await expect(restoreDeployment({ paths: p, runner: failingIf(stacksStop), source: dir, report: () => undefined }))
+      .rejects.toThrow(/could not be stopped/);
     expect(verbs()).toContain('up --detach');
     expect(verbs()).not.toContain('start harness');
   });
@@ -675,7 +688,7 @@ describe('a failed verb brings the harness back', () => {
     writeFileSync(join(dir, 'myco.sqlite'), 'snapshot');
     let raised: unknown = null;
     try {
-      await restoreDeployment({ paths: p, runner: failing('cp', 'up'), source: dir, report: () => undefined });
+      await restoreDeployment({ paths: p, runner: failingIf((argv) => stacksStop(argv) || argv.startsWith('up ')), source: dir, report: () => undefined });
     } catch (err) { raised = err; }
 
     expect(raised).toBeInstanceOf(HarnessLeftStopped);
@@ -843,29 +856,42 @@ describe('a bundle the files and Compose disagree about stops the verb', () => {
     });
   }
 
-  it('refuses when Compose reads a different set of services than the files declare', async () => {
+  it('takes Compose at its word about the services, whatever the files look like', async () => {
+    // Compose accepts four-space blocks, flow style, anchors, and a service
+    // held behind a profile; none of them are things this code reads for.
+    const shapes = [
+      'services:\n    sidecar:\n        image: x\n',
+      'services: {sidecar: {image: x}}\n',
+      'x-common: &common\n  restart: always\nservices:\n  sidecar:\n    <<: *common\n    image: x\n',
+      'services:\n  seeded:\n    image: x\n    profiles: ["tools"]\n',
+    ];
+    for (const shape of shapes) {
+      calls = [];
+      const p = bundle();
+      writeFileSync(p.overrideFile, shape);
+      const answered: CommandRunner = {
+        async run(command, args) {
+          calls.push({ command, args: [...args] });
+          return { code: 0, stdout: args.includes('--services') ? 'server\nharness\nsidecar\n' : answer(args), stderr: '' };
+        },
+      };
+      await recreateDeployment({ paths: p, runner: answered });
+      expect({ shape, argv: touched() }).toEqual({ shape, argv: [STOP_HARNESS, 'up --detach --force-recreate --wait'] });
+    }
+  });
+
+  it('leaves the harness alone when Compose does not name it, whatever the bundle file says', async () => {
     const p = bundle();
-    const disagreeing: CommandRunner = {
+    // The shipped bundle declares the harness; Compose is the authority, and it
+    // does not name it here.
+    const oneService: CommandRunner = {
       async run(command, args) {
         calls.push({ command, args: [...args] });
         return { code: 0, stdout: args.includes('--services') ? 'server\n' : answer(args), stderr: '' };
       },
     };
-    await expect(recreateDeployment({ paths: p, runner: disagreeing })).rejects.toThrow(ComposeFilesUnreadable);
-    expect(touched()).toEqual([]);
-  });
-
-  it('names the harness a service the override adds, and stops it', async () => {
-    const p = bundle();
-    writeFileSync(p.overrideFile, 'services:\n  sidecar:\n    image: x\n');
-    const withSidecar: CommandRunner = {
-      async run(command, args) {
-        calls.push({ command, args: [...args] });
-        return { code: 0, stdout: args.includes('--services') ? 'server\nharness\nsidecar\n' : answer(args), stderr: '' };
-      },
-    };
-    await recreateDeployment({ paths: p, runner: withSidecar });
-    expect(touched()).toEqual([STOP_HARNESS, 'up --detach --force-recreate --wait']);
+    await recreateDeployment({ paths: p, runner: oneService });
+    expect(touched()).toEqual(['up --detach --force-recreate --wait']);
   });
 });
 
@@ -901,11 +927,26 @@ describe('a restore never boots a half-replaced volume', () => {
   };
   const started = () => calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' ')).filter((a) => a.startsWith('up '));
 
-  it('brings the stack back when the copy failed before anything went in', async () => {
+  it('brings the stack back only when it failed before any copy was issued', async () => {
     const p = bundle();
-    await expect(restoreDeployment({ paths: p, runner: failingOn('cp', 1), source: backup(false), report: () => undefined }))
-      .rejects.toThrow(/cp failed/);
+    // The whole-stack stop, not the harness's own, which runs ahead of it.
+    await expect(restoreDeployment({ paths: p, runner: failingOn('stop', 2), source: backup(false), report: () => undefined }))
+      .rejects.toThrow(/stop failed/);
     expect(started()).toEqual(['up --detach']);
+  });
+
+  it('GATE: a copy that failed is not evidence that nothing went in', async () => {
+    const p = bundle();
+    let raised: unknown = null;
+    try {
+      await restoreDeployment({ paths: p, runner: failingOn('cp', 1), source: backup(false), report: () => undefined });
+    } catch (err) { raised = err; }
+
+    // A `cp` that failed part-way leaves a truncated database beside the
+    // write-ahead log of the one it replaces.
+    expect(raised).toBeInstanceOf(RestoreLeftIncomplete);
+    expect((raised as Error).message).toContain('possibly part-written: myco.sqlite');
+    expect(started()).toEqual([]);
   });
 
   it('GATE: leaves the stack down when the blobs copy failed after the database went in', async () => {
@@ -916,7 +957,7 @@ describe('a restore never boots a half-replaced volume', () => {
     } catch (err) { raised = err; }
 
     expect(raised).toBeInstanceOf(RestoreLeftIncomplete);
-    expect((raised as Error).message).toContain('Copied in before it stopped: myco.sqlite');
+    expect((raised as Error).message).toContain('possibly part-written: myco.sqlite, blobs');
     expect((raised as Error).message).toContain('myco server restore --from');
     expect((raised as Error).message).toContain('myco server destroy --data');
     expect(started()).toEqual([]);
@@ -932,7 +973,59 @@ describe('a restore never boots a half-replaced volume', () => {
     } catch (err) { raised = err; }
 
     expect(raised).toBeInstanceOf(RestoreLeftIncomplete);
-    expect((raised as Error).message).toContain('myco.sqlite, blobs');
+    expect((raised as Error).message).toContain('possibly part-written: myco.sqlite, blobs, the write-ahead log and the ownership fix-up');
     expect(started()).toEqual([]);
+  });
+});
+
+/**
+ * What a verb does before it is sure it can read the bundle.
+ *
+ * A refused update that had already exec'd into the container and rewritten
+ * compose.yaml leaves an operator with a bundle that no longer matches the
+ * containers running against it.
+ */
+describe('the readability check comes before anything else', () => {
+  const bundle = () => { const p = paths(); materializeBundle(p); return p; };
+  const refusing = (): CommandRunner => ({
+    async run(command, args) {
+      calls.push({ command, args: [...args] });
+      if (args.includes('--services')) return { code: 1, stdout: '', stderr: 'validating compose.override.yaml' };
+      return { code: 0, stdout: answer(args), stderr: '' };
+    },
+  });
+
+  it('GATE: a refused update reads no container and rewrites no bundle', async () => {
+    const p = bundle();
+    writeFileSync(p.composeFile, 'services:\n  server:\n    image: from-an-older-cli\n');
+    const before = readFileSync(p.composeFile, 'utf8');
+
+    await expect(updateDeployment({ paths: p, runner: refusing(), report: () => undefined })).rejects.toThrow(ComposeFilesUnreadable);
+
+    expect(readFileSync(p.composeFile, 'utf8')).toBe(before);
+    expect(calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '))).toEqual(['config --services']);
+  });
+
+  it('GATE: a refused restore never execs into the container', async () => {
+    const p = bundle();
+    const dir = join(scratch(), 'from');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'myco.sqlite'), 'snapshot');
+
+    await expect(restoreDeployment({ paths: p, runner: refusing(), source: dir, report: () => undefined })).rejects.toThrow(ComposeFilesUnreadable);
+    expect(calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '))).toEqual(['config --services']);
+  });
+
+  it('reads, drains, rewrites, stops the harness, pulls and recreates, in that order', async () => {
+    const p = bundle();
+    await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
+    expect(calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '))).toEqual([
+      'config --services',
+      'exec --no-TTY --user myco server bun run /app/server.js --live-runs',
+      'config --services',
+      STOP_HARNESS,
+      'pull',
+      'up --detach --wait',
+    ]);
   });
 });

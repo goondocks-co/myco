@@ -29,6 +29,7 @@ import {
   signInConfigured,
   backupDeployment,
   updateDeployment,
+  recreateDeployment,
   repairBundle,
 } from '@myco/server/deployment.js';
 import { COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
@@ -282,12 +283,18 @@ describe('status', () => {
   it('GATE: says it could not read the bundle rather than calling it running', async () => {
     const p = paths();
     materializeBundle(p);
-    // A bundle whose own files do not say what it is made of is not something
-    // to report as running off whatever containers happen to be up.
-    writeFileSync(p.composeFile, '# a bundle this reader cannot parse\n');
-    const status = await deploymentStatus({ paths: p, runner: runner({ stdout: '{"Service":"server","State":"running"}\n' }) });
+    // A bundle Compose refuses is not something to report as running off
+    // whatever containers happen to be up.
+    const refusing: CommandRunner = {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        if (args.includes('--services')) return { code: 1, stdout: '', stderr: 'validating compose.override.yaml: services.server Additional property extra_host is not allowed' };
+        return { code: 0, stdout: '{"Service":"server","State":"running"}\n', stderr: '' };
+      },
+    };
+    const status = await deploymentStatus({ paths: p, runner: refusing });
     expect({ running: status.running, states: status.states }).toEqual({ running: false, states: [] });
-    expect(status.servicesError).toContain('declares no services');
+    expect(status.servicesError).toContain('Additional property extra_host is not allowed');
     expect(status.services).toEqual(['server']);
   });
 });
@@ -417,13 +424,26 @@ describe('an older bundle is repaired by whatever verb reaches it', () => {
     expect(existsSync(p.overrideFile)).toBe(false);
   });
 
-  it('repairs the bundle before its first compose call, and names both files from then on', async () => {
+  it('a changing verb repairs the bundle before its first compose call, and names both files from then on', async () => {
     const { paths: p } = older();
-    await destroyDeployment({ paths: p, runner: runner() });
+    await recreateDeployment({ paths: p, runner: runner() });
 
     expect(existsSync(p.overrideFile)).toBe(true);
-    expect(acts()[0]!.args.filter((a) => a === '--file')).toHaveLength(2);
+    for (const call of acts()) expect(call.args.filter((a) => a === '--file')).toHaveLength(2);
     expect(acts()[0]!.args).toContain(p.overrideFile);
+  });
+
+  it('GATE: a verb that only reads writes nothing into the bundle', async () => {
+    for (const read of [
+      (p: ReturnType<typeof paths>) => deploymentStatus({ paths: p, runner: runner() }),
+      (p: ReturnType<typeof paths>) => backupDeployment({ paths: p, runner: runner(), destination: join(scratchDir(), 'backup') }),
+    ]) {
+      const { paths: p } = older();
+      await read(p);
+      // The argv names the override only while it is there, so a read needs no
+      // repair and has no business writing into an operator's bundle.
+      expect(existsSync(p.overrideFile)).toBe(false);
+    }
   });
 
   it('leaves an override the operator already wrote exactly as it is', () => {
@@ -479,10 +499,21 @@ describe('create on a stack that is already running', () => {
 
   it('gives a harness whose server is down the short window rather than the whole grace', async () => {
     const p = paths();
-    await createDeployment({ paths: p, runner: withRunning('harness'), report: () => undefined });
+    const lines: string[] = [];
+    await createDeployment({ paths: p, runner: withRunning('harness'), report: (l) => lines.push(l) });
     // A harness with no server to post an ending to has nothing to spend the
     // grace on, and an operator waiting on `create` would spend it with it.
     expect(verbs()).toEqual([`stop --timeout ${DESTROY_STOP_TIMEOUT_SECONDS} harness`, 'up --detach --wait']);
+    expect(lines).toContain('Stopping the harness; the server is not running, so the harness has nothing to post to.');
+  });
+
+  it('GATE: gives a harness that is not running the short window too, and says so', async () => {
+    const p = paths();
+    const lines: string[] = [];
+    await createDeployment({ paths: p, runner: withRunning('server'), report: (l) => lines.push(l) });
+    // The whole grace is worth spending only on a harness that is running.
+    expect(verbs()).toEqual([`stop --timeout ${DESTROY_STOP_TIMEOUT_SECONDS} harness`, 'up --detach --wait']);
+    expect(lines).toContain('Stopping the harness; the harness is not running.');
   });
 
   it('starts a stack that is not running without stopping anything', async () => {
