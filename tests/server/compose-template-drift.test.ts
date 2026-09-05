@@ -85,11 +85,17 @@ describe('the harness rides in the server\'s network namespace', () => {
     expect(harness()).not.toMatch(/^\s+networks:$/m);
   });
 
-  it('probes the SERVER through the shared loopback, which is what a stranded namespace shows on', () => {
-    // A harness whose namespace went away with an out-of-band restart of the
-    // server container reaches nothing at this address.
-    expect(harness()).toContain('"http://127.0.0.1:${MYCO_PORT:-8787}/health"');
-    expect(harness()).toContain('Host: 127.0.0.1:${MYCO_PORT:-8787}');
+  it('probes its own supervisor AND the server, so a wedged supervisor cannot report healthy', () => {
+    // The server's health alone is answered by a harness whose supervisor has
+    // stopped serving; the supervisor's probe alone is answered by a harness
+    // whose namespace went away with an out-of-band restart of the server.
+    const test = /^\s+test: \[(.+)\]$/m.exec(harness())![1]!;
+    expect(test).toContain('"CMD-SHELL"');
+    expect(test).toContain('http://127.0.0.1:8080/probe');
+    expect(test).toContain('http://127.0.0.1:${MYCO_PORT:-8787}/health');
+    expect(test).toContain("Host: 127.0.0.1:${MYCO_PORT:-8787}");
+    // One shell command, both halves required.
+    expect(test).toContain('&&');
   });
 
   it('gives each runtime a working directory on tmpfs the image\'s unprivileged user can create in', () => {

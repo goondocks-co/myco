@@ -1,26 +1,29 @@
 # Self-hosted Myco Deployment.
 #
 # Two services on one network namespace. Embedded SQLite on the mounted volume,
-# no separate database service, matching the acceptance in #913.
+# and no separate database service.
 #
-# The published port is loopback-qualified. `${MYCO_PORT}:${MYCO_PORT}` binds
+# Every published port is loopback-qualified. `${MYCO_PORT}:${MYCO_PORT}` binds
 # every interface on the host and the container receives no signal that it
-# happened, so condition 4 of #909's C-local contract is verified against this
-# file rather than at startup. `tests/myco-server/contract/compose-publish.test.ts`
+# happened, so no runtime check inside it can tell the difference: this file is
+# what decides it, and `tests/myco-server/contract/compose-publish.test.ts`
 # fails when a published port loses its `127.0.0.1:` prefix.
 #
-# Remote access is an operator-run reverse proxy in front of this, per #909's
-# C-remote half: HTTPS terminated there, MYCO_TRANSPORT=proxy, and the trusted
-# hop count declared. The published port stays loopback either way, keeping the
-# proxy-to-backend leg off the network.
+# Remote access is an operator-run reverse proxy in front of this: HTTPS
+# terminated there, MYCO_TRANSPORT=proxy, and the trusted hop count declared.
+# The published port stays loopback either way, keeping the proxy-to-backend leg
+# off the network.
 #
 # The harness holds the runtimes and shares the SERVER's network namespace, so
 # the two reach each other over the loopback and neither publishes a port for
-# it. Restart this stack through `myco server`, never one service on its own:
-# an out-of-band restart of the server container leaves the harness attached to
-# a namespace that is gone, and it stays that way until the whole stack is
-# restarted. The harness healthcheck probes the server through that shared
-# loopback, so a harness left behind reports unhealthy.
+# it. Operate this stack through `myco server`, never one service on its own.
+# Compose brings the namespace owner down FIRST, so a plain `up` or `stop` of
+# the whole stack kills the server while the harness is still holding runs: the
+# verbs stop the harness on its own first, which spends its grace with the
+# server still serving. An out-of-band restart of the server container leaves
+# the harness attached to a namespace that is gone, and it stays that way until
+# the whole stack is restarted; the harness healthcheck reaches neither its own
+# supervisor's namespace-mate nor the server then, and reports unhealthy.
 
 services:
   server:
@@ -118,7 +121,9 @@ services:
     # supervisor at 127.0.0.1:8080 and a runtime reaches the server at
     # 127.0.0.1:${MYCO_PORT}, which the Host allowlist admits. Compose refuses
     # `ports:` and `networks:` on a service sharing another's namespace, and
-    # this service declares neither.
+    # this service declares neither. Compose also takes the namespace owner down
+    # first, which is why the verbs stop this service on its own before they
+    # touch the server.
     network_mode: "service:server"
 
     environment:
@@ -136,19 +141,21 @@ services:
     tmpfs: ["/work:mode=1777"]
 
     healthcheck:
-      # The SERVER's health, over the shared loopback. A harness whose namespace
-      # went away with an out-of-band restart of the server container reaches
-      # nothing here, which is how a stranded harness reports itself.
-      test: ["CMD", "curl", "-fsS", "-H", "Host: 127.0.0.1:${MYCO_PORT:-8787}",
-             "http://127.0.0.1:${MYCO_PORT:-8787}/health"]
+      # Both halves of what makes this service useful: the supervisor answering
+      # its own probe, and the SERVER answering over the shared loopback. A
+      # wedged supervisor answers the second alone; a harness whose namespace
+      # went away with an out-of-band restart of the server container answers
+      # neither. `/probe` carries no token and discloses run ids alone.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/probe && curl -fsS -H 'Host: 127.0.0.1:${MYCO_PORT:-8787}' http://127.0.0.1:${MYCO_PORT:-8787}/health"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
 
     # SIGTERM makes the supervisor refuse new launches and wait for the runtimes
-    # it holds. The window covers the longest task budget, so a run in flight
-    # when the stack is updated finishes and posts its own ending.
+    # it holds. The window covers the longest task budget, and the verbs spend
+    # it while the server is still serving, so a run in flight when the stack is
+    # updated finishes and posts its own ending.
     stop_grace_period: 1800s
 
     deploy:

@@ -75,6 +75,23 @@ function resolved(options: DeploymentOptions): { paths: DeploymentPaths; runner:
   return { paths: options.paths ?? resolveDeploymentPaths(), runner: options.runner ?? systemRunner() };
 }
 
+/** One key's value in the bundle's `.env`, or null when the file names none. */
+function envValue(paths: DeploymentPaths, key: string): string | null {
+  if (!existsSync(paths.envFile)) return null;
+  const line = readFileSync(paths.envFile, 'utf8').split('\n').find((l) => l.startsWith(`${key}=`));
+  return line === undefined ? null : line.slice(key.length + 1);
+}
+
+/** Whether a value names an address a browser and the deployment's own scheduled work can both reach. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 /** `docker compose` scoped to this stack, with the file and project name pinned. */
 function composeArgs(paths: DeploymentPaths, ...rest: string[]): string[] {
   return ['compose', '--file', paths.composeFile, '--project-name', COMPOSE_PROJECT, ...rest];
@@ -86,6 +103,12 @@ function composeArgs(paths: DeploymentPaths, ...rest: string[]): string[] {
  * Secret files are written 0600 inside a 0700 directory before the stack is
  * ever started: a bind mount of a world-readable key is not something to
  * correct after the fact.
+ *
+ * Every part of the bundle but the Compose file is additive. The named keys are
+ * merged into `.env` and every other line survives — this is the one writer of
+ * that file, and a caller naming no keys leaves it as it stands. A verb that
+ * rewrote it would drop the values other verbs put there: the sign-in client
+ * id, the pinned version, the port, the fleet, the origin.
  */
 export function materializeBundle(paths: DeploymentPaths, env: Record<string, string> = {}): void {
   mkdirSync(paths.root, { recursive: true, mode: 0o700 });
@@ -105,8 +128,8 @@ export function materializeBundle(paths: DeploymentPaths, env: Record<string, st
     if (!existsSync(file)) writeFileSync(file, '', { mode: 0o600 });
   }
 
-  const lines = Object.entries(env).map(([key, value]) => `${key}=${value}`);
-  writeFileSync(paths.envFile, lines.length > 0 ? `${lines.join('\n')}\n` : '', { mode: 0o600 });
+  if (!existsSync(paths.envFile)) writeFileSync(paths.envFile, '', { mode: 0o600 });
+  for (const [key, value] of Object.entries(env)) upsertEnv(paths, key, value);
 }
 
 export interface CreateOptions extends DeploymentOptions {
@@ -121,18 +144,29 @@ export interface CreateOptions extends DeploymentOptions {
 /** How many runtimes a Deployment runs at once when its operator names no count. */
 export const DEFAULT_FLEET = 4;
 
-/** Provision and start. Idempotent: an existing bundle keeps its secrets. */
+/** The default port the bundle publishes on. */
+const DEFAULT_PORT = 8787;
+
+/**
+ * Provision and start. Idempotent: an existing bundle keeps its secrets, and a
+ * re-run without a flag keeps the value the bundle already carries rather than
+ * resetting it to the default.
+ */
 export async function createDeployment(options: CreateOptions = {}): Promise<{ root: string; port: number }> {
   const { paths, runner } = resolved(options);
-  const port = options.port ?? 8787;
-  const fleet = options.fleet ?? DEFAULT_FLEET;
-  if (!Number.isInteger(fleet) || fleet < 1) {
+  if (options.fleet !== undefined && (!Number.isInteger(options.fleet) || options.fleet < 1)) {
     throw new Error(`the fleet is a whole number of runtimes, 1 or more, and is ${JSON.stringify(options.fleet)}`);
   }
+  if (options.origin !== undefined && options.origin !== '' && !isHttpUrl(options.origin)) {
+    throw new Error(`the origin is an http:// or https:// URL naming the address members reach this Deployment at, and is ${JSON.stringify(options.origin)}`);
+  }
+
+  const port = options.port ?? Number(envValue(paths, 'MYCO_PORT') ?? DEFAULT_PORT);
+  const fleet = options.fleet ?? (envValue(paths, 'MYCO_FLEET') === null ? DEFAULT_FLEET : null);
 
   materializeBundle(paths, {
     MYCO_PORT: String(port),
-    MYCO_FLEET: String(fleet),
+    ...(fleet === null ? {} : { MYCO_FLEET: String(fleet) }),
     ...(options.origin !== undefined && options.origin !== '' ? { MYCO_ORIGIN: options.origin } : {}),
     ...(options.version ? { MYCO_VERSION: options.version } : {}),
   });
@@ -257,12 +291,34 @@ export async function backupDeployment(options: BackupOptions): Promise<{ destin
   return { destination: options.destination };
 }
 
+/** The service holding the runtimes. It shares the server's network namespace. */
+const HARNESS_SERVICE = 'harness';
+
 /**
- * What carries a run a verb stopped waiting on. The harness shares the server's
- * network namespace, so stopping or recreating the server stops it too, and
- * every runtime it holds finishes inside its stop grace, posting its own ending.
+ * What carries a run a verb stopped waiting on: the harness is stopped on its
+ * own before anything touches the server, so every runtime it holds finishes
+ * inside its stop grace and posts its own ending to a server still serving.
  */
-const COMPOSE_SPARING = 'the harness finishes them inside its stop grace';
+const COMPOSE_SPARING = 'the harness is stopped first and finishes them inside its stop grace';
+
+/**
+ * Stop the harness on its own, before the server is recreated or stopped.
+ *
+ * Compose brings the namespace owner down FIRST. A verb going straight to `up`
+ * or `stop` kills the server, then signals the harness — which spends its whole
+ * stop grace with nothing to post an ending to, and holds the Deployment down
+ * for the length of that grace. Stopping this service alone spends the same
+ * grace with the server still serving, so the runtimes finish, post their
+ * endings, and the server is replaced against an idle harness.
+ *
+ * A bundle written before the harness existed declares no such service, and
+ * Compose refuses a service it cannot find; the file on disk decides.
+ */
+async function stopHarness(paths: DeploymentPaths, runner: CommandRunner): Promise<void> {
+  if (!existsSync(paths.composeFile)) return;
+  if (!new RegExp(`^ {2}${HARNESS_SERVICE}:$`, 'm').test(readFileSync(paths.composeFile, 'utf8'))) return;
+  await runOrThrow(runner, 'docker', composeArgs(paths, 'stop', HARNESS_SERVICE), { cwd: paths.root });
+}
 
 /**
  * The runs the Deployment has in flight, read from the running container.
@@ -301,18 +357,19 @@ export interface DrainOptions {
  *
  * Both verbs that take the server down go through here, so a Deployment cannot
  * be replaced under a live run by one of them and not the other. `--no-drain`
- * skips the wait and the read it needs: the escape hatch is used when the
- * container cannot be reached, so it must not need the container to answer.
+ * still says what it is proceeding over, on both targets: the read is a
+ * courtesy there rather than a gate, and a Deployment that cannot be read is
+ * exactly when the escape hatch is used.
  */
 async function drainLiveRuns(
   target: { paths: DeploymentPaths; runner: CommandRunner },
   options: DrainOptions,
 ): Promise<void> {
-  if (options.noDrain === true) return;
   const clock = options.clock ?? systemClock;
   await waitForLiveRuns({
     read: () => readComposeLiveRuns({ ...target, sleep: (ms) => clock.sleep(ms) }),
     sparing: COMPOSE_SPARING,
+    drain: options.noDrain !== true,
     clock,
     ...(options.report === undefined ? {} : { report: options.report }),
   });
@@ -342,6 +399,7 @@ export async function restoreDeployment(options: RestoreOptions): Promise<void> 
   }
 
   await drainLiveRuns({ paths, runner }, options);
+  await stopHarness(paths, runner);
   await runOrThrow(runner, 'docker', composeArgs(paths, 'stop'), { cwd: paths.root });
   await runOrThrow(runner, 'docker',
     composeArgs(paths, 'cp', snapshot, 'server:/data/myco.sqlite'), { cwd: paths.root });
@@ -374,10 +432,7 @@ export interface UpdateOptions extends DeploymentOptions, DrainOptions {
 
 /** The version a bundle is pinned to, or null when it tracks the default tag. */
 export function pinnedVersion(paths: DeploymentPaths): string | null {
-  if (!existsSync(paths.envFile)) return null;
-  const line = readFileSync(paths.envFile, 'utf8')
-    .split('\n').find((l) => l.startsWith('MYCO_VERSION='));
-  return line === undefined ? null : line.slice('MYCO_VERSION='.length);
+  return envValue(paths, 'MYCO_VERSION');
 }
 
 /** Set one key in the bundle's `.env`, or drop it when `value` is null; every other line survives. */
@@ -411,9 +466,10 @@ export function writeSignInSecrets(paths: DeploymentPaths, secrets: SignInSecret
   upsertEnv(paths, 'GITHUB_CLIENT_ID', secrets.clientId);
 }
 
-/** Recreate the container so it reads the bundle's current secrets and env; a plain `up` leaves a running container on the bytes it started with. */
+/** Recreate the containers so they read the bundle's current secrets and env; a plain `up` leaves a running container on the bytes it started with. */
 export async function recreateDeployment(options: DeploymentOptions = {}): Promise<void> {
   const { paths, runner } = resolved(options);
+  await stopHarness(paths, runner);
   await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--force-recreate', '--wait'), { cwd: paths.root });
 }
 
@@ -436,9 +492,14 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
   const { paths, runner } = resolved(options);
   const previous = pinnedVersion(paths);
 
-  // Recreating the server stops the harness with it, so the runs in flight are
-  // waited out first.
   await drainLiveRuns({ paths, runner }, options);
+
+  // The bundle is rewritten from the shipped template before the pull. A new
+  // image carrying a new service runs nothing until compose.yaml declares that
+  // service, so a Deployment provisioned by an older CLI would pull an image
+  // and run the same one service. Secrets on disk are kept and `.env` survives.
+  materializeBundle(paths);
+  await stopHarness(paths, runner);
 
   // The requested version travels as an environment override for the pull and
   // the recreate, and is written into the bundle only once both succeed.
@@ -460,6 +521,7 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
     if (options.noRollback === true || options.version === undefined) throw err;
 
     writePin(paths, previous);
+    await stopHarness(paths, runner);
     await runner.run('docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
     throw new UpdateRolledBack(previous, err as Error);
   }
@@ -481,6 +543,7 @@ export async function rotateSecrets(options: DeploymentOptions = {}): Promise<st
     writeFileSync(path.join(paths.secretsDir, name), crypto.randomBytes(bytes).toString('base64'), { mode: 0o600 });
     rotated.push(name);
   }
+  // Recreating through the shared verb keeps the harness stop ahead of it.
   await recreateDeployment({ paths, runner });
   return rotated;
 }

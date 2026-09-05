@@ -17,6 +17,8 @@ import {
   deploymentStatus,
   destroyDeployment,
   materializeBundle,
+  adoptDeployment,
+  writeSignInSecrets,
   resolveDeploymentPaths,
   GENERATED_SECRETS,
   COMPOSE_PROJECT,
@@ -128,6 +130,34 @@ describe('create', () => {
     expect(readFileSync(named.envFile, 'utf8')).toContain('MYCO_FLEET=2');
   });
 
+  it('GATE: a second create keeps what the bundle already carries rather than resetting it to the defaults', async () => {
+    const p = paths();
+    await createDeployment({ paths: p, runner: runner(), port: 9001, fleet: 2 });
+    // Sign-in is installed after a create, by a verb of its own.
+    writeSignInSecrets(p, { clientId: 'Iv1.x', clientSecret: 's3cr3t' });
+
+    const again = await createDeployment({ paths: p, runner: runner() });
+
+    const env = readFileSync(p.envFile, 'utf8');
+    expect(env).toContain('GITHUB_CLIENT_ID=Iv1.x');
+    expect(env).toContain('MYCO_FLEET=2');
+    expect(env).toContain('MYCO_PORT=9001');
+    expect(again.port).toBe(9001);
+  });
+
+  it('GATE: adopt leaves the env file byte-identical, writing only the bundle', async () => {
+    const p = paths();
+    await createDeployment({ paths: p, runner: runner(), port: 9003, fleet: 3, origin: 'https://myco.example.com' });
+    writeSignInSecrets(p, { clientId: 'Iv1.y', clientSecret: 's' });
+    const before = readFileSync(p.envFile, 'utf8');
+
+    await adoptDeployment({ paths: p, runner: runner() });
+
+    // Adopting is about regaining the ability to operate a stack, and a stack
+    // whose port and client id were dropped is a stack that no longer starts.
+    expect(readFileSync(p.envFile, 'utf8')).toBe(before);
+  });
+
   it('refuses a fleet that is not a count of runtimes, before it starts anything', async () => {
     for (const fleet of [0, -1, 2.5]) {
       const p = paths();
@@ -144,6 +174,16 @@ describe('create', () => {
     const bare = paths();
     await createDeployment({ paths: bare, runner: runner() });
     expect(readFileSync(bare.envFile, 'utf8')).not.toContain('MYCO_ORIGIN');
+  });
+
+  it('refuses an origin that is not an address, before it starts anything', async () => {
+    // The value is handed out as the address members and the scheduled work
+    // reach the Deployment at; a scheme-less one reaches nobody.
+    for (const origin of ['myco.example.com', 'ws://myco.example.com', '/myco']) {
+      const p = paths();
+      await expect(createDeployment({ paths: p, runner: runner(), origin })).rejects.toThrow(/http:\/\/ or https:\/\//);
+      expect(calls).toHaveLength(0);
+    }
   });
 });
 

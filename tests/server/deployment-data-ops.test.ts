@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   backupDeployment,
+  recreateDeployment,
   restoreDeployment,
   updateDeployment,
   rotateSecrets,
@@ -107,6 +108,8 @@ describe('backup', () => {
 });
 
 describe('restore', () => {
+  /** A provisioned bundle, which is the only thing a restore ever runs against. */
+  const bundle = () => { const p = paths(); materializeBundle(p); return p; };
   const backupDir = () => {
     const dir = join(scratch(), 'from');
     mkdirSync(dir, { recursive: true });
@@ -120,17 +123,17 @@ describe('restore', () => {
   });
 
   it('stops before copying and starts after', async () => {
-    const p = paths();
+    const p = bundle();
     await restoreDeployment({ paths: p, runner: runner(), source: backupDir() });
 
-    const verbs = calls.filter((c) => !c.args.includes('--live-runs'))
+    const verbs = calls.filter((c) => !c.args.includes('--live-runs') && !c.args.includes('harness'))
       .map((c) => c.args.find((a) => ['stop', 'cp', 'run', 'up'].includes(a)));
     expect(verbs[0]).toBe('stop');
     expect(verbs.at(-1)).toBe('up');
   });
 
   it('waits for what is running before it stops, and a run arriving mid-wait is left to the grace', async () => {
-    const p = paths();
+    const p = bundle();
     const lines: string[] = [];
     const live = JSON.stringify([{ id: 'run_a', task: 'digest-only', status: 'running', started_at: 0, run_context: JSON.stringify({ timeoutSeconds: 1800 }) }]);
     let answers = [live, '[]'];
@@ -144,22 +147,29 @@ describe('restore', () => {
     await restoreDeployment({ paths: p, runner: scripted, source: backupDir(), report: (l) => lines.push(l), clock: clock() });
 
     // A restore replaces the database a live run writes its own ending into.
-    const flat = calls.map((c) => c.args.join(' '));
-    expect(flat.findIndex((a) => a.includes('--live-runs'))).toBe(0);
-    expect(flat.findIndex((a) => a.includes('--live-runs'))).toBeLessThan(flat.findIndex((a) => a.includes('stop')));
+    const flat = calls.map((c) => c.args.slice(5).join(' '));
+    expect(flat[0]!).toContain('--live-runs');
+    // The harness goes down while the server is still serving; a whole-stack
+    // stop takes the server first and leaves the harness with nothing to post to.
+    expect(flat.filter((a) => a === 'stop harness' || a === 'stop').slice(0, 2)).toEqual(['stop harness', 'stop']);
     expect(lines).toContain('Waiting for a running task: digest-only, started 0 sec ago, budget 30 min');
     expect(lines).toContain('Nothing is running; the deploy proceeds.');
   });
 
-  it('--no-drain asks the container nothing at all', async () => {
-    const p = paths();
-    await restoreDeployment({ paths: p, runner: runner(), source: backupDir(), noDrain: true, report: () => undefined });
-    expect(calls.filter((c) => c.args.includes('--live-runs'))).toHaveLength(0);
-    expect(argvText()).toContain('stop');
+  it('--no-drain reads once, says what it is proceeding over, and still stops the harness first', async () => {
+    const p = bundle();
+    const lines: string[] = [];
+    await restoreDeployment({ paths: p, runner: runner(), source: backupDir(), noDrain: true, report: (l) => lines.push(l) });
+
+    expect(calls.filter((c) => c.args.includes('--live-runs'))).toHaveLength(1);
+    expect(lines).toContain('Not waiting for the runs in flight: the harness is stopped first and finishes them inside its stop grace.');
+    const verbs = calls.filter((c) => !c.args.includes('--live-runs')).map((c) => c.args.slice(5).join(' '));
+    expect(verbs[0]).toBe('stop harness');
+    expect(verbs[1]).toBe('stop');
   });
 
   it('GATE: clears the WAL sidecar, which describes the replaced database', async () => {
-    const p = paths();
+    const p = bundle();
     await restoreDeployment({ paths: p, runner: runner(), source: backupDir() });
     // Left in place it is replayed over the snapshot, undoing the restore.
     expect(argvText()).toContain('rm -f /data/myco.sqlite-wal /data/myco.sqlite-shm');
@@ -167,16 +177,50 @@ describe('restore', () => {
 });
 
 describe('update', () => {
-  it('reads what is running, then pulls, then recreates, and does not migrate itself', async () => {
+  it('reads what is running, stops the harness, then pulls and recreates, and does not migrate itself', async () => {
     const p = paths();
     materializeBundle(p);
     await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
 
-    expect(calls[0]!.args).toContain('--live-runs');
-    expect(calls[1]!.args).toContain('pull');
-    expect(calls[2]!.args).toEqual(expect.arrayContaining(['up', '--detach', '--wait']));
+    expect(calls.map((c) => c.args.slice(5).join(' '))).toEqual([
+      'exec --no-TTY server bun run /app/server.js --live-runs',
+      'stop harness',
+      'pull',
+      'up --detach --wait',
+    ]);
     // Migration is the container entrypoint's, before the listener binds.
     expect(argvText()).not.toContain('--migrate-only');
+  });
+
+  it('rewrites the bundle from the shipped template, keeping the secrets and the env a bundle already carries', async () => {
+    const p = paths();
+    materializeBundle(p, { MYCO_PORT: '9001', MYCO_FLEET: '2', GITHUB_CLIENT_ID: 'Iv1.x' });
+    const token = readFileSync(join(p.secretsDir, 'harness_token'), 'utf8');
+    const env = readFileSync(p.envFile, 'utf8');
+    // A bundle an older CLI wrote: one service, no harness.
+    writeFileSync(p.composeFile, 'services:\n  server:\n    image: ghcr.io/goondocks-co/myco-server:latest\n');
+
+    await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
+
+    const compose = readFileSync(p.composeFile, 'utf8');
+    expect(compose).toContain('  harness:');
+    expect(compose).toContain('myco_harness_token');
+    expect(readFileSync(p.envFile, 'utf8')).toBe(env);
+    expect(readFileSync(join(p.secretsDir, 'harness_token'), 'utf8')).toBe(token);
+  });
+
+  it('leaves an older bundle unstopped where it declares no harness, rather than failing on a service Compose cannot find', async () => {
+    const p = paths();
+    materializeBundle(p);
+    writeFileSync(p.composeFile, 'services:\n  server:\n    image: x\n');
+    // The refresh runs before the stop, so the service is there by then.
+    await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
+    expect(argvText()).toContain('stop harness');
+
+    calls = [];
+    writeFileSync(p.composeFile, 'services:\n  server:\n    image: x\n');
+    await recreateDeployment({ paths: p, runner: runner() });
+    expect(argvText()).not.toContain('stop harness');
   });
 
   it('GATE: a failed pull leaves the bundle unpinned rather than lying', async () => {
@@ -396,15 +440,48 @@ describe('the update waits for what is running', () => {
     expect(argvText()).not.toContain('--force-recreate');
   });
 
-  it('--no-drain asks the container nothing at all', async () => {
+  it('--no-drain reads once, says what it is shipping over, waits never, and still stops the harness first', async () => {
     const p = paths();
     materializeBundle(p);
-    await updateDeployment({ paths: p, runner: scripted(['!Error: No such service: server']), noDrain: true, report: () => undefined });
+    const lines: string[] = [];
+    const drive = clock();
+    await updateDeployment({
+      paths: p, runner: scripted([JSON.stringify([row()])]), noDrain: true, report: (l) => lines.push(l), clock: drive,
+    });
 
-    // The escape hatch is used when the container cannot be reached, so it must
-    // not need the container to work.
-    expect(reads()).toBe(0);
+    expect(reads()).toBe(1);
+    expect(drive.at).toBe(0);
+    expect(lines).toContain('Shipping over a running task: digest-only, started 0 sec ago, budget 30 min');
+    expect(lines).toContain('Not waiting for the runs in flight: the harness is stopped first and finishes them inside its stop grace.');
+    expect(calls.map((c) => c.args.slice(5).join(' ')).filter((a) => a === 'stop harness' || a === 'pull')).toEqual(['stop harness', 'pull']);
+  });
+
+  it('--no-drain ships when the runs cannot be read at all, saying so', async () => {
+    const p = paths();
+    materializeBundle(p);
+    const lines: string[] = [];
+    // The escape hatch is used when the container cannot be reached, so a read
+    // that fails must not stop it.
+    await updateDeployment({
+      paths: p, runner: scripted(['!Error: No such service: server', '!Error: No such service: server']),
+      noDrain: true, report: (l) => lines.push(l), clock: clock(),
+    });
+
+    expect(lines.some((l) => l.startsWith('What is running could not be read'))).toBe(true);
     expect(argvText()).toContain('pull');
+  });
+
+  it('reads a JSON array a Compose warning line precedes', async () => {
+    const p = paths();
+    materializeBundle(p);
+    const lines: string[] = [];
+    await updateDeployment({
+      paths: p,
+      runner: scripted([`WARN[0000] /compose.yaml: the attribute \`version\` is obsolete\n${JSON.stringify([row()])}`, '[]']),
+      report: (l) => lines.push(l), clock: clock(),
+    });
+    expect(lines).toContain('Waiting for a running task: digest-only, started 0 sec ago, budget 30 min');
+    expect(reads()).toBe(2);
   });
 
   it('names the harness grace, not a platform, for a run it stopped waiting on', async () => {
@@ -420,12 +497,89 @@ describe('the update waits for what is running', () => {
     });
 
     expect(lines).toContain('A task outlived its own budget (cortex-instructions); the deploy proceeds and the stale sweep owns the run.');
-    expect(lines).toContain('titling started during the deploy; the harness finishes them inside its stop grace.');
+    expect(lines).toContain('titling started during the deploy; the harness is stopped first and finishes them inside its stop grace.');
   });
 
   it('reads the same rows the hosted target reads', async () => {
     // Two query texts across a package boundary the server cannot be imported
     // across; a column added to one and not the other reads a different fleet.
     expect(SERVER_LIVE_RUNS_QUERY).toBe(LIVE_RUNS_QUERY);
+  });
+});
+
+/**
+ * Compose brings the namespace owner down first.
+ *
+ * Measured on Compose v5.5.0: a `up --force-recreate` over a service with
+ * `network_mode: "service:server"` signals and kills the SERVER, then signals
+ * the harness — which spends its whole stop grace with nothing to post an
+ * ending to, and holds the Deployment down for the length of it. Every verb
+ * that takes the server down stops the harness on its own first.
+ */
+describe('the harness goes down before the server', () => {
+  /** Where `stop harness` and the first command that takes the server down land, in call order. */
+  const order = (): { harnessAt: number; serverAt: number } => {
+    const verbs = calls.filter((c) => !c.args.includes('--live-runs')).map((c) => c.args.slice(5).join(' '));
+    return {
+      harnessAt: verbs.indexOf('stop harness'),
+      serverAt: verbs.findIndex((a) => a === 'stop' || a.startsWith('up ')),
+    };
+  };
+  const bundle = () => { const p = paths(); materializeBundle(p); return p; };
+  const composeHead = (p: ReturnType<typeof paths>) => ['compose', '--file', p.composeFile, '--project-name', COMPOSE_PROJECT];
+  const backup = () => {
+    const dir = join(scratch(), 'from');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'myco.sqlite'), 'snapshot');
+    return dir;
+  };
+
+  it('update stops it, after the wait and before the pull', async () => {
+    await updateDeployment({ paths: bundle(), runner: runner(), report: () => undefined });
+    const { harnessAt, serverAt } = order();
+    expect(harnessAt).toBe(0);
+    expect(harnessAt).toBeLessThan(serverAt);
+  });
+
+  it('update with --no-drain stops it too', async () => {
+    await updateDeployment({ paths: bundle(), runner: runner(), noDrain: true, report: () => undefined });
+    const { harnessAt, serverAt } = order();
+    expect(harnessAt).toBe(0);
+    expect(harnessAt).toBeLessThan(serverAt);
+  });
+
+  it('recreate stops it', async () => {
+    await recreateDeployment({ paths: bundle(), runner: runner() });
+    const { harnessAt, serverAt } = order();
+    expect(harnessAt).toBe(0);
+    expect(harnessAt).toBeLessThan(serverAt);
+  });
+
+  it('rotate stops it', async () => {
+    await rotateSecrets({ paths: bundle(), runner: runner() });
+    const { harnessAt, serverAt } = order();
+    expect(harnessAt).toBe(0);
+    expect(harnessAt).toBeLessThan(serverAt);
+  });
+
+  it('restore stops it', async () => {
+    await restoreDeployment({ paths: bundle(), runner: runner(), source: backup(), report: () => undefined });
+    const { harnessAt, serverAt } = order();
+    expect(harnessAt).toBe(0);
+    expect(harnessAt).toBeLessThan(serverAt);
+  });
+
+  it('CONTROL: the reader names a verb that never stopped the harness', () => {
+    // A reader that found neither command would pass every assertion above.
+    const p = resolveDeploymentPaths(scratch());
+    calls = [
+      { command: 'docker', args: [...composeHead(p), 'up', '--detach', '--wait'] },
+    ];
+    expect(order()).toEqual({ harnessAt: -1, serverAt: 0 });
+    calls = [
+      { command: 'docker', args: [...composeHead(p), 'stop', 'harness'] },
+      { command: 'docker', args: [...composeHead(p), 'up', '--detach', '--wait'] },
+    ];
+    expect(order()).toEqual({ harnessAt: 0, serverAt: 1 });
   });
 });

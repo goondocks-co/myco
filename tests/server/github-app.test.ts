@@ -129,7 +129,13 @@ describe('installing the credentials', () => {
     const env = readFileSync(paths.envFile, 'utf8');
     expect(env.split('\n').filter(Boolean).sort()).toEqual(['GITHUB_CLIENT_ID=Iv1.x', 'MYCO_PORT=18787', 'MYCO_VERSION=2.0.0']);
     expect(env).not.toContain('s3cr3t');
-    expect(calls.map((c) => [c.command, ...c.args])).toEqual([['docker', 'compose', '--file', paths.composeFile, '--project-name', 'myco', 'up', '--detach', '--force-recreate', '--wait']]);
+    // The harness goes down on its own first: Compose takes the namespace owner
+    // down ahead of it, and a recreate that starts with `up` kills the server
+    // while the harness is still holding runs.
+    expect(calls.map((c) => [c.command, ...c.args])).toEqual([
+      ['docker', 'compose', '--file', paths.composeFile, '--project-name', 'myco', 'stop', 'harness'],
+      ['docker', 'compose', '--file', paths.composeFile, '--project-name', 'myco', 'up', '--detach', '--force-recreate', '--wait'],
+    ]);
   });
 
   it('the real runner hands `input` to the child on stdin', async () => {

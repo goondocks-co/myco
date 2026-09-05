@@ -44,8 +44,8 @@ Commands (Compose is the default target; --target cloudflare selects the Worker)
                                           A failed update returns to the previous version. Waits for
                                           the tasks this Deployment has in flight, queued ones
                                           included, before it recreates. --no-drain skips the wait;
-                                          the runs still finish inside the harness's stop grace, and
-                                          the recreate waits behind them.
+                                          the harness is still stopped first, so live runs finish
+                                          inside its stop grace before the server is touched.
   update --target cloudflare [--no-drain]
                                           Move the Worker to this checkout. Waits for the tasks the
                                           Deployment has in flight, queued ones included, then
@@ -58,9 +58,9 @@ Commands (Compose is the default target; --target cloudflare selects the Worker)
   backup --to <dir>                       Snapshot the database and blobs.
   restore --from <dir> [--no-drain]       Replace the Deployment's data with a backup. Waits for the
                                           tasks this Deployment has in flight, queued ones included,
-                                          before it stops. --no-drain skips the wait; the runs still
-                                          finish inside the harness's stop grace, and the stop waits
-                                          behind them.
+                                          before it stops. --no-drain skips the wait; the harness is
+                                          still stopped first, so live runs finish inside its stop
+                                          grace before the server is touched.
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
   adopt                                   Write a bundle for a stack this machine did not provision.
   destroy [--data] [--yes]                Stop and remove the stack, at once — it does not wait for
@@ -190,6 +190,9 @@ export async function run(args: string[]): Promise<void> {
       }
       const originFlag = flags.get('origin');
       if (originFlag === '' || originFlag === 'true') fail('--origin needs the address members reach this Deployment at.');
+      if (originFlag !== undefined && !/^https?:\/\//.test(originFlag)) {
+        fail(`--origin is an http:// or https:// URL naming the address members reach this Deployment at, and is ${JSON.stringify(originFlag)}`);
+      }
       const created = await createDeployment({ port, fleet, origin: originFlag, version: flags.get('version') });
       console.log('\nDeployment started.');
       console.log(`  Directory:  ${created.root}`);
