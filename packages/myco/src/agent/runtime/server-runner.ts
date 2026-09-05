@@ -109,9 +109,18 @@ export interface ServerTaskOptions {
   onClosing?: () => void;
 }
 
+/**
+ * What became of the run's own record of itself: an ending the Deployment
+ * applied, one it refused or this process could not send, or no claim at all —
+ * which leaves the row exactly as the dispatcher wrote it.
+ */
+export type RunEnding = 'posted' | 'unposted' | 'unclaimed';
+
 export interface ServerTaskResult {
   runId: string;
   status: 'completed' | 'failed' | 'skipped';
+  /** Whether the row carries this run's ending. */
+  ending: RunEnding;
   error?: string;
   /** The Deployment's word when it did not apply the terminal status this run posted; `error` then names the refusal itself. */
   refused?: string;
@@ -177,7 +186,7 @@ export async function recordRunFailure(
         update: { status: 'failed', completed_at: Date.now(), error: error.slice(0, MAX_RUN_ERROR_CHARS) },
         ...(options.replaced === true ? { replaced: true } : {}),
       });
-      const applied = answered.applied !== false;
+      const applied = answered.applied === true;
       return applied ? { applied } : { applied, ...(typeof answered.reason === 'string' ? { reason: answered.reason } : {}) };
     } catch (failure) {
       if (attempt >= attempts) throw failure;
@@ -303,7 +312,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     const definition = loadAgentDefinition(definitionsDir);
     const task = loadAllTasks(definitionsDir).get(taskName);
     if (task === undefined) {
-      return { runId, status: 'failed', error: `unknown task: ${taskName}`, reportCount: 0 };
+      return { runId, status: 'failed', ending: 'unclaimed', error: `unknown task: ${taskName}`, reportCount: 0 };
     }
     const systemPrompt = loadSystemPrompt(definitionsDir, definition.systemPromptPath);
 
@@ -327,7 +336,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       { taskName, maxAgeSeconds: 0 },
     );
     if ((claim as { claimed?: boolean } | undefined)?.claimed === false) {
-      return { runId, status: 'skipped', reportCount: 0 };
+      return { runId, status: 'skipped', ending: 'unclaimed', reportCount: 0 };
     }
     options.onClaimed?.();
 
@@ -381,23 +390,25 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       // failed, and the container's log is where a person looks first.
       const refused = refusalOf(closed);
       if (refused !== undefined) {
-        return { runId, status: 'failed', error: RUN_REFUSED_CLOSE_ERROR, refused, reportCount: counter.reports };
+        return { runId, status: 'failed', ending: 'unposted', error: RUN_REFUSED_CLOSE_ERROR, refused, reportCount: counter.reports };
       }
-      return { runId, status: 'completed', reportCount: counter.reports };
+      return { runId, status: 'completed', ending: 'posted', reportCount: counter.reports };
     } finally {
       clearTimeout(timer);
     }
   } catch (error) {
     const message = runErrorText(error);
     let refused: string | undefined;
+    let ending: RunEnding = 'unposted';
     try {
       options.onClosing?.();
       refused = refusalOf(await recordTerminal(store, runId, 'failed', { completed_at: Date.now(), error: message }));
+      if (refused === undefined) ending = 'posted';
     } catch {
       // The terminal update is best-effort: the stale sweep closes the row
       // when the Deployment is unreachable, and the container's log holds
       // the message either way.
     }
-    return { runId, status: 'failed', error: message, ...(refused === undefined ? {} : { refused }), reportCount: 0 };
+    return { runId, status: 'failed', ending, error: message, ...(refused === undefined ? {} : { refused }), reportCount: 0 };
   }
 }

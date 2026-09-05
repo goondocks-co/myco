@@ -8,7 +8,9 @@
  * completed, and leaves.
  *
  * It records its own environment first, so the test can hold what the dispatch
- * and the supervisor give it — and what they do not.
+ * and the supervisor give it — and what they do not. Its own failures leave
+ * with codes of their own (10 and up), never the ones a runtime uses to tell a
+ * supervisor what became of the run it held.
  */
 import { ServerClient } from '@myco/member/transport.js';
 import { createHttpRunStore, postRunReport } from '@myco/agent/runtime/run-store-http.js';
@@ -29,7 +31,7 @@ const runId = env('MYCO_RUN_ID');
 const taskName = env('MYCO_TASK');
 if (!serverUrl || !token || !projectId || !runId || !taskName) {
   console.error(`stand-in runtime: the dispatch named no ${!serverUrl ? 'server' : !token ? 'credential' : !projectId ? 'project' : !runId ? 'run' : 'task'}`);
-  process.exit(2);
+  process.exit(10);
 }
 
 // A runtime that claims late: the launch that started it can be answered after
@@ -62,7 +64,7 @@ const claim = await store.claimRun(
 );
 if (claim.claimed !== true) {
   console.error(`stand-in runtime: the claim on ${runId} was refused`);
-  process.exit(3);
+  process.exit(11);
 }
 
 await postRunReport(client, budget, {
@@ -75,6 +77,6 @@ await postRunReport(client, budget, {
 const closed = await store.updateRunStatus(runId, 'completed', { completed_at: Date.now(), tokens_used: null } as never);
 if (closed.applied !== true) {
   console.error(`stand-in runtime: the deployment refused to close ${runId}: ${closed.reason ?? ''}`);
-  process.exit(4);
+  process.exit(12);
 }
 process.exit(0);

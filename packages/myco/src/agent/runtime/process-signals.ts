@@ -33,20 +33,20 @@ export function onStopSignals(events: ProcessEvents, handle: (ordinal: number) =
 /**
  * What a runtime's exit code says about the run it held.
  *
- * Only these two mean the row already carries an ending. Everything else — a
- * kill, an out-of-memory, a signal, a bundle that would not start, a throw
- * before the run's own handlers are live — is a death the runtime did not get
- * to describe, and the supervisor closes the run in its place. `1` is left out
- * deliberately: it is what a runtime that never started answers, so a runtime
- * saying `1` is saying nothing.
+ * A code the runtime chose says two things: whether it claimed the run, and
+ * whether the row now carries an ending. Only `ran` and `named` mean the row
+ * carries one. Every other code — including the `1` a process that failed to
+ * start answers, and any signal — leaves a run for the supervisor to close.
  */
 export const RUNTIME_EXIT = {
-  /** The run finished and this process posted its ending. */
+  /** The run finished and the Deployment applied the ending this process posted. */
   ran: 0,
   /** This process named the run's failure on the row itself. */
   named: 2,
-  /** This process ended with a failure it could not post. */
+  /** This process held the run and ended with a failure it could not post. */
   unposted: 3,
+  /** This process never claimed a run: the row is as the dispatcher wrote it. */
+  unclaimed: 4,
 } as const;
 
 /** The exit codes that mean the run's row already carries an ending. */

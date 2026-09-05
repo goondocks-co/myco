@@ -317,8 +317,10 @@ describe('update: the runs in flight and the rollout', () => {
     await updateCloudflareDeployment({ ...options, runner: scripted({}), report: () => undefined, clock: clock() });
     const read = calls.map((c) => c.args).find((a) => a.join(' ').includes('d1 execute'))!;
     expect(read.slice(0, 6)).toEqual(['wrangler', 'd1', 'execute', 'myco-server', '--remote', '--json']);
-    // The server counts both states as live (core/runs.ts, LIVE_RUNS_SQL); so does the deploy.
-    expect(read).toContain("SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running')");
+    // A deploy waits for what a recreate would interrupt: the dispatcher's two
+    // live states, and a queued row whose child is still working under the
+    // credential it names.
+    expect(read).toContain("SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running') OR (status = 'queued' AND dispatched_by IS NOT NULL)");
     expect(read.join(' ')).toContain(`-c ${DEPLOY_CONFIG_NAME}`);
   });
 

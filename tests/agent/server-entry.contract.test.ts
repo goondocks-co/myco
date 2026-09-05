@@ -77,12 +77,14 @@ describe('the runtime entry on its port', () => {
 
 describe('what this runtime tells its supervisor by leaving', () => {
   it('leaves with a code that says whether the run it held carries an ending', () => {
-    // The two the supervisor reads as an ending already written, and the one it
-    // reads as a failure this process could not post.
-    expect(RUNTIME_EXIT).toEqual({ ran: 0, named: 2, unposted: 3 });
+    // What the supervisor reads: an ending already written, a failure this
+    // process could not post, and a run it never claimed at all.
+    expect(RUNTIME_EXIT).toEqual({ ran: 0, named: 2, unposted: 3, unclaimed: 4 });
     expect([...RUNTIME_OWN_ENDINGS].sort()).toEqual([RUNTIME_EXIT.ran, RUNTIME_EXIT.named]);
-    // `1` is a process that never got as far as holding a run.
+    // `1` is a process that never got as far as holding a run, and `4` is one
+    // that started and claimed nothing: both leave a run for the supervisor.
     expect(RUNTIME_OWN_ENDINGS.has(1)).toBe(false);
+    expect(RUNTIME_OWN_ENDINGS.has(RUNTIME_EXIT.unclaimed)).toBe(false);
   });
 
   it('uses those codes where it names a run and where it cannot', () => {

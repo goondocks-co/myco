@@ -18,12 +18,13 @@
  * that run's dispatch, so it posts the ending itself, and waits for that post
  * before it leaves.
  *
- * The child's exit code says whether one is owed: `RUNTIME_OWN_ENDINGS` are the
- * two the runtime uses for a row that already carries an ending, and every
+ * The child's exit code says whether one is owed, and what to say:
+ * `RUNTIME_OWN_ENDINGS` are the two the runtime uses for a row that already
+ * carries an ending; a runtime that left without claiming names a run this
+ * deployment took back, which the Deployment queues a successor for; and every
  * other code is a death it did not describe — a kill, an out-of-memory, a
- * signal inside the boot window, a bundle that would not start. Those are
- * posted, drain or no drain, which is what makes a hard death during a drain
- * reach the row.
+ * signal inside the boot window, a bundle that would not start. All of those
+ * are posted, drain or no drain.
  *
  * The route authenticates before it reads anything: an unauthenticated body is
  * never buffered. The socket's `maxRequestBodySize` answers 413 to an oversize
@@ -45,7 +46,7 @@ import { fileURLToPath } from 'node:url';
 import { MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { NO_RUNTIME_LISTENER } from './runtime-port.js';
 import { MAX_RUN_ERROR_CHARS } from './run-store.js';
-import { onStopSignals, RUNTIME_OWN_ENDINGS, type ProcessEvents } from './process-signals.js';
+import { onStopSignals, RUNTIME_EXIT, RUNTIME_OWN_ENDINGS, type ProcessEvents } from './process-signals.js';
 
 export { RUNTIME_EXIT, RUNTIME_OWN_ENDINGS } from './process-signals.js';
 import {
@@ -149,6 +150,19 @@ export function runControlOf(envVars: Record<string, string>): RunControl | null
 /** How a run whose runtime died before it ended is recorded. */
 export const RUNTIME_DIED_ERROR = 'the runtime exited before the run ended';
 
+/** How a run whose runtime left without ever claiming it is recorded. */
+export const RUNTIME_UNCLAIMED_ERROR = 'the runtime left without claiming the run';
+
+/**
+ * How a run this supervisor stopped before its runtime claimed it is recorded.
+ *
+ * The Deployment reads this word as a run a deployment ended rather than one
+ * the work ended, and queues a fresh run of the same task in its place; the
+ * runtime uses it for the same case it can name itself
+ * (`RUN_RECLAIMED_ERROR` in `server-runner.ts`).
+ */
+export const RUNTIME_RECLAIMED_ERROR = 'the platform reclaimed the runtime before the run ended';
+
 /** How long the supervisor gives the post that closes a run its child abandoned. */
 const CLOSE_TIMEOUT_MS = 5_000;
 
@@ -164,7 +178,9 @@ export const BODY_READ_TIMEOUT_MS = 2_000;
 export const BODY_TOTAL_TIMEOUT_MS = 5_000;
 
 /** Close a run its runtime left open, with that run's own credential. */
-async function closeAbandonedRun(control: RunControl, runId: string, code: number, now: number): Promise<Response> {
+async function closeAbandonedRun(
+  control: RunControl, runId: string, close: { error: string; replaced: boolean }, now: number,
+): Promise<Response> {
   return await fetch(`${control.serverUrl}/runs/update`, {
     method: 'POST',
     headers: {
@@ -175,10 +191,29 @@ async function closeAbandonedRun(control: RunControl, runId: string, code: numbe
     },
     body: JSON.stringify({
       runId,
-      update: { status: 'failed', completed_at: now, error: `${RUNTIME_DIED_ERROR} (${code})`.slice(0, MAX_RUN_ERROR_CHARS) },
+      update: { status: 'failed', completed_at: now, error: close.error.slice(0, MAX_RUN_ERROR_CHARS) },
+      ...(close.replaced ? { replaced: true } : {}),
     }),
     signal: AbortSignal.timeout(CLOSE_TIMEOUT_MS),
   });
+}
+
+/**
+ * What a child's exit leaves for this supervisor to write, or nothing.
+ *
+ * A run this supervisor stopped before its runtime could claim it is a run a
+ * deployment ended: named as reclaimed, the Deployment queues a fresh run of
+ * the task in its place. Every other unclaimed exit is a runtime that started
+ * and did nothing, and a run nobody is coming back for.
+ */
+export function closeForExit(code: number, draining: boolean): { error: string; replaced: boolean } | null {
+  if (RUNTIME_OWN_ENDINGS.has(code)) return null;
+  if (code === RUNTIME_EXIT.unclaimed) {
+    return draining
+      ? { error: RUNTIME_RECLAIMED_ERROR, replaced: true }
+      : { error: RUNTIME_UNCLAIMED_ERROR, replaced: false };
+  }
+  return { error: `${RUNTIME_DIED_ERROR} (${code})`, replaced: false };
 }
 
 /** One run's child process, as the supervisor tracks it. */
@@ -342,10 +377,11 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
     // left the run open, and this is the only process that can still close it.
     // The post is awaited: this process leaves behind the last child of a drain,
     // so a post that must land has to land before that.
-    if (!RUNTIME_OWN_ENDINGS.has(code) && child?.control != null) {
+    const close = closeForExit(code, decision.exit || draining);
+    if (close !== null && child?.control != null) {
       try {
-        const answered = await closeAbandonedRun(child.control, runId, code, Date.now());
-        line({ kind: 'supervisor_run_closed', runId, code, status: answered.status });
+        const answered = await closeAbandonedRun(child.control, runId, close, Date.now());
+        line({ kind: 'supervisor_run_closed', runId, code, status: answered.status, replaced: close.replaced });
       } catch (error) {
         line({ kind: 'supervisor_run_close_failed', runId, code, error: error instanceof Error ? error.message : String(error) });
       }

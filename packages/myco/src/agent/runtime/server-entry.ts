@@ -7,7 +7,7 @@
  * network namespace with other runtimes sets it to the no-listener word.
  */
 import { ServerClient } from '@myco/member/transport.js';
-import { installRunFailureHandlers, runServerTask, type HeldRun, type ServerTaskResult } from './server-runner.js';
+import { installRunFailureHandlers, runServerTask, type HeldRun, type RunEnding, type ServerTaskResult } from './server-runner.js';
 import { runtimePortFrom } from './runtime-port.js';
 import { RUNTIME_EXIT } from './process-signals.js';
 import type { ProviderConfig } from '../types.js';
@@ -74,7 +74,10 @@ async function executeFromEnv(): Promise<void> {
   const projectId = env('MYCO_PROJECT');
   const runId = env('MYCO_RUN_ID');
   const taskName = env('MYCO_TASK');
-  if (!serverUrl || !token || !projectId || !runId || !taskName) return;
+  if (!serverUrl || !token || !projectId || !runId || !taskName) {
+    console.log(JSON.stringify({ kind: 'server_entry_undispatched' }));
+    return;
+  }
   // A runtime told to stop before it claimed anything runs nothing: the row
   // stays as the dispatcher wrote it, for the Deployment to launch again.
   if (stopping) return;
@@ -126,10 +129,28 @@ async function executeFromEnv(): Promise<void> {
   inFlight = null;
   running = false;
   console.log(JSON.stringify({ kind: 'server_run_finished', ...result }));
-  // The drain was waiting on exactly this: the run carries its own ending, and
-  // the container the platform asked for has nothing left to hold.
-  if (stopping) process.exit(0);
+  leaveWith(EXIT_FOR_ENDING[result.ending]);
 }
+
+/**
+ * Leave, where leaving is this process's to decide.
+ *
+ * A runtime serving no listener is one a supervisor holds by its process alone:
+ * it leaves the moment its run is done, and the code is what the supervisor
+ * reads to decide whether that run still owes the Deployment an ending. A
+ * runtime serving a port is held by the platform that probes it, and stays up
+ * until that platform stops it or asks it to drain.
+ */
+function leaveWith(code: number): void {
+  if (runtimePort === null || stopping) process.exit(code);
+}
+
+/** What each ending leaves the process to say on its way out. */
+const EXIT_FOR_ENDING: Readonly<Record<RunEnding, number>> = {
+  posted: RUNTIME_EXIT.ran,
+  unposted: RUNTIME_EXIT.unposted,
+  unclaimed: RUNTIME_EXIT.unclaimed,
+};
 
 // A runtime the platform probes and holds serves its own port. A runtime the
 // self-hosted supervisor starts shares one network namespace with its siblings,
@@ -156,9 +177,17 @@ if (runtimePort !== null) {
   console.log(`harness entry up on ${runtimePort}`);
 }
 
-executeFromEnv().catch((error) => {
-  fatal = error instanceof Error ? error.message : String(error);
-  inFlight = null;
-  running = false;
-  console.log(JSON.stringify({ kind: 'server_entry_failed', fatal }));
-});
+executeFromEnv().then(
+  () => {
+    // Reached where `executeFromEnv` returned without claiming; a run it
+    // claimed has already left through the exit above.
+    leaveWith(RUNTIME_EXIT.unclaimed);
+  },
+  (error: unknown) => {
+    fatal = error instanceof Error ? error.message : String(error);
+    inFlight = null;
+    running = false;
+    console.log(JSON.stringify({ kind: 'server_entry_failed', fatal }));
+    leaveWith(RUNTIME_EXIT.unposted);
+  },
+);

@@ -197,9 +197,10 @@ export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
 
     async updateRunStatus(runId, status, completion) {
       const answered = await post('/runs/update', { runId, update: { status, ...toColumns(completion) } });
-      // The server's close gate answers `applied: false` with what the run owed;
-      // silence about that would log a run as finished that the row calls failed.
-      const applied = answered.applied !== false;
+      // Applied is said, never assumed: a write that moved nothing answers
+      // without it, and reading that as an ending would log a run finished that
+      // the row does not call finished.
+      const applied = answered.applied === true;
       return applied ? { applied } : { applied, ...(typeof answered.reason === 'string' ? { reason: answered.reason } : {}) };
     },
 

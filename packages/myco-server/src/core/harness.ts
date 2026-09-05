@@ -163,6 +163,9 @@ function storedSpecOf(spec: LaunchSpec): StoredSpec {
   };
 }
 
+/** What a status write presenting a credential the run's row does not name is refused with. */
+export const STALE_CREDENTIAL_REFUSAL = 'this run is dispatched under another credential';
+
 /** How a queued row whose launch spec cannot be read is failed. */
 export const NO_LAUNCH_ERROR = 'the queued dispatch carries no launch';
 
@@ -270,6 +273,20 @@ export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch
 }
 
 /**
+ * Retire a harness credential.
+ *
+ * A run's credential exists for that run alone, and the row is what says which
+ * one that is. The rule this function exists to make true: a credential is
+ * revoked at the moment the row stops naming it, and at no other moment — so
+ * every write that changes what a row names retires what it named before, in
+ * the same breath, through here.
+ */
+async function retireDispatchCredential(env: ServerEnv, tokenId: string | null, now: number): Promise<void> {
+  if (tokenId === null) return;
+  await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, tokenId, now);
+}
+
+/**
  * End a queued run, and release what it holds.
  *
  * A queued row can carry the credential of a launch that may have started a
@@ -288,9 +305,7 @@ export async function endQueuedRun(
   const applied = 'failed' in outcome
     ? await failQueuedRun(env.db, scope, run.id, now, outcome.failed)
     : await skipQueued(env.db, scope, run.id, now, outcome.skipped);
-  if (applied && run.dispatchedBy !== null) {
-    await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, run.dispatchedBy, now);
-  }
+  if (applied) await retireDispatchCredential(env, run.dispatchedBy, now);
   return applied;
 }
 
@@ -442,7 +457,8 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     ? await launchQueued(env.db, scope, runId, { task: prepared.task, dispatchedBy: minted.tokenId, startedAt: now, runContext, instruction: spec.instruction ?? null, provider: prepared.providerType, model: prepared.model }, admission)
     : await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }, admission);
   if (!recorded) {
-    await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, minted.tokenId, now);
+    // No row names this credential: the write above changed nothing.
+    await retireDispatchCredential(env, minted.tokenId, now);
     const existing = await getRun(env.db, scope, runId);
     if (spec.fromQueue === true) {
       if (existing === null || existing.status !== 'queued') throw new NotQueued();
@@ -452,13 +468,14 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     if (options.singleFlight === true && (await hasLiveTaskRun(env.db, scope, prepared.task))) throw new AlreadyRunning();
     throw new LimitReached();
   }
-  /** What a launch that reached a runtime answers, whether its own call said so or the row did. */
+  /**
+   * What a launch that reached a runtime answers.
+   *
+   * The row names `minted` from the write above; `carried` is what it named
+   * before, and no attempt is coming back for it.
+   */
   const landed = async (options: { retire?: string | null } = {}): Promise<Launched> => {
-    // A fresh child runs under the credential just minted; the one the row
-    // carried belongs to an attempt that is over.
-    if (options.retire != null && options.retire !== minted.tokenId) {
-      await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, options.retire, now);
-    }
+    if (options.retire !== minted.tokenId) await retireDispatchCredential(env, options.retire ?? null, now);
     emit({ kind: 'harness_dispatch', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor });
     try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
     return { runId, task: prepared.task, projectId: prepared.projectId, timeoutSeconds, provider: prepared.providerType };
@@ -485,23 +502,23 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // The runtime is running this run already, under the credential it started
-    // with: the row goes back to naming that one, and the credential minted for
-    // this attempt is revoked unused.
+    // with: the row names that one again, and the one minted here named nothing.
     if (error instanceof RuntimeAlreadyHolding) {
       if (carried !== null) await restoreDispatchCredential(env.db, scope, runId, carried);
-      await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, minted.tokenId, now);
+      await retireDispatchCredential(env, carried === null ? null : minted.tokenId, now);
       return landed();
     }
     if (error instanceof RuntimeDraining) {
-      // The row moves back to the queue FIRST. A launch that reached a runtime
-      // and lost only its answer leaves a live child holding this credential on
-      // a row already claimed: `returnToQueue` writes from `pending` alone, so a
-      // row that has moved says the run is running and keeps what it holds.
-      const returned = await returnToQueue(env.db, scope, runId, { heldBy: 'runtime', dispatchSpec: JSON.stringify(storedSpecOf(spec)), now });
+      // The row goes back to the queue naming the oldest credential still in
+      // play: where a launch is answered late, that is the one its child holds.
+      // `returnToQueue` writes from `pending` alone, so a row a claim has
+      // already moved keeps what it holds and this branch does not apply.
+      const keeps = carried ?? minted.tokenId;
+      const returned = await returnToQueue(env.db, scope, runId, {
+        heldBy: 'runtime', dispatchSpec: JSON.stringify(storedSpecOf(spec)), credential: keeps, now,
+      });
       if (returned) {
-        // The credential stays live on the row: a launch answered late may have
-        // started a child that claims under it. Its successor's launch revokes
-        // it, and the expiry revokes it where no successor comes.
+        await retireDispatchCredential(env, keeps === minted.tokenId ? null : minted.tokenId, now);
         if (error.why === 'unreachable') {
           emit({ kind: 'harness_unreachable', runId, task: prepared.task, projectId: prepared.projectId, error: message });
         } else {
@@ -513,9 +530,9 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
       // child claims under, and the one an earlier attempt left is dead.
       return landed({ retire: carried });
     }
-    // The credential is usable until it is revoked, and a runtime that never
-    // started never presents it.
-    await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, minted.tokenId, now);
+    // The run is over, so the row names neither of them any more.
+    await retireDispatchCredential(env, minted.tokenId, now);
+    await retireDispatchCredential(env, carried, now);
     await applyRunUpdate(env.db, scope, runId, { status: 'failed', completed_at: now, error: `${LAUNCH_REFUSED_ERROR}: ${message}`.slice(0, MAX_RUN_ERROR_CHARS) });
     throw error;
   }

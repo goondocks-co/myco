@@ -29,12 +29,16 @@ export interface LiveRun {
  *
  * `pending` counts as in flight exactly as `running` does: the dispatcher
  * writes the row before it launches the runtime, and that run — admitted, not
- * yet started — is the one a deploy is most likely to lose. A run held behind a
- * limit carries neither status and is not read: the next wake dispatches it.
- * The server's own live-run reads use the same pair (`core/runs.ts`,
- * `LIVE_RUNS_SQL`).
+ * yet started — is the one a deploy is most likely to lose. So does a queued
+ * row that names a credential: a launch answered too late is taken back into
+ * the queue while the child it started keeps working, and that child claims the
+ * row it is still named on. A queued row naming none is a run behind a limit,
+ * and the next wake dispatches it.
+ *
+ * The dispatcher's own fleet count reads the first pair alone (`core/runs.ts`,
+ * `LIVE_RUN_STATUSES`): this read is about what a recreate would interrupt.
  */
-export const LIVE_RUNS_QUERY = "SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running')";
+export const LIVE_RUNS_QUERY = "SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running') OR (status = 'queued' AND dispatched_by IS NOT NULL)";
 
 /** A row of {@link LIVE_RUNS_QUERY}, as either target's read answers it. */
 export interface LiveRunRow {

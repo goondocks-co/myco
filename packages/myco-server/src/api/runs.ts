@@ -35,7 +35,7 @@ import { admitResume, classifyFailure, type FailureObservation } from '../core/r
 const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
 import { releaseRun } from '../core/release.js';
 import { runCloseRefusal } from '../core/run-postconditions.js';
-import { HARNESS_MEMBER_ID, requeueReplaced } from '../core/harness.js';
+import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
@@ -259,7 +259,7 @@ const asksReplaced = (body: Record<string, unknown>, status: unknown): boolean =
 /** The answer a status change gets on a run that has already ended under a DIFFERENT ending: nothing moved, and the row's own ending stands. */
 const TERMINAL_ANSWER = { persisted: true, changed: 0, applied: false, reason: 'terminal' } as const;
 /** The answer a status change gets on a run already carrying that very status: nothing moved, and nothing needs to. */
-const SETTLED_ANSWER = { persisted: true, changed: 0 } as const;
+const SETTLED_ANSWER = { persisted: true, changed: 0, applied: true } as const;
 
 /**
  * What a status write answers on a run that has already ended, or nothing when
@@ -323,6 +323,13 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   }
   const guarded = 'status' in runUpdate;
   const before = guarded ? await getRun(env.db, scope, runId) : null;
+  // A dispatched run's status belongs to the credential the row names, exactly
+  // as its claim does: ending a run requires holding the credential that run is
+  // running under, so an earlier attempt's runtime — or the supervisor closing
+  // for it — cannot end the work its successor is doing.
+  if (guarded && ctx.memberId === HARNESS_MEMBER_ID && before !== null && before.dispatchedBy !== ctx.tokenId) {
+    return Response.json(refused(ctx, refusal(STALE_CREDENTIAL_REFUSAL, 'refused')));
+  }
   const settled = endedAnswer(before?.status, runUpdate.status);
   if (settled !== null) return settled;
   if (runUpdate.status === 'completed') {
@@ -339,11 +346,13 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   if (changed === 1) {
     await releaseDispatchedRun(env, ctx, runId, runUpdate.status);
     if (asksReplaced(body, runUpdate.status)) await recordReplacedRun(env, ctx, runId);
-    return Response.json({ persisted: true, changed });
+    return Response.json({ persisted: true, changed, applied: true });
   }
   const raced = guarded ? endedAnswer((await getRun(env.db, scope, runId))?.status, runUpdate.status) : null;
   if (raced !== null) return raced;
-  return Response.json({ persisted: true, changed });
+  // A write that moved nothing says so: a caller reading silence as an applied
+  // ending would log a run finished that the row does not call finished.
+  return Response.json({ persisted: true, changed, applied: false });
 }
 
 /** Retire the resumability of failed runs equivalent to this one. */

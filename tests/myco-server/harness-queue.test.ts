@@ -513,6 +513,36 @@ describe('a runtime that is not taking runs', () => {
     expect(f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(row.dispatchedBy as string)).toEqual({ revoked_at: null });
   });
 
+  it('leaves one live credential per outcome a relaunch can have, and it is the one the row names', async () => {
+    const live = (f: ReturnType<typeof fixture>) =>
+      (f.sqlite.query(`SELECT id FROM member_credentials WHERE revoked_at IS NULL ORDER BY id`).all() as Array<{ id: string }>).map((c) => c.id);
+    const minted = (f: ReturnType<typeof fixture>) =>
+      (f.sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get() as { c: number }).c;
+
+    // A row re-queued three times over: each attempt mints one, and the row
+    // goes on naming the first — the one whose child a late answer may have
+    // started — so exactly one is live and the rest are retired.
+    const stopping = fixture({ refuse: () => draining() });
+    const prepared = await prepareDispatch(stopping.env, 'container-smoke', 'proj_1');
+    await dispatchPrepared(stopping.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_thrice' }, NOW);
+    const first = stopping.run('run_thrice')!.dispatchedBy as string;
+    for (const at of [NOW + 1, NOW + 2]) expect(await drainQueue(stopping.env, at)).toBe(0);
+    expect(stopping.run('run_thrice')).toMatchObject({ status: 'queued', heldBy: 'runtime', dispatchedBy: first });
+    expect(minted(stopping)).toBe(3);
+    expect(live(stopping)).toEqual([first]);
+
+    // A relaunch the runtime refuses outright ends the run, and the row names
+    // neither of the two credentials in play.
+    let attempts = 0;
+    const refusing = fixture({ refuse: () => (attempts += 1) === 1 ? draining() : new Error('the harness runtime refused to launch: spawn') });
+    const preparedRefusing = await prepareDispatch(refusing.env, 'container-smoke', 'proj_1');
+    await dispatchPrepared(refusing.env, (preparedRefusing as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_spawn' }, NOW);
+    expect(await drainQueue(refusing.env, NOW + 1)).toBe(0);
+    expect(refusing.run('run_spawn')?.status).toBe('failed');
+    expect(minted(refusing)).toBe(2);
+    expect(live(refusing)).toEqual([]);
+  });
+
   it('retires the credential a queued row carries at every way that row can end', async () => {
     const credentialOf = (f: ReturnType<typeof fixture>, id: string) => f.run(id)!.dispatchedBy as string;
     const revokedAt = (f: ReturnType<typeof fixture>, id: string) =>

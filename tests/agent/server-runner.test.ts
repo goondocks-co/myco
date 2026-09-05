@@ -57,7 +57,8 @@ describe('runServerTask', () => {
   it('claims, executes with the materialized report surface, lands the report, and completes the run', async () => {
     const { client, sqlite } = await harness();
     const result = await runServerTask({ client, budget, runId: 'run_smoke_1', taskName: 'container-smoke', harness: fakeHarness('reports') });
-    expect(result).toEqual({ runId: 'run_smoke_1', status: 'completed', reportCount: 1 });
+    // The Deployment applied the ending this run posted, which is what `ending` says.
+    expect(result).toEqual({ runId: 'run_smoke_1', status: 'completed', ending: 'posted', reportCount: 1 });
 
     const run = sqlite.query(`SELECT status, task, tokens_used t FROM agent_runs WHERE id = 'run_smoke_1'`).get() as { status: string; task: string; t: number };
     expect(run).toEqual({ status: 'completed', task: 'container-smoke', t: 42 });
@@ -205,7 +206,7 @@ describe('a run that dies names itself', () => {
       onClosing: () => { held = null; },
     });
     await Bun.sleep(30);
-    expect(result).toEqual({ runId: 'run_drained', status: 'completed', reportCount: 0 });
+    expect(result).toEqual({ runId: 'run_drained', status: 'completed', ending: 'posted', reportCount: 0 });
     expect(named).toEqual([]);
     expect(seen).toEqual(['draining']);
     expect(sqlite.query(`SELECT status, error, run_context c FROM agent_runs WHERE id = 'run_drained'`).get())
@@ -293,7 +294,8 @@ describe('what the container makes of the deployment\'s answer', () => {
       },
     } as unknown as ServerClient;
     const result = await runServerTask({ client: stub, budget, runId: 'run_refused', taskName: 'container-smoke', harness: fakeHarness('silent') });
-    expect(result).toEqual({ runId: 'run_refused', status: 'failed', error: RUN_REFUSED_CLOSE_ERROR, refused: 'postcondition', reportCount: 0 });
+    // The row does not carry this run's ending, and the exit code says so.
+    expect(result).toEqual({ runId: 'run_refused', status: 'failed', ending: 'unposted', error: RUN_REFUSED_CLOSE_ERROR, refused: 'postcondition', reportCount: 0 });
   });
 
   it('takes the run as its own only once the claim lands', async () => {

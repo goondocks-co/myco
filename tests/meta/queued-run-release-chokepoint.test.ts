@@ -1,12 +1,15 @@
 /**
- * Meta gate: a queued run ends in one place.
+ * Meta gate: one function owns a harness run's credential.
  *
- * A queued row can carry the credential of a launch that may have started a
- * child, and ending the row is the last moment anything can retire it — the
- * retention pass then deletes the row, and nothing names the credential again.
- * `endQueuedRun` is what pairs the transition with the release. A second caller
- * writing a queued row terminal on its own is how a live credential outlives
- * every reader of it, which is exactly the shape that made this gate necessary.
+ * The rule: a run's credential is revoked at the moment its row stops naming
+ * it, and at no other moment. Two things make that true and are held here — a
+ * queued row goes terminal only through `endQueuedRun`, which retires what the
+ * row names as it ends it, and `revokeCredentialOfMember` is reached for a
+ * harness credential only from the one function that owns the rule and from
+ * the release a terminal run already goes through.
+ *
+ * A credential revoked anywhere else is one revoked while a row still names it;
+ * a row moved anywhere else is one whose credential nothing retires.
  */
 import { describe, expect, it } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -30,6 +33,9 @@ function files(dir: string): string[] {
   }
   return out;
 }
+
+/** Where a harness credential may be revoked: the rule's owner, and the release a terminal run goes through. */
+const REVOKE_CALLERS: readonly string[] = ['core/harness.ts', 'core/release.ts'];
 
 describe('meta: ending a queued run', () => {
   it('happens only through the release that retires what the row holds', () => {
@@ -55,6 +61,26 @@ describe('meta: ending a queued run', () => {
       // One occurrence in the file, and it is that one.
       expect({ name, calls: harness.match(new RegExp(`\\b${name}\\s*\\(`, 'g'))?.length ?? 0 }).toEqual({ name, calls: 1 });
     }
-    expect(release).toContain('revokeCredentialOfMember');
+    // The transition and the retirement are one act.
+    expect(release).toContain('retireDispatchCredential(');
+  });
+
+  it('revokes a harness credential from the rule\'s owner and from the run release, and nowhere else', () => {
+    const offenders: string[] = [];
+    for (const file of files(SRC)) {
+      const relative = file.slice(SRC.length);
+      // The function's own definition is not a call of it.
+      if (relative === 'auth/tokens.ts') continue;
+      if (!/\brevokeCredentialOfMember\s*\(/.test(readFileSync(file, 'utf8'))) continue;
+      if (!REVOKE_CALLERS.includes(relative)) offenders.push(relative);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('reaches it once in the owner, from the function that names the rule', () => {
+    const harness = readFileSync(join(SRC, 'core', 'harness.ts'), 'utf8');
+    expect(harness.match(/\brevokeCredentialOfMember\s*\(/g)).toHaveLength(1);
+    const owner = harness.slice(harness.indexOf('async function retireDispatchCredential'));
+    expect(owner.slice(0, owner.indexOf('\n}\n') + 3)).toContain('revokeCredentialOfMember(');
   });
 });

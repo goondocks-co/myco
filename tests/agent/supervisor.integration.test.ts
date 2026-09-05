@@ -18,8 +18,8 @@ import { platform } from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  DEFAULT_SUPERVISOR_HOSTNAME, MAX_LAUNCH_BODY_BYTES, RUNTIME_DIED_ERROR,
-  startSupervisor, supervisorOptionsFromEnv, SUPERVISOR_ONLY_ENV,
+  closeForExit, DEFAULT_SUPERVISOR_HOSTNAME, MAX_LAUNCH_BODY_BYTES, RUNTIME_DIED_ERROR,
+  RUNTIME_RECLAIMED_ERROR, RUNTIME_UNCLAIMED_ERROR, startSupervisor, supervisorOptionsFromEnv, SUPERVISOR_ONLY_ENV,
   type RunningSupervisor, type SpawnedChild, type SpawnPlan,
 } from '@myco/agent/runtime/supervisor.js';
 import { RUNTIME_EXIT, RUNTIME_OWN_ENDINGS } from '@myco/agent/runtime/process-signals.js';
@@ -636,6 +636,74 @@ describe('a run whose runtime died before it ended', () => {
       for (const post of deploy.posts) {
         expect((post.body.update as { status: string }).status).toBe('failed');
       }
+    } finally {
+      deploy.stop();
+    }
+  });
+
+  it('names what each exit code owes the row it held', () => {
+    // Table of the whole rule: what the supervisor writes, and for whom.
+    const cases: Array<[number, boolean, { error: string; replaced: boolean } | null]> = [
+      [RUNTIME_EXIT.ran, false, null],
+      [RUNTIME_EXIT.named, false, null],
+      [RUNTIME_EXIT.ran, true, null],
+      [RUNTIME_EXIT.named, true, null],
+      [RUNTIME_EXIT.unclaimed, false, { error: RUNTIME_UNCLAIMED_ERROR, replaced: false }],
+      // A run this supervisor stopped before its runtime claimed it is one a
+      // deployment ended, and the Deployment queues a successor for it.
+      [RUNTIME_EXIT.unclaimed, true, { error: RUNTIME_RECLAIMED_ERROR, replaced: true }],
+      [RUNTIME_EXIT.unposted, false, { error: `${RUNTIME_DIED_ERROR} (3)`, replaced: false }],
+      [1, false, { error: `${RUNTIME_DIED_ERROR} (1)`, replaced: false }],
+      [137, true, { error: `${RUNTIME_DIED_ERROR} (137)`, replaced: false }],
+    ];
+    for (const [code, draining, expected] of cases) {
+      expect({ code, draining, close: closeForExit(code, draining) }).toEqual({ code, draining, close: expected });
+    }
+  });
+
+  it('closes a run its runtime started and never claimed', async () => {
+    const s = boot();
+    const deploy = deployment();
+    try {
+      expect((await s.launch({
+        runId: 'run_never_claimed', timeoutSeconds: 120,
+        envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_unclaimed', MYCO_PROJECT: 'proj_1', STANDIN_EXIT_CODE: String(RUNTIME_EXIT.unclaimed) },
+      })).status).toBe(202);
+
+      await until(() => deploy.posts.length > 0, 'the run to be closed');
+      const update = deploy.posts[0]!.body.update as { status: string; error: string };
+      expect(update).toMatchObject({ status: 'failed', error: RUNTIME_UNCLAIMED_ERROR });
+      // Nothing asks for a successor: no deployment took this run away.
+      expect(deploy.posts[0]!.body.replaced).toBeUndefined();
+    } finally {
+      deploy.stop();
+    }
+  });
+
+  it('asks for a successor when the run it stopped had not been claimed', async () => {
+    const s = boot();
+    const deploy = deployment();
+    const out = join(s.root, 'reclaimed.json');
+    const hold = join(s.root, 'reclaim-hold');
+    try {
+      expect((await s.launch({
+        runId: 'run_reclaimed', timeoutSeconds: 120,
+        envVars: {
+          MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_reclaimed', MYCO_PROJECT: 'proj_1',
+          STANDIN_OUT: out, STANDIN_HOLD_SIGTERM: hold, STANDIN_EXIT_ON_SIGTERM: String(RUNTIME_EXIT.unclaimed),
+        },
+      })).status).toBe(202);
+      await until(() => existsSync(out), 'the child to run');
+
+      s.signal();
+      await until(() => existsSync(`${hold}.signalled`), 'the child to receive the stop signal');
+      writeFileSync(`${hold}.release`, '1');
+      await until(() => s.exits.length > 0, 'the supervisor to leave');
+
+      expect(deploy.posts).toHaveLength(1);
+      expect(deploy.posts[0]!.body.update).toMatchObject({ status: 'failed', error: RUNTIME_RECLAIMED_ERROR });
+      // The word and the flag the Deployment reads to queue a fresh run in its place.
+      expect(deploy.posts[0]!.body.replaced).toBe(true);
     } finally {
       deploy.stop();
     }

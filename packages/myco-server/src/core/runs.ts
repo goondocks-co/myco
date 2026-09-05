@@ -840,21 +840,23 @@ export async function launchQueued(db: RelationalStore, scope: ReadScope, runId:
  * The launch's own context is dropped, and the drain rebuilds it when it
  * launches.
  *
- * `dispatched_by` STAYS. A launch can be answered late — after the supervisor
- * already started a child with that credential — and the child claims under it.
- * The relaunch revokes it when it mints a successor, and the expiry revokes it
- * when there will be no successor.
+ * The caller names the credential the row is to carry. A launch can be answered
+ * late — after the supervisor has already started a child under the credential
+ * that launch carried — and the child claims under it, so the row goes on
+ * naming one live credential; whichever one it stops naming is retired by the
+ * caller in the same breath.
  */
 const RETURN_TO_QUEUE_SQL = `UPDATE agent_runs
-   SET status = 'queued', held_by = ?, dispatch_spec = ?, started_at = NULL,
+   SET status = 'queued', held_by = ?, dispatch_spec = ?, dispatched_by = ?, started_at = NULL,
        run_context = NULL, queued_at = COALESCE(queued_at, ?)
  WHERE project_id = ? AND id = ? AND status = 'pending'`;
 
 export async function returnToQueue(
-  db: RelationalStore, scope: ReadScope, runId: string, hold: { heldBy: string; dispatchSpec: string; now: number },
+  db: RelationalStore, scope: ReadScope, runId: string,
+  hold: { heldBy: string; dispatchSpec: string; credential: string | null; now: number },
 ): Promise<boolean> {
   const result = await db.prepare(RETURN_TO_QUEUE_SQL)
-    .bind(hold.heldBy, hold.dispatchSpec, hold.now, scope.projectId, runId)
+    .bind(hold.heldBy, hold.dispatchSpec, hold.credential, hold.now, scope.projectId, runId)
     .run();
   return result.meta.changes === 1;
 }
