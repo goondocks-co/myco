@@ -19,7 +19,7 @@ import {
   adoptDeployment,
 } from '../server/deployment.js';
 import { CommandFailed } from '../server/runner.js';
-import { UpdateRolledBack } from '../server/deployment.js';
+import { HarnessLeftStopped, UpdateRolledBack, UpdateRollbackFailed } from '../server/deployment.js';
 import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
 import { WranglerAbsent, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
@@ -190,9 +190,6 @@ export async function run(args: string[]): Promise<void> {
       }
       const originFlag = flags.get('origin');
       if (originFlag === '' || originFlag === 'true') fail('--origin needs the address members reach this Deployment at.');
-      if (originFlag !== undefined && !/^https?:\/\//.test(originFlag)) {
-        fail(`--origin is an http:// or https:// URL naming the address members reach this Deployment at, and is ${JSON.stringify(originFlag)}`);
-      }
       const created = await createDeployment({ port, fleet, origin: originFlag, version: flags.get('version') });
       console.log('\nDeployment started.');
       console.log(`  Directory:  ${created.root}`);
@@ -211,7 +208,10 @@ export async function run(args: string[]): Promise<void> {
       console.log('\nDeployment');
       console.log(`  Directory:  ${paths.root}`);
       console.log(`  Bundle:     ${bundleContents(paths).join(', ')}`);
-      console.log(`  Running:    ${status.running ? status.services.join(', ') : 'no'}`);
+      // Every declared service, with its state: a stack whose harness exited
+      // serves and runs nothing, and naming only what is up hides that.
+      console.log(`  Services:   ${status.states.map((s) => `${s.service} (${s.state})`).join(', ')}`);
+      console.log(`  Running:    ${status.running ? 'yes' : 'no'}`);
       return;
     }
 
@@ -250,7 +250,7 @@ export async function run(args: string[]): Promise<void> {
       if (!flags.has('yes')) {
         fail('rotate replaces the session secret, which ends every signed-in session. Re-run with --yes to confirm.');
       }
-      const rotated = await rotateSecrets();
+      const rotated = await rotateSecrets({ report: (line) => console.log(line) });
       console.log(`Rotated: ${rotated.join(', ')}`);
       console.log('Every signed-in session has ended.');
       return;
@@ -324,7 +324,7 @@ export async function run(args: string[]): Promise<void> {
   } catch (err) {
     // A rolled-back update is a failure, and the operator needs to know the
     // Deployment is serving again on the version it started from.
-    if (err instanceof UpdateRolledBack) fail(err.message);
+    if (err instanceof UpdateRolledBack || err instanceof UpdateRollbackFailed || err instanceof HarnessLeftStopped) fail(err.message);
     if (err instanceof RegistrationRefused || err instanceof WranglerAbsent) fail(err.message);
     if (err instanceof DeployConfigIncomplete) fail(err.message);
     // A Compose failure is the operator's to read, verbatim.

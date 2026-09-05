@@ -86,9 +86,9 @@ describe('the harness rides in the server\'s network namespace', () => {
   });
 
   it('probes its own supervisor AND the server, so a wedged supervisor cannot report healthy', () => {
-    // The server's health alone is answered by a harness whose supervisor has
-    // stopped serving; the supervisor's probe alone is answered by a harness
-    // whose namespace went away with an out-of-band restart of the server.
+    // A wedged supervisor fails the first request; a harness whose namespace
+    // went away with an out-of-band restart of the server still answers its own
+    // probe and fails the second.
     const test = /^\s+test: \[(.+)\]$/m.exec(harness())![1]!;
     expect(test).toContain('"CMD-SHELL"');
     expect(test).toContain('http://127.0.0.1:8080/probe');
@@ -96,6 +96,18 @@ describe('the harness rides in the server\'s network namespace', () => {
     expect(test).toContain("Host: 127.0.0.1:${MYCO_PORT:-8787}");
     // One shell command, both halves required.
     expect(test).toContain('&&');
+    // The health log keeps a healthcheck's output, and /probe names run ids.
+    expect([...test.matchAll(/-o \/dev\/null/g)]).toHaveLength(2);
+    // Two requests do not fit the one-request window.
+    expect(harness()).toContain('timeout: 10s');
+  });
+
+  it('runs the supervisor as root, so the launch token is not the runtime child\'s to read', () => {
+    // The supervisor drops each child to the image's unprivileged user; a child
+    // that could read the token could launch runs of its own.
+    expect(harness()).toContain('user: "0:0"');
+    // The server holds the image's own unprivileged user and declares none.
+    expect(service('server')).not.toMatch(/^\s+user:/m);
   });
 
   it('gives each runtime a working directory on tmpfs the image\'s unprivileged user can create in', () => {

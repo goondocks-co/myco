@@ -14,7 +14,7 @@ import crypto from 'node:crypto';
 import { resolveMycoHome } from '../paths/home.js';
 import { jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
 import { readLiveRunsTwice, systemClock, waitForLiveRuns, type Clock, type LiveRun, type LiveRunRow } from './live-runs.js';
-import { COMPOSE_TEMPLATE } from './compose-template.js';
+import { COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from './compose-template.js';
 import { ensureServerLayout } from './layout.js';
 
 /** Compose project name; every command is scoped to it so a stack is addressable without a path. */
@@ -69,6 +69,8 @@ export function resolveDeploymentPaths(mycoHome = resolveMycoHome()): Deployment
 export interface DeploymentOptions {
   paths?: DeploymentPaths;
   runner?: CommandRunner;
+  /** Where a verb says where it is, as it gets there. */
+  report?: (line: string) => void;
 }
 
 function resolved(options: DeploymentOptions): { paths: DeploymentPaths; runner: CommandRunner } {
@@ -141,11 +143,29 @@ export interface CreateOptions extends DeploymentOptions {
   origin?: string;
 }
 
-/** How many runtimes a Deployment runs at once when its operator names no count. */
+/**
+ * How many runtimes a Deployment runs at once when its operator names no count.
+ * Mirrors the template's `\${MYCO_FLEET:-4}`, held equal by
+ * `tests/server/deployment.test.ts`.
+ */
 export const DEFAULT_FLEET = 4;
 
-/** The default port the bundle publishes on. */
-const DEFAULT_PORT = 8787;
+/**
+ * The default port the bundle publishes on. Mirrors the template's
+ * `\${MYCO_PORT:-8787}` and the process's own fallback, held equal by
+ * `tests/server/deployment.test.ts`.
+ */
+export const DEFAULT_PORT = 8787;
+
+/** The port a bundle's `.env` names, or the default; a value that is not a port is refused rather than silently becoming one. */
+function portIn(value: string | null): number {
+  if (value === null || value === '') return DEFAULT_PORT;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`the bundle's .env names MYCO_PORT=${value}, which is not a port; correct it or pass --port`);
+  }
+  return port;
+}
 
 /**
  * Provision and start. Idempotent: an existing bundle keeps its secrets, and a
@@ -161,7 +181,7 @@ export async function createDeployment(options: CreateOptions = {}): Promise<{ r
     throw new Error(`the origin is an http:// or https:// URL naming the address members reach this Deployment at, and is ${JSON.stringify(options.origin)}`);
   }
 
-  const port = options.port ?? Number(envValue(paths, 'MYCO_PORT') ?? DEFAULT_PORT);
+  const port = options.port ?? portIn(envValue(paths, 'MYCO_PORT'));
   const fleet = options.fleet ?? (envValue(paths, 'MYCO_FLEET') === null ? DEFAULT_FLEET : null);
 
   materializeBundle(paths, {
@@ -175,30 +195,55 @@ export async function createDeployment(options: CreateOptions = {}): Promise<{ r
   return { root: paths.root, port };
 }
 
+/** The word Compose reports for a service the bundle declares but no container exists for. */
+export const SERVICE_ABSENT = 'absent';
+
 export interface DeploymentStatus {
   provisioned: boolean;
+  /** True only when every service the bundle declares is running. */
   running: boolean;
+  /** The services actually running. */
   services: string[];
+  /** Every service the bundle declares, and the state Compose reports for it. */
+  states: { service: string; state: string }[];
   raw: string;
 }
 
+/**
+ * What the stack is doing, service by service.
+ *
+ * `ps` without `--all` lists running containers only, so a harness that exited
+ * or was left stopped is indistinguishable from one that was never declared —
+ * and a Deployment reporting itself running while it can start no runtime is
+ * the failure this reads for. Every service the bundle declares is named with
+ * the state Compose gives it, and the stack is running only when they all are.
+ */
 export async function deploymentStatus(options: DeploymentOptions = {}): Promise<DeploymentStatus> {
   const { paths, runner } = resolved(options);
   if (!existsSync(paths.composeFile)) {
-    return { provisioned: false, running: false, services: [], raw: '' };
+    return { provisioned: false, running: false, services: [], states: [], raw: '' };
   }
 
-  const result = await runner.run('docker', composeArgs(paths, 'ps', '--format', 'json'), { cwd: paths.root });
-  const services = result.stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith('{'))
-    .map((line) => {
-      try { return String((JSON.parse(line) as { Service?: unknown }).Service ?? ''); } catch { return ''; }
-    })
-    .filter((name) => name !== '');
+  const result = await runner.run('docker', composeArgs(paths, 'ps', '--all', '--format', 'json'), { cwd: paths.root });
+  const reported = new Map<string, string>();
+  for (const line of result.stdout.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('{'))) {
+    try {
+      const row = JSON.parse(line) as { Service?: unknown; State?: unknown };
+      const service = String(row.Service ?? '');
+      if (service !== '') reported.set(service, String(row.State ?? SERVICE_ABSENT));
+    } catch { /* a line compose ps did not format as JSON */ }
+  }
 
-  return { provisioned: true, running: services.length > 0, services, raw: result.stdout };
+  const declared = declaredServices(paths);
+  const states = declared.map((service) => ({ service, state: reported.get(service) ?? SERVICE_ABSENT }));
+  const services = [...reported.entries()].filter(([, state]) => state === 'running').map(([service]) => service);
+  // A bundle whose services cannot be read answers on what is running, which is
+  // all there is to go on.
+  const running = declared.length === 0
+    ? services.length > 0
+    : states.every((entry) => entry.state === 'running');
+
+  return { provisioned: true, running, services, states, raw: result.stdout };
 }
 
 export interface DestroyOptions extends DeploymentOptions {
@@ -294,6 +339,9 @@ export async function backupDeployment(options: BackupOptions): Promise<{ destin
 /** The service holding the runtimes. It shares the server's network namespace. */
 const HARNESS_SERVICE = 'harness';
 
+/** How long the live-runs read gives the running container to answer. */
+export const LIVE_RUNS_EXEC_TIMEOUT_MS = 30_000;
+
 /**
  * What carries a run a verb stopped waiting on: the harness is stopped on its
  * own before anything touches the server, so every runtime it holds finishes
@@ -314,10 +362,86 @@ const COMPOSE_SPARING = 'the harness is stopped first and finishes them inside i
  * A bundle written before the harness existed declares no such service, and
  * Compose refuses a service it cannot find; the file on disk decides.
  */
-async function stopHarness(paths: DeploymentPaths, runner: CommandRunner): Promise<void> {
-  if (!existsSync(paths.composeFile)) return;
-  if (!new RegExp(`^ {2}${HARNESS_SERVICE}:$`, 'm').test(readFileSync(paths.composeFile, 'utf8'))) return;
-  await runOrThrow(runner, 'docker', composeArgs(paths, 'stop', HARNESS_SERVICE), { cwd: paths.root });
+async function stopHarness(target: HarnessTarget): Promise<void> {
+  if (!declaresHarness(target.paths)) return;
+  const say = target.report ?? console.log;
+  // The stop can take the whole grace, and a verb silent for that long reads as
+  // a hung command.
+  say(`Stopping the harness; the runs it holds finish inside its grace of ${Math.round(HARNESS_STOP_GRACE_SECONDS / 60)} min.`);
+  await runOrThrow(target.runner, 'docker',
+    composeArgs(target.paths, 'stop', '--timeout', String(HARNESS_STOP_GRACE_SECONDS), HARNESS_SERVICE),
+    { cwd: target.paths.root });
+}
+
+/** What a verb needs to take the harness down and put it back. */
+interface HarnessTarget {
+  paths: DeploymentPaths;
+  runner: CommandRunner;
+  report?: (line: string) => void;
+}
+
+/** Every service the bundle on disk declares, in file order. */
+function declaredServices(paths: DeploymentPaths): string[] {
+  if (!existsSync(paths.composeFile)) return [];
+  const file = readFileSync(paths.composeFile, 'utf8');
+  const start = file.search(/^services:$/m);
+  if (start < 0) return [];
+  const body = file.slice(start).split('\n').slice(1);
+  const names: string[] = [];
+  for (const line of body) {
+    if (/^\S/.test(line)) break;
+    const named = /^ {2}([A-Za-z0-9][A-Za-z0-9_-]*):$/.exec(line);
+    if (named !== null) names.push(named[1]!);
+  }
+  return names;
+}
+
+/** Whether the bundle on disk declares the harness; one written before it existed does not, and Compose refuses a service it cannot find. */
+function declaresHarness(paths: DeploymentPaths): boolean {
+  return declaredServices(paths).includes(HARNESS_SERVICE);
+}
+
+/**
+ * Bring the harness back.
+ *
+ * `docker compose stop` sets the container's manual-stop flag, and
+ * `restart: unless-stopped` honours it: nothing brings the harness back on its
+ * own after a verb stopped it. A verb that stopped it and then failed would
+ * leave a Deployment that serves and runs nothing at all.
+ */
+async function startHarness(target: HarnessTarget): Promise<void> {
+  if (!declaresHarness(target.paths)) return;
+  await runOrThrow(target.runner, 'docker', composeArgs(target.paths, 'start', HARNESS_SERVICE), { cwd: target.paths.root });
+}
+
+/** Raised when a verb failed AND could not put the harness back, which leaves the Deployment running nothing. */
+export class HarnessLeftStopped extends Error {
+  constructor(readonly cause: Error, readonly restartFailure: Error) {
+    super(`${cause.message}\nThe harness was stopped for this and could not be restarted, so this Deployment runs nothing until it is: ${restartFailure.message}`);
+    this.name = 'HarnessLeftStopped';
+  }
+}
+
+/**
+ * Run a verb's steps with the harness stopped.
+ *
+ * Every path out that does not itself bring the harness back goes through here,
+ * so no verb can leave it down by forgetting. A step that succeeds ends in an
+ * `up`, which starts the harness with everything else; a step that throws is
+ * followed by an explicit start before the failure is rethrown.
+ */
+async function withHarnessStopped<T>(target: HarnessTarget, body: () => Promise<T>): Promise<T> {
+  await stopHarness(target);
+  try {
+    return await body();
+  } catch (err) {
+    try {
+      await startHarness(target);
+    } catch (restartFailure) {
+      throw new HarnessLeftStopped(err as Error, restartFailure as Error);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -328,7 +452,9 @@ async function stopHarness(paths: DeploymentPaths, runner: CommandRunner): Promi
  * `MYCO_DATABASE` and unprivileged user apply. The read is asked twice and a
  * second bad answer refuses the deploy — "nothing came back" and "nothing is
  * running" are opposite facts, and a deploy that confused them would recreate
- * straight over live work.
+ * straight over live work. A container that answers nothing is one of those bad
+ * answers: an `exec` into a wedged server would otherwise hold the verb open
+ * with no bound at all.
  */
 export async function readComposeLiveRuns(
   options: DeploymentOptions & { sleep?: (ms: number) => Promise<void> },
@@ -337,7 +463,7 @@ export async function readComposeLiveRuns(
   return readLiveRunsTwice({
     ask: async () => (await runOrThrow(runner, 'docker',
       composeArgs(paths, 'exec', '--no-TTY', 'server', 'bun', 'run', '/app/server.js', '--live-runs'),
-      { cwd: paths.root })).stdout,
+      { cwd: paths.root, timeoutMs: LIVE_RUNS_EXEC_TIMEOUT_MS })).stdout,
     rowsIn: (output) => jsonDocument<LiveRunRow[]>(output),
     ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
   });
@@ -399,7 +525,7 @@ export async function restoreDeployment(options: RestoreOptions): Promise<void> 
   }
 
   await drainLiveRuns({ paths, runner }, options);
-  await stopHarness(paths, runner);
+  await withHarnessStopped({ paths, runner, ...(options.report === undefined ? {} : { report: options.report }) }, async () => {
   await runOrThrow(runner, 'docker', composeArgs(paths, 'stop'), { cwd: paths.root });
   await runOrThrow(runner, 'docker',
     composeArgs(paths, 'cp', snapshot, 'server:/data/myco.sqlite'), { cwd: paths.root });
@@ -420,7 +546,8 @@ export async function restoreDeployment(options: RestoreOptions): Promise<void> 
     composeArgs(paths, 'run', '--rm', '--user', 'root', '--entrypoint', 'sh', 'server', '-c',
       `rm -f /data/myco.sqlite-wal /data/myco.sqlite-shm && chown -R ${RUNTIME_USER}:${RUNTIME_USER} /data`),
     { cwd: paths.root });
-  await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
+    await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
+  });
 }
 
 
@@ -469,8 +596,19 @@ export function writeSignInSecrets(paths: DeploymentPaths, secrets: SignInSecret
 /** Recreate the containers so they read the bundle's current secrets and env; a plain `up` leaves a running container on the bytes it started with. */
 export async function recreateDeployment(options: DeploymentOptions = {}): Promise<void> {
   const { paths, runner } = resolved(options);
-  await stopHarness(paths, runner);
-  await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--force-recreate', '--wait'), { cwd: paths.root });
+  await withHarnessStopped({ paths, runner, ...(options.report === undefined ? {} : { report: options.report }) }, () =>
+    runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--force-recreate', '--wait'), { cwd: paths.root }));
+}
+
+/** Raised when the update failed and the return to the previous version failed too; the Deployment is on neither. */
+export class UpdateRollbackFailed extends Error {
+  constructor(readonly previous: string | null, readonly cause: Error, readonly rollbackFailure: Error) {
+    super(
+      `update failed and the return to ${previous ?? 'the previous image'} failed too, so this Deployment is on neither version: ${cause.message}`
+      + `\nThe return said: ${rollbackFailure.message}`,
+    );
+    this.name = 'UpdateRollbackFailed';
+  }
 }
 
 export class UpdateRolledBack extends Error {
@@ -499,7 +637,6 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
   // service, so a Deployment provisioned by an older CLI would pull an image
   // and run the same one service. Secrets on disk are kept and `.env` survives.
   materializeBundle(paths);
-  await stopHarness(paths, runner);
 
   // The requested version travels as an environment override for the pull and
   // the recreate, and is written into the bundle only once both succeed.
@@ -510,21 +647,29 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
     ? undefined
     : { ...process.env, MYCO_VERSION: options.version };
 
-  try {
-    await runOrThrow(runner, 'docker', composeArgs(paths, 'pull'), { cwd: paths.root, env });
-    await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root, env });
-  } catch (err) {
-    // `up` recreates the container before it waits for health, so a version
-    // that starts and fails its healthcheck has already replaced the one that
-    // worked. Returning to the previous pin is what makes that recoverable
-    // without an operator reconstructing which tag was running.
-    if (options.noRollback === true || options.version === undefined) throw err;
+  const target = { paths, runner, ...(options.report === undefined ? {} : { report: options.report }) };
+  await withHarnessStopped(target, async () => {
+    try {
+      await runOrThrow(runner, 'docker', composeArgs(paths, 'pull'), { cwd: paths.root, env });
+      await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root, env });
+    } catch (err) {
+      // `up` recreates the container before it waits for health, so a version
+      // that starts and fails its healthcheck has already replaced the one that
+      // worked. Returning to the previous pin is what makes that recoverable
+      // without an operator reconstructing which tag was running.
+      if (options.noRollback === true || options.version === undefined) throw err;
 
-    writePin(paths, previous);
-    await stopHarness(paths, runner);
-    await runner.run('docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
-    throw new UpdateRolledBack(previous, err as Error);
-  }
+      writePin(paths, previous);
+      try {
+        await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root });
+      } catch (rollbackFailure) {
+        // A rollback reported as done and never performed sends an operator
+        // looking at the wrong version for the failure.
+        throw new UpdateRollbackFailed(previous, err as Error, rollbackFailure as Error);
+      }
+      throw new UpdateRolledBack(previous, err as Error);
+    }
+  });
 
   if (options.version !== undefined) writePin(paths, options.version);
 }
@@ -544,7 +689,7 @@ export async function rotateSecrets(options: DeploymentOptions = {}): Promise<st
     rotated.push(name);
   }
   // Recreating through the shared verb keeps the harness stop ahead of it.
-  await recreateDeployment({ paths, runner });
+  await recreateDeployment({ paths, runner, ...(options.report === undefined ? {} : { report: options.report }) });
   return rotated;
 }
 

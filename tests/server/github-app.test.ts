@@ -15,6 +15,7 @@ import {
 } from '@myco/server/github-app.js';
 import { putWorkerSecrets, writeDeploymentRecord, WranglerAbsent } from '@myco/server/cloudflare.js';
 import { materializeBundle, resolveDeploymentPaths } from '@myco/server/deployment.js';
+import { HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
 import { systemRunner, type CommandRunner, type CommandResult, type RunOptions } from '@myco/server/runner.js';
 
 interface Call { command: string; args: string[]; options?: RunOptions }
@@ -133,7 +134,7 @@ describe('installing the credentials', () => {
     // down ahead of it, and a recreate that starts with `up` kills the server
     // while the harness is still holding runs.
     expect(calls.map((c) => [c.command, ...c.args])).toEqual([
-      ['docker', 'compose', '--file', paths.composeFile, '--project-name', 'myco', 'stop', 'harness'],
+      ['docker', 'compose', '--file', paths.composeFile, '--project-name', 'myco', 'stop', '--timeout', String(HARNESS_STOP_GRACE_SECONDS), 'harness'],
       ['docker', 'compose', '--file', paths.composeFile, '--project-name', 'myco', 'up', '--detach', '--force-recreate', '--wait'],
     ]);
   });

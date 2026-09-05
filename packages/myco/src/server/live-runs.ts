@@ -10,7 +10,7 @@
  * operator's deploy from racing them, and each target hands in the words for
  * what carries a run it stopped waiting on.
  */
-import { CommandFailed, commandOutputTail, describeFailure } from './runner.js';
+import { commandOutputTail, describeFailure, isCommandFailure } from './runner.js';
 
 /** One run a Deployment has in flight. */
 export interface LiveRun {
@@ -117,9 +117,10 @@ export const systemClock: Clock = {
 /**
  * One read of a Deployment's runs, asked twice.
  *
- * A command that fails and an answer that carries no readable document both
- * refuse the read: "nothing came back" and "nothing is running" are opposite
- * facts, and a deploy that confused them would ship straight over live work.
+ * A command that fails, one that answers nothing inside its window, and an
+ * answer carrying no readable document all refuse the read: "nothing came
+ * back" and "nothing is running" are opposite facts, and a deploy that confused
+ * them would ship straight over live work.
  * Either answer is asked again once after a pause first — a transient failure
  * refused on the spot costs the operator the whole run. Only a second bad
  * answer raises, carrying what the command itself said.
@@ -139,7 +140,7 @@ export async function readLiveRunsTwice(options: {
     try {
       output = await options.ask();
     } catch (err) {
-      if (!(err instanceof CommandFailed)) throw err;
+      if (!isCommandFailure(err)) throw err;
       answer = err.message;
       continue;
     }

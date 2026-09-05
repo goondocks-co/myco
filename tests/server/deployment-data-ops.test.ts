@@ -16,6 +16,9 @@ import { join } from 'node:path';
 import {
   backupDeployment,
   recreateDeployment,
+  HarnessLeftStopped,
+  UpdateRollbackFailed,
+  LIVE_RUNS_EXEC_TIMEOUT_MS,
   restoreDeployment,
   updateDeployment,
   rotateSecrets,
@@ -28,6 +31,13 @@ import {
 } from '@myco/server/deployment.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 import { LIVE_RUNS_QUERY, LIVE_RUNS_RETRY_MS, LIVE_RUN_POLL_MS, LiveRunsUnreadable } from '@myco/server/live-runs.js';
+import { HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
+import { CommandTimedOut } from '@myco/server/runner.js';
+
+/** The stop that gives the harness its whole grace, as the argv reads. */
+const STOP_HARNESS = `stop --timeout ${HARNESS_STOP_GRACE_SECONDS} harness`;
+/** The service the verbs take down on its own. */
+const HARNESS_SERVICE_NAME = 'harness';
 import { LIVE_RUNS_QUERY as SERVER_LIVE_RUNS_QUERY } from '@myco-server-worker/platform/bun/server-main.js';
 
 const roots: string[] = [];
@@ -126,7 +136,7 @@ describe('restore', () => {
     const p = bundle();
     await restoreDeployment({ paths: p, runner: runner(), source: backupDir() });
 
-    const verbs = calls.filter((c) => !c.args.includes('--live-runs') && !c.args.includes('harness'))
+    const verbs = calls.filter((c) => !c.args.includes('--live-runs') && !c.args.includes(HARNESS_SERVICE_NAME))
       .map((c) => c.args.find((a) => ['stop', 'cp', 'run', 'up'].includes(a)));
     expect(verbs[0]).toBe('stop');
     expect(verbs.at(-1)).toBe('up');
@@ -151,7 +161,7 @@ describe('restore', () => {
     expect(flat[0]!).toContain('--live-runs');
     // The harness goes down while the server is still serving; a whole-stack
     // stop takes the server first and leaves the harness with nothing to post to.
-    expect(flat.filter((a) => a === 'stop harness' || a === 'stop').slice(0, 2)).toEqual(['stop harness', 'stop']);
+    expect(flat.filter((a) => a === STOP_HARNESS || a === 'stop').slice(0, 2)).toEqual([STOP_HARNESS, 'stop']);
     expect(lines).toContain('Waiting for a running task: digest-only, started 0 sec ago, budget 30 min');
     expect(lines).toContain('Nothing is running; the deploy proceeds.');
   });
@@ -164,7 +174,7 @@ describe('restore', () => {
     expect(calls.filter((c) => c.args.includes('--live-runs'))).toHaveLength(1);
     expect(lines).toContain('Not waiting for the runs in flight: the harness is stopped first and finishes them inside its stop grace.');
     const verbs = calls.filter((c) => !c.args.includes('--live-runs')).map((c) => c.args.slice(5).join(' '));
-    expect(verbs[0]).toBe('stop harness');
+    expect(verbs[0]).toBe(STOP_HARNESS);
     expect(verbs[1]).toBe('stop');
   });
 
@@ -184,7 +194,7 @@ describe('update', () => {
 
     expect(calls.map((c) => c.args.slice(5).join(' '))).toEqual([
       'exec --no-TTY server bun run /app/server.js --live-runs',
-      'stop harness',
+      STOP_HARNESS,
       'pull',
       'up --detach --wait',
     ]);
@@ -215,12 +225,12 @@ describe('update', () => {
     writeFileSync(p.composeFile, 'services:\n  server:\n    image: x\n');
     // The refresh runs before the stop, so the service is there by then.
     await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
-    expect(argvText()).toContain('stop harness');
+    expect(argvText()).toContain(STOP_HARNESS);
 
     calls = [];
     writeFileSync(p.composeFile, 'services:\n  server:\n    image: x\n');
     await recreateDeployment({ paths: p, runner: runner() });
-    expect(argvText()).not.toContain('stop harness');
+    expect(argvText()).not.toContain(STOP_HARNESS);
   });
 
   it('GATE: a failed pull leaves the bundle unpinned rather than lying', async () => {
@@ -301,15 +311,20 @@ describe('adopt', () => {
 });
 
 describe('rollback', () => {
-  /** Fails whichever compose verb is named, succeeds at everything else. */
-  const failingAt = (verb: string): CommandRunner => ({
-    async run(command, args) {
-      calls.push({ command, args: [...args] });
-      return args.includes(verb)
-        ? { code: 1, stdout: '', stderr: `${verb} failed` }
-        : { code: 0, stdout: answer(args), stderr: '' };
-    },
-  });
+  /** Fails the first `times` commands carrying the named verb, and succeeds at everything else. */
+  const failingAt = (verb: string, times = 1): CommandRunner => {
+    let left = times;
+    return {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        if (args.includes(verb) && left > 0) {
+          left -= 1;
+          return { code: 1, stdout: '', stderr: `${verb} failed` };
+        }
+        return { code: 0, stdout: answer(args), stderr: '' };
+      },
+    };
+  };
 
   it('returns to the previous version when the new one fails to come up', async () => {
     const p = paths();
@@ -453,7 +468,7 @@ describe('the update waits for what is running', () => {
     expect(drive.at).toBe(0);
     expect(lines).toContain('Shipping over a running task: digest-only, started 0 sec ago, budget 30 min');
     expect(lines).toContain('Not waiting for the runs in flight: the harness is stopped first and finishes them inside its stop grace.');
-    expect(calls.map((c) => c.args.slice(5).join(' ')).filter((a) => a === 'stop harness' || a === 'pull')).toEqual(['stop harness', 'pull']);
+    expect(calls.map((c) => c.args.slice(5).join(' ')).filter((a) => a === STOP_HARNESS || a === 'pull')).toEqual([STOP_HARNESS, 'pull']);
   });
 
   it('--no-drain ships when the runs cannot be read at all, saying so', async () => {
@@ -521,7 +536,7 @@ describe('the harness goes down before the server', () => {
   const order = (): { harnessAt: number; serverAt: number } => {
     const verbs = calls.filter((c) => !c.args.includes('--live-runs')).map((c) => c.args.slice(5).join(' '));
     return {
-      harnessAt: verbs.indexOf('stop harness'),
+      harnessAt: verbs.indexOf(STOP_HARNESS),
       serverAt: verbs.findIndex((a) => a === 'stop' || a.startsWith('up ')),
     };
   };
@@ -577,9 +592,139 @@ describe('the harness goes down before the server', () => {
     ];
     expect(order()).toEqual({ harnessAt: -1, serverAt: 0 });
     calls = [
-      { command: 'docker', args: [...composeHead(p), 'stop', 'harness'] },
+      { command: 'docker', args: [...composeHead(p), 'stop', '--timeout', String(HARNESS_STOP_GRACE_SECONDS), 'harness'] },
       { command: 'docker', args: [...composeHead(p), 'up', '--detach', '--wait'] },
     ];
     expect(order()).toEqual({ harnessAt: 0, serverAt: 1 });
+  });
+});
+
+/**
+ * A verb that stopped the harness and then failed.
+ *
+ * `docker compose stop` sets the container's manual-stop flag, which
+ * `restart: unless-stopped` honours: nothing brings the harness back on its
+ * own. A Deployment left that way serves and runs nothing, and the operator is
+ * looking at the update failure rather than at the harness.
+ */
+describe('a failed verb brings the harness back', () => {
+  const bundle = () => { const p = paths(); materializeBundle(p); return p; };
+  /** Fails every command carrying `verb`; `alsoFails` names a second one. */
+  const failing = (verb: string, alsoFails: string | null = null): CommandRunner => ({
+    async run(command, args) {
+      calls.push({ command, args: [...args] });
+      return args.includes(verb) || (alsoFails !== null && args.includes(alsoFails))
+        ? { code: 1, stdout: '', stderr: `${args.find((a) => a === verb || a === alsoFails)} failed` }
+        : { code: 0, stdout: answer(args), stderr: '' };
+    },
+  });
+  const verbs = () => calls.map((c) => c.args.slice(5).join(' '));
+
+  it('restarts it when the pull fails and no version was named to roll back to', async () => {
+    const p = bundle();
+    await expect(updateDeployment({ paths: p, runner: failing('pull'), report: () => undefined })).rejects.toThrow(/pull failed/);
+    expect(verbs().filter((a) => a === STOP_HARNESS || a === 'start harness')).toEqual([STOP_HARNESS, 'start harness']);
+  });
+
+  it('restarts it when --no-rollback leaves the failure standing', async () => {
+    const p = bundle();
+    materializeBundle(p, { MYCO_VERSION: '2.0.0' });
+    await expect(updateDeployment({ paths: p, runner: failing('--wait'), version: '2.0.1', noRollback: true, report: () => undefined }))
+      .rejects.not.toBeInstanceOf(UpdateRolledBack);
+    expect(verbs()).toContain('start harness');
+  });
+
+  it('restarts it when a restore fails part-way', async () => {
+    const p = bundle();
+    const dir = join(scratch(), 'from');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'myco.sqlite'), 'snapshot');
+    await expect(restoreDeployment({ paths: p, runner: failing('cp'), source: dir, report: () => undefined })).rejects.toThrow(/cp failed/);
+    expect(verbs()).toContain('start harness');
+  });
+
+  it('GATE: names both facts when the restart itself fails, so the operator is not left reading the wrong failure', async () => {
+    const p = bundle();
+    let raised: unknown = null;
+    try {
+      await updateDeployment({ paths: p, runner: failing('pull', 'start'), report: () => undefined });
+    } catch (err) { raised = err; }
+
+    expect(raised).toBeInstanceOf(HarnessLeftStopped);
+    expect((raised as Error).message).toContain('pull failed');
+    expect((raised as Error).message).toContain('runs nothing until it is');
+  });
+
+  it('GATE: a rollback that failed is never reported as a rollback that happened', async () => {
+    const p = bundle();
+    materializeBundle(p, { MYCO_VERSION: '2.0.0' });
+    let raised: unknown = null;
+    try {
+      await updateDeployment({ paths: p, runner: failing('--wait'), version: '2.0.1', report: () => undefined });
+    } catch (err) { raised = err; }
+
+    expect(raised).toBeInstanceOf(UpdateRollbackFailed);
+    expect((raised as Error).message).toContain('on neither version');
+    expect(raised).not.toBeInstanceOf(UpdateRolledBack);
+  });
+
+  it('says it is stopping the harness before it spends the grace', async () => {
+    const p = bundle();
+    const lines: string[] = [];
+    await updateDeployment({ paths: p, runner: runner(), report: (l) => lines.push(l) });
+    expect(lines).toContain(`Stopping the harness; the runs it holds finish inside its grace of ${HARNESS_STOP_GRACE_SECONDS / 60} min.`);
+  });
+});
+
+/**
+ * The read into the running container is bounded.
+ *
+ * An `exec` into a wedged server answers nothing and never returns, and the
+ * verb waiting on it is an operator command with a person in front of it.
+ */
+describe('the live-runs read cannot hang', () => {
+  const bundle = () => { const p = paths(); materializeBundle(p); return p; };
+  /** Answers every live-runs read the way a killed child does. */
+  const hanging = (): CommandRunner => ({
+    async run(command, args) {
+      calls.push({ command, args: [...args] });
+      if (args.includes('--live-runs')) throw new CommandTimedOut(command, args, LIVE_RUNS_EXEC_TIMEOUT_MS);
+      return { code: 0, stdout: '', stderr: '' };
+    },
+  });
+
+  it('gives the container a window and names it in the argv the runner is handed', async () => {
+    const p = bundle();
+    let seen: number | undefined;
+    const watching: CommandRunner = {
+      async run(command, args, options) {
+        calls.push({ command, args: [...args] });
+        if (args.includes('--live-runs')) seen = options?.timeoutMs;
+        return { code: 0, stdout: answer(args), stderr: '' };
+      },
+    };
+    await updateDeployment({ paths: p, runner: watching, report: () => undefined });
+    expect(seen).toBe(LIVE_RUNS_EXEC_TIMEOUT_MS);
+  });
+
+  it('GATE: refuses the deploy when the container answers nothing, naming the silence', async () => {
+    const p = bundle();
+    let raised = '';
+    try {
+      await updateDeployment({ paths: p, runner: hanging(), report: () => undefined, clock: clock() });
+    } catch (err) { raised = (err as Error).message; }
+
+    expect(raised).toContain('could not be read');
+    expect(raised).toContain('answered nothing in 30 s');
+    expect(argvText()).not.toContain('pull');
+  });
+
+  it('--no-drain proceeds over a container that answers nothing, saying so', async () => {
+    const p = bundle();
+    const lines: string[] = [];
+    await updateDeployment({ paths: p, runner: hanging(), noDrain: true, report: (l) => lines.push(l), clock: clock() });
+
+    expect(lines.some((l) => l.startsWith('What is running could not be read') && l.includes('answered nothing'))).toBe(true);
+    expect(argvText()).toContain('pull');
   });
 });

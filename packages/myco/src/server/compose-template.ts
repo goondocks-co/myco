@@ -50,8 +50,8 @@ export const COMPOSE_TEMPLATE = `# Self-hosted Myco Deployment.
 # verbs stop the harness on its own first, which spends its grace with the
 # server still serving. An out-of-band restart of the server container leaves
 # the harness attached to a namespace that is gone, and it stays that way until
-# the whole stack is restarted; the harness healthcheck reaches neither its own
-# supervisor's namespace-mate nor the server then, and reports unhealthy.
+# the whole stack is restarted; the harness healthcheck cannot reach the server
+# then, and reports unhealthy.
 
 services:
   server:
@@ -145,6 +145,11 @@ services:
     depends_on:
       - server
 
+    # Root, so the launch token is root's to read: the supervisor drops each
+    # runtime child to the image's unprivileged user, and a child that could
+    # read the token could launch runs of its own.
+    user: "0:0"
+
     # The server's namespace, not one of its own: the server reaches the
     # supervisor at 127.0.0.1:8080 and a runtime reaches the server at
     # 127.0.0.1:\${MYCO_PORT}, which the Host allowlist admits. Compose refuses
@@ -171,12 +176,14 @@ services:
     healthcheck:
       # Both halves of what makes this service useful: the supervisor answering
       # its own probe, and the SERVER answering over the shared loopback. A
-      # wedged supervisor answers the second alone; a harness whose namespace
-      # went away with an out-of-band restart of the server container answers
-      # neither. \`/probe\` carries no token and discloses run ids alone.
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/probe && curl -fsS -H 'Host: 127.0.0.1:\${MYCO_PORT:-8787}' http://127.0.0.1:\${MYCO_PORT:-8787}/health"]
+      # wedged supervisor fails the first; a harness whose namespace went away
+      # with an out-of-band restart of the server container still answers its
+      # own probe and fails the second. Bodies are discarded: a healthcheck's
+      # output is kept in the container's health log, and \`/probe\` names run ids.
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8080/probe && curl -fsS -o /dev/null -H 'Host: 127.0.0.1:\${MYCO_PORT:-8787}' http://127.0.0.1:\${MYCO_PORT:-8787}/health"]
       interval: 30s
-      timeout: 5s
+      # Two requests, not one.
+      timeout: 10s
       retries: 3
       start_period: 20s
 

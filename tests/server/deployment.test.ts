@@ -24,8 +24,10 @@ import {
   COMPOSE_PROJECT,
   DEFAULT_FLEET,
   DESTROY_STOP_TIMEOUT_SECONDS,
+  DEFAULT_PORT,
+  SERVICE_ABSENT,
 } from '@myco/server/deployment.js';
-import { HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
+import { COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 
 const roots: string[] = [];
@@ -194,25 +196,73 @@ describe('status', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('parses running services from compose ps', async () => {
+  it('parses running services from compose ps, over every service the bundle declares', async () => {
     const p = paths();
     materializeBundle(p);
     const status = await deploymentStatus({
       paths: p,
-      runner: runner({ stdout: '{"Service":"server","State":"running"}\n' }),
+      runner: runner({ stdout: '{"Service":"server","State":"running"}\n{"Service":"harness","State":"running"}\n' }),
     });
     expect(status.running).toBe(true);
-    expect(status.services).toEqual(['server']);
+    expect(status.services.sort()).toEqual(['harness', 'server']);
+    expect(status.states).toEqual([{ service: 'server', state: 'running' }, { service: 'harness', state: 'running' }]);
+    // A container that exited is listed only with --all, and a stack whose
+    // harness exited serves and runs nothing.
+    expect(calls[0]!.args).toContain('--all');
   });
 
-  it('survives a line compose ps did not format as JSON', async () => {
+  it('GATE: a stack whose harness exited is not running, and names it', async () => {
     const p = paths();
     materializeBundle(p);
     const status = await deploymentStatus({
       paths: p,
-      runner: runner({ stdout: 'warning: something\n{"Service":"server"}\n' }),
+      runner: runner({ stdout: '{"Service":"server","State":"running"}\n{"Service":"harness","State":"exited"}\n' }),
     });
+    expect(status.running).toBe(false);
     expect(status.services).toEqual(['server']);
+    expect(status.states).toEqual([{ service: 'server', state: 'running' }, { service: 'harness', state: 'exited' }]);
+  });
+
+  it('names a declared service no container answers for at all', async () => {
+    const p = paths();
+    materializeBundle(p);
+    const status = await deploymentStatus({ paths: p, runner: runner({ stdout: '{"Service":"server","State":"running"}\n' }) });
+    expect(status.running).toBe(false);
+    expect(status.states.find((s) => s.service === 'harness')).toEqual({ service: 'harness', state: SERVICE_ABSENT });
+  });
+
+  it('survives a line compose ps did not format as JSON, and answers on what is up for a bundle it cannot read', async () => {
+    const p = paths();
+    materializeBundle(p);
+    const status = await deploymentStatus({
+      paths: p,
+      runner: runner({ stdout: 'warning: something\n{"Service":"server","State":"running"}\n{"Service":"harness","State":"running"}\n' }),
+    });
+    expect(status.services.sort()).toEqual(['harness', 'server']);
+
+    // A bundle whose services cannot be read has only what is up to go on.
+    const opaque = paths();
+    materializeBundle(opaque);
+    writeFileSync(opaque.composeFile, '# a bundle this reader cannot parse\n');
+    const fallback = await deploymentStatus({ paths: opaque, runner: runner({ stdout: '{"Service":"server","State":"running"}\n' }) });
+    expect({ running: fallback.running, states: fallback.states }).toEqual({ running: true, states: [] });
+  });
+});
+
+describe('the defaults the bundle and the process already carry', () => {
+  it('GATE: holds the create defaults equal to what the template falls back to', () => {
+    // Two spellings of one number: the operator's flag default and the shell
+    // default the running container reads.
+    expect(COMPOSE_TEMPLATE).toContain(`MYCO_FLEET: \${MYCO_FLEET:-${DEFAULT_FLEET}}`);
+    expect(COMPOSE_TEMPLATE).toContain(`MYCO_PORT: \${MYCO_PORT:-${DEFAULT_PORT}}`);
+    expect(COMPOSE_TEMPLATE).toContain(`127.0.0.1:\${MYCO_PORT:-${DEFAULT_PORT}}:\${MYCO_PORT:-${DEFAULT_PORT}}`);
+  });
+
+  it('refuses a port the bundle names that is not a port, rather than publishing on NaN', async () => {
+    const p = paths();
+    materializeBundle(p, { MYCO_PORT: 'eight-thousand' });
+    await expect(createDeployment({ paths: p, runner: runner() })).rejects.toThrow(/MYCO_PORT=eight-thousand/);
+    expect(calls).toHaveLength(0);
   });
 });
 
