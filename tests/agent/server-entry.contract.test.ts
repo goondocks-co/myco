@@ -102,15 +102,22 @@ describe('what this runtime tells its supervisor by leaving', () => {
 
 describe('a runtime stopped before it could claim', () => {
   /** A deployment that takes the claim and never answers it. */
-  function stalling(): string {
+  function stalling(): { url: string; claimed: Promise<void> } {
+    // The arrival of the claim is what says the entry is past its own startup:
+    // its stop handlers are installed and the request is in flight.
+    let arrived: () => void;
+    const claimed = new Promise<void>((resolve) => { arrived = resolve; });
     const server = Bun.serve({
       port: 0,
       hostname: '127.0.0.1',
       development: false,
-      fetch: async () => await new Promise<Response>(() => undefined),
+      fetch: async () => {
+        arrived();
+        return await new Promise<Response>(() => undefined);
+      },
     });
     servers.push(server);
-    return `http://127.0.0.1:${server.port}`;
+    return { url: `http://127.0.0.1:${server.port}`, claimed };
   }
 
   /** The entry under a supervisor: no listener of its own, so its exit code is what it says. */
@@ -131,15 +138,19 @@ describe('a runtime stopped before it could claim', () => {
     // The shape a `docker compose stop harness` makes a tenth of a second after
     // a dispatch: the handlers are up, the claim is in flight, and the row is
     // still exactly as the dispatcher wrote it.
+    const deployment = stalling();
     const { child } = supervised({
-      MYCO_SERVER_URL: stalling(),
+      MYCO_SERVER_URL: deployment.url,
       MYCO_MEMBER_TOKEN: 'mt_stalled',
       MYCO_PROJECT: 'proj_1',
       MYCO_RUN_ID: 'run_stalled',
       MYCO_TASK: 'container-smoke',
       MYCO_TASK_ADMISSION: 'cortex',
     });
-    await Bun.sleep(400);
+    // Signalled once the claim has arrived, never on a clock: a signal that
+    // beat the entry's own startup kills it instead of draining it, which is a
+    // different case and not this one.
+    await deployment.claimed;
     child.kill('SIGTERM');
 
     // The supervisor reads this code as a run this deployment took back, and
