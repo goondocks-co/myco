@@ -16,10 +16,11 @@
  */
 import { afterAll, afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LIVE_RUNS_QUERY, main, migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
+import { exitFailureLine, LIVE_RUNS_QUERY, main, migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
+import { LIVE_RUN_STATUSES } from '@myco-server-worker/core/runs.js';
 import { bunPlatform } from '@myco-server-worker/platform/bun/env.js';
 
 const roots: string[] = [];
@@ -127,7 +128,8 @@ describe('secrets arrive as files', () => {
     // A clean start proves the file is read and trimmed, not passed through
     // with its surrounding whitespace.
     const started = await main();
-    expect(started).toBeUndefined();
+    expect(started?.port).toBeGreaterThan(0);
+    await started?.stop();
   });
 
   it('refuses when *_FILE names a file it cannot read', async () => {
@@ -184,15 +186,50 @@ describe('the harness runtime', () => {
     await expect(main()).rejects.toThrow(/MYCO_HARNESS_TOKEN_FILE names an empty file/);
   });
 
-  it('starts with a supervisor address and the token file both services mount', async () => {
+  it('starts with a supervisor address and the token file both services mount, and tells the runtime the port it bound', async () => {
+    const launches: { envVars: Record<string, string> }[] = [];
+    const supervisor = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      development: false,
+      fetch: async (request) => {
+        launches.push(await request.json() as { envVars: Record<string, string> });
+        return Response.json({}, { status: 202 });
+      },
+    });
+
     const env = volume();
     Object.assign(process.env, env, {
+      // The kernel chooses the port, so the requested one is not the one a
+      // runtime has to call back to.
       MYCO_PORT: '0',
-      MYCO_HARNESS: 'http://127.0.0.1:8080',
+      MYCO_HARNESS: `http://127.0.0.1:${supervisor.port}`,
       MYCO_HARNESS_TOKEN_FILE: tokenFile('  supervisor-token  \n'),
     });
     migrateOnly(env.MYCO_DATABASE);
-    expect(await main()).toBeUndefined();
+
+    const started = await main();
+    try {
+      expect(started?.port).toBeGreaterThan(0);
+      expect(started?.harnessLaunch).toBeDefined();
+      await started!.harnessLaunch!({ runId: 'run_1', timeoutSeconds: 120, envVars: { MYCO_SERVER_URL: 'https://elsewhere.example' } });
+      expect(launches[0]!.envVars.MYCO_SERVER_URL).toBe(`http://127.0.0.1:${started!.port}`);
+    } finally {
+      await started?.stop();
+      supervisor.stop(true);
+    }
+  });
+
+  it('binds no launch when it names no supervisor', async () => {
+    const env = volume();
+    Object.assign(process.env, env, { MYCO_PORT: '0' });
+    migrateOnly(env.MYCO_DATABASE);
+    const started = await main();
+    try {
+      expect(started?.harnessLaunch).toBeUndefined();
+    } finally {
+      await started?.stop();
+    }
   });
 
   it('reports the capability present once a launch is bound, naming what an operator sets', () => {
@@ -278,11 +315,25 @@ describe('the live-runs read', () => {
     expect(JSON.parse(await read(volumeWith([])))).toEqual([]);
   });
 
-  it('selects only the two states the dispatcher treats as in flight', () => {
-    expect(LIVE_RUNS_QUERY).toContain("status IN ('pending', 'running')");
+  it('selects the states the dispatcher itself treats as in flight, from the dispatcher\'s own definition', () => {
+    expect(LIVE_RUNS_QUERY).toContain(LIVE_RUN_STATUSES);
+    expect(LIVE_RUN_STATUSES).toBe("status IN ('pending', 'running')");
   });
 
-  it('refuses a volume it cannot read rather than answering an empty Deployment', async () => {
-    await expect(read(join(scratch(), 'absent.sqlite'))).rejects.toThrow();
+  it('refuses a volume it cannot read rather than answering an empty Deployment, and leaves no volume behind', async () => {
+    const absent = join(scratch(), 'absent.sqlite');
+    await expect(read(absent)).rejects.toThrow();
+    // A mistyped path that created an empty volume would answer every later
+    // read with an empty Deployment.
+    expect(existsSync(absent)).toBe(false);
+  });
+
+  it('says it could not read the volume, rather than that it failed to start', () => {
+    expect(exitFailureLine(['bun', 'server.js', '--live-runs'], 'unable to open database'))
+      .toBe('myco-server could not read the volume: unable to open database\n');
+    expect(exitFailureLine(['bun', 'server.js'], 'MYCO_DATABASE is not set'))
+      .toBe('myco-server failed to start: MYCO_DATABASE is not set\n');
+    expect(exitFailureLine(['bun', 'server.js', '--migrate-only'], 'no such table'))
+      .toBe('myco-server failed to start: no such table\n');
   });
 });

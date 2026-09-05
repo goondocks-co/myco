@@ -672,9 +672,19 @@ export interface LiveRunRef {
   dispatchedBy: string | null;
 }
 
+/**
+ * Which runs are in flight.
+ *
+ * A `pending` row counts as one: the dispatcher writes the row before the
+ * runtime starts. Every reader of the fleet shares this predicate — the sweep,
+ * the drain's load, and the read a deploy makes before it recreates the
+ * container — and each projects the columns it needs from it.
+ */
+export const LIVE_RUN_STATUSES = "status IN ('pending', 'running')";
+
 const LIVE_RUNS_SQL = `SELECT project_id AS projectId, id, task, status, started_at AS startedAt,
     run_context AS runContext, dispatched_by AS dispatchedBy
-  FROM agent_runs WHERE status IN ('pending', 'running')
+  FROM agent_runs WHERE ${LIVE_RUN_STATUSES}
   ORDER BY started_at ASC, id ASC LIMIT ?`;
 
 export async function listLiveRunsAcrossProjects(db: RelationalStore, limit: number): Promise<LiveRunRef[]> {
@@ -684,7 +694,7 @@ export async function listLiveRunsAcrossProjects(db: RelationalStore, limit: num
 
 /** A live run whose runtime went away is failed exactly once; a run that landed terminal on its own in the meantime is left as it landed. */
 const FAIL_STALE_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?
-  WHERE project_id = ? AND id = ? AND status IN ('pending', 'running')`;
+  WHERE project_id = ? AND id = ? AND ${LIVE_RUN_STATUSES}`;
 
 export async function failStaleRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string): Promise<boolean> {
   const result = await db.prepare(FAIL_STALE_SQL).bind(now, error, scope.projectId, runId).run();
@@ -788,6 +798,29 @@ export async function launchQueued(db: RelationalStore, scope: ReadScope, runId:
     launch.dispatchedBy, launch.startedAt, launch.runContext, launch.instruction ?? null, launch.provider, launch.model, scope.projectId, runId,
     ...admissionParams(scope, launch.task, runId, admission),
   ).run();
+  return result.meta.changes === 1;
+}
+
+/**
+ * A run whose runtime would not take it goes back to the queue, from `pending`
+ * alone: the launch credential is dropped from the row, it takes the holder
+ * that describes why, and it carries the launch spec the drain relaunches it
+ * from.
+ *
+ * `queued_at` is kept where the row already had one, so a run returned here
+ * keeps its place in the queue's order rather than moving to the back of it.
+ */
+const RETURN_TO_QUEUE_SQL = `UPDATE agent_runs
+   SET status = 'queued', held_by = ?, dispatch_spec = ?, dispatched_by = NULL, started_at = NULL,
+       queued_at = COALESCE(queued_at, ?)
+ WHERE project_id = ? AND id = ? AND status = 'pending'`;
+
+export async function returnToQueue(
+  db: RelationalStore, scope: ReadScope, runId: string, hold: { heldBy: string; dispatchSpec: string; now: number },
+): Promise<boolean> {
+  const result = await db.prepare(RETURN_TO_QUEUE_SQL)
+    .bind(hold.heldBy, hold.dispatchSpec, hold.now, scope.projectId, runId)
+    .run();
   return result.meta.changes === 1;
 }
 

@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
-import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, HARNESS_MEMBER_ID, launchDispatch, LimitReached, prepareDispatch } from '@myco-server-worker/core/harness.js';
+import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, enqueueDispatch, HARNESS_MEMBER_ID, launchDispatch, LAUNCH_REFUSED_ERROR, LimitReached, MAX_RUN_ERROR_CHARS, prepareDispatch, RuntimeDraining } from '@myco-server-worker/core/harness.js';
 import { heldBy, readDispatchLimits } from '@myco-server-worker/core/limits.js';
 import { claimRun, dispatchLoad, launchQueued, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
@@ -18,14 +18,15 @@ const NOW = 1_800_000_000_000;
 const ORIGIN = 'https://s';
 type Launch = { runId: string; timeoutSeconds: number; envVars: Record<string, string> };
 
-function fixture(opts: { bound?: boolean; refuse?: string } = {}) {
+function fixture(opts: { bound?: boolean; refuse?: () => Error | undefined } = {}) {
   const e = sqliteEnv();
   const launches: Launch[] = [];
   const wakes: number[] = [];
   const HARNESS = opts.bound === false ? undefined : {
     idFromName: (name: string) => ({ name }),
     get: () => ({ launch: async (spec: Launch) => {
-      if (opts.refuse !== undefined) throw new Error(opts.refuse);
+      const refusal = opts.refuse?.();
+      if (refusal !== undefined) throw refusal;
       launches.push(spec);
     } }),
   };
@@ -248,19 +249,77 @@ describe('the write is the admission', () => {
     expect(f.launches).toHaveLength(0);
   });
 
-  it('revokes the credential a run whose runtime refused to start minted, along with failing its row', async () => {
-    const f = fixture({ refuse: 'the harness runtime refused to launch run_refused: draining' });
+  it('revokes the credential a run whose runtime refused to start minted, and fails its row in the runtime\'s own words', async () => {
+    const f = fixture({ refuse: () => new Error('the harness runtime refused to launch run_refused: duplicate') });
     const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
     expect(prepared.ok).toBe(true);
     const spec = { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120, runId: 'run_refused' };
 
-    // The supervisor's own word reaches the caller; the row carries the server's.
-    await expect(launchDispatch(f.env, (prepared as { prepared: never }).prepared, spec, NOW)).rejects.toThrow(/draining/);
-    expect(f.run('run_refused')).toMatchObject({ status: 'failed', error: 'the runtime refused to start' });
+    await expect(launchDispatch(f.env, (prepared as { prepared: never }).prepared, spec, NOW)).rejects.toThrow(/duplicate/);
+    // The row carries the refusal's own word, which is the only place an operator reads why.
+    expect(f.run('run_refused')).toMatchObject({ status: 'failed', error: `${LAUNCH_REFUSED_ERROR}: the harness runtime refused to launch run_refused: duplicate` });
 
     // A run that never started never presents the credential minted for it.
     const credentials = f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE member_id = 'mem_harness'`).all() as Array<{ revoked_at: number | null }>;
     expect(credentials).toHaveLength(1);
     expect(credentials[0]!.revoked_at).toBe(NOW);
+  });
+
+  it('bounds the refusal it writes on the row', async () => {
+    const f = fixture({ refuse: () => new Error('x'.repeat(5_000)) });
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    await expect(launchDispatch(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_long' }, NOW)).rejects.toThrow();
+    expect((f.run('run_long')?.error as string).length).toBe(MAX_RUN_ERROR_CHARS);
+  });
+});
+
+/**
+ * A runtime that is stopping is not a run that failed.
+ *
+ * Every `myco server update` stops the harness first, and a wake landing inside
+ * that window reaches a supervisor answering `draining`. A refusal treated as
+ * terminal would fail the dispatch that caused the wake and then walk the queue
+ * failing every row behind it.
+ */
+describe('a runtime that is not taking runs', () => {
+  const draining = () => new RuntimeDraining('the harness runtime refused to launch: draining');
+
+  it('leaves the dispatch queued under the fleet, with its launch intact and no credential of its own', async () => {
+    let stopping = true;
+    const f = fixture({ refuse: () => (stopping ? draining() : undefined) });
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    expect(prepared.ok).toBe(true);
+    const spec = { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120, runId: 'run_held' };
+
+    const outcome = await dispatchPrepared(f.env, (prepared as { prepared: never }).prepared, spec, NOW);
+    expect(outcome).toEqual({ queued: true, runId: 'run_held', task: 'container-smoke', projectId: 'proj_1', heldBy: 'fleet' });
+    expect(f.launches).toHaveLength(0);
+
+    const row = f.run('run_held')!;
+    expect(row).toMatchObject({ status: 'queued', heldBy: 'fleet', dispatchedBy: null });
+    expect(JSON.parse(row.dispatchSpec as string)).toEqual({ serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 });
+    const credentials = f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE member_id = 'mem_harness'`).all() as Array<{ revoked_at: number | null }>;
+    expect(credentials.map((c) => c.revoked_at)).toEqual([NOW]);
+
+    // The runtime comes back and the next drain launches exactly what queued.
+    stopping = false;
+    expect(await drainQueue(f.env, NOW + 1)).toBe(1);
+    expect(f.run('run_held')?.status).toBe('pending');
+    expect(f.launches.map((l) => l.runId)).toEqual(['run_held']);
+    expect(f.launches[0]!.timeoutSeconds).toBe(120);
+  });
+
+  it('ends this wake\'s drain rather than walking the queue, leaving every row behind it queued', async () => {
+    const f = fixture({ refuse: () => draining() });
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    for (const id of ['q1', 'q2', 'q3']) {
+      await enqueueDispatch(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120, runId: id }, 'fleet', NOW);
+    }
+
+    expect(await drainQueue(f.env, NOW + 1)).toBe(0);
+    expect(['q1', 'q2', 'q3'].map((id) => f.run(id)?.status)).toEqual(['queued', 'queued', 'queued']);
+    expect(f.launches).toHaveLength(0);
+    // No row fails: the queue keeps them all for the next wake.
+    expect((f.sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE status = 'failed'`).get() as { c: number }).c).toBe(0);
   });
 });

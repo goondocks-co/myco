@@ -22,7 +22,7 @@ import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
-import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
+import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { deploymentSecretStore } from './secrets.js';
 import { leafValues } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
@@ -39,6 +39,10 @@ const SUBSCRIPTION_TOKEN_PREFIX = 'sk-ant-oat';
 export const DEFAULT_DISPATCH_TIMEOUT_SECONDS = 300;
 /** How long a run may outlive its own bound before the Deployment treats its runtime as gone: the hosted hold releases the container at this margin, and the sweep fails the run at the same one. */
 export const RUN_OVERRUN_MARGIN_MS = 120_000;
+/** How much of a runtime's refusal rides the run row; the runtime bounds its own failures at the same length (`MAX_RUN_ERROR_CHARS` in packages/myco/src/agent/runtime/server-runner.ts). */
+export const MAX_RUN_ERROR_CHARS = 2000;
+/** What a run whose runtime would not start carries, before the refusal's own word. */
+export const LAUNCH_REFUSED_ERROR = 'the runtime refused to start';
 /** The admission a capture-driven task carries into its container, in place of a capability name. */
 export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 /** How many runs of one task a Project may have re-queued in a day in place of runs the platform replaced. */
@@ -149,6 +153,16 @@ interface StoredSpec {
   replaces?: string;
 }
 
+/** What the queue keeps of a dispatch, from the launch spec it carries. */
+function storedSpecOf(spec: LaunchSpec): StoredSpec {
+  return {
+    serverUrl: spec.serverUrl, actor: spec.actor, timeoutSeconds: spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
+    ...(spec.params === undefined ? {} : { params: spec.params }),
+    ...(spec.options === undefined ? {} : { options: spec.options }),
+    ...(spec.replaces === undefined ? {} : { replaces: spec.replaces }),
+  };
+}
+
 /** How many queued runs one drain considers; the next wake continues. */
 export const DRAIN_BATCH = 200;
 
@@ -165,6 +179,15 @@ export class AlreadyRunning extends Error {
 /** A queued row the drain found no longer queued: another drain launched it, or it failed. */
 export class NotQueued extends Error {
   constructor() { super('the run is not queued'); this.name = 'NotQueued'; }
+}
+
+/**
+ * The runtime is not taking runs at this instant — draining, restarting, or not
+ * reachable. The run goes back to the queue rather than failing, and the next
+ * drain launches it; `runId` names the row once `launchDispatch` has returned it.
+ */
+export class RuntimeDraining extends Error {
+  constructor(message: string, readonly runId?: string) { super(message); this.name = 'RuntimeDraining'; }
 }
 
 /**
@@ -190,6 +213,10 @@ export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatc
   try {
     return { queued: false, ...(await launchDispatch(env, prepared, spec, now, { limits, singleFlight: options.singleFlight })) };
   } catch (err) {
+    // The launch already returned the row to the queue; the dispatch waits there rather than being written twice.
+    if (err instanceof RuntimeDraining && err.runId !== undefined) {
+      return { queued: true, runId: err.runId, task: prepared.task, projectId: prepared.projectId, heldBy: 'fleet' };
+    }
     if (!(err instanceof LimitReached)) throw err;
     const holder = (await admitDispatch(env, prepared.task, now, limits)) ?? 'concurrent_runs';
     return { queued: true, ...(await enqueueDispatch(env, prepared, spec, holder, now, options)) };
@@ -204,12 +231,7 @@ export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatc
 export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, held: HeldBy, now: number, options: { singleFlight?: boolean } = {}): Promise<Queued> {
   await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now);
   const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
-  const stored: StoredSpec = {
-    serverUrl: spec.serverUrl, actor: spec.actor, timeoutSeconds: spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
-    ...(spec.params === undefined ? {} : { params: spec.params }),
-    ...(spec.options === undefined ? {} : { options: spec.options }),
-    ...(spec.replaces === undefined ? {} : { replaces: spec.replaces }),
-  };
+  const stored = storedSpecOf(spec);
   const scope = { projectId: prepared.projectId };
   if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored) }, options))) {
     if (options.singleFlight === true && (await getRun(env.db, scope, runId)) === null) throw new AlreadyRunning();
@@ -268,6 +290,8 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
       await launchDispatch(env, prepared.prepared, { ...stored, ...rebuilt, runId: queued.id, fromQueue: true }, now, { limits });
       launched += 1;
     } catch (err) {
+      // A runtime that is not taking runs takes none of the rows after this one either; this wake ends and the next retries.
+      if (err instanceof RuntimeDraining) return launched;
       // The write refused on a limit another launch reached first: the row stays queued for the next drain. A row no longer queued belongs to another drain; the next row still gets its turn.
       if (err instanceof LimitReached && (await admitDispatch(env, queued.task, now, limits)) !== null) {
         const holder = await admitDispatch(env, queued.task, now, limits);
@@ -391,11 +415,18 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     },
   });
   } catch (error) {
-    // The run is over before it began, and the credential minted for it is
-    // usable until it is revoked; a runtime that never started is never going
-    // to present it.
+    // The credential is usable until it is revoked, and a runtime that never
+    // started never presents it.
     await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, minted.tokenId, now);
-    await applyRunUpdate(env.db, scope, runId, { status: 'failed', completed_at: now, error: 'the runtime refused to start' });
+    const message = error instanceof Error ? error.message : String(error);
+    // A runtime that is not taking runs at this instant is a fleet with no free
+    // slot: the row waits in the queue and the next drain launches it.
+    if (error instanceof RuntimeDraining) {
+      await returnToQueue(env.db, scope, runId, { heldBy: 'fleet', dispatchSpec: JSON.stringify(storedSpecOf(spec)), now });
+      emit({ kind: 'harness_queued', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor, heldBy: 'fleet' });
+      throw new RuntimeDraining(message, runId);
+    }
+    await applyRunUpdate(env.db, scope, runId, { status: 'failed', completed_at: now, error: `${LAUNCH_REFUSED_ERROR}: ${message}`.slice(0, MAX_RUN_ERROR_CHARS) });
     throw error;
   }
   emit({ kind: 'harness_dispatch', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor });

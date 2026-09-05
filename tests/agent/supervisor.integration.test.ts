@@ -12,10 +12,10 @@
  * handed and then wait for the signal the supervisor forwards.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startSupervisor, supervisorOptionsFromEnv, type RunningSupervisor } from '@myco/agent/runtime/supervisor.js';
+import { MAX_LAUNCH_BODY_BYTES, startSupervisor, supervisorOptionsFromEnv, type RunningSupervisor } from '@myco/agent/runtime/supervisor.js';
 
 const TOKEN = 'supervisor-token';
 
@@ -28,7 +28,10 @@ const out = process.env.STANDIN_OUT;
 if (out !== undefined && out !== '') {
   await Bun.write(out, JSON.stringify({ env: { ...process.env }, cwd: process.cwd() }));
 }
-process.on('SIGTERM', () => { process.exit(0); });
+if (process.env.STANDIN_EXIT_MS !== undefined) {
+  setTimeout(() => { process.exit(0); }, Number(process.env.STANDIN_EXIT_MS));
+}
+process.on('SIGTERM', () => { if (process.env.STANDIN_IGNORE_SIGTERM === undefined) process.exit(0); });
 setInterval(() => {}, 60_000);
 `;
 
@@ -58,7 +61,7 @@ interface Booted {
   probe(): Promise<{ ok: boolean; draining: boolean; children: { runId: string; pid: number; startedAt: number }[] }>;
 }
 
-function boot(options: { entry?: string; runtimeCommand?: string } = {}): Booted {
+function boot(options: { entry?: string; runtimeCommand?: string; overrunMarginMs?: number } = {}): Booted {
   const root = scratch();
   const workDir = join(root, 'work');
   const entry = options.entry ?? join(root, 'stand-in.js');
@@ -71,6 +74,7 @@ function boot(options: { entry?: string; runtimeCommand?: string } = {}): Booted
     entry,
     workDir,
     ...(options.runtimeCommand === undefined ? {} : { runtimeCommand: options.runtimeCommand }),
+    ...(options.overrunMarginMs === undefined ? {} : { overrunMarginMs: options.overrunMarginMs }),
     port: 0,
     hostname: '127.0.0.1',
     events: { on: (event: string, listener: () => void) => listeners.set(event, listener) },
@@ -92,10 +96,10 @@ function boot(options: { entry?: string; runtimeCommand?: string } = {}): Booted
 }
 
 /** Wait for a condition the supervisor's children settle into. */
-async function until(condition: () => boolean, label: string, ms = 10_000): Promise<void> {
+async function until(condition: () => boolean | Promise<boolean>, label: string, ms = 10_000): Promise<void> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
-    if (condition()) return;
+    if (await condition()) return;
     await Bun.sleep(20);
   }
   throw new Error(`timed out waiting for ${label}`);
@@ -119,7 +123,57 @@ describe('launching a runtime', () => {
     expect(child.env.MYCO_RUN_ID).toBe('run_1');
     expect(child.env.MYCO_RUNTIME_PORT).toBe('none');
     expect(child.env.PATH).toBe(process.env.PATH!);
+    expect(child.env.HOME).toBe(process.env.HOME!);
     expect(child.cwd).toBe(join(realpathSync(s.workDir), 'run_1'));
+  });
+
+  it('keeps the supervisor\'s own configuration out of the child, the launch token first among it', async () => {
+    const s = boot();
+    const out = join(s.root, 'secrets.json');
+    const held = {
+      MYCO_HARNESS_TOKEN_FILE: '/run/secrets/myco_harness_token',
+      MYCO_HARNESS_TOKEN: TOKEN,
+      MYCO_SUPERVISOR_PORT: '8080',
+      MYCO_WORK_DIR: '/work',
+      MYCO_HARNESS_ENTRY: '/app/entry.js',
+    };
+    Object.assign(process.env, held);
+    try {
+      expect((await s.launch({ runId: 'run_1', timeoutSeconds: 120, envVars: { STANDIN_OUT: out } })).status).toBe(202);
+      await until(() => existsSync(out), 'the child to record its environment');
+      const child = handed(out);
+      for (const key of Object.keys(held)) expect({ key, given: child.env[key] }).toEqual({ key, given: undefined });
+      // What the image supplies is still there.
+      expect(child.env.PATH).toBe(process.env.PATH!);
+      expect(child.env.HOME).toBe(process.env.HOME!);
+    } finally {
+      for (const key of Object.keys(held)) delete process.env[key];
+    }
+  });
+
+  it('releases the run and its working directory when a child ends on its own', async () => {
+    const s = boot();
+    const out = join(s.root, 'short.json');
+    expect((await s.launch({ runId: 'run_short', timeoutSeconds: 120, envVars: { STANDIN_OUT: out, STANDIN_EXIT_MS: '30' } })).status).toBe(202);
+    await until(() => existsSync(out), 'the child to run');
+    const runDir = handed(out).cwd;
+
+    await until(async () => (await s.probe()).children.length === 0, 'the run to be released');
+    expect(existsSync(runDir)).toBe(false);
+    // A supervisor that is not draining outlives its children and keeps serving.
+    expect(s.exits).toEqual([]);
+    expect((await s.launch({ runId: 'run_after', timeoutSeconds: 120, envVars: {} })).status).toBe(202);
+  });
+
+  it('kills a child that outlives its bound and releases the run it held', async () => {
+    const s = boot({ overrunMarginMs: 150 });
+    const out = join(s.root, 'overrun.json');
+    expect((await s.launch({ runId: 'run_over', timeoutSeconds: 0, envVars: { STANDIN_OUT: out, STANDIN_IGNORE_SIGTERM: '1' } })).status).toBe(202);
+    await until(() => existsSync(out), 'the child to run');
+    const runDir = handed(out).cwd;
+
+    await until(async () => (await s.probe()).children.length === 0, 'the overrunning child to be killed');
+    expect(existsSync(runDir)).toBe(false);
   });
 
   it('runs two dispatches at once, which is what one shared namespace has to allow', async () => {
@@ -187,6 +241,23 @@ describe('who may launch', () => {
     expect((await s.probe()).children).toEqual([]);
   });
 
+  it('refuses a body larger than a launch can be, without starting anything', async () => {
+    const s = boot();
+    const oversize = 'x'.repeat(MAX_LAUNCH_BODY_BYTES + 1_024);
+    const answered = await s.launch({ runId: 'run_1', timeoutSeconds: 120, envVars: { PADDING: oversize } });
+    expect(answered.status).toBe(413);
+    expect((await s.probe()).children).toEqual([]);
+  });
+
+  it('leaves the connection usable after a refusal, so the next launch on it is answered', async () => {
+    const s = boot();
+    const padded = { runId: 'run_1', timeoutSeconds: 120, envVars: { PADDING: 'x'.repeat(64_000) } };
+    expect((await s.launch(padded, null)).status).toBe(401);
+    // The same client, the same pooled connection.
+    expect((await s.launch(padded)).status).toBe(202);
+    expect((await s.probe()).children.map((c) => c.runId)).toEqual(['run_1']);
+  });
+
   it('serves the probe to anyone: it discloses run ids and nothing else', async () => {
     const s = boot();
     const probe = await fetch(`http://127.0.0.1:${s.supervisor.port}/probe`);
@@ -216,6 +287,23 @@ describe('a stop signal', () => {
     await until(() => s.exits.length > 0, 'the supervisor to leave');
     expect(s.exits).toEqual([0]);
     expect(existsSync(runDir)).toBe(false);
+  });
+
+  it('leaves even where the run\'s working directory cannot be removed', async () => {
+    const s = boot();
+    const out = join(s.root, 'stuck.json');
+    expect((await s.launch({ runId: 'run_stuck', timeoutSeconds: 120, envVars: { STANDIN_OUT: out } })).status).toBe(202);
+    await until(() => existsSync(out), 'the child to run');
+
+    // A directory whose parent admits no writes cannot be removed.
+    chmodSync(s.workDir, 0o500);
+    try {
+      s.signal();
+      await until(() => s.exits.length > 0, 'the supervisor to leave');
+      expect(s.exits).toEqual([0]);
+    } finally {
+      chmodSync(s.workDir, 0o700);
+    }
   });
 
   it('leaves at once when it holds no run', async () => {

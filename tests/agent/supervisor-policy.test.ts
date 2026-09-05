@@ -7,9 +7,10 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
-  bearerMatches, decideChildExit, decideLaunch, decideSignal,
+  bearerMatches, childDeadline, CHILD_OVERRUN_MARGIN_MS, decideChildExit, decideLaunch, decideSignal,
   LAUNCH_REFUSAL_STATUS, RUN_ID_PATTERN, type SupervisorState,
 } from '@myco/agent/runtime/supervisor-policy.js';
+import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
 
 const idle: SupervisorState = { draining: false, running: [] };
 const holding = (...running: string[]): SupervisorState => ({ draining: false, running });
@@ -97,5 +98,23 @@ describe('what a launch has to present', () => {
   it('refuses everything when this supervisor holds no token of its own', () => {
     expect(bearerMatches('Bearer ', '')).toBe(false);
     expect(bearerMatches('Bearer tok', '')).toBe(false);
+  });
+});
+
+describe('when a child has outlived its run', () => {
+  it('is killed a margin past the bound its dispatch named', () => {
+    expect(childDeadline(1_000, 300)).toBe(1_000 + 300_000 + CHILD_OVERRUN_MARGIN_MS);
+    expect(childDeadline(1_000, 0)).toBe(1_000 + CHILD_OVERRUN_MARGIN_MS);
+  });
+
+  it('takes a bound that is absent or nonsense as no bound at all, never as a negative wait', () => {
+    for (const bound of [Number.NaN, Number.POSITIVE_INFINITY, -300]) {
+      expect({ bound, at: childDeadline(1_000, bound) }).toEqual({ bound, at: 1_000 + CHILD_OVERRUN_MARGIN_MS });
+    }
+    expect(childDeadline(1_000, 5, -50)).toBe(1_000 + 5_000);
+  });
+
+  it('holds the same margin the Deployment gives a run before it treats its runtime as gone', () => {
+    expect(CHILD_OVERRUN_MARGIN_MS).toBe(RUN_OVERRUN_MARGIN_MS);
   });
 });

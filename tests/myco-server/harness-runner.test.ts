@@ -9,9 +9,11 @@
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import { httpHarnessLaunch } from '@myco-server-worker/platform/bun/harness-runner.js';
+import { RuntimeDraining } from '@myco-server-worker/core/harness.js';
 
 const TOKEN = 'supervisor-token';
 const CALLBACK = 'http://127.0.0.1:8787';
+const origin = () => CALLBACK;
 
 interface Seen {
   authorization: string | null;
@@ -52,7 +54,7 @@ const dispatch = {
 describe('launching over HTTP', () => {
   it('posts the dispatch to the supervisor under the bearer token it was given', async () => {
     const stand = supervisor(() => Response.json({ runId: 'run_1', pid: 42 }, { status: 202 }));
-    await httpHarnessLaunch({ url: stand.url, token: TOKEN, callbackOrigin: CALLBACK })(dispatch);
+    await httpHarnessLaunch({ url: stand.url, token: TOKEN, callbackOrigin: origin })(dispatch);
 
     expect(stand.seen).toHaveLength(1);
     expect(stand.seen[0]!.path).toBe('/launch');
@@ -63,7 +65,7 @@ describe('launching over HTTP', () => {
 
   it('rewrites the callback origin, leaving the rest of the dispatch as it was handed', async () => {
     const stand = supervisor(() => Response.json({}, { status: 202 }));
-    await httpHarnessLaunch({ url: stand.url, token: TOKEN, callbackOrigin: CALLBACK })(dispatch);
+    await httpHarnessLaunch({ url: stand.url, token: TOKEN, callbackOrigin: origin })(dispatch);
 
     expect(stand.seen[0]!.body.envVars).toEqual({
       MYCO_SERVER_URL: CALLBACK,
@@ -74,14 +76,14 @@ describe('launching over HTTP', () => {
 
   it('reaches the supervisor whose address carries a trailing slash', async () => {
     const stand = supervisor(() => Response.json({}, { status: 202 }));
-    await httpHarnessLaunch({ url: `${stand.url}/`, token: TOKEN, callbackOrigin: CALLBACK })(dispatch);
+    await httpHarnessLaunch({ url: `${stand.url}/`, token: TOKEN, callbackOrigin: origin })(dispatch);
     expect(stand.seen[0]!.path).toBe('/launch');
   });
 });
 
 describe("a refusal reaches the dispatcher in the supervisor's own words", () => {
   const refusing = (status: number, body: Record<string, unknown>) =>
-    httpHarnessLaunch({ url: supervisor(() => Response.json(body, { status })).url, token: TOKEN, callbackOrigin: CALLBACK });
+    httpHarnessLaunch({ url: supervisor(() => Response.json(body, { status })).url, token: TOKEN, callbackOrigin: origin });
 
   it('throws the word for a run already running', async () => {
     await expect(refusing(409, { refusal: 'duplicate' })(dispatch)).rejects.toThrow(/duplicate/);
@@ -105,11 +107,40 @@ describe("a refusal reaches the dispatcher in the supervisor's own words", () =>
     await expect(refusing(409, { refusal: 'duplicate' })(dispatch)).rejects.toThrow(/run_1/);
   });
 
-  it('names a supervisor it could not reach at all, rather than reporting a launch', async () => {
+  it('is a retryable hold, not a failure, when the supervisor is draining', async () => {
+    await expect(refusing(503, { refusal: 'draining' })(dispatch)).rejects.toBeInstanceOf(RuntimeDraining);
+  });
+
+  it('is a terminal failure for every other refusal', async () => {
+    for (const [status, body] of [[409, { refusal: 'duplicate' }], [500, { refusal: 'spawn', error: 'x' }], [400, { refusal: 'invalid' }], [401, {}]] as const) {
+      const caught = await refusing(status, body)(dispatch).then(() => null, (err: unknown) => err);
+      expect({ status, draining: caught instanceof RuntimeDraining, error: caught instanceof Error })
+        .toEqual({ status, draining: false, error: true });
+    }
+  });
+
+  it('reads the callback origin at each launch, so a port bound after the adapter was built is the one handed out', async () => {
+    let bound: number | null = null;
+    const stand = supervisor(() => Response.json({}, { status: 202 }));
+    const launch = httpHarnessLaunch({ url: stand.url, token: TOKEN, callbackOrigin: () => {
+      if (bound === null) throw new RuntimeDraining('the deployment has not bound its port');
+      return `http://127.0.0.1:${bound}`;
+    } });
+
+    // A launch before the socket is bound holds the run rather than failing it.
+    await expect(launch(dispatch)).rejects.toBeInstanceOf(RuntimeDraining);
+    expect(stand.seen).toHaveLength(0);
+
+    bound = 51_234;
+    await launch(dispatch);
+    expect(stand.seen[0]!.body.envVars?.MYCO_SERVER_URL).toBe('http://127.0.0.1:51234');
+  });
+
+  it('names a supervisor it could not reach at all, and holds the run rather than failing it', async () => {
     const stand = supervisor(() => Response.json({}, { status: 202 }));
     for (const server of servers.splice(0)) server.stop(true);
 
-    await expect(httpHarnessLaunch({ url: stand.url, token: TOKEN, callbackOrigin: CALLBACK })(dispatch))
+    await expect(httpHarnessLaunch({ url: stand.url, token: TOKEN, callbackOrigin: origin })(dispatch))
       .rejects.toThrow(new RegExp(`${stand.url.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')} could not be reached`));
   });
 });

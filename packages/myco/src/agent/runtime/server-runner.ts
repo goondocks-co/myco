@@ -29,7 +29,7 @@ import type { ProviderConfig } from '../types.js';
 import type { RunStatusOutcome, RunStore } from './run-store.js';
 import { createHttpRunStore, postRunControl, type RunClaimAdmission } from './run-store-http.js';
 import { INSTRUCTED_TASKS, materializedToolsForTask, type ServerToolContext } from './server-tools.js';
-import { RUNTIME_STOP_SIGNALS, type ProcessEvents } from './process-signals.js';
+import { onStopSignals, type ProcessEvents } from './process-signals.js';
 
 export { RUNTIME_STOP_SIGNALS, type ProcessEvents } from './process-signals.js';
 
@@ -263,7 +263,7 @@ export function installRunFailureHandlers(events: ProcessEvents, handlers: RunFa
   };
   events.on('uncaughtException', (reason) => { start(runErrorText(reason)); });
   events.on('unhandledRejection', (reason) => { start(runErrorText(reason)); });
-  for (const signal of RUNTIME_STOP_SIGNALS) events.on(signal, () => { drain(); });
+  onStopSignals(events, (ordinal) => { if (ordinal === 1) drain(); });
 }
 
 /**

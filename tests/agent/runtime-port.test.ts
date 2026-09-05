@@ -27,8 +27,8 @@ describe('the runtime port', () => {
     expect(runtimePortFrom('65535')).toBe(65_535);
   });
 
-  it('refuses a value that is neither, rather than binding the container port under it', () => {
-    for (const value of ['off', 'null', '-1', '65536', '8080.5', 'eight']) {
+  it('refuses a value that is neither a decimal port nor the word, rather than binding the container port under it', () => {
+    for (const value of ['off', 'null', '-1', '65536', '8080.5', 'eight', '0x1F', '1e3', ' 80', '+80', '080808']) {
       expect(() => runtimePortFrom(value)).toThrow(/MYCO_RUNTIME_PORT/);
     }
   });

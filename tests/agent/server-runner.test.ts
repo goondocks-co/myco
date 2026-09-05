@@ -6,12 +6,12 @@
 import { describe, expect, it } from 'bun:test';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID, MAX_RUN_ERROR_CHARS as SERVER_MAX_RUN_ERROR_CHARS } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import worker from '@myco-server-worker/index.js';
 import { ServerClient } from '@myco/member/transport.js';
 import {
-  CAPTURE_DRIVEN_ADMISSION, installRunFailureHandlers, RECLAIM_WARNING_MS, RUN_DEADLINE_ERROR, RUN_REFUSED_CLOSE_ERROR,
+  CAPTURE_DRIVEN_ADMISSION, installRunFailureHandlers, MAX_RUN_ERROR_CHARS, RECLAIM_WARNING_MS, RUN_DEADLINE_ERROR, RUN_REFUSED_CLOSE_ERROR,
   RUN_RECLAIMED_ERROR, runServerTask, type HeldRun,
 } from '@myco/agent/runtime/server-runner.js';
 import type { AgentHarness, HarnessExecuteInput } from '@myco/agent/harness/types.js';
@@ -307,5 +307,13 @@ describe('what the container makes of the deployment\'s answer', () => {
     const second = await runServerTask({ client, budget, runId: 'run_claim_1', taskName: 'container-smoke', harness: fakeHarness('silent'), onClaimed: () => { refusedClaims += 1; } });
     expect(second.status).toBe('skipped');
     expect(refusedClaims).toBe(0);
+  });
+});
+
+describe('how much of a failure rides a run row', () => {
+  it('is the same bound wherever the failure is written', () => {
+    // The runtime bounds the failures it posts; the Deployment bounds the
+    // refusal it writes when the runtime never started. One row, one column.
+    expect(MAX_RUN_ERROR_CHARS).toBe(SERVER_MAX_RUN_ERROR_CHARS);
   });
 });

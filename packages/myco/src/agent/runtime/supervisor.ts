@@ -1,25 +1,19 @@
 /**
  * The harness supervisor: one long-lived process that starts a runtime per run.
  *
- * The self-hosted stack has no per-run container. The Docker socket is what a
- * container-per-run would need inside the server container, and the image
- * refuses it, so the run stays the unit of work in a different shape: one
- * minted run id becomes one child process, in its own working directory, with
- * the dispatch environment layered over this process's own. The layering is
- * load-bearing — the harness image reaches the Claude Code CLI through `PATH`
- * and `HOME` alone.
+ * `POST /launch` spawns one child per minted run id, in its own working
+ * directory, with the dispatch environment layered over this process's own —
+ * the harness image reaches the Claude Code CLI through `PATH` and `HOME`, and
+ * a dispatch carries neither. The supervisor's own configuration, the launch
+ * token among it, is removed before the child sees the environment.
  *
- * Nothing here counts a fleet. The dispatcher's queue holds a dispatch that is
- * at the operator's limit and launches it as capacity returns; a refusal from
- * this endpoint is a terminal `failed` row instead, so a second count here
- * would fail what the queue admitted. This refuses only what it genuinely
- * cannot do: a run id it is already running, a body it cannot read, a child
- * that will not start, and anything at all once it is draining.
+ * The route is authenticated before it reads anything, and the body it reads is
+ * bounded. `GET /probe` carries no token and discloses run ids alone.
  *
- * `/launch` spawns a process with a caller-chosen environment, and the network
- * namespace it serves on holds the runtimes themselves. It is authenticated:
- * the bearer token comes from a file the operator mounts, and a supervisor
- * without one refuses to start.
+ * Refusals are the ones this process genuinely cannot serve: a run id it is
+ * already running, a body it cannot read, a child that will not start, and
+ * anything at all once it is draining. It counts no fleet; the dispatcher's
+ * queue is the bound on how much runs at once.
  *
  * The decisions are `supervisor-policy.ts`; this file is mechanism.
  */
@@ -28,17 +22,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NO_RUNTIME_LISTENER } from './runtime-port.js';
-import { RUNTIME_STOP_SIGNALS, type ProcessEvents } from './process-signals.js';
+import { onStopSignals, type ProcessEvents } from './process-signals.js';
 import {
-  bearerMatches, decideChildExit, decideLaunch, decideSignal,
+  bearerMatches, childDeadline, decideChildExit, decideLaunch, decideSignal,
   LAUNCH_REFUSAL_STATUS, type SupervisorState,
 } from './supervisor-policy.js';
 
 /** The port the supervisor serves on when the operator names none. */
 export const DEFAULT_SUPERVISOR_PORT = 8080;
 
+/**
+ * How much of a launch body this supervisor reads.
+ *
+ * A launch carries a run id, a bound and the dispatch environment; the prompt a
+ * task runs on rides the run row, never this route.
+ */
+export const MAX_LAUNCH_BODY_BYTES = 327_680;
+
 /** The runtime bundle a launch runs, relative to this file, when the operator names none. */
 const DEFAULT_ENTRY = './entry.js';
+
+/** This supervisor's own configuration, which its children are not given. */
+const SUPERVISOR_ONLY_ENV = [
+  'MYCO_HARNESS_TOKEN_FILE', 'MYCO_HARNESS_TOKEN', 'MYCO_SUPERVISOR_PORT', 'MYCO_WORK_DIR', 'MYCO_HARNESS_ENTRY',
+] as const;
 
 class SupervisorStartupError extends Error {}
 
@@ -53,6 +60,8 @@ export interface SupervisorOptions {
   hostname?: string;
   /** The runtime that executes `entry`; this process's own by default, which is what the image installs. */
   runtimeCommand?: string;
+  /** How long past its own bound a child is left running before it is killed. */
+  overrunMarginMs?: number;
   /** Where stop signals are listened for. */
   events?: ProcessEvents;
   /** How the process leaves once the drain is complete. */
@@ -74,9 +83,20 @@ interface Child {
   dir: string;
   /** Ask this child to stop, as a platform would. */
   stop(): void;
+  /** Stop waiting for this child to go. */
+  cancelBackstop(): void;
 }
 
 const line = (fields: Record<string, unknown>): void => { console.log(JSON.stringify(fields)); };
+
+/** Run one piece of cleanup; a failure is logged and the caller carries on. */
+function attempt(what: string, runId: string, act: () => void): void {
+  try {
+    act();
+  } catch (error) {
+    line({ kind: 'supervisor_cleanup_failed', what, runId, error: error instanceof Error ? error.message : String(error) });
+  }
+}
 
 const record = (value: unknown): Record<string, string> => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -85,13 +105,14 @@ const record = (value: unknown): Record<string, string> => {
   );
 };
 
-/**
- * Serve the launch endpoint until a stop signal drains it.
- *
- * The socket binds every address in this process's network namespace: the
- * supervisor is reached by the server sharing that namespace, and a namespace
- * with no published port of its own is the boundary.
- */
+/** The environment a child is given: this process's, less its own configuration, plus the dispatch. */
+function childEnv(envVars: Record<string, string>): Record<string, string | undefined> {
+  const inherited: Record<string, string | undefined> = { ...process.env };
+  for (const key of SUPERVISOR_ONLY_ENV) delete inherited[key];
+  return { ...inherited, ...envVars, MYCO_RUNTIME_PORT: NO_RUNTIME_LISTENER };
+}
+
+/** Serve the launch endpoint until a stop signal drains it. */
 export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
   const events = options.events ?? process;
   const leaveProcess = options.exit ?? ((code: number) => { process.exit(code); });
@@ -102,13 +123,17 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
   const state = (): SupervisorState => ({ draining, running: [...children.keys()] });
 
   const server = Bun.serve({
+    // Nothing publishes this port; the deployment reaches it over the loopback
+    // of the network namespace both share.
+    hostname: options.hostname ?? '127.0.0.1',
     port: options.port ?? DEFAULT_SUPERVISOR_PORT,
-    hostname: options.hostname ?? '0.0.0.0',
     development: false,
+    maxRequestBodySize: MAX_LAUNCH_BODY_BYTES,
+    // Bodiless: the runtime's own fallback page embeds the thrown message and
+    // surrounding source.
+    error: () => new Response(null, { status: 500 }),
     fetch: async (request) => {
       const path = new URL(request.url).pathname;
-      // The probe discloses run ids and nothing else, and is what a
-      // healthcheck and an operator read; it carries no token.
       if (path === '/probe') {
         return Response.json({
           ok: true,
@@ -121,8 +146,12 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
     },
   });
 
+  const stopChild = (runId: string, child: Child): void => {
+    attempt('stop', runId, () => { child.stop(); });
+  };
+
   const leave = (code: number): void => {
-    for (const child of children.values()) child.stop();
+    for (const [runId, child] of children) stopChild(runId, child);
     void Promise.resolve(server.stop(true)).then(() => { leaveProcess(code); }, () => { leaveProcess(code); });
   };
 
@@ -130,19 +159,24 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
     const decision = decideChildExit(state(), runId);
     const child = children.get(runId);
     children.delete(runId);
-    if (child !== undefined) rmSync(child.dir, { recursive: true, force: true });
+    if (child !== undefined) {
+      attempt('backstop', runId, () => { child.cancelBackstop(); });
+      attempt('workdir', runId, () => { rmSync(child.dir, { recursive: true, force: true }); });
+    }
     line({ kind: 'supervisor_child_exited', runId, code, running: decision.running.length });
     if (decision.exit) leave(0);
   };
 
   async function launch(request: Request): Promise<Response> {
-    // Read before deciding: an answer written while the caller is still sending
-    // its body resets the connection rather than carrying the answer.
-    const raw = await request.text().catch(() => '');
-    // Bodiless: a distinguishing message tells a caller which half of the
-    // credential it got wrong.
-    if (!bearerMatches(request.headers.get('authorization'), options.token)) return new Response(null, { status: 401 });
+    // The token before the body: an unauthenticated caller is answered without
+    // this process reading what it sent. The bounded body is drained first so
+    // the answer is not written while the caller is still sending it.
+    if (!bearerMatches(request.headers.get('authorization'), options.token)) {
+      await request.text().catch(() => '');
+      return new Response(null, { status: 401 });
+    }
 
+    const raw = await request.text().catch(() => '');
     let parsed: unknown = null;
     try { parsed = JSON.parse(raw); } catch { parsed = null; }
     const body = (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null) as { runId?: unknown; timeoutSeconds?: unknown; envVars?: unknown } | null;
@@ -159,46 +193,60 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
       child = Bun.spawn({
         cmd: [runtimeCommand, options.entry],
         cwd: dir,
-        // This process's environment first: the image puts the CLI the harness
-        // spawns on `PATH`, under a `HOME` the CLI writes to, and a dispatch
-        // carries neither.
-        env: { ...process.env, ...record(body?.envVars), MYCO_RUNTIME_PORT: NO_RUNTIME_LISTENER },
+        env: childEnv(record(body?.envVars)),
         // The container log is where a run's own JSON lines are read.
         stdin: 'ignore',
         stdout: 'inherit',
         stderr: 'inherit',
       });
     } catch (error) {
-      rmSync(dir, { recursive: true, force: true });
       const message = error instanceof Error ? error.message : String(error);
+      attempt('workdir', runId, () => { rmSync(dir, { recursive: true, force: true }); });
       line({ kind: 'supervisor_launch_failed', runId, error: message });
       return Response.json({ refusal: 'spawn', error: message }, { status: LAUNCH_REFUSAL_STATUS.spawn });
     }
 
+    const startedAt = Date.now();
+    const timeoutSeconds = Number(body?.timeoutSeconds);
+    // A run keeps its own deadline and posts its own ending; this is the floor
+    // under a child that reaches neither, so its run id is released and its
+    // working directory goes.
+    const backstop = setTimeout(() => {
+      line({ kind: 'supervisor_child_overran', runId, pid: child.pid });
+      attempt('kill', runId, () => { child.kill('SIGKILL'); });
+    }, Math.max(0, childDeadline(startedAt, timeoutSeconds, options.overrunMarginMs) - startedAt));
+    (backstop as { unref?: () => void }).unref?.();
+
     children.set(runId, {
       pid: child.pid,
-      startedAt: Date.now(),
+      startedAt,
       dir,
       stop: () => { child.kill('SIGTERM'); },
+      cancelBackstop: () => { clearTimeout(backstop); },
     });
-    line({ kind: 'supervisor_launched', runId, pid: child.pid, timeoutSeconds: Number(body?.timeoutSeconds) || null });
+    line({ kind: 'supervisor_launched', runId, pid: child.pid, timeoutSeconds: Number.isFinite(timeoutSeconds) ? timeoutSeconds : null });
     void child.exited.then((code) => { childExited(runId, code); }, () => { childExited(runId, -1); });
     return Response.json({ runId, pid: child.pid }, { status: 202 });
   }
 
-  const signalled = (): void => {
+  onStopSignals(events, () => {
     const decision = decideSignal(state());
     line({ kind: 'supervisor_draining', holding: decision.action === 'drain' ? decision.stop : [] });
     if (decision.action === 'exit') { leave(0); return; }
     draining = true;
-    for (const runId of decision.stop) children.get(runId)?.stop();
-  };
-  for (const signal of RUNTIME_STOP_SIGNALS) events.on(signal, signalled);
+    for (const runId of decision.stop) {
+      const child = children.get(runId);
+      if (child !== undefined) stopChild(runId, child);
+    }
+  });
 
   return {
     port: Number(server.port),
     stop: async () => {
-      for (const child of children.values()) child.stop();
+      for (const [runId, child] of children) {
+        attempt('backstop', runId, () => { child.cancelBackstop(); });
+        stopChild(runId, child);
+      }
       children.clear();
       await server.stop(true);
     },
@@ -208,9 +256,9 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
 /**
  * What the operator's environment says this supervisor is.
  *
- * A missing or empty token file is refused by name here rather than at the
- * first launch: a supervisor that started without one would serve an endpoint
- * that spawns processes for any caller that reaches its namespace.
+ * A missing or empty token file is refused by name: the launch endpoint spawns
+ * processes with a caller-chosen environment, and it has no token to check
+ * against.
  */
 export function supervisorOptionsFromEnv(env: Record<string, string | undefined> = process.env): SupervisorOptions {
   const tokenPath = env.MYCO_HARNESS_TOKEN_FILE;
