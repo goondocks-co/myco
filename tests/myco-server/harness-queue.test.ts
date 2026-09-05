@@ -424,8 +424,13 @@ describe('a runtime that is not taking runs', () => {
     expect(QUEUE_MAX_AGE_MS).toBe(86_400_000);
     expect(QUEUE_EXPIRED_ERROR).toBe('no runtime took the run within a day');
 
-    expect(await runStaleSweep(f.env, NOW + QUEUE_MAX_AGE_MS)).toBe(1);
+    const lines = await emitted(async () => { expect(await runStaleSweep(f.env, NOW + QUEUE_MAX_AGE_MS)).toBe(1); });
+    expect(lines.filter((l) => l.kind === 'harness_queue_expired'))
+      .toEqual([{ kind: 'harness_queue_expired', runId: 'run_waited', task: 'container-smoke', projectId: 'proj_1' }]);
     expect(f.run('run_waited')).toMatchObject({ status: 'failed', error: QUEUE_EXPIRED_ERROR });
+    // The row takes a start, so a reader sees a run that happened rather than one that never began.
+    expect((f.sqlite.query(`SELECT started_at AS s FROM agent_runs WHERE id = 'run_waited'`).get() as { s: number | null }).s)
+      .toBe(NOW + QUEUE_MAX_AGE_MS);
     expect(f.run('run_recent')?.status).toBe('queued');
     // A queued run holds no credential, so the sweep has nothing to revoke.
     expect((f.sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get() as { c: number }).c).toBe(0);

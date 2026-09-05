@@ -22,6 +22,8 @@ export interface HttpHarnessOptions {
   token: string;
   /** The origin the runtime posts its claim, status, and reports back to, read at each launch. */
   callbackOrigin: () => string;
+  /** How long this launch waits for an answer; the dispatcher awaits this call, and the drain awaits the dispatcher. */
+  timeoutMs?: number;
 }
 
 /** The supervisor's answer to a launch it did not accept. */
@@ -35,6 +37,16 @@ const DRAINING = 'draining';
 
 /** The status a runtime that is not serving answers with, whatever body it carries. */
 const UNAVAILABLE_STATUS = 503;
+
+/**
+ * How long a launch waits for the supervisor's answer.
+ *
+ * The dispatcher awaits this call and the drain awaits the dispatcher, so the
+ * tick's own progress requires this call to end. A launch is one small POST
+ * against a process on this machine's own loopback; a wait past this is a
+ * runtime that is not answering.
+ */
+export const LAUNCH_TIMEOUT_MS = 10_000;
 
 const text = (value: unknown): string | null => (typeof value === 'string' && value.trim() !== '' ? value.trim() : null);
 
@@ -52,10 +64,12 @@ export function httpHarnessLaunch(options: HttpHarnessOptions): NonNullable<Serv
           timeoutSeconds: spec.timeoutSeconds,
           envVars: { ...spec.envVars, MYCO_SERVER_URL: callbackOrigin },
         }),
+        signal: AbortSignal.timeout(options.timeoutMs ?? LAUNCH_TIMEOUT_MS),
       });
     } catch (error) {
-      // A supervisor between restarts answers nothing, which is the same "not
-      // now" as the word it answers while it stops.
+      // A supervisor between restarts, and one that takes the call and answers
+      // nothing inside the bound, are both "not now": the run waits in the queue
+      // and the next drain offers it again.
       throw new RuntimeDraining(`the harness runtime at ${options.url} could not be reached: ${error instanceof Error ? error.message : String(error)}`, 'unreachable');
     }
     if (answered.ok) return;

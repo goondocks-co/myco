@@ -8,7 +8,7 @@
  * that word onto the run row, where an operator reads it.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { httpHarnessLaunch } from '@myco-server-worker/platform/bun/harness-runner.js';
+import { httpHarnessLaunch, LAUNCH_TIMEOUT_MS } from '@myco-server-worker/platform/bun/harness-runner.js';
 import { RuntimeDraining } from '@myco-server-worker/core/harness.js';
 
 const TOKEN = 'supervisor-token';
@@ -158,6 +158,18 @@ describe("a refusal reaches the dispatcher in the supervisor's own words", () =>
     bound = 51_234;
     await launch(dispatch);
     expect(stand.seen[0]!.body.envVars?.MYCO_SERVER_URL).toBe('http://127.0.0.1:51234');
+  });
+
+  it('holds the run when the supervisor takes the call and answers nothing', async () => {
+    // The dispatcher awaits this call and the drain awaits the dispatcher, so a
+    // supervisor that never answers would hold the tick itself.
+    expect(LAUNCH_TIMEOUT_MS).toBe(10_000);
+    const stalled = supervisor(() => new Promise<Response>(() => undefined) as never);
+    const started = Date.now();
+    const caught = await httpHarnessLaunch({ url: stalled.url, token: TOKEN, callbackOrigin: origin, timeoutMs: 150 })(dispatch)
+      .then(() => null, (err: unknown) => err);
+    expect(caught).toBeInstanceOf(RuntimeDraining);
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 
   it('names a supervisor it could not reach at all, and holds the run rather than failing it', async () => {

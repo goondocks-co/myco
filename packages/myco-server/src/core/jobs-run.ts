@@ -7,7 +7,8 @@
  * nothing left to do.
  */
 import type { ServerEnv } from './adapters.js';
-import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, DRAIN_BATCH, HARNESS_MEMBER_ID, RUN_OVERRUN_MARGIN_MS } from './harness.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, HARNESS_MEMBER_ID, RUN_OVERRUN_MARGIN_MS } from './harness.js';
+import { emit } from '../telemetry.js';
 import { failQueuedRun, failStaleRun, listLiveRunsAcrossProjects, listQueuedAcrossProjects, pruneRevokedCredentials, pruneTerminalRuns } from './runs.js';
 import { leafValues } from './settings.js';
 import { releaseRun } from './release.js';
@@ -75,7 +76,7 @@ export const STALE_RUN_ERROR = 'the runtime went away';
  * reader is told. `QUEUE_EXPIRED_ERROR` names this bound in words, and a test
  * holds the two in step.
  */
-export const QUEUE_MAX_AGE_MS = 86_400_000;
+export const QUEUE_MAX_AGE_MS = DAY_MS;
 export const QUEUE_EXPIRED_ERROR = 'no runtime took the run within a day';
 
 /**
@@ -95,9 +96,11 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
     await releaseRun(env, scope, run, now, { drain: false });
     changed += 1;
   }
-  for (const queued of await listQueuedAcrossProjects(env.db, DRAIN_BATCH)) {
+  for (const queued of await listQueuedAcrossProjects(env.db, JOB_BATCH)) {
     if (now - queued.queuedAt < QUEUE_MAX_AGE_MS) continue;
-    if (await failQueuedRun(env.db, { projectId: queued.projectId }, queued.id, now, QUEUE_EXPIRED_ERROR)) changed += 1;
+    if (!(await failQueuedRun(env.db, { projectId: queued.projectId }, queued.id, now, QUEUE_EXPIRED_ERROR))) continue;
+    emit({ kind: 'harness_queue_expired', runId: queued.id, task: queued.task, projectId: queued.projectId });
+    changed += 1;
   }
   return changed;
 }

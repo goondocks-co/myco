@@ -12,7 +12,7 @@
  * handed and then wait for the signal the supervisor forwards.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { platform } from 'node:os';
 import { tmpdir } from 'node:os';
@@ -49,9 +49,10 @@ process.on('SIGTERM', () => {
   // Say the signal arrived, then keep running until released or the window ends,
   // so a caller can observe the drain with this child provably still alive.
   writeFileSync(hold + '.signalled', '1');
+  const code = process.env.STANDIN_EXIT_ON_SIGTERM === undefined ? 0 : Number(process.env.STANDIN_EXIT_ON_SIGTERM);
   const deadline = Date.now() + 5_000;
   const waiting = setInterval(() => {
-    if (existsSync(hold + '.release') || Date.now() > deadline) { clearInterval(waiting); process.exit(0); }
+    if (existsSync(hold + '.release') || Date.now() > deadline) { clearInterval(waiting); process.exit(code); }
   }, 20);
 });
 setInterval(() => {}, 60_000);
@@ -83,7 +84,7 @@ interface Booted {
   probe(): Promise<{ ok: boolean; draining: boolean; children: { runId: string; pid: number; startedAt: number }[] }>;
 }
 
-function boot(options: { entry?: string; runtimeCommand?: string; overrunMarginMs?: number; backstopRetryMs?: number; spawn?: (plan: SpawnPlan) => SpawnedChild; hostname?: string | null; tools?: { setsid: string | null; setpriv: string | null } } = {}): Booted {
+function boot(options: { entry?: string; runtimeCommand?: string; overrunMarginMs?: number; backstopRetryMs?: number; bodyReadTimeoutMs?: number; spawn?: (plan: SpawnPlan) => SpawnedChild; hostname?: string | null; tools?: { setsid: string | null; setpriv: string | null }; runAs?: { name: string; uid: number; gid: number; home: string } } = {}): Booted {
   const root = scratch();
   const workDir = join(root, 'work');
   const entry = options.entry ?? join(root, 'stand-in.js');
@@ -97,9 +98,11 @@ function boot(options: { entry?: string; runtimeCommand?: string; overrunMarginM
     workDir,
     ...(options.runtimeCommand === undefined ? {} : { runtimeCommand: options.runtimeCommand }),
     ...(options.overrunMarginMs === undefined ? {} : { overrunMarginMs: options.overrunMarginMs }),
+    ...(options.bodyReadTimeoutMs === undefined ? {} : { bodyReadTimeoutMs: options.bodyReadTimeoutMs }),
     ...(options.backstopRetryMs === undefined ? {} : { backstopRetryMs: options.backstopRetryMs }),
     ...(options.spawn === undefined ? {} : { spawn: options.spawn }),
     ...(options.tools === undefined ? {} : { tools: options.tools }),
+    ...(options.runAs === undefined ? {} : { runAs: options.runAs }),
     port: 0,
     ...(options.hostname === null ? {} : { hostname: options.hostname ?? '127.0.0.1' }),
     events: { on: (event: string, listener: () => void) => listeners.set(event, listener) },
@@ -139,7 +142,7 @@ const handed = (path: string) => JSON.parse(readFileSync(path, 'utf8')) as { env
  * never sees it. Sending stops the moment an answer arrives, so what was
  * written is what the supervisor made this caller send before answering.
  */
-async function chunkedLaunch(port: number, options: { token: string | null; totalBytes: number }): Promise<{ status: number; written: number }> {
+async function chunkedLaunch(port: number, options: { token: string | null; totalBytes: number; stallAfter?: boolean }): Promise<{ status: number; written: number }> {
   let response = '';
   const socket = await Bun.connect({
     hostname: '127.0.0.1',
@@ -167,7 +170,9 @@ async function chunkedLaunch(port: number, options: { token: string | null; tota
     written += size;
     await Bun.sleep(1);
   }
-  const deadline = Date.now() + 5_000;
+  // A caller that sends part of a body and then goes quiet, without ever
+  // closing: the socket stays open and nothing more arrives.
+  const deadline = Date.now() + (options.stallAfter === true ? 10_000 : 5_000);
   while (response === '' && Date.now() < deadline) await Bun.sleep(10);
   socket.end();
   return { status: Number(/^HTTP\/1\.1 (\d{3})/.exec(response)?.[1] ?? 0), written };
@@ -346,6 +351,15 @@ describe('who may launch', () => {
     expect(sent.written).toBeGreaterThan(MAX_LAUNCH_BODY_BYTES);
     expect(sent.written).toBeLessThan(MAX_LAUNCH_BODY_BYTES * 2);
     expect((await s.probe()).children).toEqual([]);
+  });
+
+  it('abandons a body that stops arriving rather than holding the handler on it', async () => {
+    const s = boot({ bodyReadTimeoutMs: 150 });
+    const stalled = await chunkedLaunch(s.supervisor.port, { token: TOKEN, totalBytes: 32_768, stallAfter: true });
+    expect(stalled.status).toBe(408);
+    expect((await s.probe()).children).toEqual([]);
+    // The supervisor is still serving; only that one body was let go.
+    expect((await s.launch({ runId: 'run_after_stall', timeoutSeconds: 120, envVars: {} })).status).toBe(202);
   });
 
   it('serves the probe to anyone: it discloses run ids and nothing else', async () => {
@@ -552,10 +566,70 @@ describe('a run whose runtime died before it ended', () => {
     }
   });
 
+  it('is left to its own reclaim when this supervisor is the one that stopped it', async () => {
+    const s = boot();
+    const deploy = deployment();
+    const out = join(s.root, 'drained.json');
+    const hold = join(s.root, 'drain-hold');
+    try {
+      // A drained runtime records its own ending and then exits non-zero, which
+      // is the ordinary shape of every `myco server update`.
+      expect((await s.launch({
+        runId: 'run_drained',
+        timeoutSeconds: 120,
+        envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_drained', MYCO_PROJECT: 'proj_1', STANDIN_OUT: out, STANDIN_HOLD_SIGTERM: hold, STANDIN_EXIT_ON_SIGTERM: '1' },
+      })).status).toBe(202);
+      await until(() => existsSync(out), 'the child to run');
+
+      s.signal();
+      await until(() => existsSync(`${hold}.signalled`), 'the child to receive the stop signal');
+      writeFileSync(`${hold}.release`, '1');
+
+      await until(() => s.exits.length > 0, 'the supervisor to leave');
+      // Nothing is posted over the ending that run wrote for itself.
+      expect(deploy.posts).toEqual([]);
+    } finally {
+      deploy.stop();
+    }
+  });
+
   it('says nothing to a deployment a dispatch never named', async () => {
     const s = boot();
     expect((await s.launch({ runId: 'run_bare', timeoutSeconds: 120, envVars: { STANDIN_EXIT_CODE: '9' } })).status).toBe(202);
     await until(async () => (await s.probe()).children.length === 0, 'the child to leave');
+  });
+});
+
+describe('a child dropped to another user', () => {
+  /** Stands in for the tools the image has: it records what it was asked to do and runs the rest. */
+  const RECORDER = (record: string) => `#!/bin/sh\nprintf '%s\\n' "$*" >> ${record}\nwhile [ "\${1#--}" != "$1" ]; do shift; done\nexec "$@"\n`;
+
+  it('is spawned through the tools that drop it, in a directory of its own, under its own home', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'myco-drop-'));
+    roots.push(tmp);
+    const record = join(tmp, 'argv.log');
+    const setpriv = join(tmp, 'setpriv');
+    const home = join(tmp, 'home');
+    mkdirSync(home);
+    writeFileSync(setpriv, RECORDER(record), { mode: 0o755 });
+
+    // The run's own user, as this process can actually chown to.
+    const runAs = { name: 'runtime', uid: process.getuid!(), gid: process.getgid!(), home };
+    const s = boot({ tools: { setsid: null, setpriv }, runAs });
+    const out = join(s.root, 'dropped.json');
+
+    expect((await s.launch({ runId: 'run_dropped', timeoutSeconds: 120, envVars: { STANDIN_OUT: out } })).status).toBe(202);
+    await until(() => existsSync(out), 'the dropped child to run');
+
+    // The drop went through the tool, naming the user and its groups.
+    expect(readFileSync(record, 'utf8').trim())
+      .toContain('--reuid=runtime --regid=runtime --init-groups');
+    const child = handed(out);
+    // The CLI a run spawns writes under a home the dropped user owns.
+    expect(child.env.HOME).toBe(home);
+    expect(child.cwd).toBe(join(realpathSync(s.workDir), 'run_dropped'));
+    // The directory is the run's own user's to write in.
+    expect(statSync(join(s.workDir, 'run_dropped')).uid).toBe(runAs.uid);
   });
 });
 

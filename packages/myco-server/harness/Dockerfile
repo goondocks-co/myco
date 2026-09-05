@@ -17,13 +17,13 @@
 FROM oven/bun:1.3.14-slim
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates util-linux \
   && rm -rf /var/lib/apt/lists/*
-USER bun
 ENV HOME=/home/bun
 # The installer writes a versioned executable under the installing user's home
-# and links to it; the link is replaced below by one into the shared location.
-RUN curl -fsSL https://claude.ai/install.sh | bash
-USER root
+# and links to it. Installing and moving it in ONE layer is what keeps one copy
+# of it in the image: a move in a later layer leaves the original in the one
+# below, and the executable is 215 MB.
 RUN set -eu; \
+  su bun -s /bin/sh -c 'curl -fsSL https://claude.ai/install.sh | bash'; \
   target="$(readlink -f /home/bun/.local/bin/claude)"; \
   install -d -m 0755 /opt/claude/bin; \
   mv "$target" /opt/claude/bin/claude; \

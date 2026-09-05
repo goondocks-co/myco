@@ -864,12 +864,19 @@ export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: s
   return result.meta.changes === 1;
 }
 
-/** A queued run the Deployment can no longer launch is failed by name, from `queued` alone. */
-const FAIL_QUEUED_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, held_by = NULL
+/**
+ * A queued run the Deployment can no longer launch is failed by name, from
+ * `queued` alone.
+ *
+ * The row takes a start where it has none, as a skipped one does: every run
+ * view reads `started_at` for when a run happened, and rendering it as a run
+ * that happened requires one.
+ */
+const FAIL_QUEUED_SQL = `UPDATE agent_runs SET status = 'failed', started_at = COALESCE(started_at, ?), completed_at = ?, error = ?, held_by = NULL
   WHERE project_id = ? AND id = ? AND status = 'queued'`;
 
 export async function failQueuedRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string): Promise<boolean> {
-  const result = await db.prepare(FAIL_QUEUED_SQL).bind(now, error, scope.projectId, runId).run();
+  const result = await db.prepare(FAIL_QUEUED_SQL).bind(now, now, error, scope.projectId, runId).run();
   return result.meta.changes === 1;
 }
 

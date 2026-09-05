@@ -15,9 +15,11 @@
  * A run's own ending is the runtime's to post, and a runtime that dies before
  * it can — killed inside its first second, out of memory, a bad image — leaves
  * a row live until a sweep gives up on it minutes later. The supervisor holds
- * that run's dispatch, so it posts the ending itself from the child's exit. The
- * server takes the first terminal write, so a post for a run that did end is
- * answered as one and changes nothing.
+ * that run's dispatch, so it posts the ending itself from the child's exit, and
+ * waits for that post before it leaves. It posts only for a child it did not
+ * ask to stop: a drained runtime exits non-zero after recording its own
+ * reclaim, and the credential that run was launched with is revoked the instant
+ * any ending lands, so a second post carries a credential the server refuses.
  *
  * The route authenticates before it reads anything: an unauthenticated body is
  * never buffered. The socket's `maxRequestBodySize` answers 413 to an oversize
@@ -103,6 +105,8 @@ export interface SupervisorOptions {
   overrunMarginMs?: number;
   /** How often the kill is offered again to a child that is still there. */
   backstopRetryMs?: number;
+  /** How long a launch body may go without a further byte before the read is abandoned. */
+  bodyReadTimeoutMs?: number;
   /** Where stop signals are listened for. */
   events?: ProcessEvents;
   /** How the process leaves once the drain is complete. */
@@ -140,12 +144,10 @@ export const RUNTIME_DIED_ERROR = 'the runtime exited before the run ended';
 /** How long the supervisor gives the post that closes a run its child abandoned. */
 const CLOSE_TIMEOUT_MS = 5_000;
 
-/**
- * Close a run its runtime left open, with that run's own credential.
- *
- * Answered `terminal` for a run that already carries an ending, which is the
- * ordinary case for a child that closed its run and then exited non-zero.
- */
+/** How long a launch body may go without a further byte before the read is abandoned. */
+export const BODY_READ_TIMEOUT_MS = 10_000;
+
+/** Close a run its runtime left open, with that run's own credential. */
 async function closeAbandonedRun(control: RunControl, runId: string, code: number, now: number): Promise<Response> {
   return await fetch(`${control.serverUrl}/runs/update`, {
     method: 'POST',
@@ -204,28 +206,39 @@ export function childEnv(envVars: Record<string, string>, runAs: RuntimeUser | n
   return { ...inherited, ...envVars, MYCO_RUNTIME_PORT: NO_RUNTIME_LISTENER };
 }
 
+/** Why a body was not read whole: it ran past the bound, or it stopped arriving. */
+export type BodyRefusal = 'too-large' | 'stalled';
+
 /**
- * Read a request body up to `limit`, or answer that it is longer.
+ * Read a request body up to `limit`, or answer why it was not read.
  *
  * A chunked body declares no length, so the socket's own bound never sees it;
- * this is where such a body stops being read.
+ * this is where such a body stops being read. A caller that sends part of one
+ * and then stops is given `timeoutMs` for its next byte and abandoned after it,
+ * so a handler is never held by a body that does not end.
  */
-export async function readBounded(request: Request, limit: number): Promise<{ ok: true; text: string } | { ok: false }> {
+export async function readBounded(request: Request, limit: number, timeoutMs = BODY_READ_TIMEOUT_MS): Promise<{ ok: true; text: string } | { ok: false; why: BodyRefusal }> {
   if (request.body === null) return { ok: true, text: '' };
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
   for (;;) {
     let step: { done: boolean; value?: Uint8Array };
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      step = await reader.read();
+      const stalled = new Promise<'stalled'>((resolve) => { timer = setTimeout(() => { resolve('stalled'); }, timeoutMs); });
+      const next = await Promise.race([reader.read(), stalled]);
+      if (next === 'stalled') return { ok: false, why: 'stalled' };
+      step = next;
     } catch {
       return { ok: true, text: '' };
+    } finally {
+      clearTimeout(timer);
     }
     if (step.done) break;
     if (step.value === undefined) continue;
     size += step.value.byteLength;
-    if (size > limit) return { ok: false };
+    if (size > limit) return { ok: false, why: 'too-large' };
     chunks.push(step.value);
   }
   const joined = new Uint8Array(size);
@@ -287,7 +300,8 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
     void Promise.resolve(server.stop(true)).then(() => { leaveProcess(code); }, () => { leaveProcess(code); });
   };
 
-  const childExited = (runId: string, code: number): void => {
+  const childExited = async (runId: string, code: number): Promise<void> => {
+    const stopped = draining;
     const decision = decideChildExit(state(), runId);
     const child = children.get(runId);
     children.delete(runId);
@@ -298,11 +312,16 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
     line({ kind: 'supervisor_child_exited', runId, code, running: decision.running.length });
     // A child that left cleanly posted its own ending; any other exit may have
     // left the run open, and this is the only process that can still close it.
-    if (code !== 0 && child?.control != null) {
-      void closeAbandonedRun(child.control, runId, code, Date.now()).then(
-        (answered) => { line({ kind: 'supervisor_run_closed', runId, code, status: answered.status }); },
-        (error: unknown) => { line({ kind: 'supervisor_run_close_failed', runId, code, error: error instanceof Error ? error.message : String(error) }); },
-      );
+    // A child this supervisor asked to stop records its own reclaim and is left
+    // to it. The post is awaited: this process leaves behind the last child of a
+    // drain, so a post that must land has to land before that.
+    if (code !== 0 && !stopped && child?.control != null) {
+      try {
+        const answered = await closeAbandonedRun(child.control, runId, code, Date.now());
+        line({ kind: 'supervisor_run_closed', runId, code, status: answered.status });
+      } catch (error) {
+        line({ kind: 'supervisor_run_close_failed', runId, code, error: error instanceof Error ? error.message : String(error) });
+      }
     }
     if (decision.exit) leave(0);
   };
@@ -312,8 +331,10 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
     // at all, whatever length it declares or declines to.
     if (!bearerMatches(request.headers.get('authorization'), options.token)) return new Response(null, { status: 401 });
 
-    const read = await readBounded(request, MAX_LAUNCH_BODY_BYTES);
-    if (!read.ok) return new Response(null, { status: 413 });
+    const read = await readBounded(request, MAX_LAUNCH_BODY_BYTES, options.bodyReadTimeoutMs);
+    // Bodiless either way: a caller that sent too much, and one that stopped
+    // sending, each learn only that this body was not taken.
+    if (!read.ok) return new Response(null, { status: read.why === 'stalled' ? 408 : 413 });
     let parsed: unknown = null;
     try { parsed = JSON.parse(read.text); } catch { parsed = null; }
     const body = (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null) as { runId?: unknown; timeoutSeconds?: unknown; envVars?: unknown } | null;
@@ -374,7 +395,7 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
       control: runControlOf(envVars),
     });
     line({ kind: 'supervisor_launched', runId, pid: child.pid, timeoutSeconds: Number.isFinite(timeoutSeconds) ? timeoutSeconds : null });
-    void child.exited.then((code) => { childExited(runId, code); }, () => { childExited(runId, -1); });
+    void child.exited.then((code) => childExited(runId, code), () => childExited(runId, -1));
     return Response.json({ runId, pid: child.pid }, { status: 202 });
   }
 
@@ -428,8 +449,8 @@ export function runtimeUserOf(name: string, passwd: string): RuntimeUser | null 
  *
  * A missing or empty token file is refused by name: the launch endpoint spawns
  * processes with a caller-chosen environment, and it has no token to check
- * against. A root supervisor is refused when it cannot drop its children, or
- * when the user it would drop them to could read that token anyway.
+ * against. A root supervisor is refused when it cannot drop its children, and
+ * when the user it drops them to can read that token anyway.
  */
 export function supervisorOptionsFromEnv(
   env: Record<string, string | undefined> = process.env,

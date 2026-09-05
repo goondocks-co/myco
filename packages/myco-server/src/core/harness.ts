@@ -182,7 +182,7 @@ export class NotQueued extends Error {
 }
 
 /**
- * Why a runtime would not take a run, when the answer is not the run's fault.
+ * Why a runtime is not taking a run, when the answer is not the run's fault.
  *
  * `draining` is the shape of every deploy: the harness stops before the server
  * rolls, and it clears on its own. `unreachable` is a runtime that answered
