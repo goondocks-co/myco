@@ -8,7 +8,8 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, enqueueDispatch, HARNESS_MEMBER_ID, launchDispatch, LAUNCH_REFUSED_ERROR, LimitReached, MAX_RUN_ERROR_CHARS, NO_LAUNCH_ERROR, prepareDispatch, RuntimeAlreadyHolding, RuntimeDraining } from '@myco-server-worker/core/harness.js';
 import { HELD_BY_WORDS } from '@myco-server-worker/core/limits.js';
-import { agentRunRetention, QUEUE_EXPIRED_ERROR, QUEUE_MAX_AGE_MS, runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
+import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
+import { agentRunRetention, QUEUE_EXPIRED_ERROR, QUEUE_MAX_AGE_MS, runStaleSweep, STALE_RUN_ERROR } from '@myco-server-worker/core/jobs-run.js';
 import { heldBy, readDispatchLimits } from '@myco-server-worker/core/limits.js';
 import { claimRun, dispatchLoad, launchQueued, listQueuedAcrossProjects, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
@@ -541,6 +542,22 @@ describe('a runtime that is not taking runs', () => {
     expect(refusing.run('run_spawn')?.status).toBe('failed');
     expect(minted(refusing)).toBe(2);
     expect(live(refusing)).toEqual([]);
+  });
+
+  it('leaves a run whose credential an operator revoked to the sweep, closed by its own bound', async () => {
+    // An operator revoking a credential by id, or revoking the harness member,
+    // reaches the credential store directly: the row still names it, and the
+    // run it names is closed the way any run whose runtime went away is.
+    const f = fixture();
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    await dispatchPrepared(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 60, runId: 'run_operator' }, NOW);
+    const credential = f.run('run_operator')!.dispatchedBy as string;
+    f.sqlite.run(`UPDATE member_credentials SET revoked_at = ?, revoked_by = 'mem_1' WHERE id = ?`, [NOW, credential]);
+
+    // Nothing closes the row at the revocation; the sweep does, at its bound.
+    expect(f.run('run_operator')?.status).toBe('pending');
+    expect(await runStaleSweep(f.env, NOW + 60_000 + RUN_OVERRUN_MARGIN_MS)).toBe(1);
+    expect(f.run('run_operator')).toMatchObject({ status: 'failed', error: STALE_RUN_ERROR });
   });
 
   it('retires the credential a queued row carries at every way that row can end', async () => {

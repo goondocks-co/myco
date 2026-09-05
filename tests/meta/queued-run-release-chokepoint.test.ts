@@ -1,5 +1,6 @@
 /**
- * Meta gate: one function owns a harness run's credential.
+ * Meta gate: one function owns a harness run's credential, and one guard keys
+ * every terminal write to it.
  *
  * The rule: a run's credential is revoked at the moment its row stops naming
  * it, and at no other moment. Two things make that true and are held here — a
@@ -82,5 +83,24 @@ describe('meta: ending a queued run', () => {
     expect(harness.match(/\brevokeCredentialOfMember\s*\(/g)).toHaveLength(1);
     const owner = harness.slice(harness.indexOf('async function retireDispatchCredential'));
     expect(owner.slice(0, owner.indexOf('\n}\n') + 3)).toContain('revokeCredentialOfMember(');
+  });
+
+  it('keys every terminal write in the api on the credential the run\'s row names', () => {
+    const api = join(SRC, 'api');
+    const offenders: string[] = [];
+    for (const file of files(api)) {
+      const source = readFileSync(file, 'utf8');
+      // A handler that writes a terminal status, by either of the two ways the
+      // api does it, has to consult the guard in the same function.
+      for (const handler of source.split(/\nexport async function /).slice(1)) {
+        const name = handler.slice(0, handler.indexOf('('));
+        const writesTerminal = /status: 'failed'/.test(handler)
+          || /applyRunUpdate\([^)]*runUpdate\)/.test(handler)
+          || /recordReplacedRun\(/.test(handler);
+        if (!writesTerminal) continue;
+        if (!/foreignCredentialAnswer\(/.test(handler)) offenders.push(`${file.slice(SRC.length)}: ${name}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

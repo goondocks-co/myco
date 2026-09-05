@@ -197,9 +197,9 @@ export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
 
     async updateRunStatus(runId, status, completion) {
       const answered = await post('/runs/update', { runId, update: { status, ...toColumns(completion) } });
-      // Applied is said, never assumed: a write that moved nothing answers
-      // without it, and reading that as an ending would log a run finished that
-      // the row does not call finished.
+      // Applied is said, never assumed: reporting a run as ended requires the
+      // Deployment to say the write landed, and a write that moved nothing
+      // answers without saying it.
       const applied = answered.applied === true;
       return applied ? { applied } : { applied, ...(typeof answered.reason === 'string' ? { reason: answered.reason } : {}) };
     },

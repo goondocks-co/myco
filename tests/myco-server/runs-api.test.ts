@@ -399,6 +399,20 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     expect(typeof credRevokedAt(minted.tokenId)).toBe('number');
   });
 
+  it('refuses a failure recorded under a credential the row does not name, and queues no successor for it', async () => {
+    const { db, minted, post, dispatch, run, sqlite } = await dispatchedRun();
+    const sibling = await issueMemberToken(db, { memberId: 'mem_harness', machineId: 'harness' }, Date.now());
+    await dispatch('run_t6', sibling);
+    expect((await post(sibling.token, '/runs/claim', { id: 'run_t6', agentId: AGENT, task: 'digest', capability: 'cortex' })).claimed).toBe(true);
+
+    // `/runs/failed` writes a terminal status and can ask for a successor; it
+    // is keyed on the row's credential exactly as the update route is.
+    const failed = await post(minted.token, '/runs/failed', { runId: 'run_t6', errorClass: 'other', error: 'stale', replaced: true });
+    expect({ persisted: failed.persisted, reason: failed.reason }).toEqual({ persisted: false, reason: STALE_CREDENTIAL_REFUSAL });
+    expect(run('run_t6')?.status).toBe('running');
+    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(1);
+  });
+
   it("refuses a status write under a credential the run's row does not name, and leaves the row as it stands", async () => {
     // The shape a relaunch makes: an earlier attempt's runtime, or the
     // supervisor closing for it, posting onto a row that has moved on. Ending

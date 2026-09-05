@@ -320,7 +320,7 @@ describe('update: the runs in flight and the rollout', () => {
     // A deploy waits for what a recreate would interrupt: the dispatcher's two
     // live states, and a queued row whose child is still working under the
     // credential it names.
-    expect(read).toContain("SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running') OR (status = 'queued' AND dispatched_by IS NOT NULL)");
+    expect(read).toContain("SELECT id, task, status, started_at, queued_at, run_context FROM agent_runs WHERE status IN ('pending', 'running') OR (status = 'queued' AND dispatched_by IS NOT NULL)");
     expect(read.join(' ')).toContain(`-c ${DEPLOY_CONFIG_NAME}`);
   });
 

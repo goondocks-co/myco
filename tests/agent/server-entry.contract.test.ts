@@ -17,7 +17,11 @@ import { RUNTIME_EXIT, RUNTIME_OWN_ENDINGS } from '@myco/agent/runtime/process-s
 const ENTRY = fileURLToPath(new URL('../../packages/myco/src/agent/runtime/server-entry.ts', import.meta.url));
 
 const children: { kill(signal?: NodeJS.Signals): void }[] = [];
-afterEach(() => { for (const child of children.splice(0)) child.kill('SIGKILL'); });
+const servers: { stop(closeActiveConnections?: boolean): unknown }[] = [];
+afterEach(() => {
+  for (const child of children.splice(0)) child.kill('SIGKILL');
+  for (const server of servers.splice(0)) server.stop(true);
+});
 
 /** A port nothing holds: bound, read, and released before the entry claims it. */
 function freePort(): number {
@@ -78,8 +82,9 @@ describe('the runtime entry on its port', () => {
 describe('what this runtime tells its supervisor by leaving', () => {
   it('leaves with a code that says whether the run it held carries an ending', () => {
     // What the supervisor reads: an ending already written, a failure this
-    // process could not post, and a run it never claimed at all.
-    expect(RUNTIME_EXIT).toEqual({ ran: 0, named: 2, unposted: 3, unclaimed: 4 });
+    // process could not post, and three ways of never having claimed — which
+    // decide the words it writes and whether a successor is queued.
+    expect(RUNTIME_EXIT).toEqual({ ran: 0, named: 2, unposted: 3, unclaimed: 4, unknownTask: 5, claimRefused: 6 });
     expect([...RUNTIME_OWN_ENDINGS].sort()).toEqual([RUNTIME_EXIT.ran, RUNTIME_EXIT.named]);
     // `1` is a process that never got as far as holding a run, and `4` is one
     // that started and claimed nothing: both leave a run for the supervisor.
@@ -93,4 +98,57 @@ describe('what this runtime tells its supervisor by leaving', () => {
     expect(source).toContain('process.exit(named ? RUNTIME_EXIT.named : RUNTIME_EXIT.unposted)');
     expect(source).not.toMatch(/process\.exit\(named \? 1 : 0\)/);
   });
+});
+
+describe('a runtime stopped before it could claim', () => {
+  /** A deployment that takes the claim and never answers it. */
+  function stalling(): string {
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      development: false,
+      fetch: async () => await new Promise<Response>(() => undefined),
+    });
+    servers.push(server);
+    return `http://127.0.0.1:${server.port}`;
+  }
+
+  /** The entry under a supervisor: no listener of its own, so its exit code is what it says. */
+  function supervised(env: Record<string, string>): { child: ReturnType<typeof Bun.spawn> } {
+    const child = Bun.spawn({
+      cmd: [process.execPath, ENTRY],
+      cwd: fileURLToPath(new URL('../../', import.meta.url)),
+      env: { ...process.env, MYCO_RUNTIME_PORT: 'none', ...env },
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    children.push(child);
+    return { child };
+  }
+
+  it('leaves saying it claimed nothing when a stop signal reaches it inside the claim', async () => {
+    // The shape a `docker compose stop harness` makes a tenth of a second after
+    // a dispatch: the handlers are up, the claim is in flight, and the row is
+    // still exactly as the dispatcher wrote it.
+    const { child } = supervised({
+      MYCO_SERVER_URL: stalling(),
+      MYCO_MEMBER_TOKEN: 'mt_stalled',
+      MYCO_PROJECT: 'proj_1',
+      MYCO_RUN_ID: 'run_stalled',
+      MYCO_TASK: 'container-smoke',
+      MYCO_TASK_ADMISSION: 'cortex',
+    });
+    await Bun.sleep(400);
+    child.kill('SIGTERM');
+
+    // The supervisor reads this code as a run this deployment took back, and
+    // the Deployment queues one in its place.
+    expect(await child.exited).toBe(RUNTIME_EXIT.unclaimed);
+  }, 30_000);
+
+  it('leaves saying it claimed nothing when its environment carries no dispatch', async () => {
+    const { child } = supervised({ MYCO_SERVER_URL: '', MYCO_MEMBER_TOKEN: '', MYCO_RUN_ID: '', MYCO_TASK: '' });
+    expect(await child.exited).toBe(RUNTIME_EXIT.unclaimed);
+  }, 30_000);
 });

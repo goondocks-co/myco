@@ -18,8 +18,9 @@ import { platform } from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  closeForExit, DEFAULT_SUPERVISOR_HOSTNAME, MAX_LAUNCH_BODY_BYTES, RUNTIME_DIED_ERROR,
-  RUNTIME_RECLAIMED_ERROR, RUNTIME_UNCLAIMED_ERROR, startSupervisor, supervisorOptionsFromEnv, SUPERVISOR_ONLY_ENV,
+  closeForExit, DEFAULT_SUPERVISOR_HOSTNAME, MAX_LAUNCH_BODY_BYTES, RUNTIME_CLAIM_REFUSED_ERROR, RUNTIME_DIED_ERROR,
+  RUNTIME_RECLAIMED_ERROR, RUNTIME_UNCLAIMED_ERROR, RUNTIME_UNKNOWN_TASK_ERROR,
+  startSupervisor, supervisorOptionsFromEnv, SUPERVISOR_ONLY_ENV,
   type RunningSupervisor, type SpawnedChild, type SpawnPlan,
 } from '@myco/agent/runtime/supervisor.js';
 import { RUNTIME_EXIT, RUNTIME_OWN_ENDINGS } from '@myco/agent/runtime/process-signals.js';
@@ -504,7 +505,7 @@ describe('what the supervisor does with a child it cannot be rid of', () => {
 
 describe('a run whose runtime died before it ended', () => {
   /** A stand-in deployment: it records the run-control posts a supervisor makes for a child that died. */
-  function deployment(): { url: string; posts: { path: string; headers: Record<string, string>; body: Record<string, unknown> }[]; stop(): void } {
+  function deployment(answer: Record<string, unknown> = { persisted: true, applied: true }): { url: string; posts: { path: string; headers: Record<string, string>; body: Record<string, unknown> }[]; stop(): void } {
     const posts: { path: string; headers: Record<string, string>; body: Record<string, unknown> }[] = [];
     const server = Bun.serve({
       port: 0,
@@ -516,7 +517,7 @@ describe('a run whose runtime died before it ended', () => {
           headers: Object.fromEntries(request.headers.entries()),
           body: await request.json() as Record<string, unknown>,
         });
-        return Response.json({ persisted: true, applied: true });
+        return Response.json(answer);
       },
     });
     return { url: `http://127.0.0.1:${server.port}`, posts, stop: () => { server.stop(true); } };
@@ -649,16 +650,26 @@ describe('a run whose runtime died before it ended', () => {
       [RUNTIME_EXIT.ran, true, null],
       [RUNTIME_EXIT.named, true, null],
       [RUNTIME_EXIT.unclaimed, false, { error: RUNTIME_UNCLAIMED_ERROR, replaced: false }],
-      // A run this supervisor stopped before its runtime claimed it is one a
-      // deployment ended, and the Deployment queues a successor for it.
+      // The one case a successor is queued for: a run this supervisor stopped
+      // before its runtime claimed it runs again unchanged.
       [RUNTIME_EXIT.unclaimed, true, { error: RUNTIME_RECLAIMED_ERROR, replaced: true }],
+      // These two fail the same way every time they are tried, drain or no
+      // drain, so each is named and left.
+      [RUNTIME_EXIT.unknownTask, false, { error: `${RUNTIME_UNKNOWN_TASK_ERROR} container-smoke`, replaced: false }],
+      [RUNTIME_EXIT.unknownTask, true, { error: `${RUNTIME_UNKNOWN_TASK_ERROR} container-smoke`, replaced: false }],
+      [RUNTIME_EXIT.claimRefused, false, { error: RUNTIME_CLAIM_REFUSED_ERROR, replaced: false }],
+      [RUNTIME_EXIT.claimRefused, true, { error: RUNTIME_CLAIM_REFUSED_ERROR, replaced: false }],
       [RUNTIME_EXIT.unposted, false, { error: `${RUNTIME_DIED_ERROR} (3)`, replaced: false }],
       [1, false, { error: `${RUNTIME_DIED_ERROR} (1)`, replaced: false }],
       [137, true, { error: `${RUNTIME_DIED_ERROR} (137)`, replaced: false }],
     ];
     for (const [code, draining, expected] of cases) {
-      expect({ code, draining, close: closeForExit(code, draining) }).toEqual({ code, draining, close: expected });
+      expect({ code, draining, close: closeForExit(code, draining, 'container-smoke') })
+        .toEqual({ code, draining, close: expected });
     }
+    // A dispatch whose task the launch did not name still says what happened.
+    expect(closeForExit(RUNTIME_EXIT.unknownTask, false, null))
+      .toEqual({ error: `${RUNTIME_UNKNOWN_TASK_ERROR} the dispatch named`, replaced: false });
   });
 
   it('closes a run its runtime started and never claimed', async () => {
@@ -705,6 +716,29 @@ describe('a run whose runtime died before it ended', () => {
       // The word and the flag the Deployment reads to queue a fresh run in its place.
       expect(deploy.posts[0]!.body.replaced).toBe(true);
     } finally {
+      deploy.stop();
+    }
+  });
+
+  it('reads the answer it got: a refusal is a 200, and is not a close', async () => {
+    const s = boot();
+    // The shape a stale credential makes: the row moved on, and this post is
+    // answered `applied: false` with a reason rather than a status of its own.
+    const deploy = deployment({ persisted: false, applied: false, reason: 'this run is dispatched under another credential' });
+    const logged: Record<string, unknown>[] = [];
+    const log = console.log;
+    console.log = (text?: unknown) => { try { logged.push(JSON.parse(String(text)) as Record<string, unknown>); } catch { /* not a line */ } };
+    try {
+      expect((await s.launch({
+        runId: 'run_refused_close', timeoutSeconds: 120,
+        envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_stale', MYCO_PROJECT: 'proj_1', STANDIN_EXIT_CODE: '9' },
+      })).status).toBe(202);
+      await until(() => logged.some((l) => l.kind === 'supervisor_run_close_refused'), 'the refusal to be read');
+      expect(logged.filter((l) => l.kind === 'supervisor_run_closed')).toEqual([]);
+      expect(logged.find((l) => l.kind === 'supervisor_run_close_refused'))
+        .toMatchObject({ runId: 'run_refused_close', refusal: 'this run is dispatched under another credential' });
+    } finally {
+      console.log = log;
       deploy.stop();
     }
   });

@@ -136,6 +136,8 @@ interface RunControl {
   serverUrl: string;
   token: string;
   projectId: string;
+  /** The task the dispatch named, for a close that has to say which one. */
+  task: string | null;
 }
 
 /** The run-control surface a dispatch carries, or nothing when it names no server. */
@@ -144,7 +146,7 @@ export function runControlOf(envVars: Record<string, string>): RunControl | null
   const token = envVars.MYCO_MEMBER_TOKEN;
   const projectId = envVars.MYCO_PROJECT;
   if (!serverUrl || !token || !projectId) return null;
-  return { serverUrl: serverUrl.replace(/\/+$/, ''), token, projectId };
+  return { serverUrl: serverUrl.replace(/\/+$/, ''), token, projectId, task: envVars.MYCO_TASK ?? null };
 }
 
 /** How a run whose runtime died before it ended is recorded. */
@@ -152,6 +154,12 @@ export const RUNTIME_DIED_ERROR = 'the runtime exited before the run ended';
 
 /** How a run whose runtime left without ever claiming it is recorded. */
 export const RUNTIME_UNCLAIMED_ERROR = 'the runtime left without claiming the run';
+
+/** How a run whose task this runtime does not have is recorded. */
+export const RUNTIME_UNKNOWN_TASK_ERROR = 'the runtime does not know the task';
+
+/** How a run the Deployment refused this runtime's claim on is recorded. */
+export const RUNTIME_CLAIM_REFUSED_ERROR = 'the deployment refused the claim';
 
 /**
  * How a run this supervisor stopped before its runtime claimed it is recorded.
@@ -201,18 +209,23 @@ async function closeAbandonedRun(
 /**
  * What a child's exit leaves for this supervisor to write, or nothing.
  *
- * A run this supervisor stopped before its runtime could claim it is a run a
- * deployment ended: named as reclaimed, the Deployment queues a fresh run of
- * the task in its place. Every other unclaimed exit is a runtime that started
- * and did nothing, and a run nobody is coming back for.
+ * A successor is queued for one case only: a run this supervisor stopped before
+ * its runtime could claim it, which is a run a deployment took away and which
+ * runs again unchanged. A task this runtime does not have, and a claim the
+ * Deployment refused, fail the same way every time they are tried, and each
+ * successor spends one of a Project's few per day — so they are named and left.
  */
-export function closeForExit(code: number, draining: boolean): { error: string; replaced: boolean } | null {
+export function closeForExit(code: number, draining: boolean, task: string | null): { error: string; replaced: boolean } | null {
   if (RUNTIME_OWN_ENDINGS.has(code)) return null;
   if (code === RUNTIME_EXIT.unclaimed) {
     return draining
       ? { error: RUNTIME_RECLAIMED_ERROR, replaced: true }
       : { error: RUNTIME_UNCLAIMED_ERROR, replaced: false };
   }
+  if (code === RUNTIME_EXIT.unknownTask) {
+    return { error: `${RUNTIME_UNKNOWN_TASK_ERROR} ${task ?? 'the dispatch named'}`, replaced: false };
+  }
+  if (code === RUNTIME_EXIT.claimRefused) return { error: RUNTIME_CLAIM_REFUSED_ERROR, replaced: false };
   return { error: `${RUNTIME_DIED_ERROR} (${code})`, replaced: false };
 }
 
@@ -377,11 +390,21 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
     // left the run open, and this is the only process that can still close it.
     // The post is awaited: this process leaves behind the last child of a drain,
     // so a post that must land has to land before that.
-    const close = closeForExit(code, decision.exit || draining);
+    const close = child?.control == null ? null : closeForExit(code, decision.exit || draining, child.control.task);
     if (close !== null && child?.control != null) {
       try {
         const answered = await closeAbandonedRun(child.control, runId, close, Date.now());
-        line({ kind: 'supervisor_run_closed', runId, code, status: answered.status, replaced: close.replaced });
+        // A refusal is a 200 carrying `applied: false`: the row kept an ending
+        // of its own, or this credential is not the one it names.
+        const body = await answered.json().catch(() => null) as { applied?: unknown; reason?: unknown } | null;
+        if (body?.applied === true) {
+          line({ kind: 'supervisor_run_closed', runId, code, replaced: close.replaced });
+        } else {
+          line({
+            kind: 'supervisor_run_close_refused', runId, code, status: answered.status,
+            refusal: typeof body?.reason === 'string' ? body.reason : null,
+          });
+        }
       } catch (error) {
         line({ kind: 'supervisor_run_close_failed', runId, code, error: error instanceof Error ? error.message : String(error) });
       }

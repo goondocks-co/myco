@@ -38,7 +38,7 @@ export interface LiveRun {
  * The dispatcher's own fleet count reads the first pair alone (`core/runs.ts`,
  * `LIVE_RUN_STATUSES`): this read is about what a recreate would interrupt.
  */
-export const LIVE_RUNS_QUERY = "SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running') OR (status = 'queued' AND dispatched_by IS NOT NULL)";
+export const LIVE_RUNS_QUERY = "SELECT id, task, status, started_at, queued_at, run_context FROM agent_runs WHERE status IN ('pending', 'running') OR (status = 'queued' AND dispatched_by IS NOT NULL)";
 
 /** A row of {@link LIVE_RUNS_QUERY}, as either target's read answers it. */
 export interface LiveRunRow {

@@ -50,7 +50,12 @@ installRunFailureHandlers(process, {
     // under a post that never answers.
     if (closing && result === null) return;
     console.log(JSON.stringify({ kind: 'server_entry_drained', ran: result }));
-    process.exit(0);
+    // A drain that found no run in flight is a stop that arrived before this
+    // process could claim: the row is as the dispatcher wrote it, and the code
+    // says so, so the supervisor names it a run this deployment took back and
+    // the Deployment queues one in its place. A drain after a run finished
+    // reports what that run's ending was.
+    process.exit(result === null ? RUNTIME_EXIT.unclaimed : EXIT_FOR_ENDING[result.ending]);
   },
   onNamed: (error, named, refused) => {
     fatal = error;
@@ -150,6 +155,8 @@ const EXIT_FOR_ENDING: Readonly<Record<RunEnding, number>> = {
   posted: RUNTIME_EXIT.ran,
   unposted: RUNTIME_EXIT.unposted,
   unclaimed: RUNTIME_EXIT.unclaimed,
+  'unknown-task': RUNTIME_EXIT.unknownTask,
+  'claim-refused': RUNTIME_EXIT.claimRefused,
 };
 
 // A runtime the platform probes and holds serves its own port. A runtime the
@@ -179,8 +186,10 @@ if (runtimePort !== null) {
 
 executeFromEnv().then(
   () => {
-    // Reached where `executeFromEnv` returned without claiming; a run it
-    // claimed has already left through the exit above.
+    // A run this process claimed has already said what became of it. Reaching
+    // here means it claimed nothing: no dispatch in the environment, or a stop
+    // signal before the claim. A runtime the platform holds by its port stays
+    // up, and `leaveWith` is what decides which of the two this is.
     leaveWith(RUNTIME_EXIT.unclaimed);
   },
   (error: unknown) => {

@@ -33,10 +33,12 @@ export function onStopSignals(events: ProcessEvents, handle: (ordinal: number) =
 /**
  * What a runtime's exit code says about the run it held.
  *
- * A code the runtime chose says two things: whether it claimed the run, and
- * whether the row now carries an ending. Only `ran` and `named` mean the row
- * carries one. Every other code — including the `1` a process that failed to
- * start answers, and any signal — leaves a run for the supervisor to close.
+ * A code the runtime chose says three things: whether it claimed the run,
+ * whether the row now carries an ending, and — where it never claimed — which
+ * of the reasons it was. Only `ran` and `named` mean the row carries an ending.
+ * Every other code, including the `1` a process that failed to start answers
+ * and any signal, leaves a run for the supervisor to close; the reason decides
+ * what it writes and whether a successor is queued.
  */
 export const RUNTIME_EXIT = {
   /** The run finished and the Deployment applied the ending this process posted. */
@@ -45,8 +47,12 @@ export const RUNTIME_EXIT = {
   named: 2,
   /** This process held the run and ended with a failure it could not post. */
   unposted: 3,
-  /** This process never claimed a run: the row is as the dispatcher wrote it. */
+  /** A stop signal reached this process before it could claim: the run is one a deployment took back. */
   unclaimed: 4,
+  /** The dispatch named a task this runtime does not have. */
+  unknownTask: 5,
+  /** The Deployment refused the claim: the Project is not admitted, or it has no provider. */
+  claimRefused: 6,
 } as const;
 
 /** The exit codes that mean the run's row already carries an ending. */

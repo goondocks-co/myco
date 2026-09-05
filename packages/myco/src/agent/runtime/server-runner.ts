@@ -112,9 +112,10 @@ export interface ServerTaskOptions {
 /**
  * What became of the run's own record of itself: an ending the Deployment
  * applied, one it refused or this process could not send, or no claim at all —
- * which leaves the row exactly as the dispatcher wrote it.
+ * which leaves the row exactly as the dispatcher wrote it, and names which of
+ * the three ways that happened.
  */
-export type RunEnding = 'posted' | 'unposted' | 'unclaimed';
+export type RunEnding = 'posted' | 'unposted' | 'unclaimed' | 'unknown-task' | 'claim-refused';
 
 export interface ServerTaskResult {
   runId: string;
@@ -312,7 +313,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     const definition = loadAgentDefinition(definitionsDir);
     const task = loadAllTasks(definitionsDir).get(taskName);
     if (task === undefined) {
-      return { runId, status: 'failed', ending: 'unclaimed', error: `unknown task: ${taskName}`, reportCount: 0 };
+      return { runId, status: 'failed', ending: 'unknown-task', error: `unknown task: ${taskName}`, reportCount: 0 };
     }
     const systemPrompt = loadSystemPrompt(definitionsDir, definition.systemPromptPath);
 
@@ -336,7 +337,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       { taskName, maxAgeSeconds: 0 },
     );
     if ((claim as { claimed?: boolean } | undefined)?.claimed === false) {
-      return { runId, status: 'skipped', ending: 'unclaimed', reportCount: 0 };
+      return { runId, status: 'skipped', ending: 'claim-refused', reportCount: 0 };
     }
     options.onClaimed?.();
 

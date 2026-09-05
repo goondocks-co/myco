@@ -280,6 +280,14 @@ export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch
  * revoked at the moment the row stops naming it, and at no other moment — so
  * every write that changes what a row names retires what it named before, in
  * the same breath, through here.
+ *
+ * What the gate over this holds is the dispatcher's own paths: no other caller
+ * in `src/` reaches `revokeCredentialOfMember` for a harness credential except
+ * the release a terminal run goes through. An operator revoking a credential by
+ * id, or revoking the harness member itself, still reaches `auth/tokens.ts`
+ * directly — that is an operator ending a credential the row still names, and
+ * the run it names is left to the stale sweep, which closes it by its bound
+ * like any run whose runtime went away.
  */
 async function retireDispatchCredential(env: ServerEnv, tokenId: string | null, now: number): Promise<void> {
   if (tokenId === null) return;
@@ -504,8 +512,15 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     // The runtime is running this run already, under the credential it started
     // with: the row names that one again, and the one minted here named nothing.
     if (error instanceof RuntimeAlreadyHolding) {
-      if (carried !== null) await restoreDispatchCredential(env.db, scope, runId, carried);
-      await retireDispatchCredential(env, carried === null ? null : minted.tokenId, now);
+      // The restore writes from `pending` alone. Where it landed the row names
+      // `carried`; where it did not, the row has moved — a sweep, a terminal
+      // write — and what it names now is what decides. Either way the row's own
+      // credential is kept and the other retired.
+      const restored = carried !== null && await restoreDispatchCredential(env.db, scope, runId, carried);
+      const names = restored ? carried : (await getRun(env.db, scope, runId))?.dispatchedBy ?? null;
+      for (const token of new Set([minted.tokenId, carried])) {
+        if (token !== null && token !== names) await retireDispatchCredential(env, token, now);
+      }
       return landed();
     }
     if (error instanceof RuntimeDraining) {

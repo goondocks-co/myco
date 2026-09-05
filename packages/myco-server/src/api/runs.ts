@@ -28,7 +28,7 @@ import {
   type RunInsert, type RunUpdate, type RunEventRowInsert,
 } from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
-import type { RunAdmissionGate } from '../core/runs.js';
+import type { RunAdmissionGate, RunRow } from '../core/runs.js';
 import { admitResume, classifyFailure, type FailureObservation } from '../core/resume.js';
 
 /** The failure classes a harness may report; anything else is refused rather than mapped to a default. */
@@ -277,6 +277,24 @@ function endedAnswer(status: string | undefined, posted: unknown): Response | nu
 }
 
 /**
+ * What a terminal write answers when the caller is not the credential the run
+ * is running under, or nothing when it is.
+ *
+ * Ending a run requires holding the credential its row names, exactly as
+ * claiming it does. A launch answered too late is re-queued and offered again
+ * under a fresh credential, so an earlier attempt's runtime — or the supervisor
+ * closing for it — reaches this surface holding one the row has moved past; the
+ * work its successor is doing is what the refusal protects. Every route that
+ * writes a terminal status funnels through here, which
+ * `tests/meta/queued-run-release-chokepoint.test.ts` holds.
+ */
+function foreignCredentialAnswer(ctx: RouteContext, before: RunRow | null): Response | null {
+  if (ctx.memberId !== HARNESS_MEMBER_ID || before === null) return null;
+  if (before.dispatchedBy === ctx.tokenId) return null;
+  return Response.json(refused(ctx, refusal(STALE_CREDENTIAL_REFUSAL, 'refused')));
+}
+
+/**
  * Apply a partial update to one run.
  *
  * A column outside `RUN_UPDATE_COLUMNS` is a refusal rather than a silent
@@ -313,23 +331,18 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   const scope = { projectId: ctx.projectId };
   // On a run the server dispatched, the context and the dry-run flag are the
   // dispatcher's own record of what it decided, and the task routes read both
-  // off the row. A runtime moving either would file its own hash as the
-  // Project's current one, or turn a dry run into a writing one — and the
-  // refusal names the columns rather than dropping them, so a caller learns
-  // what it may not set instead of watching a write silently do less.
+  // off the row: filing a hash as the Project's current one, and turning a dry
+  // run into a writing one, each require moving a column that is not the
+  // runtime's. The refusal names the columns rather than dropping them, so a
+  // caller learns what it may not set instead of watching a write do less.
   const claimed = DISPATCHER_OWNED_COLUMNS.filter((c) => c in runUpdate);
   if (claimed.length > 0 && (await getRun(env.db, scope, runId))?.dispatchedBy != null) {
     return Response.json(refused(ctx, refusal(`a dispatched run's ${claimed.join(' and ')} belong to the dispatcher and may not be updated`, 'refused')));
   }
   const guarded = 'status' in runUpdate;
   const before = guarded ? await getRun(env.db, scope, runId) : null;
-  // A dispatched run's status belongs to the credential the row names, exactly
-  // as its claim does: ending a run requires holding the credential that run is
-  // running under, so an earlier attempt's runtime — or the supervisor closing
-  // for it — cannot end the work its successor is doing.
-  if (guarded && ctx.memberId === HARNESS_MEMBER_ID && before !== null && before.dispatchedBy !== ctx.tokenId) {
-    return Response.json(refused(ctx, refusal(STALE_CREDENTIAL_REFUSAL, 'refused')));
-  }
+  const foreign = guarded ? foreignCredentialAnswer(ctx, before) : null;
+  if (foreign !== null) return foreign;
   const settled = endedAnswer(before?.status, runUpdate.status);
   if (settled !== null) return settled;
   if (runUpdate.status === 'completed') {
@@ -350,8 +363,8 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   }
   const raced = guarded ? endedAnswer((await getRun(env.db, scope, runId))?.status, runUpdate.status) : null;
   if (raced !== null) return raced;
-  // A write that moved nothing says so: a caller reading silence as an applied
-  // ending would log a run finished that the row does not call finished.
+  // A write that moved nothing says so: reporting a run as ended requires this
+  // route to say the write landed.
   return Response.json({ persisted: true, changed, applied: false });
 }
 
@@ -495,7 +508,10 @@ export async function handleRecordFailure(env: ServerEnv, ctx: RouteContext): Pr
   // ended under another status answers the same refusal the update route gives:
   // `changed: 0` alone reads exactly like a run in another Project.
   const scope = { projectId: ctx.projectId };
-  const ended = endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed');
+  const before = await getRun(env.db, scope, runId);
+  const foreign = foreignCredentialAnswer(ctx, before);
+  if (foreign !== null) return foreign;
+  const ended = endedAnswer(before?.status, 'failed');
   if (ended !== null) return ended;
   const changed = await applyRunUpdate(env.db, scope, runId, update as RunUpdate);
   if (changed === 1) {
