@@ -212,11 +212,16 @@ async function closeAbandonedRun(
  * A successor is queued for one case only: a run this supervisor stopped before
  * its runtime could claim it, which is a run a deployment took away and which
  * runs again unchanged. A task this runtime does not have, and a claim the
- * Deployment refused, fail the same way every time they are tried, and each
- * successor spends one of a Project's few per day — so they are named and left.
+ * Deployment refused on its own terms, fail the same way every time they are
+ * tried, and each successor spends one of a Project's few per day — so they are
+ * named and left. A run another attempt holds is neither: nothing is written
+ * for it at all.
  */
 export function closeForExit(code: number, draining: boolean, task: string | null): { error: string; replaced: boolean } | null {
   if (RUNTIME_OWN_ENDINGS.has(code)) return null;
+  // The run belongs to another attempt: its row names a credential this child
+  // never held, so a post carrying that child's would be refused anyway.
+  if (code === RUNTIME_EXIT.claimContended) return null;
   if (code === RUNTIME_EXIT.unclaimed) {
     return draining
       ? { error: RUNTIME_RECLAIMED_ERROR, replaced: true }
@@ -390,6 +395,9 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
     // left the run open, and this is the only process that can still close it.
     // The post is awaited: this process leaves behind the last child of a drain,
     // so a post that must land has to land before that.
+    if (code === RUNTIME_EXIT.claimContended) {
+      line({ kind: 'supervisor_run_contended', runId, code });
+    }
     const close = child?.control == null ? null : closeForExit(code, decision.exit || draining, child.control.task);
     if (close !== null && child?.control != null) {
       try {

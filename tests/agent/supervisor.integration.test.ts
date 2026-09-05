@@ -659,6 +659,9 @@ describe('a run whose runtime died before it ended', () => {
       [RUNTIME_EXIT.unknownTask, true, { error: `${RUNTIME_UNKNOWN_TASK_ERROR} container-smoke`, replaced: false }],
       [RUNTIME_EXIT.claimRefused, false, { error: RUNTIME_CLAIM_REFUSED_ERROR, replaced: false }],
       [RUNTIME_EXIT.claimRefused, true, { error: RUNTIME_CLAIM_REFUSED_ERROR, replaced: false }],
+      // A run another attempt holds is not this one's to end, drain or no drain.
+      [RUNTIME_EXIT.claimContended, false, null],
+      [RUNTIME_EXIT.claimContended, true, null],
       [RUNTIME_EXIT.unposted, false, { error: `${RUNTIME_DIED_ERROR} (3)`, replaced: false }],
       [1, false, { error: `${RUNTIME_DIED_ERROR} (1)`, replaced: false }],
       [137, true, { error: `${RUNTIME_DIED_ERROR} (137)`, replaced: false }],
@@ -670,6 +673,27 @@ describe('a run whose runtime died before it ended', () => {
     // A dispatch whose task the launch did not name still says what happened.
     expect(closeForExit(RUNTIME_EXIT.unknownTask, false, null))
       .toEqual({ error: `${RUNTIME_UNKNOWN_TASK_ERROR} the dispatch named`, replaced: false });
+  });
+
+  it('writes nothing for a run another attempt holds, and says which run it was', async () => {
+    const s = boot();
+    const deploy = deployment();
+    const logged: Record<string, unknown>[] = [];
+    const log = console.log;
+    console.log = (text?: unknown) => { try { logged.push(JSON.parse(String(text)) as Record<string, unknown>); } catch { /* not a line */ } };
+    try {
+      expect((await s.launch({
+        runId: 'run_contended', timeoutSeconds: 120,
+        envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_contended', MYCO_PROJECT: 'proj_1', STANDIN_EXIT_CODE: String(RUNTIME_EXIT.claimContended) },
+      })).status).toBe(202);
+      await until(() => logged.some((l) => l.kind === 'supervisor_run_contended'), 'the contention to be said');
+      await Bun.sleep(200);
+      expect(deploy.posts).toEqual([]);
+      expect(logged.find((l) => l.kind === 'supervisor_run_contended')).toMatchObject({ runId: 'run_contended' });
+    } finally {
+      console.log = log;
+      deploy.stop();
+    }
   });
 
   it('closes a run its runtime started and never claimed', async () => {

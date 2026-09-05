@@ -251,8 +251,15 @@ describe('a dispatch that starts a real runtime', () => {
     expect({ tokenFile: child.MYCO_HARNESS_TOKEN_FILE, port: child.MYCO_SUPERVISOR_PORT, work: child.MYCO_WORK_DIR })
       .toEqual({ tokenFile: undefined, port: undefined, work: undefined });
 
-    // The supervisor holds nothing once the child has gone.
-    expect(await seam.probe()).toEqual({ ok: true, draining: false, children: [] } as never);
+    // The supervisor holds nothing once the child has gone — which is after the
+    // run's own ending lands, not with it.
+    const deadline = Date.now() + 10_000;
+    let probe = await seam.probe();
+    while (probe.children.length > 0 && Date.now() < deadline) {
+      await Bun.sleep(20);
+      probe = await seam.probe();
+    }
+    expect(probe).toEqual({ ok: true, draining: false, children: [] } as never);
   }, 60_000);
 
   it('lands a run whose launch was answered too late, rather than failing a child that is running', async () => {

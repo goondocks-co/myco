@@ -154,9 +154,9 @@ function leaveWith(code: number): void {
 const EXIT_FOR_ENDING: Readonly<Record<RunEnding, number>> = {
   posted: RUNTIME_EXIT.ran,
   unposted: RUNTIME_EXIT.unposted,
-  unclaimed: RUNTIME_EXIT.unclaimed,
   'unknown-task': RUNTIME_EXIT.unknownTask,
   'claim-refused': RUNTIME_EXIT.claimRefused,
+  'claim-contended': RUNTIME_EXIT.claimContended,
 };
 
 // A runtime the platform probes and holds serves its own port. A runtime the

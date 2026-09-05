@@ -6,11 +6,9 @@
 import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
-import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, enqueueDispatch, HARNESS_MEMBER_ID, launchDispatch, LAUNCH_REFUSED_ERROR, LimitReached, MAX_RUN_ERROR_CHARS, NO_LAUNCH_ERROR, prepareDispatch, RuntimeAlreadyHolding, RuntimeDraining } from '@myco-server-worker/core/harness.js';
-import { HELD_BY_WORDS } from '@myco-server-worker/core/limits.js';
-import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
+import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, enqueueDispatch, HARNESS_MEMBER_ID, launchDispatch, LAUNCH_REFUSED_ERROR, LimitReached, MAX_RUN_ERROR_CHARS, NO_LAUNCH_ERROR, prepareDispatch, RUN_OVERRUN_MARGIN_MS, RuntimeAlreadyHolding, RuntimeDraining } from '@myco-server-worker/core/harness.js';
 import { agentRunRetention, QUEUE_EXPIRED_ERROR, QUEUE_MAX_AGE_MS, runStaleSweep, STALE_RUN_ERROR } from '@myco-server-worker/core/jobs-run.js';
-import { heldBy, readDispatchLimits } from '@myco-server-worker/core/limits.js';
+import { heldBy, HELD_BY_WORDS, readDispatchLimits } from '@myco-server-worker/core/limits.js';
 import { claimRun, dispatchLoad, launchQueued, listQueuedAcrossProjects, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
@@ -445,14 +443,17 @@ describe('a runtime that is not taking runs', () => {
     const rowOf = (id: string) => held.sqlite.query(`SELECT ${columns} FROM agent_runs WHERE id = ?`).get(id) as Record<string, unknown>;
     const returned = rowOf('run_returned');
     const fresh = rowOf('run_fresh');
-    // One column differs by design: a returned row keeps the credential a child
-    // an earlier launch may have started still claims under, where a row that
-    // never launched has none.
+    // Three columns differ by design, and each is what the attempt left: the
+    // credential a child may still claim under, the instant that launch went
+    // out, and the bound that launch carries. A deploy bounds this row from the
+    // last two, so a recreate does not ship over a child that is working.
     expect(returned.dispatched_by).not.toBeNull();
-    expect(fresh.dispatched_by).toBeNull();
-    // In everything else a returned row is a queued row: nothing of the launch
-    // it attempted survives on it.
-    expect({ ...returned, dispatched_by: null }).toEqual(fresh);
+    expect(returned.started_at).toBe(NOW);
+    expect(JSON.parse(returned.run_context as string)).toMatchObject({ timeoutSeconds: 120 });
+    expect({ started_at: fresh.started_at, run_context: fresh.run_context, dispatched_by: fresh.dispatched_by })
+      .toEqual({ started_at: null, run_context: null, dispatched_by: null });
+    // In everything else a returned row is a queued row.
+    expect({ ...returned, dispatched_by: null, started_at: null, run_context: null }).toEqual(fresh);
 
     // A row that already holds a place in line keeps it, rather than moving to the back.
     const drained = fixture({ refuse: () => draining() });

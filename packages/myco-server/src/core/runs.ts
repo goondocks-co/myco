@@ -845,10 +845,17 @@ export async function launchQueued(db: RelationalStore, scope: ReadScope, runId:
  * that launch carried — and the child claims under it, so the row goes on
  * naming one live credential; whichever one it stops naming is retired by the
  * caller in the same breath.
+ *
+ * `started_at` and `run_context` STAY. The attempt did start: the row's start
+ * is the instant its launch went out, and its context carries the bound that
+ * launch carries. A deploy bounds such a row from those two, so sparing a child
+ * that is working requires both to survive the write — the default budget, or a
+ * clock reset to when the row first joined the queue, each bound it to an
+ * instant already past.
  */
 const RETURN_TO_QUEUE_SQL = `UPDATE agent_runs
-   SET status = 'queued', held_by = ?, dispatch_spec = ?, dispatched_by = ?, started_at = NULL,
-       run_context = NULL, queued_at = COALESCE(queued_at, ?)
+   SET status = 'queued', held_by = ?, dispatch_spec = ?, dispatched_by = ?,
+       queued_at = COALESCE(queued_at, ?)
  WHERE project_id = ? AND id = ? AND status = 'pending'`;
 
 export async function returnToQueue(

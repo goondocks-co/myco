@@ -619,7 +619,10 @@ function contextField<T>(runContext: string | null, key: string, ofType: (value:
  * Two caps hold the rest: a run already answered by a successor is never
  * answered twice, and a Project gets `REPLACED_REQUEUES_PER_DAY` of one task in
  * a day, so a Deployment rolling again and again does not turn one ask into a
- * stream of runs.
+ * stream of runs. The per-run cap and the per-task one are different bounds: a
+ * drain that takes several un-claimed runs of one task away files a reclaim for
+ * each, and they share that task's day between them — the first two are
+ * answered and any beyond them are not.
  */
 export async function requeueReplaced(env: ServerEnv, replaced: ReplacedRun, now: number): Promise<RequeueOutcome> {
   const { run, projectId } = replaced;

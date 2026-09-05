@@ -84,7 +84,7 @@ describe('what this runtime tells its supervisor by leaving', () => {
     // What the supervisor reads: an ending already written, a failure this
     // process could not post, and three ways of never having claimed — which
     // decide the words it writes and whether a successor is queued.
-    expect(RUNTIME_EXIT).toEqual({ ran: 0, named: 2, unposted: 3, unclaimed: 4, unknownTask: 5, claimRefused: 6 });
+    expect(RUNTIME_EXIT).toEqual({ ran: 0, named: 2, unposted: 3, unclaimed: 4, unknownTask: 5, claimRefused: 6, claimContended: 7 });
     expect([...RUNTIME_OWN_ENDINGS].sort()).toEqual([RUNTIME_EXIT.ran, RUNTIME_EXIT.named]);
     // `1` is a process that never got as far as holding a run, and `4` is one
     // that started and claimed nothing: both leave a run for the supervisor.

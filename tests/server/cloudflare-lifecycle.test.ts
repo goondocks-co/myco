@@ -18,6 +18,7 @@ import {
   ROLLOUT_WATCH_TIMEOUT_SECONDS,
   RUN_OVERRUN_MARGIN_MS,
 } from '@myco/server/cloudflare-lifecycle.js';
+import { LIVE_RUN_POLL_MS } from '@myco/server/live-runs.js';
 import { CONTAINERS_ROLLOUT_NONE, LIVE_RUNS_RETRY_MS, readDeploymentRecord, writeDeploymentRecord, wranglerJson } from '@myco/server/cloudflare.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 import { containersTableHash, renderDeployConfig } from '@myco/server/deploy-config.js';
@@ -678,36 +679,52 @@ describe('update: the runs in flight and the rollout', () => {
  * row is in flight even though nothing ever claimed it. It carries no start,
  * and it is not the stale sweep's to clear.
  */
+/**
+ * The rows a deploy waits on when the queue took one back.
+ *
+ * `returnToQueue` leaves such a row carrying the start its launch stamped and
+ * the context that launch was given, so the wait bounds it exactly as it bounds
+ * a running one — its own start, its own budget. What it cannot invent is a
+ * clock a row does not carry.
+ */
 describe('the wait on a requeued row', () => {
   const NOW_Q = Date.parse('2026-09-04T12:00:00Z');
   const drive = () => { let at = NOW_Q; return { now: () => at, sleep: async (ms: number) => { at += ms; }, get at() { return at; } }; };
   const rows = (over: Record<string, unknown>) => JSON.stringify([{
-    results: [{ id: 'run_q', task: 'digest-only', status: 'queued', started_at: null, run_context: JSON.stringify({ timeoutSeconds: 300 }), ...over }],
+    results: [{
+      id: 'run_q', task: 'digest-only', status: 'queued',
+      // The shape the write leaves: launched ten minutes ago on its own budget,
+      // having waited two hours in the queue before that.
+      started_at: NOW_Q - 600_000, queued_at: NOW_Q - 7_200_000,
+      run_context: JSON.stringify({ timeoutSeconds: 1800 }), ...over,
+    }],
     success: true,
   }]);
 
-  it('names it as claimed by no runtime, and counts its bound from when the queue took it', async () => {
+  it('names it as claimed by no runtime, and bounds it by its own launch and its own budget', async () => {
     const lines: string[] = [];
     const clock = drive();
-    // Budget 300 s plus the 120 s margin: counted from the queue this bound is
-    // already past, and counted from now it would hold the deploy for 7 min.
-    const live = liveRunsIn(JSON.parse(rows({ queued_at: NOW_Q - 600_000 }))[0].results);
-    expect({ status: live[0]!.status, queuedAt: live[0]!.queuedAt }).toEqual({ status: 'queued', queuedAt: NOW_Q - 600_000 });
+    const live = liveRunsIn(JSON.parse(rows({}))[0].results);
+    expect({ status: live[0]!.status, startedAt: live[0]!.startedAt, queuedAt: live[0]!.queuedAt })
+      .toEqual({ status: 'queued', startedAt: NOW_Q - 600_000, queuedAt: NOW_Q - 7_200_000 });
 
     await waitForLiveRuns({ read: async () => live, sparing: 'the platform drains what is running', clock, report: (l) => lines.push(l) });
 
-    expect(lines[0]).toBe('Waiting for a task the queue took back while its runtime kept working: digest-only, claimed by no runtime yet, queued 10 min ago, budget 5 min');
+    expect(lines[0]).toBe('Waiting for a task the queue took back while its runtime kept working: digest-only, started 10 min ago, budget 30 min');
+    // Its own start plus its own budget, not the default one and not the two
+    // hours it spent waiting: the wait gives the child the rest of its budget.
+    const deadline = (NOW_Q - 600_000) + 1_800_000 + RUN_OVERRUN_MARGIN_MS;
+    expect(clock.at).toBeGreaterThanOrEqual(deadline);
+    expect(clock.at).toBeLessThan(deadline + LIVE_RUN_POLL_MS);
     expect(lines).toContain("A task the queue took back outlived its own budget (digest-only); the deploy proceeds and the queue's expiry owns the row.");
     expect(lines.some((l) => l.includes('the stale sweep owns the run'))).toBe(false);
-    expect(clock.at).toBe(NOW_Q);
   });
 
-  it('names a row carrying no queue time without inventing one', async () => {
-    const live = liveRunsIn(JSON.parse(rows({}))[0].results);
-    expect(live[0]!.queuedAt).toBeNull();
+  it('counts a row that names neither clock from now, rather than inventing one', async () => {
+    const live = liveRunsIn(JSON.parse(rows({ started_at: null, queued_at: null }))[0].results);
+    expect({ startedAt: live[0]!.startedAt, queuedAt: live[0]!.queuedAt }).toEqual({ startedAt: null, queuedAt: null });
     const lines: string[] = [];
     await waitForLiveRuns({ read: async () => live, sparing: 'the platform drains what is running', clock: drive(), report: (l) => lines.push(l) });
-    expect(lines[0]).toBe('Waiting for a task the queue took back while its runtime kept working: digest-only, claimed by no runtime yet, budget 5 min');
+    expect(lines[0]).toBe('Waiting for a task the queue took back while its runtime kept working: digest-only, claimed by no runtime yet, budget 30 min');
   });
-
 });

@@ -29,7 +29,7 @@ import type { ProviderConfig } from '../types.js';
 import { MAX_RUN_ERROR_CHARS, type RunStatusOutcome, type RunStore } from './run-store.js';
 
 export { MAX_RUN_ERROR_CHARS } from './run-store.js';
-import { createHttpRunStore, postRunControl, type RunClaimAdmission } from './run-store-http.js';
+import { createHttpRunStore, NoProviderConfiguredError, postRunControl, ProjectNotAdmittedError, type RunClaimAdmission } from './run-store-http.js';
 import { INSTRUCTED_TASKS, materializedToolsForTask, type ServerToolContext } from './server-tools.js';
 import { onStopSignals, type ProcessEvents } from './process-signals.js';
 
@@ -111,11 +111,12 @@ export interface ServerTaskOptions {
 
 /**
  * What became of the run's own record of itself: an ending the Deployment
- * applied, one it refused or this process could not send, or no claim at all —
- * which leaves the row exactly as the dispatcher wrote it, and names which of
- * the three ways that happened.
+ * applied, one it refused or this process could not send, or no claim — and
+ * where there was no claim, which of the three ways. Only a contended claim
+ * leaves the row to somebody else; the other two leave a row nothing is coming
+ * back for, which its supervisor closes.
  */
-export type RunEnding = 'posted' | 'unposted' | 'unclaimed' | 'unknown-task' | 'claim-refused';
+export type RunEnding = 'posted' | 'unposted' | 'unknown-task' | 'claim-refused' | 'claim-contended';
 
 export interface ServerTaskResult {
   runId: string;
@@ -323,21 +324,35 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     const harnessId = (options.provider?.type === undefined ? HARNESS_CLAUDE_SDK : inferHarnessFromProviderType(options.provider.type)) ?? HARNESS_CLAUDE_SDK;
     // No started_at: the server stamps its own clock. The run's context is the
     // dispatch's parameters, which the run routes that serve one task read back.
-    const claim = await store.claimRun(
-      {
-        id: runId,
-        agent_id: agentId,
-        task: taskName,
-        status: 'running',
-        harness: harnessId,
-        provider: options.provider?.type ?? null,
-        model: options.model ?? null,
-        run_context: options.params === undefined ? null : JSON.stringify(options.params),
-      },
-      { taskName, maxAgeSeconds: 0 },
-    );
+    let claim: Awaited<ReturnType<typeof store.claimRun>>;
+    try {
+      claim = await store.claimRun(
+        {
+          id: runId,
+          agent_id: agentId,
+          task: taskName,
+          status: 'running',
+          harness: harnessId,
+          provider: options.provider?.type ?? null,
+          model: options.model ?? null,
+          run_context: options.params === undefined ? null : JSON.stringify(options.params),
+        },
+        { taskName, maxAgeSeconds: 0 },
+      );
+    } catch (error) {
+      // A Project the Deployment has not admitted, and a Deployment with no
+      // model to call, are settled answers an operator clears: the run is
+      // nobody's, and its supervisor names it on the row.
+      if (error instanceof ProjectNotAdmittedError || error instanceof NoProviderConfiguredError) {
+        return { runId, status: 'skipped', ending: 'claim-refused', error: error.message, reportCount: 0 };
+      }
+      throw error;
+    }
     if ((claim as { claimed?: boolean } | undefined)?.claimed === false) {
-      return { runId, status: 'skipped', ending: 'claim-refused', reportCount: 0 };
+      // The row is held by another attempt: it names a credential this process
+      // does not hold, or a runtime is already running it. The run is not this
+      // process's to end.
+      return { runId, status: 'skipped', ending: 'claim-contended', reportCount: 0 };
     }
     options.onClaimed?.();
 

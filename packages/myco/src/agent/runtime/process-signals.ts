@@ -51,8 +51,10 @@ export const RUNTIME_EXIT = {
   unclaimed: 4,
   /** The dispatch named a task this runtime does not have. */
   unknownTask: 5,
-  /** The Deployment refused the claim: the Project is not admitted, or it has no provider. */
+  /** The Deployment refused the claim on its own terms: the Project is not admitted, or it has no provider. */
   claimRefused: 6,
+  /** The run belongs to another attempt: its row names a credential this process does not hold, or another runtime holds it. */
+  claimContended: 7,
 } as const;
 
 /** The exit codes that mean the run's row already carries an ending. */

@@ -85,20 +85,26 @@ describe('meta: ending a queued run', () => {
     expect(owner.slice(0, owner.indexOf('\n}\n') + 3)).toContain('revokeCredentialOfMember(');
   });
 
-  it('keys every terminal write in the api on the credential the run\'s row names', () => {
-    const api = join(SRC, 'api');
+  it('writes a run terminal in the api only through the wrapper that keys it to the row\'s credential', () => {
+    // Structure, not proximity: the write and the release are reachable from
+    // one function, so a route cannot write a run terminal beside the guard.
+    const api = readFileSync(join(SRC, 'api', 'runs.ts'), 'utf8');
+    const wrapper = api.slice(api.indexOf('async function endRunAsCaller'));
+    const body = wrapper.slice(0, wrapper.indexOf('\n}\n') + 3);
+    expect(body).toContain('foreignCredentialAnswer(');
+
     const offenders: string[] = [];
-    for (const file of files(api)) {
+    for (const file of files(join(SRC, 'api'))) {
+      const relative = file.slice(SRC.length);
       const source = readFileSync(file, 'utf8');
-      // A handler that writes a terminal status, by either of the two ways the
-      // api does it, has to consult the guard in the same function.
-      for (const handler of source.split(/\nexport async function /).slice(1)) {
-        const name = handler.slice(0, handler.indexOf('('));
-        const writesTerminal = /status: 'failed'/.test(handler)
-          || /applyRunUpdate\([^)]*runUpdate\)/.test(handler)
-          || /recordReplacedRun\(/.test(handler);
-        if (!writesTerminal) continue;
-        if (!/foreignCredentialAnswer\(/.test(handler)) offenders.push(`${file.slice(SRC.length)}: ${name}`);
+      for (const [index, lineText] of source.split('\n').entries()) {
+        // A declaration is not a call.
+        if (/\bfunction \w+\(/.test(lineText)) continue;
+        for (const name of ['applyRunUpdate', 'recordReplacedRun', 'failQueuedRun', 'skipQueued']) {
+          if (!new RegExp(`\\b${name}\\s*\\(`).test(lineText)) continue;
+          const insideWrapper = relative === 'api/runs.ts' && body.includes(lineText.trim());
+          if (!insideWrapper) offenders.push(`${relative}:${index + 1}: ${name}`);
+        }
       }
     }
     expect(offenders).toEqual([]);
