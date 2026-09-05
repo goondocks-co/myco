@@ -23,16 +23,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
   && rm -rf /var/lib/apt/lists/*
 ENV HOME=/home/bun
 # The installer writes a versioned executable under the installing user's home
-# and links to it. Installing and moving it in ONE layer is what keeps one copy
-# of it in the image: a move in a later layer leaves the original in the one
-# below, and the executable is 215 MB.
+# and links to it. It runs here as root into a scratch home, and the executable
+# is moved out in the SAME layer: a move in a later layer leaves the original in
+# the one below, and the executable is 215 MB. No account switch is involved,
+# so the step does not depend on the base image's home ownership, which differs
+# by architecture.
 RUN set -eu; \
-  su bun -s /bin/sh -c 'curl -fsSL https://claude.ai/install.sh | bash'; \
-  target="$(readlink -f /home/bun/.local/bin/claude)"; \
+  HOME=/tmp/claude-install sh -c 'curl -fsSL https://claude.ai/install.sh | bash'; \
+  target="$(readlink -f /tmp/claude-install/.local/bin/claude)"; \
   install -d -m 0755 /opt/claude/bin; \
   mv "$target" /opt/claude/bin/claude; \
   chown root:root /opt/claude/bin/claude; \
   chmod 0755 /opt/claude/bin/claude; \
+  rm -rf /tmp/claude-install; \
+  install -d -m 0755 -o bun -g bun /home/bun/.local/bin; \
   ln -sfn /opt/claude/bin/claude /home/bun/.local/bin/claude; \
   groupadd --system --gid 10002 runtime; \
   useradd --system --uid 10002 --gid runtime --home /home/runtime --shell /usr/sbin/nologin runtime; \
