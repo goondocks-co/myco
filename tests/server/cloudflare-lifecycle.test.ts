@@ -306,7 +306,7 @@ describe('update: the runs in flight and the rollout', () => {
     const pending = liveRuns([{ id: 'run_p', task: 'digest-only', status: 'pending', started_at: null, run_context: JSON.stringify({ timeoutSeconds: 30 }) }]);
     await updateCloudflareDeployment({ ...options, runner: scripted({ d1: [pending] }), report: (l) => lines.push(l), clock: drive });
 
-    expect(lines).toContain('Waiting for a queued task: digest-only, not started yet, budget 30 sec');
+    expect(lines).toContain('Waiting for a task about to start: digest-only, not started yet, budget 30 sec');
     expect(drive.at).toBe(NOW + 150_000);
     expect(lines.some((l) => l.includes('outlived its own budget') && l.includes('digest-only'))).toBe(true);
   });

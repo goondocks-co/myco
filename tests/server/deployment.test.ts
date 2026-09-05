@@ -26,6 +26,7 @@ import {
   DESTROY_STOP_TIMEOUT_SECONDS,
   DEFAULT_PORT,
   SERVICE_ABSENT,
+  signInConfigured,
 } from '@myco/server/deployment.js';
 import { COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
@@ -111,7 +112,7 @@ describe('create', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]!.command).toBe('docker');
     expect(calls[0]!.args).toEqual([
-      'compose', '--file', p.composeFile, '--project-name', COMPOSE_PROJECT,
+      'compose', '--file', p.composeFile, '--file', p.overrideFile, '--project-name', COMPOSE_PROJECT,
       'up', '--detach', '--wait',
     ]);
   });
@@ -249,6 +250,51 @@ describe('status', () => {
   });
 });
 
+describe("the operator's own layer over the bundle", () => {
+  it('writes an override file once and never rewrites it', () => {
+    const p = paths();
+    materializeBundle(p);
+    expect(readFileSync(p.overrideFile, 'utf8')).toContain('services:');
+
+    writeFileSync(p.overrideFile, 'services:\n  server:\n    extra_hosts:\n      - "auth.internal:10.0.0.5"\n');
+    const mine = readFileSync(p.overrideFile, 'utf8');
+    // Every update rewrites compose.yaml from the template; an operator's own
+    // layer has to survive that, and this is the only file that does.
+    materializeBundle(p);
+    materializeBundle(p, { MYCO_PORT: '9001' });
+    expect(readFileSync(p.overrideFile, 'utf8')).toBe(mine);
+  });
+
+  it('names both files on every command, which is what turns Compose discovery off and this file on', async () => {
+    const p = paths();
+    await createDeployment({ paths: p, runner: runner() });
+    await destroyDeployment({ paths: p, runner: runner() });
+    for (const call of calls) {
+      expect({ argv: call.args.join(' '), both: call.args.filter((a) => a === '--file').length }).toEqual({ argv: call.args.join(' '), both: 2 });
+      expect(call.args).toContain(p.overrideFile);
+    }
+  });
+});
+
+describe('sign-in on a stock bundle', () => {
+  it('reports it unconfigured while either half is missing, and configured once both are there', () => {
+    const p = paths();
+    materializeBundle(p);
+    // A bundle without both halves answers every owner route anonymously,
+    // dispatch included.
+    expect(signInConfigured(p)).toBe(false);
+
+    writeSignInSecrets(p, { clientId: 'Iv1.x', clientSecret: '' });
+    expect(signInConfigured(p)).toBe(false);
+
+    writeSignInSecrets(p, { clientId: '', clientSecret: 's3cr3t' });
+    expect(signInConfigured(p)).toBe(false);
+
+    writeSignInSecrets(p, { clientId: 'Iv1.x', clientSecret: 's3cr3t' });
+    expect(signInConfigured(p)).toBe(true);
+  });
+});
+
 describe('the defaults the bundle and the process already carry', () => {
   it('GATE: holds the create defaults equal to what the template falls back to', () => {
     // Two spellings of one number: the operator's flag default and the shell
@@ -273,7 +319,7 @@ describe('destroy', () => {
     await destroyDeployment({ paths: p, runner: runner() });
 
     expect(calls[0]!.args).toEqual([
-      'compose', '--file', p.composeFile, '--project-name', COMPOSE_PROJECT,
+      'compose', '--file', p.composeFile, '--file', p.overrideFile, '--project-name', COMPOSE_PROJECT,
       'down', '--remove-orphans', '--timeout', String(DESTROY_STOP_TIMEOUT_SECONDS),
     ]);
     expect(calls[0]!.args).not.toContain('--volumes');

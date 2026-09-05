@@ -14,7 +14,7 @@ import crypto from 'node:crypto';
 import { resolveMycoHome } from '../paths/home.js';
 import { jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
 import { readLiveRunsTwice, systemClock, waitForLiveRuns, type Clock, type LiveRun, type LiveRunRow } from './live-runs.js';
-import { COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from './compose-template.js';
+import { COMPOSE_OVERRIDE_TEMPLATE, COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from './compose-template.js';
 import { ensureServerLayout } from './layout.js';
 
 /** Compose project name; every command is scoped to it so a stack is addressable without a path. */
@@ -51,6 +51,8 @@ export const SUPPLIED_SECRETS = ['github_client_secret'] as const;
 export interface DeploymentPaths {
   root: string;
   composeFile: string;
+  /** The operator's own layer over the bundle. Written once, never rewritten. */
+  overrideFile: string;
   secretsDir: string;
   envFile: string;
 }
@@ -61,6 +63,7 @@ export function resolveDeploymentPaths(mycoHome = resolveMycoHome()): Deployment
   return {
     root,
     composeFile: path.join(root, 'compose.yaml'),
+    overrideFile: path.join(root, 'compose.override.yaml'),
     secretsDir: path.join(root, 'secrets'),
     envFile: path.join(root, '.env'),
   };
@@ -94,9 +97,27 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+/**
+ * `docker compose exec` as the runtime user.
+ *
+ * The image starts as root to copy its mounted secrets somewhere the runtime
+ * user can read them and drops before it serves, so an `exec` naming no user
+ * runs privileged — and anything it writes beside the volume is root's, which
+ * the server then cannot remove.
+ */
+function composeExecArgs(paths: DeploymentPaths, ...rest: string[]): string[] {
+  return composeArgs(paths, 'exec', '--no-TTY', '--user', RUNTIME_USER, ...rest);
+}
+
 /** `docker compose` scoped to this stack, with the file and project name pinned. */
 function composeArgs(paths: DeploymentPaths, ...rest: string[]): string[] {
-  return ['compose', '--file', paths.composeFile, '--project-name', COMPOSE_PROJECT, ...rest];
+  return [
+    'compose',
+    '--file', paths.composeFile,
+    '--file', paths.overrideFile,
+    '--project-name', COMPOSE_PROJECT,
+    ...rest,
+  ];
 }
 
 /**
@@ -119,6 +140,11 @@ export function materializeBundle(paths: DeploymentPaths, env: Record<string, st
   chmodSync(paths.secretsDir, 0o700);
 
   writeFileSync(paths.composeFile, COMPOSE_TEMPLATE, { mode: 0o600 });
+  // Naming a file turns Compose's own override discovery off, and every update
+  // rewrites the bundle from the template, so an operator's `extra_hosts`,
+  // `pull_policy` or proxy network would have nowhere to live. This layer is
+  // written once and never again.
+  if (!existsSync(paths.overrideFile)) writeFileSync(paths.overrideFile, COMPOSE_OVERRIDE_TEMPLATE, { mode: 0o600 });
 
   for (const [name, bytes] of Object.entries(GENERATED_SECRETS)) {
     const file = path.join(paths.secretsDir, name);
@@ -246,6 +272,13 @@ export async function deploymentStatus(options: DeploymentOptions = {}): Promise
   return { provisioned: true, running, services, states, raw: result.stdout };
 }
 
+/** Whether the bundle carries both halves of the sign-in credential; without them every owner route answers anonymous. */
+export function signInConfigured(paths: DeploymentPaths): boolean {
+  const clientId = envValue(paths, 'GITHUB_CLIENT_ID');
+  const secret = readSecret(paths, 'github_client_secret');
+  return clientId !== null && clientId !== '' && secret !== null && secret !== '';
+}
+
 export interface DestroyOptions extends DeploymentOptions {
   /** Remove the data volume. Absent, the stack goes and the Deployment's data stays. */
   removeData?: boolean;
@@ -324,14 +357,14 @@ export async function backupDeployment(options: BackupOptions): Promise<{ destin
   mkdirSync(options.destination, { recursive: true, mode: 0o700 });
 
   await runOrThrow(runner, 'docker',
-    composeArgs(paths, 'exec', '--no-TTY', 'server', 'bun', '-e', VACUUM_SCRIPT), { cwd: paths.root });
+    composeExecArgs(paths, 'server', 'bun', '-e', VACUUM_SCRIPT), { cwd: paths.root });
   await runOrThrow(runner, 'docker',
     composeArgs(paths, 'cp', `server:${SNAPSHOT_IN_VOLUME}`, path.join(options.destination, 'myco.sqlite')), { cwd: paths.root });
   await runOrThrow(runner, 'docker',
     composeArgs(paths, 'cp', 'server:/data/blobs', path.join(options.destination, 'blobs')), { cwd: paths.root });
   // The snapshot is a full copy of the database; leaving it doubles the volume.
   await runOrThrow(runner, 'docker',
-    composeArgs(paths, 'exec', '--no-TTY', 'server', 'rm', '-f', SNAPSHOT_IN_VOLUME), { cwd: paths.root });
+    composeExecArgs(paths, 'server', 'rm', '-f', SNAPSHOT_IN_VOLUME), { cwd: paths.root });
 
   return { destination: options.destination };
 }
@@ -462,7 +495,7 @@ export async function readComposeLiveRuns(
   const { paths, runner } = resolved(options);
   return readLiveRunsTwice({
     ask: async () => (await runOrThrow(runner, 'docker',
-      composeArgs(paths, 'exec', '--no-TTY', 'server', 'bun', 'run', '/app/server.js', '--live-runs'),
+      composeExecArgs(paths, 'server', 'bun', 'run', '/app/server.js', '--live-runs'),
       { cwd: paths.root, timeoutMs: LIVE_RUNS_EXEC_TIMEOUT_MS })).stdout,
     rowsIn: (output) => jsonDocument<LiveRunRow[]>(output),
     ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
@@ -555,6 +588,8 @@ export interface UpdateOptions extends DeploymentOptions, DrainOptions {
   version?: string;
   /** Skip returning to the previous version when the new one fails to come up. */
   noRollback?: boolean;
+  /** Recreate on the images this daemon already holds. A tag built here or loaded from a file resolves at no registry. */
+  noPull?: boolean;
 }
 
 /** The version a bundle is pinned to, or null when it tracks the default tag. */
@@ -650,7 +685,9 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
   const target = { paths, runner, ...(options.report === undefined ? {} : { report: options.report }) };
   await withHarnessStopped(target, async () => {
     try {
-      await runOrThrow(runner, 'docker', composeArgs(paths, 'pull'), { cwd: paths.root, env });
+      // A pull refused for a tag that only exists on this daemon is not a
+      // failure to report; it is a deployment whose images arrived another way.
+      if (options.noPull !== true) await runOrThrow(runner, 'docker', composeArgs(paths, 'pull'), { cwd: paths.root, env });
       await runOrThrow(runner, 'docker', composeArgs(paths, 'up', '--detach', '--wait'), { cwd: paths.root, env });
     } catch (err) {
       // `up` recreates the container before it waits for health, so a version

@@ -126,8 +126,15 @@ jobs:
           done
           docker logs myco-ci
 
-          # Serves on the published loopback port.
+          # Serves on the published loopback port, with no secrets mounted at
+          # all: a deployment establishes its sign-in credential later.
           [ "$code" = "200" ] || { echo "health was $code, expected 200"; exit 1; }
+
+          # The entrypoint starts as root to copy its mounted secrets somewhere
+          # the runtime user owns, and drops before it migrates or serves. The
+          # image carries no ps, so the owner of PID 1 is read from /proc.
+          served=$(docker exec myco-ci stat -c '%U:%u' /proc/1)
+          [ "$served" = "myco:10001" ] || { echo "PID 1 runs as $served, expected myco:10001"; exit 1; }
 
           # The Host allowlist is what protects a container: its socket sees
           # every address the publish spec forwards, so a forged Host is

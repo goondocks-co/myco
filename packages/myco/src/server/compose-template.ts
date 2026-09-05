@@ -217,3 +217,36 @@ secrets:
   myco_harness_token:
     file: ./secrets/harness_token
 `;
+
+/**
+ * The operator's own layer over the bundle, written once and never rewritten.
+ *
+ * Every verb names both files, which turns off Compose's own override
+ * discovery, and every update rewrites `compose.yaml` from the template above —
+ * so anything an operator adds to that file is lost on the next update. This
+ * file is where those additions live.
+ */
+export const COMPOSE_OVERRIDE_TEMPLATE = `# Your own layer over the Myco bundle.
+#
+# \`myco server update\` rewrites compose.yaml from the shipped template on every
+# run; this file it writes once and never touches again. Anything Compose
+# accepts belongs here — a host mapping the container needs, an image policy for
+# a tag this machine builds itself, a network a reverse proxy shares.
+#
+# Merged over compose.yaml by every \`myco server\` verb. Examples:
+#
+# services:
+#   server:
+#     extra_hosts:
+#       - "auth.internal:10.0.0.5"
+#     networks:
+#       - proxy
+#   harness:
+#     pull_policy: never
+#
+# networks:
+#   proxy:
+#     external: true
+
+services: {}
+`;

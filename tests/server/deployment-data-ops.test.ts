@@ -38,6 +38,8 @@ import { CommandTimedOut } from '@myco/server/runner.js';
 const STOP_HARNESS = `stop --timeout ${HARNESS_STOP_GRACE_SECONDS} harness`;
 /** The service the verbs take down on its own. */
 const HARNESS_SERVICE_NAME = 'harness';
+/** How many argv entries `docker compose` spends naming the bundle and the project before the verb. */
+const COMPOSE_HEAD = 7;
 import { LIVE_RUNS_QUERY as SERVER_LIVE_RUNS_QUERY } from '@myco-server-worker/platform/bun/server-main.js';
 
 const roots: string[] = [];
@@ -157,7 +159,7 @@ describe('restore', () => {
     await restoreDeployment({ paths: p, runner: scripted, source: backupDir(), report: (l) => lines.push(l), clock: clock() });
 
     // A restore replaces the database a live run writes its own ending into.
-    const flat = calls.map((c) => c.args.slice(5).join(' '));
+    const flat = calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
     expect(flat[0]!).toContain('--live-runs');
     // The harness goes down while the server is still serving; a whole-stack
     // stop takes the server first and leaves the harness with nothing to post to.
@@ -173,7 +175,7 @@ describe('restore', () => {
 
     expect(calls.filter((c) => c.args.includes('--live-runs'))).toHaveLength(1);
     expect(lines).toContain('Not waiting for the runs in flight: the harness is stopped first and finishes them inside its stop grace.');
-    const verbs = calls.filter((c) => !c.args.includes('--live-runs')).map((c) => c.args.slice(5).join(' '));
+    const verbs = calls.filter((c) => !c.args.includes('--live-runs')).map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
     expect(verbs[0]).toBe(STOP_HARNESS);
     expect(verbs[1]).toBe('stop');
   });
@@ -192,8 +194,8 @@ describe('update', () => {
     materializeBundle(p);
     await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
 
-    expect(calls.map((c) => c.args.slice(5).join(' '))).toEqual([
-      'exec --no-TTY server bun run /app/server.js --live-runs',
+    expect(calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '))).toEqual([
+      'exec --no-TTY --user myco server bun run /app/server.js --live-runs',
       STOP_HARNESS,
       'pull',
       'up --detach --wait',
@@ -426,7 +428,10 @@ describe('the update waits for what is running', () => {
     // would migrate the volume a second time on the way in.
     expect(read.slice(-5)).toEqual(['server', 'bun', 'run', '/app/server.js', '--live-runs']);
     expect(read).toContain('--no-TTY');
-    expect(read.slice(0, 5)).toEqual(['compose', '--file', p.composeFile, '--project-name', COMPOSE_PROJECT]);
+    // The image starts as root and drops; an exec naming no user runs
+    // privileged and leaves root-owned files beside the volume.
+    expect(read.slice(read.indexOf('exec'), read.indexOf('server'))).toEqual(['exec', '--no-TTY', '--user', 'myco']);
+    expect(read.slice(0, COMPOSE_HEAD)).toEqual(['compose', '--file', p.composeFile, '--file', p.overrideFile, '--project-name', COMPOSE_PROJECT]);
   });
 
   it('asks again after a pause when the first answer carries no document, and ships on the second', async () => {
@@ -468,7 +473,7 @@ describe('the update waits for what is running', () => {
     expect(drive.at).toBe(0);
     expect(lines).toContain('Shipping over a running task: digest-only, started 0 sec ago, budget 30 min');
     expect(lines).toContain('Not waiting for the runs in flight: the harness is stopped first and finishes them inside its stop grace.');
-    expect(calls.map((c) => c.args.slice(5).join(' ')).filter((a) => a === STOP_HARNESS || a === 'pull')).toEqual([STOP_HARNESS, 'pull']);
+    expect(calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' ')).filter((a) => a === STOP_HARNESS || a === 'pull')).toEqual([STOP_HARNESS, 'pull']);
   });
 
   it('--no-drain ships when the runs cannot be read at all, saying so', async () => {
@@ -534,14 +539,14 @@ describe('the update waits for what is running', () => {
 describe('the harness goes down before the server', () => {
   /** Where `stop harness` and the first command that takes the server down land, in call order. */
   const order = (): { harnessAt: number; serverAt: number } => {
-    const verbs = calls.filter((c) => !c.args.includes('--live-runs')).map((c) => c.args.slice(5).join(' '));
+    const verbs = calls.filter((c) => !c.args.includes('--live-runs')).map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
     return {
       harnessAt: verbs.indexOf(STOP_HARNESS),
       serverAt: verbs.findIndex((a) => a === 'stop' || a.startsWith('up ')),
     };
   };
   const bundle = () => { const p = paths(); materializeBundle(p); return p; };
-  const composeHead = (p: ReturnType<typeof paths>) => ['compose', '--file', p.composeFile, '--project-name', COMPOSE_PROJECT];
+  const composeHead = (p: ReturnType<typeof paths>) => ['compose', '--file', p.composeFile, '--file', p.overrideFile, '--project-name', COMPOSE_PROJECT];
   const backup = () => {
     const dir = join(scratch(), 'from');
     mkdirSync(dir, { recursive: true });
@@ -618,7 +623,7 @@ describe('a failed verb brings the harness back', () => {
         : { code: 0, stdout: answer(args), stderr: '' };
     },
   });
-  const verbs = () => calls.map((c) => c.args.slice(5).join(' '));
+  const verbs = () => calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
 
   it('restarts it when the pull fails and no version was named to roll back to', async () => {
     const p = bundle();
@@ -726,5 +731,31 @@ describe('the live-runs read cannot hang', () => {
 
     expect(lines.some((l) => l.startsWith('What is running could not be read') && l.includes('answered nothing'))).toBe(true);
     expect(argvText()).toContain('pull');
+  });
+});
+
+/**
+ * Images that never came from a registry.
+ *
+ * A tag built on the machine or loaded from a file resolves nowhere, and a
+ * `pull` for it fails the update before anything is recreated.
+ */
+describe('update on images this machine already holds', () => {
+  const bundle = () => { const p = paths(); materializeBundle(p); return p; };
+
+  it('--no-pull recreates without asking a registry for anything', async () => {
+    const p = bundle();
+    await updateDeployment({ paths: p, runner: runner(), noPull: true, version: 'local', report: () => undefined });
+
+    const verbs = calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '));
+    expect(verbs).not.toContain('pull');
+    expect(verbs).toContain('up --detach --wait');
+    expect(pinnedVersion(p)).toBe('local');
+  });
+
+  it('pulls by default, so a registry outage is a failure and not a silent stale deploy', async () => {
+    const p = bundle();
+    await updateDeployment({ paths: p, runner: runner(), report: () => undefined });
+    expect(calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' '))).toContain('pull');
   });
 });

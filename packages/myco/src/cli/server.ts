@@ -12,6 +12,7 @@ import {
   removeBundle,
   resolveDeploymentPaths,
   bundleContents,
+  signInConfigured,
   backupDeployment,
   restoreDeployment,
   updateDeployment,
@@ -39,13 +40,16 @@ Commands (Compose is the default target; --target cloudflare selects the Worker)
                                           migrate, deploy, and write the deployment record.
   status                                  Report what is provisioned and running.
                                           With --target cloudflare: the record and the deployed version.
-  update [--version <tag>] [--no-rollback] [--no-drain]
+  update [--version <tag>] [--no-rollback] [--no-drain] [--no-pull]
                                           Move to a new image; the container migrates on start.
                                           A failed update returns to the previous version. Waits for
-                                          the tasks this Deployment has in flight, queued ones
-                                          included, before it recreates. --no-drain skips the wait;
-                                          the harness is still stopped first, so live runs finish
-                                          inside its stop grace before the server is touched.
+                                          the tasks this Deployment is running or about to start
+                                          before it recreates; work queued behind a limit waits for
+                                          the next wake either way. --no-drain skips the wait; the
+                                          harness is still stopped first, so live runs finish inside
+                                          its stop grace before the server is touched. --no-pull
+                                          recreates on the images this machine already holds, for a
+                                          tag built here or loaded from a file.
   update --target cloudflare [--no-drain]
                                           Move the Worker to this checkout. Waits for the tasks the
                                           Deployment has in flight, queued ones included, then
@@ -57,10 +61,10 @@ Commands (Compose is the default target; --target cloudflare selects the Worker)
                                           left serving.
   backup --to <dir>                       Snapshot the database and blobs.
   restore --from <dir> [--no-drain]       Replace the Deployment's data with a backup. Waits for the
-                                          tasks this Deployment has in flight, queued ones included,
-                                          before it stops. --no-drain skips the wait; the harness is
-                                          still stopped first, so live runs finish inside its stop
-                                          grace before the server is touched.
+                                          tasks this Deployment is running or about to start before
+                                          it stops. --no-drain skips the wait; the harness is still
+                                          stopped first, so live runs finish inside its stop grace
+                                          before the server is touched.
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
   adopt                                   Write a bundle for a stack this machine did not provision.
   destroy [--data] [--yes]                Stop and remove the stack, at once — it does not wait for
@@ -212,6 +216,11 @@ export async function run(args: string[]): Promise<void> {
       // serves and runs nothing, and naming only what is up hides that.
       console.log(`  Services:   ${status.states.map((s) => `${s.service} (${s.state})`).join(', ')}`);
       console.log(`  Running:    ${status.running ? 'yes' : 'no'}`);
+      // A bundle with no sign-in credential answers every owner route
+      // anonymously, dispatch included, and says nothing about why.
+      console.log(signInConfigured(paths)
+        ? '  Sign-in:    configured'
+        : '  Sign-in:    not configured — owner routes answer anonymous until `myco server github-app`');
       return;
     }
 
@@ -220,6 +229,7 @@ export async function run(args: string[]): Promise<void> {
         version: flags.get('version'),
         noRollback: flags.has('no-rollback'),
         noDrain: flags.has('no-drain'),
+        noPull: flags.has('no-pull'),
       });
       console.log('Deployment updated. The container applied any migrations its volume was behind.');
       return;

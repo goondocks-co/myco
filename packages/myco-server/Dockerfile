@@ -78,7 +78,14 @@ RUN chmod +x ./docker-entrypoint.sh
 RUN mkdir -p /data/blobs && chown -R myco:myco /data
 VOLUME ["/data"]
 
-USER myco
+# No `USER` here, deliberately. A Compose secret outside swarm is a bind mount
+# of the operator's own file and arrives owned by that file's uid at 0600, which
+# uid 10001 cannot read on a native daemon. The entrypoint starts as root only
+# to copy those secrets into a directory the runtime user owns, then drops with
+# setpriv before it migrates or serves — so nothing that touches the volume, the
+# network, or the secrets runs privileged. A `USER myco` added above the
+# ENTRYPOINT would take the copy away and is refused by
+# `tests/myco-server/contract/container-privileges.test.ts`.
 
 ENV MYCO_DATABASE=/data/myco.sqlite \
     MYCO_BLOB_DIR=/data/blobs \
@@ -88,7 +95,8 @@ ENV MYCO_DATABASE=/data/myco.sqlite \
 
 EXPOSE 8787
 
-# The entrypoint migrates and then execs the server, so PID 1 is the server and
-# SIGTERM reaches it directly rather than being absorbed by a shell.
+# The entrypoint takes the secrets, drops to the runtime user, migrates, and
+# then execs the server, so PID 1 is the server running unprivileged and SIGTERM
+# reaches it directly rather than being absorbed by a shell.
 ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["bun", "run", "/app/server.js"]

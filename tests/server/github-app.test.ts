@@ -134,8 +134,8 @@ describe('installing the credentials', () => {
     // down ahead of it, and a recreate that starts with `up` kills the server
     // while the harness is still holding runs.
     expect(calls.map((c) => [c.command, ...c.args])).toEqual([
-      ['docker', 'compose', '--file', paths.composeFile, '--project-name', 'myco', 'stop', '--timeout', String(HARNESS_STOP_GRACE_SECONDS), 'harness'],
-      ['docker', 'compose', '--file', paths.composeFile, '--project-name', 'myco', 'up', '--detach', '--force-recreate', '--wait'],
+      ['docker', 'compose', '--file', paths.composeFile, '--file', paths.overrideFile, '--project-name', 'myco', 'stop', '--timeout', String(HARNESS_STOP_GRACE_SECONDS), 'harness'],
+      ['docker', 'compose', '--file', paths.composeFile, '--file', paths.overrideFile, '--project-name', 'myco', 'up', '--detach', '--force-recreate', '--wait'],
     ]);
   });
 

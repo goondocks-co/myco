@@ -28,9 +28,11 @@ export interface LiveRun {
  * What the wait reads, in the spelling the columns carry.
  *
  * `pending` counts as in flight exactly as `running` does: the dispatcher
- * writes the row before it launches the runtime, and that run — dispatched,
- * not yet started — is the one a deploy is most likely to lose. The server's
- * own live-run reads use the same pair (`core/runs.ts`, `LIVE_RUNS_SQL`).
+ * writes the row before it launches the runtime, and that run — admitted, not
+ * yet started — is the one a deploy is most likely to lose. A run held behind a
+ * limit carries neither status and is not read: the next wake dispatches it.
+ * The server's own live-run reads use the same pair (`core/runs.ts`,
+ * `LIVE_RUNS_SQL`).
  */
 export const LIVE_RUNS_QUERY = "SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running')";
 
@@ -176,11 +178,17 @@ function runDeadline(run: LiveRun, now: number): number {
   return (run.startedAt ?? now) + budgetSeconds(run) * 1000 + RUN_OVERRUN_MARGIN_MS;
 }
 
-/** One run, named the way an operator watching a deploy would name it. */
+/**
+ * One run, named the way an operator watching a deploy would name it.
+ *
+ * A `pending` row is a run the dispatcher has already admitted and is about to
+ * launch. A row whose status is `queued` is held behind a limit and is not one
+ * of these: the next wake drains it, and no deploy waits for it.
+ */
 function describeRun(lead: string, run: LiveRun, now: number): string {
-  const kind = run.status === 'pending' ? 'queued' : 'running';
+  const kind = run.status === 'pending' ? 'task about to start' : 'running task';
   const when = run.startedAt === null ? 'not started yet' : `started ${describeDuration(now - run.startedAt)} ago`;
-  return `${lead} a ${kind} task: ${run.task}, ${when}, budget ${describeDuration(budgetSeconds(run) * 1000)}`;
+  return `${lead} a ${kind}: ${run.task}, ${when}, budget ${describeDuration(budgetSeconds(run) * 1000)}`;
 }
 
 export interface WaitOptions {
