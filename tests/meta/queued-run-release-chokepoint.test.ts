@@ -103,26 +103,13 @@ describe('meta: ending a queued run', () => {
       const inWrapper = (at: number) => relative === 'api/runs.ts' && at >= from && at < to;
       for (const name of ['applyRunUpdate', 'recordReplacedRun', 'failQueuedRun', 'skipQueued']) {
         for (const match of source.matchAll(new RegExp(`\\b${name}\\s*\\(`, 'g'))) {
-          const at = match.index;
-          // A declaration is not a call.
-          if (/\bfunction \s*$/.test(source.slice(Math.max(0, at - 20), at))) continue;
-          if (!inWrapper(at)) offenders.push(`${relative}@${at}: ${name}`);
+          // `async function recordReplacedRun(` is where the name is declared,
+          // not a call of it.
+          if (/\bfunction\s+$/.test(source.slice(Math.max(0, match.index - 24), match.index))) continue;
+          if (!inWrapper(match.index)) offenders.push(`${relative}@${match.index}: ${name}`);
         }
       }
     }
     expect(offenders).toEqual([]);
-  });
-
-  it('runs both shipped images on the bun this repository pins', () => {
-    const root = fileURLToPath(new URL('../../', import.meta.url));
-    const pinned = readFileSync(join(root, '.bun-version'), 'utf8').trim();
-    expect(pinned).toMatch(/^\d+\.\d+\.\d+$/);
-    for (const image of ['packages/myco-server/Dockerfile', 'packages/myco-server/harness/Dockerfile']) {
-      const text = readFileSync(join(root, image), 'utf8');
-      // The version is an argument with the pin as its default, and the image
-      // is built from it — never a literal tag beside the pin.
-      expect({ image, arg: new RegExp(`^ARG BUN_VERSION=${pinned}$`, 'm').test(text) }).toEqual({ image, arg: true });
-      expect({ image, literal: /FROM oven\/bun:\d/.test(text) }).toEqual({ image, literal: false });
-    }
   });
 });

@@ -301,9 +301,10 @@ describe('the live-runs read', () => {
       { id: 'run_r', status: 'running', task: 'digest-only', startedAt: 1_700_000_000_000, context: JSON.stringify({ timeoutSeconds: 1800 }) },
       { id: 'run_p', status: 'pending', task: 'titling', startedAt: null, context: null },
       { id: 'run_done', status: 'completed', task: 'titling', startedAt: 1, context: null },
-      // A launch answered too late: the run is back in the queue and its child
-      // is still working under the credential the row names.
-      { id: 'run_q_live', status: 'queued', task: 'titling', startedAt: null, queuedAt: 1_700_000_000_500, context: null, dispatchedBy: 'cred_live' },
+      // A launch answered too late: the run is back in the queue with the start
+      // its launch stamped, and its child is still working under the credential
+      // the row names.
+      { id: 'run_q_live', status: 'queued', task: 'titling', startedAt: 1_700_000_000_500, queuedAt: 1_700_000_000_400, context: null, dispatchedBy: 'cred_live' },
       // A run behind a limit: nothing is running for it, and a recreate takes nothing away.
       { id: 'run_q_waiting', status: 'queued', task: 'titling', startedAt: null, queuedAt: 1_700_000_000_600, context: null },
     ]);
@@ -314,11 +315,11 @@ describe('the live-runs read', () => {
     // neither does a row waiting behind a limit.
     expect(rows.map((r) => r.id).sort()).toEqual(['run_p', 'run_q_live', 'run_r']);
     expect(rows.find((r) => r.id === 'run_r')).toEqual({
-      id: 'run_r', task: 'digest-only', status: 'running', started_at: 1_700_000_000_000, queued_at: null, run_context: JSON.stringify({ timeoutSeconds: 1800 }),
+      id: 'run_r', task: 'digest-only', status: 'running', started_at: 1_700_000_000_000, run_context: JSON.stringify({ timeoutSeconds: 1800 }),
     });
-    // A queued row is bounded from when it queued, which the wait reads.
-    expect(rows.find((r) => r.id === 'run_q_live')).toMatchObject({ started_at: null, queued_at: 1_700_000_000_500 });
-    expect(Object.keys(rows[0]!).sort()).toEqual(['id', 'queued_at', 'run_context', 'started_at', 'status', 'task']);
+    // A queued row is bounded from the launch that went out for it, like any other.
+    expect(rows.find((r) => r.id === 'run_q_live')).toMatchObject({ started_at: 1_700_000_000_500 });
+    expect(Object.keys(rows[0]!).sort()).toEqual(['id', 'run_context', 'started_at', 'status', 'task']);
   });
 
   it('prints an empty array for a Deployment running nothing', async () => {

@@ -317,9 +317,9 @@ export async function endQueuedRun(
   now: number,
   outcome: { failed: string } | { skipped: string },
 ): Promise<boolean> {
-  // What the write displaced, never what the caller read before it: a drain
-  // that relaunched and re-queued this row in between left it naming a
-  // different credential from the one in the caller's hand.
+  // Retiring the right credential requires the write's own answer: a drain that
+  // relaunched and re-queued this row between the caller's read and this write
+  // leaves the row naming one the caller never saw.
   const ended = 'failed' in outcome
     ? await failQueuedRun(env.db, scope, run.id, now, outcome.failed)
     : await skipQueued(env.db, scope, run.id, now, outcome.skipped);
@@ -377,11 +377,26 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
     } catch (err) {
       // A runtime that is not taking runs takes none of the rows after this one either; this wake ends and the next retries.
       if (err instanceof RuntimeDraining) return launched;
-      // The write refused on a limit another launch reached first: the row stays queued for the next drain. A row no longer queued belongs to another drain; the next row still gets its turn.
-      if (err instanceof LimitReached && (await admitDispatch(env, queued.task, now, limits, queued.id)) !== null) {
+      // Another drain took this row between the read and the write. It is that
+      // drain's now; the rows after it are still this one's to try.
+      if (err instanceof NotQueued) {
+        emit({ kind: 'harness_drain_raced', runId: queued.id, task: queued.task, projectId: queued.projectId });
+        continue;
+      }
+      // The write refused on a limit another launch reached first: the row stays queued for the next drain. A Deployment-wide holder holds every later row too.
+      if (err instanceof LimitReached) {
         const holder = await admitDispatch(env, queued.task, now, limits, queued.id);
         if (holder !== null && DEPLOYMENT_WIDE_HOLDS.has(holder)) return launched;
+        continue;
       }
+      // Anything else came from the launch itself, which failed the row on its
+      // way out: the run is answered, and the rows after it still get their
+      // turn. It is named rather than swallowed, so a refusal nobody expected
+      // is readable in the log instead of being a wake that quietly did less.
+      emit({
+        kind: 'harness_drain_refused', runId: queued.id, task: queued.task, projectId: queued.projectId,
+        error: (err instanceof Error ? err.message : String(err)).slice(0, MAX_RUN_ERROR_CHARS),
+      });
     }
   }
   return launched;

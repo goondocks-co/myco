@@ -20,8 +20,6 @@ export interface LiveRun {
   status: 'pending' | 'running' | 'queued';
   /** Epoch milliseconds. Every row this read answers carries one: both writers of a live row stamp the instant its launch went out. */
   startedAt: number | null;
-  /** When the row first joined the queue, in epoch milliseconds, for a run that waited; null for one that never did. */
-  queuedAt: number | null;
   /** The budget the dispatcher wrote into the run's context, or null for a run that carries none. */
   timeoutSeconds: number | null;
 }
@@ -40,7 +38,7 @@ export interface LiveRun {
  * The dispatcher's own fleet count reads the first pair alone (`core/runs.ts`,
  * `LIVE_RUN_STATUSES`): this read is about what a recreate would interrupt.
  */
-export const LIVE_RUNS_QUERY = "SELECT id, task, status, started_at, queued_at, run_context FROM agent_runs WHERE status IN ('pending', 'running') OR (status = 'queued' AND dispatched_by IS NOT NULL)";
+export const LIVE_RUNS_QUERY = "SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running') OR (status = 'queued' AND dispatched_by IS NOT NULL)";
 
 /** A row of {@link LIVE_RUNS_QUERY}, as either target's read answers it. */
 export interface LiveRunRow {
@@ -48,7 +46,6 @@ export interface LiveRunRow {
   task?: unknown;
   status?: unknown;
   started_at?: unknown;
-  queued_at?: unknown;
   run_context?: unknown;
 }
 
@@ -73,7 +70,6 @@ export function liveRunsIn(rows: readonly LiveRunRow[]): LiveRun[] {
       task: typeof row.task === 'string' && row.task !== '' ? row.task : 'a run without a task',
       status: row.status === 'pending' || row.status === 'queued' ? row.status : 'running',
       startedAt: typeof row.started_at === 'number' ? row.started_at : null,
-      queuedAt: typeof row.queued_at === 'number' ? row.queued_at : null,
       timeoutSeconds: runContextTimeout(row.run_context),
     });
   }

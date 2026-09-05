@@ -373,6 +373,33 @@ describe('a runtime that is not taking runs', () => {
     expect((f.sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE status = 'failed'`).get() as { c: number }).c).toBe(0);
   });
 
+  it('leaves a row another drain took to that drain, and carries on with the rest', async () => {
+    const f = fixture();
+    const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    for (const id of ['q_taken', 'q_next']) {
+      await enqueueDispatch(f.env, (prepared as { prepared: never }).prepared, { serverUrl: ORIGIN, actor: 'mem_1', runId: id }, 'fleet', NOW);
+    }
+
+    // Another drain moves the first row past `queued` between this drain's read
+    // and its write, which is what the launch's guarded write answers.
+    let raced = false;
+    const racing: ServerEnv = { ...f.env, db: { ...f.env.db, prepare: (sql: string) => {
+      if (!raced && sql.includes(`SET status = 'pending'`)) {
+        raced = true;
+        f.sqlite.run(`UPDATE agent_runs SET status = 'pending' WHERE id = 'q_taken'`);
+      }
+      return f.env.db.prepare(sql);
+    } } };
+
+    const lines = await emitted(async () => { expect(await drainQueue(racing, NOW + 1)).toBe(1); });
+    expect(lines.filter((l) => l.kind === 'harness_drain_raced'))
+      .toEqual([{ kind: 'harness_drain_raced', runId: 'q_taken', task: 'container-smoke', projectId: 'proj_1' }]);
+    // The row the other drain took is left as it took it, and the next row ran.
+    expect(f.run('q_taken')?.status).toBe('pending');
+    expect(f.run('q_next')?.status).toBe('pending');
+    expect(f.launches.map((l) => l.runId)).toEqual(['q_next']);
+  });
+
   it('does not count itself against its task\'s hour when the queue takes it back', async () => {
     // The row keeps the start of the launch that went out for it, so admitting
     // it again requires counting the other runs of its task, not this one.

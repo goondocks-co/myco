@@ -122,22 +122,31 @@ const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
  WHERE project_id = ? AND id = ? AND status IN ('pending', 'queued') AND dispatched_by = ?`;
 
 /**
+ * The one exclusion rule: a run is never counted by a limit it is itself being
+ * admitted against.
+ *
+ * A row already in the table — one the queue took back, carrying the start of
+ * the launch that went out for it — is admitted against the OTHER runs, so
+ * admitting it a second time requires leaving it out of every count. The read a
+ * dispatcher takes first and the write that decides share this text, which is
+ * what holds them to one answer. A caller with no row to leave out binds null.
+ */
+export const NOT_THE_RUN_ADMITTED = '(? IS NULL OR id != ?)';
+
+/**
  * The limit check, as part of the write that launches: each limit is either
  * unset (its parameter NULL) or compared against the count the same statement
  * reads, so two launches deciding at once cannot both pass a limit of one.
  *
- * Every count is of OTHER runs. A row the queue took back carries the start of
- * the launch that went out for it, so counting itself in the trailing hour
- * would hold that row for an hour against its own attempt.
- *
- * Bound as: fleet, fleet, concurrent, concurrent, task-concurrent, task, run,
- * task-concurrent, per-hour, task, run, hour-start, per-hour.
+ * Bound as: fleet, run, run, fleet; concurrent, run, run, concurrent;
+ * task-concurrent, task, run, run, task-concurrent; per-hour, task, run, run,
+ * hour-start, per-hour; single, project, task, run.
  */
 const ADMISSION_WHERE = `
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running')) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND task = ? AND id != ?) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND id != ? AND started_at IS NOT NULL AND started_at >= ?) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND task = ? AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) < ?)
    AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND status IN ('pending', 'running', 'queued') AND id != ?))`;
 
 /**
@@ -159,9 +168,10 @@ function admissionParams(scope: ReadScope, task: string | null, runId: string, a
   const hourStart = (admission?.now ?? 0) - 3_600_000;
   const single = admission?.singleFlight === true ? task : null;
   return [
-    l.fleet, l.fleet, l.concurrent_runs, l.concurrent_runs,
-    l.task_concurrent_runs, task, runId, l.task_concurrent_runs,
-    l.task_runs_per_hour, task, runId, hourStart, l.task_runs_per_hour,
+    l.fleet, runId, runId, l.fleet,
+    l.concurrent_runs, runId, runId, l.concurrent_runs,
+    l.task_concurrent_runs, task, runId, runId, l.task_concurrent_runs,
+    l.task_runs_per_hour, task, runId, runId, hourStart, l.task_runs_per_hour,
     single, scope.projectId, task, runId,
   ];
 }
@@ -967,15 +977,15 @@ export async function hasQueuedRun(db: RelationalStore): Promise<boolean> {
 
 /** What the Deployment is doing for one task: the counts admission compares against the limits. */
 export async function dispatchLoad(db: RelationalStore, task: string, now: number, exclude?: string): Promise<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }> {
-  // A row already in the table is admitted against the OTHERS. A re-queued run
-  // carries the start of the launch that went out for it, and a fresh dispatch
-  // has no row here to leave out.
+  // The same rule the write applies (`NOT_THE_RUN_ADMITTED`): the row being
+  // admitted is not counted by any of these. A caller with no row to leave out
+  // binds null, and every count is then of everything.
   const other = exclude ?? null;
   const row = await db.prepare(
     `SELECT
-       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND (? IS NULL OR id != ?)) AS liveRuns,
-       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ? AND (? IS NULL OR id != ?)) AS liveTaskRuns,
-       (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND (? IS NULL OR id != ?) AND started_at IS NOT NULL AND started_at >= ?) AS taskRunsLastHour`,
+       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) AS liveRuns,
+       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ? AND ${NOT_THE_RUN_ADMITTED}) AS liveTaskRuns,
+       (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) AS taskRunsLastHour`,
   ).bind(other, other, task, other, other, task, other, other, now - 3_600_000)
     .first<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }>();
   return row ?? { liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 };

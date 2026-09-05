@@ -155,9 +155,9 @@ export function migrateOnly(databasePath: string): number {
 /**
  * The rows a deploy reads to learn what this Deployment still has in flight.
  *
- * The columns are the ones the operator's CLI reads — every row it answers
- * carries the start of the launch that went out for it, and its own budget —
- * and the states are the
+ * The columns are the ones the operator's CLI reads: every row it answers
+ * carries the start of the launch that went out for it and that launch's own
+ * budget, which is what the wait bounds it by. The states are the
  * dispatcher's own (`core/runs.ts`) plus one a deploy must not ship over: a
  * queued row that names a credential is a run whose child may be working under
  * it, taken back into the queue by a launch answered too late. The fleet count
@@ -165,7 +165,7 @@ export function migrateOnly(databasePath: string): number {
  * interrupt. The CLI holds the same query text for the hosted target, and
  * `tests/server/deployment-data-ops.test.ts` holds the two identical.
  */
-export const LIVE_RUNS_QUERY = `SELECT id, task, status, started_at, queued_at, run_context FROM agent_runs`
+export const LIVE_RUNS_QUERY = `SELECT id, task, status, started_at, run_context FROM agent_runs`
   + ` WHERE ${LIVE_RUN_STATUSES} OR (status = 'queued' AND dispatched_by IS NOT NULL)`;
 
 /**

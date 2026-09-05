@@ -12,12 +12,12 @@
  * which the dispatcher counts as landed; every other refusal is terminal, and
  * its word rides the failed row.
  *
- * A 401 is among the terminal ones on purpose. Both services mount the same
- * secret, so a supervisor refusing this deployment's token is a stack whose two
- * halves disagree: an operator's fix, not a wait. Telling that operator
- * promptly requires the row to fail rather than sit in the queue for its day.
+ * A 401 is terminal. Both services mount one secret, so a supervisor refusing
+ * this deployment's token names a stack whose halves disagree, and an operator
+ * has to be told at the run rather than at the end of the queue's day.
+ *
  * Unavailability is read from the status as well as the word: a 503 is a
- * runtime that is not serving whatever body it sent, including none.
+ * runtime that is not serving, whatever body it sends, including none.
  */
 import { RuntimeAlreadyHolding, RuntimeDraining } from '../../core/harness.js';
 import type { ServerEnv } from '../../core/adapters.js';

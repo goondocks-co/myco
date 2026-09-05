@@ -322,7 +322,7 @@ describe('update: the runs in flight and the rollout', () => {
     // A deploy waits for what a recreate would interrupt: the dispatcher's two
     // live states, and a queued row whose child is still working under the
     // credential it names.
-    expect(read).toContain("SELECT id, task, status, started_at, queued_at, run_context FROM agent_runs WHERE status IN ('pending', 'running') OR (status = 'queued' AND dispatched_by IS NOT NULL)");
+    expect(read).toContain("SELECT id, task, status, started_at, run_context FROM agent_runs WHERE status IN ('pending', 'running') OR (status = 'queued' AND dispatched_by IS NOT NULL)");
     expect(read.join(' ')).toContain(`-c ${DEPLOY_CONFIG_NAME}`);
   });
 
@@ -693,9 +693,8 @@ describe('the wait on a requeued row', () => {
   const rows = (over: Record<string, unknown>) => JSON.stringify([{
     results: [{
       id: 'run_q', task: 'digest-only', status: 'queued',
-      // The shape the write leaves: launched ten minutes ago on its own budget,
-      // having waited two hours in the queue before that.
-      started_at: NOW_Q - 600_000, queued_at: NOW_Q - 7_200_000,
+      // The shape the write leaves: launched ten minutes ago on its own budget.
+      started_at: NOW_Q - 600_000,
       run_context: JSON.stringify({ timeoutSeconds: TASK_RUN_TIMEOUT_SECONDS['digest-only'] }), ...over,
     }],
     success: true,
@@ -705,14 +704,14 @@ describe('the wait on a requeued row', () => {
     const lines: string[] = [];
     const clock = drive();
     const live = liveRunsIn(JSON.parse(rows({}))[0].results);
-    expect({ status: live[0]!.status, startedAt: live[0]!.startedAt, queuedAt: live[0]!.queuedAt })
-      .toEqual({ status: 'queued', startedAt: NOW_Q - 600_000, queuedAt: NOW_Q - 7_200_000 });
+    expect({ status: live[0]!.status, startedAt: live[0]!.startedAt })
+      .toEqual({ status: 'queued', startedAt: NOW_Q - 600_000 });
 
     await waitForLiveRuns({ read: async () => live, sparing: 'the platform drains what is running', clock, report: (l) => lines.push(l) });
 
     expect(lines[0]).toBe('Waiting for a task the queue took back while its runtime kept working: digest-only, started 10 min ago, budget 30 min');
-    // Its own start plus its own budget, not the default one and not the two
-    // hours it spent waiting: the wait gives the child the rest of its budget.
+    // Its own start plus its own budget, not the default one: the wait gives
+    // the child the rest of the budget its launch carried.
     const deadline = (NOW_Q - 600_000) + TASK_RUN_TIMEOUT_SECONDS['digest-only']! * 1000 + RUN_OVERRUN_MARGIN_MS;
     expect(clock.at).toBeGreaterThanOrEqual(deadline);
     expect(clock.at).toBeLessThan(deadline + LIVE_RUN_POLL_MS);
