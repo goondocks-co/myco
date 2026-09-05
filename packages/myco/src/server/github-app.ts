@@ -21,7 +21,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { putWorkerSecrets, readDeploymentRecord, writeDeploymentRecord, type DeploymentRecord } from './cloudflare.js';
-import { assertComposeReadable, recreateDeployment, resolveDeploymentPaths, writeSignInSecrets, type DeploymentPaths } from './deployment.js';
+import { assertComposeReadable, recreateDeployment, repairBundle, resolveDeploymentPaths, writeSignInSecrets, type DeploymentPaths } from './deployment.js';
 import { systemRunner, type CommandRunner } from './runner.js';
 
 const LOOPBACK = '127.0.0.1';
@@ -159,8 +159,10 @@ export async function installSignInSecrets(target: SignInTarget, app: Pick<Regis
     await putWorkerSecrets({ accountId: target.record.accountId, workerName: target.record.workerName, runner }, { GITHUB_CLIENT_ID: app.clientId, GITHUB_CLIENT_SECRET: app.clientSecret });
     return;
   }
-  // Refused before the secret is written: a bundle the recreate would refuse
-  // leaves the credential on disk and the Deployment serving without it.
+  // The credential is written only once the recreate that applies it is known
+  // to be possible, and the check reads the same file set that recreate will:
+  // a Deployment must never hold a sign-in secret it is not serving with.
+  repairBundle(target.paths);
   await assertComposeReadable({ paths: target.paths, runner: runner ?? systemRunner() });
   writeSignInSecrets(target.paths, { clientId: app.clientId, clientSecret: app.clientSecret });
   await recreateDeployment({ paths: target.paths, runner });

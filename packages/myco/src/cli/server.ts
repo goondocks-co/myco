@@ -183,9 +183,9 @@ export async function run(args: string[]): Promise<void> {
 
     if (command === 'create') {
       // The port is decided in one place, for the flag and for the bundle's own
-      // `.env` alike; `createDeployment` refuses a value that is not one.
-      const portFlag = flags.get('port');
-      const port = portFlag === undefined ? undefined : Number(portFlag);
+      // `.env` alike. The flag travels as the operator typed it, so a refusal
+      // names that and not what a conversion made of it.
+      const port = flags.get('port');
       const fleetFlag = flags.get('fleet');
       const fleet = fleetFlag === undefined ? undefined : Number(fleetFlag);
       if (fleetFlag !== undefined && (fleetFlag === 'true' || !Number.isInteger(fleet) || fleet! < 1)) {

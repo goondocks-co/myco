@@ -13,7 +13,7 @@ import { mkdirSync, existsSync, writeFileSync, readFileSync, rmSync, chmodSync, 
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { resolveMycoHome } from '../paths/home.js';
-import { isCommandFailure, jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
+import { CommandFailed, commandFailureDetail, isCommandFailure, jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
 import { readLiveRunsTwice, systemClock, waitForLiveRuns, type Clock, type LiveRun, type LiveRunRow } from './live-runs.js';
 import { COMPOSE_OVERRIDE_TEMPLATE, COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from './compose-template.js';
 import { ensureServerLayout } from './layout.js';
@@ -181,7 +181,8 @@ export function materializeBundle(paths: DeploymentPaths, env: Record<string, st
 }
 
 export interface CreateOptions extends DeploymentOptions {
-  port?: number;
+  /** The port to publish on, as the operator named it; a value that is not a port is refused by name. */
+  port?: number | string;
   version?: string;
   /** How many runtimes the Deployment may run at once; the dispatcher queues past it. */
   fleet?: number;
@@ -208,10 +209,14 @@ export const DEFAULT_PORT = 8787;
  *
  * The one place a port is decided, whichever surface the value came from: a
  * flag and an `.env` line are the same question, and 0 is a port number in
- * neither — Compose publishes it as an ephemeral pick nothing can address.
+ * neither — Compose publishes it as an ephemeral pick nothing can address. A
+ * value reaches here as the operator typed it, so a refusal names that.
  */
 function portIn(value: string | number | null | undefined, source: 'flag' | 'env'): number {
-  if (value === null || value === undefined || value === '') return DEFAULT_PORT;
+  if (value === null || value === undefined) return DEFAULT_PORT;
+  // An `.env` line that is not there names no port; a flag that is there and
+  // carries nothing is a typo, not a request for the default.
+  if (value === '' && source === 'env') return DEFAULT_PORT;
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(source === 'flag'
@@ -531,9 +536,23 @@ export interface HarnessTarget {
 }
 
 /** Raised when Compose cannot say what this Deployment is made of; a verb that guessed would act on the wrong services. */
+/** The bundle's two files, as an operator would name them. */
+const BUNDLE_FILES = ['compose.yaml', 'compose.override.yaml'] as const;
+
+/** The file Compose's own words name, or both when they name neither. */
+function fileNamedIn(detail: string): string {
+  const named = BUNDLE_FILES.filter((file) => detail.includes(file));
+  return named.length === 1 ? `fix ${named[0]!} or restore it from a bundle that works` : 'fix compose.yaml and compose.override.yaml, or remove the override';
+}
+
 export class ComposeFilesUnreadable extends Error {
-  constructor(readonly detail: string) {
-    super(`the Compose files could not be read: ${detail}; fix compose.override.yaml or remove it`);
+  /**
+   * `detail` is what an operator reads; `said` is the command's own words,
+   * apart from the argv that names both files on every call and would make
+   * every failure look like it named them both.
+   */
+  constructor(readonly detail: string, said = detail) {
+    super(`the Compose files could not be read: ${detail}; ${fileNamedIn(said)}`);
     this.name = 'ComposeFilesUnreadable';
   }
 }
@@ -555,7 +574,10 @@ async function composeServices(target: HarnessTarget): Promise<string[]> {
     named = result.stdout.split('\n').map((line) => line.trim()).filter((line) => line !== '');
   } catch (err) {
     if (!isCommandFailure(err)) throw err;
-    throw new ComposeFilesUnreadable((err as Error).message);
+    throw new ComposeFilesUnreadable(
+      (err as Error).message,
+      err instanceof CommandFailed ? commandFailureDetail(err.result) : (err as Error).message,
+    );
   }
   // Every Deployment has a server. An answer that is empty, truncated, or
   // filtered down by a profile exits zero and names a set this Deployment is
@@ -864,8 +886,10 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
   // service, so a Deployment provisioned by an older CLI would pull an image
   // and run the same one service. Secrets on disk are kept and `.env` survives.
   materializeBundle(paths);
-  // The bundle the pull and the recreate will run on is a different file from
-  // the one read above; both reads refuse.
+  // The bundle the pull and the recreate run on is a different file from the
+  // one read above, so it is read too. A refusal here leaves the shipped
+  // template on disk and every container as it was: the rewrite is the same
+  // bytes `create` would write, and nothing has been stopped or pulled.
   await assertComposeReadable({ paths, runner });
 
   // The requested version travels as an environment override for the pull and
@@ -916,8 +940,9 @@ export async function updateDeployment(options: UpdateOptions = {}): Promise<voi
 export async function rotateSecrets(options: DeploymentOptions = {}): Promise<string[]> {
   const { paths, runner } = resolved(options);
   repairBundle(paths);
-  // Refused before the keys are replaced: a rotation the recreate then refuses
-  // leaves the Deployment serving on a wrap key its bundle no longer holds.
+  // The keys are replaced only once the recreate that applies them is known to
+  // be possible: a Deployment must never serve on a wrap key its bundle no
+  // longer holds.
   await assertComposeReadable({ paths, runner });
   const rotated: string[] = [];
   for (const [name, bytes] of Object.entries(GENERATED_SECRETS)) {
@@ -937,9 +962,20 @@ export async function rotateSecrets(options: DeploymentOptions = {}): Promise<st
  */
 export async function adoptDeployment(options: DeploymentOptions = {}): Promise<{ adopted: boolean; services: string[] }> {
   const { paths, runner } = resolved(options);
-  // A bundle already on disk is read before it is rewritten, so an adopt about
-  // to be refused leaves it as the running containers know it.
-  if (existsSync(paths.composeFile)) await assertComposeReadable({ paths, runner });
+  repairBundle(paths);
+  // A stack whose bundle Compose cannot read is the stack this verb exists to
+  // take over, so an unreadable one is replaced from the shipped template
+  // rather than refused. The operator's override, the secrets and `.env` stand;
+  // an override Compose still refuses after that refuses the adopt.
+  if (existsSync(paths.composeFile)) {
+    try {
+      await assertComposeReadable({ paths, runner });
+    } catch (err) {
+      if (!(err instanceof ComposeFilesUnreadable)) throw err;
+      materializeBundle(paths);
+      await assertComposeReadable({ paths, runner });
+    }
+  }
   materializeBundle(paths);
 
   const status = await deploymentStatus({ paths, runner });

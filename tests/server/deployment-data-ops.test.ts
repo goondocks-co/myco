@@ -36,7 +36,7 @@ import {
 } from '@myco/server/deployment.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 import { LIVE_RUNS_QUERY, LIVE_RUNS_RETRY_MS, LIVE_RUN_POLL_MS, LiveRunsUnreadable } from '@myco/server/live-runs.js';
-import { HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
+import { COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
 import { CommandTimedOut } from '@myco/server/runner.js';
 
 /** The stop that gives the harness its whole grace, as the argv reads. */
@@ -853,7 +853,7 @@ describe('a bundle the files and Compose disagree about stops the verb', () => {
       try { await run(p, refusing()); } catch (err) { raised = err; }
 
       expect(raised).toBeInstanceOf(ComposeFilesUnreadable);
-      expect((raised as Error).message).toContain('fix compose.override.yaml or remove it');
+      expect((raised as Error).message).toContain('fix compose.override.yaml or restore it');
       expect(touched()).toEqual([]);
     });
   }
@@ -1096,12 +1096,68 @@ describe('no verb writes before it can still refuse', () => {
     expect(Object.keys(GENERATED_SECRETS).map((name) => readFileSync(join(p.secretsDir, name), 'utf8'))).toEqual(before);
   });
 
-  it('GATE: a refused adopt leaves the bundle as its containers know it', async () => {
+  it('GATE: adopt replaces a bundle Compose cannot read rather than refusing the stack it exists to take over', async () => {
     const p = bundle();
     writeFileSync(p.composeFile, 'services:\n  server:\n    image: from-an-older-cli\n');
-    const before = readFileSync(p.composeFile, 'utf8');
+    const secret = readFileSync(join(p.secretsDir, 'session_secret'), 'utf8');
+    writeFileSync(p.envFile, 'MYCO_PORT=9001\n');
+    // The first read refuses on compose.yaml; the second, after the template is
+    // written, answers.
+    let reads = 0;
+    const refusesOnce: CommandRunner = {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        if (!args.includes('--services')) return { code: 0, stdout: answer(args), stderr: '' };
+        reads += 1;
+        return reads === 1
+          ? { code: 1, stdout: '', stderr: 'validating compose.yaml: services.server Additional property imag is not allowed' }
+          : { code: 0, stdout: 'server\nharness\n', stderr: '' };
+      },
+    };
+
+    const adopted = await adoptDeployment({ paths: p, runner: refusesOnce });
+
+    expect(adopted.services).toEqual([]);
+    expect(readFileSync(p.composeFile, 'utf8')).toBe(COMPOSE_TEMPLATE);
+    // What the operator supplied stands.
+    expect(readFileSync(p.envFile, 'utf8')).toBe('MYCO_PORT=9001\n');
+    expect(readFileSync(join(p.secretsDir, 'session_secret'), 'utf8')).toBe(secret);
+  });
+
+  it('GATE: adopt still refuses an override Compose refuses after the template is back', async () => {
+    const p = bundle();
     await expect(adoptDeployment({ paths: p, runner: refusing() })).rejects.toThrow(ComposeFilesUnreadable);
-    expect(readFileSync(p.composeFile, 'utf8')).toBe(before);
+  });
+
+  it('names the file Compose named, and both where it named neither', () => {
+    expect(new ComposeFilesUnreadable('validating compose.yaml: services.server').message)
+      .toContain('fix compose.yaml or restore it');
+    expect(new ComposeFilesUnreadable('validating compose.override.yaml: services.server').message)
+      .toContain('fix compose.override.yaml or restore it');
+    expect(new ComposeFilesUnreadable('Cannot connect to the Docker daemon').message)
+      .toContain('fix compose.yaml and compose.override.yaml, or remove the override');
+  });
+
+  it('GATE: a refusal after the rewrite leaves the shipped template and every container untouched', async () => {
+    const p = bundle();
+    writeFileSync(p.composeFile, 'services:\n  server:\n    image: from-an-older-cli\n');
+    let reads = 0;
+    const secondRefuses: CommandRunner = {
+      async run(command, args) {
+        calls.push({ command, args: [...args] });
+        if (!args.includes('--services')) return { code: 0, stdout: answer(args), stderr: '' };
+        reads += 1;
+        return reads === 1
+          ? { code: 0, stdout: 'server\nharness\n', stderr: '' }
+          : { code: 1, stdout: '', stderr: 'validating compose.override.yaml' };
+      },
+    };
+    await expect(updateDeployment({ paths: p, runner: secondRefuses, report: () => undefined })).rejects.toThrow(ComposeFilesUnreadable);
+
+    // The rewrite is the same bytes `create` writes, and nothing was stopped,
+    // pulled or recreated behind it.
+    expect(readFileSync(p.composeFile, 'utf8')).toBe(COMPOSE_TEMPLATE);
+    expect(calls.map((c) => c.args.slice(COMPOSE_HEAD).join(' ')).filter((a) => a === STOP_HARNESS || a === 'pull' || a.startsWith('up '))).toEqual([]);
   });
 
   it('GATE: the update refuses on the bundle it rewrote, before it stops anything', async () => {
