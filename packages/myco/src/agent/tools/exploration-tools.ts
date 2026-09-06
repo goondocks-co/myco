@@ -31,7 +31,7 @@ import { promisify } from 'node:util';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { getRipgrepPath } from '../../runtime/native-deps.js';
 import { z } from 'zod/v4';
-import { textResult, type VaultToolDeps } from './types.js';
+import { textResult } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -67,6 +67,7 @@ const MAX_GREP_RESULTS = 200;
 const MAX_GREP_CONTEXT = 5;
 /** Per-match text cap for code_grep — survives minified files without blowing the budget. */
 const MAX_GREP_MATCH_CHARS = 200;
+const GREP_TIMEOUT_MS = 30_000;
 /** Directories skipped by fs_tree and fs_list during recursive walk. */
 const IGNORE_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', '.next', 'coverage',
@@ -93,14 +94,47 @@ function assertProjectRoot(projectRoot: string | undefined): asserts projectRoot
  * Resolve `inputPath` relative to `projectRoot` and reject anything that
  * escapes it. Returns the absolute path inside the project.
  */
-function resolveScoped(projectRoot: string | undefined, inputPath: string): string {
+async function resolveScoped(projectRoot: string | undefined, inputPath: string): Promise<string> {
   assertProjectRoot(projectRoot);
   const resolved = path.resolve(projectRoot, inputPath);
-  const rel = path.relative(projectRoot, resolved);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new Error(`Path resolves outside project root: ${inputPath}`);
+  const assertContained = (root: string, target: string) => {
+    const rel = path.relative(root, target);
+    if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+      throw new Error(`Path resolves outside project root: ${inputPath}`);
+    }
+    if (rel.split(path.sep).some((part) => part.toLowerCase() === '.git')) {
+      throw new Error('Git metadata is outside the code exploration surface.');
+    }
+  };
+  assertContained(projectRoot, resolved);
+  const [root, target] = await Promise.all([fs.promises.realpath(projectRoot), fs.promises.realpath(resolved)]);
+  assertContained(root, target);
+  return target;
+}
+
+/** Read at most the byte ceiling, retaining the head and tail of larger files. */
+async function readBounded(file: string): Promise<{ content: string; size: number; bytesTruncated: boolean }> {
+  const handle = await fs.promises.open(file, 'r');
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error('Code exploration requires a regular file.');
+    const bytesTruncated = stat.size > MAX_FILE_BYTES;
+    const buffer = Buffer.alloc(Math.min(stat.size, MAX_FILE_BYTES));
+    if (!bytesTruncated) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      return { content: buffer.subarray(0, bytesRead).toString('utf8'), size: stat.size, bytesTruncated };
+    }
+    const half = Math.floor(MAX_FILE_BYTES / 2);
+    const head = await handle.read(buffer, 0, half, 0);
+    const tail = await handle.read(buffer, half, half, stat.size - half);
+    return {
+      content: `${buffer.subarray(0, head.bytesRead).toString('utf8')}\n\n... [truncated ${stat.size - MAX_FILE_BYTES} bytes] ...\n\n${buffer.subarray(half, half + tail.bytesRead).toString('utf8')}`,
+      size: stat.size,
+      bytesTruncated,
+    };
+  } finally {
+    await handle.close();
   }
-  return resolved;
 }
 
 function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
@@ -117,7 +151,7 @@ function truncateLine(line: string, max: number): string {
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createExplorationTools(deps: VaultToolDeps) {
+export function createExplorationTools(deps: { projectRoot?: string; ripgrepPath?: string }) {
   const { projectRoot } = deps;
 
   const fsRead = tool(
@@ -132,17 +166,8 @@ export function createExplorationTools(deps: VaultToolDeps) {
       end_line: z.number().optional().describe(`Last line to return (inclusive). Omit to return the default window (${DEFAULT_READ_LINES} lines from start_line).`),
     },
     async (args) => {
-      const fullPath = resolveScoped(projectRoot, args.path);
-      const stat = await fs.promises.stat(fullPath);
-      if (!stat.isFile()) throw new Error(`Not a file: ${args.path}`);
-
-      let content = await fs.promises.readFile(fullPath, 'utf-8');
-      let bytesTruncated = false;
-      if (stat.size > MAX_FILE_BYTES) {
-        const half = Math.floor(MAX_FILE_BYTES / 2);
-        content = `${content.slice(0, half)}\n\n... [truncated ${stat.size - MAX_FILE_BYTES} bytes] ...\n\n${content.slice(-half)}`;
-        bytesTruncated = true;
-      }
+      const fullPath = await resolveScoped(projectRoot, args.path);
+      const { content, size, bytesTruncated } = await readBounded(fullPath);
 
       const lines = content.split('\n');
       const totalLines = lines.length;
@@ -158,7 +183,7 @@ export function createExplorationTools(deps: VaultToolDeps) {
 
       return textResult({
         path: args.path,
-        size: stat.size,
+        size,
         total_lines: totalLines,
         start_line: requestedStart,
         end_line: cappedEnd,
@@ -186,9 +211,9 @@ export function createExplorationTools(deps: VaultToolDeps) {
       const includeHidden = args.include_hidden === true;
       const limit = clampInt(args.limit, DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT);
 
-      const fullPath = resolveScoped(projectRoot, targetPath);
+      const fullPath = await resolveScoped(projectRoot, targetPath);
       const entries = await fs.promises.readdir(fullPath, { withFileTypes: true });
-      const visible = includeHidden ? entries : entries.filter((e) => !e.name.startsWith('.'));
+      const visible = entries.filter((e) => e.name.toLowerCase() !== '.git' && (includeHidden || !e.name.startsWith('.')));
       const sorted = visible.sort((a, b) => {
         // Directories first, then alphabetical.
         const dirDiff = Number(b.isDirectory()) - Number(a.isDirectory());
@@ -200,7 +225,7 @@ export function createExplorationTools(deps: VaultToolDeps) {
         // would be discarded. Cuts syscalls roughly in half on dir-heavy paths.
         const isFile = entry.isFile();
         const stat = isFile
-          ? await fs.promises.stat(path.join(fullPath, entry.name)).catch(() => null)
+          ? await fs.promises.stat(path.join(fullPath, entry.name))
           : null;
         return {
           name: entry.name,
@@ -234,16 +259,16 @@ export function createExplorationTools(deps: VaultToolDeps) {
       const depth = clampInt(args.depth, DEFAULT_TREE_DEPTH, 1, MAX_TREE_DEPTH);
       const includeHidden = args.include_hidden === true;
 
-      const root = resolveScoped(projectRoot, targetPath);
+      const root = await resolveScoped(projectRoot, targetPath);
 
       const lines: string[] = [];
       let hiddenCount = 0;
 
       async function walk(dir: string, remainingDepth: number, prefix: string): Promise<void> {
         if (remainingDepth <= 0) return;
-        const raw = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => []);
+        const raw = await fs.promises.readdir(dir, { withFileTypes: true });
         const entries = raw
-          .filter((e) => !IGNORE_DIRS.has(e.name))
+          .filter((e) => !IGNORE_DIRS.has(e.name.toLowerCase()))
           .filter((e) => includeHidden || !e.name.startsWith('.'))
           .sort((a, b) => {
             const dirDiff = Number(b.isDirectory()) - Number(a.isDirectory());
@@ -306,19 +331,22 @@ export function createExplorationTools(deps: VaultToolDeps) {
       const maxResults = clampInt(args.max_results, DEFAULT_GREP_RESULTS, 1, MAX_GREP_RESULTS);
 
       assertProjectRoot(projectRoot);
-      const searchPath = resolveScoped(projectRoot, targetPath);
+      const canonicalRoot = await fs.promises.realpath(projectRoot);
+      const searchPath = await resolveScoped(projectRoot, targetPath);
       const rgArgs: string[] = [
+        '--no-config', '--no-follow',
         '--json',
         '--max-count', String(maxResults),
         ...(caseInsensitive ? ['-i'] : []),
         ...(contextLines > 0 ? ['-C', String(contextLines)] : []),
         ...(args.glob ? ['-g', args.glob] : []),
+        '--iglob', '!.git', '--iglob', '!**/.git/**',
         '--', args.pattern, searchPath,
       ];
 
       let stdout: string;
       try {
-        ({ stdout } = await execFileAsync(getRipgrepPath(), rgArgs, { maxBuffer: 10_000_000 }));
+        ({ stdout } = await execFileAsync(deps.ripgrepPath ?? getRipgrepPath(), rgArgs, { maxBuffer: 10_000_000, timeout: GREP_TIMEOUT_MS }));
       } catch (err) {
         // ripgrep exits 1 when no matches — treat as empty result, not error.
         const exitCode = (err as { code?: number }).code;
@@ -340,7 +368,7 @@ export function createExplorationTools(deps: VaultToolDeps) {
         if (evt.type !== 'match' || !evt.data) continue;
         const rawPath = typeof evt.data.path === 'string' ? evt.data.path : evt.data.path?.text;
         if (!rawPath) continue;
-        const relPath = path.relative(projectRoot, rawPath);
+        const relPath = path.relative(canonicalRoot, rawPath);
         matches.push({
           path: relPath,
           line: evt.data.line_number ?? 0,

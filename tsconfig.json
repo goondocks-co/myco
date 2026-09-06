@@ -22,6 +22,7 @@
       "@goondocks/myco-shared": ["./packages/myco-shared/src/index.ts"],
       "@goondocks/myco-shared/relevance": ["./packages/myco-shared/src/relevance.ts"],
       "@goondocks/myco-shared/recall": ["./packages/myco-shared/src/recall.ts"],
+      "@goondocks/myco-shared/repository": ["./packages/myco-shared/src/repository.ts"],
       "react": ["./node_modules/react"],
       "react-dom": ["./node_modules/react-dom"],
       "react/jsx-runtime": ["./node_modules/react/jsx-runtime.js"],

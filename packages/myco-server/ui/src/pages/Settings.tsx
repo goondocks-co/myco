@@ -10,12 +10,12 @@ import { SubtabPill } from '../components/ui/subtab-pill';
 import { AppearanceSection } from '../layout/AppearanceSection';
 import { useMembers } from '../hooks/use-access';
 import { useProjects } from '../hooks/use-projects';
-import { settingsRefusalText, useCapabilities, useSecrets, useSettings, useSettingsActions, type LeafRow, type SecretRow } from '../hooks/use-settings';
+import { settingsRefusalText, useRepository, useRepositoryActions, type RepositoryRow, useCapabilities, useSecrets, useSettings, useSettingsActions, type LeafRow, type SecretRow } from '../hooks/use-settings';
 import { isArchived } from '../lib/api';
 import { formatRelative } from '../lib/format';
 import { LEAF_GROUPS, type LeafField } from '../settings/catalogue';
 
-const TABS = [...LEAF_GROUPS.map((g) => ({ id: g.id, label: g.label })), { id: 'secrets', label: 'Credentials' }, { id: 'capabilities', label: 'Project capabilities' }, { id: 'browser', label: 'This browser' }];
+const TABS = [...LEAF_GROUPS.map((g) => ({ id: g.id, label: g.label })), { id: 'secrets', label: 'Credentials' }, { id: 'capabilities', label: 'Projects' }, { id: 'browser', label: 'This browser' }];
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50';
 const primary = 'rounded-md bg-primary px-3 py-1.5 font-sans text-sm text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50';
@@ -246,6 +246,67 @@ function ProjectCapabilityPanel({ projectId, name }: { projectId: string; name: 
         </ul>
         {error !== null && <p className="mt-2 font-sans text-xs text-tertiary">{error}</p>}
       </PageLoading>
+      <ProjectRepository projectId={projectId} />
     </Panel>
   );
+}
+
+function ProjectRepository({ projectId }: { projectId: string }) {
+  const query = useRepository(projectId);
+  const actions = useRepositoryActions(projectId);
+  const nameOf = useMemberName();
+  const [editing, setEditing] = useState<{ connection: RepositoryRow | null } | null>(null);
+  const [removing, setRemoving] = useState<RepositoryRow | null>(null);
+  const connection = query.data?.repository ?? null;
+  return <section className="mt-4 border-t border-outline-variant/20 pt-4">
+    <h3 className="font-sans text-sm font-semibold text-on-surface">Committed source</h3>
+    <p className="mt-1 font-sans text-xs text-on-surface-variant">Code tasks read a committed snapshot of this repository. Public repositories need no credential.</p>
+    <PageLoading isLoading={query.isPending} error={query.error}>
+      {connection && <div className="mt-2 break-all font-mono text-xs text-on-surface-variant">
+        <p>{connection.url} · {connection.branch}</p>
+        <p>{connection.credential === null ? 'Public access' : connection.credential.readable ? 'Read credential configured' : 'Read credential unavailable — enter it again'}</p>
+        <p>Updated {formatRelative(connection.updatedAt)} by {nameOf(connection.updatedBy)}</p>
+      </div>}
+      <div className="mt-2 flex gap-2">
+        <button className={button} type="button" onClick={() => setEditing({ connection })}>{connection ? 'Edit repository' : 'Connect repository'}</button>
+        {connection && <button className={button} type="button" onClick={() => setRemoving(connection)}>Disconnect</button>}
+      </div>
+    </PageLoading>
+    <Dialog open={editing !== null} onOpenChange={(open) => { if (!open) setEditing(null); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Project repository</DialogTitle><DialogDescription>Choose the repository and branch code tasks should read. For a private repository, supply a credential limited to read access.</DialogDescription></DialogHeader>
+        {editing && <RepositoryForm projectId={projectId} connection={editing.connection} onClose={() => setEditing(null)} />}
+      </DialogContent>
+    </Dialog>
+    <ConfirmDialog open={removing !== null} onOpenChange={(open) => { if (!open) { setRemoving(null); actions.remove.reset(); } }}
+      title="Disconnect repository?" description="New code tasks will need a repository connection before they can run. Existing project memory is retained." confirmLabel="Disconnect" variant="destructive"
+      isPending={actions.remove.isPending} errorMessage={actions.remove.error ? settingsRefusalText(actions.remove.error) : null}
+      onConfirm={() => { if (removing) actions.remove.mutate(removing.revision, { onSuccess: () => setRemoving(null) }); }} />
+  </section>;
+}
+
+function RepositoryForm({ projectId, connection, onClose }: { projectId: string; connection: RepositoryRow | null; onClose: () => void }) {
+  const actions = useRepositoryActions(projectId);
+  const [url, setUrl] = useState(connection?.url ?? '');
+  const [branch, setBranch] = useState(connection?.branch ?? 'main');
+  const [username, setUsername] = useState(connection?.username ?? 'x-access-token');
+  const [token, setToken] = useState('');
+  const [publicAccess, setPublicAccess] = useState(connection?.credential == null);
+  const canKeepCredential = connection?.url === url && connection?.username === username && connection.credential?.readable;
+  return <form className="flex flex-col gap-3" onSubmit={(event) => {
+    event.preventDefault();
+    const credential = publicAccess ? null : token ? { username, token } : undefined;
+    if (!publicAccess && !token && !canKeepCredential) return;
+    actions.save.mutate({ url, branch, revision: connection?.revision ?? null, credential }, { onSuccess: () => { setToken(''); actions.save.reset(); onClose(); } });
+  }}>
+    <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">HTTPS repository URL<input className={inputClass} type="url" required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://github.com/example/repository.git" /></label>
+    <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">Branch<input className={inputClass} required value={branch} onChange={(event) => setBranch(event.target.value)} /></label>
+    <label className="flex items-center gap-2 font-sans text-sm text-on-surface"><input type="checkbox" checked={publicAccess} onChange={(event) => { setPublicAccess(event.target.checked); setToken(''); }} />Use without a credential</label>
+    {!publicAccess && <>
+      <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">Git username<input className={inputClass} required value={username} autoComplete="off" onChange={(event) => setUsername(event.target.value)} /></label>
+      <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">Read token<input className={inputClass} type="password" autoComplete="off" required={!canKeepCredential} value={token} onChange={(event) => setToken(event.target.value)} placeholder={canKeepCredential ? 'Leave blank to keep the current credential' : ''} /></label>
+    </>}
+    {actions.save.error && <p role="alert" className="font-sans text-xs text-tertiary">{settingsRefusalText(actions.save.error)}</p>}
+    <div className="flex justify-end"><button type="submit" className={primary} disabled={actions.save.isPending}>Save repository</button></div>
+  </form>;
 }

@@ -48,6 +48,7 @@ const base = (extra: Record<string, (init?: RequestInit) => Response> = {}) => (
   '/api/settings': () => Response.json(leaves({ 'cortex.digest.inject_on_session_start': { value: true, updatedBy: 'mem_1', updatedAt: NOW } })),
   '/api/secrets': () => Response.json(secrets(true)),
   '/api/projects/x/capabilities': () => Response.json({ capabilities: { cortex: true, canopy: false, skills: false, vault_evolution: false } }),
+  '/api/projects/x/repository': () => Response.json({ repository: null }),
   ...extra,
 });
 
@@ -154,7 +155,7 @@ describe('Deployment Settings', () => {
   it('toggles a project capability through the project route', async () => {
     const { sent } = server(base({ '/api/projects/x/capabilities/cortex': () => Response.json({ applied: true }) }));
     mount('/settings');
-    await tab('Project capabilities');
+    await tab('Projects');
     fireEvent.click(await screen.findByRole('switch', { name: 'Cortex: digests and instructions for Project X' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/projects/x/capabilities/cortex', body: { enabled: false } });

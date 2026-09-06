@@ -38,12 +38,12 @@ export const ok = (body: unknown): Response => Response.json(body);
  * would throw, and the owner branch answers a throw as a retryable 503; a body of
  * the caller's own making is refused as terminal instead.
  */
-export async function readJsonObject(request: Request): Promise<Record<string, unknown> | null> {
+export function parseJsonObject(body: string): Record<string, unknown> | null {
   let parsed: unknown;
-  try {
-    parsed = await request.json();
-  } catch {
-    return null;
-  }
-  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  try { parsed = JSON.parse(body); } catch { return null; }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+}
+
+export async function readJsonObject(request: Request): Promise<Record<string, unknown> | null> {
+  try { return parseJsonObject(await request.text()); } catch { return null; }
 }
