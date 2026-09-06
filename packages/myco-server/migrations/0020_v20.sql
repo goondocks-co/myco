@@ -76,17 +76,17 @@ INSERT OR IGNORE INTO embedding_versions(project_id, type, record_id, revision) 
 
 CREATE TRIGGER IF NOT EXISTS knowledge_release_embedding_insert AFTER INSERT ON knowledge_release_state BEGIN
       UPDATE embedding_versions SET revision = lower(hex(randomblob(16))) WHERE project_id = new.project_id AND record_id = new.record_id
-      AND type = CASE new.namespace WHEN 'sessions' THEN 'session' WHEN 'spores' THEN 'spore' WHEN 'plans' THEN 'plan' WHEN 'skill_records' THEN 'skill' END; END;
+      AND ((new.namespace = 'sessions' AND type = 'session') OR (new.namespace = 'spores' AND type = 'spore') OR (new.namespace = 'plans' AND type = 'plan') OR (new.namespace = 'skill_records' AND type = 'skill')); END;
 
 CREATE TRIGGER IF NOT EXISTS knowledge_release_embedding_update AFTER UPDATE ON knowledge_release_state BEGIN
       UPDATE embedding_versions SET revision = lower(hex(randomblob(16))) WHERE project_id = old.project_id AND record_id = old.record_id
-      AND type = CASE old.namespace WHEN 'sessions' THEN 'session' WHEN 'spores' THEN 'spore' WHEN 'plans' THEN 'plan' WHEN 'skill_records' THEN 'skill' END;
+      AND ((old.namespace = 'sessions' AND type = 'session') OR (old.namespace = 'spores' AND type = 'spore') OR (old.namespace = 'plans' AND type = 'plan') OR (old.namespace = 'skill_records' AND type = 'skill'));
 UPDATE embedding_versions SET revision = lower(hex(randomblob(16))) WHERE project_id = new.project_id AND record_id = new.record_id
-      AND type = CASE new.namespace WHEN 'sessions' THEN 'session' WHEN 'spores' THEN 'spore' WHEN 'plans' THEN 'plan' WHEN 'skill_records' THEN 'skill' END; END;
+      AND ((new.namespace = 'sessions' AND type = 'session') OR (new.namespace = 'spores' AND type = 'spore') OR (new.namespace = 'plans' AND type = 'plan') OR (new.namespace = 'skill_records' AND type = 'skill')); END;
 
 CREATE TRIGGER IF NOT EXISTS knowledge_release_embedding_delete AFTER DELETE ON knowledge_release_state BEGIN
       UPDATE embedding_versions SET revision = lower(hex(randomblob(16))) WHERE project_id = old.project_id AND record_id = old.record_id
-      AND type = CASE old.namespace WHEN 'sessions' THEN 'session' WHEN 'spores' THEN 'spore' WHEN 'plans' THEN 'plan' WHEN 'skill_records' THEN 'skill' END; END;
+      AND ((old.namespace = 'sessions' AND type = 'session') OR (old.namespace = 'spores' AND type = 'spore') OR (old.namespace = 'plans' AND type = 'plan') OR (old.namespace = 'skill_records' AND type = 'skill')); END;
 
 CREATE VIEW IF NOT EXISTS embedding_sources AS SELECT s.*, v.revision,
     COALESCE((SELECT k.state FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_state,

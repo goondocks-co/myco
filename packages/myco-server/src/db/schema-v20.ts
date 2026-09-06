@@ -51,7 +51,7 @@ export const V20_STATEMENTS: readonly string[] = [
     const rows = op === 'UPDATE' ? ['old', 'new'] : [op === 'DELETE' ? 'old' : 'new'];
     return `CREATE TRIGGER IF NOT EXISTS knowledge_release_embedding_${op.toLowerCase()} AFTER ${op} ON knowledge_release_state BEGIN
       ${rows.map((row) => `UPDATE embedding_versions SET revision = lower(hex(randomblob(16))) WHERE project_id = ${row}.project_id AND record_id = ${row}.record_id
-      AND type = CASE ${row}.namespace ${sources.map((s) => `WHEN '${s.table}' THEN '${s.type}'`).join(' ')} END;`).join('\n')} END`;
+      AND (${sources.map((s) => `(${row}.namespace = '${s.table}' AND type = '${s.type}')`).join(' OR ')});`).join('\n')} END`;
   }),
   `CREATE VIEW IF NOT EXISTS embedding_sources AS SELECT s.*, v.revision,
     COALESCE((SELECT k.state FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_state,
