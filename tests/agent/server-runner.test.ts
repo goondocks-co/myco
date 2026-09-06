@@ -14,7 +14,7 @@ import {
   CAPTURE_DRIVEN_ADMISSION, installRunFailureHandlers, MAX_RUN_ERROR_CHARS, RECLAIM_WARNING_MS, RUN_DEADLINE_ERROR, RUN_REFUSED_CLOSE_ERROR,
   RUN_RECLAIMED_ERROR, runServerTask, type HeldRun,
 } from '@myco/agent/runtime/server-runner.js';
-import type { AgentHarness, HarnessExecuteInput } from '@myco/agent/harness/types.js';
+import { HarnessExecutionError, type AgentHarness, type HarnessExecuteInput } from '@myco/agent/harness/types.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { indexFixture } from '../myco-server/helpers/vector-index.js';
 
@@ -48,7 +48,7 @@ function fakeHarness(behavior: 'reports' | 'silent' | 'throws'): AgentHarness {
         expect(reportTool).toBeDefined();
         await reportTool!.handler({ action: 'container-smoke', summary: 'runtime works', details: { note: 'smoke' } }, {});
       }
-      return { finalText: 'done', turnsUsed: 1, usage: { totalTokens: 42 } as never };
+      return { finalText: 'done', turnsUsed: 1, usage: { totalTokens: 42, costUsd: 0.25 } as never };
     },
     supports: () => false,
   } as unknown as AgentHarness;
@@ -88,8 +88,22 @@ describe('runServerTask', () => {
 
     const run = sqlite.query(`SELECT status, task, tokens_used t FROM agent_runs WHERE id = 'run_smoke_1'`).get() as { status: string; task: string; t: number };
     expect(run).toEqual({ status: 'completed', task: 'container-smoke', t: 42 });
+    expect(sqlite.query(`SELECT cost_usd,actual_cost_usd,estimated_cost_usd,cost_source FROM agent_runs WHERE id='run_smoke_1'`).get())
+      .toEqual({ cost_usd: 0.25, actual_cost_usd: 0.25, estimated_cost_usd: null, cost_source: 'actual' });
     const report = sqlite.query(`SELECT action, summary FROM agent_reports WHERE run_id = 'run_smoke_1'`).get() as { action: string; summary: string };
     expect(report).toEqual({ action: 'container-smoke', summary: 'runtime works' });
+  });
+
+  it('retains partial billed usage when the model fails', async () => {
+    const { client, sqlite } = await harness();
+    const failing: AgentHarness = { ...fakeHarness('silent'), execute: async () => {
+      throw new HarnessExecutionError('turn limit reached', { usage: { totalTokens: 123, costUsd: 0.1 } });
+    } };
+    const result = await runServerTask({ client, budget, runId: 'run_metered_failure', taskName: 'container-smoke', harness: failing });
+    expect(result.status).toBe('failed');
+    expect(sqlite.query(`SELECT tokens_used,cost_usd,actual_cost_usd,cost_source,error FROM agent_runs WHERE id='run_metered_failure'`).get())
+      .toEqual({ tokens_used: 123, cost_usd: 0.1, actual_cost_usd: 0.1, cost_source: 'actual', error: 'turn limit reached' });
+    sqlite.close();
   });
 
   it('records a failed run when the harness throws, and answers skipped when another run holds the task', async () => {
