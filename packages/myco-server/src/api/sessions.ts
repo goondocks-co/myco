@@ -4,20 +4,21 @@ import { getSession, listSessionSummaries, projectStats, sessionCounts, type Ses
 import { activityFeed } from '../read/activity.js';
 import { badRequest, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
-import { listAttachments, listPlans, listPrompts, listResponses, listToolCalls } from '../read/children.js';
+import { listAttachments, listContextInjections, listPlans, listPrompts, listResponses, listToolCalls } from '../read/children.js';
 import { listTurns, parseOrigins, promptInSession, turnDetail } from '../read/turns.js';
 import { getTranscript, listSegments } from '../read/transcript.js';
 import { titleSession } from '../core/titling.js';
 import { changePlanStatus } from '../core/plans.js';
 import { PLAN_STATUS_MESSAGE, planInSession, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
 
-/** The five child collections, by URL segment. One handler serves all of them: they differ only in which query runs. */
+/** Session child collections, each served by the same scoped and paginated handler. */
 const CHILDREN = {
   prompts: listPrompts,
   'tool-calls': listToolCalls,
   responses: listResponses,
   plans: listPlans,
   attachments: listAttachments,
+  'context-injections': listContextInjections,
 } as const;
 
 export const CHILD_SEGMENTS = Object.keys(CHILDREN);

@@ -1,6 +1,10 @@
 import { runMemberHook, type HookMainOptions } from '../member/capture.js';
 import { compactionEvent } from '../member/envelope.js';
+import { recordCompaction } from '../member/compaction.js';
 
 export async function main(opts: HookMainOptions = {}) {
-  await runMemberHook('pre-compact', opts, (run) => ({ events: [compactionEvent(run.ctx, 'pre', run.input)] }));
+  await runMemberHook('pre-compact', opts, (run) => ({
+    events: [compactionEvent(run.ctx, 'pre', run.input)],
+    record: run.agent === 'claude-code' ? recordCompaction : undefined,
+  }));
 }

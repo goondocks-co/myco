@@ -36,7 +36,7 @@ import {
   handleRevokeCredential, handleRevokeInvitation, handleRevokeMember,
 } from './api/access.js';
 import { handleGrants, handleMintGrant, handleRevokeGrant, handleRotateGrant } from './api/grants.js';
-import { handleProjectActivity, handleProjectSessions, handleSession, handleSessionChildren, handleSessionTurn, handleSessionTurnToolCalls, handleSessionTurns, handleSetPlanStatus, handleTitleSession, handleTranscript } from './api/sessions.js';
+import { CHILD_SEGMENTS, handleProjectActivity, handleProjectSessions, handleSession, handleSessionChildren, handleSessionTurn, handleSessionTurnToolCalls, handleSessionTurns, handleSetPlanStatus, handleTitleSession, handleTranscript } from './api/sessions.js';
 import { handleProjectRun, handleProjectRuns } from './api/agent-runs.js';
 import { MAX_BLOB_BYTES, MEMBER_ID_SEGMENT } from './constants.js';
 import { handleJoin } from './auth/join.js';
@@ -153,7 +153,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/projects/{projectId}/activity', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/activity$/, auth: 'owner', handler: handleProjectActivity },
   { method: 'GET', path: '/api/projects/{projectId}/sessions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions$/, auth: 'owner', handler: handleProjectSessions },
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})$/, auth: 'owner', handler: handleSession },
-  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/{child}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/(?<child>prompts|tool-calls|responses|plans|attachments)$/, auth: 'owner', handler: handleSessionChildren },
+  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/{child}', pattern: new RegExp(String.raw`^/api/projects/(?<projectId>[A-Za-z0-9._-]{1,64})/sessions/(?<sessionId>[^/]{1,384})/(?<child>${CHILD_SEGMENTS.join('|')})$`), auth: 'owner', handler: handleSessionChildren },
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/transcript', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/transcript$/, auth: 'owner', handler: handleTranscript },
   { method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/plans\/(?<planKey>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/status$/, auth: 'owner', handler: handleSetPlanStatus },
   { method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/title', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/title$/, auth: 'owner', handler: handleTitleSession },
