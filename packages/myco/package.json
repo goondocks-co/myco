@@ -67,7 +67,7 @@
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "@modelcontextprotocol/server": "2.0.0",
-    "@openai/agents": "^0.14.3",
+    "@openai/agents": "^0.17.0",
     "chokidar": "^5.0.0",
     "fflate": "^0.8.2",
     "gray-matter": "^4.0.3",
