@@ -59,6 +59,7 @@ export function parseMapArtifact(value: unknown): MapArtifact {
     }),
   };
   if (new Set(artifact.domains.map((domain) => domain.id)).size !== artifact.domains.length) throw new MapArtifactError('Map domain identifiers must be unique.');
+  if (new Set(artifact.directories.map((directory) => directory.path)).size !== artifact.directories.length) throw new MapArtifactError('Map skeleton paths must be unique.');
   if (new TextEncoder().encode(JSON.stringify(artifact)).byteLength > MAX_MAP_BYTES) throw new MapArtifactError('Map artifact exceeds its size limit.');
   return artifact;
 }
@@ -100,11 +101,19 @@ export function assertMapEvidence(artifact: MapArtifact, files: readonly SourceG
 
 /** Incremental passes preserve domains whose grounding did not change and gained no changed source. */
 export function assertIncrementalMap(before: MapArtifact, after: MapArtifact, changedPaths: ReadonlySet<string>): void {
+  const preserve = (prior: unknown, next: unknown, evidence: SourceGrounding[], label: string) => {
+    if (!evidence.some((file) => changedPaths.has(file.path)) && JSON.stringify(prior) !== JSON.stringify(next)) {
+      throw new MapArtifactError(`Preserve the unchanged ${label}`);
+    }
+  };
   for (const domain of before.domains) {
     const next = after.domains.find((item) => item.id === domain.id);
     const evidence = [...domain.files, ...(next?.files ?? [])].flatMap((item) => item.groundedIn);
-    if (evidence.some((file) => changedPaths.has(file.path))) continue;
-    if (JSON.stringify(domain) !== JSON.stringify(next)) throw new MapArtifactError(`Preserve the unchanged domain: ${domain.title}`);
+    preserve(domain, next, evidence, `domain: ${domain.title}`);
+  }
+  for (const directory of before.directories) {
+    const next = after.directories.find((item) => item.path === directory.path);
+    preserve(directory, next, [...directory.groundedIn, ...(next?.groundedIn ?? [])], `directory: ${directory.path}`);
   }
 }
 
