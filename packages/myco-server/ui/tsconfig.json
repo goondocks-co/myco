@@ -6,6 +6,7 @@
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
+    "paths": { "@goondocks/myco-shared/*": ["../../myco-shared/src/*"] },
     "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "moduleDetection": "force",

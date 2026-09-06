@@ -54,11 +54,12 @@ RUN bun build src/platform/bun/server-main.ts \
 # Built once, on the build host's own architecture: the output is static files
 # and is identical for every target platform.
 FROM --platform=$BUILDPLATFORM node:22-slim AS ui
-WORKDIR /build/ui
+WORKDIR /build/packages/myco-server/ui
 COPY packages/myco-server/ui/package.json packages/myco-server/ui/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY packages/myco-server/ui ./
-COPY packages/myco-server/src/read/search-types.ts /build/src/read/search-types.ts
+COPY packages/myco-server/src/read/search-types.ts /build/packages/myco-server/src/read/search-types.ts
+COPY packages/myco-shared/src /build/packages/myco-shared/src
 RUN npx vite build
 
 # --- runtime ---------------------------------------------------------------
@@ -77,7 +78,7 @@ RUN groupadd --system --gid 10001 myco \
 WORKDIR /app
 COPY --from=build /build/server.js ./server.js
 COPY --from=deps /runtime-modules ./node_modules
-COPY --from=ui /build/ui/dist ./ui
+COPY --from=ui /build/packages/myco-server/ui/dist ./ui
 COPY packages/myco-server/migrations ./migrations
 COPY packages/myco-server/docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh
