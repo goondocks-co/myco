@@ -39,6 +39,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     converges: 'no run whose runtime went away stays live past its bound: each is failed by name and released as a finished run is',
   },
   { name: 'search-index', runsThrough: 'idle', converges: 'every referenced text blob has a complete full-text index' },
+  { name: 'embedding-reconcile', runsThrough: 'idle', converges: 'every eligible project memory record has a current vector and settled spore hubness' },
 ];
 
 /** A job declared for a state, awaiting the child that gives it work. Nothing runs it; naming the owner keeps the table honest. */
@@ -48,14 +49,6 @@ export interface DeferredJob extends ServerJob {
 
 /** Declared with #919's engine, not yet given an implementation; a tick never sees these. */
 export const DEFERRED_JOBS: readonly DeferredJob[] = [
-  {
-    name: 'embedding-reconcile',
-    // Embedding calls a model and costs money per row; a Deployment nobody is
-    // using does not need its backlog cleared this minute.
-    runsThrough: 'idle',
-    converges: 'every embeddable row has a current embedding',
-    owner: '#919',
-  },
   { name: 'session-maintenance', runsThrough: 'sleep', converges: 'no session is left open past its last receipt', owner: '#919' },
   { name: 'release-provenance-reconcile', runsThrough: 'sleep', converges: 'every release-state row reflects the git state it was checked against', owner: '#919' },
 ];

@@ -16,7 +16,8 @@
     "paths": {
       "@myco/*": ["./src/*"],
       "@myco-deploy/*": ["../myco-deploy/src/*"],
-      "@goondocks/myco-shared": ["../myco-shared/src/index.ts"]
+      "@goondocks/myco-shared": ["../myco-shared/src/index.ts"],
+      "@goondocks/myco-shared/relevance": ["../myco-shared/src/relevance.ts"]
     }
   },
   "include": ["src/**/*", "plugin/**/*"],

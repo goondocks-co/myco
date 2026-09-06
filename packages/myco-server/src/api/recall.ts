@@ -11,6 +11,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { composePromptContext, composeSessionContext, readRecallLeaves, type SessionContextKind } from '../core/recall.js';
+import { resolveSemanticSearch } from '../core/search.js';
 import { settingsWriter } from '../core/settings.js';
 import { refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
@@ -53,7 +54,7 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
   ]);
   const served = await composePromptContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
     sessionId, promptId, text, now: ctx.now,
-  });
+  }, () => resolveSemanticSearch(env));
   return Response.json({ persisted: true, ...served });
 }
 

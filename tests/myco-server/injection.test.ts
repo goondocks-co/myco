@@ -13,6 +13,7 @@ import {
 import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
+import { semanticRecall } from './helpers/semantic-recall.js';
 
 const SCOPE: ReadScope = { projectId: 'proj_one' };
 const OTHER: ReadScope = { projectId: 'proj_two' };
@@ -49,7 +50,7 @@ const select = (db: RelationalStore, over: Partial<{ leaves: InjectionLeaves; ca
     promptHash: over.promptHash ?? 'hash_1',
     prompt: over.prompt ?? PROMPT,
     now: over.now ?? NOW,
-  });
+  }, semanticRecall(db, over.scope ?? SCOPE));
 
 const rows = (sqlite: Database) => sqlite.query(`SELECT project_id, session_id, prompt_id, prompt_hash, spore_ids, created_at FROM spore_injections`).all() as Record<string, string | number>[];
 
@@ -107,7 +108,7 @@ describe('the gates, in order', () => {
 });
 
 describe('the pool', () => {
-  it('serves active spores newest first and never a retired one', async () => {
+  it('serves eligible spores in semantic rank order and never a retired one', async () => {
     const { db } = store();
     await insertSpore(db, SCOPE, spore('old', { createdAt: NOW - 3_000 }));
     await insertSpore(db, SCOPE, spore('gone', { createdAt: NOW - 1_000, status: 'superseded' }));
@@ -127,7 +128,7 @@ describe('the pool', () => {
     expect(served.spores.map((s) => s.id)).toEqual(['sp0', 'sp1']);
   });
 
-  it('leaves a spore already served in this session out, and the next-newest takes its place', async () => {
+  it('leaves a spore already served in this session out, and the next ranked match takes its place', async () => {
     const { db } = store();
     for (const [id, at] of [['a', NOW - 1], ['b', NOW - 2], ['c', NOW - 3]] as const) {
       await insertSpore(db, SCOPE, spore(id, { createdAt: at }));
@@ -175,7 +176,7 @@ describe('the record', () => {
 
   it('reads back per session, newest first, and by prompt with the spores hydrated', async () => {
     const { db } = store();
-    await insertSpore(db, SCOPE, spore('a', { createdAt: NOW - 1, observationType: 'decision', content: 'the selector reads recency' }));
+    await insertSpore(db, SCOPE, spore('a', { createdAt: NOW - 1, observationType: 'decision', content: 'the selector reads relevance' }));
     await insertSpore(db, SCOPE, spore('b', { createdAt: NOW - 2 }));
     await select(db, { leaves: { enabled: true, maxPerPrompt: 1 }, promptId: 'p1', promptHash: 'h1', now: NOW });
     await select(db, { leaves: { enabled: true, maxPerPrompt: 1 }, promptId: 'p2', promptHash: 'h2', now: NOW + 10 });
@@ -187,7 +188,7 @@ describe('the record', () => {
     expect(one).toEqual({
       sporeIds: ['a'],
       createdAt: NOW,
-      spores: [{ id: 'a', observationType: 'decision', preview: 'the selector reads recency' }],
+      spores: [{ id: 'a', observationType: 'decision', preview: 'the selector reads relevance' }],
     });
     expect(await injectionForPrompt(db, SCOPE, SESSION, 'p9')).toBeNull();
   });
@@ -215,10 +216,10 @@ describe('the record', () => {
 describe('the rendered context', () => {
   it('names each spore by its type and one line of its observation', async () => {
     const { db } = store();
-    await insertSpore(db, SCOPE, spore('a', { observationType: 'decision', content: 'recency\nis the whole selector', createdAt: NOW - 1 }));
+    await insertSpore(db, SCOPE, spore('a', { observationType: 'decision', content: 'relevance\nguides the selector', createdAt: NOW - 1 }));
     await insertSpore(db, SCOPE, spore('b', { observationType: 'gotcha', content: 'the hook answers first', createdAt: NOW - 2 }));
     const served = await select(db);
-    expect(served.context).toBe('Relevant vault observations:\n- (decision) recency is the whole selector\n- (gotcha) the hook answers first');
+    expect(served.context).toBe('Relevant vault observations:\n- (decision) relevance guides the selector\n- (gotcha) the hook answers first');
   });
 
   it('stops at the budget, keeping the spores the record names', async () => {

@@ -37,7 +37,7 @@ function importSpecifiers(source: string): string[] {
 }
 
 /** The modules the core is made of. A named floor, not a count: a count sails through a silent collapse. */
-const CORE_MODULES = ['activity.ts', 'blobs.ts', 'children.ts', 'cortex.ts', 'meta.ts', 'plans.ts', 'runs.ts', 'scope.ts', 'search.ts', 'search-types.ts', 'credentials.ts', 'sessions.ts', 'transcript.ts', 'turns.ts'] as const;
+const CORE_MODULES = ['activity.ts', 'blobs.ts', 'children.ts', 'cortex.ts', 'meta.ts', 'plans.ts', 'runs.ts', 'scope.ts', 'search.ts', 'search-types.ts', 'credentials.ts', 'embedding.ts', 'sessions.ts', 'transcript.ts', 'turns.ts'] as const;
 
 const FORBIDDEN_IMPORT = [/\/auth\//, /cookie/i, /\/pipeline\.js/, /\/routes\.js/, /\/context\.js/, /\/api\//, /\/ingest\//];
 /** The one ingest module a read may name: the wire's kind catalogue, pure data — never the write path beside it. */
@@ -152,7 +152,7 @@ describe('read layer', () => {
     //                     additive restore are row transport over every table,
     //                     which no facade abstraction can carry
     //   pipeline.ts   one quota re-read on the ingest admission path
-    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/runs\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/digests\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/search-index\.ts$/, /^core\/spores\.ts$/, /^pipeline\.ts$/];
+    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/runs\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/digests\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/search-index\.ts$/, /^core\/embedding\/(reconcile|hubness|jobs)\.ts$/, /^core\/spores\.ts$/, /^pipeline\.ts$/];
     const offenders: string[] = [];
     for (const file of tsFiles(SRC)) {
       const rel = file.slice(SRC.length);

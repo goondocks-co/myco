@@ -58,6 +58,12 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     "inputSchema": {
       "type": "object",
       "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["auto", "semantic", "fts"],
+          "description": "Auto uses semantic search and falls back to full text only when the provider is unavailable. Use fts to search captured prompt and response bodies."
+        },
+        "session_id": { "type": "string", "description": "Filter by session ID." },
         "query": {
           "type": "string",
           "description": "Natural language search query — describe what you are looking for"

@@ -1,16 +1,9 @@
 import { expect } from 'bun:test';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
-/**
- * Recall on both targets: a prompt carrying planning intent is served the nudge
- * and the session's unseen spores, the same prompt content is served nothing a
- * second time, the record of what the prompt was served reaches the session
- * explorer under that prompt, a starting session is served the Project's
- * instructions once and every delegation of it is served too, and a Project
- * withdrawn from `cortex` is served an empty block naming the gate.
- */
+/** Both unconfigured targets retain independent recall contributors and explicitly skip semantic spores. */
 export const recall: ParityScenario = {
-  name: 'recall: the nudge and the unseen spores on a prompt, once per session, gated by the capability',
+  name: 'recall: provider unavailability, independent guidance and capability admission',
   async run(target: ParityTarget) {
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>, createdAt = Date.now()) => {
       const res = await fetch(`${target.url}/events`, {
@@ -74,16 +67,15 @@ export const recall: ParityScenario = {
 
     await admit(true);
     const spore = await mcp({ op: 'save', type: 'decision', content: `the hook answers before the drain ${stamp}`, session_id: session });
-    const sporeId = String(spore.id);
+    expect(spore.id).toBeDefined();
 
-    // The session's first prompt carrying planning intent: the nudge, then the spores.
+    // The planning nudge remains available when semantic recall has no provider.
     const first = await served(session, p1, planning);
     expect(first.persisted).toBe(true);
-    expect(first.skipped).toEqual([]);
-    expect(first.parts?.map((p) => p.kind)).toEqual(['plan-nudge', 'spores']);
-    expect(first.parts?.[1]?.sporeIds).toContain(sporeId);
+    expect(first.skipped).toEqual(['spores:provider_unavailable']);
+    expect(first.parts?.map((p) => p.kind)).toEqual(['plan-nudge']);
     expect(first.context?.startsWith('Myco is where plans live')).toBe(true);
-    expect(first.context).toContain(`the hook answers before the drain ${stamp}`);
+    expect(first.context).not.toContain(`the hook answers before the drain ${stamp}`);
     expect(first.context!.length).toBeLessThanOrEqual(10_000);
 
     // The same prompt content again: nothing at all, and every silence is named
@@ -105,8 +97,7 @@ export const recall: ParityScenario = {
     interface Turn { injection: { sporeIds: string[]; spores: { id: string }[] } | null }
     const turn = await owner<Turn>(`/api/projects/${target.projectId}/sessions/${session}/turns/${p1}`);
     expect(turn.status).toBe(200);
-    expect(turn.body.injection?.sporeIds).toContain(sporeId);
-    expect(turn.body.injection?.spores.map((s) => s.id)).toContain(sporeId);
+    expect(turn.body.injection).toBeNull();
 
     // A starting session is served the Project's instructions, trimmed and with
     // no heading, and is served nothing a second time.

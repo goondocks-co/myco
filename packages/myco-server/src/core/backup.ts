@@ -61,6 +61,7 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'search_blob_queue', 'search_blob_chunks',
+  'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'local_vectors',
   ...['prompt_batches', 'responses', 'spores', 'plans', 'skill_records', 'sessions', 'search_blob_chunks']
     .flatMap((table) => ['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `${table}_fts${suffix}`)),
   'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',

@@ -427,7 +427,7 @@ describe('gates', () => {
   it('keeps request stream ownership with the runtime; only the object-store indexer owns its reader', () => {
     for (const f of files(SRC)) {
       const t = readFileSync(f, 'utf8');
-      if (f.endsWith('/core/search-index.ts')) {
+      if (f.endsWith('/core/search-index.ts') || f.endsWith('/core/embedding/reconcile.ts')) {
         expect(t).not.toMatch(/\bRequest\b|\bRouteContext\b|\bServerEnv\b/);
         continue;
       }
@@ -640,6 +640,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/instruction', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/instruction', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
       },
+      'POST /runs/embedding-step': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
+      },
       'POST /runs/instructions-write': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/instructions-write', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -821,7 +826,10 @@ describe('gates', () => {
     // and the one dispatcher, which opens a provider credential to hand it to
     // the launched runtime's environment and nothing else. A new file here is
     // the thing to look at.
-    expect(callers.sort()).toEqual([join('api', 'settings.ts'), join('core', 'harness.ts')]);
+    expect(callers.sort()).toEqual([join('api', 'settings.ts'), join('core', 'provider-credentials.ts')]);
+    const credentialCallers = files(SRC).filter((f) => /\bopenProviderCredential\(/.test(stripComments(readFileSync(f, 'utf8'))))
+      .map((f) => f.slice(SRC.length + 1)).sort();
+    expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'harness.ts'), join('core', 'provider-credentials.ts')]);
     const surface = stripComments(readFileSync(join(SRC, 'api', 'settings.ts'), 'utf8'));
     expect(surface).not.toMatch(/\.get\(\s*ctx\.params\.name/);
   });
@@ -931,12 +939,14 @@ describe('gates', () => {
       ['_RelationalSatisfies', 'RelationalStore', 'D1Database'],
       ['_RateLimitSatisfies', 'RateLimiter', 'RateLimit'],
       ['_BlobStoreSatisfies', 'BlobStore', 'R2Bucket'],
+      ['_VectorStoreSatisfies', 'VectorIndex', 'VectorizeIndex'],
+      ['_EmbeddingSatisfies', 'EmbeddingBinding', 'Ai'],
     ]) {
       expect({ proof, args: declared.get(proof) ?? null }).toEqual({ proof, args: [adapter, binding] });
       expect({ proof, imported: new RegExp(`\\b${binding}\\b`).test(platform.slice(0, platform.indexOf('type AssertAssignable'))) })
         .toEqual({ proof, imported: false });
     }
-    expect(declared.size).toBe(3);
+    expect(declared.size).toBe(5);
     expect(platform).toMatch(/type AssertAssignable<A, B extends A> = B;/);
   });
 
@@ -1083,6 +1093,7 @@ describe('gates', () => {
       'member POST /runs/claim',
       'member POST /runs/digest',
       'member POST /runs/digest-write',
+      'member POST /runs/embedding-step',
       'member POST /runs/events',
       'member POST /runs/failed',
       'member POST /runs/get',
@@ -1261,8 +1272,9 @@ describe('gates', () => {
     for (const f of files(SRC)) for (const pkg of specifiers(readFileSync(f, 'utf8'))) (imported.get(pkg) ?? imported.set(pkg, new Set()).get(pkg)!).add(f);
     expect([...imported.keys()].filter((pkg) => !declared.has(pkg))).toEqual([]);
     const shared = new Set(sharedFiles());
-    expect(Object.keys(runtime).filter((pkg) => ![...(imported.get(pkg) ?? [])].some((f) => shared.has(f)))).toEqual([]);
-    expect(runtime).toEqual({ '@modelcontextprotocol/server': '2.0.0' });
+    expect(Object.keys(runtime).filter((pkg) => pkg !== 'sqlite-vec' && ![...(imported.get(pkg) ?? [])].some((f) => shared.has(f)))).toEqual([]);
+    expect([...(imported.get('sqlite-vec') ?? [])]).toEqual([join(SRC, 'platform', 'bun', 'vectors.ts')]);
+    expect(runtime).toEqual({ '@modelcontextprotocol/server': '2.0.0', '@goondocks/myco-shared': '^0.2.0', 'sqlite-vec': '^0.1.9' });
   });
 
   it('leaves owner routes ingest-neutral', async () => {

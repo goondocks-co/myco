@@ -32,6 +32,7 @@ export { MAX_RUN_ERROR_CHARS } from './run-store.js';
 import { createHttpRunStore, NoProviderConfiguredError, postRunControl, ProjectNotAdmittedError, type RunClaimAdmission } from './run-store-http.js';
 import { INSTRUCTED_TASKS, materializedToolsForTask, type ServerToolContext } from './server-tools.js';
 import { onStopSignals, type ProcessEvents } from './process-signals.js';
+import { EMBEDDING_TASK, embeddingTask, executeEmbeddingRun } from './server-embedding.js';
 
 export { RUNTIME_STOP_SIGNALS, type ProcessEvents } from './process-signals.js';
 
@@ -312,7 +313,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
   try {
     const definitionsDir = resolveDefinitionsDir();
     const definition = loadAgentDefinition(definitionsDir);
-    const task = loadAllTasks(definitionsDir).get(taskName);
+    const task = taskName === EMBEDDING_TASK ? embeddingTask : loadAllTasks(definitionsDir).get(taskName);
     if (task === undefined) {
       return { runId, status: 'failed', ending: 'unknown-task', error: `unknown task: ${taskName}`, reportCount: 0 };
     }
@@ -332,7 +333,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
           agent_id: agentId,
           task: taskName,
           status: 'running',
-          harness: harnessId,
+          harness: taskName === EMBEDDING_TASK ? 'deterministic' : harnessId,
           provider: options.provider?.type ?? null,
           model: options.model ?? null,
           run_context: options.params === undefined ? null : JSON.stringify(options.params),
@@ -359,7 +360,6 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     const counter = { reports: 0, writes: 0 };
     const toolContext = { client, budget, runId, agentId };
     const tools = materializedToolsForTask(taskName, toolContext, counter);
-    const harness = options.harness ?? getAgentHarness(harnessId);
     // The prompt the server built for this run rides the run row rather than the
     // container's environment; the claim above is what admits this read.
     const instruction = options.instruction ?? await instructionForRun(toolContext, taskName);
@@ -382,7 +382,9 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       timer = setTimeout(() => { abort.abort(); reject(new Error(RUN_DEADLINE_ERROR)); }, timeoutMs);
     });
     try {
-      const execution = harness.execute({
+      const execution = taskName === EMBEDDING_TASK
+        ? executeEmbeddingRun(toolContext, abort.signal, Date.now() + timeoutMs).then((result) => { counter.reports += 1; return result; })
+        : (options.harness ?? getAgentHarness(harnessId)).execute({
         prompt,
         model: options.model ?? task.model ?? 'claude-opus-5',
         maxTurns: task.maxTurns,

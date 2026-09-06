@@ -93,7 +93,7 @@ describe('the power state a tick resolves', () => {
   it('runs housekeeping at every depth but deep sleep: a Deployment in use is swept too', async () => {
     const f = fixture();
     f.seedSession('s1', NOW);
-    expect((await runTick(f.env, NOW)).jobs.map((j) => j.name)).toEqual(['agent-run-retention', 'run-stale-sweep', 'search-index']);
+    expect((await runTick(f.env, NOW)).jobs.map((j) => j.name)).toEqual(['agent-run-retention', 'run-stale-sweep', 'search-index', 'embedding-reconcile']);
   });
 
   it('runs nothing when the Deployment never saw activity: nothing to keep, and no wake to pay for', async () => {

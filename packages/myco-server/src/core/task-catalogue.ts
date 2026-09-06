@@ -10,18 +10,20 @@
  *
  * A Deployment has no provisioning moment — a Project appears from a member's
  * first write — so admission has to be asked per run, and this is the table that
- * answers it. Two kinds of gate, and every retained task names one:
+ * answers it. Every retained task names one gate:
  *
  * - **A capability**, per Project, absent meaning not admitted.
  * - **A provider**, per Deployment, for the capture-driven tasks. A title and
  *   summary rides capture rather than an intelligence capability, and asks only
  *   whether there is a model to call — resolved task-first then default, as
  *   `hasConfiguredProvider` resolves it locally.
+ * - **An embedding provider**, per Deployment, for deterministic vector work.
  */
 import type { RunAdmissionGate } from './runs.js';
 
 /** Every retained task, with the gate it runs behind. Canopy's tasks belong to the map task and are not here. */
 export const TASK_ADMISSION: Readonly<Record<string, RunAdmissionGate>> = {
+  'embedding-reconcile': { kind: 'embedding' },
   'container-smoke': { kind: 'capability', capability: 'cortex' },
   'cortex-instructions': { kind: 'capability', capability: 'cortex' },
   'cortex-prompt-builder': { kind: 'capability', capability: 'cortex' },
@@ -73,6 +75,7 @@ export interface TaskSchedule {
  * `harness-health`: one call, one report, proof the runtime still works.
  */
 export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
+  'embedding-reconcile': null,
   'container-smoke': { intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 },
   // Declared and switched off. 1.4 ran this every 8 hours against a local
   // model-agnostic vault; a Deployment run is a container and a frontier model,
