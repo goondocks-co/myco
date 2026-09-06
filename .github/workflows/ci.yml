@@ -80,7 +80,7 @@ jobs:
           bun-version-file: .bun-version
       - run: npm ci
       - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build for both architectures
         run: |
