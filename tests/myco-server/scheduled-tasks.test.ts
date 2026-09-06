@@ -71,11 +71,14 @@ describe('the leaves the clock reads', () => {
   it('is off until the owner turns scheduling on, with the 1.4 defaults for the recency gates', async () => {
     const f = fixture();
     f.sqlite.run(`DELETE FROM deployment_settings WHERE leaf = 'agent.scheduled_tasks_enabled'`);
-    expect(await scheduleLeaves(f.env)).toEqual({ enabled: false, coldThresholdDays: COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, activeWindowDays: ACTIVE_WINDOW_DAYS_DEFAULT, overrides: {} });
+    expect(await scheduleLeaves(f.env)).toEqual({ enabled: false, coldThresholdDays: COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, activeWindowDays: ACTIVE_WINDOW_DAYS_DEFAULT, overrides: { 'canopy-map': { schedule: { enabled: true, intervalSeconds: 3600 } } } });
     f.setting('agent.scheduled_tasks_enabled', true);
     f.setting('agent.cold_project_threshold_days', 3);
     f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 60 } } });
     expect(await scheduleLeaves(f.env)).toMatchObject({ enabled: true, coldThresholdDays: 3, overrides: { 'container-smoke': { schedule: { intervalSeconds: 60 } } } });
+    f.setting('cortex.canopy.refresh.background_enabled', false);
+    f.setting('agent.tasks', { 'canopy-map': { schedule: { enabled: true } } });
+    expect((await scheduleLeaves(f.env)).overrides['canopy-map']).toMatchObject({ schedule: { enabled: false } });
   });
 });
 

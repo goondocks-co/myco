@@ -1,3 +1,4 @@
+import { createExplorationTools } from '@myco/agent/tools/exploration-tools.js';
 /**
  * The served tool surface matches the task definitions it serves.
  *
@@ -31,7 +32,7 @@ const UNDECLARED: Readonly<Record<string, readonly string[]>> = {};
 
 /** The tool surface a run of this task holds, by name. */
 function servedNames(taskName: string): string[] {
-  const ctx = { client: {} as never, budget: { connectTimeoutMs: 1, requestTimeoutMs: 1 }, runId: 'run', agentId: 'agent' };
+  const ctx = { client: {} as never, budget: { connectTimeoutMs: 1, requestTimeoutMs: 1 }, runId: 'run', agentId: 'agent', sourceTools: taskName === 'canopy-map' ? createExplorationTools({ projectRoot: '/prepared-source' }) : [] };
   return materializedToolsForTask(taskName, ctx, { reports: 0, writes: 0 }).map((t) => t.name);
 }
 

@@ -9,6 +9,7 @@ export interface SourceGrounding { path: string; sha256: string }
 export interface MapAnnotation { path: string; annotation: string; groundedIn: SourceGrounding[] }
 export interface MapDomain { id: string; title: string; files: MapAnnotation[] }
 export interface MapArtifact { directories: MapAnnotation[]; domains: MapDomain[] }
+export interface MapSourcePin { inputHash: string; priorRevision: string | null }
 
 export class MapArtifactError extends Error {}
 
@@ -40,6 +41,17 @@ const grounding = (value: unknown): SourceGrounding => {
   if (!/^[a-f0-9]{64}$/.test(sha256)) throw new MapArtifactError('Map grounding requires a SHA-256 digest.');
   return { path: mapSourcePath(item.path), sha256 };
 };
+
+export function parseMapSourcePin(value: unknown): MapSourcePin {
+  const item = record(value);
+  const inputHash = line(item.inputHash, 64);
+  if (!/^[a-f0-9]{64}$/.test(inputHash)) throw new MapArtifactError('Map source requires a SHA-256 digest.');
+  const priorRevision = item.priorRevision;
+  if (!(priorRevision === null || (typeof priorRevision === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(priorRevision)))) {
+    throw new MapArtifactError('Map source requires the prior map revision or null.');
+  }
+  return { inputHash, priorRevision };
+}
 
 const annotation = (value: unknown): MapAnnotation => {
   const item = record(value);
@@ -87,6 +99,7 @@ export function assertMapEvidence(artifact: MapArtifact, files: readonly SourceG
   const reused = (item: MapAnnotation) => existing.has(JSON.stringify(item));
   for (const item of artifact.domains.flatMap((domain) => domain.files)) {
     if (!hashes.has(item.path) || (!reused(item) && !readPaths.has(item.path))) throw new MapArtifactError(`Read the annotated source before describing it: ${item.path}`);
+    if (!item.groundedIn.some((file) => file.path === item.path)) throw new MapArtifactError(`Include the annotated file in its grounding: ${item.path}`);
   }
   const paths = admittedSourcePaths(files);
   for (const item of artifact.directories) {
@@ -132,3 +145,28 @@ export function renderMap(artifact: MapArtifact, repository: RepositoryPin): str
     ...artifact.domains.flatMap((domain) => [`### ${prose(domain.title)}`, '', ...domain.files.map(bullet), '']),
     '<!-- Map Provenance', provenance, '-->', ''].join('\n');
 }
+
+export const CANOPY_DEFAULT_EXCLUDE_PATTERNS: readonly string[] = [
+  // Source control + filesystem noise
+  '.git',
+  '.DS_Store',
+  // Dependency trees
+  'node_modules',
+  // Python: bytecode, venvs, test/lint caches
+  '__pycache__',
+  '.venv', 'venv', 'env', 'ENV',
+  '.pytest_cache', '.ruff_cache', '.mypy_cache', '.tox',
+  // Build/output dirs (JS, Rust, Java)
+  'dist', 'build', 'target', '.gradle', '.cache',
+  // Framework caches
+  '.next', '.nuxt', '.turbo', '.svelte-kit',
+  // Dependency lockfiles
+  '**/*.lock',
+  '**/package-lock.json',
+  '**/pnpm-lock.yaml',
+  '**/yarn.lock',
+];
+
+
+export interface MapSettings { defaultPatterns: string[]; userPatterns: string[] }
+export interface StoredMap { revision: string; artifact: MapArtifact; content: string; inputHash: string; repository: RepositoryPin; sourceRunId: string; generatedAt: number }

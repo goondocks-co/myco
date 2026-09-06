@@ -1,4 +1,5 @@
 import { repositories } from './scenarios/repositories.ts';
+import { canopy } from './scenarios/canopy.ts';
 import { afterAll, beforeAll, describe, it, test } from 'bun:test';
 import type { ParityTarget } from './harness.ts';
 import { bootSelfhosted } from './targets/selfhosted.ts';
@@ -16,7 +17,7 @@ import { cortex } from './scenarios/cortex.ts';
 import { replacedRun } from './scenarios/replaced-run.ts';
 import { search } from './scenarios/search.ts';
 
-const scenarios = [repositories, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search];
+const scenarios = [repositories, canopy, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search];
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

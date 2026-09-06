@@ -1,6 +1,25 @@
 import { type UseQueryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson } from '../lib/api';
 import { usePaged } from './use-paged';
+import { MAP_TASK, type StoredMap } from '@goondocks/myco-shared/canopy';
+
+export function useCanopyMap(projectId: string) {
+  return useQuery({ queryKey: ['canopy-map', projectId], queryFn: ({ signal }) => fetchJson<{ map: StoredMap | null }>(`${project(projectId)}/canopy-map`, signal) });
+}
+
+export function useRefreshMap(projectId: string) {
+  const client = useQueryClient();
+  return useMutation({ mutationFn: (ask: DispatchAsk = {}) => askForArtifact(MAP_TASK, projectId, ask),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['canopy-map', projectId] }) });
+}
+
+export function mapRefusalText(error: unknown): string {
+  return refusalTextFrom(error, {
+    repository_missing: 'Connect this project’s repository in Settings → Projects first.',
+    max_runs_per_day: 'The code map has reached today’s run limit. Adjust task limits in Settings or try tomorrow.',
+    harness_unavailable: 'This deployment has no available harness runtime.',
+  }, 'The code map could not be refreshed. Check the project capability and provider settings.');
+}
 
 export interface RunListRow {
   id: string;
@@ -199,7 +218,7 @@ export function useRuns(projectId: string, status: string | null) {
 }
 
 /** One run in full. A watcher passes `enabled` and `retry` to follow a run that may not have claimed yet. */
-export function useRun(projectId: string, runId: string, options: Pick<UseQueryOptions<RunDetailResponse>, 'enabled' | 'retry'> = {}) {
+export function useRun(projectId: string, runId: string, options: Pick<UseQueryOptions<RunDetailResponse>, 'enabled' | 'retry' | 'refetchInterval'> = {}) {
   return useQuery({ queryKey: ['run', projectId, runId], queryFn: ({ signal }) => fetchJson<RunDetailResponse>(`${project(projectId)}/runs/${seg(runId)}`, signal), ...options });
 }
 

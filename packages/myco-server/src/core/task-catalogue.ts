@@ -19,10 +19,12 @@
  *   `hasConfiguredProvider` resolves it locally.
  * - **An embedding provider**, per Deployment, for deterministic vector work.
  */
+import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import type { RunAdmissionGate } from './runs.js';
 
-/** Every retained task, with the gate it runs behind. Canopy's tasks belong to the map task and are not here. */
+/** Every retained task, with the gate it runs behind. */
 export const TASK_ADMISSION: Readonly<Record<string, RunAdmissionGate>> = {
+  [MAP_TASK]: { kind: 'capability', capability: 'canopy' },
   'embedding-reconcile': { kind: 'embedding' },
   'container-smoke': { kind: 'capability', capability: 'cortex' },
   'cortex-instructions': { kind: 'capability', capability: 'cortex' },
@@ -75,6 +77,7 @@ export interface TaskSchedule {
  * `harness-health`: one call, one report, proof the runtime still works.
  */
 export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
+  [MAP_TASK]: { enabled: false, intervalSeconds: 21_600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 4 },
   'embedding-reconcile': null,
   'container-smoke': { intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 },
   // Declared and switched off. 1.4 ran this every 8 hours against a local
@@ -114,6 +117,7 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
  * inside and the point past which the stale sweep gives up on it.
  */
 export const TASK_RUN_TIMEOUT_SECONDS: Readonly<Record<string, number>> = {
+  [MAP_TASK]: 900,
   'cortex-instructions': 900,
   'digest-only': 1800,
 };

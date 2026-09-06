@@ -700,6 +700,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/repository', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/repository', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
       },
+      'POST /runs/canopy-map': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/canopy-map', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/canopy-map', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
+      },
       'POST /runs/state/read': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/state/read', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -1095,6 +1100,7 @@ describe('gates', () => {
       'member POST /mcp',
       'member POST /members/link-github',
       'member POST /runs/admission',
+      'member POST /runs/canopy-map',
       'member POST /runs/claim',
       'member POST /runs/digest',
       'member POST /runs/digest-write',
@@ -1136,6 +1142,7 @@ describe('gates', () => {
       'owner GET /api/projects',
       'owner GET /api/projects/{projectId}/activity',
       'owner GET /api/projects/{projectId}/blobs/{key}',
+      'owner GET /api/projects/{projectId}/canopy-map',
       'owner GET /api/projects/{projectId}/capabilities',
       'owner GET /api/projects/{projectId}/cortex/instructions',
       'owner GET /api/projects/{projectId}/digests',

@@ -21,6 +21,7 @@ import { RESOLUTION_ACTIONS, SPORE_STATUSES } from '@myco/constants/spore-status
 import { OBSERVATION_TYPES } from '../../vault/types.js';
 import type { MycoToolDefinition } from '../tools/types.js';
 import { postRunControl, postRunReport, RunControlError } from './run-store-http.js';
+import { MAP_TASK, MapArtifactError } from '@goondocks/myco-shared/canopy';
 
 /** The task whose runs read and write one session's title over the run routes. */
 export const TITLE_SUMMARY_TASK = 'title-summary';
@@ -31,7 +32,7 @@ export const CORTEX_INSTRUCTIONS_TASK = 'cortex-instructions';
 /** The task whose runs regenerate this Project's digest extracts. */
 export const DIGEST_TASK = 'digest-only';
 /** Every task this runtime materializes a tool surface for. */
-export const SERVED_TASKS: readonly string[] = [TITLE_SUMMARY_TASK, SUPERSESSION_SWEEP_TASK, CORTEX_INSTRUCTIONS_TASK, DIGEST_TASK];
+export const SERVED_TASKS: readonly string[] = [TITLE_SUMMARY_TASK, SUPERSESSION_SWEEP_TASK, CORTEX_INSTRUCTIONS_TASK, DIGEST_TASK, MAP_TASK];
 /** The tasks whose prompt the server builds; a run of one reads it back over `/runs/instruction` rather than from its environment. */
 export const INSTRUCTED_TASKS: readonly string[] = [CORTEX_INSTRUCTIONS_TASK, DIGEST_TASK];
 /** The report action a `cortex-instructions` run records its artifact under; the same call files the artifact itself. */
@@ -42,7 +43,11 @@ export interface ServerToolContext {
   budget: RequestBudget;
   runId: string;
   agentId: string;
+  sourceTools?: MycoToolDefinition[];
+  beforeReport?: (args: RunReportArgs) => Promise<void>;
 }
+
+export interface RunReportArgs { action: string; summary: string; details?: Record<string, unknown> }
 
 const text = (value: unknown) => ({ content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }] });
 
@@ -72,7 +77,11 @@ export function materializedReportTool(ctx: ServerToolContext, counter: { report
       details: z.record(z.string(), z.unknown()).optional().describe('Structured details as key-value pairs'),
     },
     annotations: { readOnlyHint: true },
-    handler: async (args: { action: string; summary: string; details?: Record<string, unknown> }) => {
+    handler: async (args: RunReportArgs) => {
+      try { await ctx.beforeReport?.(args); } catch (error) {
+        if (error instanceof MapArtifactError) return text({ error: error.message });
+        throw error;
+      }
       const content = instructionsContentOf(args);
       let failure: string | null = null;
       if (content !== null) {
@@ -312,7 +321,7 @@ export function materializedWriteDigestTool(ctx: ServerToolContext, counter: { w
 
 /** The tools a run of `taskName` holds. */
 export function materializedToolsForTask(taskName: string, ctx: ServerToolContext, counter: { reports: number; writes: number }): MycoToolDefinition[] {
-  const tools = [materializedReportTool(ctx, counter)];
+  const tools = [materializedReportTool(ctx, counter), ...(ctx.sourceTools ?? [])];
   if (taskName === TITLE_SUMMARY_TASK) {
     tools.push(materializedSessionMaterialTool(ctx), materializedUpdateSessionTool(ctx, counter));
   }

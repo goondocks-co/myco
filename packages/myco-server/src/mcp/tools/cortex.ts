@@ -1,3 +1,4 @@
+import { readCanopyMap } from '../../read/canopy.js';
 /**
  * `myco_cortex` over the Deployment's generated intelligence: the digest
  * tiers, the current instructions, and the activity of every Project.
@@ -53,4 +54,13 @@ export async function handleCortexProjectsActivity(_input: ToolInput, ctx: ToolC
       active: p.lastActivityAt !== null && ctx.now - p.lastActivityAt <= ACTIVE_WINDOW_MS,
     })),
   };
+}
+
+/** The same committed-source map the dashboard reads. */
+export async function handleCortexMap(input: ToolInput, ctx: ToolContext): Promise<unknown> {
+  const scope = await scopeOf(ctx, input);
+  if (scope === null) return failure('Project not found');
+  const map = await readCanopyMap(ctx.env.db, scope);
+  return map === null ? { content: null, available: false, reason: 'No code map has been generated for this project.' }
+    : { content: map.content, available: true, generated_at: map.generatedAt, source_run_id: map.sourceRunId, repository: map.repository };
 }

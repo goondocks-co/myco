@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createLayeredExcludeMatcher, type ExcludeMatcherConfig } from '../exclude.js';
-import { walkProject } from '../scanner/walk.js';
+import { createLayeredExcludeMatcher, type ExcludeMatcherConfig } from '@myco/canopy/exclude.js';
+import { walkProject } from '@myco/canopy/scanner/walk.js';
 import { admittedSourcePaths, type SourceGrounding } from '@goondocks/myco-shared/canopy';
 
 const MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024;

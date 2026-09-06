@@ -113,6 +113,15 @@ Code tasks prepare an isolated checkout and record its commit before reading fil
 
 Checkout has a two-minute limit and supports up to 256 MiB of committed file content. Repositories containing submodules or Git LFS pointers are refused. Use **Edit repository** to change the branch or replace a credential. **Disconnect** removes the connection and its credential while retaining project memory. Repository connections are configuration and must be re-entered after restoring a backup.
 
+### Generate a code map
+
+Enable **Code map** for the project in **Settings → Projects**, then open **Cortex → Code map** and select **Refresh map**. The task reads the configured branch at a pinned commit, checks applicable project rules and representative source files, and publishes a compact directory skeleton and domain guide. The map records its commit, source run and content-hash grounding. Connected agents read the same map with `myco_cortex` using `op: "canopy_map"`.
+
+A refresh preserves unaffected domains and avoids model work when its admitted source and task definition are unchanged. **Rebuild map** explores the source again. Failed updates retain the current map; open the run for its failure, usage and cost. Map generation has a 15-minute run budget, at most 35 exploration calls, and a default ceiling of four runs per day. Only readable text files up to 2 MiB are admitted; binary and oversized files are counted as skipped in the run report.
+
+**Settings → Code map** controls background refresh and extra exclusion patterns. Gitignore rules, built-in exclusions, sensitive files and Myco-managed directories also apply. Background refresh requires server scheduling and the project's Code map capability; task-specific schedule overrides and daily limits still apply. There is no per-file entry index or entry injection.
+
+
 ## Access
 
 Membership is flat: every member manages members, invitations, runtimes and external agents, and every act names who did it.

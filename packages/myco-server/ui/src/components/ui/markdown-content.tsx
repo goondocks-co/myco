@@ -5,6 +5,7 @@ import { cn } from '../../lib/cn';
 interface MarkdownContentProps {
   content: string;
   className?: string;
+  skipHtml?: boolean;
 }
 
 /** Stored markdown sits inside a page that already owns its top headings, so the document's own headings step down two levels and never outrank the page's. */
@@ -18,10 +19,10 @@ const DEMOTED_HEADINGS: Components = {
 };
 
 /** Stored Markdown — instructions, digests, skills, prompts, plans — rendered as prose. */
-export function MarkdownContent({ content, className }: MarkdownContentProps) {
+export function MarkdownContent({ content, className, skipHtml }: MarkdownContentProps) {
   return (
     <div className={cn('prose-myco', className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={DEMOTED_HEADINGS}>{content}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={DEMOTED_HEADINGS} skipHtml={skipHtml}>{content}</ReactMarkdown>
     </div>
   );
 }

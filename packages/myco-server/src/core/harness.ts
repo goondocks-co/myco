@@ -1,3 +1,5 @@
+import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
+import { repositoryIdentity } from './repositories.js';
 /**
  * The one dispatcher: every agent task a Deployment runs goes through here,
  * whatever asked for it — an owner's dispatch control, a session's end, a
@@ -58,10 +60,11 @@ const DISPATCHER_CONTEXT_KEYS = new Set(['timeoutSeconds', 'input_hash', 'counts
  * none clears by retrying.
  */
 export type DispatchRefusal =
-  | 'harness_unavailable' | 'unknown_task' | 'unknown_project'
+  | 'harness_unavailable' | 'unknown_task' | 'unknown_project' | 'repository_missing'
   | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider';
 
 export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>> = {
+  repository_missing: 'Connect the project repository in Settings before running a code task.',
   harness_unavailable: 'this deployment has no harness runtime bound',
   unknown_task: 'the task is not one this deployment serves',
   unknown_project: 'projectId names no Project this Deployment holds',
@@ -431,6 +434,10 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   const gate = admissionForTask(task);
   if (gate === null) return { ok: false, refusal: 'unknown_task' };
   if (!(await projectExists(env.db, projectId))) return { ok: false, refusal: 'unknown_project' };
+
+  if (REPOSITORY_TASKS.includes(task) && await repositoryIdentity(env.db, { projectId }) === null) {
+    return { ok: false, refusal: 'repository_missing' };
+  }
 
   if (gate.kind === 'embedding') {
     const embedding = await env.embeddingProvider?.();
