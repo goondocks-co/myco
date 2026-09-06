@@ -121,7 +121,6 @@ A refresh preserves unaffected domains and avoids model work when its admitted s
 
 **Settings → Code map** controls background refresh and extra exclusion patterns. Gitignore rules, built-in exclusions, sensitive files and Myco-managed directories also apply. Background refresh requires server scheduling and the project's Code map capability; task-specific schedule overrides and daily limits still apply. There is no per-file entry index or entry injection.
 
-
 ## Access
 
 Membership is flat: every member manages members, invitations, runtimes and external agents, and every act names who did it.
