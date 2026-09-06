@@ -54,6 +54,7 @@ jobs:
         with:
           name: parity-wrangler-logs
           path: packages/myco-server/.wrangler/parity-dev-*.log
+          include-hidden-files: true
           if-no-files-found: ignore
 
   # The self-hosted Deployment, on the platform it actually ships to.
