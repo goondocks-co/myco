@@ -1082,7 +1082,7 @@ const V18_STATEMENTS: readonly string[] = [
      PRIMARY KEY (project_id, session_id, kind))`,
 ];
 
-/** Candidate revisions and authenticated member review attribution. */
+/** Candidate revisions and authenticated member attribution. */
 const V23_STATEMENTS: readonly string[] = [
   `ALTER TABLE skill_candidates ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE skill_candidates ADD COLUMN reviewed_at INTEGER`,

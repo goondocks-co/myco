@@ -205,7 +205,6 @@ function candidateUpdateStatement(
     .bind(...params, scope.projectId, ...values);
 }
 
-/** Review the revision the member saw; generated candidates are reviewed through their skill. */
 export async function reviewCandidate(db: RelationalStore, scope: ReadScope,
   input: { id: string; revision: number; status: CandidateReviewStatus; memberId: string }, now: number,
 ): Promise<{ reviewed: boolean; candidate: SkillCandidate | null }> {
