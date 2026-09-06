@@ -20,7 +20,7 @@ beforeEach(() => {
 afterEach(() => rmSync(home, { recursive: true, force: true }));
 
 async function call(name: string, args: Record<string, unknown>) {
-  const tool = createExplorationTools({ projectRoot: root, ripgrepPath: 'rg' }).find((entry) => entry.name === name)!;
+  const tool = createExplorationTools({ projectRoot: root }).find((entry) => entry.name === name)!;
   const result = await tool.handler(args, {} as never);
   return JSON.parse(result.content[0].text);
 }
