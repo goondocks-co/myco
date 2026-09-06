@@ -120,7 +120,8 @@ export function canStartRequest(budget: HookBudget, now: number = Date.now()): b
 
 /**
  * The budget one request may spend beside the drain that follows it: a third of
- * what the hook has left, capped by `capMs`, with a third of that to connect.
+ * what the hook has left, capped by `capMs`. Waiting for response headers
+ * includes the server's work and may spend the whole request share.
  *
  * The share leaves the drain the other two thirds, so a hook that asks the
  * server to serve it something still ships records rather than spooling the
@@ -128,7 +129,7 @@ export function canStartRequest(budget: HookBudget, now: number = Date.now()): b
  */
 export function subRequestBudget(budget: HookBudget, capMs: number, now: number = Date.now()): RequestBudget {
   const ms = Math.max(1, Math.min(capMs, Math.floor(remainingMs(budget, now) / 3)));
-  return { connectTimeoutMs: Math.max(1, Math.floor(ms / 3)), requestTimeoutMs: ms };
+  return { connectTimeoutMs: ms, requestTimeoutMs: ms };
 }
 
 /** The request budget clipped to what remains before the deadline. */
