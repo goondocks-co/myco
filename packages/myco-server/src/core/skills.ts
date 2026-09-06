@@ -130,7 +130,7 @@ export async function deleteSkillRecordCascade(
       .bind(now, scope.projectId, skillId, scope.projectId, skillId),
     db.prepare(`DELETE FROM skill_records WHERE project_id = ? AND id = ?`).bind(scope.projectId, skillId),
   ]);
-  return results[3].meta.changes === 1;
+  return results[3].meta.changes > 0;
 }
 
 // ---------------------------------------------------------------------------

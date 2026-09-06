@@ -746,7 +746,6 @@ async function mycoSearch(
     status?: string;
     since?: number;
     until?: number;
-    language?: string;
   },
 ): Promise<{ ok: boolean; data?: unknown }> {
   return execMycoTool(directory, "myco_search", input);
@@ -1134,21 +1133,20 @@ export default function (pi: ExtensionAPI) {
     name: "myco_search",
     label: "Myco Search",
     description:
-      "Search the vault for prior sessions, spores, plans, skills, and Canopy file summaries.",
-    promptSnippet: "Search Myco for prior decisions, bugs, rationale, sessions, plans, skills, or Canopy file summaries",
+      "Search project sessions, spores, plans, skills, prompts and responses.",
+    promptSnippet: "Search Myco for prior decisions, bugs, sessions, plans, skills and captured conversations",
     promptGuidelines: [
       "Use myco_search when you need specific information about a topic, pattern, or past decision.",
-      "Follow the retrieve hint on a result to fetch the full entity from its owning tool.",
+      "Follow a result's retrieve hint when present; prompt and response hits identify the session and prompt.",
     ],
     parameters: Type.Object({
       query: Type.String({ description: "Search query — topic, pattern, or question" }),
-      type: Type.Optional(Type.String({ description: "Optional type filter: session, plan, spore, skill, canopy, or all" })),
+      type: Type.Optional(Type.String({ description: "Optional type filter: session, plan, spore, skill, prompt, response, or all" })),
       limit: Type.Optional(Type.Number({ description: "Optional max results" })),
       observation_type: Type.Optional(Type.String({ description: "Optional spore observation type filter" })),
-      status: Type.Optional(Type.String({ description: "Optional semantic status filter" })),
+      status: Type.Optional(Type.String({ description: "Optional status filter" })),
       since: Type.Optional(Type.Number({ description: "Optional created_at lower bound in epoch seconds" })),
       until: Type.Optional(Type.Number({ description: "Optional created_at upper bound in epoch seconds" })),
-      language: Type.Optional(Type.String({ description: "Canopy-only optional language filter, e.g. typescript" })),
     }),
     async execute(_toolCallId, params) {
       const result = await mycoSearch(currentCwd, params);

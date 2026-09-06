@@ -21,6 +21,7 @@ import { drainQueue } from './harness.js';
 import { runScheduledTasks, type ScheduleReport } from './scheduled-tasks.js';
 import { lastActivityAt } from './activity.js';
 import { classify, emit } from '../telemetry.js';
+import { pendingSearchBlobs } from './search-index.js';
 
 /** Inactivity before each depth: the same thresholds the 1.4 daemon applies on a machine. */
 export const POWER_THRESHOLDS: PowerThresholds = { idleMs: 5 * 60_000, sleepMs: 30 * 60_000, deepSleepMs: 90 * 60_000 };
@@ -52,6 +53,7 @@ export interface TickReport {
 export async function engineAssertions(env: ServerEnv, now: number): Promise<PowerAssertion[]> {
   const [inside, queued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db)]);
   const assertions: PowerAssertion[] = [];
+  if (await pendingSearchBlobs(env.db) > 0) assertions.push({ name: 'search:pending', maxDepth: 'active' });
   // Requested work that waits keeps the Deployment awake until it runs.
   if (queued) assertions.push({ name: 'queue:pending', maxDepth: 'active' });
   if (inside) assertions.push({ name: 'run:live', maxDepth: 'idle' });

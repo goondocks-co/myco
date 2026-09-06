@@ -51,6 +51,7 @@ WORKDIR /build/ui
 COPY packages/myco-server/ui/package.json packages/myco-server/ui/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY packages/myco-server/ui ./
+COPY packages/myco-server/src/read/search-types.ts /build/src/read/search-types.ts
 RUN npx vite build
 
 # --- runtime ---------------------------------------------------------------

@@ -1,6 +1,7 @@
 import { Activity, Bell, Bot, Brain, FolderTree, KeyRound, LayoutDashboard, MessageSquare, Settings2, Sparkles, Sprout, Users, Wrench } from 'lucide-react';
 import { NavLink, Outlet, useParams } from 'react-router-dom';
 import { ProjectSwitcher } from '../components/ProjectSwitcher';
+import { GlobalSearch } from '../components/GlobalSearch';
 import { PageLoading } from '../components/ui/page-loading';
 import { useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
@@ -61,6 +62,7 @@ export function Layout() {
         <div className="px-2 pb-2">
           <div className="px-2 pb-1 font-sans text-[10px] uppercase tracking-wide text-on-surface-variant">Project</div>
           <ProjectSwitcher projects={all} current={current} />
+          {current && <GlobalSearch key={current.projectId} projectId={current.projectId} projectName={current.name} />}
         </div>
 
         {current && (

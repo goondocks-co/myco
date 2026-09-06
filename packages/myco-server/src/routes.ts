@@ -6,6 +6,7 @@ import { clearCookie } from './auth/owner/cookie.js';
 import { handleCallback, handleLogin } from './auth/owner/routes.js';
 import { handleArchiveProject, handleCreateProject, handleProjects, handleUnarchiveProject, handleRenameProject } from './api/projects.js';
 import { handleStatus } from './api/status.js';
+import { handleProjectSearch } from './api/search.js';
 import { handleWake } from './api/wake.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
@@ -81,6 +82,7 @@ async function health(): Promise<Response> {
 }
 
 export const ROUTES: readonly Route[] = [
+  { method: 'GET', path: '/api/projects/{projectId}/search', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/search$/, auth: 'owner', handler: handleProjectSearch },
   { method: 'GET', path: '/health', auth: 'public', bodyMode: 'none', handler: health },
   { method: 'POST', path: '/api/harness/probe', auth: 'owner', handler: handleHarnessProbe },
   { method: 'POST', path: '/api/harness/dispatch', auth: 'owner', handler: handleHarnessDispatch },

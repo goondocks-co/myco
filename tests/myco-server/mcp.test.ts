@@ -72,8 +72,7 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_nope')).error.data.code).toBe('unknown_tool');
     expect((await call(t1.token, 'myco_search')).error.data.code).toBe('invalid_input');
     expect((await call(t1.token, 'myco_sessions', { op: 'purge' })).error.data.code).toBe('invalid_input');
-    const notServed = await call(t1.token, 'myco_search', { query: 'anything' });
-    expect({ code: notServed.error.data.code, names: /#1027/.test(notServed.error.message) }).toEqual({ code: 'not_served', names: true });
+    expect((await call(t1.token, 'myco_search', { query: 'anything' })).result).toMatchObject({ results: [], mode: 'fts', provider_unavailable: true });
     const never = await call(t1.token, 'myco_plans', { op: 'delete', id: 'x' });
     expect({ code: never.error.data.code, offered: /not offered/.test(never.error.message) }).toEqual({ code: 'not_served', offered: true });
     expect((await call(t1.token, 'myco_cortex', { op: 'canopy_map' })).error.data.code).toBe('not_served');
@@ -379,8 +378,8 @@ describe('POST /mcp over an External Agent grant', () => {
     expect((await callAs(grant.key, 'myco_sessions', {})).result).toEqual([]);
     expect((await callAs(grant.key, 'myco_skills', { op: 'list' })).result).toEqual([]);
     expect((await callAs(grant.key, 'myco_cortex', { op: 'digest', tier: 5000 })).result.content).toBe('the digest');
-    const search = await callAs(grant.key, 'myco_search', { query: 'q' });
-    expect({ code: search.error.data.code, names: /#1027/.test(search.error.message) }).toEqual({ code: 'not_served', names: true });
+    const search = await callAs(grant.key, 'myco_search', { query: 'seen' });
+    expect(search.result.results).toMatchObject([{ type: 'spore', id: spores.result.spores[0].id }]);
   });
 
   it('refuses every write, every admin read, myco_agent, an op outside the enum and an empty op exactly as a tool that does not exist', async () => {

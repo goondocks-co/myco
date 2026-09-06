@@ -24,9 +24,12 @@ describe('table dispositions', () => {
   it('GATE: every DDL table is named in exactly one disposition', () => {
     const ddlTables = new Set<string>();
     for (const s of SCHEMA_DDL) {
-      const m = /CREATE TABLE (?:IF NOT EXISTS )?(\w+)/.exec(s);
+      const m = /CREATE (?:VIRTUAL )?TABLE (?:IF NOT EXISTS )?(\w+)/.exec(s);
       if (m) ddlTables.add(m[1]!);
     }
+    const fixture = sqliteEnv();
+    for (const row of fixture.sqlite.query<{ name: string }, []>(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all()) ddlTables.add(row.name);
+    fixture.sqlite.close();
     const named = new Set<string>([...BACKUP_TABLES, ...EXCLUDED_TABLES]);
     expect([...ddlTables].filter((t) => !named.has(t)).sort()).toEqual([]);
     expect([...named].filter((t) => !ddlTables.has(t)).sort()).toEqual([]);

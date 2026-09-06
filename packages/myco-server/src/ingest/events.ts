@@ -5,6 +5,7 @@ import { emit, refusal, StorageContractError, type Classifier, type Refusal } fr
 import { parseEnvelope, type CaptureEnvelope } from './envelope.js';
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
 import { titleSession } from '../core/titling.js';
+import { pendingSearchBlobs } from '../core/search-index.js';
 import { planKind, projectLive, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { withinQuota } from './quota.js';
 
@@ -155,7 +156,16 @@ export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<R
     return Response.json(refused(ctx, refusal('body must be JSON', 'parse')));
   }
   const result = await ingestEvent(env.db, ctx, parsed);
-  const envelope = parsed as { kind?: unknown; sessionId?: unknown } | null;
+  const envelope = parsed as { kind?: unknown; sessionId?: unknown; payload?: { blob?: unknown } } | null;
+  if (result.persisted && result.projected === true && typeof envelope?.payload?.blob === 'string') {
+    env.afterResponse(async () => {
+      try {
+        if (await pendingSearchBlobs(env.db, ctx.projectId) > 0) await env.wake?.();
+      } catch {
+        emit({ kind: 'search_wake_failed', projectId: ctx.projectId });
+      }
+    });
+  }
   const endedSession = envelope?.kind === SESSION_END_KIND && typeof envelope.sessionId === 'string' ? envelope.sessionId : null;
   if (result.persisted && result.projected === true && endedSession !== null) {
     const target = { projectId: ctx.projectId, sessionId: endedSession, now: ctx.now, origin: ctx.origin };

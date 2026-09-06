@@ -425,7 +425,7 @@ export async function overwriteTitle(db: RelationalStore, projectId: string, ses
     .prepare(`UPDATE sessions SET title = ?, summary = ?, titled_by = ? WHERE project_id = ? AND session_id = ?`)
     .bind(title, summary, titledBy, projectId, sessionId)
     .run();
-  return result.meta.changes === 1;
+  return result.meta.changes > 0;
 }
 
 /** Stores a session's title and summary where none exists yet; false when one already does. */
@@ -434,7 +434,7 @@ export async function writeTitle(db: RelationalStore, projectId: string, session
     .prepare(`UPDATE sessions SET title = ?, summary = ? WHERE project_id = ? AND session_id = ? AND title IS NULL`)
     .bind(title, summary, projectId, sessionId)
     .run();
-  return result.meta.changes === 1;
+  return result.meta.changes > 0;
 }
 
 /** Give a project a new display name; `absent` when no row carries the id. Archived projects rename too: the name is display, not capture. */
