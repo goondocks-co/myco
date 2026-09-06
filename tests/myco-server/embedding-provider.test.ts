@@ -72,3 +72,17 @@ test('provider outages allow fallback while malformed successful replies remain 
     else await expect(client.embed('query')).rejects.not.toBeInstanceOf(EmbeddingUnavailable);
   }
 });
+
+test('OpenRouter preserves its existing default model and opens only its own credential', async () => {
+  const f = fixture(); await f.configure('openrouter');
+  await f.secrets.put('openrouter', 'router-credential', 'operator', 1);
+  await f.secrets.put('openai', 'openai-credential', 'operator', 1);
+  let request: Request | undefined;
+  const provider = (await configuredEmbeddingProvider(f.db, f.key, (async (url: string, init: RequestInit) => {
+    request = new Request(url, init); return Response.json({ data: [{ embedding: [1, 0] }] });
+  }) as typeof fetch))!;
+  await provider.embed('query');
+  expect(request!.url).toBe('https://openrouter.ai/api/v1/embeddings');
+  expect(request!.headers.get('authorization')).toBe('Bearer router-credential');
+  expect((await request!.json()).model).toBe('openai/text-embedding-3-small');
+});

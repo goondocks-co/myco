@@ -17,7 +17,7 @@ export async function configuredEmbeddingProvider(db: RelationalStore, wrappingK
   if (provider === undefined) return null;
   if (!['ollama', 'openai-compatible', 'openai', 'openrouter'].includes(provider)) throw new Error('unsupported embedding provider');
   const custom = read('base_url');
-  const model = read('model') ?? (provider === 'openai' ? 'text-embedding-3-small' : provider === 'openrouter' ? 'baai/bge-m3' : 'bge-m3');
+  const model = read('model') ?? (provider === 'openai' ? 'text-embedding-3-small' : provider === 'openrouter' ? 'openai/text-embedding-3-small' : 'bge-m3');
   const base = custom ?? ({ ollama: 'http://localhost:11434', openai: 'https://api.openai.com/v1', openrouter: 'https://openrouter.ai/api/v1' } as Record<string, string>)[provider];
   if (base === undefined) return null;
   const url = new URL(base.replace(/\/+$/, '') + (provider === 'ollama' ? '/api/embed' : '/embeddings'));

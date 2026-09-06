@@ -161,6 +161,7 @@ describe('destroy', () => {
     writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: 'then', databaseId: DB_ID }, home);
     const destroyed = await destroyCloudflareDeployment({ ...options, runner: runner() });
     expect(destroyed.kept.join(' ')).toMatch(/d1 .* r2 .*secrets store.*record/);
+    expect(destroyed.kept).toContain('vectorize myco-server-memory');
     const flat = calls.map((c) => c.args.join(' '));
     expect(flat.some((a) => a.includes('delete --name myco-server'))).toBe(true);
     expect(flat.some((a) => a.includes('d1 delete') || a.includes('bucket delete'))).toBe(false);

@@ -385,5 +385,5 @@ export async function destroyCloudflareDeployment(options: LifecycleOptions): Pr
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; nothing to destroy');
   await deleteWorker({ ...options, workerName: record.workerName });
-  return { kept: [`d1 ${record.databaseName}`, `r2 ${record.bucketName}`, 'secrets store', 'the deployment record'] };
+  return { kept: [`d1 ${record.databaseName}`, `r2 ${record.bucketName}`, `vectorize ${VECTOR_INDEX_NAME}`, 'secrets store', 'the deployment record'] };
 }
