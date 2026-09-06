@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { Loader2, Sparkles } from 'lucide-react';
 import { Badge } from '../components/ui/badge';
@@ -11,13 +12,16 @@ import { Panel } from '../components/ui/panel';
 import { SubtabPill } from '../components/ui/subtab-pill';
 import {
   DIGEST_OUTCOME_TEXT, digestRefusalText, INSTRUCTIONS_OUTCOME_TEXT, refusalText, useDigestRevisions, useDigests,
-  useInstructions, useRefreshInstructions, useRegenerateDigest,
+  useInstructions, useRefreshInstructions, useRegenerateDigest, useCanopyMap, useRefreshMap, mapRefusalText, useRun,
   type DigestRow, type InstructionsCounts,
 } from '../hooks/use-intelligence';
 import { cn } from '../lib/cn';
 import { formatDateTime, formatRelative } from '../lib/format';
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
+const MAP_WATCH_MS = 15 * 60 * 1000;
+const MAP_POLL_MS = 5000;
+const activeRun = (status: string) => ['pending', 'queued', 'running'].includes(status);
 
 /** What an ask answered, under the control that made it: the outcome in the reader's words, and the run doing the work. */
 function AskNote({ projectId, note, runId }: { projectId: string; note: string | null; runId?: string }) {
@@ -45,18 +49,51 @@ export function Cortex() {
   const tab = tabOf(params.get('tab'));
   return (
     <PageContainer>
-      <PageHeader title="Cortex" subtitle="What this project's agents generate for session start." />
+      <PageHeader title="Cortex" subtitle="Instructions, memory summaries, and a guide to this project's committed source." />
       <div className="mb-4">
         <SubtabPill tabs={TABS} activeTab={tab} onTabChange={(id) => setParams(id === 'instructions' ? {} : { tab: id })} />
       </div>
       {tab === 'instructions' && <Instructions projectId={projectId} />}
       {tab === 'digest' && <Digests projectId={projectId} />}
-      {tab === 'map' && (
-        <Panel title="Code map">
-          <p className="font-sans text-sm text-on-surface-variant">The code map is not available on this deployment yet.</p>
-        </Panel>
-      )}
+      {tab === 'map' && <CodeMap projectId={projectId} />}
     </PageContainer>
+  );
+}
+
+function CodeMap({ projectId }: { projectId: string }) {
+  const query = useCanopyMap(projectId);
+  const refresh = useRefreshMap(projectId);
+  const map = query.data?.map;
+  const answer = refresh.data;
+  const queries = useQueryClient();
+  const run = useRun(projectId, answer?.runId ?? '', { enabled: answer?.runId !== undefined, retry: false,
+    refetchInterval: (query) => Date.now() - refresh.submittedAt >= MAP_WATCH_MS || (query.state.data && !activeRun(query.state.data.run.status)) ? false : MAP_POLL_MS });
+  const runId = answer?.runId;
+  const status = run.data?.run.status;
+  useEffect(() => {
+    if (runId !== undefined && status !== undefined && !activeRun(status)) void queries.invalidateQueries({ queryKey: ['canopy-map', projectId] });
+  }, [queries, projectId, runId, status]);
+  const busy = refresh.isPending || (runId !== undefined && (status === undefined || activeRun(status)) && Date.now() - refresh.submittedAt < MAP_WATCH_MS);
+  const note = refresh.error ? mapRefusalText(refresh.error) : run.error ? 'Could not read the run’s status. Open the run for details.'
+    : status === 'completed' ? 'Map check completed.' : status === 'failed' ? `Map update failed: ${run.data?.run.error ?? 'open the run for details'}` : answer
+    ? answer.outcome === 'queued' ? 'Waiting for a runtime.' : 'Checking committed source and updating affected domains.' : null;
+  return (
+    <PageLoading isLoading={query.isPending} error={query.error}>
+      <Panel title="Code map" actions={<div className="flex flex-wrap items-center gap-2">
+        <button type="button" className={button} disabled={busy} onClick={() => refresh.mutate({})}>Refresh map</button>
+        {map && <button type="button" className={button} disabled={busy} title="Explore committed source again and replace the whole map" onClick={() => refresh.mutate({ fresh: true })}>Rebuild map</button>}
+      </div>}>
+        <AskNote projectId={projectId} note={note} runId={answer?.runId} />
+        {map ? <>
+          <div className="my-3 flex flex-wrap items-center gap-2 font-sans text-xs text-on-surface-variant">
+            <Badge variant="secondary" title={formatDateTime(map.generatedAt)}>generated {formatRelative(map.generatedAt)}</Badge>
+            <span title={map.repository.commit}>{map.repository.branch} · {map.repository.commit.slice(0, 12)}</span>
+            <Link className={inlineLink} to={`/p/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(map.sourceRunId)}`}>Source run and cost</Link>
+          </div>
+          <MarkdownContent content={map.content} skipHtml />
+        </> : <p className="mt-3 font-sans text-sm text-on-surface-variant">No map yet. Connect committed source and enable Code map in <Link className={inlineLink} to="/settings?tab=capabilities">project settings</Link>, then refresh the map.</p>}
+      </Panel>
+    </PageLoading>
   );
 }
 

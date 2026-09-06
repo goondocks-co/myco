@@ -16,6 +16,8 @@ export interface RepositoryCheckoutRequest {
   branch: string;
   credential?: { username: string; token: string };
   commit?: string;
+  /** Prior map commit whose changed paths are needed for incremental discovery. */
+  compareCommit?: string;
   signal: AbortSignal;
   /** Persist the resolved commit before any file is exposed to a task. */
   pin: (commit: string) => Promise<string>;
@@ -26,6 +28,7 @@ export interface RepositoryCheckoutRequest {
 export interface RepositoryCheckout {
   root: string;
   commit: string;
+  changedPaths?: string[];
   dispose: () => Promise<void>;
 }
 
@@ -65,7 +68,7 @@ async function git(
       signal.removeEventListener('abort', abort);
       if (failure !== undefined) reject(failure);
       else if (code !== 0) reject(new Error(`Repository Git operation failed (exit ${code ?? 'signal'}). Check the repository, branch, and read credential.`));
-      else resolve(Buffer.concat(chunks).toString('utf8').trim());
+      else resolve(Buffer.concat(chunks).toString('utf8'));
     });
   });
 }
@@ -76,6 +79,7 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
   const url = repositoryUrl(request.url);
   repositoryBranch(request.branch);
   if (request.commit !== undefined && !SHA_PATTERN.test(request.commit)) throw new Error('Invalid repository commit.');
+  if (request.compareCommit !== undefined && !SHA_PATTERN.test(request.compareCommit)) throw new Error('Invalid comparison commit.');
   const directory = await mkdtemp(join(tmpdir(), 'myco-repository-'));
   const root = join(directory, 'checkout');
   const dispose = () => rm(directory, { recursive: true, force: true });
@@ -104,11 +108,16 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     await run('init', '--quiet', '--template=');
     await run('remote', 'add', 'origin', url);
     await run('fetch', '--quiet', '--depth=1', '--no-tags', 'origin', request.commit ?? `refs/heads/${request.branch}`);
-    const resolved = await run('rev-parse', '--verify', 'FETCH_HEAD^{commit}');
+    const resolved = (await run('rev-parse', '--verify', 'FETCH_HEAD^{commit}')).trim();
     if (!SHA_PATTERN.test(resolved)) throw new Error('Repository returned an invalid commit.');
     const pinned = await request.pin(resolved);
     if (!SHA_PATTERN.test(pinned)) throw new Error('Repository pin returned an invalid commit.');
     if (pinned !== resolved) await run('fetch', '--quiet', '--depth=1', '--no-tags', 'origin', pinned);
+    let changedPaths: string[] | undefined;
+    if (request.compareCommit !== undefined) {
+      if (request.compareCommit !== pinned) await run('fetch', '--quiet', '--depth=1', '--no-tags', 'origin', request.compareCommit);
+      changedPaths = (await run('diff-tree', '--no-commit-id', '--name-only', '-r', '-z', request.compareCommit, pinned)).split('\0').filter(Boolean);
+    }
     const files = (await run('ls-tree', '-r', '-l', '-z', pinned)).split('\0').filter(Boolean).map((entry) => {
       const tab = entry.indexOf('\t');
       const [mode, , , size] = entry.slice(0, tab).trim().split(/\s+/);
@@ -118,7 +127,7 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     const bytes = files.reduce((total, file) => total + file.size, 0);
     if (!Number.isSafeInteger(bytes) || bytes > MAX_REPOSITORY_BYTES) throw new Error('Repository committed files exceed the 256 MiB checkout limit.');
     await run('checkout', '--quiet', '--detach', pinned);
-    const actual = await run('rev-parse', 'HEAD');
+    const actual = (await run('rev-parse', 'HEAD')).trim();
     if (actual !== pinned) throw new Error('Repository checkout does not match its pinned commit.');
     for (const entry of files) {
       signal.throwIfAborted();
@@ -133,7 +142,7 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     await rm(askpass);
     delete env.MYCO_GIT_USERNAME;
     delete env.MYCO_GIT_TOKEN;
-    return { root, commit: pinned, dispose };
+    return { root, commit: pinned, changedPaths, dispose };
   } catch (error) {
     await dispose();
     throw error;

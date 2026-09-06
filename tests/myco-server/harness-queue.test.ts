@@ -45,6 +45,12 @@ function fixture(opts: { bound?: boolean; refuse?: () => Error | undefined } = {
 }
 
 describe('what holds a dispatch', () => {
+  it('requires configured committed source before launching a code task', async () => {
+    const f = fixture();
+    expect(await prepareDispatch(f.env, 'canopy-map', 'proj_1')).toEqual({ ok: false, refusal: 'repository_missing' });
+    expect(f.launches).toEqual([]);
+    f.sqlite.close();
+  });
   it('is null with no limit set, and names the first limit the load is at, the fleet first', () => {
     const none = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
     expect(heldBy({ liveRuns: 100, liveTaskRuns: 100, taskRunsLastHour: 100 }, none)).toBeNull();

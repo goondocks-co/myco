@@ -19,6 +19,7 @@ import { leafValues, type ProjectCapability } from './settings.js';
 import { ACCELERATORS, admissionForTask, effectiveIntervalSeconds, PRE_CONDITIONS, resolveSchedule, runTimeoutForTask, scheduledTasks, scheduleOverride, type TaskSchedule } from './task-catalogue.js';
 import { listProjects } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
+import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 
 const DAY_MS = 86_400_000;
 /** Who a scheduled run is attributed to: the Deployment's own clock. */
@@ -51,17 +52,28 @@ const parse = (value: string | undefined): unknown => {
 
 /** The Deployment's scheduling leaves: off until the owner turns scheduling on. */
 export async function scheduleLeaves(env: ServerEnv): Promise<ScheduleLeaves> {
-  const byLeaf = await leafValues(env.db, ['agent.scheduled_tasks_enabled', 'agent.cold_project_threshold_days', 'agent.scheduled_tasks_active_window_days', 'agent.tasks']);
+  const mapEnabled = 'cortex.canopy.refresh.background_enabled';
+  const mapPeriod = 'cortex.canopy.refresh.background_period_minutes';
+  const byLeaf = await leafValues(env.db, ['agent.scheduled_tasks_enabled', 'agent.cold_project_threshold_days', 'agent.scheduled_tasks_active_window_days', 'agent.tasks', mapEnabled, mapPeriod]);
   const days = (leaf: string, fallback: number): number => {
     const v = parse(byLeaf.get(leaf));
     return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback;
   };
   const overrides = parse(byLeaf.get('agent.tasks'));
+  const tasks = overrides !== null && typeof overrides === 'object' && !Array.isArray(overrides) ? overrides as Record<string, unknown> : {};
+  const enabled: unknown = byLeaf.has(mapEnabled) ? JSON.parse(byLeaf.get(mapEnabled)!) : true;
+  const period: unknown = byLeaf.has(mapPeriod) ? JSON.parse(byLeaf.get(mapPeriod)!) : 60;
+  if (typeof enabled !== 'boolean' || typeof period !== 'number' || !Number.isSafeInteger(period) || period < 1) throw new Error('Canopy refresh requires a boolean and a positive whole number of minutes.');
+  const mapOverride = tasks[MAP_TASK];
+  const mapTask = mapOverride !== null && typeof mapOverride === 'object' && !Array.isArray(mapOverride) ? mapOverride as Record<string, unknown> : {};
+  const configured = scheduleOverride(MAP_TASK, tasks);
+  const mapSchedule = configured !== null && typeof configured === 'object' && !Array.isArray(configured) ? configured as Record<string, unknown> : {};
+  tasks[MAP_TASK] = { ...mapTask, schedule: { intervalSeconds: period * 60, ...mapSchedule, enabled: enabled && mapSchedule.enabled !== false } };
   return {
     enabled: parse(byLeaf.get('agent.scheduled_tasks_enabled')) === true,
     coldThresholdDays: days('agent.cold_project_threshold_days', COLD_PROJECT_THRESHOLD_DAYS_DEFAULT),
     activeWindowDays: days('agent.scheduled_tasks_active_window_days', ACTIVE_WINDOW_DAYS_DEFAULT),
-    overrides: overrides !== null && typeof overrides === 'object' && !Array.isArray(overrides) ? (overrides as Record<string, unknown>) : {},
+    overrides: tasks,
   };
 }
 

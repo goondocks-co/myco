@@ -1,3 +1,4 @@
+import { PatternInput } from '../components/config/PatternInput';
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
@@ -81,7 +82,7 @@ function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefine
   const nameOf = useMemberName();
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const value = row?.configured ? row.value : null;
+  const value = field.readOnly && field.defaultValue !== undefined ? field.defaultValue : row?.configured ? row.value : field.defaultValue ?? null;
   const shown = draft ?? textOf(field, value);
 
   const save = (next: unknown) => {
@@ -116,6 +117,9 @@ function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefine
         </p>
       </div>
       <div className="flex items-center gap-2 sm:w-1/2">
+        {field.kind === 'patterns' && (Array.isArray(value) && value.every((item) => typeof item === 'string')
+          ? <PatternInput label={field.label} patterns={value} readOnly={field.readOnly} pending={actions.setLeaf.isPending} onSave={save} />
+          : <span role="alert" className="text-tertiary">Stored patterns must be an array of strings.</span>)}
         {field.kind === 'toggle' && (
           <button type="button" id={`leaf-${field.leaf}`} role="switch" aria-checked={value === true} aria-label={field.label} disabled={actions.setLeaf.isPending}
             onClick={() => save(value !== true)}

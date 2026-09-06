@@ -1,3 +1,5 @@
+import { MAP_TASK } from '@goondocks/myco-shared/canopy';
+import { materializeRunMap, prepareRunMap } from './server-canopy.js';
 /**
  * The lean server-mode runner: one agent run inside a container that holds no
  * vault, speaking to the Deployment over HTTP.
@@ -379,17 +381,27 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     try {
       const execution = (async () => {
         try {
+          const mapPreparation = taskName === MAP_TASK ? await prepareRunMap(toolContext) : null;
           if (REPOSITORY_TASKS.includes(taskName)) {
-            checkout = await prepareRunRepository(toolContext, abort.signal, options.repositoryGitPath);
+            checkout = await prepareRunRepository(toolContext, abort.signal, options.repositoryGitPath, mapPreparation?.fresh ? undefined : mapPreparation?.map?.repository);
           }
+          const map = mapPreparation === null || checkout === undefined ? null : await materializeRunMap(toolContext, mapPreparation, checkout,
+            abort.signal, JSON.stringify({ prompt: task.prompt, phases: task.phases }));
+          if (map?.unchanged) {
+            await map.reportUnchanged();
+            counter.reports += 1;
+            return { usage: { totalTokens: 0 } };
+          }
+          if (map !== null) toolContext.beforeReport = map.beforeReport;
+          if (map !== null) toolContext.sourceTools = map.tools;
+          else if (checkout !== undefined) toolContext.sourceTools = createExplorationTools({ projectRoot: checkout.root, ripgrepPath: 'rg' });
           const tools = materializedToolsForTask(taskName, toolContext, counter);
-          if (checkout !== undefined) tools.push(...createExplorationTools({ projectRoot: checkout.root, ripgrepPath: 'rg' }));
-          const instruction = options.instruction ?? await instructionForRun(toolContext, taskName);
+          const instruction = map?.instruction ?? options.instruction ?? await instructionForRun(toolContext, taskName);
           const prompt = composeTaskPrompt({
             vaultContext: '',
             taskDisplayName: task.displayName ?? taskName,
             taskPrompt: composeHostedPrompt({ taskPrompt: task.prompt ?? '', phases: task.phases }),
-            instruction: checkout === undefined ? instruction : `${instruction}\nRepository commit: ${checkout.commit}. Read AGENTS.md and CLAUDE.md when present before reasoning about source.`,
+            instruction: checkout === undefined ? instruction : `${instruction ?? ''}\nRepository commit: ${checkout.commit}. Read AGENTS.md and CLAUDE.md when present before reasoning about source.`,
             params: options.params,
           });
           abort.signal.throwIfAborted();

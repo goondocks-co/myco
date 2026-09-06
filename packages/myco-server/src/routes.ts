@@ -1,4 +1,5 @@
 import { handleRepository, handleSaveRepository, handleRemoveRepository, handleRunRepository } from './api/repositories.js';
+import { handleProjectMap, handleRunMap } from './api/canopy.js';
 import type { ServerEnv } from './core/adapters.js';
 import type { AuthContext, GrantContext, OwnerContext, RouteContext, SessionContext, StreamContext } from './context.js';
 import { handleLink, handleMe } from './api/identity.js';
@@ -84,6 +85,7 @@ async function health(): Promise<Response> {
 }
 
 export const ROUTES: readonly Route[] = [
+  { method: 'GET', path: '/api/projects/{projectId}/canopy-map', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/canopy-map$/, auth: 'owner', handler: handleProjectMap },
   { method: 'GET', path: '/api/projects/{projectId}/search', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/search$/, auth: 'owner', handler: handleProjectSearch },
   { method: 'GET', path: '/health', auth: 'public', bodyMode: 'none', handler: health },
   { method: 'POST', path: '/api/harness/probe', auth: 'owner', handler: handleHarnessProbe },
@@ -136,6 +138,7 @@ export const ROUTES: readonly Route[] = [
   // instructions, and the preferred digest where a Deployment asks for it.
   { method: 'POST', path: '/context/session', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionContext },
   { method: 'POST', path: '/runs/repository', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunRepository },
+  { method: 'POST', path: '/runs/canopy-map', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunMap },
   { method: 'POST', path: '/runs/state/read', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleReadState },
   { method: 'POST', path: '/runs/state/write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteState },
   // The tool surface: the seven MCP tools over the Deployment for a member, the

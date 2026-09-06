@@ -21,6 +21,10 @@
     "./repository": {
       "import": "./dist/repository.js",
       "types": "./dist/repository.d.ts"
+    },
+    "./canopy": {
+      "import": "./dist/canopy.js",
+      "types": "./dist/canopy.d.ts"
     }
   },
   "files": [

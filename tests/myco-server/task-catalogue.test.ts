@@ -13,14 +13,14 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const LEDGER = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
 
 /** Canopy's two tasks belong to the map task's own issue and are gated there. */
-const OWNED_ELSEWHERE = new Set(['canopy-map', 'canopy-describe', 'harness-health']);
+const OWNED_ELSEWHERE = new Set(['canopy-describe', 'harness-health']);
 
 describe('the task catalogue', () => {
   it('names a gate for every task the ledger keeps, and none it does not', () => {
     const section = fs.readFileSync(LEDGER, 'utf8');
     const body = section.slice(section.indexOf('### 7.4'), section.indexOf('### 7.5'));
     const kept = body.split('\n')
-      .filter((l) => l.startsWith('| `') && l.split('|')[2]?.trim() === 'KEEP')
+      .filter((l) => l.startsWith('| `') && ['KEEP', 'REPLACE'].includes(l.split('|')[2]?.trim()))
       .map((l) => l.split('`')[1])
       .filter((t) => !OWNED_ELSEWHERE.has(t));
     expect([...kept].sort()).toEqual([...RETAINED_TASKS].sort());
@@ -40,7 +40,7 @@ describe('the task catalogue', () => {
   });
 
   it('answers null for a task this Deployment does not serve, rather than a default gate', () => {
-    expect(admissionForTask('canopy-map')).toBeNull();
+    expect(admissionForTask('canopy-map')).toEqual({ kind: 'capability', capability: 'canopy' });
     expect(admissionForTask('invented-task')).toBeNull();
     expect(admissionForTask('digest-only')).toEqual({ kind: 'capability', capability: 'cortex' });
   });

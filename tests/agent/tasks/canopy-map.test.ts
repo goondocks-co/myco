@@ -155,18 +155,18 @@ describe('canopy-map task', () => {
       expect(built.kind).toBe('built');
     });
 
-    it('canopy-map ships with schedule.enabled = true by default', () => {
+    it('canopy-map ships with its declared schedule disabled', () => {
       const def = BUNDLED_AGENT_TASKS.find(t => t.name === CANOPY_MAP_TASK);
       expect(def).toBeDefined();
       expect(def!.schedule).toBeDefined();
-      expect(def!.schedule!.enabled).toBe(true);
+      expect(def!.schedule!.enabled).toBe(false);
       expect(def!.schedule!.intervalSeconds).toBe(21600);
       expect(def!.schedule!.runIn).toEqual(['idle', 'sleep']);
     });
   });
 
   // -----------------------------------------------------------------------
-  // mechanical no-op gates (paired with `schedule.enabled: true`)
+  // mechanical no-op gates
   // -----------------------------------------------------------------------
 
   describe('no-op gates', () => {

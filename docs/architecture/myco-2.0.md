@@ -621,8 +621,8 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `cortex.canopy.refresh.background_period_minutes` | REPLACE | Deployment | Core | Deployment-side map refresh schedule | #920 |
 | `cortex.canopy.exclude.default_patterns` | REPLACE | Deployment | Core | Map scan exclusion applied Deployment-side | #920 |
 | `cortex.canopy.exclude.patterns` | REPLACE | Deployment | Core | Map scan exclusion applied Deployment-side | #920 |
-| `cortex.canopy.min_file_bytes` | REPLACE | Deployment | Core | Map scan threshold applied Deployment-side | #920 |
-| `cortex.canopy.inject_on_pre_tool_use` | KEEP | Member | M | Decides whether THIS machine's hook injects; a member-side behaviour | #920 |
+| `cortex.canopy.min_file_bytes` | DROP | — | — | Retired per-file injection threshold | #920 |
+| `cortex.canopy.inject_on_pre_tool_use` | DROP | — | — | Retired Canopy entry injection | #920 |
 | `appearance.theme` | KEEP | Member | M | Per-viewer dashboard theme | #918 |
 | `appearance.mode` | KEEP | Member | M | Per-viewer light/dark; Deployment-wide would flip every member's dashboard | #918 |
 | `appearance.font` | KEEP | Member | M | Per-viewer dashboard typography | #918 |

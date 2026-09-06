@@ -75,7 +75,7 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_search', { query: 'anything' })).result).toMatchObject({ results: [], mode: 'fts', provider_unavailable: true });
     const never = await call(t1.token, 'myco_plans', { op: 'delete', id: 'x' });
     expect({ code: never.error.data.code, offered: /not offered/.test(never.error.message) }).toEqual({ code: 'not_served', offered: true });
-    expect((await call(t1.token, 'myco_cortex', { op: 'canopy_map' })).error.data.code).toBe('not_served');
+    expect((await call(t1.token, 'myco_cortex', { op: 'canopy_entry' })).error.data.code).toBe('not_served');
   });
 
   it('records, reads, lists, supersedes and consolidates spores under the built-in user agent', async () => {

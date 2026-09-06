@@ -563,7 +563,7 @@ describe('a run whose runtime died before it ended', () => {
     try {
       expect((await s.launch({
         runId: 'run_killed',
-        timeoutSeconds: 0,
+        timeoutSeconds: 2,
         envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_killed', MYCO_PROJECT: 'proj_1', STANDIN_OUT: out, STANDIN_IGNORE_SIGTERM: '1' },
       })).status).toBe(202);
       await until(() => existsSync(out), 'the child to run');

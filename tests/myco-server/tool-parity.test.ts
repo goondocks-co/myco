@@ -119,7 +119,7 @@ describe('tool parity', () => {
       ['myco_spores', { op: 'save', content: 'x', type: 'decision' }], ['myco_spores', { op: 'supersede' }], ['myco_spores', { op: 'consolidate' }], ['myco_spores', { op: 'obsolete' }],
       ['myco_plans', { op: 'delete', id: 'p1' }], ['myco_plans', { op: 'save', content: 'x' }],
       ['myco_cortex', { op: 'maintenance_summary' }], ['myco_cortex', { op: 'projects_activity' }], ['myco_cortex', { op: 'instructions' }],
-      ['myco_cortex', { op: 'canopy_map' }], ['myco_cortex', { op: 'canopy_entry' }], ['myco_cortex', { op: 'notifications' }],
+      ['myco_cortex', { op: 'canopy_entry' }], ['myco_cortex', { op: 'notifications' }],
       ['myco_agent', { op: 'runs' }], ['myco_agent', {}], ['myco_sessions', { op: 'purge' }], ['myco_plans', { op: 5 }],
     ];
     for (const [tool, args] of table) expect({ tool, args, server: judged(tool, args) }).toEqual({ tool, args, server: isAllowedExternalCall(tool, args) });

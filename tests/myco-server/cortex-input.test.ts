@@ -137,9 +137,9 @@ describe('the instructions input', () => {
   it('lists, under every tool it names, only the ops the registry answers', async () => {
     const built = await fixture().build();
     const surface = built.instruction.split('## Current valid tool surface (authoritative)\n')[1]!.split('\n\n')[0]!;
-    expect(surface).toContain('- `myco_cortex` — ops: `digest`, `instructions`, `projects_activity`');
+    expect(surface).toContain('- `myco_cortex` — ops: `digest`, `instructions`, `canopy_map`, `projects_activity`');
     expect(surface).toContain('- `myco_plans` — ops: `list`, `get`, `save`');
-    expect(surface).not.toContain('canopy_map');
+    expect(surface).toContain('canopy_map');
     expect(surface).not.toContain('`delete`');
   });
 
@@ -151,7 +151,7 @@ describe('the instructions input', () => {
     expect(unanswered).toEqual([]);
     expect(named).toContain('digest');
     expect(named).toContain('instructions');
-    for (const retired of ['canopy_map', 'canopy_entry', 'notifications', 'maintenance_summary']) {
+    for (const retired of ['canopy_entry', 'notifications', 'maintenance_summary']) {
       expect({ op: retired, present: built.instruction.includes(retired) }).toEqual({ op: retired, present: false });
     }
   });
@@ -160,7 +160,7 @@ describe('the instructions input', () => {
     const built = await fixture().build();
     const guidance = built.instruction.split('## Tool guidance to encode\n')[1]!.split('\n\n')[0]!.split('\n');
     const cortexLine = guidance.find((line) => line.startsWith('- `myco_cortex`'))!;
-    expect(cortexLine).toBe('- `myco_cortex`: Use op: "digest" for broad orientation, and op: "projects_activity" to see which projects are still active across the machine.');
+    expect(cortexLine).toBe('- `myco_cortex`: Use op: "digest" for broad orientation, op: "canopy_map" as the default opener for project layout, and op: "projects_activity" to see which projects are still active across the machine.');
     const plansLine = guidance.find((line) => line.startsWith('- `myco_plans`'))!;
     expect(plansLine).toContain(TOOL_DEFINITIONS.find((t) => t.name === 'myco_plans')!.cortex!.guidance);
   });

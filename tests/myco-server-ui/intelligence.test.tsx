@@ -168,6 +168,7 @@ describe('Cortex', () => {
     server(base({
       '/api/projects/x/cortex/instructions': () => Response.json({ instructions: [instructionsRow()] }),
       '/api/projects/x/digests': () => Response.json({ digests: [] }),
+      '/api/projects/x/canopy-map': () => Response.json({ map: null }),
     }));
     mount('/p/x/cortex');
     expect(await screen.findByText('Start here')).toBeTruthy();
@@ -176,7 +177,25 @@ describe('Cortex', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Digest' }));
     expect(await screen.findByText(/No digest generated yet/)).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: 'Code map' }));
-    expect(await screen.findByText(/not available on this deployment yet/)).toBeTruthy();
+    expect(await screen.findByText(/No map yet/)).toBeTruthy();
+  });
+
+  it('shows committed map provenance and dispatches a rebuild through the shared harness action', async () => {
+    let asked: unknown;
+    server(base({
+      '/api/projects/x/canopy-map': () => Response.json({ map: { revision: 'v1', content: '## Directory skeleton\n\nSource code.\n\n<!-- Map Provenance {} -->', generatedAt: NOW,
+        sourceRunId: 'r1', repository: { url: 'https://example.test/source.git', branch: 'main', commit: 'a'.repeat(40) } } }),
+      '/api/harness/dispatch': (init) => { asked = JSON.parse(String(init?.body)); return Response.json({ runId: 'r2' }); },
+      '/api/projects/x/runs/r2': () => Response.json(detail({ id: 'r2', task: 'canopy-map' })),
+    }));
+    mount('/p/x/cortex?tab=map');
+    expect(await screen.findByText('Directory skeleton')).toBeTruthy();
+    expect(screen.queryByText(/Map Provenance/)).toBeNull();
+    expect(screen.getByText('main · aaaaaaaaaaaa')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Source run and cost' }).getAttribute('href')).toBe('/p/x/runs/r1');
+    fireEvent.click(screen.getByRole('button', { name: 'Rebuild map' }));
+    expect(await screen.findByText(/Map check completed/)).toBeTruthy();
+    expect(asked).toEqual({ task: 'canopy-map', projectId: 'x', fresh: true });
   });
 
   it('says nothing was written from when the run recorded no counts', async () => {

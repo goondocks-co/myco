@@ -5,12 +5,15 @@
  * from here. A gate holds this list equal to the server's leaf list, so a leaf
  * added on one side without the other fails by name.
  */
-export type LeafKind = 'toggle' | 'number' | 'text' | 'select' | 'json';
+import { CANOPY_DEFAULT_EXCLUDE_PATTERNS } from '@goondocks/myco-shared/canopy';
+
+export type LeafKind = 'toggle' | 'number' | 'text' | 'select' | 'json' | 'patterns';
 
 export interface LeafField {
   leaf: string;
   label: string;
   kind: LeafKind;
+  defaultValue?: unknown;
   options?: readonly (string | number)[];
   min?: number;
   max?: number;
@@ -99,11 +102,10 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Code map',
     note: 'How this server keeps its map of each project\'s code.',
     leaves: [
-      { leaf: 'cortex.canopy.refresh.background_enabled', label: 'Refresh in the background', kind: 'toggle' },
-      { leaf: 'cortex.canopy.refresh.background_period_minutes', label: 'Refresh every', kind: 'number', min: 1, unit: 'minutes' },
-      { leaf: 'cortex.canopy.exclude.patterns', label: 'Exclude patterns', kind: 'json', note: 'A JSON list of glob patterns.' },
-      { leaf: 'cortex.canopy.exclude.default_patterns', label: 'Built-in exclude patterns', kind: 'json', readOnly: true, note: 'Shown for reference; add your own above.' },
-      { leaf: 'cortex.canopy.min_file_bytes', label: 'Smallest file to map', kind: 'number', min: 0, unit: 'bytes' },
+      { leaf: 'cortex.canopy.refresh.background_enabled', label: 'Refresh in the background', kind: 'toggle', defaultValue: true, note: 'Requires server scheduling and the project’s Code map capability. Task schedule overrides and daily limits also apply.' },
+      { leaf: 'cortex.canopy.refresh.background_period_minutes', label: 'Refresh every', kind: 'number', min: 1, unit: 'minutes', defaultValue: 60 },
+      { leaf: 'cortex.canopy.exclude.patterns', label: 'Exclude patterns', kind: 'patterns', defaultValue: [], note: 'Additional exclusions. Gitignore, built-in patterns, sensitive files and Myco-managed directories are always excluded; any layer can exclude a path.' },
+      { leaf: 'cortex.canopy.exclude.default_patterns', label: 'Built-in exclude patterns', kind: 'patterns', defaultValue: CANOPY_DEFAULT_EXCLUDE_PATTERNS, readOnly: true, note: 'Maintained by Myco. Add extra patterns above.' },
     ],
   },
   {

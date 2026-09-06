@@ -105,7 +105,7 @@ describe('the member tool surface over a real Deployment', () => {
     const found = await cli(env, 'call', 'myco_search', '--input', '{"query":"wire"}');
     expect(found.envelope.ok).toBe(true);
     expect(found.envelope.result?.results).toMatchObject([{ type: 'spore', id: saved.envelope.result?.id }]);
-    const notServed = await cli(env, 'call', 'myco_cortex', '--input', '{"op":"canopy_map"}');
+    const notServed = await cli(env, 'call', 'myco_cortex', '--input', '{"op":"canopy_entry"}');
     expect({ ok: notServed.envelope.ok, code: notServed.envelope.error?.code }).toEqual({ ok: false, code: 'not_served' });
 
     const refused = await cli(memberEnv(url, token, '..'), 'call', 'myco_plans', '--input', '{}');
