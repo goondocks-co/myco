@@ -1,5 +1,5 @@
-export const CANDIDATE_STATUSES = ['identified', 'approved', 'dismissed', 'generated'] as const;
-export const CANDIDATE_REVIEW_STATUSES = ['approved', 'dismissed', 'identified'] as const;
+export const CANDIDATE_STATUSES = ['identified', 'approved', 'deferred', 'dismissed', 'generated'] as const;
+export const CANDIDATE_REVIEW_STATUSES = ['approved', 'deferred', 'dismissed', 'identified'] as const;
 export type CandidateReviewStatus = (typeof CANDIDATE_REVIEW_STATUSES)[number];
 
 export interface SkillCandidate {

@@ -210,8 +210,8 @@ export async function reviewCandidate(db: RelationalStore, scope: ReadScope,
   input: { id: string; revision: number; status: CandidateReviewStatus; memberId: string }, now: number,
 ): Promise<{ reviewed: boolean; candidate: SkillCandidate | null }> {
   const result = await candidateUpdateStatement(db, scope, { status: input.status }, now,
-    "id = ? AND revision = ? AND status IN ('identified', 'approved', 'dismissed')",
-    [input.id, input.revision], input.memberId).run();
+    `id = ? AND revision = ? AND status IN (${CANDIDATE_REVIEW_STATUSES.map(() => '?').join(', ')})`,
+    [input.id, input.revision, ...CANDIDATE_REVIEW_STATUSES], input.memberId).run();
   return { reviewed: result.meta.changes > 0, candidate: await getCandidate(db, scope, input.id) };
 }
 

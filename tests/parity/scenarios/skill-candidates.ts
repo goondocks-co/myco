@@ -31,6 +31,8 @@ export const skillCandidates: ParityScenario = {
     expect(reapproved.body.candidate.approvedAt).toBe(firstApproval);
     expect(reapproved.body.candidate.approvedBy).toBe(MEMBER_ID);
     expect((await ask(`/${id}`, { revision: 3, status: 'generated' })).status).toBe(400);
+    expect((await ask(`/${id}`, { revision: 3, status: 'deferred' })).status).toBe(200);
+    expect((await ask(`/${id}`, { revision: 4, status: 'approved' })).body.candidate.approvedAt).toBe(firstApproval);
     expect((await ask('/absent', { revision: 0, status: 'approved' })).status).toBe(404);
   },
 };

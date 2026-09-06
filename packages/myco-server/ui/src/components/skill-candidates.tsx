@@ -11,13 +11,21 @@ import { CANDIDATE_PAGE_SIZE, useReviewCandidate, useSkillCandidates, type Candi
 import { ApiError } from '../lib/api';
 import { formatDateTime } from '../lib/format';
 
-const LABELS: Record<SkillCandidate['status'], string> = { identified: 'Needs review', approved: 'Approved', dismissed: 'Dismissed', generated: 'Generated' };
+const LABELS: Record<SkillCandidate['status'], string> = { identified: 'Needs review', approved: 'Approved', deferred: 'Deferred', dismissed: 'Dismissed', generated: 'Generated' };
 
-function Evidence({ raw, label, empty }: { raw: string; label: string; empty: string }) {
+function evidenceLabel(value: unknown, sources: boolean): string | null {
+  if (typeof value === 'string') return value;
+  if (sources && typeof value === 'object' && value !== null && 'id' in value && 'type' in value
+    && typeof value.id === 'string' && typeof value.type === 'string') return `${value.type}:${value.id}`;
+  return null;
+}
+
+function Evidence({ raw, label, empty, sources = false }: { raw: string; label: string; empty: string; sources?: boolean }) {
   let values: unknown;
   try { values = JSON.parse(raw); } catch { values = null; }
-  if (!Array.isArray(values) || values.some((value) => typeof value !== 'string')) return <p role="alert">The recorded {label} could not be read.</p>;
-  return values.length === 0 ? <p>{empty}</p> : <ul className="space-y-1 font-mono text-xs">{values.map((value, index) => <li key={`${index}:${value}`} className="break-all">{value}</li>)}</ul>;
+  const labels = Array.isArray(values) ? values.map((value: unknown) => evidenceLabel(value, sources)) : null;
+  if (labels === null || labels.some((value) => value === null)) return <p role="alert">The recorded {label} could not be read.</p>;
+  return labels.length === 0 ? <p>{empty}</p> : <ul className="space-y-1 font-mono text-xs">{labels.map((value, index) => <li key={`${index}:${value}`} className="break-all">{value}</li>)}</ul>;
 }
 
 export function SkillCandidates({ projectId }: { projectId: string }) {
@@ -62,9 +70,9 @@ export function SkillCandidates({ projectId }: { projectId: string }) {
             <h2 className="font-serif text-xl">{candidate.topic}</h2>
             <Badge variant="secondary">{LABELS[candidate.status]}</Badge>
             <Panel title="Why this skill"><p className="whitespace-pre-wrap font-sans text-sm">{candidate.rationale}</p></Panel>
-            <Panel title="Source references"><Evidence raw={candidate.sourceIds} label="sources" empty="No source references recorded." /></Panel>
+            <Panel title="Source references"><Evidence raw={candidate.sourceIds} label="sources" empty="No source references recorded." sources /></Panel>
             <Panel title="Quality assessment">
-              {candidate.qualityScore !== null && <p className="mb-2 font-sans text-sm">Quality score: {candidate.qualityScore}</p>}
+              {candidate.qualityScore !== null && <p className="mb-2 font-sans text-sm">Quality score: {Math.round(candidate.qualityScore * 100)}%</p>}
               <Evidence raw={candidate.qualityFailures} label="quality concerns" empty="No quality concerns recorded." />
             </Panel>
             <Panel title="Existing skill coverage"><Evidence raw={candidate.coverageMatches} label="coverage matches" empty="No overlapping skills recorded." /></Panel>
@@ -74,6 +82,7 @@ export function SkillCandidates({ projectId }: { projectId: string }) {
               ? <Link className={inlineLink} to={`/p/${encodeURIComponent(projectId)}/skills/${encodeURIComponent(candidate.skillId)}`}>View skill</Link>
               : 'Review the published skill in the Skills tab.'}</p> : <div className="flex flex-wrap gap-2">
               <Button size="sm" disabled={review.isPending || candidate.status === 'approved'} onClick={() => decide('approved')}>Approve</Button>
+              <Button size="sm" variant="outline" disabled={review.isPending || candidate.status === 'deferred'} onClick={() => decide('deferred')}>Defer</Button>
               <Button size="sm" variant="outline" disabled={review.isPending || candidate.status === 'dismissed'} onClick={() => decide('dismissed')}>Dismiss</Button>
               {candidate.status !== 'identified' && <Button size="sm" variant="ghost" disabled={review.isPending} onClick={() => decide('identified')}>Return to review</Button>}
             </div>}

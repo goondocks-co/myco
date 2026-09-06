@@ -134,16 +134,16 @@ describe('Agent runs', () => {
 
 describe('Skills', () => {
   const candidate = (over: Record<string, unknown> = {}) => ({ id: 'candidate_1', topic: 'Capture diagnosis', rationale: 'Repeated spool troubleshooting', confidence: 0.8,
-    status: 'identified', sourceIds: '["spore_1"]', qualityScore: 0.8, qualityFailures: '[]', coverageMatches: '[]', revision: 0, approvedAt: null, reviewedBy: null, reconciliationReason: null, ...over });
+    status: 'identified', sourceIds: '["spore_1",{"type":"spore","id":"spore_2"}]', qualityScore: 0.8, qualityFailures: '[]', coverageMatches: '[]', revision: 0, approvedAt: null, reviewedBy: null, reconciliationReason: null, ...over });
 
-  it('reviews candidate evidence and submits the visible revision for approval', async () => {
+  it.each([['Approve', 'approved'], ['Defer', 'deferred']] as const)('submits the visible candidate revision for %s', async (button, status) => {
     let row = candidate();
     const requests: unknown[] = [];
     server(base({
       '/api/projects/x/skill-candidates': () => Response.json({ candidates: row.status === 'identified' ? [row] : [], hasMore: false }),
       '/api/projects/x/skill-candidates/candidate_1': (init) => {
         requests.push(JSON.parse(String(init?.body)));
-        row = candidate({ status: 'approved', revision: 1 });
+        row = candidate({ status, revision: 1 });
         return Response.json({ reviewed: true, candidate: row });
       },
     }));
@@ -151,9 +151,10 @@ describe('Skills', () => {
     fireEvent.click(await screen.findByText('Capture diagnosis'));
     expect(await screen.findByText('Repeated spool troubleshooting')).toBeTruthy();
     expect(screen.getByText('spore_1')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Approve', exact: true }));
-    expect(await screen.findByText('Candidate approved.')).toBeTruthy();
-    expect(requests).toEqual([{ revision: 0, status: 'approved' }]);
+    expect(screen.getByText('spore:spore_2')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: button, exact: true }));
+    expect(await screen.findByText(`Candidate ${status}.`)).toBeTruthy();
+    expect(requests).toEqual([{ revision: 0, status }]);
   });
 
   it('surfaces a concurrent decision and reloads the evidence without automatically retrying approval', async () => {

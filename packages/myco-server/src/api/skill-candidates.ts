@@ -27,7 +27,7 @@ export async function handleReviewSkillCandidate(env: ServerEnv, ctx: OwnerConte
   const body = await readJsonObject(ctx.request);
   if (body === null || !Number.isSafeInteger(body.revision) || (body.revision as number) < 0
     || !(CANDIDATE_REVIEW_STATUSES as readonly unknown[]).includes(body.status)) {
-    return badRequest('A current candidate revision and an approved, dismissed, or identified status are required.');
+    return badRequest('A current candidate revision and an approved, deferred, dismissed, or identified status are required.');
   }
   const result = await reviewCandidate(env.db, scope, { id: ctx.params.candidateId,
     revision: body.revision as number, status: body.status as CandidateReviewStatus, memberId: ctx.member.id }, ctx.now);
