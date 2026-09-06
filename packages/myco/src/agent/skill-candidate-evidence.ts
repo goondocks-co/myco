@@ -1,11 +1,7 @@
 import type { CandidateQualityFailureCode } from './skill-candidate-quality.js';
 
-export type CandidateSourceType = 'spore' | 'session' | 'plan' | 'artifact';
-
-export interface CandidateSourceRef {
-  id: string;
-  type: CandidateSourceType;
-}
+import { normalizeSourceRefs, parseSourceRefs, type CandidateSourceRef } from '@goondocks/myco-shared/skill-candidates';
+export { parseSourceRefs, parseSourceRefsWithRawCount, type CandidateSourceType, type CandidateSourceRef } from '@goondocks/myco-shared/skill-candidates';
 
 export interface SkillCandidateEvidenceBundle {
   id: string;
@@ -69,7 +65,6 @@ export interface CandidateEvidenceAssessment {
   coverageMatches: string[];
 }
 
-const SOURCE_TYPES = new Set<CandidateSourceType>(['spore', 'session', 'plan', 'artifact']);
 const MIN_SOURCE_REFS = 3;
 const MIN_DISTINCT_SESSIONS = 2;
 const OVERLAP_SIMILARITY_THRESHOLD = 0.18;
@@ -255,39 +250,6 @@ function featuresFor(
   const computed = computeSporeFeatures(spore);
   cache.set(spore.id, computed);
   return computed;
-}
-
-/**
- * Parses source_ids and returns both the normalized refs and the raw
- * pre-normalization entry count, so callers can detect "input had N
- * entries but only M were valid type/id shapes" without a second
- * JSON.parse pass.
- *
- * `rawCount` is `null` when the value isn't a JSON array (or isn't a
- * string at all) — meaning the field is structurally absent rather
- * than "present but empty".
- */
-export function parseSourceRefsWithRawCount(
-  value: unknown,
-): { refs: CandidateSourceRef[]; rawCount: number | null } {
-  const raw = readJsonArray(value);
-  if (raw === null) return { refs: [], rawCount: null };
-  return { refs: normalizeSourceRefs(raw), rawCount: raw.length };
-}
-
-export function parseSourceRefs(value: unknown): CandidateSourceRef[] {
-  return parseSourceRefsWithRawCount(value).refs;
-}
-
-function readJsonArray(value: unknown): unknown[] | null {
-  if (Array.isArray(value)) return value;
-  if (typeof value !== 'string') return null;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 export function assessCandidateEvidence(input: AssessCandidateEvidenceInput): CandidateEvidenceAssessment {
@@ -641,44 +603,6 @@ function truncateText(value: string, maxLength: number): string {
   const clean = value.trim().replace(/\s+/g, ' ');
   if (clean.length <= maxLength) return clean;
   return `${clean.slice(0, maxLength - 3).trimEnd()}...`;
-}
-
-function normalizeSourceRefs(value: unknown): CandidateSourceRef[] {
-  if (!Array.isArray(value)) return [];
-
-  const refs: CandidateSourceRef[] = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    const ref = sourceRefFromEntry(entry);
-    if (!ref) continue;
-    const key = `${ref.type}:${ref.id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    refs.push(ref);
-  }
-  return refs;
-}
-
-function sourceRefFromEntry(entry: unknown): CandidateSourceRef | null {
-  if (typeof entry === 'string') {
-    const id = cleanId(entry);
-    const type = inferSourceType(id);
-    return type ? { id, type } : null;
-  }
-
-  if (!isRecord(entry)) return null;
-  const id = cleanId(entry.id);
-  if (!id || typeof entry.type !== 'string') return null;
-  if (!SOURCE_TYPES.has(entry.type as CandidateSourceType)) return null;
-  return { id, type: entry.type as CandidateSourceType };
-}
-
-function inferSourceType(id: string): CandidateSourceType | null {
-  if (/^spore-/i.test(id)) return 'spore';
-  if (/^(?:session-|sess-)/i.test(id)) return 'session';
-  if (/^plan-/i.test(id)) return 'plan';
-  if (/^artifact-/i.test(id)) return 'artifact';
-  return null;
 }
 
 export function renderEvidenceBundleForPrompt(bundle: SkillCandidateEvidenceBundle): string {
