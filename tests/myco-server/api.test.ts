@@ -90,6 +90,26 @@ describe('sessions', () => {
     const outside = await worker.fetch(await asOwner('/api/projects/proj_1/sessions/absent/prompts'), { ...e.env, ...OWNER_ENV });
     expect(outside.status).toBe(404);
   });
+
+  it('pages context receipts within the requested project and session', async () => {
+    const e = sqliteEnv();
+    seed(e);
+    e.sqlite.run(`INSERT INTO session_injections (project_id, session_id, kind, created_at) VALUES
+      ('proj_1', 's1', 'cortex', 10), ('proj_1', 's1', 'cortex-compact:1', 20),
+      ('proj_1', 's1', 'cortex-compact:2', 20), ('proj_2', 's1', 'cortex-compact:99', 15)`);
+    const base = '/api/projects/proj_1/sessions/s1/context-injections';
+    const read = async (url: string) => worker.fetch(await asOwner(url), { ...e.env, ...OWNER_ENV });
+    const response = await read(`${base}?limit=2`);
+    expect(response.status).toBe(200);
+    const first = await response.json() as { rows: { kind: string }[]; cursor: string };
+    expect(first.rows.map((r) => r.kind)).toEqual(['cortex', 'cortex-compact:1']);
+    const second = await (await read(`${base}?limit=2&cursor=${encodeURIComponent(first.cursor)}`)).json() as { rows: { kind: string }[]; cursor: string | null };
+    expect(second.rows.map((r) => r.kind)).toEqual(['cortex-compact:2']);
+    expect(second.cursor).toBeNull();
+    expect((await read(`${base}?cursor=garbage`)).status).toBe(400);
+    expect((await read(base.replace('/s1/', '/missing/'))).status).toBe(404);
+    expect((await worker.fetch(new Request(`https://s${base}`, { headers: { 'cf-connecting-ip': '1.2.3.4' } }), { ...e.env, ...OWNER_ENV })).status).toBe(401);
+  });
 });
 
 describe('session turns', () => {

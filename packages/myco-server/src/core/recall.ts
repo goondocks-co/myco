@@ -40,6 +40,8 @@ import { leafValues } from './settings.js';
 import { sha256Hex } from '../hash.js';
 import { newestInstructions } from '../read/cortex.js';
 import type { ReadScope } from '../read/scope.js';
+import { sessionInjectionKind, type SessionContextRequest, type SessionContextIdentity } from '@goondocks/myco-shared/recall';
+export { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 
 /** The most text one prompt is served. A part that would cross it is dropped whole. */
 export const PROMPT_CONTEXT_MAX_CHARS = 10_000;
@@ -308,23 +310,11 @@ export const SUBAGENT_CORTEX_GUIDANCE = [
 /** The heading a digest stands under, naming the tier the block actually carries. */
 export const digestHeading = (tier: number): string => `## Preferred Digest (Tier ${tier})\n`;
 
-/** Which start a block is being composed for. */
-export type SessionContextKind = 'start' | 'subagent';
+/** The session lifecycle event requesting context. */
+export type SessionContextKind = SessionContextIdentity['kind'];
 
 /**
- * The record kind a start burns.
- *
- * A subagent names its own delegation: the agent id when the harness gives one,
- * the type behind it, and a single name for a harness that gives neither. Two
- * delegations of one type are two subagents, and each is served.
- */
-export function sessionInjectionKind(kind: SessionContextKind, agentId?: string, agentType?: string): string {
-  if (kind === 'start') return 'cortex';
-  return `cortex:${agentId?.trim() || agentType?.trim() || 'unknown'}`;
-}
-
-/**
- * The block one session start or one subagent start is served.
+ * The block served at session start, after compaction, or at subagent start.
  *
  * Instructions stand first with no heading of their own — the artifact is
  * written to be read as project guidance, and a frame around it would be one
@@ -342,15 +332,15 @@ export async function composeSessionContext(
   scope: ReadScope,
   leaves: RecallLeaves,
   capabilityOn: boolean,
-  input: { sessionId: string; kind: SessionContextKind; agentId?: string; agentType?: string; now: number },
+  input: SessionContextRequest & { now: number },
 ): Promise<RecallSessionBlock> {
-  const recordKind = sessionInjectionKind(input.kind, input.agentId, input.agentType);
+  const recordKind = sessionInjectionKind(input);
   if (!capabilityOn) return { context: '', parts: [], skipped: ['capability'], kind: recordKind };
 
   const skipped: RecallSkip[] = [];
   const contributions: Contribution<SessionContextPart>[] = [];
 
-  const wantsInstructions = input.kind === 'start'
+  const wantsInstructions = input.kind !== 'subagent'
     ? leaves.instructionsAtSessionStart
     : leaves.instructionsAtSubagentStart;
   try {
@@ -369,9 +359,8 @@ export async function composeSessionContext(
     skipped.push('instructions');
   }
 
-  // A delegated agent inherits its parent's framing and is never handed the
-  // whole project again, so the digest is a session-start contributor alone.
-  if (input.kind === 'start') {
+  // A parent session receives the digest at initial start and after compaction.
+  if (input.kind !== 'subagent') {
     try {
       if (!leaves.digestAtSessionStart) skipped.push('digest:off');
       else {

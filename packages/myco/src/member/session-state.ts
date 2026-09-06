@@ -46,6 +46,8 @@ export interface SessionState {
    * on every invocation spends the budget once.
    */
   delivered: string[];
+  /** PreCompact events appended for this session; synchronous capture advances it before compact recall. */
+  compactionOrdinal: number;
   /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */
   startedAt?: number;
   /** When the server last acknowledged one of this session's records. */
@@ -54,7 +56,7 @@ export interface SessionState {
 }
 
 export function emptySessionState(now: number = Date.now()): SessionState {
-  return { version: SESSION_STATE_VERSION, highWater: 0, prompts: {}, planHashes: {}, planTagCount: 0, planPaths: {}, attachmentKeys: [], delivered: [], updatedAt: now };
+  return { version: SESSION_STATE_VERSION, highWater: 0, prompts: {}, planHashes: {}, planTagCount: 0, planPaths: {}, attachmentKeys: [], delivered: [], compactionOrdinal: 0, updatedAt: now };
 }
 
 export function sessionStatePath(spoolDir: string, sessionId: string): string {

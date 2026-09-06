@@ -39,10 +39,11 @@ WORKDIR /build
 
 COPY --from=deps /build/node_modules ./node_modules
 COPY packages/myco-shared/package.json ./packages/myco-shared/package.json
-COPY packages/myco-shared/src/relevance.ts ./packages/myco-shared/src/relevance.ts
+COPY packages/myco-shared/src ./packages/myco-shared/src
+COPY packages/myco-shared/scripts/build.mjs ./packages/myco-shared/scripts/build.mjs
 COPY packages/myco-server/src ./src
 
-RUN bun build packages/myco-shared/src/relevance.ts --target=browser --outfile=packages/myco-shared/dist/relevance.js
+RUN bun packages/myco-shared/scripts/build.mjs
 
 RUN bun build src/platform/bun/server-main.ts \
       --target=bun \

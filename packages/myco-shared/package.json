@@ -13,6 +13,10 @@
     "./relevance": {
       "import": "./dist/relevance.js",
       "types": "./dist/relevance.d.ts"
+    },
+    "./recall": {
+      "import": "./dist/recall.js",
+      "types": "./dist/recall.d.ts"
     }
   },
   "files": [

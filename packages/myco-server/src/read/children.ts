@@ -53,6 +53,13 @@ export interface PlanRow { planKey: string; promptId: string | null; title: stri
 /** `promptId` names the prompt an attachment accompanies, when the capture named one; the session page shows the image under that prompt. */
 export interface AttachmentRow { attachmentId: string; promptId: string | null; blobKey: string; mediaType: string; byteSize: number; description: string | null; createdAt: number; orderedAt: number }
 
+export interface ContextInjectionRow { kind: string; createdAt: number; orderedAt: number }
+
+const CONTEXT_INJECTION_QUERY: ChildQuery<Omit<ContextInjectionRow, 'orderedAt'>> = {
+  table: 'session_injections', columns: 'kind, created_at', idColumn: 'kind', orderColumn: 'created_at',
+  map: (r) => ({ kind: r.kind as string, createdAt: r.created_at as number }),
+};
+
 export const PROMPT_QUERY: ChildQuery<Omit<PromptRow, 'orderedAt'>> = {
   table: 'prompt_batches', columns: 'prompt_id, text, blob_key, origin, prompt_kind, parent_prompt_id, thread_label, created_at', idColumn: 'prompt_id', orderColumn: 'created_at',
   map: (r) => ({
@@ -122,6 +129,7 @@ export const ATTACHMENT_QUERY: ChildQuery<Omit<AttachmentRow, 'orderedAt'>> = {
 export type PagingOptions = Pick<ChildOptions, 'limit' | 'cursor'>;
 
 export const listPrompts = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: PagingOptions) => listChildren(db, PROMPT_QUERY, scope, sessionId, opts);
+export const listContextInjections = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: PagingOptions) => listChildren(db, CONTEXT_INJECTION_QUERY, scope, sessionId, opts);
 export const listToolCalls = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, TOOL_CALL_QUERY, scope, sessionId, opts);
 export const listResponses = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, RESPONSE_QUERY, scope, sessionId, opts);
 export const listPlans = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, PLAN_QUERY, scope, sessionId, opts);

@@ -123,6 +123,34 @@ export const recall: ParityScenario = {
     expect(await target.sql(`SELECT kind FROM session_injections WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(startSession)} ORDER BY kind`))
       .toEqual([{ kind: 'cortex' }, { kind: 'cortex:a1' }, { kind: 'cortex:a2' }]);
 
+    for (const compaction of [1, 2]) {
+      const payload = { sessionId: startSession, kind: 'compact', compaction };
+      const restored = await sessionBlock(payload);
+      expect(restored.context).toBe(guidance);
+      expect(restored.kind).toBe(`cortex-compact:${compaction}`);
+      expect((await sessionBlock(payload)).skipped).toContain('repeat');
+    }
+    expect((await servedAtStart(startSession)).context).toBe('');
+    await post(startSession, 'session.start', { agent: 'claude-code', startedAt: stamp }, stamp);
+    interface ContextPage { rows: Array<{ kind: string; createdAt: number }>; cursor: string | null }
+    const contextPath = `/api/projects/${target.projectId}/sessions/${startSession}/context-injections`;
+    const context = await owner<ContextPage>(`${contextPath}?limit=2`);
+    expect(context.status).toBe(200);
+    expect(context.body.rows).toHaveLength(2);
+    expect(context.body.cursor).not.toBeNull();
+    const rest = await owner<ContextPage>(`${contextPath}?cursor=${encodeURIComponent(context.body.cursor!)}&limit=100`);
+    expect([...context.body.rows, ...rest.body.rows].map((r) => r.kind).sort())
+      .toEqual(['cortex', 'cortex-compact:1', 'cortex-compact:2', 'cortex:a1', 'cortex:a2']);
+    expect((await owner(`${contextPath.replace(startSession, 'missing-session')}`)).status).toBe(404);
+    await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('cortex.instructions.inject_on_session_start', 'false', ${stamp}, 'test')`);
+    try {
+      const off = await sessionBlock({ sessionId: startSession, kind: 'compact', compaction: 3 });
+      expect(off.context).toBe('');
+      expect(off.skipped).toEqual(['instructions:off', 'digest:off']);
+    } finally {
+      await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'cortex.instructions.inject_on_session_start'`);
+    }
+
     // A Project withdrawn from `cortex` is served an empty block naming the gate, and records nothing.
     await admit(false);
     const withdrawn = `parity-recall-off-${stamp}`;

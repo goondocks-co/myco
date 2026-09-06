@@ -11,7 +11,7 @@ import { SubtabPill } from '../ui/subtab-pill';
 import { Surface } from '../ui/surface';
 import {
   blobUrl, memberName, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, runtimeName, TITLING_OUTCOME_TEXT, TITLING_WATCH_MS, useSession, useSessionChildren, useTitleSession, useTranscript, useTurns,
-  type AttachmentRow, type PlanRow, type SessionRow, type TurnRow,
+  type AttachmentRow, type ContextInjectionRow, type PlanRow, type SessionRow, type TurnRow,
 } from '../../hooks/use-sessions';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRun, useSpores } from '../../hooks/use-intelligence';
@@ -28,6 +28,7 @@ const TABS = [
   { id: 'conversation', label: 'Conversation' },
   { id: 'plans', label: 'Plans' },
   { id: 'spores', label: 'Spores' },
+  { id: 'context', label: 'Context' },
   { id: 'attachments', label: 'Attachments' },
   { id: 'transcript', label: 'Transcript' },
 ];
@@ -72,11 +73,42 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
             {tab === 'conversation' && <TurnTimeline projectId={projectId} sessionId={sessionId} promptCount={detail.data.counts.prompts} />}
             {tab === 'plans' && <Plans projectId={projectId} sessionId={sessionId} wanted={params.get('plan')} />}
             {tab === 'spores' && <Spores projectId={projectId} sessionId={sessionId} />}
+            {tab === 'context' && <ContextInjections projectId={projectId} sessionId={sessionId} />}
             {tab === 'attachments' && <Attachments projectId={projectId} sessionId={sessionId} />}
             {tab === 'transcript' && <Transcript projectId={projectId} sessionId={sessionId} />}
           </div>
         </div>
       )}
+    </PageLoading>
+  );
+}
+
+function contextLabel(kind: string): string {
+  if (kind === 'cortex') return 'Session start';
+  if (kind === 'plan-nudge') return 'Plan reminder';
+  if (kind.startsWith('cortex-compact:')) return `After compaction ${kind.slice('cortex-compact:'.length)}`;
+  if (kind.startsWith('cortex:')) return `Subagent · ${kind.slice('cortex:'.length)}`;
+  return kind;
+}
+
+function ContextInjections({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+  const context = useSessionChildren<ContextInjectionRow>(projectId, sessionId, 'context-injections');
+  return (
+    <PageLoading isLoading={context.isPending} error={context.error} loadingText="Loading context history…">
+      <Panel title="Context history" padded>
+        <p className="mb-4 font-sans text-sm text-on-surface-variant">Context the server prepared for this session. A record does not confirm that the coding agent received it.</p>
+        {context.rows.length === 0 ? <p className="font-sans text-sm text-on-surface-variant">No session context recorded.</p> : (
+          <ul className="divide-y divide-outline-variant/20" aria-label="Context records">
+            {context.rows.map((record) => (
+              <li key={record.kind} className="flex flex-wrap items-baseline justify-between gap-2 py-3 font-sans text-sm">
+                <span className="break-words text-on-surface">{contextLabel(record.kind)}</span>
+                <time dateTime={new Date(record.createdAt).toISOString()} className="text-xs text-on-surface-variant">{formatDateTime(record.createdAt)}</time>
+              </li>
+            ))}
+          </ul>
+        )}
+        {context.hasMore && <button type="button" className={button} onClick={context.more}>Load more</button>}
+      </Panel>
     </PageLoading>
   );
 }
