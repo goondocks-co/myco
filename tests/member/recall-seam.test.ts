@@ -16,7 +16,7 @@ import { _resetManifestCache } from '@myco/hooks/normalize.js';
 import { writeHookResponse } from '@myco/hooks/response.js';
 import { runMemberHook, type HookOutcome, type HookRun } from '@myco/member/capture.js';
 import { resolveHookBudget, subRequestBudget } from '@myco/member/budget.js';
-import { recallKind, RECALL_CAP_MS } from '@myco/member/recall.js';
+import { recallKind, RECALL_CAP_MS, servedContext } from '@myco/member/recall.js';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
@@ -146,6 +146,32 @@ describe('the recall seam', () => {
 });
 
 describe('the sub-budget', () => {
+  it.each([650, RECALL_CAP_MS + 100])('bounds a recall HTTP response taking %i ms and preserves capture', async (delayMs) => {
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch() {
+      await Bun.sleep(delayMs);
+      return Response.json({ persisted: true, context: 'semantic observations', skipped: [] });
+    } });
+    try {
+      const answered = await drive(
+        { prompt: 'a typed prompt', transcript_path: transcript() },
+        (run) => outcomeFor(run, async () => {
+          const context = await servedContext(run, '/context/prompt', { sessionId: run.sessionId, promptId: 'p', text: 'a typed prompt' });
+          return context === undefined ? undefined : { additionalContext: context };
+        }),
+        (url, init) => new URL(String(url)).pathname === '/context/prompt' ? fetch(server.url, init) : rig.fetch(url, init),
+      );
+      if (delayMs < RECALL_CAP_MS) {
+        expect(answered.stdout).toBe('semantic observations');
+        expect(answered.stderr).toBe('');
+        expect(rig.rows('prompt_batches')).toBe(1);
+      } else {
+        expect(answered.stdout).toBe(`Session:: \`${SESSION}\``);
+        expect(answered.stderr).toContain('recall skipped (retry)');
+        expect(new MemberSpool('proj_1', { mycoHome }).depth(SESSION)).toBe(1);
+      }
+    } finally { await server.stop(true); }
+  });
+
   it('takes a third of what a 5 s hook has left, capped, so the drain still ships', () => {
     const start = 1_000_000;
     // Claude Code declares 5 s for UserPromptSubmit: a 4 000 ms hook budget, connect 1 333.
@@ -153,7 +179,7 @@ describe('the sub-budget', () => {
     expect([budget.hookBudgetMs, budget.connectTimeoutMs]).toEqual([4_000, 1_333]);
 
     const atStart = subRequestBudget(budget, RECALL_CAP_MS, start);
-    expect(atStart).toEqual({ connectTimeoutMs: 444, requestTimeoutMs: 1_333 });
+    expect(atStart).toEqual({ connectTimeoutMs: 1_333, requestTimeoutMs: 1_333 });
     expect(atStart.requestTimeoutMs).toBeLessThanOrEqual(RECALL_CAP_MS);
 
     // A longer hook budget is held to the cap rather than to its own third.
