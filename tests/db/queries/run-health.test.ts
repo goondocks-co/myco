@@ -304,18 +304,18 @@ describe('run-health query helpers', () => {
 
   describe('findSilentStreams', () => {
     it('flags a schedule-enabled, preCondition-free task with zero runs in the window', () => {
-      // canopy-map is bundled with schedule.enabled=true and no preCondition.
+      // harness-health is bundled with schedule.enabled=true and no preCondition.
       const window = resolveRunHealthWindow(24);
       const silent = findSilentStreams(window, ALL_PROJECTS_SCOPE);
-      expect(silent.some((s) => s.task === 'canopy-map')).toBe(true);
+      expect(silent.some((s) => s.task === 'harness-health')).toBe(true);
     });
 
     it('does not flag that task once it has a run in the window', () => {
-      seedRun('run-canopy-map', { id: 'run-canopy-map', agent_id: TEST_AGENT_ID, task: 'canopy-map' });
+      seedRun('run-harness-health', { id: 'run-harness-health', agent_id: TEST_AGENT_ID, task: 'harness-health' });
 
       const window = resolveRunHealthWindow(24);
       const silent = findSilentStreams(window, ALL_PROJECTS_SCOPE);
-      expect(silent.some((s) => s.task === 'canopy-map')).toBe(false);
+      expect(silent.some((s) => s.task === 'harness-health')).toBe(false);
     });
 
     it('never flags a task that has a preCondition gate', () => {
