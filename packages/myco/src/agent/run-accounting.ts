@@ -265,19 +265,25 @@ interface RunAccountingUpdateFields extends Pick<
 }
 
 export function buildRunAccountingUpdate(input: RunAccountingUpdateInput): RunAccountingUpdateFields {
-  const tokenBudget = analyzeRuntimeTokenBudget(input.usage, input.provider);
   return {
     harness: input.harness,
     provider: input.provider?.type ?? null,
     model: input.model,
     session_ref: input.sessionRef ?? input.checkpointState.harnessState?.ref ?? input.checkpointState.sessionRef ?? null,
     checkpoints: serializeCheckpointState(input.checkpointState),
-    usage_data: buildUsageData(input.usage, input.costData, input.phaseResults, tokenBudget),
+    ...buildRunUsageUpdate(input),
+    actions_taken: buildActionsTaken(input.harness, input.provider, input.model, input.phaseResults),
+  };
+}
+
+/** Usage and cost columns shared by local and server run persistence. */
+export function buildRunUsageUpdate(input: Pick<RunAccountingUpdateInput, 'usage' | 'costData' | 'phaseResults' | 'provider'>) {
+  return {
+    usage_data: buildUsageData(input.usage, input.costData, input.phaseResults, analyzeRuntimeTokenBudget(input.usage, input.provider)),
     cost_usd: input.costData.costUsd ?? null,
     actual_cost_usd: input.costData.actualCostUsd,
     estimated_cost_usd: input.costData.estimatedCostUsd,
     cost_source: input.costData.source,
     cost_data: serializeCostData(input.costData),
-    actions_taken: buildActionsTaken(input.harness, input.provider, input.model, input.phaseResults),
   };
 }
