@@ -50,4 +50,3 @@ export async function canopyMapWrittenBy(db: RelationalStore, scope: ReadScope, 
     && current.repository.url === repository.url && current.repository.branch === repository.branch
     && (current.sourceRunId === run.id || current.revision === source.priorRevision);
 }
-
