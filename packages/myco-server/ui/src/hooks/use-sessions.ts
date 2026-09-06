@@ -148,7 +148,8 @@ export interface ProjectStats {
   lastActivityAt: number | null;
 }
 
-export type SessionChild = 'prompts' | 'tool-calls' | 'responses' | 'plans' | 'attachments';
+export type SessionChild = 'prompts' | 'tool-calls' | 'responses' | 'plans' | 'attachments' | 'context-injections';
+export interface ContextInjectionRow { kind: string; createdAt: number; orderedAt: number }
 
 /** A session row as the list serves it: the row plus its counts and its activity spread over eight lifetime buckets, oldest first. */
 export interface SessionSummaryRow extends SessionRow {

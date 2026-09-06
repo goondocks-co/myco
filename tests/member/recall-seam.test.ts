@@ -18,7 +18,7 @@ import { runMemberHook, type HookOutcome, type HookRun } from '@myco/member/capt
 import { resolveHookBudget, subRequestBudget } from '@myco/member/budget.js';
 import { recallKind, RECALL_CAP_MS, servedContext } from '@myco/member/recall.js';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
-import { readSessionState } from '@myco/member/session-state.js';
+import { readSessionState, sessionStatePath } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { ServerClient, type FetchLike } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
@@ -330,11 +330,80 @@ const darkTo = (path: string): FetchLike => async (input, init) => {
 };
 
 describe('the session-start hook', () => {
-  const start = (fetchImpl: FetchLike) => runHook(
+  const start = (fetchImpl: FetchLike, source = 'startup') => runHook(
     'session-start',
-    { session_id: SESSION, hook_event_name: 'SessionStart', transcript_path: transcript(), cwd: '/work/repo' },
+    { session_id: SESSION, hook_event_name: 'SessionStart', transcript_path: transcript(), cwd: '/work/repo', source },
     { fetch: fetchImpl },
   );
+
+  const compact = (fetchImpl: FetchLike) => runHook('pre-compact', {
+    session_id: SESSION, hook_event_name: 'PreCompact', trigger: 'manual', transcript_path: transcript(),
+  }, { fetch: fetchImpl });
+
+  it('restores context once for each compaction and retains ordinary start deduplication', async () => {
+    admit();
+    guidance();
+    const spy = recordingFetch(rig.fetch);
+    expect((await start(spy.fetch)).stdout).toContain('Keep the plan current.');
+    for (const ordinal of [1, 2]) {
+      await compact(spy.fetch);
+      expect((await start(spy.fetch, 'compact')).stdout).toContain('Keep the plan current.');
+      expect((await start(spy.fetch, 'compact')).stdout).toBe('');
+      expect(delivered()).toContain(`cortex-compact:${ordinal}`);
+    }
+    for (const source of ['startup', 'resume', 'clear', 'fork']) expect((await start(spy.fetch, source)).stdout).toBe('');
+    expect(spy.requests.filter((r) => r.path === '/context/session').map((r) => JSON.parse(r.body!)))
+      .toEqual([{ sessionId: SESSION, kind: 'start' }, { sessionId: SESSION, kind: 'compact', compaction: 1 }, { sessionId: SESSION, kind: 'compact', compaction: 2 }]);
+    expect(rig.env.sqlite.query('SELECT kind FROM session_injections ORDER BY kind').all())
+      .toEqual([{ kind: 'cortex' }, { kind: 'cortex-compact:1' }, { kind: 'cortex-compact:2' }]);
+    expect(new MemberSpool('proj_1', { mycoHome }).depth(SESSION)).toBe(0);
+  });
+
+  it('reports an unrecorded compaction without suppressing its capture or inventing an identity', async () => {
+    admit();
+    guidance();
+    const spy = recordingFetch(rig.fetch);
+    const out = await start(spy.fetch, 'compact');
+    expect(out.stdout).toBe('');
+    expect(out.stderr).toContain('no recorded PreCompact ordinal');
+    expect(spy.requests.filter((r) => r.path === '/context/session')).toHaveLength(0);
+    expect(rig.rows('sessions')).toBe(1);
+    await compact(spy.fetch);
+    expect((await start(spy.fetch, 'compact')).stdout).toContain('Keep the plan current.');
+  });
+
+  it('records the compaction ordinal while offline and serves it after connectivity returns', async () => {
+    admit();
+    guidance();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    spool.markOffline(Date.now());
+    const spy = recordingFetch(rig.fetch);
+    await compact(spy.fetch);
+    expect(spy.requests).toHaveLength(0);
+    expect(readSessionState(spool.dir, SESSION).compactionOrdinal).toBe(1);
+    expect(spool.depth(SESSION)).toBe(1);
+    spool.clearLatch();
+    expect((await start(spy.fetch, 'compact')).stdout).toContain('Keep the plan current.');
+    expect(spool.depth(SESSION)).toBe(0);
+  });
+
+  it('extends existing session state without losing delivered context or capture receipts', async () => {
+    admit();
+    guidance();
+    await start(rig.fetch);
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const file = sessionStatePath(spool.dir, SESSION);
+    const existing = JSON.parse(fs.readFileSync(file, 'utf8'));
+    delete existing.compactionOrdinal;
+    existing.prompts.retained = 'retained-prompt';
+    fs.writeFileSync(file, JSON.stringify(existing));
+    await compact(rig.fetch);
+    expect((await start(rig.fetch, 'compact')).stdout).toContain('Keep the plan current.');
+    const state = readSessionState(spool.dir, SESSION);
+    expect(state.prompts.retained).toBe('retained-prompt');
+    expect(state.delivered).toEqual(['cortex', 'cortex-compact:1']);
+    expect(state.compactionOrdinal).toBe(1);
+  });
 
   it('asks for the session block and writes the branch and the session under it', async () => {
     admit();

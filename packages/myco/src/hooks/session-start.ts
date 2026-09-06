@@ -6,6 +6,7 @@ import { runGit } from '../utils/git.js';
 import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { deriveId, promptEvent, sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
 import { servedOnce } from '../member/recall.js';
+import { sessionContextRequest } from '../member/compaction.js';
 import { readSessionState } from '../member/session-state.js';
 import { sessionLineage } from '../member/transcript.js';
 import { sha256Text } from '../member/text.js';
@@ -27,7 +28,9 @@ const SESSION_RECALL_PATH = '/context/session';
  */
 function recall(sessionId: string, branch: string | undefined) {
   return async (run: HookRun): Promise<HookResponse | undefined> => {
-    const served = await servedOnce(run, SESSION_RECALL_PATH, { sessionId, kind: 'start' });
+    const request = sessionContextRequest(run);
+    if (request === undefined) return undefined;
+    const served = await servedOnce(run, SESSION_RECALL_PATH, request);
     if (served === undefined) return undefined;
     const lines = [served, ...(branch ? [`Branch:: \`${branch}\``] : []), `Session:: \`${sessionId}\``];
     return { additionalContext: lines.join('\n\n') };

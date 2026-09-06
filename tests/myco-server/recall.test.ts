@@ -231,10 +231,10 @@ const instructions = (sqlite: Database, over: Partial<{ id: string; agentId: str
 
 const forSession = (
   db: RelationalStore,
-  over: Partial<{ leaves: RecallLeaves; capabilityOn: boolean; scope: ReadScope; sessionId: string; kind: SessionContextKind; agentId: string; agentType: string; now: number }> = {},
+  over: Partial<{ leaves: RecallLeaves; capabilityOn: boolean; scope: ReadScope; sessionId: string; kind: SessionContextKind; agentId: string; agentType: string; compaction: number; now: number }> = {},
 ) => composeSessionContext(db, over.scope ?? SCOPE, over.leaves ?? ON, over.capabilityOn ?? true, {
   sessionId: over.sessionId ?? SESSION,
-  kind: over.kind ?? 'start',
+  ...(over.kind === 'compact' ? { kind: 'compact' as const, compaction: over.compaction ?? 1 } : { kind: over.kind ?? 'start' }),
   agentId: over.agentId,
   agentType: over.agentType,
   now: over.now ?? NOW,
@@ -302,6 +302,26 @@ describe('a session start', () => {
 describe('the digest at session start', () => {
   const digest = (db: RelationalStore, tier: number, content: string, generatedAt = NOW, scope: ReadScope = SCOPE) =>
     upsertDigest(db, scope, { id: `dg_${tier}`, agentId: AGENT, tier, content, substrateHash: null, generatedAt });
+
+  it('restores the same bounded instructions and digest after compaction with independent receipts', async () => {
+    const { db, sqlite } = store();
+    instructions(sqlite);
+    await digest(db, 5000, 'the middle digest');
+    const leaves = { ...ON, digestAtSessionStart: true };
+    const initial = await forSession(db, { leaves });
+    for (const compaction of [1, 2]) {
+      const restored = await forSession(db, { kind: 'compact', compaction, leaves });
+      expect(restored.context).toBe(initial.context);
+      expect(restored.parts).toEqual(initial.parts);
+      expect(restored.kind).toBe(`cortex-compact:${compaction}`);
+      expect((await forSession(db, { kind: 'compact', compaction, leaves })).skipped).toContain('repeat');
+    }
+    expect((await forSession(db, { kind: 'subagent', agentId: 'compact:1', leaves })).context).not.toBe('');
+    expect((await forSession(db, { kind: 'compact', compaction: 3, leaves: { ...leaves, instructionsAtSessionStart: false, digestAtSessionStart: false } })).skipped)
+      .toEqual(['instructions:off', 'digest:off']);
+    expect((await forSession(db, { kind: 'compact', compaction: 3, capabilityOn: false, leaves })).skipped).toEqual(['capability']);
+    expect(sessionRows(sqlite).map((r) => r.kind).sort()).toEqual(['cortex', 'cortex-compact:1', 'cortex-compact:2', 'cortex:compact:1']);
+  });
 
   it('stays away unless the Deployment asks for it', async () => {
     const { db } = store();
@@ -394,10 +414,10 @@ describe('a subagent start', () => {
   });
 
   it('names the delegation the way the record does, trimming what the harness sent', () => {
-    expect(sessionInjectionKind('start', 'a1', 'code-reviewer')).toBe('cortex');
-    expect(sessionInjectionKind('subagent', ' a1 ', 'code-reviewer')).toBe('cortex:a1');
-    expect(sessionInjectionKind('subagent', '  ', ' code-reviewer ')).toBe('cortex:code-reviewer');
-    expect(sessionInjectionKind('subagent')).toBe('cortex:unknown');
+    expect(sessionInjectionKind({ kind: 'start', agentId: 'a1', agentType: 'code-reviewer' })).toBe('cortex');
+    expect(sessionInjectionKind({ kind: 'subagent', agentId: ' a1 ', agentType: 'code-reviewer' })).toBe('cortex:a1');
+    expect(sessionInjectionKind({ kind: 'subagent', agentId: '  ', agentType: ' code-reviewer ' })).toBe('cortex:code-reviewer');
+    expect(sessionInjectionKind({ kind: 'subagent' })).toBe('cortex:unknown');
   });
 
   it('holds the instructions back where the Deployment switched the subagent surface off', async () => {
@@ -517,6 +537,24 @@ describe('POST /context/session', () => {
     });
   const answer = async (e: ReturnType<typeof sqliteEnv>, token: string, body: unknown) =>
     (await (await worker.fetch(post(token, body), e.env)).json()) as Record<string, unknown>;
+
+  it('requires a positive safe-integer compaction identity and deduplicates it on the server', async () => {
+    const { e, token } = await member();
+    admit(e);
+    instructions(e.sqlite, { projectId: 'proj_1' });
+    for (const compaction of [undefined, null, 0, -1, 1.5, '1', Number.MAX_SAFE_INTEGER + 1]) {
+      const got = await answer(e, token, { sessionId: 's1', kind: 'compact', compaction });
+      expect({ compaction, persisted: got.persisted, code: got.code }).toEqual({ compaction, persisted: false, code: 'parse' });
+    }
+    for (const compaction of [1, 2]) {
+      const got = await answer(e, token, { sessionId: 's1', kind: 'compact', compaction });
+      expect(got.kind).toBe(`cortex-compact:${compaction}`);
+      expect(got.context).toContain('Keep the plan current.');
+      const repeated = await answer(e, token, { sessionId: 's1', kind: 'compact', compaction });
+      expect(repeated.context).toBe('');
+      expect(repeated.skipped).toContain('repeat');
+    }
+  });
 
   it('refuses a body it cannot read, one that names no session, and one naming a kind it does not serve', async () => {
     const { e, token } = await member();

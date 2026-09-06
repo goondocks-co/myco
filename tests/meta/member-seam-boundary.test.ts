@@ -53,6 +53,7 @@ const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const ALLOWLIST: readonly string[] = [
   'hooks/**',
   'member/**',
+  'packages/myco-shared/src/recall.ts',
   'capture/buffer.ts',
   'capture/transcript-id.ts',
   // Transcript-derived capture: the prompt walker, session lineage, and plan-tag envelopes.

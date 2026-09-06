@@ -17,7 +17,8 @@
       "@myco/*": ["./src/*"],
       "@myco-deploy/*": ["../myco-deploy/src/*"],
       "@goondocks/myco-shared": ["../myco-shared/src/index.ts"],
-      "@goondocks/myco-shared/relevance": ["../myco-shared/src/relevance.ts"]
+      "@goondocks/myco-shared/relevance": ["../myco-shared/src/relevance.ts"],
+      "@goondocks/myco-shared/recall": ["../myco-shared/src/recall.ts"]
     }
   },
   "include": ["src/**/*", "plugin/**/*"],

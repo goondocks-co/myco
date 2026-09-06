@@ -18,6 +18,7 @@ import { canStartRequest, subRequestBudget } from './budget.js';
 import type { HookRun } from './capture.js';
 import { readSessionState, updateSessionState } from './session-state.js';
 import { classifyEventAnswer } from './transport.js';
+import { sessionInjectionKind, type SessionContextRequest } from '@goondocks/myco-shared/recall';
 
 /** The longest one recall call may take, whatever the hook has left. */
 export const RECALL_CAP_MS = 1500;
@@ -65,18 +66,8 @@ export async function servedContext(
   return answer === undefined || answer.context.length === 0 ? undefined : answer.context;
 }
 
-/**
- * The record a session-context request burns, named the way the Deployment
- * names it. Mirrored here so a hook can consult its own state before spending
- * the budget; `tests/member/recall-seam.test.ts` holds it against the `kind` the
- * Deployment answers, so the two cannot drift.
- */
-export function recallKind(body: Record<string, unknown>): string {
-  if (body.kind === 'start') return 'cortex';
-  const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
-  const agentType = typeof body.agentType === 'string' ? body.agentType.trim() : '';
-  return `cortex:${agentId || agentType || 'unknown'}`;
-}
+/** The shared receipt identity consulted before spending the hook's request budget. */
+export const recallKind = (body: SessionContextRequest): string => sessionInjectionKind(body);
 
 /**
  * What a hook asks the Deployment to serve it once per session.
@@ -96,7 +87,7 @@ export function recallKind(body: Record<string, unknown>): string {
 export async function servedOnce(
   run: HookRun,
   path: string,
-  body: Record<string, unknown>,
+  body: SessionContextRequest,
 ): Promise<string | undefined> {
   const local = recallKind(body);
   if (readSessionState(run.spool.dir, run.sessionId).delivered.includes(local)) return undefined;
