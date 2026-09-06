@@ -22,6 +22,7 @@
  */
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
+import { parseSourceRefs, validateSkillCandidateQualityContract, type CandidateSourceRef } from '@goondocks/myco-shared/skill-candidates';
 
 export const SKILL_STATUSES = ['active', 'archived', 'superseded'] as const;
 import { CANDIDATE_STATUSES, CANDIDATE_REVIEW_STATUSES, type CandidateReviewStatus, type SkillCandidate } from './skill-types.js';
@@ -207,11 +208,44 @@ function candidateUpdateStatement(
 
 export async function reviewCandidate(db: RelationalStore, scope: ReadScope,
   input: { id: string; revision: number; status: CandidateReviewStatus; memberId: string }, now: number,
-): Promise<{ reviewed: boolean; candidate: SkillCandidate | null }> {
+): Promise<{ reviewed: boolean; candidate: SkillCandidate | null; issues?: string[]; warnings?: string[] }> {
+  const candidate = await getCandidate(db, scope, input.id);
+  if (candidate === null || candidate.revision !== input.revision || !(CANDIDATE_REVIEW_STATUSES as readonly string[]).includes(candidate.status)) {
+    return { reviewed: false, candidate };
+  }
+  const sourceGuards: { sql: string; values: unknown[] }[] = [];
+  const warnings: string[] = [];
+  if (input.status === 'approved') {
+    const legacy = candidate.evidenceBundleId === null && candidate.qualityScore === null
+      && candidate.qualityFailures === '[]' && candidate.coverageMatches === '[]'
+      && candidate.lastReconciledAt === null && candidate.reconciliationReason === null;
+    if (legacy) warnings.push('This candidate has no recorded quality assessment.');
+    else {
+      const issues = validateSkillCandidateQualityContract({ source_ids: candidate.sourceIds,
+        evidence_bundle_id: candidate.evidenceBundleId, quality_score: candidate.qualityScore,
+        quality_failures: candidate.qualityFailures, coverage_matches: candidate.coverageMatches });
+      if (issues.length > 0) return { reviewed: false, candidate, issues };
+      const refs = parseSourceRefs(candidate.sourceIds);
+      sourceGuards.push(...refs.map((ref) => candidateSourceGuard(scope, ref)));
+      const resolved = await db.prepare(`SELECT ${sourceGuards.map((guard, index) => `${guard.sql} AS r${index}`).join(', ')}`)
+        .bind(...sourceGuards.flatMap((guard) => guard.values)).first<Record<string, number>>();
+      if (resolved === null) throw new Error('Candidate sources could not be resolved.');
+      const missing = refs.filter((_, index) => resolved[`r${index}`] !== 1);
+      if (missing.length > 0) return { reviewed: false, candidate,
+        issues: [`Source references could not be resolved: ${missing.map((ref) => `${ref.type}:${ref.id}`).join(', ')}`] };
+    }
+  }
   const result = await candidateUpdateStatement(db, scope, { status: input.status }, now,
-    `id = ? AND revision = ? AND status IN (${CANDIDATE_REVIEW_STATUSES.map(() => '?').join(', ')})`,
-    [input.id, input.revision, ...CANDIDATE_REVIEW_STATUSES], input.memberId).run();
-  return { reviewed: result.meta.changes > 0, candidate: await getCandidate(db, scope, input.id) };
+    `id = ? AND revision = ? AND status IN (${CANDIDATE_REVIEW_STATUSES.map(() => '?').join(', ')})${sourceGuards.map((guard) => ` AND ${guard.sql}`).join('')}`,
+    [input.id, input.revision, ...CANDIDATE_REVIEW_STATUSES, ...sourceGuards.flatMap((guard) => guard.values)], input.memberId).run();
+  return { reviewed: result.meta.changes > 0, candidate: await getCandidate(db, scope, input.id), ...(warnings.length > 0 ? { warnings } : {}) };
+}
+
+function candidateSourceGuard(scope: ReadScope, ref: CandidateSourceRef): { sql: string; values: unknown[] } {
+  const source = ({ spore: ['spores', 'id'], session: ['sessions', 'session_id'], plan: ['plans', 'plan_key'], artifact: null } as const)[ref.type];
+  if (source === null) return { sql: '0', values: [] };
+  return { sql: `EXISTS (SELECT 1 FROM ${source[0]} AS source WHERE source.project_id = ? AND substr(source.${source[1]}, 1, length(?)) = ?)`,
+    values: [scope.projectId, ref.id, ref.id] };
 }
 
 // ---------------------------------------------------------------------------

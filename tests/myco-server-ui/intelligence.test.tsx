@@ -176,6 +176,18 @@ describe('Skills', () => {
     expect(writes).toBe(1);
   });
 
+  it('explains an evidence refusal while keeping the candidate available for deferral', async () => {
+    server(base({
+      '/api/projects/x/skill-candidates': () => Response.json({ candidates: [candidate()], hasMore: false }),
+      '/api/projects/x/skill-candidates/candidate_1': () => Response.json({ error: 'candidate_quality', issues: ['missing evidence'] }, { status: 400 }),
+    }));
+    mount('/p/x/skills?tab=candidates');
+    fireEvent.click(await screen.findByText('Capture diagnosis'));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve', exact: true }));
+    expect(await screen.findByText(/needs complete, resolvable evidence/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Defer', exact: true }).hasAttribute('disabled')).toBe(false);
+  });
+
   it('renders the published content, the lineage, and the release state that names this skill', async () => {
     server(base({
       '/api/projects/x/skills': () => Response.json({ skills: [{ id: 'sk1', agentId: 'agent_1', name: 'debugging', displayName: 'Debugging', description: 'How to debug here', status: 'active', generation: 2, sourceIds: '["a","b"]', usageCount: 3, lastUsedAt: NOW, createdAt: 0, updatedAt: 0 }] }),

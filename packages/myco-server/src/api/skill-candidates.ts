@@ -32,6 +32,7 @@ export async function handleReviewSkillCandidate(env: ServerEnv, ctx: OwnerConte
   const result = await reviewCandidate(env.db, scope, { id: ctx.params.candidateId,
     revision: body.revision as number, status: body.status as CandidateReviewStatus, memberId: ctx.member.id }, ctx.now);
   if (result.candidate === null) return notFound();
+  if (result.issues) return Response.json({ error: 'candidate_quality', reason: 'This candidate needs complete, resolvable evidence before approval.', issues: result.issues }, { status: 400 });
   if (!result.reviewed) return Response.json({ error: 'conflict', reason: 'This candidate changed or has already generated a skill. Reload it before reviewing.', candidate: result.candidate }, { status: 409 });
   return ok(result);
 }

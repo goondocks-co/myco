@@ -16,6 +16,6 @@ export function useSkillCandidates(projectId: string, status: SkillCandidate['st
 export function useReviewCandidate(projectId: string) {
   const client = useQueryClient();
   return useMutation({ mutationFn: (input: { id: string; revision: number; status: CandidateReviewStatus }) =>
-    patchJson<{ reviewed: boolean; candidate: SkillCandidate }>(`${path(projectId)}/${encodeURIComponent(input.id)}`, { revision: input.revision, status: input.status }),
+    patchJson<{ reviewed: boolean; candidate: SkillCandidate; warnings?: string[] }>(`${path(projectId)}/${encodeURIComponent(input.id)}`, { revision: input.revision, status: input.status }),
     onSettled: () => client.invalidateQueries({ queryKey: ['skill-candidates', projectId] }) });
 }

@@ -20,6 +20,7 @@ export const skillCandidates: ParityScenario = {
     expect(listed.body.candidates).toContainEqual(expect.objectContaining({ id, revision: 0, approvedAt: null }));
     const approved = await ask(`/${id}`, { revision: 0, status: 'approved' });
     expect(approved.status).toBe(200);
+    expect(approved.body.warnings).toEqual(['This candidate has no recorded quality assessment.']);
     expect(approved.body.candidate).toMatchObject({ revision: 1, status: 'approved', approvedBy: MEMBER_ID, reviewedBy: MEMBER_ID });
     const firstApproval = approved.body.candidate.approvedAt;
     const stale = await ask(`/${id}`, { revision: 0, status: 'dismissed' });
@@ -34,5 +35,16 @@ export const skillCandidates: ParityScenario = {
     expect((await ask(`/${id}`, { revision: 3, status: 'deferred' })).status).toBe(200);
     expect((await ask(`/${id}`, { revision: 4, status: 'approved' })).body.candidate.approvedAt).toBe(firstApproval);
     expect((await ask('/absent', { revision: 0, status: 'approved' })).status).toBe(404);
+    const sources = ['a', 'b', 'c'].map((suffix) => `spore-${id}-${suffix}`);
+    await target.sql(`UPDATE skill_candidates SET status='identified',revision=6,evidence_bundle_id='bundle',quality_score=0.9,
+      quality_failures='["missing-project-anchor"]',source_ids=${lit(JSON.stringify(sources))} WHERE project_id=${lit(target.projectId)} AND id=${lit(id)}`);
+    expect((await ask(`/${id}`, { revision: 6, status: 'approved' })).body.error).toBe('candidate_quality');
+    await target.sql(`UPDATE skill_candidates SET quality_failures='[]',revision=7 WHERE project_id=${lit(target.projectId)} AND id=${lit(id)}`);
+    expect((await ask(`/${id}`, { revision: 7, status: 'approved' })).status).toBe(400);
+    for (const source of sources) await target.sql(`INSERT INTO spores(project_id,id,agent_id,observation_type,content,created_at)
+      VALUES (${lit(target.projectId)},${lit(`${source}-long`)},'user','wisdom','Candidate evidence',1)`);
+    expect((await ask(`/${id}`, { revision: 7, status: 'approved' })).status).toBe(200);
+    await target.sql(`DELETE FROM skill_candidates WHERE project_id=${lit(target.projectId)} AND id=${lit(id)}`);
+    for (const source of sources) await target.sql(`DELETE FROM spores WHERE project_id=${lit(target.projectId)} AND id=${lit(`${source}-long`)}`);
   },
 };

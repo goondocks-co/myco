@@ -13,6 +13,16 @@ import { formatDateTime } from '../lib/format';
 
 const LABELS: Record<SkillCandidate['status'], string> = { identified: 'Needs review', approved: 'Approved', deferred: 'Deferred', dismissed: 'Dismissed', generated: 'Generated' };
 
+function decisionError(error: Error): string {
+  if (error instanceof ApiError) {
+    if (error.status === 409) return 'This candidate changed. Review the updated details before deciding again.';
+    if (typeof error.body === 'object' && error.body !== null && 'error' in error.body && error.body.error === 'candidate_quality') {
+      return 'This candidate needs complete, resolvable evidence before approval. Review its source references and quality assessment.';
+    }
+  }
+  return 'The review could not be saved. Try again.';
+}
+
 function evidenceLabel(value: unknown, sources: boolean): string | null {
   if (typeof value === 'string') return value;
   if (sources && typeof value === 'object' && value !== null && 'id' in value && 'type' in value
@@ -48,8 +58,8 @@ export function SkillCandidates({ projectId }: { projectId: string }) {
         {Object.entries(LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
       </select></label>
       {review.data && <span role="status" className="font-sans text-sm text-tertiary">Candidate {LABELS[review.data.candidate.status].toLowerCase()}.</span>}
-      {review.error && <span role="alert" className="font-sans text-sm text-tertiary">{review.error instanceof ApiError && review.error.status === 409
-        ? 'This candidate changed. Review the updated details before deciding again.' : 'The review could not be saved. Try again.'}</span>}
+      {review.data?.warnings?.map((warning) => <span role="status" key={warning} className="font-sans text-sm text-on-surface-variant">{warning}</span>)}
+      {review.error && <span role="alert" className="font-sans text-sm text-tertiary">{decisionError(review.error)}</span>}
     </div>
     <PageLoading isLoading={query.isPending} error={query.error}>
       <div className="min-h-[50vh] rounded-lg border border-outline-variant/20">

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { insertCandidate, getCandidate } from '@myco-server-worker/core/skills.js';
+import { insertCandidate, getCandidate, updateCandidate } from '@myco-server-worker/core/skills.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPatch, OWNER_ENV, PRINCIPAL } from './helpers/owner.js';
 
@@ -32,11 +32,29 @@ describe('member skill candidate review', () => {
     const r = await rig();
     const approved = await r.ask(await asOwnerPatch(`${PATH}/one`, { revision: 0, status: 'approved', memberId: 'forged' }));
     expect(approved.status).toBe(200);
-    expect(await approved.json()).toMatchObject({ reviewed: true, candidate: { status: 'approved', revision: 1, approvedBy: PRINCIPAL.id, reviewedBy: PRINCIPAL.id } });
+    expect(await approved.json()).toMatchObject({ reviewed: true, warnings: ['This candidate has no recorded quality assessment.'], candidate: { status: 'approved', revision: 1, approvedBy: PRINCIPAL.id, reviewedBy: PRINCIPAL.id } });
     const stale = await r.ask(await asOwnerPatch(`${PATH}/one`, { revision: 0, status: 'dismissed' }));
     expect(stale.status).toBe(409);
     expect(await stale.json()).toMatchObject({ error: 'conflict', candidate: { status: 'approved', revision: 1 } });
     expect((await getCandidate(r.db, { projectId: 'proj_1' }, 'one'))?.status).toBe('approved');
+  });
+
+  it('requires assessed evidence to pass quality checks and resolve inside the project, including short ids', async () => {
+    const r = await rig();
+    await updateCandidate(r.db, { projectId: 'proj_1' }, 'one', { evidence_bundle_id: 'bundle_one', quality_score: 0.9,
+      quality_failures: '["missing-project-anchor"]', source_ids: '["spore-a","spore-b","spore-c"]' }, 2);
+    const ask = async (revision: number) => r.ask(await asOwnerPatch(`${PATH}/one`, { revision, status: 'approved' }));
+    expect(await (await ask(1)).json()).toMatchObject({ error: 'candidate_quality', issues: ['quality_failures must be an empty array'] });
+    await updateCandidate(r.db, { projectId: 'proj_1' }, 'one', { quality_failures: '[]' }, 3);
+    for (const [project, id] of [['proj_1', 'spore-a-long'], ['proj_1', 'spore-b-long'], ['proj_2', 'spore-c-long']]) {
+      r.sqlite.query("INSERT INTO spores(project_id,id,agent_id,observation_type,content,created_at) VALUES (?,?,'agent_1','wisdom','Evidence',1)").run(project, id);
+    }
+    expect((await ask(2)).status).toBe(400);
+    expect((await getCandidate(r.db, { projectId: 'proj_1' }, 'one'))?.revision).toBe(2);
+    r.sqlite.query("INSERT INTO spores(project_id,id,agent_id,observation_type,content,created_at) VALUES ('proj_1','spore-c-long','agent_1','wisdom','Evidence',1)").run();
+    const approved = await ask(2);
+    expect(approved.status).toBe(200);
+    expect(await approved.json()).toMatchObject({ reviewed: true, candidate: { status: 'approved', revision: 3 } });
   });
 
   it('requires a member session and same-origin review and cannot invent approval state', async () => {

@@ -8,7 +8,7 @@ const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 rmSync(resolve(pkgRoot, 'dist'), { recursive: true, force: true }); // matches tsup clean:true
 
 const result = await Bun.build({
-  entrypoints: ['index', 'relevance', 'recall', 'repository', 'canopy'].map((name) => resolve(pkgRoot, `src/${name}.ts`)),
+  entrypoints: ['index', 'relevance', 'recall', 'repository', 'canopy', 'skill-candidates'].map((name) => resolve(pkgRoot, `src/${name}.ts`)),
   outdir: resolve(pkgRoot, 'dist'),
   target: 'node',
   format: 'esm',
