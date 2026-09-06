@@ -38,6 +38,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'sleep',
     converges: 'no run whose runtime went away stays live past its bound: each is failed by name and released as a finished run is',
   },
+  { name: 'search-index', runsThrough: 'idle', converges: 'every referenced text blob has a complete full-text index' },
 ];
 
 /** A job declared for a state, awaiting the child that gives it work. Nothing runs it; naming the owner keeps the table honest. */

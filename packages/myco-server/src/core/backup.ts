@@ -60,6 +60,9 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * outside its dumps.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
+  'search_blob_queue', 'search_blob_chunks',
+  ...['prompt_batches', 'responses', 'spores', 'plans', 'skill_records', 'sessions', 'search_blob_chunks']
+    .flatMap((table) => ['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `${table}_fts${suffix}`)),
   'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
   'deployment_settings', 'project_capabilities', 'deployment_secrets', 'backups',
   '_v2_guard_project_id_grammar', '_v2_guard_session_machine_id',
@@ -274,7 +277,7 @@ export async function restoreArtifact(
       const statements = chunk.map((row) => {
         const columns = Object.keys(row);
         if (!columns.every((c) => IDENTIFIER.test(c))) throw new BackupApplyError(table, 'a row carries a column name outside the store grammar');
-        return db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`)
+        return db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING rowid`)
           .bind(...columns.map((c) => row[c] ?? null));
       });
       let applied;
@@ -283,7 +286,7 @@ export async function restoreArtifact(
       } catch (err) {
         throw new BackupApplyError(table, err instanceof Error ? err.message : String(err));
       }
-      for (const result of applied) inserted += result.meta.changes;
+      for (const result of applied) inserted += result.results.length;
     }
     outcome.tables[table] = { rows: rows.length, inserted };
   }

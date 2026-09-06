@@ -19,6 +19,21 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0002_v2.sql': '9a8cee5f16d76d37f2997148525de27e9716b1997263a67f7f4fecc3499a3ea4',
   '0003_v3.sql': 'ff2773c613c61ecedcc9bbb236c739c43b1811ae89e1b89c7547a7ed9f7e741b',
   '0004_v4.sql': '62393274aa0dde97a25fdab7f412a4a534244874150dac6f4a9b9f1aa4a0a348',
+  '0005_v5.sql': 'b8cbcbe9a647d492d99f767b9779335f9bd724bab1024ef7c11d0686528770fd',
+  '0006_v6.sql': 'c8b0d10e18841d4c5e16b08a0fdeb58d6fd122c5e369e6d708a21aeba50a9c19',
+  '0007_v7.sql': '23211b666c32d96c55538aa2ea45a8dcdd49fa90d84086d6f1f9b05bb0f37493',
+  '0008_v8.sql': 'b48de3ea7d93f99e29b8b5fa73d8543c18f91d71db52cf441e1d3bc90edb22c5',
+  '0009_v9.sql': 'a9151650dbab2135b24a195517cc88e32b66f29b18bd211fd8c7ba2781ecbf19',
+  '0010_v10.sql': '725651462a2fab075ca3891dd049cc27c5235ff481fe12769763c25b5c8534b5',
+  '0011_v11.sql': '7ad31c92d2fb4a73b334bb60293225fa39545938c9ce022e2f8988dc04c99e5b',
+  '0012_v12.sql': '7b708740fa80bdee06eb2145711ee89312054d4ca4f28da3828fb7ec8900add9',
+  '0013_v13.sql': 'a152088648a3058772a7696d3bb5b9358ec3fb41d68554aab40ef7cb8d802c71',
+  '0014_v14.sql': 'a4baab3fa7476a0b7da47968396ec9f0a4f739c8250194b7dd8b8a4756e00513',
+  '0015_v15.sql': '56b8085ba9179e0aa93b63b383fb240935eabd1948a39a02fd5df12768d74908',
+  '0016_v16.sql': '56d0f29d79664655e0ceb671dc4d5e66930dfbd2af0565c1f076ee81d8ef3a0f',
+  '0017_v17.sql': '5f615c450cbfc1e0f413e13f95332d79a76a5e399558c5f7eac079f1c8d7cf47',
+  '0018_v18.sql': '67440408a984d7b805395a5ae152694975d2e5ed5b6a6bd5b0b94b0980fb6b52',
+  '0019_v19.sql': '7e1dbd6996831979c8141d239e29087489531ec801b7e91fc93fde79d153e8d2',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -45,6 +60,23 @@ function declaredColumns(steps: readonly SchemaStep[]): Map<string, Map<string, 
 const step = (sqlite: Database, s: SchemaStep): void => { for (const statement of s.statements) sqlite.exec(statement); };
 
 describe('versioned schema steps', () => {
+  it('indexes existing captured text and queues historical spilled bodies when v19 is applied', () => {
+    const sqlite = fresh();
+    try {
+      for (const migration of SCHEMA_STEPS.filter((s) => s.version < 19)) step(sqlite, migration);
+      sqlite.exec(`INSERT INTO projects(project_id,name,created_at) VALUES ('existing','Existing',1);
+        INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,title) VALUES ('existing','s','m','t',1,1,'historical session');
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<50000)
+        INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,origin,text,content_hash,created_at,updated_at,token_id,received_at)
+          SELECT 'existing','s','p'||i,'e'||i,'user','historical prompt '||i,'h'||i,1,1,'t',1 FROM n;
+        UPDATE prompt_batches SET text=NULL,blob_key='legacy-body' WHERE prompt_id='p1';`);
+      step(sqlite, SCHEMA_STEPS.find((s) => s.version === 19)!);
+      expect(version(sqlite)).toBe('19');
+      expect(sqlite.query(`SELECT COUNT(*) AS n FROM prompt_batches_fts WHERE prompt_batches_fts MATCH 'historical'`).get()).toEqual({ n: 49999 });
+      expect(sqlite.query(`SELECT project_id,blob_key,complete FROM search_blob_queue`).all()).toEqual([{ project_id: 'existing', blob_key: 'legacy-body', complete: 0 }]);
+      expect(sqlite.query(`SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH 'historical'`).all()).toHaveLength(1);
+    } finally { sqlite.close(); }
+  });
   it('stamps its version as the last statement of every step, in ascending order from 1', () => {
     SCHEMA_STEPS.forEach((step, i) => {
       expect(step.version).toBe(i + 1);
@@ -65,7 +97,7 @@ describe('versioned schema steps', () => {
 
   it('keeps every shipped migration file byte-identical to its recorded digest, so an applied step cannot be edited in place and pass as a rendered file', () => {
     const shipped = Object.keys(SHIPPED_MIGRATION_DIGESTS);
-    expect(shipped).toEqual(renderMigrationFiles().map((f) => f.name).slice(0, shipped.length));
+    expect(shipped).toEqual(renderMigrationFiles().map((f) => f.name));
     for (const [name, digest] of Object.entries(SHIPPED_MIGRATION_DIGESTS)) {
       expect({ name, digest: sha256(readFileSync(join(MIGRATIONS, name))) }).toEqual({ name, digest });
     }
@@ -202,6 +234,7 @@ describe('versioned schema steps', () => {
       const cols = sqlite.query(`PRAGMA table_info(${t})`).all() as { name: string; type: string; notnull: number; dflt_value: string | null }[];
       if (!cols.some((c) => c.name === 'project_id')) continue;
       if (t === 'member_tokens' || t === 'sessions' || t === 'events') continue;
+      sqlite.exec('SAVEPOINT grammar_probe');
       const insert = (projectId: string) => {
         const names = cols.map((c) => c.name);
         const values = cols.map((c) => (c.name === 'project_id' ? `'${projectId}'` : c.type === 'INTEGER' ? '0' : `'x'`));
@@ -213,13 +246,14 @@ describe('versioned schema steps', () => {
       expect(() => insert('.')).toThrow(/CHECK constraint failed/);
       expect(() => insert('..')).toThrow(/CHECK constraint failed/);
       expect(() => insert('ok.id-1_A')).not.toThrow();
+      sqlite.exec('ROLLBACK TO grammar_probe; RELEASE grammar_probe');
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_events', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'attachments', 'blob_reservations', 'blobs', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts', 'external_grants',
       'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'project_capabilities', 'projects',
-      'prompt_batches', 'resolution_events', 'responses', 'session_injections', 'skill_candidates', 'skill_lineage', 'skill_records',
+      'prompt_batches', 'resolution_events', 'responses', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'skill_candidates', 'skill_lineage', 'skill_records',
       'skill_usage', 'spore_injections', 'spores', 'tags', 'tool_calls', 'transcript_segments', 'transcripts',
     ]);
   });

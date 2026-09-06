@@ -48,7 +48,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 79;
+const EMIT_CALLS = 80;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -424,9 +424,13 @@ describe('gates', () => {
     expect(periods).toEqual([RETRY_AFTER_SECONDS, RETRY_AFTER_SECONDS]);
   });
 
-  it('never cancels or releases a request stream anywhere under src', () => {
+  it('keeps request stream ownership with the runtime; only the object-store indexer owns its reader', () => {
     for (const f of files(SRC)) {
       const t = readFileSync(f, 'utf8');
+      if (f.endsWith('/core/search-index.ts')) {
+        expect(t).not.toMatch(/\bRequest\b|\bRouteContext\b|\bServerEnv\b/);
+        continue;
+      }
       expect({ file: f, cancels: /\.cancel\(/.test(t), releases: /releaseLock\(/.test(t) }).toEqual({ file: f, cancels: false, releases: false });
     }
   });
@@ -494,8 +498,9 @@ describe('gates', () => {
     // spans every Project in its Deployment, so the quota admission looks reservations
     // up by credential, and the foreign key on a run's dispatching credential is
     // checked by credential alone. Both have to lead with what they are read by.
-    const byCredential = /idx_blob_reservations_credential|idx_agent_runs_credential|idx_external_grants_hash|idx_events_token_only/;
-    for (const s of SCHEMA_DDL.filter((x) => /CREATE (UNIQUE )?INDEX .* ON \w+/.test(x) && !deploymentScoped.test(x) && !byCredential.test(x))) {
+    // Pending search work is ordered across the Deployment by its last attempt.
+    const byAccessPath = /idx_blob_reservations_credential|idx_agent_runs_credential|idx_external_grants_hash|idx_events_token_only|idx_search_blob_pending/;
+    for (const s of SCHEMA_DDL.filter((x) => /CREATE (UNIQUE )?INDEX .* ON \w+/.test(x) && !deploymentScoped.test(x) && !byAccessPath.test(x))) {
       expect(s).toMatch(/\(project_id/);
     }
   });
@@ -1121,6 +1126,7 @@ describe('gates', () => {
       'owner GET /api/projects/{projectId}/release-states',
       'owner GET /api/projects/{projectId}/runs',
       'owner GET /api/projects/{projectId}/runs/{runId}',
+      'owner GET /api/projects/{projectId}/search',
       'owner GET /api/projects/{projectId}/sessions',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}',
       'owner GET /api/projects/{projectId}/sessions/{sessionId}/transcript',

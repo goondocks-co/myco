@@ -77,7 +77,7 @@ const PROP_PROJECT_ID_PIVOT = 'Optional Grove project id (proj_<32 hex>) to pivo
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: TOOL_SEARCH,
-    description: 'Search the vault for prior sessions, spores, plans, skills, and Canopy file summaries. Results include stable IDs plus a `retrieve` hint naming the entity tool and input to fetch the full record. Use before making design decisions, debugging non-obvious issues, or locating source files by what they do. Pass type="canopy" to search the project Canopy index — file-level llm_description summaries — when keyword search is too shallow.',
+    description: "Search project sessions, spores, plans, skills, prompts and responses. Results include stable IDs and entity retrieval hints where available. Use before making design decisions or debugging non-obvious issues.",
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -85,22 +85,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Use to find prior decisions, bugs, plans, sessions, skills, or Canopy file summaries. Follow each result\'s `retrieve` hint to fetch the full entity with its owning tool.',
+      guidance: "Use to find prior decisions, bugs, plans, sessions, skills and captured conversation text. Follow each result's retrieve hint to fetch its entity; prompt and response hits identify the session and prompt.",
       priority: 20,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
         query: { type: 'string', description: 'Natural language search query — describe what you are looking for' },
-        type: { type: 'string', enum: ['session', 'plan', 'spore', 'skill', 'canopy', 'all'], description: 'Filter by entity type (default: all). "canopy" searches per-file llm_description summaries and returns canopy_entry results.' },
+        type: { type: 'string', enum: ['session', 'plan', 'spore', 'skill', 'prompt', 'response', 'all'], description: 'Filter by entity type (default: all).' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SEARCH_DEFAULT_LIMIT})` },
-        observation_type: { type: 'string', description: 'Optional semantic filter for spore observation type (decision, gotcha, discovery, etc.)' },
-        status: { type: 'string', description: 'Optional semantic filter for record status (for example active)' },
-        release_state: { type: 'string', enum: [...RELEASE_STATES], description: 'Optional semantic filter for release provenance state' },
-        release_confidence: { type: 'string', enum: [...RELEASE_CONFIDENCE], description: 'Optional semantic filter for release provenance confidence' },
+        observation_type: { type: 'string', description: 'Optional filter for spore observation type (decision, gotcha, discovery, etc.)' },
+        status: { type: 'string', description: 'Optional filter for record status (for example active)' },
+        release_state: { type: 'string', enum: [...RELEASE_STATES], description: 'Optional filter for release provenance state' },
+        release_confidence: { type: 'string', enum: [...RELEASE_CONFIDENCE], description: 'Optional filter for release provenance confidence' },
         since: { type: 'number', description: 'Optional created_at lower bound in epoch seconds' },
         until: { type: 'number', description: 'Optional created_at upper bound in epoch seconds' },
-        language: { type: 'string', description: 'Canopy-only: optional language filter (e.g. "typescript")' },
         grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
         project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
       },
