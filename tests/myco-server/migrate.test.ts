@@ -34,7 +34,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0017_v17.sql': '5f615c450cbfc1e0f413e13f95332d79a76a5e399558c5f7eac079f1c8d7cf47',
   '0018_v18.sql': '67440408a984d7b805395a5ae152694975d2e5ed5b6a6bd5b0b94b0980fb6b52',
   '0019_v19.sql': '7e1dbd6996831979c8141d239e29087489531ec801b7e91fc93fde79d153e8d2',
-  '0020_v20.sql': '8b83f6f4d34148e95e7631cbc15a6f80173b2734dcd21a9cf2c7cba05f4477f4',
+  '0020_v20.sql': 'ca39a216f15ca7e06f57cd4657a20397521fd24c196e06ef7a7d6d947d30133c',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -61,6 +61,35 @@ function declaredColumns(steps: readonly SchemaStep[]): Map<string, Map<string, 
 const step = (sqlite: Database, s: SchemaStep): void => { for (const statement of s.statements) sqlite.exec(statement); };
 
 describe('versioned schema steps', () => {
+  it('invalidates only the matching project, namespace and record on release-state mutations', () => {
+    const sqlite = fresh();
+    try {
+      for (const migration of SCHEMA_STEPS) step(sqlite, migration);
+      const types = { sessions: 'session', spores: 'spore', plans: 'plan', skill_records: 'skill' };
+      for (const project of ['one', 'two']) {
+        sqlite.query('INSERT INTO projects(project_id,name,created_at) VALUES (?, ?, 1)').run(project, project);
+        for (const type of Object.values(types)) for (const id of ['old', 'new']) {
+          sqlite.query('INSERT INTO embedding_versions(project_id,type,record_id,revision) VALUES (?, ?, ?, ?)').run(project, type, id, 'initial');
+        }
+      }
+      const revisions = () => new Map((sqlite.query('SELECT project_id,type,record_id,revision FROM embedding_versions').all() as
+        { project_id: string; type: string; record_id: string; revision: string }[]).map(r => [`${r.project_id}/${r.type}/${r.record_id}`, r.revision]));
+      const changed = (before: Map<string, string>) => [...revisions()].filter(([key, revision]) => before.get(key) !== revision).map(([key]) => key).sort();
+      for (const [namespace, type] of Object.entries(types)) {
+        let before = revisions();
+        sqlite.query(`INSERT INTO knowledge_release_state(project_id,id,identity_key,namespace,record_id,state,confidence,checked_at,created_at)
+          VALUES ('one', 'release', 'identity', ?, 'old', 'draft', 'high', 1, 1)`).run(namespace);
+        expect(changed(before)).toEqual([`one/${type}/old`]);
+        before = revisions();
+        sqlite.exec("UPDATE knowledge_release_state SET project_id = 'two', namespace = 'spores', record_id = 'new'");
+        expect(changed(before)).toEqual([`one/${type}/old`, 'two/spore/new']);
+        before = revisions();
+        sqlite.exec('DELETE FROM knowledge_release_state');
+        expect(changed(before)).toEqual(['two/spore/new']);
+      }
+    } finally { sqlite.close(); }
+  });
+
   it('indexes existing captured text and queues historical spilled bodies when v19 is applied', () => {
     const sqlite = fresh();
     try {
