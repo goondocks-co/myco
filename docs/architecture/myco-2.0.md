@@ -347,7 +347,7 @@ The member's MCP bridge talks to the Deployment. External agents get a project-s
 | Tool | Disposition | Surface | Blk | Replacement / reason | Owner |
 |---|---|---|---|---|---|
 | `myco_search` | REPLACE | MCP, Core | Blk | Server-side search + vector adapters | #921 |
-| `myco_cortex` | REPLACE | MCP, Core | Blk | Digest, instructions, Canopy map/entry, notifications, maintenance summary, projects activity — all server-side; `canopy_entry` returns mechanical fields only once entry embeddings retire (#920) | #921 |
+| `myco_cortex` | REPLACE | MCP, Core | Blk | Digest, instructions, Canopy map, notifications, maintenance summary, projects activity — all server-side; Canopy entries and entry injection retire (#920) | #921 |
 | `myco_sessions` | KEEP | MCP, Core | Blk | The query core already serves this shape | #921 |
 | `myco_plans` | KEEP | MCP, Core | Blk | **Closes the one §8.4 parity miss** — MCP-written plans reach the server only here | #921 |
 | `myco_spores` | KEEP | MCP, Core | Blk | Needs the server-side spores tables; `session_id` names the session a member's spore belongs to, or the session that retired one | #919 |
@@ -367,13 +367,14 @@ Task YAML, the phased executor, turn budgets, model routing, and the `agent_runs
 | `skill-generate` | KEEP | Core | Blk | Skill lifecycle | #919 |
 | `skill-evolve` | KEEP | Core | Blk | Skill lifecycle | #919 |
 | `extract-only` | KEEP | Core | Blk | Spore extraction | #919 |
+| `embedding-reconcile` | KEEP | Core | Blk | Deterministic indexing run, admitted by the embedding provider. Cloudflare uses Workers AI `@cf/baai/bge-m3` and Vectorize; self-hosted uses sqlite-vec with configured Ollama, OpenAI-compatible, OpenAI or OpenRouter embeddings. Run steps reconcile missing and stale vectors, orphan deletion and spore hubness. | #1124 |
 | `title-summary` | KEEP | Core | Blk | Dispatched to the harness on a session's end and on an owner's ask, through the one dispatcher (§3.6); no direct provider call on the server — #1033's after-response call was a deviation, removed by #1045 S4 | #1045, #1091 |
 | `review-session` | KEEP | Core | Blk | | #919 |
 | `vault-evolve` | KEEP | Core | Blk | | #919 |
 | `supersession-sweep` | KEEP | Core | Blk | Served on the harness on demand: a run holds the spore tools over run routes — an inventory of previews, one spore in full, create, and resolve — so a sweep never pulls a whole vault into a model's context. Carries no schedule; one waits on measurement of what a pass costs and finds | #1044 |
 | `vault-seed` | KEEP | Core | Blk | | #919 |
 | `canopy-map` | REPLACE | Core | Blk | Grows a scan/diff phase using normal harness code-exploration tools and content hashes; maintains the map as a living document. **Gated on #910's accepted content prototype** | #920 |
-| `canopy-describe` | DROP | — | Blk | Per-file fan-out and entry embeddings retire. **Named cost:** semantic Canopy search ends and `canopy_entry` returns mechanical fields only | #920 |
+| `canopy-describe` | DROP | — | Blk | Per-file fan-out and entry embeddings retire. **Named cost:** per-file Canopy search and entry injection end; the living map remains | #920 |
 | `harness-health` | DROP | — | Blk | Inspects a local harness — a machine question. Its checks move into `doctor` (**M**) | #917 |
 | `container-smoke` | KEEP | Core | Blk | New in 2.0: the end-to-end proof for a server-dispatched containerized run — claim, harness, one report, terminal status. Server-dispatched only; carries no schedule | #914 |
 
@@ -534,8 +535,8 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 |---|---|---|---|---|---|
 | `version` | DROP | — | — | Schema version marker, not a setting | #925 |
 | `config_version` | DROP | — | — | Migration mechanism, not a setting | #925 |
-| `embedding.provider` | REPLACE | Deployment | Core | Which provider the Deployment embeds with | #915 |
-| `embedding.model` | REPLACE | Deployment | Core | Model the Deployment embeds with | #915 |
+| `embedding.provider` | REPLACE | Deployment | Core | Self-hosted embedding provider; Cloudflare always uses Workers AI bge-m3 | #1124 |
+| `embedding.model` | REPLACE | Deployment | Core | Self-hosted embedding model; Cloudflare always uses Workers AI bge-m3 | #1124 |
 | `embedding.prevent_deep_sleep` | REPLACE | Deployment | Core | Wake policy for the embedding job; a Deployment-side scheduling concern | #915 |
 | `daemon.log_level` | KEEP | Member | MS | The Member Service's own log verbosity on this machine | #915 |
 | `daemon.log_retention_days` | KEEP | Member | MS | Local log retention on this machine | #915 |
@@ -575,7 +576,7 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `agent.provider.effort_map.low.effort` | REPLACE | Deployment | Core | Effort this provider applies at the `low` tier | #919 |
 | `agent.provider.effort_map.low.verbosity` | REPLACE | Deployment | Core | Verbosity this provider applies at the `low` tier | #919 |
 | `agent.provider.thinking_budget_map.low` | REPLACE | Deployment | Core | Thinking budget this provider applies at the `low` tier | #919 |
-| `embedding.base_url` | REPLACE | Deployment | Core | Where embeddings are computed | #915 |
+| `embedding.base_url` | REPLACE | Deployment | Core | Self-hosted embedding endpoint; Cloudflare uses its Workers AI binding | #1124 |
 | `backup.dir` | DROP | — | — | A member-writable server-side filesystem path is the #907 H5 family, and has no meaning on a Worker. Where a self-hosted Deployment writes backups is operator configuration, not a member setting | #923 |
 | `agent.tasks` | REPLACE | Deployment | Core | Per-task overrides the Deployment applies to its own harness runs | #919 |
 | `notifications.domains` | KEEP | Member | M | Per-viewer delivery preference for each notification domain | #915 |

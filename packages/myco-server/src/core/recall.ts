@@ -35,6 +35,7 @@
 import type { RelationalStore } from './adapters.js';
 import { digestForTier, listDigests } from './digests.js';
 import { INJECTION_LEAVES, injectionLeaves, selectSporesForPrompt, type InjectionLeaves, type InjectionSkip } from './injection.js';
+import type { SemanticSearch } from '../read/embedding.js';
 import { leafValues } from './settings.js';
 import { sha256Hex } from '../hash.js';
 import { newestInstructions } from '../read/cortex.js';
@@ -251,6 +252,7 @@ export async function composePromptContext(
   leaves: RecallLeaves,
   capabilityOn: boolean,
   input: { sessionId: string; promptId: string; text: string; now: number },
+  resolveSemantic?: () => Promise<SemanticSearch | null>,
 ): Promise<PromptContext> {
   if (!capabilityOn) return { context: '', parts: [], skipped: ['capability'] };
 
@@ -264,7 +266,7 @@ export async function composePromptContext(
       promptHash: await sha256Hex(input.text),
       prompt: input.text,
       now: input.now,
-    });
+    }, resolveSemantic);
     if (selection.skipped !== null) skipped.push(`spores:${selection.skipped}`);
     else if (selection.context.length > 0) {
       spores = { part: { kind: 'spores', sporeIds: selection.spores.map((s) => s.id) }, text: selection.context };

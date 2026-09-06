@@ -29,18 +29,19 @@
  * may precede its prompt; a key to `sessions` or `prompt_batches` would refuse
  * the ordinary case. 1.4 falls through the same way under `no_batch`.
  *
- * Relevance is recency: active spores newest first, capped by the leaf. No
- * lexical scoring and no vectors.
+ * Relevance uses Mutual Proximity over the current semantic candidates.
  */
 import type { RelationalStore } from './adapters.js';
 import { leafValues } from './settings.js';
-import { listSpores, listSporesByIds, type SporeRow } from './spores.js';
+import { listSporesByIds, type SporeRow } from './spores.js';
 import type { ReadScope } from '../read/scope.js';
+import { selectRelevantSpores } from '@goondocks/myco-shared/relevance';
+import { semanticHits, type SemanticSearch } from '../read/embedding.js';
+import { EmbeddingUnavailable } from './embedding/provider.js';
+import { VECTOR_QUERY_LIMIT } from './embedding/vectors.js';
 
 /** A prompt shorter than this carries too little to serve against. */
 export const MIN_PROMPT_CHARS = 10;
-/** How many active spores the selector reads before the exclusion set narrows them. */
-export const INJECTION_POOL = 200;
 /** The rendered context's ceiling in estimated tokens. */
 export const INJECTION_BUDGET_TOKENS = 300;
 /** How much of a spore's text one rendered line carries. */
@@ -66,7 +67,7 @@ export interface InjectionLeaves {
 }
 
 /** Why the selector served nothing. Null means it served what it selected. */
-export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_max' | 'repeat' | 'empty';
+export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_max' | 'repeat' | 'empty' | 'provider_unavailable';
 
 export interface InjectionSelection {
   spores: SporeRow[];
@@ -203,6 +204,7 @@ export async function selectSporesForPrompt(
   leaves: InjectionLeaves,
   capabilityOn: boolean,
   input: { sessionId: string; promptId: string; promptHash: string; prompt: string; now: number },
+  resolveSemantic?: () => Promise<SemanticSearch | null>,
 ): Promise<InjectionSelection> {
   const nothing = (skipped: InjectionSkip): InjectionSelection => ({ spores: [], context: '', skipped });
   if (!capabilityOn) return nothing('capability');
@@ -210,11 +212,21 @@ export async function selectSporesForPrompt(
   if (input.prompt.length < MIN_PROMPT_CHARS) return nothing('short_prompt');
   if (leaves.maxPerPrompt === 0) return nothing('zero_max');
 
+  const semantic = await resolveSemantic?.();
+  if (semantic == null) return nothing('provider_unavailable');
+  let values: number[];
+  try { values = await semantic.provider.embed(input.prompt); }
+  catch (error) { if (error instanceof EmbeddingUnavailable) return nothing('provider_unavailable'); throw error; }
   const [pool, already] = await Promise.all([
-    listSpores(db, scope, { status: 'active', limit: INJECTION_POOL }),
+    semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'spore', status: 'active' } }),
     injectedSporeIds(db, scope, input.sessionId),
   ]);
-  const selected = pool.filter((s) => !already.has(s.id)).slice(0, leaves.maxPerPrompt);
+  const relevant = selectRelevantSpores(pool.map((s) => ({ id: s.record_id, similarity: s.score, alreadyInjected: already.has(s.record_id),
+    ...(s.neighbor_mean === null || s.neighbor_std === null ? {} : { neighborMean: s.neighbor_mean, neighborStd: s.neighbor_std }),
+  })), { maxResults: leaves.maxPerPrompt });
+  const hydrated = await listSporesByIds(db, scope, relevant.map((s) => s.id));
+  const byId = new Map(hydrated.filter((s) => s.status === 'active').map((s) => [s.id, s]));
+  const selected = relevant.flatMap((s) => byId.has(s.id) ? [byId.get(s.id)!] : []);
   if (selected.length === 0) return nothing('empty');
 
   const written = await db

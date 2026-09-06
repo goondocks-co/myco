@@ -12,11 +12,11 @@ ARG BUN_VERSION=1.3.13
 
 # --- dependencies ----------------------------------------------------------
 # The server's runtime dependencies, resolved from the root lockfile so the
-# image carries exactly what CI installs. The set is pure JavaScript, so it is
-# resolved once on the build host for every target platform.
+# image carries exactly what CI installs. Native vector dependencies are
+# resolved on the target platform.
 # `tests/myco-server/gates.test.ts` pins the declared set to what `src` imports;
 # a second dependency is a decision there before it is one here.
-FROM --platform=$BUILDPLATFORM node:22-slim AS deps
+FROM node:22-slim AS deps
 WORKDIR /build
 COPY package.json package-lock.json ./
 COPY packages/myco/package.json packages/myco/
@@ -31,16 +31,22 @@ COPY packages/myco-shared/package.json packages/myco-shared/
 COPY packages/myco-team/package.json packages/myco-team/
 COPY packages/myco-windows-x64/package.json packages/myco-windows-x64/
 RUN npm ci --workspace=@goondocks/myco-server --omit=dev --ignore-scripts --no-audit --no-fund
+RUN mkdir /runtime-modules && cp -R node_modules/sqlite-vec* /runtime-modules/
 
 # --- build -----------------------------------------------------------------
 FROM oven/bun:${BUN_VERSION}-slim AS build
 WORKDIR /build
 
 COPY --from=deps /build/node_modules ./node_modules
+COPY packages/myco-shared/package.json ./packages/myco-shared/package.json
+COPY packages/myco-shared/src/relevance.ts ./packages/myco-shared/src/relevance.ts
 COPY packages/myco-server/src ./src
+
+RUN bun build packages/myco-shared/src/relevance.ts --target=browser --outfile=packages/myco-shared/dist/relevance.js
 
 RUN bun build src/platform/bun/server-main.ts \
       --target=bun \
+      --external=sqlite-vec \
       --outfile=/build/server.js
 
 # --- dashboard -------------------------------------------------------------
@@ -69,6 +75,7 @@ RUN groupadd --system --gid 10001 myco \
 
 WORKDIR /app
 COPY --from=build /build/server.js ./server.js
+COPY --from=deps /runtime-modules ./node_modules
 COPY --from=ui /build/ui/dist ./ui
 COPY packages/myco-server/migrations ./migrations
 COPY packages/myco-server/docker-entrypoint.sh ./docker-entrypoint.sh

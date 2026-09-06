@@ -48,6 +48,9 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
       return { code: 0, stdout: `Created bucket ${name}`, stderr: '' };
     }
     const canned: Record<string, Partial<CommandResult>> = {
+      'vectorize list --json': { stdout: '[{"name":"myco-server-memory"}]' },
+      'vectorize get myco-server-memory --json': { stdout: '{"config":{"dimensions":1536,"metric":"cosine"}}' },
+      'vectorize list-metadata-index': { stdout: '[{"propertyName":"type","indexType":"String"},{"propertyName":"status","indexType":"String"},{"propertyName":"session_id","indexType":"String"},{"propertyName":"created_at","indexType":"Number"},{"propertyName":"observation_type","indexType":"String"},{"propertyName":"release_state","indexType":"String"},{"propertyName":"release_confidence","indexType":"String"}]' },
       'd1 list --json': { stdout: '[]' },
       'd1 create myco-server': { stdout: `database_id = "${DB_ID}"` },
       'd1 execute': { stdout: '[\n  {\n    "results": [],\n    "success": true\n  }\n]' },
@@ -158,6 +161,7 @@ describe('destroy', () => {
     writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: 'then', databaseId: DB_ID }, home);
     const destroyed = await destroyCloudflareDeployment({ ...options, runner: runner() });
     expect(destroyed.kept.join(' ')).toMatch(/d1 .* r2 .*secrets store.*record/);
+    expect(destroyed.kept).toContain('vectorize myco-server-memory');
     const flat = calls.map((c) => c.args.join(' '));
     expect(flat.some((a) => a.includes('delete --name myco-server'))).toBe(true);
     expect(flat.some((a) => a.includes('d1 delete') || a.includes('bucket delete'))).toBe(false);

@@ -16,9 +16,13 @@ import type { HarnessContainer } from './harness-container.js';
 import { CLOCK_MANUAL, CLOCK_NAME, type DeploymentClock } from './deployment-clock.js';
 import { markRecordedLaunch } from '../../core/runs.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
+import { cloudflareVectorStore, type VectorIndex } from './vectors.js';
+import { cloudflareEmbeddingProvider, type EmbeddingBinding } from './embedding.js';
 
 /** The bindings `wrangler.toml` declares, exactly as the Worker receives them. */
 export interface CloudflareBindings extends OwnerBindings {
+  VECTORIZE?: VectorIndex;
+  AI?: EmbeddingBinding;
   MYCO_DB: RelationalStore;
   BUCKET: BlobStore;
   SOURCE_LIMIT: RateLimiter;
@@ -50,6 +54,8 @@ type AssertAssignable<A, B extends A> = B;
 export type _RelationalSatisfies = AssertAssignable<RelationalStore, D1Database>;
 export type _RateLimitSatisfies = AssertAssignable<RateLimiter, RateLimit>;
 export type _BlobStoreSatisfies = AssertAssignable<BlobStore, R2Bucket>;
+export type _VectorStoreSatisfies = AssertAssignable<VectorIndex, VectorizeIndex>;
+export type _EmbeddingSatisfies = AssertAssignable<EmbeddingBinding, Ai>;
 
 /** Every binding the Worker requires to serve a request. */
 export const REQUIRED_BINDINGS = ['MYCO_DB', 'BUCKET', 'SOURCE_LIMIT', 'TOKEN_LIMIT'] as const;
@@ -125,6 +131,8 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     throw new Error('CLOCK_MODE=manual is refused beside a bound HARNESS: a Deployment that starts runtimes keeps its own clock');
   }
   return {
+    ...(bindings.VECTORIZE === undefined ? {} : { vectors: cloudflareVectorStore(bindings.VECTORIZE) }),
+    embeddingProvider: async () => bindings.AI === undefined ? null : cloudflareEmbeddingProvider(bindings.AI),
     ...(bindings.HARNESS_LAUNCH_MODE === 'record' && bindings.HARNESS === undefined ? { harnessLaunch: recordingLaunch(bindings) } : {}),
     ...(bindings.MYCO_ORIGIN === undefined || bindings.MYCO_ORIGIN === '' ? {} : { origin: bindings.MYCO_ORIGIN }),
     ...(fleetOf(bindings.MYCO_FLEET) === null ? {} : { fleet: fleetOf(bindings.MYCO_FLEET)! }),

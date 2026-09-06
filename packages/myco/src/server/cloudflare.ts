@@ -16,6 +16,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
 import { jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
 import { LIVE_RUNS_QUERY, readLiveRunsTwice, type LiveRun, type LiveRunRow } from './live-runs.js';
+import { VECTOR_INDEX_NAME, VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
 
 // The wait policy and its read shape are one implementation for both targets;
 // this module keeps the names it published so the Worker's callers reach them
@@ -283,6 +284,45 @@ export async function ensureBucket(options: CloudflareOptions & { bucketName: st
   if (result.code === 0) return { created: true };
   if (/already (exists|owned)/i.test(result.stdout + result.stderr)) return { created: false };
   throw new Error(`r2 bucket create failed: ${(result.stderr || result.stdout).slice(-500)}`);
+}
+
+/** The memory index and its filters must exist before the Worker accepts embedding work. */
+export async function ensureVectorIndex(options: CloudflareOptions): Promise<{ created: boolean }> {
+  const { runner, env } = resolved(options);
+  const command = (...args: string[]) => runOrThrow(runner, 'npx', wrangler('vectorize', ...args), { cwd: options.configDir, env });
+  const rows: unknown = jsonDocument((await command('list', '--json')).stdout);
+  if (!Array.isArray(rows)) throw new Error('Vectorize index list is unreadable');
+  const created = !rows.some((r) => r?.name === VECTOR_INDEX_NAME);
+  if (created) await command('create', VECTOR_INDEX_NAME, '--dimensions', String(VECTOR_INDEX_DIMENSIONS), '--metric', 'cosine', '--json', '--update-config=false');
+  const held = jsonDocument((await command('get', VECTOR_INDEX_NAME, '--json')).stdout) as { config?: { dimensions?: number; metric?: string } };
+  if (held?.config?.dimensions !== VECTOR_INDEX_DIMENSIONS || held.config.metric !== 'cosine') throw new Error('memory vector index has incompatible dimensions or metric');
+  const metadata = async (): Promise<Array<{ propertyName: string; indexType: string }>> => {
+    const indexed: unknown = jsonDocument((await command('list-metadata-index', VECTOR_INDEX_NAME, '--json')).stdout);
+    if (!Array.isArray(indexed) || indexed.some((r) => typeof r?.propertyName !== 'string' || typeof r?.indexType !== 'string')) throw new Error('Vectorize metadata index list is unreadable');
+    return indexed;
+  };
+  let indexed = await metadata();
+  const compatible = (field: string): boolean => {
+    const existing = indexed.find((r) => r.propertyName === field);
+    if (existing === undefined) return false;
+    if (existing.indexType.toLowerCase() !== (field === 'created_at' ? 'number' : 'string')) throw new Error(`memory vector filter ${field} has an incompatible type`);
+    return true;
+  };
+  for (const field of VECTOR_METADATA_FIELDS) {
+    if (compatible(field)) continue;
+    const type = field === 'created_at' ? 'number' : 'string';
+    const result = await runner.run('npx', wrangler('vectorize', 'create-metadata-index', VECTOR_INDEX_NAME, '--propertyName', field, '--type', type), { cwd: options.configDir, env });
+    if (result.code !== 0 && !/metadata index already exists for this name/.test(result.stderr + result.stdout)) throw new Error(`vector metadata creation failed: ${(result.stderr || result.stdout).slice(-500)}`);
+  }
+  const attempts = 30;
+  const waitMs = 2000;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (VECTOR_METADATA_FIELDS.every(compatible)) return { created };
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    indexed = await metadata();
+  }
+  if (VECTOR_METADATA_FIELDS.every(compatible)) return { created };
+  throw new Error('memory vector filters are still becoming visible; retry the deployment');
 }
 
 /**

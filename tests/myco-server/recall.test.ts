@@ -20,6 +20,10 @@ import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.j
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { semanticRecall } from './helpers/semantic-recall.js';
+import { indexFixture } from './helpers/vector-index.js';
+import { resolveSemanticSearch } from '@myco-server-worker/core/search.js';
+import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 
 const SCOPE: ReadScope = { projectId: 'proj_one' };
 const OTHER: ReadScope = { projectId: 'proj_two' };
@@ -64,7 +68,7 @@ const compose = (
   promptId: over.promptId ?? 'p1',
   text: over.text ?? PROMPT,
   now: over.now ?? NOW,
-});
+}, semanticRecall(db, over.scope ?? SCOPE));
 
 const sessionRows = (sqlite: Database) =>
   sqlite.query(`SELECT project_id, session_id, kind, created_at FROM session_injections`).all() as Record<string, string | number>[];
@@ -459,6 +463,13 @@ describe('POST /context/prompt', () => {
     const { e, token } = await member();
     admit(e);
     await insertSpore(e.db, { projectId: 'proj_1' }, spore('sp_route', { observationType: 'decision', content: 'the hook answers first' }));
+    e.env.AI = { run: async (_model, input) => ({ data: [input.text[0].includes('background') ? [0, 1] : [1, 0]] }) };
+    e.env.VECTORIZE = indexFixture();
+    for (let i = 0; i < 3; i++) await insertSpore(e.db, { projectId: 'proj_1' }, spore(`background-${i}`));
+    const semantic = (await resolveSemanticSearch(e.serverEnv))!;
+    for (let i = 0; i < 10; i++) {
+      if ((await reconcileEmbedding({ db: e.db, blobs: e.bucket, ...semantic }, 'proj_1', NOW)).processed === 0) break;
+    }
 
     const first = await (await worker.fetch(post(token, { sessionId: 's1', promptId: 'p1', text: PLANNING_PROMPT }), e.env)).json() as Record<string, unknown>;
     expect(first.persisted).toBe(true);

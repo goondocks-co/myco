@@ -1,6 +1,8 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { pendingSearchBlobs, SEARCH_QUERY_MAX_CHARS } from '../core/search-index.js';
 import type { ReadScope } from './scope.js';
+import { semanticSearch, type SemanticSearch } from './embedding.js';
+import { EmbeddingUnavailable } from '../core/embedding/provider.js';
 
 import { SEARCH_TYPES, SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_PREVIEW_CHARS, type SearchType, type SearchOptions, type SearchResult, type SearchAnswer } from './search-types.js';
 export * from './search-types.js';
@@ -102,7 +104,7 @@ async function searchType(db: RelationalStore, scope: ReadScope, type: SearchTyp
 }
 
 /** One scoped search implementation for HTTP and MCP. An unavailable semantic provider is explicit. */
-export async function searchProject(db: RelationalStore, scope: ReadScope, opts: SearchOptions): Promise<SearchAnswer> {
+export async function searchProject(db: RelationalStore, scope: ReadScope, opts: SearchOptions, resolveSemantic?: () => Promise<SemanticSearch | null>): Promise<SearchAnswer> {
   const query = opts.query.trim();
   if (query.length === 0 || query.length > SEARCH_QUERY_MAX_CHARS) throw new InvalidSearch(`query must contain 1–${SEARCH_QUERY_MAX_CHARS} characters`);
   const words = query.split(/\s+/);
@@ -115,10 +117,18 @@ export async function searchProject(db: RelationalStore, scope: ReadScope, opts:
   for (const value of [opts.since, opts.until]) if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new InvalidSearch('timestamps must be non-negative epoch seconds');
   if (opts.since !== undefined && opts.until !== undefined && opts.since > opts.until) throw new InvalidSearch('since must not exceed until');
   const coverage = { pending_blobs: await pendingSearchBlobs(db, scope.projectId) };
+  if (mode !== 'fts') {
+    const semantic = await resolveSemantic?.();
+    if (semantic != null) {
+      try {
+        return { results: await semanticSearch(db, scope, semantic, types, { ...opts, query }, limit), mode: 'semantic', provider_unavailable: false, coverage };
+      } catch (error) { if (!(error instanceof EmbeddingUnavailable)) throw error; }
+    }
+  }
   if (mode === 'semantic') return { results: [], mode, provider_unavailable: true, coverage };
   const branches = await Promise.all(types.map((type) => searchType(db, scope, type, words.map(sanitizeFtsQuery), opts, limit)));
   const order = (a: SearchResult, b: SearchResult) => b.score - a.score || SEARCH_TYPES.indexOf(a.type) - SEARCH_TYPES.indexOf(b.type) || a.id.localeCompare(b.id);
   const floor = branches.flatMap((hits) => hits.slice(0, 1)).sort(order).slice(0, limit);
   const remaining = branches.flatMap((hits) => hits.slice(1)).sort(order).slice(0, limit - floor.length);
-  return { results: [...floor, ...remaining].sort(order), mode: 'fts', provider_unavailable: true, coverage };
+  return { results: [...floor, ...remaining].sort(order), mode: 'fts', provider_unavailable: mode === 'auto', coverage };
 }

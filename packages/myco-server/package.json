@@ -19,7 +19,9 @@
     "harness:bundle": "bun build ../myco/src/agent/runtime/server-entry.ts --target=bun --outfile harness/entry.js && bun build ../myco/src/agent/runtime/supervisor.ts --target=bun --outfile harness/supervisor.js && rm -rf harness/definitions harness/prompts && cp -R ../myco/src/agent/definitions harness/definitions && cp -R ../myco/src/agent/prompts harness/prompts"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.0.0"
+    "@goondocks/myco-shared": "^0.2.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "sqlite-vec": "^0.1.9"
   },
   "devDependencies": {
     "@cloudflare/containers": "^0.3.7",

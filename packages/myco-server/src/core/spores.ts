@@ -208,7 +208,7 @@ export async function resolveSpore(
   now: number,
 ): Promise<boolean> {
   const [moved] = await db.batch([
-    db.prepare(`UPDATE spores SET status = ?, updated_at = ? WHERE project_id = ? AND id = ?`)
+    db.prepare(`UPDATE spores SET status = ?, updated_at = ? WHERE project_id = ? AND id = ? RETURNING id`)
       .bind(status, now, scope.projectId, event.sporeId),
     db.prepare(`INSERT INTO resolution_events
         (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, created_at)
@@ -218,7 +218,7 @@ export async function resolveSpore(
         event.newSporeId, event.reason, event.sessionId, event.createdAt,
         scope.projectId, event.sporeId),
   ]);
-  return moved.meta.changes === 1;
+  return moved.results.length === 1;
 }
 
 /**
@@ -285,7 +285,7 @@ export async function consolidateSpores(
       wisdom.status ?? 'active', wisdom.content, wisdom.context, wisdom.importance ?? 5, wisdom.filePath,
       wisdom.tags, wisdom.contentHash, wisdom.properties, wisdom.createdAt);
   const moves = sources.flatMap((sporeId) => [
-    db.prepare(`UPDATE spores SET status = 'consolidated', updated_at = ? WHERE project_id = ? AND id = ? AND status = 'active'`)
+    db.prepare(`UPDATE spores SET status = 'consolidated', updated_at = ? WHERE project_id = ? AND id = ? AND status = 'active' RETURNING id`)
       .bind(now, scope.projectId, sporeId),
     db.prepare(`INSERT INTO resolution_events
         (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, created_at)
@@ -295,6 +295,6 @@ export async function consolidateSpores(
         scope.projectId, sporeId, now),
   ]);
   const results = await db.batch([insert, ...moves]);
-  const consolidated = moves.filter((_, i) => i % 2 === 0 && results[1 + i].meta.changes === 1).length;
+  const consolidated = moves.filter((_, i) => i % 2 === 0 && results[1 + i].results.length === 1).length;
   return { wisdom: (results[0].results[0] as SporeRow | undefined) ?? null, consolidated };
 }

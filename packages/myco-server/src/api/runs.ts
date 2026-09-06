@@ -105,7 +105,12 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
     dryRun: body.dryRun === true, startedAt, runContext, dispatchedBy: ctx.tokenId,
   };
   // The runtime member claims only a run the server dispatched under this credential.
-  const outcome = await claimRun(env.db, { projectId: ctx.projectId }, row, { taskName: task, admission, dispatchedOnly: ctx.memberId === HARNESS_MEMBER_ID }, ctx.now);
+  const embedding = task === 'embedding-reconcile';
+  const outcome = await claimRun(env.db, { projectId: ctx.projectId }, row, {
+    taskName: task, admission: embedding ? { kind: 'embedding' } : admission,
+    dispatchedOnly: embedding || ctx.memberId === HARNESS_MEMBER_ID,
+    ...(embedding ? { embeddingConfigured: env.vectors !== undefined && (await env.embeddingProvider?.()) != null } : {}),
+  }, ctx.now);
   if (outcome.claimed) return Response.json({ persisted: true, claimed: true, runId: id });
   // A Project not admitted to the capability is a settled answer, not contention:
   // it names the capability so a caller reports what to enable rather than retrying.

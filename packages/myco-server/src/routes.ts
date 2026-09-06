@@ -30,6 +30,7 @@ import {
   handleRunReports, handleWriteReport, handleRecordRunEvents, handleSupersedeRuns, handleUpdateRun, handleWriteState,
 } from './api/runs.js';
 import { handleDigestWrite, handleInstructionsWrite, handleRunDigest, handleRunInstruction, handleRunSessions } from './api/cortex-tasks.js';
+import { handleEmbeddingStep } from './api/embedding-task.js';
 import {
   handleCredentialActivity, handleCredentials, handleInvitations, handleMembers, handleMintInvitation,
   handleRevokeCredential, handleRevokeInvitation, handleRevokeMember,
@@ -117,6 +118,7 @@ export const ROUTES: readonly Route[] = [
   // artifact, or one digest extract per tier — admitted only to the harness
   // credential that dispatched a live run of such a task.
   { method: 'POST', path: '/runs/instruction', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunInstruction },
+  { method: 'POST', path: '/runs/embedding-step', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleEmbeddingStep },
   { method: 'POST', path: '/runs/instructions-write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleInstructionsWrite },
   { method: 'POST', path: '/runs/sessions', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSessions },
   { method: 'POST', path: '/runs/digest', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunDigest },

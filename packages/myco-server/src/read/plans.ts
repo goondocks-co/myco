@@ -102,8 +102,8 @@ export async function planInSession(db: RelationalStore, scope: ReadScope, sessi
  */
 export async function setPlanStatus(db: RelationalStore, scope: ReadScope, planKey: string, status: string, by: string, nowMs: number): Promise<boolean> {
   const result = await db
-    .prepare(`UPDATE plans SET status = ?, updated_by = ?, updated_at = MAX(updated_at + 1, ?) WHERE project_id = ? AND plan_key = ? AND status <> ?`)
+    .prepare(`UPDATE plans SET status = ?, updated_by = ?, updated_at = MAX(updated_at + 1, ?) WHERE project_id = ? AND plan_key = ? AND status <> ? RETURNING plan_key`)
     .bind(status, by, nowMs, scope.projectId, planKey, status)
-    .run();
-  return result.meta.changes === 1;
+    .first();
+  return result !== null;
 }

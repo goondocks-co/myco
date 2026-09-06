@@ -13,6 +13,9 @@
  * `ServerEnv` rather than the core learning one platform's binding vocabulary.
  */
 
+import type { EmbeddingProvider } from './embedding/provider.js';
+import type { VectorStore } from './embedding/vectors.js';
+
 // ---------------------------------------------------------------------------
 // Relational storage
 // ---------------------------------------------------------------------------
@@ -203,6 +206,8 @@ export interface PlatformDescriptor {
  * one target's binding shape.
  */
 export interface ServerEnv {
+  vectors?: VectorStore;
+  embeddingProvider?: () => Promise<EmbeddingProvider | null>;
   platform: PlatformDescriptor;
   db: RelationalStore;
   blobs: BlobStore;

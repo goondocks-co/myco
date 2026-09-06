@@ -72,6 +72,7 @@ export interface RunningRunRef {
  */
 export type RunAdmissionGate =
   | { kind: 'capability'; capability: ProjectCapability }
+  | { kind: 'embedding' }
   | { kind: 'provider' };
 
 /**
@@ -258,14 +259,14 @@ export async function claimRun(
   db: RelationalStore,
   scope: ReadScope,
   row: RunInsert,
-  guard: { taskName: string; admission: RunAdmissionGate; dispatchedOnly?: boolean },
+  guard: { taskName: string; admission: RunAdmissionGate; dispatchedOnly?: boolean; embeddingConfigured?: boolean },
   _now: number,
 ): Promise<ClaimOutcome> {
   if (guard.admission.kind === 'capability') {
     if (!(await settingsWriter(db).capabilityEnabled(scope.projectId, guard.admission.capability))) {
       return { claimed: false, notAdmitted: guard.admission.capability };
     }
-  } else if (!(await providerConfiguredFor(db, guard.taskName))) {
+  } else if (guard.admission.kind === 'embedding' ? guard.embeddingConfigured !== true : !(await providerConfiguredFor(db, guard.taskName))) {
     return { claimed: false, noProvider: true };
   }
   if (row.dispatchedBy !== null) {

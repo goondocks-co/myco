@@ -10,6 +10,8 @@ import { classifySqliteError, sqliteRelationalStore } from './sqlite.js';
 import { diskBlobStore, DIGEST_MISMATCH_MESSAGE } from './blobs.js';
 import { inProcessRateLimiter } from './limiter.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
+import { sqliteVectorStore } from './vectors.js';
+import { configuredEmbeddingProvider } from '../../core/embedding/configured-provider.js';
 
 export const SOURCE_LIMIT = { limit: 600, periodMs: 60_000 };
 export const TOKEN_LIMIT = { limit: 300, periodMs: 60_000 };
@@ -80,8 +82,12 @@ export interface BunServerEnv extends ServerEnv {
 
 export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
   const now = config.now ?? (() => Date.now());
+  const db = sqliteRelationalStore(config.sqlite);
+  const wrappingKey = wrappingKeyFromText(async () => config.SECRET_WRAP_KEY, 'SECRET_WRAP_KEY');
   const pending = new Set<Promise<void>>();
   return {
+    vectors: sqliteVectorStore(config.sqlite),
+    embeddingProvider: () => configuredEmbeddingProvider(db, wrappingKey, fetch),
     afterResponse: (work) => {
       const tracked: Promise<void> = work().catch(() => undefined).finally(() => { pending.delete(tracked); });
       pending.add(tracked);
@@ -99,8 +105,8 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
     ...(config.fleet === undefined || !Number.isInteger(config.fleet) || config.fleet < 1 ? {} : { fleet: config.fleet }),
     // Self-hosted holds the key the way this project already holds machine
     // secrets: an env value outside the store it protects.
-    wrappingKey: wrappingKeyFromText(async () => config.SECRET_WRAP_KEY, 'SECRET_WRAP_KEY'),
-    db: sqliteRelationalStore(config.sqlite),
+    wrappingKey,
+    db,
     blobs: diskBlobStore(config.blobDir),
     sourceLimit: inProcessRateLimiter({ ...SOURCE_LIMIT, now }),
     tokenLimit: inProcessRateLimiter({ ...TOKEN_LIMIT, now }),

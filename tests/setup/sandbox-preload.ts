@@ -8,6 +8,9 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
+
+configureSqliteLibrary();
 
 const REAL_HOME = os.homedir();
 const SANDBOX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-home-'));

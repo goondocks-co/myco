@@ -107,11 +107,9 @@ describe('what runs at each depth', () => {
   });
 
   it('holds the model-calling job back to a Deployment in use, once its owner gives it work', () => {
-    const embedding = DEFERRED_JOBS.find((j) => j.name === 'embedding-reconcile');
+    const embedding = SERVER_JOBS.find((j) => j.name === 'embedding-reconcile');
     expect(embedding?.runsThrough).toBe('idle');
-    expect(embedding?.owner).toBe('#919');
-    // Deferred means no tick sees it: the registry answers as for a job it does not run.
-    expect(jobRunsAt('embedding-reconcile', 'idle')).toBe(false);
+    expect(jobRunsAt('embedding-reconcile', 'idle')).toBe(true);
   });
 
   it('still runs query-only housekeeping while sleeping', () => {
@@ -131,6 +129,6 @@ describe('what runs at each depth', () => {
 
   it('states what every job converges toward, so its idempotence is checkable', () => {
     expect(SERVER_JOBS.filter((j) => j.converges.trim().length === 0)).toEqual([]);
-    expect(SERVER_JOBS).toHaveLength(3);
+    expect(SERVER_JOBS).toHaveLength(4);
   });
 });

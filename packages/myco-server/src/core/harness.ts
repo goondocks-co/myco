@@ -23,7 +23,7 @@ import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
 import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
-import { deploymentSecretStore } from './secrets.js';
+import { openProviderCredential } from './provider-credentials.js';
 import { leafValues } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
 import { buildTaskInput } from './task-inputs.js';
@@ -432,6 +432,12 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   if (gate === null) return { ok: false, refusal: 'unknown_task' };
   if (!(await projectExists(env.db, projectId))) return { ok: false, refusal: 'unknown_project' };
 
+  if (gate.kind === 'embedding') {
+    const embedding = await env.embeddingProvider?.();
+    if (env.vectors === undefined || embedding == null) return { ok: false, refusal: 'no_provider' };
+    return { ok: true, prepared: { task, projectId, providerType: 'embedding', model: embedding.modelKey, provider: {}, credentialEnv: {}, admission: CAPTURE_DRIVEN_ADMISSION } };
+  }
+
   const byLeaf = await leafValues(env.db, ['agent.tasks', 'agent.provider.type', 'agent.provider.model', 'agent.model', 'agent.provider.base_url']);
   const override = record(record(parseLeaf(byLeaf.get('agent.tasks')))[task]);
   const providerType = str(override.provider) ?? str(parseLeaf(byLeaf.get('agent.provider.type')));
@@ -443,7 +449,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   const provider: Record<string, unknown> = { type: providerType };
   if (model !== null) provider.model = model;
   if (providerType === 'anthropic') {
-    const key = await deploymentSecretStore(env.db, env.wrappingKey).get('anthropic');
+    const key = await openProviderCredential(env.db, env.wrappingKey, 'anthropic');
     if (key === null) return { ok: false, refusal: 'no_credential' };
     credentialEnv[key.startsWith(SUBSCRIPTION_TOKEN_PREFIX) ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY'] = key;
   } else if (providerType === 'openai-compatible') {

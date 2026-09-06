@@ -16,6 +16,7 @@ import {
 } from '@myco/agent/runtime/server-runner.js';
 import type { AgentHarness, HarnessExecuteInput } from '@myco/agent/harness/types.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
+import { indexFixture } from '../myco-server/helpers/vector-index.js';
 
 const AGENT = 'myco-agent';
 
@@ -54,6 +55,31 @@ function fakeHarness(behavior: 'reports' | 'silent' | 'throws'): AgentHarness {
 }
 
 describe('runServerTask', () => {
+  it('reconciles embeddings through a held run and completes without invoking an LLM harness', async () => {
+    const fixture = await harness();
+    const now = Date.now();
+    await ensureMember(fixture.db, HARNESS_MEMBER_ID, now, 'harness');
+    const minted = await issueMemberToken(fixture.db, { memberId: HARNESS_MEMBER_ID, machineId: 'machine_1' }, now);
+    fixture.env.AI = { run: async () => ({ data: [[1, 0]] }) };
+    fixture.env.VECTORIZE = indexFixture();
+    fixture.sqlite.query(`INSERT INTO spores(project_id, id, agent_id, content, observation_type, created_at)
+      VALUES ('proj_1', 'embedding-spore', ?, 'keep a durable decision', 'decision', ?)`).run(AGENT, now);
+    await recordDispatch(fixture.db, { projectId: 'proj_1' }, {
+      id: 'run_embedding', agentId: AGENT, task: 'embedding-reconcile', provider: 'embedding', model: null,
+      runContext: JSON.stringify({ timeoutSeconds: 300 }), dispatchedBy: minted.tokenId, startedAt: now,
+    });
+    const client = new ServerClient({ serverUrl: 'https://s', token: minted.token, projectId: 'proj_1' },
+      ((input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        request.headers.set('cf-connecting-ip', '1.2.3.4');
+        return worker.fetch(request, fixture.env);
+      }) as typeof fetch);
+    const result = await runServerTask({ client, budget, runId: 'run_embedding', taskName: 'embedding-reconcile', admission: CAPTURE_DRIVEN_ADMISSION, harness: fakeHarness('throws') });
+    expect(result).toEqual({ runId: 'run_embedding', status: 'completed', ending: 'posted', reportCount: 1 });
+    expect(fixture.sqlite.query('SELECT type, record_id, ready FROM embedding_receipts').all()).toEqual([{ type: 'spore', record_id: 'embedding-spore', ready: 1 }]);
+    expect(fixture.sqlite.query("SELECT action FROM agent_reports WHERE run_id = 'run_embedding'").all()).toEqual([{ action: 'embedding' }]);
+    fixture.sqlite.close();
+  });
   it('claims, executes with the materialized report surface, lands the report, and completes the run', async () => {
     const { client, sqlite } = await harness();
     const result = await runServerTask({ client, budget, runId: 'run_smoke_1', taskName: 'container-smoke', harness: fakeHarness('reports') });

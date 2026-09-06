@@ -23,7 +23,9 @@ import {
   readDeploymentRecord,
   rollsContainers,
   writeDeploymentRecord,
+  ensureVectorIndex,
 } from '@myco/server/cloudflare.js';
+import { VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import { containersTableHash } from '@myco/server/deploy-config.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 
@@ -38,6 +40,38 @@ beforeEach(() => { calls = []; });
 
 const ACCOUNT = 'b134c2135129c4800082e677fbffb286';
 const base = () => ({ accountId: ACCOUNT, configDir: '/tmp/cfg' });
+
+describe('memory vector provisioning', () => {
+  const metadata = VECTOR_METADATA_FIELDS.map((propertyName) => ({ propertyName, indexType: propertyName === 'created_at' ? 'Number' : 'String' }));
+  const vectorRunner = (options: { missing?: boolean; wrongDimension?: boolean } = {}): CommandRunner => {
+    let metadataReads = 0;
+    return { async run(command, args, opts) {
+      calls.push({ command, args: [...args], env: opts?.env });
+      const line = args.join(' ');
+      let stdout = '';
+      if (line.includes('list-metadata-index')) stdout = JSON.stringify(options.missing && metadataReads++ === 0 ? [] : metadata);
+      else if (line.includes('vectorize list')) stdout = JSON.stringify(options.missing ? [] : [{ name: 'myco-server-memory' }]);
+      else if (line.includes('vectorize get')) stdout = JSON.stringify({ config: { dimensions: options.wrongDimension ? 1024 : 1536, metric: 'cosine' } });
+      else if (line.includes('create-metadata-index') && args.includes('type')) return { code: 1, stdout: '', stderr: 'metadata index already exists for this name [code: 40004]' };
+      return { code: 0, stdout, stderr: '' };
+    } };
+  };
+  it('accepts the live API capitalization and leaves compatible resources unchanged', async () => {
+    expect(await ensureVectorIndex({ ...base(), runner: vectorRunner() })).toEqual({ created: false });
+    expect(calls.some((c) => c.args.some((arg) => arg.startsWith('create')))).toBe(false);
+    expect(calls.every((c) => c.env?.CLOUDFLARE_ACCOUNT_ID === ACCOUNT)).toBe(true);
+  });
+  it('waits for acknowledged metadata filters to become visible before accepting a new index', async () => {
+    expect(await ensureVectorIndex({ ...base(), runner: vectorRunner({ missing: true }) })).toEqual({ created: true });
+    expect(calls.find((c) => c.args.includes('create'))?.args).toContain('--update-config=false');
+    expect(calls.filter((c) => c.args.includes('create-metadata-index'))).toHaveLength(VECTOR_METADATA_FIELDS.length);
+    expect(calls.filter((c) => c.args.includes('list-metadata-index'))).toHaveLength(2);
+  });
+  it('refuses an incompatible index without changing it', async () => {
+    await expect(ensureVectorIndex({ ...base(), runner: vectorRunner({ wrongDimension: true }) })).rejects.toThrow('incompatible dimensions');
+    expect(calls.some((c) => c.args.some((arg) => arg.startsWith('create')))).toBe(false);
+  });
+});
 
 describe('account selection', () => {
   it('GATE: refuses to run with no account named', async () => {
