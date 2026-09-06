@@ -67,7 +67,8 @@ export async function materializeRunMap(ctx: ServerToolContext, preparation: Map
     if (prior !== null && !rulesChanged && changed.size > 0) assertIncrementalMap(prior.artifact, artifact, changed);
     const result = await control(ctx, 'write', { artifact });
     if (result.written !== true && result.dryRun !== true) throw new Error('The map was not stored. A newer map or repository connection may have replaced this run’s inputs.');
-    args.details = { artifact, commit: checkout.commit, inputHash, filesConsidered: source.files.length, explorationCalls, skipped: source.skipped };
+    args.details = { commit: checkout.commit, inputHash, domains: artifact.domains.length, dryRun: result.dryRun === true,
+      filesConsidered: source.files.length, explorationCalls, skipped: source.skipped };
   };
   const reportUnchanged = async () => {
     await postRunReport(ctx.client, ctx.budget, { runId: ctx.runId, agentId: ctx.agentId, action: MAP_UNCHANGED_ACTION,
