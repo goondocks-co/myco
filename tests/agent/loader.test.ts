@@ -26,6 +26,7 @@ import {
   seedBuiltInAgentsAndTasks,
 } from '@myco/agent/loader.js';
 import { SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN } from '@myco/agent/instruction-builders.js';
+import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import type { AgentRow } from '@myco/db/queries/agents.js';
 import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 
@@ -42,6 +43,11 @@ const BUILT_IN_AGENT_NAME = 'myco-agent';
 /** Resolve the test definitions directory from the package-owned source tree. */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFINITIONS_DIR = path.resolve(__dirname, '..', '..', 'packages', 'myco', 'src', 'agent', 'definitions');
+
+it('prepares repositories for exactly the tasks whose phases require committed project files', () => {
+  const tasks = loadAgentTasks(DEFINITIONS_DIR).filter((task) => task.phases?.some((phase) => phase.requiresProjectTree));
+  expect(tasks.map((task) => task.name).sort()).toEqual([...REPOSITORY_TASKS].sort());
+});
 
 // ---------------------------------------------------------------------------
 // Helpers

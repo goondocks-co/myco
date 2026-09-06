@@ -1,3 +1,4 @@
+import { handleRepository, handleSaveRepository, handleRemoveRepository, handleRunRepository } from './api/repositories.js';
 import type { ServerEnv } from './core/adapters.js';
 import type { AuthContext, GrantContext, OwnerContext, RouteContext, SessionContext, StreamContext } from './context.js';
 import { handleLink, handleMe } from './api/identity.js';
@@ -134,6 +135,7 @@ export const ROUTES: readonly Route[] = [
   // What a starting session or a starting subagent is served: the Project's
   // instructions, and the preferred digest where a Deployment asks for it.
   { method: 'POST', path: '/context/session', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionContext },
+  { method: 'POST', path: '/runs/repository', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunRepository },
   { method: 'POST', path: '/runs/state/read', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleReadState },
   { method: 'POST', path: '/runs/state/write', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteState },
   // The tool surface: the seven MCP tools over the Deployment for a member, the
@@ -199,6 +201,9 @@ export const ROUTES: readonly Route[] = [
   { method: 'PUT', path: '/api/secrets/{name}', pattern: /^\/api\/secrets\/(?<name>[a-z0-9_-]{1,32})$/, auth: 'owner', handler: handleSetSecret },
   { method: 'DELETE', path: '/api/secrets/{name}', pattern: /^\/api\/secrets\/(?<name>[a-z0-9_-]{1,32})$/, auth: 'owner', handler: handleDeleteSecret },
   { method: 'GET', path: '/api/projects/{projectId}/capabilities', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities$/, auth: 'owner', handler: handleProjectCapabilities },
+  { method: 'GET', path: '/api/projects/{projectId}/repository', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/repository$/, auth: 'owner', handler: handleRepository },
+  { method: 'PUT', path: '/api/projects/{projectId}/repository', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/repository$/, auth: 'owner', handler: handleSaveRepository },
+  { method: 'DELETE', path: '/api/projects/{projectId}/repository', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/repository$/, auth: 'owner', handler: handleRemoveRepository },
   { method: 'PUT', path: '/api/projects/{projectId}/capabilities/{capability}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities\/(?<capability>[a-z_]{1,32})$/, auth: 'owner', handler: handleSetProjectCapability },
   { method: 'GET', path: '/auth/login', auth: 'auth', handler: handleLogin },
   { method: 'GET', path: '/auth/callback', auth: 'auth', handler: handleCallback },

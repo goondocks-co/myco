@@ -15,6 +15,10 @@
  * container awake (`packages/myco-server/src/platform/cloudflare/run-hold.ts`)
  * renews on its own alarm and a replacement does not touch it.
  */
+import { createExplorationTools } from '../tools/exploration-tools.js';
+import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
+import { prepareRunRepository } from './server-repository.js';
+import type { RepositoryCheckout } from './repository-checkout.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import type { RequestBudget } from '@myco/member/budget.js';
 import type { ServerClient } from '@myco/member/transport.js';
@@ -96,6 +100,8 @@ export interface ServerTaskOptions {
   admission?: string;
   /** Test seam: the harness to execute with; resolved from the task's configuration when absent. */
   harness?: AgentHarness;
+  /** Test seam: Git executable for credential-protected repository fixtures. */
+  repositoryGitPath?: string;
   /** Called once the claim lands, so a container knows from which instant the run is its to fail. */
   onClaimed?: () => void;
   /**
@@ -358,19 +364,8 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     options.onClaimed?.();
 
     const counter = { reports: 0, writes: 0 };
-    const toolContext = { client, budget, runId, agentId };
-    const tools = materializedToolsForTask(taskName, toolContext, counter);
-    // The prompt the server built for this run rides the run row rather than the
-    // container's environment; the claim above is what admits this read.
-    const instruction = options.instruction ?? await instructionForRun(toolContext, taskName);
-    const prompt = composeTaskPrompt({
-      vaultContext: '',
-      taskDisplayName: task.displayName ?? taskName,
-      taskPrompt: composeHostedPrompt({ taskPrompt: task.prompt ?? '', phases: task.phases }),
-      instruction,
-      params: options.params,
-    });
-
+    const toolContext: ServerToolContext = { client, budget, runId, agentId };
+    let checkout: RepositoryCheckout | undefined;
     const abort = new AbortController();
     const timeoutMs = (options.timeoutSeconds ?? task.timeoutSeconds ?? 300) * 1000;
     // The deadline is raced against the execution rather than left to the abort
@@ -382,18 +377,41 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       timer = setTimeout(() => { abort.abort(); reject(new Error(RUN_DEADLINE_ERROR)); }, timeoutMs);
     });
     try {
-      const execution = taskName === EMBEDDING_TASK
-        ? executeEmbeddingRun(toolContext, abort.signal, Date.now() + timeoutMs).then((result) => { counter.reports += 1; return result; })
-        : (options.harness ?? getAgentHarness(harnessId)).execute({
-        prompt,
-        model: options.model ?? task.model ?? 'claude-opus-5',
-        maxTurns: task.maxTurns,
-        systemPrompt,
-        provider: options.provider,
-        toolSurface: { agentId, runId, tools },
-        abortController: abort,
-        reasoningLevel: task.reasoningLevel,
-      });
+      const execution = (async () => {
+        try {
+          if (REPOSITORY_TASKS.includes(taskName)) {
+            checkout = await prepareRunRepository(toolContext, abort.signal, options.repositoryGitPath);
+          }
+          const tools = materializedToolsForTask(taskName, toolContext, counter);
+          if (checkout !== undefined) tools.push(...createExplorationTools({ projectRoot: checkout.root, ripgrepPath: 'rg' }));
+          const instruction = options.instruction ?? await instructionForRun(toolContext, taskName);
+          const prompt = composeTaskPrompt({
+            vaultContext: '',
+            taskDisplayName: task.displayName ?? taskName,
+            taskPrompt: composeHostedPrompt({ taskPrompt: task.prompt ?? '', phases: task.phases }),
+            instruction: checkout === undefined ? instruction : `${instruction}\nRepository commit: ${checkout.commit}. Read AGENTS.md and CLAUDE.md when present before reasoning about source.`,
+            params: options.params,
+          });
+          abort.signal.throwIfAborted();
+          if (taskName === EMBEDDING_TASK) {
+            const result = await executeEmbeddingRun(toolContext, abort.signal, Date.now() + timeoutMs);
+            counter.reports += 1;
+            return result;
+          }
+          return await (options.harness ?? getAgentHarness(harnessId)).execute({
+            prompt,
+            model: options.model ?? task.model ?? 'claude-opus-5',
+            maxTurns: task.maxTurns,
+            systemPrompt,
+            provider: options.provider,
+            toolSurface: { agentId, runId, tools, projectRoot: checkout?.root },
+            abortController: abort,
+            reasoningLevel: task.reasoningLevel,
+          });
+        } finally {
+          await checkout?.dispose();
+        }
+      })();
       // The loser of the race settles alone; its later rejection is the run's
       // outcome only when it won.
       execution.catch(() => {});
@@ -413,6 +431,8 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       return { runId, status: 'completed', ending: 'posted', reportCount: counter.reports };
     } finally {
       clearTimeout(timer);
+      abort.abort();
+      await checkout?.dispose();
     }
   } catch (error) {
     const message = runErrorText(error);

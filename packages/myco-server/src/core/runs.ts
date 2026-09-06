@@ -23,6 +23,7 @@
  *   is what makes the container post an ending of its own, so the two writes
  *   overlap by construction and only the WHERE clause can settle which lands.
  */
+import { REPOSITORY_COMMIT_PATTERN, type RepositoryPin } from '@goondocks/myco-shared/repository';
 import type { DispatchLimits } from './limits.js';
 import type { RelationalStore } from './adapters.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
@@ -1106,4 +1107,30 @@ export async function recordSkipped(db: RelationalStore, scope: ReadScope, recor
        SELECT ?, ?, ?, ?, 'skipped', 0, ?, ?, ?
         WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`,
   ).bind(scope.projectId, record.id, record.agentId, record.task, record.at, record.at, skipContext(record.reason), scope.projectId, record.id).run();
+}
+
+/** The immutable source revision attached to a code run, if preparation has pinned it. */
+export function repositoryPinOfRun(run: Pick<RunRow, 'runContext'>): RepositoryPin | null {
+  if (run.runContext === null) return null;
+  const context: unknown = JSON.parse(run.runContext);
+  if (context === null || typeof context !== 'object' || Array.isArray(context)) throw new Error('Run context is not an object.');
+  const pin = (context as { repository?: unknown }).repository;
+  if (pin === undefined) return null;
+  if (pin === null || typeof pin !== 'object' || Array.isArray(pin)) throw new Error('Run repository pin is invalid.');
+  const record = pin as RepositoryPin;
+  if (typeof record.url !== 'string' || typeof record.branch !== 'string' || typeof record.commit !== 'string'
+    || !REPOSITORY_COMMIT_PATTERN.test(record.commit)) throw new Error('Run repository pin is invalid.');
+  return { url: record.url, branch: record.branch, commit: record.commit };
+}
+
+/** Pin once while the dispatched run is held; a repeat reads the first committed identity. */
+export async function pinRepositoryForRun(db: RelationalStore, scope: ReadScope, run: RunRow, pin: RepositoryPin): Promise<RepositoryPin | null> {
+  repositoryPinOfRun(run);
+  await db.prepare(`UPDATE agent_runs SET run_context = json_set(COALESCE(run_context, '{}'), '$.repository', json(?))
+    WHERE project_id = ? AND id = ? AND status = 'running' AND dispatched_by = ?
+      AND json_type(COALESCE(run_context, '{}'), '$.repository') IS NULL`)
+    .bind(JSON.stringify(pin), scope.projectId, run.id, run.dispatchedBy).run();
+  const fresh = await getRun(db, scope, run.id);
+  if (fresh === null || fresh.status !== 'running' || fresh.dispatchedBy !== run.dispatchedBy) return null;
+  return repositoryPinOfRun(fresh);
 }

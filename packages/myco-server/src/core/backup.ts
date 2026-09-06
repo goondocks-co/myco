@@ -52,12 +52,10 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
 /**
  * Tables an artifact never carries, each for a stated reason: migration-owned
  * state, transient quota state, the credential-store table nothing else may
- * touch, the backup index itself, the migration guard tables, and the three
- * operator-entered configuration tables — settings, capability admissions and
- * sealed secrets each have one validated writer with a recorded actor, and a
- * restore that inserted their rows would be a second one. An operator re-enters
- * them on the dashboard after a restore, exactly as 1.4 keeps its config
- * outside its dumps.
+ * touch, the backup index itself, the migration guard tables, and operator
+ * configuration. Settings, capability admissions, repository connections and
+ * sealed secrets require their validated writers and a recorded actor.
+ * Operators re-enter configuration on the dashboard after a restore.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'search_blob_queue', 'search_blob_chunks',
@@ -65,7 +63,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   ...['prompt_batches', 'responses', 'spores', 'plans', 'skill_records', 'sessions', 'search_blob_chunks']
     .flatMap((table) => ['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `${table}_fts${suffix}`)),
   'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
-  'deployment_settings', 'project_capabilities', 'deployment_secrets', 'backups',
+  'deployment_settings', 'project_capabilities', 'project_repositories', 'deployment_secrets', 'backups',
   '_v2_guard_project_id_grammar', '_v2_guard_session_machine_id',
   '_v5_guard_credential_backfillable', '_v5_guard_backfill_complete',
 ]);

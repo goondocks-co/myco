@@ -695,6 +695,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ sessionId: `s_gate_${runSeq++}`, kind: 'start' }) }),
       },
+      'POST /runs/repository': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/runs/repository', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/runs/repository', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
+      },
       'POST /runs/state/read': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/state/read', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -826,7 +831,7 @@ describe('gates', () => {
     // and the one dispatcher, which opens a provider credential to hand it to
     // the launched runtime's environment and nothing else. A new file here is
     // the thing to look at.
-    expect(callers.sort()).toEqual([join('api', 'settings.ts'), join('core', 'provider-credentials.ts')]);
+    expect(callers.sort()).toEqual([join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts')]);
     const credentialCallers = files(SRC).filter((f) => /\bopenProviderCredential\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1)).sort();
     expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'harness.ts'), join('core', 'provider-credentials.ts')]);
@@ -1101,6 +1106,7 @@ describe('gates', () => {
       'member POST /runs/instructions-write',
       'member POST /runs/report',
       'member POST /runs/reports',
+      'member POST /runs/repository',
       'member POST /runs/resume-admission',
       'member POST /runs/session-material',
       'member POST /runs/session-title',
@@ -1118,6 +1124,7 @@ describe('gates', () => {
       'member POST /spores/resolve',
       'member POST /spores/save',
       'member POST /tokens/refresh',
+      'owner DELETE /api/projects/{projectId}/repository',
       'owner DELETE /api/secrets/{name}',
       'owner GET /api/agents',
       'owner GET /api/backups',
@@ -1135,6 +1142,7 @@ describe('gates', () => {
       'owner GET /api/projects/{projectId}/digests/{tier}/revisions',
       'owner GET /api/projects/{projectId}/grants',
       'owner GET /api/projects/{projectId}/release-states',
+      'owner GET /api/projects/{projectId}/repository',
       'owner GET /api/projects/{projectId}/runs',
       'owner GET /api/projects/{projectId}/runs/{runId}',
       'owner GET /api/projects/{projectId}/search',
@@ -1178,6 +1186,7 @@ describe('gates', () => {
       'owner POST /auth/logout',
       'owner PUT /api/agents/{agentId}',
       'owner PUT /api/projects/{projectId}/capabilities/{capability}',
+      'owner PUT /api/projects/{projectId}/repository',
       'owner PUT /api/secrets/{name}',
       'owner PUT /api/settings/{leaf}',
       'public GET /health',

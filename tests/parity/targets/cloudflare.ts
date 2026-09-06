@@ -55,7 +55,7 @@ export async function bootCloudflare(): Promise<ParityTarget> {
   const configName = `wrangler.parity-${tag}.toml`;
   const configPath = path.join(SERVER_DIR, configName);
   const persistDir = path.join(SERVER_DIR, '.wrangler', `parity-state-${tag}`);
-  fs.writeFileSync(configPath, parityWranglerConfig());
+  fs.writeFileSync(configPath, parityWranglerConfig() + '\n[[secrets_store_secrets]]\nbinding = "SECRET_WRAP_KEY"\nstore_id = "parity-store"\nsecret_name = "parity-wrap-key"\n');
 
   const d1 = async (command: string): Promise<string> => {
     const args = ['d1', 'execute', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir, '--json', '--command', command];
@@ -77,6 +77,7 @@ export async function bootCloudflare(): Promise<ParityTarget> {
 
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   try {
+    await wrangler(['secrets-store', 'secret', 'create', 'parity-store', '--name', 'parity-wrap-key', '--scopes', 'workers', '--value', btoa('p'.repeat(32)), '-c', configName, '--persist-to', persistDir]);
     await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);
 
     const mint = Bun.spawn(['bun', 'scripts/mint-local.ts', MEMBER_ID, MACHINE_ID, '--print-token'], { cwd: SERVER_DIR, stdout: 'pipe', stderr: 'pipe' });

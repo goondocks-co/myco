@@ -19,7 +19,7 @@
 #   npm run harness:bundle   (in packages/myco-server)
 ARG BUN_VERSION=1.3.13
 FROM oven/bun:${BUN_VERSION}-slim
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates util-linux \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates util-linux git ripgrep \
   && rm -rf /var/lib/apt/lists/*
 ENV HOME=/home/bun
 # The installer writes a versioned executable under the installing user's home

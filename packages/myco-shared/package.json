@@ -17,6 +17,10 @@
     "./recall": {
       "import": "./dist/recall.js",
       "types": "./dist/recall.d.ts"
+    },
+    "./repository": {
+      "import": "./dist/repository.js",
+      "types": "./dist/repository.d.ts"
     }
   },
   "files": [
