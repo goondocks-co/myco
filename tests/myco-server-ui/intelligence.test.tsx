@@ -133,6 +133,48 @@ describe('Agent runs', () => {
 });
 
 describe('Skills', () => {
+  const candidate = (over: Record<string, unknown> = {}) => ({ id: 'candidate_1', topic: 'Capture diagnosis', rationale: 'Repeated spool troubleshooting', confidence: 0.8,
+    status: 'identified', sourceIds: '["spore_1"]', qualityScore: 0.8, qualityFailures: '[]', coverageMatches: '[]', revision: 0, approvedAt: null, reviewedBy: null, reconciliationReason: null, ...over });
+
+  it('reviews candidate evidence and submits the visible revision for approval', async () => {
+    let row = candidate();
+    const requests: unknown[] = [];
+    server(base({
+      '/api/projects/x/skill-candidates': () => Response.json({ candidates: row.status === 'identified' ? [row] : [], hasMore: false }),
+      '/api/projects/x/skill-candidates/candidate_1': (init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        row = candidate({ status: 'approved', revision: 1 });
+        return Response.json({ reviewed: true, candidate: row });
+      },
+    }));
+    mount('/p/x/skills?tab=candidates');
+    fireEvent.click(await screen.findByText('Capture diagnosis'));
+    expect(await screen.findByText('Repeated spool troubleshooting')).toBeTruthy();
+    expect(screen.getByText('spore_1')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve', exact: true }));
+    expect(await screen.findByText('Candidate approved.')).toBeTruthy();
+    expect(requests).toEqual([{ revision: 0, status: 'approved' }]);
+  });
+
+  it('surfaces a concurrent decision and reloads the evidence without automatically retrying approval', async () => {
+    let row = candidate();
+    let writes = 0;
+    server(base({
+      '/api/projects/x/skill-candidates': () => Response.json({ candidates: [row], hasMore: false }),
+      '/api/projects/x/skill-candidates/candidate_1': () => {
+        writes += 1;
+        row = candidate({ revision: 1, rationale: 'New evidence needs review' });
+        return Response.json({ error: 'conflict', candidate: row }, { status: 409 });
+      },
+    }));
+    mount('/p/x/skills?tab=candidates');
+    fireEvent.click(await screen.findByText('Capture diagnosis'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve', exact: true }));
+    expect(await screen.findByText(/This candidate changed/)).toBeTruthy();
+    expect(await screen.findByText('New evidence needs review')).toBeTruthy();
+    expect(writes).toBe(1);
+  });
+
   it('renders the published content, the lineage, and the release state that names this skill', async () => {
     server(base({
       '/api/projects/x/skills': () => Response.json({ skills: [{ id: 'sk1', agentId: 'agent_1', name: 'debugging', displayName: 'Debugging', description: 'How to debug here', status: 'active', generation: 2, sourceIds: '["a","b"]', usageCount: 3, lastUsedAt: NOW, createdAt: 0, updatedAt: 0 }] }),

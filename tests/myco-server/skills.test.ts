@@ -9,7 +9,7 @@ import {
   CANDIDATE_IMMUTABLE_COLUMNS, CANDIDATE_UPDATE_COLUMNS, deleteSkillRecordCascade,
   getCandidate, getPublishedSkillContent, getSkillContentAtGeneration, getSkillRecord,
   insertCandidate, insertLineage, insertSkillRecord, listLineageForSkill, listSkillRecords,
-  recordSkillUsage, updateCandidate,
+  recordSkillUsage, reviewCandidate, updateCandidate,
 } from '@myco-server-worker/core/skills.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
@@ -95,6 +95,32 @@ describe('lineage is the source of a skill content', () => {
 });
 
 describe('candidate approval', () => {
+  it('accepts one concurrent review and preserves the first approving member', async () => {
+    const { db } = store();
+    await insertCandidate(db, SCOPE, candidate('c1'));
+    const approved = await reviewCandidate(db, SCOPE, { id: 'c1', revision: 0, status: 'approved', memberId: 'member_one' }, NOW + 1);
+    expect(approved.reviewed).toBe(true);
+    expect(approved.candidate).toMatchObject({ revision: 1, status: 'approved', approvedAt: NOW + 1,
+      approvedBy: 'member_one', reviewedBy: 'member_one' });
+    const stale = await reviewCandidate(db, SCOPE, { id: 'c1', revision: 0, status: 'dismissed', memberId: 'member_two' }, NOW + 2);
+    expect(stale.reviewed).toBe(false);
+    expect(stale.candidate?.status).toBe('approved');
+    await reviewCandidate(db, SCOPE, { id: 'c1', revision: 1, status: 'dismissed', memberId: 'member_two' }, NOW + 3);
+    const again = await reviewCandidate(db, SCOPE, { id: 'c1', revision: 2, status: 'approved', memberId: 'member_two' }, NOW + 4);
+    expect(again.candidate).toMatchObject({ revision: 3, approvedAt: NOW + 1, approvedBy: 'member_one', reviewedBy: 'member_two' });
+  });
+
+  it('invalidates a review after reconciliation and refuses generated or foreign candidates', async () => {
+    const { db } = store();
+    await insertCandidate(db, SCOPE, candidate('c1'));
+    await updateCandidate(db, SCOPE, 'c1', { rationale: 'new evidence' }, NOW + 1);
+    expect((await reviewCandidate(db, SCOPE, { id: 'c1', revision: 0, status: 'approved', memberId: 'member_one' }, NOW + 2)).reviewed).toBe(false);
+    await updateCandidate(db, SCOPE, 'c1', { status: 'generated' }, NOW + 3);
+    expect((await reviewCandidate(db, SCOPE, { id: 'c1', revision: 2, status: 'dismissed', memberId: 'member_one' }, NOW + 4)).reviewed).toBe(false);
+    expect(await reviewCandidate(db, OTHER, { id: 'c1', revision: 2, status: 'approved', memberId: 'member_one' }, NOW + 4))
+      .toEqual({ reviewed: false, candidate: null });
+  });
+
   it('stamps approved_at on the first approval and never moves it', async () => {
     const { db } = store();
     await insertCandidate(db, SCOPE, candidate('c1'));

@@ -1,4 +1,6 @@
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { SkillCandidates } from '../components/skill-candidates';
+import { SubtabPill } from '../components/ui/subtab-pill';
 import { Badge } from '../components/ui/badge';
 import { MarkdownContent } from '../components/ui/markdown-content';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
@@ -25,13 +27,18 @@ const sourceCount = (raw: string): number => {
 export function Skills() {
   const { projectId = '', skillId } = useParams();
   const navigate = useNavigate();
-  const skills = useSkills(projectId);
+  const [params] = useSearchParams();
+  const tab = params.get('tab') === 'candidates' ? 'candidates' : 'skills';
+  const skills = useSkills(projectId, { enabled: tab === 'skills' });
   const base = `/p/${encodeURIComponent(projectId)}/skills`;
   const list = skills.data?.skills ?? [];
 
   return (
     <PageContainer>
       <PageHeader title="Skills" subtitle="Procedures generated from this project's memory, with what each one is built on." />
+      <div className="mb-4"><SubtabPill tabs={[{ id: 'skills', label: 'Skills' }, { id: 'candidates', label: 'Candidates' }]} activeTab={tab}
+        onTabChange={(next) => navigate(next === 'candidates' ? `${base}?tab=candidates` : base)} /></div>
+      {tab === 'candidates' ? <SkillCandidates key={projectId} projectId={projectId} /> :
       <PageLoading isLoading={skills.isPending} error={skills.error}>
         <div className="min-h-[60vh] rounded-lg border border-outline-variant/20">
           <MasterDetailSplit
@@ -67,7 +74,7 @@ export function Skills() {
             }
           />
         </div>
-      </PageLoading>
+      </PageLoading>}
     </PageContainer>
   );
 }

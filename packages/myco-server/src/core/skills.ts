@@ -20,11 +20,12 @@
  * settable columns are a fixed list, as with a run update: `project_id`, `id`
  * and `agent_id` are absent from it.
  */
-import type { RelationalStore } from './adapters.js';
+import type { PreparedStatement, RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 
 export const SKILL_STATUSES = ['active', 'archived', 'superseded'] as const;
-export const CANDIDATE_STATUSES = ['identified', 'approved', 'dismissed', 'generated'] as const;
+import { CANDIDATE_STATUSES, CANDIDATE_REVIEW_STATUSES, type CandidateReviewStatus, type SkillCandidate } from './skill-types.js';
+export { CANDIDATE_STATUSES, CANDIDATE_REVIEW_STATUSES, type CandidateReviewStatus, type SkillCandidate };
 
 /**
  * The columns a candidate update may set.
@@ -42,7 +43,7 @@ export type CandidateUpdateColumn = (typeof CANDIDATE_UPDATE_COLUMNS)[number];
 export type CandidateUpdate = Partial<Record<CandidateUpdateColumn, string | number | null>>;
 
 /** Columns a candidate update may never set. */
-export const CANDIDATE_IMMUTABLE_COLUMNS = ['project_id', 'id', 'agent_id', 'approved_at'] as const;
+export const CANDIDATE_IMMUTABLE_COLUMNS = ['project_id', 'id', 'agent_id', 'approved_at', 'revision', 'reviewed_at', 'reviewed_by', 'approved_by'] as const;
 
 const RECORD_COLUMNS = `id, agent_id AS agentId, name, display_name AS displayName, description,
   status, embedded, generation, candidate_id AS candidateId, source_ids AS sourceIds, path,
@@ -53,7 +54,8 @@ const CANDIDATE_COLUMNS = `id, agent_id AS agentId, topic, rationale, confidence
   source_ids AS sourceIds, skill_id AS skillId, supersedes, evidence_bundle_id AS evidenceBundleId,
   quality_score AS qualityScore, quality_failures AS qualityFailures, coverage_matches AS coverageMatches,
   last_reconciled_at AS lastReconciledAt, reconciliation_reason AS reconciliationReason,
-  created_at AS createdAt, updated_at AS updatedAt, approved_at AS approvedAt`;
+  created_at AS createdAt, updated_at AS updatedAt, approved_at AS approvedAt,
+  revision, reviewed_at AS reviewedAt, reviewed_by AS reviewedBy, approved_by AS approvedBy`;
 
 export interface SkillRecordInsert {
   id: string; agentId: string; name: string; displayName: string; description: string;
@@ -125,9 +127,9 @@ export async function deleteSkillRecordCascade(
   const results = await db.batch([
     db.prepare(`DELETE FROM skill_lineage WHERE project_id = ? AND skill_id = ?`).bind(scope.projectId, skillId),
     db.prepare(`DELETE FROM skill_usage WHERE project_id = ? AND skill_id = ?`).bind(scope.projectId, skillId),
-    db.prepare(`UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ?
-       WHERE project_id = ? AND (skill_id = ? OR id = (SELECT candidate_id FROM skill_records WHERE project_id = ? AND id = ?))`)
-      .bind(now, scope.projectId, skillId, scope.projectId, skillId),
+    candidateUpdateStatement(db, scope, { status: 'dismissed', skill_id: null }, now,
+      '(skill_id = ? OR id = (SELECT candidate_id FROM skill_records WHERE project_id = ? AND id = ?))',
+      [skillId, scope.projectId, skillId]),
     db.prepare(`DELETE FROM skill_records WHERE project_id = ? AND id = ?`).bind(scope.projectId, skillId),
   ]);
   return results[3].meta.changes > 0;
@@ -147,18 +149,18 @@ export async function insertCandidate(db: RelationalStore, scope: ReadScope, row
     .first();
 }
 
-export async function getCandidate(db: RelationalStore, scope: ReadScope, id: string): Promise<Record<string, unknown> | null> {
+export async function getCandidate(db: RelationalStore, scope: ReadScope, id: string): Promise<SkillCandidate | null> {
   return db.prepare(`SELECT ${CANDIDATE_COLUMNS} FROM skill_candidates WHERE project_id = ? AND id = ?`)
     .bind(scope.projectId, id).first();
 }
 
-export async function listCandidates(db: RelationalStore, scope: ReadScope, o: { status?: string; limit?: number } = {}): Promise<unknown[]> {
+export async function listCandidates(db: RelationalStore, scope: ReadScope, o: { status?: string; limit?: number; offset?: number } = {}): Promise<SkillCandidate[]> {
   const conditions = ['project_id = ?'];
   const params: unknown[] = [scope.projectId];
   if (o.status !== undefined) { conditions.push('status = ?'); params.push(o.status); }
   const { results } = await db
-    .prepare(`SELECT ${CANDIDATE_COLUMNS} FROM skill_candidates WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT ?`)
-    .bind(...params, Math.min(o.limit ?? 100, 500)).all();
+    .prepare(`SELECT ${CANDIDATE_COLUMNS} FROM skill_candidates WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?`)
+    .bind(...params, Math.min(o.limit ?? 100, 500), Math.max(0, o.offset ?? 0)).all<SkillCandidate>();
   return results;
 }
 
@@ -174,18 +176,43 @@ export async function updateCandidate(
 ): Promise<number> {
   const columns = CANDIDATE_UPDATE_COLUMNS.filter((c) => c in update);
   if (columns.length === 0) return 0;
+  return (await candidateUpdateStatement(db, scope, update, now, 'id = ?', [id]).run()).meta.changes;
+}
+
+/** Every candidate mutation advances its revision and preserves its first approval. */
+function candidateUpdateStatement(
+  db: RelationalStore, scope: ReadScope, update: CandidateUpdate, now: number,
+  condition: string, values: readonly unknown[], reviewerId?: string,
+): PreparedStatement {
+  const columns = CANDIDATE_UPDATE_COLUMNS.filter((c) => c in update);
   const sets = columns.map((c) => `${c} = ?`);
   const params: unknown[] = columns.map((c) => update[c] ?? null);
-  sets.push('updated_at = ?');
+  sets.push('updated_at = ?', 'revision = revision + 1');
   params.push(now);
   if (update.status === 'approved') {
     sets.push('approved_at = COALESCE(approved_at, ?)');
     params.push(now);
   }
-  const result = await db
-    .prepare(`UPDATE skill_candidates SET ${sets.join(', ')} WHERE project_id = ? AND id = ?`)
-    .bind(...params, scope.projectId, id).run();
-  return result.meta.changes;
+  if (reviewerId !== undefined) {
+    sets.push('reviewed_at = ?', 'reviewed_by = ?');
+    params.push(now, reviewerId);
+    if (update.status === 'approved') {
+      sets.push('approved_by = CASE WHEN approved_at IS NULL THEN ? ELSE approved_by END');
+      params.push(reviewerId);
+    }
+  }
+  return db.prepare(`UPDATE skill_candidates SET ${sets.join(', ')} WHERE project_id = ? AND (${condition})`)
+    .bind(...params, scope.projectId, ...values);
+}
+
+/** Review the revision the member saw; generated candidates are reviewed through their skill. */
+export async function reviewCandidate(db: RelationalStore, scope: ReadScope,
+  input: { id: string; revision: number; status: CandidateReviewStatus; memberId: string }, now: number,
+): Promise<{ reviewed: boolean; candidate: SkillCandidate | null }> {
+  const result = await candidateUpdateStatement(db, scope, { status: input.status }, now,
+    "id = ? AND revision = ? AND status IN ('identified', 'approved', 'dismissed')",
+    [input.id, input.revision], input.memberId).run();
+  return { reviewed: result.meta.changes > 0, candidate: await getCandidate(db, scope, input.id) };
 }
 
 // ---------------------------------------------------------------------------
