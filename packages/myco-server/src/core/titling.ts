@@ -145,6 +145,7 @@ const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
   // A titling dispatch names a catalogued task and a session the scope already resolved; neither refusal has a path here.
   unknown_task: 'error',
   unknown_project: 'error',
+  repository_missing: 'error',
 };
 
 /**

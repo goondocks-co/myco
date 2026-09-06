@@ -64,7 +64,6 @@ export const DEPLOYMENT_LEAVES: readonly string[] = [
   'backup.retention.keep_weekly',
   'cortex.canopy.exclude.default_patterns',
   'cortex.canopy.exclude.patterns',
-  'cortex.canopy.min_file_bytes',
   'cortex.canopy.refresh.background_enabled',
   'cortex.canopy.refresh.background_period_minutes',
   'cortex.digest.inject_on_session_start',

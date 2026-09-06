@@ -1730,12 +1730,12 @@ describe('vault tools', () => {
     it('lists silent_streams by default and clears an entry once that task has a run', async () => {
       const t = findTool(tools, 'vault_run_health');
       const before = parseResult(await t.handler({}, undefined)) as { buckets: Record<string, { entries: Array<{ task: string }> }> };
-      expect(before.buckets.silent_streams.entries.some((e) => e.task === 'canopy-map')).toBe(true);
+      expect(before.buckets.silent_streams.entries.some((e) => e.task === 'harness-health')).toBe(true);
 
-      insertRun({ id: 'run-canopy-map-health', agent_id: TEST_AGENT_ID, task: 'canopy-map', started_at: epochNow() });
+      insertRun({ id: 'run-harness-health-health', agent_id: TEST_AGENT_ID, task: 'harness-health', started_at: epochNow() });
 
       const after = parseResult(await t.handler({}, undefined)) as { buckets: Record<string, { entries: Array<{ task: string }> }> };
-      expect(after.buckets.silent_streams.entries.some((e) => e.task === 'canopy-map')).toBe(false);
+      expect(after.buckets.silent_streams.entries.some((e) => e.task === 'harness-health')).toBe(false);
     });
   });
 });

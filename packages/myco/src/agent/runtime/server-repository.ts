@@ -1,10 +1,10 @@
-import type { RepositoryAccess } from '@goondocks/myco-shared/repository';
+import type { RepositoryAccess, RepositoryPin } from '@goondocks/myco-shared/repository';
 import type { ServerToolContext } from './server-tools.js';
 import { postRunControl } from './run-store-http.js';
 import { prepareRepositoryCheckout, type RepositoryCheckout } from './repository-checkout.js';
 
 /** Prepare this run's configured source and persist its commit before exposing files. */
-export async function prepareRunRepository(ctx: ServerToolContext, signal: AbortSignal, gitPath?: string): Promise<RepositoryCheckout> {
+export async function prepareRunRepository(ctx: ServerToolContext, signal: AbortSignal, gitPath?: string, prior?: RepositoryPin): Promise<RepositoryCheckout> {
   const answer = await postRunControl(ctx.client, ctx.budget, '/runs/repository', { runId: ctx.runId });
   if (answer.held !== true) throw new Error('This run no longer holds repository access.');
   if (typeof answer.error === 'string') throw new Error(answer.error);
@@ -13,6 +13,7 @@ export async function prepareRunRepository(ctx: ServerToolContext, signal: Abort
   signal.throwIfAborted();
   return prepareRepositoryCheckout({
     url: repository.url, branch: repository.branch, credential: repository.credential, commit: repository.commit, signal, gitPath,
+    compareCommit: prior?.url === repository.url && prior.branch === repository.branch ? prior.commit : undefined,
     pin: async (commit) => {
       const result = await postRunControl(ctx.client, ctx.budget, '/runs/repository', {
         runId: ctx.runId, url: repository.url, branch: repository.branch, commit,

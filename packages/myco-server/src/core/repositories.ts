@@ -1,6 +1,12 @@
 import { repositoryUrl, repositoryBranch, RepositoryInputError, type RepositoryAccess } from '@goondocks/myco-shared/repository';
 import type { RelationalStore } from './adapters.js';
 import type { SecretDescription, SecretStore } from './secrets.js';
+import type { ReadScope } from '../read/scope.js';
+
+/** Configured source identity without any credential metadata. */
+export async function repositoryIdentity(db: RelationalStore, scope: ReadScope): Promise<{ url: string; branch: string } | null> {
+  return db.prepare('SELECT url, branch FROM project_repositories WHERE project_id = ?').bind(scope.projectId).first();
+}
 
 const MAX_CREDENTIAL_CHARS = 4096;
 

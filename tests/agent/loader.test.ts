@@ -347,7 +347,7 @@ describe('agent loader', () => {
     it('declares canopy-map render as requiring the project tree (WS1 coverage completion — fs_read confirms a file\'s role)', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       const cm = tasks.find((t) => t.name === 'canopy-map');
-      const render = cm?.phases?.find((phase) => phase.name === 'render');
+      const render = cm?.phases?.find((phase) => phase.name === 'map');
 
       expect(render?.tools).toContain('fs_read');
       expect(render?.requiresProjectTree).toBe(true);

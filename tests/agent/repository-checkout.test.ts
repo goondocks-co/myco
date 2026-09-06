@@ -84,6 +84,14 @@ describe('committed repository checkout', () => {
     } finally { await Promise.all([a.dispose(), b.dispose()]); }
   });
 
+  it('compares the pinned tree with the prior map commit for changed-file discovery', async () => {
+    const checkout = await prepareRepositoryCheckout({ ...request(), compareCommit: first, pin: async (commit) => commit });
+    try {
+      expect(checkout.commit).toBe(second);
+      expect(checkout.changedPaths).toEqual(['AGENTS.md']);
+    } finally { await checkout.dispose(); }
+  });
+
   it('refuses invalid credentials without exposing them', async () => {
     let message = '';
     try {
