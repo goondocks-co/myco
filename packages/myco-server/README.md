@@ -105,6 +105,14 @@ The dashboard's **Access** page (`/access`) administers members, invitations and
 
 Local development: `cd ui && npm run dev` proxies `/api`, `/auth` and `/health` to `http://127.0.0.1:8787` (override with `MYCO_SERVER_URL`), rewriting the Host to the loopback literal the self-hosted server admits.
 
+## Connect committed source
+
+In **Settings → Projects**, select **Connect repository** for a project. Enter its HTTPS Git URL and branch. Public repositories need no credential. For a private repository, clear **Use without a credential** and enter the Git username and a token limited to reading that repository. GitHub tokens can use `x-access-token` as the username. Signing in to Myco with GitHub does not grant access to repository contents.
+
+Code tasks prepare an isolated checkout and record its commit before reading files. Retries use that commit; a new run resolves the configured branch again. Uncommitted files on members' computers are never included. The Myco agent receives file reading and search tools; the credential stays in the checkout process.
+
+Checkout has a two-minute limit and supports up to 256 MiB of committed file content. Repositories containing submodules or Git LFS pointers are refused. Use **Edit repository** to change the branch or replace a credential. **Disconnect** removes the connection and its credential while retaining project memory. Repository connections are configuration and must be re-entered after restoring a backup.
+
 ## Access
 
 Membership is flat: every member manages members, invitations, runtimes and external agents, and every act names who did it.

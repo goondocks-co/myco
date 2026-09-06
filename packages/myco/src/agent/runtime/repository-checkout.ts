@@ -1,10 +1,15 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { repositoryUrl, repositoryBranch, REPOSITORY_COMMIT_PATTERN as SHA_PATTERN } from '@goondocks/myco-shared/repository';
+
+export { repositoryUrl } from '@goondocks/myco-shared/repository';
 
 const MAX_GIT_OUTPUT_BYTES = 1_000_000;
-const SHA_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
+export const MAX_REPOSITORY_BYTES = 256 * 1024 * 1024;
+const CHECKOUT_TIMEOUT_MS = 120_000;
+const LFS_POINTER_PREFIX = 'version https://git-lfs.github.com/spec/v1';
 
 export interface RepositoryCheckoutRequest {
   url: string;
@@ -24,22 +29,14 @@ export interface RepositoryCheckout {
   dispose: () => Promise<void>;
 }
 
-/** HTTPS source with credentials supplied independently of the remote URL. */
-export function repositoryUrl(raw: string): string {
-  const url = new URL(raw);
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname === '/') {
-    throw new Error('Repository URL must be HTTPS, with a repository path and no credentials, query, or fragment.');
-  }
-  return url.href;
-}
-
 /** One bounded Git process group; cancellation stops its transport children too. */
 async function git(
   executable: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal,
 ): Promise<string> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+    const command = process.platform === 'linux' ? ['prlimit', `--fsize=${MAX_REPOSITORY_BYTES}`, '--', executable, ...args] : [executable, ...args];
+    const child = spawn(command[0], command.slice(1), { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks: Buffer[] = [];
     let bytes = 0;
     let failure: Error | undefined;
@@ -75,7 +72,9 @@ async function git(
 
 /** Prepare committed files in an isolated workspace; no repository hooks or filters execute. */
 export async function prepareRepositoryCheckout(request: RepositoryCheckoutRequest): Promise<RepositoryCheckout> {
+  const signal = AbortSignal.any([request.signal, AbortSignal.timeout(CHECKOUT_TIMEOUT_MS)]);
   const url = repositoryUrl(request.url);
+  repositoryBranch(request.branch);
   if (request.commit !== undefined && !SHA_PATTERN.test(request.commit)) throw new Error('Invalid repository commit.');
   const directory = await mkdtemp(join(tmpdir(), 'myco-repository-'));
   const root = join(directory, 'checkout');
@@ -100,7 +99,7 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
       '-c', 'credential.helper=', '-c', 'core.hooksPath=/dev/null',
       '-c', 'http.followRedirects=false', '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always',
       ...args,
-    ], root, env, request.signal);
+    ], root, env, signal);
     await run('check-ref-format', `refs/heads/${request.branch}`);
     await run('init', '--quiet', '--template=');
     await run('remote', 'add', 'origin', url);
@@ -110,9 +109,27 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     const pinned = await request.pin(resolved);
     if (!SHA_PATTERN.test(pinned)) throw new Error('Repository pin returned an invalid commit.');
     if (pinned !== resolved) await run('fetch', '--quiet', '--depth=1', '--no-tags', 'origin', pinned);
+    const files = (await run('ls-tree', '-r', '-l', '-z', pinned)).split('\0').filter(Boolean).map((entry) => {
+      const tab = entry.indexOf('\t');
+      const [mode, , , size] = entry.slice(0, tab).trim().split(/\s+/);
+      if (mode === '160000') throw new Error('Repository contains submodules; submodule source is not supported yet.');
+      return { mode, size: Number(size), path: entry.slice(tab + 1) };
+    });
+    const bytes = files.reduce((total, file) => total + file.size, 0);
+    if (!Number.isSafeInteger(bytes) || bytes > MAX_REPOSITORY_BYTES) throw new Error('Repository committed files exceed the 256 MiB checkout limit.');
     await run('checkout', '--quiet', '--detach', pinned);
     const actual = await run('rev-parse', 'HEAD');
     if (actual !== pinned) throw new Error('Repository checkout does not match its pinned commit.');
+    for (const entry of files) {
+      signal.throwIfAborted();
+      if (entry.mode !== '100644' && entry.mode !== '100755') continue;
+      const file = await open(join(root, entry.path), 'r');
+      try {
+        const bytes = Buffer.alloc(LFS_POINTER_PREFIX.length);
+        await file.read(bytes, 0, bytes.length, 0);
+        if (bytes.toString('utf8') === LFS_POINTER_PREFIX) throw new Error('Repository contains Git LFS pointers; LFS source is not supported yet.');
+      } finally { await file.close(); }
+    }
     await rm(askpass);
     delete env.MYCO_GIT_USERNAME;
     delete env.MYCO_GIT_TOKEN;

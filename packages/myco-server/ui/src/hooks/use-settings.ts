@@ -38,7 +38,8 @@ export function useCapabilities(projectId: string) {
 /** What the server said when it refused a settings change, in the person's words. */
 export function settingsRefusalText(err: unknown): string {
   if (err instanceof ApiError) {
-    const body = err.body as { reason?: unknown; detail?: unknown } | null;
+    const body = err.body as { error?: unknown; reason?: unknown; detail?: unknown } | null;
+    if ((body?.error === 'bad_request' || body?.error === 'conflict') && typeof body.reason === 'string') return body.reason;
     switch (body?.reason) {
       case 'not_deployment_tier':
         return 'That setting is not held by the server.';
@@ -77,6 +78,41 @@ export function useSettingsActions() {
       mutationFn: (v: { projectId: string; capability: string; enabled: boolean }) =>
         putJson<{ applied: true }>(`/api/projects/${encodeURIComponent(v.projectId)}/capabilities/${encodeURIComponent(v.capability)}`, { enabled: v.enabled }),
       onSuccess: () => refresh('capabilities'),
+    }),
+  };
+}
+
+export interface RepositoryRow {
+  revision: string;
+  url: string;
+  branch: string;
+  username: string | null;
+  credential: Omit<SecretRow, 'name'> | null;
+  updatedAt: number;
+  updatedBy: string;
+}
+
+export function useRepository(projectId: string) {
+  return useQuery({
+    queryKey: ['repository', projectId],
+    queryFn: ({ signal }) => fetchJson<{ repository: RepositoryRow | null }>(`/api/projects/${encodeURIComponent(projectId)}/repository`, signal),
+  });
+}
+
+export function useRepositoryActions(projectId: string) {
+  const client = useQueryClient();
+  const path = `/api/projects/${encodeURIComponent(projectId)}/repository`;
+  const refresh = () => client.invalidateQueries({ queryKey: ['repository', projectId] });
+  return {
+    save: useMutation({
+      gcTime: 0,
+      mutationFn: (input: { url: string; branch: string; revision: string | null; credential?: { username: string; token: string } | null }) =>
+        putJson<{ repository: RepositoryRow | null }>(path, input),
+      onSuccess: refresh,
+    }),
+    remove: useMutation({
+      mutationFn: (revision: string) => deleteJson(path, {}, { revision }),
+      onSuccess: refresh,
     }),
   };
 }
