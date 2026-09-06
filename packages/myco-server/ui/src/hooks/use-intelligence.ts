@@ -226,8 +226,8 @@ export function useAgents() {
   return useQuery({ queryKey: ['agents'], queryFn: ({ signal }) => fetchJson<{ agents: AgentRow[] }>('/api/agents', signal) });
 }
 
-export function useSkills(projectId: string) {
-  return useQuery({ queryKey: ['skills', projectId], queryFn: ({ signal }) => fetchJson<{ skills: SkillRecord[] }>(`${project(projectId)}/skills?limit=200`, signal) });
+export function useSkills(projectId: string, options: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: ['skills', projectId], enabled: options.enabled, queryFn: ({ signal }) => fetchJson<{ skills: SkillRecord[] }>(`${project(projectId)}/skills?limit=200`, signal) });
 }
 
 export function useSkill(projectId: string, skillId: string) {

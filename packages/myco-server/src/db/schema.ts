@@ -1082,12 +1082,20 @@ const V18_STATEMENTS: readonly string[] = [
      PRIMARY KEY (project_id, session_id, kind))`,
 ];
 
+/** Candidate revisions and authenticated member attribution. */
+const V23_STATEMENTS: readonly string[] = [
+  `ALTER TABLE skill_candidates ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE skill_candidates ADD COLUMN reviewed_at INTEGER`,
+  `ALTER TABLE skill_candidates ADD COLUMN reviewed_by TEXT`,
+  `ALTER TABLE skill_candidates ADD COLUMN approved_by TEXT`,
+];
+
 function withStamp(version: number, statements: readonly string[]): SchemaStep {
   return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
 }
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

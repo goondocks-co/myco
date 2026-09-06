@@ -25,6 +25,10 @@
     "./canopy": {
       "import": "./dist/canopy.js",
       "types": "./dist/canopy.d.ts"
+    },
+    "./skill-candidates": {
+      "import": "./dist/skill-candidates.js",
+      "types": "./dist/skill-candidates.d.ts"
     }
   },
   "files": [

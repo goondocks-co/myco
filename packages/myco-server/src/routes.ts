@@ -1,5 +1,6 @@
 import { handleRepository, handleSaveRepository, handleRemoveRepository, handleRunRepository } from './api/repositories.js';
 import { handleProjectMap, handleRunMap } from './api/canopy.js';
+import { handleSkillCandidates, handleReviewSkillCandidate } from './api/skill-candidates.js';
 import type { ServerEnv } from './core/adapters.js';
 import type { AuthContext, GrantContext, OwnerContext, RouteContext, SessionContext, StreamContext } from './context.js';
 import { handleLink, handleMe } from './api/identity.js';
@@ -187,6 +188,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/projects/{projectId}/spores', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores$/, auth: 'owner', handler: handleProjectSpores },
   { method: 'GET', path: '/api/projects/{projectId}/spores/{sporeId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores\/(?<sporeId>[^/]{1,192})$/, auth: 'owner', handler: handleProjectSpore },
   { method: 'GET', path: '/api/projects/{projectId}/skills', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skills$/, auth: 'owner', handler: handleProjectSkills },
+  { method: 'GET', path: '/api/projects/{projectId}/skill-candidates', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skill-candidates$/, auth: 'owner', handler: handleSkillCandidates },
+  { method: 'PATCH', path: '/api/projects/{projectId}/skill-candidates/{candidateId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skill-candidates\/(?<candidateId>[^/]{1,192})$/, auth: 'owner', handler: handleReviewSkillCandidate },
   { method: 'GET', path: '/api/projects/{projectId}/skills/{skillId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skills\/(?<skillId>[^/]{1,192})$/, auth: 'owner', handler: handleProjectSkill },
   { method: 'GET', path: '/api/projects/{projectId}/digests', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/digests$/, auth: 'owner', handler: handleProjectDigests },
   { method: 'GET', path: '/api/projects/{projectId}/digests/{tier}/revisions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/digests\/(?<tier>\d{1,6})\/revisions$/, auth: 'owner', handler: handleProjectDigestRevisions },
