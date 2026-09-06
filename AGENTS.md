@@ -1,12 +1,13 @@
 # Myco — Collective Agent Intelligence
 
-Myco captures project memory in a local vault and serves it back through context injection, MCP tools, and skills. This file is intentionally small: keep durable rules here, and let Myco carry dynamic project intelligence.
+Myco captures project memory and serves it back through context injection, MCP tools, and skills. This file is intentionally small: keep durable rules here, and let Myco carry dynamic project intelligence.
 
 ## Use Myco First
 
 - `AGENTS.md` is for stable project rules, not changing project history.
 - Use Myco context, spores, sessions, and plans for recent work, prior decisions, and dynamic guidance.
 - When a rule depends on current initiative state or recent architecture change, prefer Myco over adding more static prose here.
+- Before interpreting runtime ownership, read the [canonical architecture and feature ledger](docs/architecture/myco-2.0.md). The daemon, Grove, local-vault and local-dashboard rules below apply to retained local-runtime code; they do not describe the Deployment server's storage, MCP or UI ownership. Verify the active entry point and its routing before labeling a module as the implementation of a surface. Existing managed skills and module documentation may describe the local runtime.
 
 ## Dogfooding
 
