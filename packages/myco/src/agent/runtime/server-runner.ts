@@ -30,7 +30,11 @@ import { HARNESS_CLAUDE_SDK } from '../types.js';
 import { loadAgentDefinition, loadSystemPrompt, resolveDefinitionsDir } from '../loader.js';
 import { loadAllTasks } from '../registry.js';
 import { composeHostedPrompt, composeTaskPrompt } from '../prompt-composition.js';
-import type { AgentHarness } from '../harness/types.js';
+import { HarnessExecutionError, type AgentHarness } from '../harness/types.js';
+import { resolveCost } from '../cost/resolver.js';
+import { resolveActualCost, resolveUnavailableCost } from '../cost/helpers.js';
+import { buildRunUsageUpdate } from '../run-accounting.js';
+import type { CostResolutionInput } from '../cost/types.js';
 import type { ProviderConfig } from '../types.js';
 import { MAX_RUN_ERROR_CHARS, type RunStatusOutcome, type RunStore } from './run-store.js';
 
@@ -318,6 +322,9 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     budget,
   });
 
+  let accounting: ReturnType<typeof buildRunUsageUpdate> | undefined;
+  let costInput: CostResolutionInput | undefined;
+
   try {
     const definitionsDir = resolveDefinitionsDir();
     const definition = loadAgentDefinition(definitionsDir);
@@ -331,6 +338,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     // it; a local-provider dispatch under the wrong harness would spawn the
     // wrong runtime.
     const harnessId = (options.provider?.type === undefined ? HARNESS_CLAUDE_SDK : inferHarnessFromProviderType(options.provider.type)) ?? HARNESS_CLAUDE_SDK;
+    const model = options.model ?? task.model ?? 'claude-opus-5';
     // No started_at: the server stamps its own clock. The run's context is the
     // dispatch's parameters, which the run routes that serve one task read back.
     let claim: Awaited<ReturnType<typeof store.claimRun>>;
@@ -343,7 +351,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
           status: 'running',
           harness: taskName === EMBEDDING_TASK ? 'deterministic' : harnessId,
           provider: options.provider?.type ?? null,
-          model: options.model ?? null,
+          model: taskName === EMBEDDING_TASK ? options.model ?? null : model,
           run_context: options.params === undefined ? null : JSON.stringify(options.params),
         },
         { taskName, maxAgeSeconds: 0 },
@@ -390,7 +398,10 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
           if (map?.unchanged) {
             await map.reportUnchanged();
             counter.reports += 1;
-            return { usage: { totalTokens: 0 } };
+            const usage = { totalTokens: 0, costUsd: 0 };
+            costInput = { harness: harnessId, model, provider: options.provider, usage };
+            accounting = buildRunUsageUpdate({ usage, provider: options.provider, costData: await resolveCost(costInput) });
+            return { usage };
           }
           if (map !== null) toolContext.beforeReport = map.beforeReport;
           if (map !== null) toolContext.sourceTools = map.tools;
@@ -410,9 +421,10 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
             counter.reports += 1;
             return result;
           }
-          return await (options.harness ?? getAgentHarness(harnessId)).execute({
+          costInput = { harness: harnessId, model, provider: options.provider, usage: {} };
+          const result = await (options.harness ?? getAgentHarness(harnessId)).execute({
             prompt,
-            model: options.model ?? task.model ?? 'claude-opus-5',
+            model,
             maxTurns: task.maxTurns,
             systemPrompt,
             provider: options.provider,
@@ -420,6 +432,9 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
             abortController: abort,
             reasoningLevel: task.reasoningLevel,
           });
+          costInput.usage = result.usage ?? {};
+          accounting = buildRunUsageUpdate({ usage: costInput.usage, provider: options.provider, costData: await resolveCost(costInput) });
+          return result;
         } finally {
           await checkout?.dispose();
         }
@@ -432,6 +447,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
       const closed = await recordTerminal(store, runId, 'completed', {
         completed_at: Date.now(),
         tokens_used: result.usage?.totalTokens ?? null,
+        ...accounting,
       });
       // The Deployment decides whether a run closes; a container that logged its
       // own word over the server's would report a run finished that the row calls
@@ -448,11 +464,17 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     }
   } catch (error) {
     const message = runErrorText(error);
+    if (costInput !== undefined) {
+      if (error instanceof HarnessExecutionError) costInput.usage = error.telemetry.usage;
+      accounting ??= buildRunUsageUpdate({ usage: costInput.usage, provider: options.provider,
+        costData: resolveActualCost(costInput) ?? resolveUnavailableCost(costInput) });
+    }
     let refused: string | undefined;
     let ending: RunEnding = 'unposted';
     try {
       options.onClosing?.();
-      refused = refusalOf(await recordTerminal(store, runId, 'failed', { completed_at: Date.now(), error: message }));
+      refused = refusalOf(await recordTerminal(store, runId, 'failed', { completed_at: Date.now(), error: message,
+        ...(costInput === undefined ? {} : { tokens_used: costInput.usage.totalTokens ?? null }), ...accounting }));
       if (refused === undefined) ending = 'posted';
     } catch {
       // The terminal update is best-effort: the stale sweep closes the row
