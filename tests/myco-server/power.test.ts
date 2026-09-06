@@ -131,6 +131,6 @@ describe('what runs at each depth', () => {
 
   it('states what every job converges toward, so its idempotence is checkable', () => {
     expect(SERVER_JOBS.filter((j) => j.converges.trim().length === 0)).toEqual([]);
-    expect(SERVER_JOBS).toHaveLength(2);
+    expect(SERVER_JOBS).toHaveLength(3);
   });
 });

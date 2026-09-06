@@ -18,6 +18,7 @@ import { handlePlans } from './tools/plans.js';
 import { handleSessions } from './tools/sessions.js';
 import { handleSkills } from './tools/skills.js';
 import { handleSpores } from './tools/spores.js';
+import { handleSearch } from './tools/search.js';
 import type { ToolInput } from './validate.js';
 
 export type ToolHandler = (input: ToolInput, ctx: ToolContext) => Promise<unknown>;
@@ -37,7 +38,7 @@ const notServed = (tool: ServedTool): Record<string, RegistryEntry> =>
   Object.fromEntries(Object.entries(UNSERVED_OPS[tool] ?? {}).map(([op, by]) => [op, { notServed: by }]));
 
 export const TOOL_REGISTRY: Record<ServedTool, ToolEntry> = {
-  myco_search: { defaultOp: null, ops: { ...notServed('myco_search') } },
+  myco_search: { defaultOp: null, ops: { [NO_OP]: served(handleSearch) } },
   myco_cortex: {
     defaultOp: 'digest',
     ops: {

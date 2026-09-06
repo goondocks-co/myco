@@ -12,6 +12,7 @@ import { emit } from '../telemetry.js';
 import { failStaleRun, listLiveRunsAcrossProjects, listQueuedAcrossProjects, pruneRevokedCredentials, pruneTerminalRuns } from './runs.js';
 import { leafValues } from './settings.js';
 import { releaseRun } from './release.js';
+import { reconcileSearchIndex } from './search-index.js';
 
 /** The retention window when the leaf is unset, and the bounds the leaf itself declares. */
 export const RUN_RETENTION_DAYS_DEFAULT = 30;
@@ -107,6 +108,7 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
 
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
+  'search-index': (env, now) => reconcileSearchIndex(env.db, env.blobs, now),
   'agent-run-retention': agentRunRetention,
   'run-stale-sweep': runStaleSweep,
 };

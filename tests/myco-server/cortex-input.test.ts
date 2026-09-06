@@ -130,7 +130,7 @@ describe('the instructions input', () => {
   it('names a tool no op of which the registry answers nowhere in the prompt', async () => {
     const built = await fixture().build();
     const silent = SERVED_TOOLS.filter((name) => !answeredTools().includes(name));
-    expect(silent).toEqual(['myco_search']);
+    expect(silent).toEqual([]);
     for (const name of silent) expect(built.instruction).not.toContain(name);
   });
 

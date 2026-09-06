@@ -44,7 +44,7 @@ export interface ToolDefinition {
 export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
     "name": "myco_search",
-    "description": "Search the vault for prior sessions, spores, plans, skills, and Canopy file summaries. Results include stable IDs plus a `retrieve` hint naming the entity tool and input to fetch the full record. Use before making design decisions, debugging non-obvious issues, or locating source files by what they do. Pass type=\"canopy\" to search the project Canopy index — file-level llm_description summaries — when keyword search is too shallow.",
+    "description": "Search project sessions, spores, plans, skills, prompts and responses. Results include stable IDs and entity retrieval hints where available. Use before making design decisions or debugging non-obvious issues.",
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -52,7 +52,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       "openWorldHint": false
     },
     "cortex": {
-      "guidance": "Use to find prior decisions, bugs, plans, sessions, skills, or Canopy file summaries. Follow each result's `retrieve` hint to fetch the full entity with its owning tool.",
+      "guidance": "Use to find prior decisions, bugs, plans, sessions, skills and captured conversation text. Follow each result's retrieve hint to fetch its entity; prompt and response hits identify the session and prompt.",
       "priority": 20
     },
     "inputSchema": {
@@ -69,10 +69,11 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
             "plan",
             "spore",
             "skill",
-            "canopy",
+            "prompt",
+            "response",
             "all"
           ],
-          "description": "Filter by entity type (default: all). \"canopy\" searches per-file llm_description summaries and returns canopy_entry results."
+          "description": "Filter by entity type (default: all)."
         },
         "limit": {
           "type": "number",
@@ -80,11 +81,11 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         },
         "observation_type": {
           "type": "string",
-          "description": "Optional semantic filter for spore observation type (decision, gotcha, discovery, etc.)"
+          "description": "Optional filter for spore observation type (decision, gotcha, discovery, etc.)"
         },
         "status": {
           "type": "string",
-          "description": "Optional semantic filter for record status (for example active)"
+          "description": "Optional filter for record status (for example active)"
         },
         "release_state": {
           "type": "string",
@@ -95,7 +96,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
             "not_on_release_line",
             "unknown"
           ],
-          "description": "Optional semantic filter for release provenance state"
+          "description": "Optional filter for release provenance state"
         },
         "release_confidence": {
           "type": "string",
@@ -104,7 +105,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
             "medium",
             "low"
           ],
-          "description": "Optional semantic filter for release provenance confidence"
+          "description": "Optional filter for release provenance confidence"
         },
         "since": {
           "type": "number",
@@ -113,10 +114,6 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         "until": {
           "type": "number",
           "description": "Optional created_at upper bound in epoch seconds"
-        },
-        "language": {
-          "type": "string",
-          "description": "Canopy-only: optional language filter (e.g. \"typescript\")"
         },
         "project_id": {
           "type": "string",

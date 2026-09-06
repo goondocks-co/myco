@@ -43,7 +43,6 @@ export const NO_OP = '*';
  * declared op enum.
  */
 export const UNSERVED_OPS: Readonly<Partial<Record<ServedTool, Readonly<Record<string, string>>>>> = {
-  myco_search: { [NO_OP]: '#1027' },
   myco_cortex: { canopy_map: '#920', canopy_entry: '#920', notifications: '#922', maintenance_summary: '#923' },
   myco_plans: { delete: 'never' },
 };
