@@ -47,6 +47,7 @@ export interface RunCloseRule {
 
 /** What each task's run must have left behind, by task. */
 export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
+  'embedding-reconcile': { reports: ['embedding'] },
   'supersession-sweep': { reports: ['supersession'] },
   'cortex-instructions': {
     reports: ['cortex_instructions'],

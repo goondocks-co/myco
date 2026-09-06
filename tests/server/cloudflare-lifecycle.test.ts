@@ -48,6 +48,9 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
       return { code: 0, stdout: `Created bucket ${name}`, stderr: '' };
     }
     const canned: Record<string, Partial<CommandResult>> = {
+      'vectorize list --json': { stdout: '[{"name":"myco-server-memory"}]' },
+      'vectorize get myco-server-memory --json': { stdout: '{"config":{"dimensions":1536,"metric":"cosine"}}' },
+      'vectorize list-metadata-index': { stdout: '[{"propertyName":"type","indexType":"String"},{"propertyName":"status","indexType":"String"},{"propertyName":"session_id","indexType":"String"},{"propertyName":"created_at","indexType":"Number"},{"propertyName":"observation_type","indexType":"String"},{"propertyName":"release_state","indexType":"String"},{"propertyName":"release_confidence","indexType":"String"}]' },
       'd1 list --json': { stdout: '[]' },
       'd1 create myco-server': { stdout: `database_id = "${DB_ID}"` },
       'd1 execute': { stdout: '[\n  {\n    "results": [],\n    "success": true\n  }\n]' },

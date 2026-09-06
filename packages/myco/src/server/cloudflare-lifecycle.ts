@@ -28,6 +28,7 @@ import {
   ensureBucket,
   ensureDatabase,
   ensureSecretsStore,
+  ensureVectorIndex,
   putStoreSecret,
   putWorkerSecretValue,
   readDeploymentRecord,
@@ -38,6 +39,7 @@ import {
 } from './cloudflare.js';
 import { systemClock, waitForLiveRuns, type Clock } from './live-runs.js';
 import { containersTableHash, renderDeployConfig } from './deploy-config.js';
+import { VECTOR_INDEX_NAME } from './vector-config.js';
 
 // The wait, its bounds, and the clock are one implementation for both targets.
 export { DEFAULT_RUN_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS } from './live-runs.js';
@@ -216,6 +218,7 @@ export interface CreateResult {
 export async function createCloudflareDeployment(options: LifecycleOptions): Promise<CreateResult> {
   const existing = readDeploymentRecord(options.mycoHome);
   const createdResources: string[] = [];
+  if ((await ensureVectorIndex(options)).created) createdResources.push(`vectorize ${VECTOR_INDEX_NAME}`);
 
   const database = existing?.databaseId !== undefined
     ? { databaseId: existing.databaseId, created: false }
@@ -285,6 +288,7 @@ export async function createCloudflareDeployment(options: LifecycleOptions): Pro
 export async function updateCloudflareDeployment(options: LifecycleOptions): Promise<{ versionId: string | null }> {
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; `myco server create --target cloudflare` provisions one');
+  await ensureVectorIndex(options);
   await buildDeployArtifacts(options);
 
   // The wait reads the Deployment's own database, which wrangler addresses by

@@ -31,6 +31,7 @@ import { SCHEMA_STEPS } from '../../db/schema.js';
 import { LIVE_RUN_STATUSES } from '../../core/runs.js';
 import { httpHarnessLaunch } from './harness-runner.js';
 import { RuntimeDraining } from '../../core/harness.js';
+import { configureSqliteLibrary } from './sqlite-library.js';
 
 class StartupError extends Error {}
 
@@ -116,6 +117,7 @@ export interface StartedDeployment {
  * equally an operator action, off the request path.
  */
 export function migrateOnly(databasePath: string): number {
+  configureSqliteLibrary();
   const sqlite = new Database(databasePath, { create: true });
   try {
     sqlite.exec('PRAGMA foreign_keys = ON');

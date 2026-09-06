@@ -10,6 +10,7 @@ import {
 } from '@myco-server-worker/core/backup.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { sqliteVectorStore } from '@myco-server-worker/platform/bun/vectors.js';
 
 const seeded = () => {
   const fixture = sqliteEnv();
@@ -21,13 +22,14 @@ const seeded = () => {
 };
 
 describe('table dispositions', () => {
-  it('GATE: every DDL table is named in exactly one disposition', () => {
+  it('GATE: every DDL table is named in exactly one disposition', async () => {
     const ddlTables = new Set<string>();
     for (const s of SCHEMA_DDL) {
       const m = /CREATE (?:VIRTUAL )?TABLE (?:IF NOT EXISTS )?(\w+)/.exec(s);
       if (m) ddlTables.add(m[1]!);
     }
     const fixture = sqliteEnv();
+    await sqliteVectorStore(fixture.sqlite).query({ projectId: 'proj_1', modelKey: 'fixture' }, { values: [1], topK: 1 });
     for (const row of fixture.sqlite.query<{ name: string }, []>(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all()) ddlTables.add(row.name);
     fixture.sqlite.close();
     const named = new Set<string>([...BACKUP_TABLES, ...EXCLUDED_TABLES]);

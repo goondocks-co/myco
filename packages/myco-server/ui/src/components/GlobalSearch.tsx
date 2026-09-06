@@ -16,12 +16,13 @@ export function GlobalSearch({ projectId, projectName }: { projectId: string; pr
   const [text, setText] = useState('');
   const [query, setQuery] = useState('');
   const [type, setType] = useState('all');
+  const [mode, setMode] = useState('auto');
   const [since, setSince] = useState('');
   const [observationType, setObservationType] = useState('');
   const input = useRef<HTMLInputElement>(null);
   const results = useRef<HTMLUListElement>(null);
   const ready = text.trim() === query && query.length >= SEARCH_MIN_CHARS;
-  const search = useSearch(projectId, { query, type, since, observationType }, open && ready);
+  const search = useSearch(projectId, { query, type, mode, since, observationType }, open && ready);
 
   useEffect(() => {
     const handle = setTimeout(() => setQuery(text.trim()), SEARCH_DEBOUNCE_MS);
@@ -52,6 +53,9 @@ export function GlobalSearch({ projectId, projectName }: { projectId: string; pr
           className={control} value={text} onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); results.current?.querySelector('a')?.focus(); } }} />
         <div className="flex flex-wrap gap-2">
+          <select aria-label="Search mode" className={control} value={mode} onChange={(event) => setMode(event.target.value)}>
+            <option value="auto">Automatic</option><option value="semantic">Semantic</option><option value="fts">Full text</option>
+          </select>
           <select aria-label="Result type" className={control} value={type} onChange={(event) => { setType(event.target.value); setObservationType(''); }}>
             {TYPES.map((value) => <option key={value} value={value}>{value === 'all' ? 'All types' : `${value[0]!.toUpperCase()}${value.slice(1)}s`}</option>)}
           </select>
@@ -68,7 +72,9 @@ export function GlobalSearch({ projectId, projectName }: { projectId: string; pr
             : !ready || search.isFetching ? <p role="status">Searching…</p>
             : search.isError ? <p role="alert">Search failed. <button type="button" className="underline" onClick={() => void search.refetch()}>Try again</button></p>
             : search.data && <>
-              {search.data.results.length === 0 && <p>No results match this search.</p>}
+              {mode !== 'fts' && search.data.provider_unavailable && <p role="status">Semantic search is unavailable.{search.data.mode === 'fts' ? ' Showing full-text results.' : ' Choose full text to search by words.'}</p>}
+              {search.data.mode === 'semantic' && !search.data.provider_unavailable && <p className="text-sm text-on-surface-variant">Searching summaries, decisions, plans and skills. Choose full text for captured prompt and response bodies.</p>}
+              {search.data.results.length === 0 && !(search.data.mode === 'semantic' && search.data.provider_unavailable) && <p>No results match this search.</p>}
               <ul ref={results} aria-label="Search results" className="space-y-1" onKeyDown={(event) => {
                 if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
                 event.preventDefault();
@@ -87,7 +93,7 @@ export function GlobalSearch({ projectId, projectName }: { projectId: string; pr
               {search.data.coverage.pending_blobs > 0 && <p role="status" className="mt-3 text-sm text-on-surface-variant">Indexing {search.data.coverage.pending_blobs} captured bodies. More results will become available.</p>}
             </>}
         </div>
-        <p className="font-mono text-xs text-on-surface-variant">Full-text search · ↑ ↓ to move · Enter to open · Esc to close</p>
+        <p className="font-mono text-xs text-on-surface-variant">↑ ↓ to move · Enter to open · Esc to close</p>
       </DialogContent>
     </Dialog>
   );

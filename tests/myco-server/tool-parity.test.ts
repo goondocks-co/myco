@@ -23,7 +23,7 @@ import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js'
 const EXCEPTED = 'project_id';
 const RETIRED = 'grove_id';
 /** Properties the Deployment serves beyond the member definition, by tool: each is a named difference, worded in the server definition. */
-const ADDED: Record<string, readonly string[]> = { myco_plans: ['prompt_id'] };
+const ADDED: Record<string, readonly string[]> = { myco_plans: ['prompt_id'], myco_search: ['mode', 'session_id'] };
 
 const byName = <T extends { name: string }>(defs: readonly T[]): Map<string, T> => new Map(defs.map((d) => [d.name, d]));
 

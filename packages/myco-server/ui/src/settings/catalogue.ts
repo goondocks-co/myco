@@ -109,7 +109,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   {
     id: 'embedding',
     label: 'Embedding',
-    note: 'The provider and model that embed memory for search.',
+    note: 'Cloudflare deployments use Workers AI with bge-m3. Provider, model and endpoint settings apply to self-hosted deployments. Keep embedding while idle applies to both.',
     leaves: [
       { leaf: 'embedding.provider', label: 'Provider', kind: 'select', options: ['ollama', 'openai-compatible', 'openrouter', 'openai'] },
       { leaf: 'embedding.model', label: 'Model', kind: 'text' },

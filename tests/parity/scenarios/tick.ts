@@ -41,6 +41,7 @@ export const tick: ParityScenario = {
       { name: 'agent-run-retention', changed: 2, failed: null },
       { name: 'run-stale-sweep', changed: 1, failed: null },
       { name: 'search-index', changed: 0, failed: null },
+      { name: 'embedding-reconcile', changed: 0, failed: null },
     ]);
     expect(first.nextWakeMs).toBe(60_000);
     expect(await rows()).toEqual([
@@ -54,6 +55,7 @@ export const tick: ParityScenario = {
       { name: 'agent-run-retention', changed: 0, failed: null },
       { name: 'run-stale-sweep', changed: 0, failed: null },
       { name: 'search-index', changed: 0, failed: null },
+      { name: 'embedding-reconcile', changed: 0, failed: null },
     ]);
     expect(await rows()).toEqual([
       { id: 'tick-live', status: 'running', error: null },
@@ -64,6 +66,6 @@ export const tick: ParityScenario = {
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id = 'tick-live'`);
     const third = await wake();
     expect(third.state).toBe('active');
-    expect(third.jobs.map((j) => j.changed)).toEqual([0, 0, 0]);
+    expect(third.jobs.map((j) => j.changed)).toEqual([0, 0, 0, 0]);
   },
 };

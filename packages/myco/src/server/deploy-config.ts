@@ -11,6 +11,7 @@
 import { createHash } from 'node:crypto';
 import type { DeploymentRecord } from './cloudflare.js';
 import { WRANGLER_TEMPLATE } from './wrangler-template.js';
+import { VECTOR_BINDINGS } from './vector-config.js';
 
 const CONTAINERS_HEADER = '[[containers]]';
 const DATABASE_ID_PLACEHOLDER = '<YOUR_D1_DATABASE_ID>';
@@ -56,7 +57,7 @@ export function renderDeployConfig(record: DeploymentRecord): string {
   const routes = routesLine(record.url);
   if (routes !== null) header.push(routes);
 
-  let body = WRANGLER_TEMPLATE.replace(DATABASE_ID_PLACEHOLDER, record.databaseId!);
+  let body = WRANGLER_TEMPLATE.replace(DATABASE_ID_PLACEHOLDER, record.databaseId!) + VECTOR_BINDINGS;
   if (record.harnessImage !== undefined && record.harnessImage !== '') {
     if (!HARNESS_IMAGE_RE.test(record.harnessImage)) {
       throw new Error(`the deployment record's harnessImage is not a digest-pinned registry URI: ${JSON.stringify(record.harnessImage)} (~/.myco/server/cloudflare/record.json)`);

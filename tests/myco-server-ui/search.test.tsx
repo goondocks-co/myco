@@ -29,7 +29,10 @@ it('debounces, applies facets, opens a result by keyboard and exposes indexing c
   await screen.findByRole('link', { name: /Cache decision/ });
   expect(asked).toHaveLength(1);
   expect(asked[0]!.pathname).toBe('/api/projects/one/search');
-  expect(screen.getByText(/Indexing 2 captured bodies/)).toBeDefined();
+  expect(asked[0]!.searchParams.get('mode')).toBe('auto');
+  fireEvent.change(screen.getByLabelText('Search mode'), { target: { value: 'fts' } });
+  await waitFor(() => expect(asked.at(-1)!.searchParams.get('mode')).toBe('fts'));
+  expect(await screen.findByText(/Indexing 2 captured bodies/)).toBeDefined();
   fireEvent.change(screen.getByLabelText('Result type'), { target: { value: 'spore' } });
   fireEvent.change(screen.getByLabelText('Spore type'), { target: { value: 'bug_fix' } });
   await waitFor(() => expect(asked.at(-1)!.searchParams.get('observation_type')).toBe('bug_fix'));
