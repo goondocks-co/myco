@@ -94,7 +94,7 @@ function assertProjectRoot(projectRoot: string | undefined): asserts projectRoot
  * Resolve `inputPath` relative to `projectRoot` and reject anything that
  * escapes it. Returns the absolute path inside the project.
  */
-async function resolveScoped(projectRoot: string | undefined, inputPath: string): Promise<string> {
+async function resolveScoped(projectRoot: string | undefined, inputPath: string, admits?: (relativePath: string) => boolean): Promise<{ root: string; target: string }> {
   assertProjectRoot(projectRoot);
   const resolved = path.resolve(projectRoot, inputPath);
   const assertContained = (root: string, target: string) => {
@@ -105,11 +105,12 @@ async function resolveScoped(projectRoot: string | undefined, inputPath: string)
     if (rel.split(path.sep).some((part) => part.toLowerCase() === '.git')) {
       throw new Error('Git metadata is outside the code exploration surface.');
     }
+    if (admits && !admits(rel.split(path.sep).join('/'))) throw new Error(`Path is excluded from code exploration: ${inputPath}`);
   };
   assertContained(projectRoot, resolved);
   const [root, target] = await Promise.all([fs.promises.realpath(projectRoot), fs.promises.realpath(resolved)]);
   assertContained(root, target);
-  return target;
+  return { root, target };
 }
 
 /** Read at most the byte ceiling, retaining the head and tail of larger files. */
@@ -151,8 +152,20 @@ function truncateLine(line: string, max: number): string {
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createExplorationTools(deps: { projectRoot?: string; ripgrepPath?: string }) {
+export function createExplorationTools(deps: {
+  projectRoot?: string;
+  ripgrepPath?: string;
+  admits?: (relativePath: string) => boolean;
+  onRead?: (relativePath: string) => void;
+}) {
   const { projectRoot } = deps;
+  let scopeRoot: string;
+  const resolve = async (inputPath: string) => {
+    const { root, target } = await resolveScoped(projectRoot, inputPath, deps.admits);
+    scopeRoot = root;
+    return target;
+  };
+  const admits = (absolutePath: string) => !deps.admits || deps.admits(path.relative(scopeRoot, absolutePath).split(path.sep).join('/'));
 
   const fsRead = tool(
     'fs_read',
@@ -166,7 +179,7 @@ export function createExplorationTools(deps: { projectRoot?: string; ripgrepPath
       end_line: z.number().optional().describe(`Last line to return (inclusive). Omit to return the default window (${DEFAULT_READ_LINES} lines from start_line).`),
     },
     async (args) => {
-      const fullPath = await resolveScoped(projectRoot, args.path);
+      const fullPath = await resolve(args.path);
       const { content, size, bytesTruncated } = await readBounded(fullPath);
 
       const lines = content.split('\n');
@@ -180,6 +193,7 @@ export function createExplorationTools(deps: { projectRoot?: string; ripgrepPath
 
       const sliced = lines.slice(requestedStart - 1, cappedEnd).join('\n');
       const linesTruncated = cappedEnd < totalLines || cappedEnd < requestedEnd;
+      if (sliced.length > 0 || size === 0) deps.onRead?.(path.relative(scopeRoot, fullPath).split(path.sep).join('/'));
 
       return textResult({
         path: args.path,
@@ -211,9 +225,9 @@ export function createExplorationTools(deps: { projectRoot?: string; ripgrepPath
       const includeHidden = args.include_hidden === true;
       const limit = clampInt(args.limit, DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT);
 
-      const fullPath = await resolveScoped(projectRoot, targetPath);
+      const fullPath = await resolve(targetPath);
       const entries = await fs.promises.readdir(fullPath, { withFileTypes: true });
-      const visible = entries.filter((e) => e.name.toLowerCase() !== '.git' && (includeHidden || !e.name.startsWith('.')));
+      const visible = entries.filter((e) => e.name.toLowerCase() !== '.git' && admits(path.join(fullPath, e.name)) && (includeHidden || !e.name.startsWith('.')));
       const sorted = visible.sort((a, b) => {
         // Directories first, then alphabetical.
         const dirDiff = Number(b.isDirectory()) - Number(a.isDirectory());
@@ -259,7 +273,7 @@ export function createExplorationTools(deps: { projectRoot?: string; ripgrepPath
       const depth = clampInt(args.depth, DEFAULT_TREE_DEPTH, 1, MAX_TREE_DEPTH);
       const includeHidden = args.include_hidden === true;
 
-      const root = await resolveScoped(projectRoot, targetPath);
+      const root = await resolve(targetPath);
 
       const lines: string[] = [];
       let hiddenCount = 0;
@@ -269,6 +283,7 @@ export function createExplorationTools(deps: { projectRoot?: string; ripgrepPath
         const raw = await fs.promises.readdir(dir, { withFileTypes: true });
         const entries = raw
           .filter((e) => !IGNORE_DIRS.has(e.name.toLowerCase()))
+          .filter((e) => admits(path.join(dir, e.name)))
           .filter((e) => includeHidden || !e.name.startsWith('.'))
           .sort((a, b) => {
             const dirDiff = Number(b.isDirectory()) - Number(a.isDirectory());
@@ -332,7 +347,7 @@ export function createExplorationTools(deps: { projectRoot?: string; ripgrepPath
 
       assertProjectRoot(projectRoot);
       const canonicalRoot = await fs.promises.realpath(projectRoot);
-      const searchPath = await resolveScoped(projectRoot, targetPath);
+      const searchPath = await resolve(targetPath);
       const rgArgs: string[] = [
         '--no-config', '--no-follow',
         '--json',
@@ -369,6 +384,7 @@ export function createExplorationTools(deps: { projectRoot?: string; ripgrepPath
         const rawPath = typeof evt.data.path === 'string' ? evt.data.path : evt.data.path?.text;
         if (!rawPath) continue;
         const relPath = path.relative(canonicalRoot, rawPath);
+        if (deps.admits && !deps.admits(relPath.split(path.sep).join('/'))) continue;
         matches.push({
           path: relPath,
           line: evt.data.line_number ?? 0,

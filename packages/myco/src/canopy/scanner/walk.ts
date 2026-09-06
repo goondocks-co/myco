@@ -30,6 +30,8 @@ export interface WalkOptions {
   maxDepth?: number;
   /** Called once when `maxFiles` or `maxDepth` is hit, for caller logging. */
   onLimitHit?: (kind: 'maxFiles' | 'maxDepth', value: number) => void;
+  /** Fail the walk on an unreadable descendant instead of skipping it. */
+  strict?: boolean;
 }
 
 const DEFAULT_MAX_FILES = 50_000;
@@ -40,9 +42,8 @@ const DEFAULT_MAX_DEPTH = 24;
  *
  * Both directory and file paths are tested against `isExcluded`; excluded
  * directories prune the walk so we never descend into `node_modules` etc.
- * Symlinks are skipped silently. Filesystem errors on a single entry are
- * swallowed so one missing or unreadable directory doesn't fail the whole
- * scan; the caller logs in aggregate.
+ * Symlinks are skipped. Strict walks propagate every filesystem error;
+ * other walks skip unreadable descendants and always refuse an unreadable root.
  */
 export function* walkProject(opts: WalkOptions): Generator<string> {
   const maxFiles = opts.maxFiles ?? DEFAULT_MAX_FILES;
@@ -59,6 +60,7 @@ export function* walkProject(opts: WalkOptions): Generator<string> {
     try {
       entries = fs.readdirSync(absDir, { withFileTypes: true });
     } catch (err) {
+      if (opts.strict) throw err;
       if (relDir === '') {
         throw new Error(`Cannot read project root ${opts.projectRoot}: ${(err as Error).message}`);
       }
