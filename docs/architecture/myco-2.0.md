@@ -1,21 +1,21 @@
 # Myco 2.0 — Canonical Architecture and Feature-Preservation Ledger
 
-> **TL;DR.** Myco 2.0 is one feature-complete server product with two first-class deployment targets (Cloudflare, self-hosted Compose) plus a thin machine-side Member Installation. This document is the single current architecture record for the whole 2.0 release and the completeness ledger that gives every 1.4 surface an explicit KEEP / REPLACE / DROP disposition and an owning surface. It is machine-enforced by `tests/meta/feature-ledger-completeness.test.ts`.
+> **TL;DR.** Myco 2.0 is one feature-complete server product with two front doors — a single Bun binary and a Cloudflare Worker — plus a machine-side member install of the binary, hooks and plugins. Neither front door runs harnesses: task runs happen on workers that attach from wherever harnesses are logged in. This document is the single current architecture record for the whole 2.0 release and the completeness ledger that gives every 1.4 surface an explicit KEEP / REPLACE / DROP disposition and an owning surface. It is machine-enforced by `tests/meta/feature-ledger-completeness.test.ts`.
 
-**Issue:** [#906](https://github.com/goondocks-co/myco/issues/906) · **Program map:** [#905](https://github.com/goondocks-co/myco/issues/905) · **Execution protocol:** Myco plan `0a5f6a8580788429`
+**Issue:** [#906](https://github.com/goondocks-co/myco/issues/906) · **Program map:** [#1144](https://github.com/goondocks-co/myco/issues/1144) (successor of [#905](https://github.com/goondocks-co/myco/issues/905)) · **Plan:** `docs/superpowers/plans/2026-09-07-myco-2-0-revised-plan.md`
 
 ## 1. Authority
 
 Use this order when sources disagree:
 
 1. `AGENTS.md` and nested instructions govern how work is performed.
-2. **GitHub #905** is the canonical program map and settled product model.
+2. **#1144 (the revised-plan anchor, successor of #905)** is the canonical program map, and the plan it executes — `docs/superpowers/plans/2026-09-07-myco-2-0-revised-plan.md` — is the settled product model.
 3. The claimed child issue is the executable scope and acceptance contract.
 4. Current code, tests, CI, deployments, and migration evidence determine actual state.
 5. **This document** is the current architecture and disposition record for the 2.0 release.
 6. Earlier Myco plans and specs are lineage and research inputs, not current authority.
 
-This document does not restate #905's live scope, dependencies, or status. GitHub is the live status source; this is the durable architecture and ledger.
+This document does not restate the anchor issue's live scope, dependencies, or status. GitHub is the live status source; this is the durable architecture and ledger.
 
 ### 1.1 The governing rule
 
@@ -55,7 +55,11 @@ The 2.0 trunk at `main` carries these merged PRs. They are the implementation ba
 
 ### 2.3 Successors
 
-Execution proceeds through #905's children #906–#928 under plan `0a5f6a8580788429`. This document's §7 rows name the owning child issue.
+| Date | Successor | What it changed |
+|---|---|---|
+| 2026-09-07 | **Myco 2.0 — Revised Plan (v2)**, `docs/superpowers/plans/2026-09-07-myco-2-0-revised-plan.md`, filed under anchor #1144 after two independent assessments (an agent-in-a-project walk and a feasibility pass against the tree) and forty-eight decisions taken by Chris | **#905's program map is superseded.** Same destination, most of the machinery removed: capture becomes transcript-first, the harness container and the phased executor give way to three one-prompt run outcomes on attached workers, Compose and the Member Service go, digest / Canopy / generated skills are dropped with their losses recorded (§1 of the plan), and the 1.4 tree retires in one sweep after cutover rather than deletion-first |
+
+Execution proceeds through the anchor's children (waves A–E and the retire-backward sweep). This document's §7 rows name the owning child issue; rows still naming a #905 child name the work, not a live issue number.
 
 ## 3. Destination architecture
 
@@ -79,24 +83,26 @@ Human member identity is distinct from machine, runtime, or coding-agent metadat
 
 > The exact enrollment, member identity, approval, recovery, and step-up mechanism is an open research decision owned by **#907**. The constraints above are settled; the mechanism is not.
 
-### 3.3 One server product, two adapters
+### 3.3 One server product, two front doors
 
-Cloudflare and self-hosted Compose implement **one common server contract and shared core** with platform-specific adapters — not divergent products.
+The Cloudflare Worker and the self-hosted binary implement **one common server contract and shared core** with platform-specific adapters — not divergent products. Both are storage + MCP + ingest + scheduler. **Neither runs harnesses** (plan §2.6).
 
 | | Cloudflare Deployment (**W**) | Self-hosted Deployment (**C**) |
 |---|---|---|
-| API + assets | Worker with static assets | Bun server container |
+| API + assets | Worker with static assets | Single Bun binary; a container image is packaging, not a requirement |
 | Relational store | D1 | Embedded SQLite |
-| Blob store | R2 | Local volume adapter |
+| Blob store | R2 | Local volume |
 | Vector store | Vectorize | Local SQLite vector adapter |
-| Wake / schedule | Durable Object alarm + cron | In-process scheduler |
+| Wake / schedule | `DeploymentClock` Durable Object alarm + cron floor | In-process scheduler |
 | Secret wrapping key | Secrets Store binding | Env or file (`secrets.env` idiom) |
-| Harness | One container per run (#914, live) | Same harness image beside the server (**#913**) |
-| Durable storage | Platform-managed | Mounted volume under Compose |
+| Harness | Workers attach from wherever harnesses are logged in; no container required | Workers attach the same way; the laptop server process includes one by default |
+| Durable storage | Platform-managed | Local volume beside the binary |
+
+The `HarnessContainer` Durable Object and the `[[containers]]` block retire with a `deleted_classes` migration (plan §2.6, §4 D2); `DeploymentClock` stays. A prebuilt worker bundle reduces Cloudflare provisioning to one verb — no Docker, no source checkout — with Node and Wrangler an **operator-machine** prerequisite for that verb alone, never on a member or worker host.
 
 Shared behavior belongs in the common core; target-specific infrastructure, storage, wake, TLS/proxy, backup, and observability behavior belongs in adapters. **Neither target may silently lose a feature because the other implemented it first.** A ledger row naming a capability without its per-target mechanism is how one target never gets it.
 
-Cloudflare is the primary real dogfood Deployment; self-hosted Compose receives equal release proof (#927).
+Both front doors pass the same ingest parity and eval suites before release (§8).
 
 ### 3.3.1 Deployment-held secrets (#961, approved 2026-08-24)
 
@@ -119,50 +125,66 @@ A member's own `secrets.env` is unchanged and out of scope: a `0600` file on a s
 
 **No managed secrets dependency is taken.** Vault-class products centre on dynamic short-lived credentials, and LLM providers issue only long-lived bearer keys — the main thing they buy does not apply to the dominant class — while every one of them would require a self-hosted operator to run infrastructure to use Myco at all.
 
-### 3.4 Member Installation and the Member Service
+### 3.4 Member Installation, plugins, and tenancy
 
-The machine-side product contains the `myco` CLI, hooks, MCP bridge, spool, local registry/configuration, and — on long-lived developer machines — a resident **Member Service**. It owns **no vault and no dashboard** and is not the server-side capture or intelligence authority.
+The machine-side product contains the `myco` binary, hooks, spool, local registry/configuration, and worker mode. It owns **no vault, no dashboard and no resident service**: reconciliation is on demand through `myco update` and `myco doctor`, run by the setup skill and the installer (plan §2.5). Capture stays hook-invoked and write-ahead per the member seam (#901).
 
-The Member Service inherits the 1.4 service's continuous-maintenance responsibility. **One idempotent reconciliation path** runs on install, start, update, repair, and relevant symbiont changes to upgrade Myco-managed global assets and **every locally registered Project**: configuration/schema revisions, launchers and runtime pins, hook and MCP registrations, skill registrations and symlinks, and generated assets. Each shared resource keeps its canonical writer. A failure in one Project is reported and retried without hiding it or blocking healthy Projects.
+**Distribution splits in two** (plan §2.7):
 
-This is **not 1.4's daemon returning**: it holds no vault, serves no UI, and is never on capture's path — capture stays hook-invoked and write-ahead per the member seam (#901).
+- **Plugins** carry no binary — 82 MB against a 256 MiB cap, and no post-install scripts. An **Agent Plugins 1.0** bundle covers Codex, Cursor and VS Code Copilot; Claude Code takes its own plugin; OpenCode, Pi and Cline take native in-process plugins over one shared TypeScript API client; Antigravity takes a bundle. Each declares the Deployment URL and credential through its own client's config prompt (Claude Code `userConfig`, Cursor `variables`, VS Code `inputs`, Codex `[plugins.*.mcp_servers.*]`). **Plugin alone = skills + MCP tools on every harness.**
+- **The installer** (POSIX `sh`, PowerShell) places the binary and writes capture hooks with absolute paths. It adds capture, plan capture, import and the worker.
 
-**Sandbox images ship the CLI, hooks, and injected credentials with no resident service** — their symbionts are fixed at build time and the container is short-lived.
+**Sandbox images ship the CLI, hooks and a join code** — no resident service, symbionts fixed at build time, the container short-lived. The join code (URL + credential in the environment) is exchanged at first contact for a member credential bound to the Project resolved from the repo remote.
+
+**Tenancy is a tool parameter, not a transport** (plan §3 D1). Every Myco tool accepts `project` — a git remote or a project id — and the server resolves remote → project by the Project Resolution rule (§3.1). Reads default to the member's bound projects; **writes require an explicit project**. Session-start injection tells the agent its project id where hooks are installed, and the `myco` skill tells it to pass the repo remote where they are not. The 1.4 CLI transport for tenancy-blind harnesses retires; `myco tool call` remains as a CLI surface onto the same server code path.
 
 ### 3.5 Cutover
 
 The transition is a **one-time, one-way migration**, not long-term coexistence or dual writing.
 
-The installed 1.4 binary owns its existing `myco remove --yes` behavior (**Legacy Removal Boundary**). The 2.0 installer invokes it **without `--purge`**, verifies the old service and integrations are stopped, and preserves the full 1.4 home and data. It then installs the 2.0 Member Service, performs and verifies initial managed-asset reconciliation, runs `myco setup`, and migrates all **active** Project data to the configured Deployment.
+The installed 1.4 binary owns its existing `myco remove --yes` behavior (**Legacy Removal Boundary**). The 2.0 installer invokes it **without `--purge`**, verifies the old service and integrations are stopped, and preserves the full 1.4 home and data. It then installs the 2.0 binary and hooks, runs the setup skill, verifies managed assets through `myco doctor`, and migrates all **active** Project data to the configured Deployment.
 
 Source data is never automatically deleted. Historical vectors and derived assets are rebuilt under the 2.0 schema. Already-archived 1.4 Projects, legacy topology/config/credentials, old vectors, and retired Canopy entries do not migrate.
 
-The current both-mode dogfood (1.4 user-level hooks plus the 2.0 member project-local on this repo) is preserved until **#924** performs the cutover.
+The current both-mode dogfood (1.4 user-level hooks plus the 2.0 member project-local on this repo) is preserved until the cutover child performs it, and the 1.4 tree is deleted in one sweep afterwards (plan §5) rather than ahead of it.
 
-### 3.6 Agent task execution — how 1.4 drives tasks today, and the 2.0 mechanism on both targets
+### 3.6 Run outcomes and the runner
 
-Recorded 2026-09-02 after #1045 S4 found the server titling a session with a direct model call. The account below is the ground every dispatch, scheduling and cost decision in 2.0 starts from; the principles at the end are Chris's, closed, and not re-opened by a slice.
+A **run** is one prompt to one harness, on a worker, with declared expected evidence. There is no phased executor, no orchestrator, no resume and no turn budget: retry is the next tick, and steps are added only after a measured failure on a specific model. Partial writes stand and the run is marked partial.
 
-**1.4 today — one daemon, on metal, driven by activity.** One scheduler job (`scheduled:tasks`) ticks on the PowerManager's clock and walks every project; each task filters itself on its own `runIn` states, its interval (divided by backlog tier), its accelerator, its `preCondition`, its `maxRunsPerDay`, `requiresTaskProvider` and `runWhenCold` (`packages/myco/src/daemon/task-scheduler.ts:168-360`, `task-scheduling.ts:843-914`). A kick is a one-shot bypass consumed on the next tick. Activity is the throttle: the global PowerManager resolves `active`/`idle`/`sleep`/`deep_sleep` from inactivity (5 m / 30 m / 90 m, `constants.ts:521-529`; `daemon/power.ts:236-308`), deep sleep stops the timer outright (`power.ts:335-340`), a per-project tracker applies the same thresholds (`project-power-state.ts:95-120`), a sleeping project simply fails every task's `runIn`, and a cold project (14 days) runs nothing but `runWhenCold`. Session-driven tasks are event-fired, not scheduled: the Stop hook dispatches `title-summary` fire-and-forget (`stop-processing.ts:641`, `trigger-title-summary.ts:65-116`), the prompt boundary fires it every `summary_batch_interval` human batches, `cortex-prompt-builder`/`cortex-instructions` fire behind `agent.event_tasks_enabled`, and `review-session` is manual. Concurrency is what one process tolerates: the JobRunner holds three slots in two fair lanes (`job-runner.ts:98-140`), the tick keeps an in-memory per-(grove, project, task) running set (`task-scheduler.ts:267,340-350`), the executor refuses a duplicate of the same task until its `timeoutSeconds + 300 s` (`executor.ts:87-124`), runs are detached, and there is no global run limit and no queue — work not admitted this tick is retried next tick. The provider resolves task-first then Deployment default (`config-resolver.ts:323-326`), and a missing key refuses the dispatch (`task-scheduling.ts:645-658`). This is sound on metal, where one person's presence bounds the cost.
+**Three run outcomes and one config leaf** (plan §2.5):
 
-**2.0 destination — a cloud Deployment serving many members, always on.** A Deployment is not one person's machine: members and partners work at all hours, work arrives from capture, from the dashboard and from the clock at once, and the harness runs each task in its own container precisely so that tasks are independent of one another. Cloud architecture manages that with a scheduler, a queue and constraints, and 2.0 does too. The mechanism, on both targets:
+| Outcome | Replaces | Checkout |
+|---|---|---|
+| Continuous extraction and curation — create, supersede, consolidate | `extract-only`, `vault-evolve`, `supersession-sweep`, `review-session` | no; an empty scratch dir with a Myco-owned instructions file |
+| Brownfield seeding from code and git history | `vault-seed` | yes; the managed AGENTS.md block (≤500 chars) is written as one atomic replacement and the rest of the file is untouched |
+| Session titles and summaries | `title-summary` | no |
+| `instructions.template` (a Settings leaf, not a run) | `cortex-instructions`, `cortex-prompt-builder` | — |
 
-1. **Triggers.** Capture (a session's end → `title-summary`, `review-session`; a prompt boundary → the Cortex tasks), a member's or owner's ask (a dashboard control, a route, an MCP tool), and the wake tick (#1091 S3: `core/scheduled-tasks.ts` visits every Project the Deployment holds for every task `TASK_SCHEDULE` in `core/task-catalogue.ts` schedules, in the 1.4 gate order — the `agent.scheduled_tasks_enabled` switch, the Project's recency against `agent.scheduled_tasks_active_window_days` and `agent.cold_project_threshold_days`, the Project's capability, the task's `overlap` policy, the interval shortened by an accelerator tier, `runIn`, a named `preCondition`, `maxRunsPerDay` — and dispatches through the one dispatcher, attributed to the clock; a ceiling met is a `skipped` run row naming it. A task is scheduled only once the Deployment serves its tool surface: `container-smoke` daily while asleep is the first, the health probe 1.4 ran as `harness-health`; the rest are null until their children turn them on with the task file's block. The clock's runs call back to `MYCO_ORIGIN`, the origin the operator declared — rendered into the deploy config from the deployment record on W, an environment value on C — never one learned from a request's Host. The clock resolves one power state for the whole Deployment, not one per Project as 1.4 did: a Deployment in use anywhere is in use; a task that runs only while asleep waits for the whole Deployment to sleep.)
-2. **The dispatcher** (`packages/myco-server/src/core/harness.ts`, landed by #1045 S4 with titling as its first consumer): one implementation for every trigger, in two steps so a caller with its own claim to make can prepare, claim, then launch. `prepareDispatch` takes admission from the catalogue (`core/task-catalogue.ts`; the container claims `captureDriven` for a provider-gated task and the capability name otherwise, from `MYCO_TASK_ADMISSION`), resolves the provider task-first as 1.4 does, and opens the credential; `launchDispatch` mints the run's credential, hands the parameters as `MYCO_TASK_PARAMS` (the container records them as `run_context`), and starts the container. The queue sits between the two once #1091 lands.
-3. **The queue** (#1091 S2): a queued run is a run row — `agent_runs.status = 'queued'` with `queued_at`, `held_by` (the limit that holds it) and `dispatch_spec` (the launch it was asked for), no credential until it launches — so the Agent runs page, the run reads and retention all see it as a run. Limits are Settings leaves — `agent.limits.concurrent_runs`, `agent.limits.task_concurrent_runs`, `agent.limits.task_runs_per_hour` — unset meaning unbounded; the fleet is the fourth holder, from the deploy config. `admitDispatch` in `core/harness.ts` decides between `prepareDispatch` and `launchDispatch`; a dispatch past a limit is queued and wakes the Deployment, never refused. `drainQueue` runs on the wake tick and after every terminal write the update route lands, oldest first, preparing and admitting each row again as the load stands; a queued run keeps the Deployment awake. The fleet size is what the operator deployed (S4): `myco server config --fleet N` writes the deployment record, the renderer sets `max_instances = N` and `MYCO_FLEET = "N"` in the deploy config, and the dispatcher counts against `ServerEnv.fleet` like any limit — one number, one source, never also an owner leaf.
-4. **The launch adapter**, the only per-target part: on **W** one Durable Object and one container per run (`platform/cloudflare/harness-container.ts`, hold renewal in `run-hold.ts`, `wrangler.toml` `max_instances`); on **C** a harness runner beside the server (#913 — today the Bun target has no `harnessLaunch` and every dispatch answers `harness_unavailable`, `platform/bun/env.ts:74-97`).
-5. **The wake tick**, per §7.5: a Durable Object alarm with a cron floor on **W**, an in-process timer on **C**, both feeding one idempotent tick (`core/tick.ts`, #1091 S1) that resolves the power state (`core/power.ts`), runs the due jobs (`core/jobs.ts` + `core/jobs-run.ts`: run retention and the stale-run sweep today; the rest deferred to their owners by name) and drains the queue. An owner's `POST /api/wake` runs the same tick; a run inside its bound holds the Deployment at idle, a run past it holds nothing and is swept.
-6. **The claim** (`core/runs.ts`): the run id, nothing more. The dispatcher writes the run's row `pending` with the dispatch's parameters as its context and the minted credential as `dispatched_by`; the runtime's claim moves that row to `running` for that credential alone, so what the run routes read about a run is always the server's word. The per-(project, task) single-flight carried from the 1.4 executor leaves the claim; overlap policy for a scheduled sweep that must not overlap itself is a per-task setting the dispatcher reads.
-7. **Power policy stays**: nothing *scheduled* runs while a Deployment sleeps, and no alarm costs nothing; *requested* work (a session ending, a person asking) enqueues and runs regardless, and wakes the Deployment.
+`embedding-reconcile` stays a shipped server job. `myco_agent` stays the read surface over `agent_runs`.
+
+**Instructions are config, not generation.** Session start serves a static, member-editable `instructions.template` (≤4 KB, Markdown, validated). With instructions static, a prompt builder has nothing to build, and the generated project digest is dropped with its loss recorded in §1 of the plan.
+
+**Instructions to a run** are the prompt body plus a Myco-owned instructions file in the scratch dir — ACP carries user prompts only. Structured final output is not relied upon: a run succeeds by making MCP writes the server verifies afterwards.
+
+**The runner** is a minimal **ACP v1** client (`@agentclientprotocol/sdk`, stdio) plus native headless drivers — `claude -p --output-format stream-json --mcp-config … --strict-mcp-config` for Claude Code, `codex exec --json` for Codex — with the ACP driver serving OpenCode, Cursor and Antigravity through their native ACP binaries. The published ACP adapters are npx packages, so native drivers are what keep **Node off every member and worker host**. One internal run-event model covers all three drivers, and a gate holds them to the same contract. The session layer is shaped so ACP v2's changed turn semantics stay a contained change.
+
+**Workers** run the same binary in worker mode, and the laptop server process includes a worker by default. A worker claims work by long poll, holds a lease with a heartbeat, and lease expiry returns the run to the queue — single-flight honours the lease, not the process. Detection probes installed binaries and credential stores. A Deployment declares a preferred harness with a fallback order, overridable per task; a cloud worker logs in once and its harness OAuth token or API key is held in the Deployment's encrypted secret store (class 3, §3.3.1) and injected per run.
+
+**A run's credential is a third principal kind.** A run token is not a member token: the MCP request carries `heldRun`, the task definition's tool allowlist is enforced at the MCP chokepoint, and writes are attributed to the run rather than to `user`. The five run operations that exist as HTTP routes today move onto this run-scoped MCP surface and the HTTP duplicates are deleted.
+
+**Close evidence** stays server-side, with the report channel and single-flight: a run closes only when the server can see the rows it owed. External agents write under the same discipline through a per-project grant, attributed to the grant by an author column and an agent row, and may cite a PR or commit instead of a session.
+
+**The wake tick is the only scheduler for Deployment work** — a `DeploymentClock` alarm with a cron floor on **W**, an in-process loop on **C**, both feeding one idempotent tick (`core/tick.ts`) with per-task per-day ceilings. Triggers are session end, the clock, and an explicit ask. The member binary registers no timers; the machine-side needs that survive — upgrade check, symbiont detection, managed-files reconcile — are the on-demand verbs `myco update` and `myco doctor`.
+
+**Evals** gate the prompts: recorded real sessions as fixtures, redacted by a gate before commit, with a hand-annotated gold set of 30–50 cases; deterministic graders per PR against replayed recordings; a weekly (and on any task-prompt or skill change) judged run on a curated subset, capped per run; results on the KPI page and the weekly job required on releases.
 
 **Principles (Chris, 2026-09-02, closed):**
-- Every agent task runs through the agent harness with the configured provider and credentials. Title and summary are no exception. There is no interim direct model call, on either target.
-- The run is the unit of work: one run id, one container, any number at once across triggers, schedules, sessions and Projects.
-- A constraint is configurable, never hard-coded. A limit means a queue, never a refusal.
-- One core, two launch adapters; neither target loses the feature because the other landed it first (§3.3).
-- Decisions about dispatch start from how 1.4 drives tasks today, and are recorded here before a slice builds on them.
-
-**What 2.0 has and lacks against 1.4 (2026-09-02, after #1045 S4):** has — the catalogue and admission gates wired through the one dispatcher, per-task provider routing into the container, the run rows the dispatcher writes and the runtime's claim moves to running (idempotent for the dispatched credential, exactly once for any other id), resume and hold, one container per run on W, `afterResponse` for work past a request, a pure power policy and job registry, and titling as the first task dispatched on a session's end and on an owner's ask; lacks — a scheduler and wake delivery on either target, a queue and any configurable limit (the only limiter is `max_instances = 12`), a session-end path for any task but titling, run retention and cancellation, a self-hosted launch, and dispatch for the openai, openrouter, ollama and lmstudio providers (the dispatcher serves anthropic and openai-compatible). Owners: #1091 (queue, limits, wake tick, retention), #913 (self-hosted launch, the other providers), #915 (scheduling leaves).
+- Every agent task runs through the agent harness with the configured provider and credentials. Title and summary are no exception. There is no interim direct model call, on either target. *(Stands. The harness is now an attached worker rather than a container — plan §2.5.)*
+- The run is the unit of work: one run id, one container, any number at once across triggers, schedules, sessions and Projects. *(Superseded in mechanism by plan §2.5: the run is still the unit of work, but its host is a claimed worker lease, not a container.)*
+- A constraint is configurable, never hard-coded. A limit means a queue, never a refusal. *(Stands; the queue is the claim queue workers long-poll.)*
+- One core, two launch adapters; neither target loses the feature because the other landed it first (§3.3). *(Superseded in mechanism by plan §2.6: there is no launch adapter, because neither front door launches harnesses. The no-feature-loss half stands.)*
+- Decisions about dispatch start from how 1.4 drives tasks today, and are recorded here before a slice builds on them. *(Stands. The 1.4 dispatch account this section carried is in git history; 1.4 retires per plan §5.)*
 
 ## 4. Owning-surface vocabulary
 
@@ -170,11 +192,11 @@ Every ledger row carries one or more of these. This is the closed set the gate a
 
 | Code | Surface | Owns |
 |---|---|---|
-| **M** | Member Installation | CLI, hooks, MCP bridge, spool, member registry, capture, member credential |
-| **MS** | Member Service | Resident local reconciliation: symbiont health, hook/MCP registration, managed assets, per-Project convergence |
-| **Core** | Shared server core | Vault, query core, intelligence, task runtime, notifications, access grants — target-independent |
+| **M** | Member Installation | Binary, hooks, plugins, spool, member registry, capture, member credential, **worker mode** |
+| **MS** | Member Service | **Retired** (§3.4). Reconciliation is the on-demand `myco update` / `myco doctor` verbs, owned by **M**. The code stays in the gate's closed set; no row carries it |
+| **Core** | Shared server core | Vault, query core, serving, run queue and close evidence, notifications, access grants — target-independent |
 | **W** | Cloudflare adapter | Target-specific mechanism on Cloudflare |
-| **C** | Self-hosted adapter | Target-specific mechanism on Compose |
+| **C** | Self-hosted adapter | Target-specific mechanism on the self-hosted binary |
 | **UI** | Server dashboard | Human surface served by the Deployment |
 | **MCP** | Server MCP surface | Normal member MCP and external read-only MCP |
 | **—** | none | DROP rows only |
@@ -187,25 +209,25 @@ Actors follow [`actors-and-boundaries.md`](actors-and-boundaries.md): the **Myco
 
 | Lifecycle stage | User | Symbiont | Myco agent | Operator | External Agent |
 |---|---|---|---|---|---|
-| **Install** | `myco` install script → CLI + hooks + Member Service (**M**, **MS**) | — | — | — | — |
-| **Setup** | `myco setup` — create/connect Deployment, join, Default Deployment, verify capture (**M** → **Core**) | — | — | `myco server create` (**W**/**C**) | — |
+| **Install** | Plugin alone → skills + MCP tools; the installer adds binary + hooks + capture + worker (**M**) | — | — | — | — |
+| **Setup** | The setup skill — install, log in or join, enable hooks, verify with `doctor` (**M** → **Core**) | — | — | `myco server create` (**W**/**C**) | — |
 | **Server operation** | — | — | — | `myco server update\|inspect\|rotate\|backup\|adopt\|restore\|remove\|github-app` (**W**/**C**; `github-app` registers the dashboard's sign-in app on GitHub from a manifest and installs its credentials) | — |
-| **Enrollment** | Join with Enrollment Authority → Member Credential (**Core**) | — | — | Issues Enrollment Authority (**Core**) | Receives project-scoped read-only grant (**Core**) |
+| **Enrollment** | Invite link or `myco login <url>` → Member Credential; a sandbox exchanges its join code (**Core**) | — | — | Issues invites and join codes (**Core**, **UI**) | Receives a project-scoped grant: read plus spore create/supersede attributed to the grant (**Core**) |
 | **Capture** | — | Hooks write-ahead to spool, drain to Deployment (**M** → **Core**) | — | — | none |
-| **Intelligence** | Views results (**UI**) | Reads via MCP (**MCP**) | Runs tasks in the harness container (**Core** + **W**/**C**) | — | none |
-| **Recall** | — | `UserPromptSubmit` recall endpoint (**Core**) | — | — | Read-only project MCP (**MCP**) |
+| **Intelligence** | Views results (**UI**) | Reads via MCP (**MCP**) | Runs outcomes on an attached worker under a run-scoped credential (**M** + **Core**) | — | Writes spores under a grant (**MCP**) |
+| **Recall** | — | Session-start `instructions.template` and prompt-submit injection (**Core**) | — | — | Project-scoped MCP under a grant (**MCP**) |
 | **Admin** | Deployment Settings, enrollment, external grants, provider credentials — all members, flat (**UI**, **Core**) | — | — | — | none |
 | **Local health** | `myco doctor` (**M**) | — | — | — | — |
 | **Maintenance** | — | — | — | — | — |
-| ↳ machine-side | Managed Asset Reconciliation, continuous (**MS**) | — | — | — | — |
+| ↳ machine-side | `myco update` / `myco doctor`, on demand (**M**) | — | — | — | — |
 | ↳ server-side | Retention, optimize, integrity, backup (**Core** + **W**/**C**) | — | — | — | — |
 | **Backup/restore** | Backup from dashboard (**UI**) | — | — | Restore is a break-glass operator procedure (**W**/**C**) | — |
 | **Project movement** | Project Binding change (**M**) | — | — | Project Reassignment (**Core**) | — |
-| **Update** | `myco update` → Member Service reconciles (**M**, **MS**) | — | — | `myco server update` (**W**/**C**) | — |
+| **Update** | `myco update` reconciles managed assets and the managed AGENTS.md block (**M**) | — | — | `myco server update` (**W**/**C**) | — |
 | **Migration** | 1.4 → 2.0 one-time cutover (**M** + **Core**) | — | — | — | — |
 | **Removal** | `myco remove` (member only; server destroyed by Operator) (**M**) | — | — | `myco server remove` (**W**/**C**) | — |
 
-**Sandbox Runtime** is not a row: it is a **Member Runtime** acting as the same member, with the Install row's Member Service omitted and credentials injected.
+**Sandbox Runtime** is not a row: it is a **Member Runtime** acting as the same member, installed from the image with a join code in its environment.
 
 ## 6. Contradictions called out explicitly
 
@@ -222,7 +244,7 @@ The audit (`64d8f59006e9b912`) predates the Wayfinder decision session. Its per-
 | "the **tokens** view *is* it" — per-project member tokens (OPEN-6) | Per-Project member tokens are **implementation baseline, not the destination**. Members hold one individually attributable Member Credential with full Deployment access | `wisdom-5b9069b8` |
 | "Groves DROP — the server's `projects` table is the tenancy unit" (§6) | Grove drops, but the replacement boundary is **Deployment**; `Project` is the shared identity **within** it. Tenancy and identity are two nouns, not one | Glossary "Deployment", "Project" |
 | "migrates one server per Grove or consolidated" | A Deployment contains **many** Projects. "One server holds one Project" was an intermediate design | `wisdom-5b9069b8` |
-| Local service = symbiont health (OPEN-10) | The **Member Service**'s role is materially larger: idempotent **Managed Asset Reconciliation** across global assets **and every locally registered Project** | Glossary "Managed Asset Reconciliation" |
+| Local service = symbiont health (OPEN-10) | Superseded again on 2026-09-07 (§2.3): there is no resident member service at all. Reconciliation across managed assets and every registered Project is the on-demand `myco update` / `myco doctor` verbs | §3.4 |
 | Owner column names Plans 4b/4c/5/6 | Those plans no longer exist. Owners are GitHub children #906–#927 | #905 |
 | "Restore … BREAK-GLASS rather than a dashboard button" | Unchanged in substance, now expressed as the `myco server restore` Operator path | Glossary "Server Provisioning" |
 
@@ -250,7 +272,9 @@ The settled glossary names surfaces the tree does **not yet carry**. These are a
 
 ## 7. The feature-preservation ledger
 
-Every row: an exact registry token, a disposition, an owning surface, and the child issue that carries it. `Blk` marks release-blocking (must close before `myco/v2.0.0`); `—` marks non-blocking follow-up.
+Every row: an exact registry token, a disposition, an owning surface, and the child that carries it.
+
+**A row's disposition describes the code as it stands, not the code as it is planned** (plan §6). The gates in §9 and the four server gates that read this document hold the ledger against the tree, so a token that still exists carries the disposition it has today and names its planned fate in the reason column; the disposition changes in the PR that changes the code. A surface that does not exist yet is described in the **Planned additions** block under its subsection rather than given a row, for the same reason. `Blk` marks release-blocking (must close before `myco/v2.0.0`); `—` marks non-blocking follow-up.
 
 Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — the need survives, the mechanism changes; the replacement is named. **DROP** — the need itself disappears; a reason is required, and "no local daemon" is a reason only when the capability existed *to manage* the daemon.
 
@@ -259,14 +283,14 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 | Command | Disposition | Surface | Blk | Replacement / reason | Owner |
 |---|---|---|---|---|---|
 | `member` | KEEP | M | Blk | Already the 2.0 surface; gains Deployment-aware join | #916 |
-| `server` | KEEP | C | Blk | The 2.0 self-hosted operator surface; provisions and runs the Compose stack `host` no longer serves | #913 |
+| `server` | KEEP | C, W | Blk | The operator surface for both front doors: the self-hosted binary, and Cloudflare provisioning reduced to one verb over a prebuilt bundle (plan §2.6) | D1, D2 |
 | `settings` | KEEP | M | Blk | Sandbox entry point; #927's proof runs through it | #917 |
 | `hook` | KEEP | M | Blk | The capture entry point | #917 |
-| `mcp` | KEEP | M, MCP | Blk | Retargeted at the Deployment | #921 |
-| `tool` | KEEP | M, MCP | Blk | CLI mirror of the MCP surface | #921 |
+| `mcp` | KEEP | M, MCP | Blk | Retargeted at the Deployment as remote HTTP MCP; tenancy travels as the tools' `project` parameter (plan §3 D1) | A6 |
+| `tool` | KEEP | M, MCP | Blk | CLI mirror of the same server code path. The 1.4 CLI transport that existed only to carry tenancy for Codex, Cursor and Antigravity retires with it (plan §3 D1) | A6 |
 | `version` | KEEP | M | Blk | | #917 |
-| `update` | KEEP | M, MS | Blk | Member self-update; triggers Managed Asset Reconciliation | #922 |
-| `doctor` | REPLACE | M | Blk | Checks member wiring, registry mode, credential liveness, spool depth, **and Deployment reachability from this machine**; absorbs `harness-health` | #917 |
+| `update` | KEEP | M | Blk | Member self-update, and the on-demand reconcile that replaces the resident service: managed assets, hooks, plugins and the managed AGENTS.md block (plan §2.5) | C2 |
+| `doctor` | REPLACE | M | Blk | Checks member wiring, credential liveness, spool depth, harness detection **and Deployment reachability from this machine**; the second on-demand reconcile verb (plan §2.5) | C2 |
 | `remove` | REPLACE | M | Blk | Member uninstall only; a Deployment is destroyed by the Operator, not the CLI | #917 |
 | `open` | REPLACE | M | Blk | Opens the Deployment dashboard URL | #918 |
 | `search` | REPLACE | M, Core | Blk | Server-backed search + vector adapters | #921 |
@@ -276,18 +300,18 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 | `logs` | REPLACE | M | Blk | Local log files under `MYCO_HOME` with a CLI view; server logs are a separate surface (**UI**) | #922 |
 | `config` | REPLACE | M, Core | Blk | Two tiers: Member Settings local, Deployment Settings server-side | #915 |
 | `setup-llm` | REPLACE | Core, UI | Blk | Deployment Settings — Intelligence Provider credentials | #915 |
-| `setup-digest` | REPLACE | Core, UI | Blk | Deployment Settings — schedules and retention | #915 |
+| `setup-digest` | REPLACE | Core, UI | Blk | Deployment Settings — schedules and retention. **Planned DROP in #1170 (sweep)** per plan §1 and §3 D2: the generated digest goes, and what survives are Settings fields rather than a verb | #1162 |
 | `detect-providers` | REPLACE | Core | Blk | Server-side provider detection under Deployment Settings | #915 |
 | `verify` | REPLACE | Core | Blk | Server-side provider connectivity check | #915 |
-| `agent` | REPLACE | Core | Blk | The container-job harness runner | #919 |
-| `task` | REPLACE | Core | Blk | Server-side task definitions and runtime | #919 |
+| `agent` | REPLACE | M, Core | Blk | Becomes `myco worker`: the same binary claiming runs by long poll and driving a local harness (plan §2.5) | B1 |
+| `task` | REPLACE | Core | Blk | The three run outcomes, defined server-side; no phased executor, no per-task turn budget (plan §2.5) | B2 |
 | `upgrade` | REPLACE | M | Blk | Folds into `update` | #922 |
 | `__apply-update` | REPLACE | M | Blk | Internal update orchestration retained under the 2.0 installer | #922 |
 | `__restore-backup` | REPLACE | W, C | Blk | Restore becomes the `myco server restore` Operator path | #923 |
 | `__finish-uninstall` | REPLACE | M | Blk | Internal teardown retained for member-only removal | #917 |
-| `daemon` | DROP | — | Blk | There is no daemon. The Member Service is not a daemon: no vault, no UI, never on capture's path | #925 |
-| `restart` | DROP | — | Blk | Nothing to restart; the Member Service is managed by `service` semantics folded into install/update | #925 |
-| `service` | DROP | — | Blk | 1.4's platform service manages the daemon. The Member Service's lifecycle is owned by the installer | #917 |
+| `daemon` | DROP | — | Blk | There is no daemon and no resident member service: no vault, no UI, never on capture's path | #925 |
+| `restart` | DROP | — | Blk | Nothing to restart on a member machine; the self-hosted server's user-service lifecycle is the installer's | #925 |
+| `service` | DROP | — | Blk | 1.4's platform service exists to manage the daemon that retires with it | #925 |
 | `subsystem` | DROP | — | Blk | Machine-global daemon ownership arbitration; no daemon to arbitrate | #925 |
 | `grove` | DROP | — | Blk | Grove is deleted; Deployment is the boundary | #925 |
 | `join` | DROP | — | Blk | Team Host enrollment retired; `member join` is the 2.0 path | #925 |
@@ -296,6 +320,8 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 | `detach` | DROP | — | Blk | Team Host project routing retired | #925 |
 | `host` | DROP | — | Blk | Team Host serving retired; a Deployment is the server | #925 |
 | `init` | DROP | — | Blk | Already a no-op stub — registration is automatic on first hook | #925 |
+
+**Planned additions.** Three verbs land with their code and take rows then: `myco worker` (worker mode — long-poll claim, lease with heartbeat, harness detection; the laptop server process runs one in-process, plan §2.5, **#1151**); `myco login <url>` (exchanges an invite for a member credential, while a sandbox exchanges its join code instead, plan §2.7, **#1158**); `myco import` (the repeatable backfill behind the join-time pass — newest 50 sessions per harness within 30 days, content-hash dedupe, tombstone gate, plan §2.2, **#1148**).
 
 ### 7.2 Dashboard routes — `packages/myco/ui/src/App.tsx`
 
@@ -308,17 +334,17 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/g/:groveSlug/p/:projectSlug` | REPLACE | UI | Blk | Project dashboard at a Deployment-relative project path; the Grove segment goes | #918 |
 | `sessions` | KEEP | UI, Core | Blk | Read API shipped (#904); UI in #918 | #918 |
 | `sessions/:id` | KEEP | UI, Core | Blk | Session detail — facts, children, transcript | #918 |
-| `cortex` | KEEP | UI, Core | Blk | Digest, instructions, Canopy map. The instructions tab carries a **Refresh instructions** control that dispatches `cortex-instructions` and names its outcome; the digest tab carries a **Regenerate digest** control with a **From scratch** option that dispatches `digest-only` the same way. 1.4's prompt-builder tab is DROPPED with the decision: recall injects the instructions at every session start, so a pasteable prompt has no consumer on a Deployment | #919, #1046 |
-| `skills` | KEEP | UI, Core | Blk | Needs the server-side skills tables | #919 |
-| `agent` | KEEP | UI, Core | Blk | `agent_runs` is rows, not files | #919 |
-| `agent/:id` | KEEP | UI, Core | Blk | Run detail with phases and write intents | #919 |
+| `cortex` | KEEP | UI, Core | Blk | Digest, instructions and the map today. **Planned DROP in #1170 (sweep)** per plan §1 and §4 E1: the page does not port, instructions become the `instructions.template` Settings field, and the digest and the map go with their losses recorded | #1162 |
+| `skills` | KEEP | UI, Core | Blk | Needs the server-side skills tables. **Planned DROP in #1170 (sweep)** per plan §2.4 D3: with the generation pipeline deleted and skills hand-written in the plugins, the page has nothing to curate | #1162 |
+| `agent` | KEEP | UI, Core | Blk | `agent_runs` is rows, not files. **Planned REPLACE by #1162**: the runs view — one row per run outcome with its close evidence; the 1.4 page is not ported (plan §2.8) | #1162 |
+| `agent/:id` | KEEP | UI, Core | Blk | Run detail with phases and write intents. **Planned REPLACE by #1162**: the prompt, the worker that claimed it, and the evidence the server verified; phases and write intents go with the executor (plan §2.5) | #1162 |
 | `/settings` | REPLACE | UI, Core | Blk | Rebuilt against Deployment Settings + Member Settings; the four-tier scoped model does not survive | #915 |
 | `/logs` | REPLACE | UI, Core | Blk | Server logs from emitted telemetry. 1.4's **local** Logs page does not port — local logs are CLI-only (**M**) | #922 |
 | `/g/:groveSlug/operations` | REPLACE | UI, W, C | Blk | Backup/diagnostics/update, per-target mechanism | #923 |
 | `/g/:groveSlug/dashboard` | REPLACE | UI | Blk | Grove dashboard folds into the Deployment status surface | #918 |
 | `/machine` | REPLACE | UI | Blk | Machine tier is gone; the equivalent question ("which runtimes write here, are they alive?") is a Deployment members/runtimes view | #918 |
 | `/system` | REPLACE | UI | Blk | Folds into the Deployment status surface | #918 |
-| `/symbionts` | REPLACE | M, MS | Blk | Symbiont detection is a **machine** question — `doctor` and Member Service reconciliation, not a dashboard page | #917 |
+| `/symbionts` | REPLACE | M | Blk | Symbiont detection is a **machine** question — `myco doctor`, not a dashboard page | C2 |
 | `/groves` | DROP | — | Blk | Grove is deleted | #925 |
 | `/team` | DROP | — | Blk | Team Host retired; membership is flat within a Deployment | #925 |
 | `mycelium` | DROP | — | Blk | The semantic graph was retired 2026-04-18; do not rebuild without a retrieval consumer | #925 |
@@ -340,87 +366,88 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/operations` | DROP | — | Blk | Legacy unscoped redirect | #925 |
 | `*` | KEEP | UI | Blk | Catch-all redirect | #918 |
 
+**Planned additions.** Two routes land with the 2.0 dashboard and take rows then: a members-and-invites page — issue, revoke, and the grants external agents hold (plan §2.8, **#1162**, **#1158**); and a KPI page showing the six measures with n — prompts with any Myco context present (primary), spore serve rate, Myco calls per prompt per harness, plan reads per session, install-to-first-injection time, eval pass rates (plan §2.8, **#1162**, **#1154**).
+
 ### 7.3 MCP tools — `packages/myco/src/tools/definitions.ts`
 
-The member's MCP bridge talks to the Deployment. External agents get a project-scoped read-only subset.
+Every tool is served over remote HTTP MCP by the Deployment, and every tool takes a `project` parameter: reads default to the member's bound projects, writes are refused without one (plan §3 D1). Three principals share the surface — a member credential, a **run-scoped credential** whose allowlist comes from the task definition and whose writes are attributed to the run, and an **external-agent grant** limited to project-scoped reads plus spore create/supersede attributed to the grant (plan §2.5, §2.6). `alwaysLoad` is set on the entry, paired with a session-start health ping so a cold front door does not stall the session.
 
 | Tool | Disposition | Surface | Blk | Replacement / reason | Owner |
 |---|---|---|---|---|---|
-| `myco_search` | REPLACE | MCP, Core | Blk | Server-side search + vector adapters | #921 |
-| `myco_cortex` | REPLACE | MCP, Core | Blk | Digest, instructions, Canopy map, notifications, maintenance summary, projects activity — all server-side; Canopy entries and entry injection retire (#920) | #921 |
-| `myco_sessions` | KEEP | MCP, Core | Blk | The query core already serves this shape | #921 |
-| `myco_plans` | KEEP | MCP, Core | Blk | **Closes the one §8.4 parity miss** — MCP-written plans reach the server only here | #921 |
-| `myco_spores` | KEEP | MCP, Core | Blk | Needs the server-side spores tables; `session_id` names the session a member's spore belongs to, or the session that retired one | #919 |
-| `myco_skills` | KEEP | MCP, Core | Blk | Needs the server-side skills tables | #919 |
-| `myco_agent` | KEEP | MCP, Core | Blk | Needs server-side `agent_runs` | #919 |
+| `myco_search` | REPLACE | MCP, Core | Blk | Server-side search + vector adapters; previews render each spore's `agent_line`, not its Markdown (plan §2.4) | A6 |
+| `myco_cortex` | REPLACE | MCP, Core | Blk | Shrinks to `instructions`, `notifications`, `maintenance` and `projects_activity`, all server-side, with `instructions` as the default op. The digest ops go with the digest and the Canopy ops with the map, both dropped with their losses recorded (plan §1, §3 D2) | A6 |
+| `myco_sessions` | KEEP | MCP, Core | Blk | The query core already serves this shape | A3 |
+| `myco_plans` | KEEP | MCP, Core | Blk | Myco owns plan identity, versions, provenance and search; content writes through MCP are for plans with no file, and status is set only by an explicit status-only save (plan §2.3) | A3 |
+| `myco_spores` | KEEP | MCP, Core | Blk | The write surface for the extraction outcome, for members, and — create and supersede only — for an external agent's grant, whose writes carry the grant as author (plan §2.6) | A5 |
+| `myco_skills` | KEEP | MCP, Core | Blk | Reduced to reading the hand-written skills that ship with the plugins. The generation pipeline, the candidate queue and their tables are deleted (plan §2.4, D3) | C2 |
+| `myco_agent` | KEEP | MCP, Core | Blk | The read surface over `agent_runs` — the runs, their outcomes and the evidence the server verified (plan §2.5) | B2 |
 
 ### 7.4 Agent tasks — `packages/myco/src/agent/definitions/tasks/`
 
-Task YAML, the phased executor, turn budgets, model routing, and the `agent_runs` audit trail carry over unchanged, running inside the harness container.
+2.0 keeps three run outcomes and one config leaf (§3.6). The phased executor, turn budgets and per-task model routing do not survive: a task is one prompt with declared expected evidence, run on an attached worker. The `agent_runs` audit trail stays.
 
 | Task | Disposition | Surface | Blk | Replacement / reason | Owner |
 |---|---|---|---|---|---|
-| `digest-only` | KEEP | Core | Blk | Hosted and on demand. Its schedule is declared and **ships switched off** — 24 h in `sleep`, one a day — so an owner's ask carries the same per-day ceiling and the same `agent.tasks.digest-only.schedule` override as the instructions task; the clock runs nothing until they turn it on. It is not in `MANUAL_ONLY_TASKS`. The server builds the run's prompt — what each tier holds, how much has landed since, and the per-tier material windows — and carries it on the run row; an owner may ask for it from scratch, which tells the run to write every tier from the material alone. The run holds `vault_report`, `vault_spores`, `vault_spore`, `vault_sessions`, `vault_read_digest` and `vault_write_digest`; each tier it writes goes through `POST /runs/digest-write`, archiving the body it replaces with the run that replaced it and filing the extract under the substrate hash the SERVER recorded. Its close evidence is a report with action `digest` or `skip`, and — for a report that claims a write — a digest row the server can see. `POST /runs/digest` serves a digest run the tier it named or nothing, so a neighbour's body is never carried forward under an absent tier's name; a run that only reads is served the nearest tier and told so. Unlike the instructions, a digest dispatch is never answered `unchanged`: the run judges tier by tier and says which it left alone. One run is budgeted 1800 s (`TASK_RUN_TIMEOUT_SECONDS`, equal to the task file's own `timeoutSeconds` and gated), its `/runs/spore` bodies are cut to the tier window's share of its full-read budget | #919, #1046 |
-| `cortex-instructions` | KEEP | Core | Blk | Hosted: the server builds the input from its own reads, carries it on the run row as the run's instruction, and the run reads it back over `POST /runs/instruction`. The run holds `vault_report`, `vault_spores`, `vault_spore`, `vault_sessions` and `vault_read_digest`; its report with action `cortex_instructions` files the artifact through `POST /runs/instructions-write` under the hash the SERVER recorded, and is the run's close evidence. Scheduled every 24 h in `sleep`, one a day, **shipped switched off** — an owner turns it on with `agent.tasks.cortex-instructions.schedule.enabled` after one measured run. A dispatch whose input matches the artifact already written starts no run at all. One run is budgeted 900 s (`TASK_RUN_TIMEOUT_SECONDS`, equal to the task file's own `timeoutSeconds` and gated), and an owner's per-day ceiling is the declared block under their own `agent.tasks.<task>.schedule` override | #1046 |
-| `cortex-prompt-builder` | KEEP | Core | Blk | Manual-only and unserved: it carries no schedule and no hosted tool surface. Recall injects the instructions at every session start, so a pasteable prompt has no consumer on a Deployment; the task stays in the catalogue for an owner's explicit ask | #1046 |
-| `skill-survey` | KEEP | Core | Blk | Skill lifecycle | #919 |
-| `skill-generate` | KEEP | Core | Blk | Skill lifecycle | #919 |
-| `skill-evolve` | KEEP | Core | Blk | Skill lifecycle | #919 |
-| `extract-only` | KEEP | Core | Blk | Spore extraction | #919 |
-| `embedding-reconcile` | KEEP | Core | Blk | Deterministic indexing run, admitted by the embedding provider. Cloudflare uses Workers AI `@cf/baai/bge-m3` and Vectorize; self-hosted uses sqlite-vec with configured Ollama, OpenAI-compatible, OpenAI or OpenRouter embeddings. Run steps reconcile missing and stale vectors, orphan deletion and spore hubness. | #1124 |
-| `title-summary` | KEEP | Core | Blk | Dispatched to the harness on a session's end and on an owner's ask, through the one dispatcher (§3.6); no direct provider call on the server — #1033's after-response call was a deviation, removed by #1045 S4 | #1045, #1091 |
-| `review-session` | KEEP | Core | Blk | | #919 |
-| `vault-evolve` | KEEP | Core | Blk | | #919 |
-| `supersession-sweep` | KEEP | Core | Blk | Served on the harness on demand: a run holds the spore tools over run routes — an inventory of previews, one spore in full, create, and resolve — so a sweep never pulls a whole vault into a model's context. Carries no schedule; one waits on measurement of what a pass costs and finds | #1044 |
-| `vault-seed` | KEEP | Core | Blk | | #919 |
-| `canopy-map` | REPLACE | Core | Blk | Grows a scan/diff phase using normal harness code-exploration tools and content hashes; maintains the map as a living document. **Gated on #910's accepted content prototype** | #920 |
-| `canopy-describe` | DROP | — | Blk | Per-file fan-out and entry embeddings retire. **Named cost:** per-file Canopy search and entry injection end; the living map remains | #920 |
-| `harness-health` | DROP | — | Blk | Inspects a local harness — a machine question. Its checks move into `doctor` (**M**) | #917 |
-| `container-smoke` | KEEP | Core | Blk | New in 2.0: the end-to-end proof for a server-dispatched containerized run — claim, harness, one report, terminal status. Server-dispatched only; carries no schedule | #914 |
+| `digest-only` | KEEP | Core | Blk | Hosted and on demand. Its schedule is declared and **ships switched off** — 24 h in `sleep`, one a day — so an owner's ask carries the same per-day ceiling and the same `agent.tasks.digest-only.schedule` override as the instructions task; the clock runs nothing until they turn it on. It is not in `MANUAL_ONLY_TASKS`. The server builds the run's prompt — what each tier holds, how much has landed since, and the per-tier material windows — and carries it on the run row; an owner may ask for it from scratch, which tells the run to write every tier from the material alone. The run holds `vault_report`, `vault_spores`, `vault_spore`, `vault_sessions`, `vault_read_digest` and `vault_write_digest`; each tier it writes goes through `POST /runs/digest-write`, archiving the body it replaces with the run that replaced it and filing the extract under the substrate hash the SERVER recorded. Its close evidence is a report with action `digest` or `skip`, and — for a report that claims a write — a digest row the server can see. `POST /runs/digest` serves a digest run the tier it named or nothing, so a neighbour's body is never carried forward under an absent tier's name; a run that only reads is served the nearest tier and told so. Unlike the instructions, a digest dispatch is never answered `unchanged`: the run judges tier by tier and says which it left alone. One run is budgeted 1800 s (`TASK_RUN_TIMEOUT_SECONDS`, equal to the task file's own `timeoutSeconds` and gated), its `/runs/spore` bodies are cut to the tier window's share of its full-read budget. **Planned DROP in #1170 (sweep)** per plan §1 and §3 D2: the generated digest goes and its loss is recorded — an agent gets no project-state summary before its first prompt and is told to search. | #1170 |
+| `cortex-instructions` | KEEP | Core | Blk | Hosted: the server builds the input from its own reads, carries it on the run row as the run's instruction, and the run reads it back over `POST /runs/instruction`. The run holds `vault_report`, `vault_spores`, `vault_spore`, `vault_sessions` and `vault_read_digest`; its report with action `cortex_instructions` files the artifact through `POST /runs/instructions-write` under the hash the SERVER recorded, and is the run's close evidence. Scheduled every 24 h in `sleep`, one a day, **shipped switched off** — an owner turns it on with `agent.tasks.cortex-instructions.schedule.enabled` after one measured run. A dispatch whose input matches the artifact already written starts no run at all. One run is budgeted 900 s (`TASK_RUN_TIMEOUT_SECONDS`, equal to the task file's own `timeoutSeconds` and gated), and an owner's per-day ceiling is the declared block under their own `agent.tasks.<task>.schedule` override. **Planned DROP in #1170 (sweep)** per plan §2.4: instructions become config, not generation — the `instructions.template` Settings leaf, static, member-editable, ≤4 KB, validated. | #1170 |
+| `cortex-prompt-builder` | KEEP | Core | Blk | Manual-only and unserved: it carries no schedule and no hosted tool surface. Recall injects the instructions at every session start, so a pasteable prompt has no consumer on a Deployment; the task stays in the catalogue for an owner's explicit ask. **Planned DROP in #1170 (sweep)** per plan §2.5: static instructions leave nothing to build. | #1170 |
+| `skill-survey` | KEEP | Core | Blk | Skill lifecycle. **Planned DROP in #1170 (sweep)** per plan §2.4 D3: the generated-skill pipeline goes; two hand-written skills ship with the plugins and five of the 52 existing files are rewritten by hand. | #1170 |
+| `skill-generate` | KEEP | Core | Blk | Skill lifecycle. **Planned DROP in #1170 (sweep)** per plan §2.4 D3: no generation pipeline, no candidate queue. | #1170 |
+| `skill-evolve` | KEEP | Core | Blk | Skill lifecycle. **Planned DROP in #1170 (sweep)** per plan §2.4 D3: hand-written skills are revised by hand. | #1170 |
+| `extract-only` | KEEP | Core | Blk | Folded into the **continuous extraction and curation** outcome — one prompt, no checkout, expected evidence the server verifies (plan §2.5) | B2 |
+| `embedding-reconcile` | KEEP | Core | Blk | Not a run outcome: a deterministic server job on the wake tick, admitted by the embedding provider (plan §2.5). Cloudflare uses Workers AI `@cf/baai/bge-m3` and Vectorize; self-hosted uses sqlite-vec with configured Ollama, OpenAI-compatible, OpenAI or OpenRouter embeddings. Run steps reconcile missing and stale vectors, orphan deletion and spore hubness. | #1124 |
+| `title-summary` | KEEP | Core | Blk | The **session titles and summaries** outcome: dispatched on a session's end and on an ask, run on a worker, no direct provider call on the server (plan §2.5) | B2 |
+| `review-session` | KEEP | Core | Blk | **Planned DROP in #1170 (sweep)** per plan §2.5: extraction and curation run continuously over sessions as they land, so a separate per-session review has no place. | #1170 |
+| `vault-evolve` | KEEP | Core | Blk | Folded into the **continuous extraction and curation** outcome — create, supersede, consolidate in one prompt (plan §2.5) | B2 |
+| `supersession-sweep` | KEEP | Core | Blk | Folded into the **continuous extraction and curation** outcome, which names consolidation as its own work (plan §2.5). The inventory-then-resolve tool shape survives as that outcome's allowlist, so a sweep still never pulls a whole vault into a model's context | B2 |
+| `vault-seed` | KEEP | Core | Blk | The **brownfield seeding** outcome: the one run with a checkout, seeding from code and git history, writing the managed AGENTS.md block (≤500 chars) as one atomic replacement and leaving the rest of the file untouched (plan §2.5) | B2 |
+| `canopy-map` | REPLACE | Core | Blk | Grows a scan/diff phase using normal harness code-exploration tools and content hashes; maintains the map as a living document. **Gated on #910's accepted content prototype**. **Planned DROP in #1170 (sweep)** per plan §1: the owned repo map goes and its loss is recorded — orientation comes from the harness's own tools and, optionally, a deterministic third-party graph the doctor recommends. | #1170 |
+| `canopy-describe` | DROP | — | Blk | Per-file descriptions and entry embeddings go with the map (plan §1) | #1170 |
+| `harness-health` | DROP | — | Blk | A worker inspects its own harnesses and files findings into the notifications domain the 1.4 consumer owned; the local half is a `doctor` check (plan §2.5, §5) | #1170 |
+| `container-smoke` | KEEP | Core | Blk | New in 2.0: the end-to-end proof for a server-dispatched containerized run — claim, harness, one report, terminal status. Server-dispatched only; carries no schedule. **Planned DROP in #1170 (sweep)** per plan §4 B1: replaced by the worker smoke — one run dispatched end to end on Claude Code, Codex and OpenCode, and a killed worker's run returning to the queue at lease expiry; the fixture is cut over before this task is removed. | #1170 |
 
 ### 7.5 Scheduled jobs — `packages/myco/src/constants/power-jobs.ts`
 
-PowerManager keeps its policy; **waking is platform-specific** (Durable Object alarm + cron on W, in-process scheduler on C).
+**The server-side wake tick is the only scheduler, and it schedules Deployment work only** (plan §2.5). The member binary registers no timers: the machine-side needs that survive 1.4's JobRunner — upgrade check, symbiont detection, managed-files reconcile — become the on-demand verbs `myco update` and `myco doctor`, run by the setup skill and the installer. PowerManager, its four power states and its ~24 machine-side jobs retire with the daemon (plan §5).
 
-That division is the whole design, and it is worth stating why so it is not re-opened. `PowerManager` resolves four states (`active`/`idle`/`sleep`/`deep_sleep`) from registered assertions — the OS idiom of IOPMAssertion, systemd inhibit and wake locks — and computes an interval from them. Today that interval reaches a `setTimeout` (`packages/myco/src/daemon/power.ts`), which hands the resolved state to `JobRunner.dispatch`. **The timer is the only platform-specific part**: policy, states, assertions and job registry are shared, and a target supplies nothing but "wake me at this instant".
+One idempotent tick (`core/tick.ts`) runs the due jobs, applies per-task per-day ceilings and drains the run queue; `POST /api/wake` runs the same tick on an ask. **Waking is the only platform-specific part**, and on the Worker that instant is a **Durable Object alarm**, not a cron trigger:
 
-On the Worker that instant is a **Durable Object alarm**, not a cron trigger:
-
-- An alarm takes an absolute time at **millisecond** precision and is re-armed on each fire — the same shape as the `setTimeout` it replaces. A cron expression bottoms out at one minute and cannot express an interval computed from assertions.
-- **No alarm set means nothing runs.** That is exactly what `deep_sleep` means, and it costs nothing. A cron trigger fires whether or not there is work, which is the opposite of what a power manager is for.
-- Cron triggers are capped **per account** (5 on the free plan, 250 on paid), so making them the primary waker would ceiling how many Deployments an account can host. Alarms carry no such cap.
+- An alarm takes an absolute time at **millisecond** precision and is re-armed on each fire — the same shape as the `setTimeout` it replaces. A cron expression bottoms out at one minute and cannot express a computed interval.
+- **No alarm set means nothing runs**, and it costs nothing. A cron trigger fires whether or not there is work.
+- Cron triggers are capped **per account** (5 free, 250 paid), so making them the primary waker would ceiling how many Deployments an account can host. Alarms carry no such cap.
 
 A **low-frequency cron trigger is still configured, as a recovery floor**. An alarm is state held inside the Durable Object: if it is never armed — a defect, or a Deployment that has never taken a request — nothing ever wakes and the failure is *silent*. Cron is externally guaranteed and is the only thing that recovers that. It is insurance, not the mechanism.
 
-Alarms may fire more than once, so **the tick must be idempotent**. The assertion model already satisfies this by construction — each evaluation re-probes its sources and recomputes the state rather than accumulating — and a gate must fail by name if a tick ever carries state between invocations.
+Alarms may fire more than once, so **the tick must be idempotent**: each evaluation re-probes its sources and recomputes rather than accumulating, and a gate fails by name if a tick ever carries state between invocations.
 
-The port is settled by **#1091** as `ServerEnv.wake` — "wake me soon", called by requested work — and the tick in `packages/myco-server/src/core/tick.ts`, which names its own next instant in its report; each target's clock arms that instant: `DeploymentClock` (a Durable Object alarm, `*/15` cron as the floor) on W, the process wake loop in `platform/bun/wake-loop.ts` on C. `POST /api/wake` runs the same tick on an owner's ask. The per-key `WakeScheduler` proposal is withdrawn: no consumer needed absolute instants by key.
+The port is `ServerEnv.wake` — "wake me soon", called by requested work — with `DeploymentClock` (a Durable Object alarm, `*/15` cron as the floor) arming the instant on W and the process wake loop in `platform/bun/wake-loop.ts` on C.
 
 | Job | Disposition | Surface | Blk | Replacement / reason | Owner |
 |---|---|---|---|---|---|
-| `embedding-reconcile` | REPLACE | Core, W, C | Blk | Server-side against Vectorize / SQLite vectors | #919 |
-| `session-maintenance` | REPLACE | Core | Blk | Server-side session lifecycle | #919 |
-| `log-retention` | REPLACE | Core | Blk | Server log retention; local logs retained by **M** | #922 |
-| `agent-run-retention` | REPLACE | Core | Blk | Server-side | #919 |
-| `notification-retention` | REPLACE | Core | Blk | Server-side | #922 |
-| `auto-backup` | REPLACE | Core, W, C | Blk | Volume snapshot on C; owner-triggered R2 export on W | #923 |
+| `embedding-reconcile` | REPLACE | Core, W, C | Blk | A tick job against Vectorize / SQLite vectors | #1124 |
+| `session-maintenance` | REPLACE | Core | Blk | A tick job: server-side session lifecycle | A3 |
+| `log-retention` | REPLACE | Core | Blk | A tick job over server logs; the member keeps its own log files (**M**) | E1 |
+| `agent-run-retention` | REPLACE | Core | Blk | A tick job; the lifecycle owner for run rows (plan §7) | B3 |
+| `notification-retention` | REPLACE | Core | Blk | A tick job; the domain now carries worker health findings (plan §5) | B3 |
+| `auto-backup` | REPLACE | Core, W, C | Blk | A tick job: local volume snapshot on C; owner-triggered R2 export on W | #923 |
 | `database-optimize` | REPLACE | Core, C | Blk | SQLite `optimize` on C; D1 exposes no equivalent, so W reports quota/storage health instead | #922 |
 | `database-integrity-check` | REPLACE | Core, C | Blk | SQLite integrity check on C; W reports schema/quota health | #922 |
-| `canopy-background-scan` | REPLACE | Core | Blk | Scan/diff phase of the new map task | #920 |
-| `release-provenance-reconcile` | REPLACE | Core | Blk | Server-side | #919 |
-| `staging-gc` | REPLACE | M, Core | Blk | Member spool staging GC stays local (**M**); server-side blob staging GC is **Core** | #917 |
-| `symbiont-detection` | REPLACE | MS | Blk | Continuous detection is the Member Service's job; absent in sandbox images | #917 |
-| `managed-files-reconcile` | REPLACE | MS | Blk | Becomes Managed Asset Reconciliation across global assets and every registered Project | #917 |
-| `self-reconcile` | REPLACE | MS | Blk | Folds into the one idempotent reconciliation path | #917 |
-| `upgrade-auto-check` | REPLACE | MS | Blk | Member Service update check | #922 |
-| `upgrade-adopt` | REPLACE | M, MS | Blk | Adopting a staged upgrade folds into `update` | #922 |
-| `service-reconcile` | REPLACE | MS | Blk | Reconciles 1.4's platform service; becomes the Member Service's own lifecycle convergence | #917 |
+| `canopy-background-scan` | REPLACE | Core | Blk | Background scan behind the map task. **Planned DROP in #1170 (sweep)** per plan §1: the map it scans for goes. | #1170 |
+| `release-provenance-reconcile` | REPLACE | Core | Blk | A tick job | #922 |
+| `staging-gc` | REPLACE | M, Core | Blk | The hook prunes its own spool files past a fixed age after a successful drain (**M**, plan §7); server-side blob staging GC is a tick job (**Core**) | C1, B3 |
+| `symbiont-detection` | REPLACE | M | Blk | An on-demand verb, not a timer: `myco doctor` probes installed binaries and credential stores, and the worker uses the same detection to pick a harness (plan §2.5) | C2 |
+| `managed-files-reconcile` | REPLACE | M | Blk | An on-demand verb: `myco update` reconciles managed assets, hooks, plugins and the managed AGENTS.md block (plan §2.5) | C2 |
+| `self-reconcile` | REPLACE | M | Blk | Folds into the same `myco update` path | C2 |
+| `upgrade-auto-check` | REPLACE | M | Blk | An on-demand check under `myco update`; a server format break is one binary self-update (plan §2.2) | C2 |
+| `upgrade-adopt` | REPLACE | M | Blk | Adopting a staged upgrade folds into `update` | C2 |
+| `service-reconcile` | REPLACE | M | Blk | Reconciles 1.4's platform service. **Planned DROP in #1170 (sweep)** per plan §2.6: the member runs no service to converge, and the self-hosted binary's user-service install is the installer's job. | #1170 |
 | `capture-buffer-drain` | DROP | — | Blk | Capture is hook-invoked and write-ahead; the member drains its own spool with no scheduled job | #925 |
 | `capture-only-notice-sweep` | DROP | — | Blk | Notices a degraded daemon-capture mode that no longer exists | #925 |
 | `content-claim-expiry` | DROP | — | Blk | Content claims are a Team Host publication mechanism; retired with Team | #925 |
 | `routed-transcript-cache-gc` | DROP | — | Blk | Routed capture is a Team Host mechanism; retired with Team | #925 |
 | `routed-event-dedup-prune` | DROP | — | Blk | Routed capture is a Team Host mechanism; retired with Team | #925 |
-| `cortex-instructions` (2.0) | NEW | Core | Blk | New in 2.0: the clock's daily dispatch of the instructions task, 24 h in `sleep`, one a day, shipped switched off. A wake over unmoved material records a `skipped` run naming `input_unchanged` rather than spending a model call | #1046 |
+
+**Planned additions.** Four tick jobs land with their code and take rows then, one per lifecycle row the plan owes an owner (plan §7): transcript retention, pruning raw segments and their blobs past the Deployment's window (**#1147**); grant expiry (**#1149**); invite expiry (**#1158**); and the worker-lease sweep, which returns a lapsed lease's run to the claim queue so single-flight follows the lease and not the process (**#1151**).
 
 ### 7.6 Data classes — vault schema v76, `packages/myco/src/db/`
 
@@ -433,19 +460,19 @@ Disposition here is about the **data class**, and separately about **migration**
 | `session_myco_tool_calls` | KEEP | MIGRATE | Core | Blk | Tool-call history | #924 |
 | `artifacts` | KEEP | MIGRATE | Core | Blk | Transcripts and responses | #924 |
 | `attachments` | KEEP | MIGRATE | Core, W, C | Blk | Blob-backed; R2 on W, volume on C. Byte-lossless comparison is a #927 gate | #924 |
-| `plans` | KEEP | MIGRATE | Core | Blk | | #924 |
-| `spores` | KEEP | MIGRATE | Core | Blk | Server tables land in #919 | #924 |
+| `plans` | KEEP | MIGRATE | Core | Blk | Myco owns identity, versions, provenance and search; disk and GitHub stay canonical for content (plan §2.3) | D3 |
+| `spores` | KEEP | MIGRATE | Core | Blk | Gains an author column so a write can be attributed to a run or to an external agent's grant rather than to `user` (plan §2.6) | A5 |
 | `resolution_events` | KEEP | MIGRATE | Core | Blk | Supersede/consolidate lineage | #924 |
 | `spore_injections` | KEEP | REBUILD | Core | Blk | What the prompt hook was served, per (session, prompt); 1.4 carries it on `activities` | #1044 |
 | `session_injections` | KEEP | REBUILD | Core | Blk | What a session was served once, per (session, kind); the plan nudge today. 1.4 carries it on `activities` | #1026 |
-| `skill_records` | KEEP | MIGRATE | Core | Blk | | #924 |
-| `skill_candidates` | KEEP | MIGRATE | Core | Blk | | #924 |
-| `skill_lineage` | KEEP | MIGRATE | Core | Blk | | #924 |
-| `skill_usage` | KEEP | MIGRATE | Core | Blk | | #924 |
-| `digest_extracts` | KEEP | REBUILD | Core | Blk | Derived; regenerated under 2.0 | #924 |
-| `digest_extract_revisions` | KEEP | REBUILD | Core | Blk | Derived | #924 |
-| `cortex_instructions` | KEEP | REBUILD | Core | Blk | Derived | #924 |
-| `canopy_maps` | KEEP | REBUILD | Core | Blk | Rebuilt by the new map task | #920 |
+| `skill_records` | KEEP | MIGRATE | Core | Blk | **Planned DROP in #1170 (sweep)** per plan §2.4 D3: the skill lifecycle goes and skills become hand-written files in the plugins. | #1170 |
+| `skill_candidates` | KEEP | MIGRATE | Core | Blk | **Planned DROP in #1170 (sweep)** per plan §2.4 D3: no candidate queue without a generation pipeline. | #1170 |
+| `skill_lineage` | KEEP | MIGRATE | Core | Blk | **Planned DROP in #1170 (sweep)** per plan §2.4 D3: a hand-written skill's history is git history. | #1170 |
+| `skill_usage` | KEEP | MIGRATE | Core | Blk | **Planned DROP in #1170 (sweep)** per plan §2.5: skill triggering is measured by evals, not by a table. | #1170 |
+| `digest_extracts` | KEEP | REBUILD | Core | Blk | Derived; regenerated under 2.0. **Planned DROP in #1170 (sweep)** per plan §1 and §3 D2: the generated digest goes with its loss recorded. | #1170 |
+| `digest_extract_revisions` | KEEP | REBUILD | Core | Blk | Derived. **Planned DROP in #1170 (sweep)** per plan §1: revisions of a dropped artifact. | #1170 |
+| `cortex_instructions` | KEEP | REBUILD | Core | Blk | Derived. **Planned DROP in #1170 (sweep)** per plan §2.4: instructions become a config leaf, not a generated row. | #1170 |
+| `canopy_maps` | KEEP | REBUILD | Core | Blk | Derived; rebuilt by the map task. **Planned DROP in #1170 (sweep)** per plan §1: the owned repo map goes with its loss recorded. | #1170 |
 | `agent_runs` | KEEP | MIGRATE | Core | Blk | Audit trail | #919 |
 | `agent_run_events` | KEEP | MIGRATE | Core | Blk | | #919 |
 | `agent_run_write_intents` | KEEP | MIGRATE | Core | Blk | | #919 |
@@ -460,7 +487,7 @@ Disposition here is about the **data class**, and separately about **migration**
 | `log_entries` | REPLACE | DROP | Core, M | Blk | Server logs from emitted telemetry (**Core**); local logs are files under `MYCO_HOME` (**M**). Two different things — 1.4's rows do not migrate | #922 |
 | `knowledge_git_provenance` | KEEP | MIGRATE | Core | Blk | Release provenance | #919 |
 | `knowledge_release_state` | KEEP | MIGRATE | Core | Blk | Release provenance | #919 |
-| `session_tombstones` | KEEP | MIGRATE | Core | Blk | Deletion records must survive migration | #924 |
+| `session_tombstones` | KEEP | MIGRATE | Core | Blk | Deletion records must survive migration, and they gate re-import: a tombstoned session is never imported again (plan §2.2) | A4 |
 | `canopy_entries` | DROP | DROP | — | Blk | Per-file descriptions and entry embeddings retire with `canopy-describe` | #920 |
 | `entities` | DROP | DROP | — | Blk | Semantic graph retired 2026-04-18 | #925 |
 | `entity_mentions` | DROP | DROP | — | Blk | Semantic graph retired | #925 |
@@ -475,9 +502,11 @@ Disposition here is about the **data class**, and separately about **migration**
 | `migration_log` | DROP | DROP | — | Blk | 1.4-internal migration bookkeeping | #925 |
 | `migration_tasks` | DROP | DROP | — | Blk | 1.4-internal migration bookkeeping | #925 |
 | `migration_import_journal` | DROP | DROP | — | Blk | OAK-import bookkeeping | #925 |
-| `okf_pages` | DROP | DROP | — | Blk | OKF was never proven against a consumer | #925 |
+| `okf_pages` | DROP | DROP | — | Blk | OKF was never proven against a consumer; the code is already gone and the sweep is the migration (plan §5) | — |
 | `okf_page_revisions` | DROP | DROP | — | Blk | OKF | #925 |
 | `okf_generations` | DROP | DROP | — | Blk | OKF | #925 |
+
+**Planned additions.** Two columns and one table land with their code and take rows then: `plans.source`, the channel a plan version arrived through — a watched path, a tagged message, or an explicit `myco_plans save`, which 1.4 infers from key shapes (plan §2.3, **#1147**); `spores.agent_line`, the ≈40-token trigger → guidance projection that injection and search previews render instead of the Markdown, backfilled once under a cost ceiling and re-derived on edit (plan §2.4, **#1150**); and `invites`, single-use expiring invite links issued from the dashboard and redeemed by `myco login` (plan §2.7, **#1158**).
 
 ### 7.7 Operational capabilities
 
@@ -488,7 +517,7 @@ Capabilities that are not a single registry token but must still carry a disposi
 | Session, prompt, tool-call, response capture | KEEP | M, Core | Blk | Shipped; proven by the §8.4 parity run | shipped |
 | Transcript capture and segmentation | KEEP | M, Core | Blk | Shipped | shipped |
 | Attachment capture | KEEP | M, Core | Blk | Shipped | shipped |
-| Plan capture from watched plan dirs | KEEP | M, Core | Blk | Shipped | shipped |
+| Plan capture from watched plan dirs | KEEP | M, Core | Blk | Parsed server-side from the transcript stream — `Write` calls to the allowlist, tagged messages, and the hook re-reading any allowlisted path it saw edited during the turn (plan §2.3) | A3 |
 | Plan capture via `myco_plans` MCP | REPLACE | MCP, Core | Blk | MCP talks to the Deployment directly — the one §8.4 parity miss | #921 |
 | Session lineage (parent/child detection) | KEEP | Core | Blk | Columns carried; populated by the member | shipped |
 | Project admission policy (ignored/archived) | REPLACE | Core | Blk | Server-side `archived` Project state: refuses ingest with a named terminal refusal, hidden from default listings with explicit opt-in, all history and attribution preserved | #918 |
@@ -497,16 +526,28 @@ Capabilities that are not a single registry token but must still carry a disposi
 | Diagnostic export bundle | REPLACE | M, Core | Blk | Local shape from **M**; server-side export from **Core** | #922 |
 | Project movement between Deployments | KEEP | Core | Blk | Project identity and history survive movement | #923 |
 | Project Reassignment | REPLACE | Core | Blk | Server-side correction of duplicate Project identities | #923 |
-| Symbiont detection and hook installation | REPLACE | MS | Blk | Continuous on developer machines; absent in sandbox images | #917 |
-| Managed Asset Reconciliation | REPLACE | MS | Blk | One idempotent path over global assets and every registered Project | #917 |
-| Recall injection (`UserPromptSubmit`) | REPLACE | Core | Blk | Served by `POST /context/prompt`: the plan nudge and the session's unseen spores, answered after the prompt is spooled — ≤ 10 000 chars cut at a part boundary, < 2 s p95 | #921 |
-| Recall injection (`SessionStart`, `SubagentStart`) | REPLACE | Core | Blk | Served by `POST /context/session`: the Project's newest instructions, and the preferred digest where a Deployment asks for it — once per session, once per subagent, ≤ 60 000 chars cut at a part boundary | #1026 |
-| External read-only MCP for cloud agents | REPLACE | MCP, Core | Blk | Project-scoped read-only Access Grant; new in 2.0, replacing "no such capability" | #921 |
+| Symbiont detection and hook installation | REPLACE | M | Blk | On demand through `myco doctor`; the installer writes hooks with absolute paths, and sandbox images fix their symbionts at build time (plan §2.5, §2.7) | C2 |
+| Managed asset reconciliation | REPLACE | M | Blk | One idempotent `myco update` path over managed assets, hooks, plugins and the managed AGENTS.md block — a verb, not a resident service (plan §2.5) | C2 |
+| Recall injection (prompt submit) | REPLACE | Core | Blk | 5–7 items under a hard 300-token budget with a stated drop order (plans after spores, lowest score first), each carrying its id so the agent can follow up, plus one line naming the search tool. Cursor injects at post-tool-use instead: its prompt hook can only block (plan §2.1, §2.4) | A6 |
+| Recall injection (session start) | REPLACE | Core | Blk | The static `instructions.template` and the agent's project id — no plans, no generated project state; the template tells the agent to search (plan §2.4, §3 D2) | A6 |
+| External agent MCP for cloud agents | REPLACE | MCP, Core | Blk | Per-project grant: read, plus spore create and supersede attributed to the grant by an author column and an agent row, optionally citing a PR or commit instead of a session. Copilot code review consumes it through repository-level MCP configuration — remote HTTP, headers, `COPILOT_MCP_*` secrets, no OAuth (plan §2.6) | A5 |
 | HTTPS / trusted-proxy contract | REPLACE | W, C | Blk | Platform TLS on W; documented proxy contract on C | #909 |
 | Update reliability | KEEP | M, MS | Blk | | #922 |
 | Deploy against the runs in flight | REPLACE | W | Blk | New in 2.0: `myco server update --target cloudflare` waits for the tasks the Deployment has in flight before it pushes — queued as well as running, since a dispatched run whose container has not started is the one most easily lost — bounded by each run's own budget plus the overrun margin; a Deployment whose runs cannot be read refuses the deploy rather than reading silence as quiet, and `--no-drain` ships over whatever is running. It then watches the container instances reach the pushed image before it returns, and records where they landed. A deploy shipping the image already running rolls nothing. | #1115 |
 | Server logs / observability | REPLACE | Core, UI | Blk | From the telemetry the server already emits; `wrangler tail` remains the W operator view | #922 |
 | Native Cloudflare intelligence provider | REPLACE | W | — | **Non-blocking follow-up** — the Intelligence Provider contract is provider-agnostic | #928 |
+| Offline capture | KEEP | M | Blk | The write-ahead spool stays, drained on the next hook with backoff; the hook prunes drained files past a fixed age (plan §2.2, §7) | #1155 |
+
+**Planned additions.** Eight capabilities land with their code and take rows then:
+
+- **Transcript-first ingest** (**#1147**) — the on-disk transcript is the source of truth for everything it contains. The turn-end hook ships the delta past a server-held offset; segments are parsed per agent server-side, inside a Durable Object request on W (30 s CPU, against 10 ms for a plain free-tier Worker invocation) and in process on C. Identity is (path, inode, prefix hash). Five facts stay hook-exclusive: git branch, compaction trigger, notifications and errors, task-completed, wall-clock ordering (plan §2.2).
+- **Bounded import and backfill** (**#1148**) — automatic on join, newest 50 sessions per harness within 30 days, content-hash dedupe, machine-scoped keys, imports not born active, tombstone gate; a repeatable command widens the window. Imported Cursor sessions carry a fidelity flag and are excluded from extraction, their JSONL having no tool results (plan §2.2).
+- **Session tombstone** (**#1147**) — suppresses a mis-imported session and its derived rows, and blocks re-import (plan §2.2).
+- **Run-scoped MCP credential** (**#1145**) — a third principal kind with `heldRun` per request, a per-run tool allowlist from the task definition enforced at the MCP chokepoint, and run attribution on writes. Today a run token is an ordinary member token (plan §2.5).
+- **Task execution on attached workers** (**#1151**) — long-poll claim, lease with heartbeat, lease expiry returning the run to the queue; a Deployment-preferred harness with a fallback order and a per-task override; a cloud worker's harness credential held in the Deployment's encrypted store and injected per run (plan §2.5).
+- **Invite and join** (**#1158**) — single-use expiring invite links and `myco login <url>` for humans; a join code in the environment for sandboxes and CI, exchanged at first contact for a member credential bound to the Project resolved from the repo remote. Admin and member roles only; revocation kept (plan §2.7).
+- **Eval suite** (**#1154**) — recorded real sessions as fixtures with a redaction gate before commit, a hand-annotated gold set of 30–50 cases, deterministic graders per PR against replayed recordings, and a weekly capped judged run required on releases (plan §2.5, §7).
+- **Grant-attributed spore writes** (**#1149**) — an author column and an agent row per grant, so an external agent's create or supersede carries the grant rather than `user`, optionally citing a PR or commit instead of a session (plan §2.6).
 
 ### 7.8 Config leaves — `packages/myco/src/config/schema.ts`
 
@@ -527,7 +568,7 @@ Classification is **per leaf, not per registry row**. Seven of the registry's 31
 
 (A deep scan of submitted values for smuggled endpoints — `containsProviderRedirect` — used to decide which writes needed the extra proof. It left with its premise on 2026-08-30: with every leaf member-writable, an endpoint inside `agent.tasks` is the same act as typing it into `agent.provider.base_url`, and the defense that holds is the fixed-endpoint rule above — a per-task override can pick a provider and model, and its endpoint is read from the leaf alone.)
 
-**Capability master gates are fail-closed and that is a mechanism, not a default.** Today `skills.enabled`, `vault_evolution.enabled`, `cortex.enabled` and `cortex.canopy.enabled` all default **`true`** in the schema, and `capabilityEnabled` returns `defaultEnabled ?? true` for an absent path (`config/capabilities.ts`). What actually makes a new project capture-only is a *write at provision time* — `reseedCaptureOnly()` seeding `false` for every gate (`vault/provision.ts`). On a Deployment, where Projects appear from a member's first write with no ceremony, the server-side predicate must therefore be the **inverse**: an absent row reads **disabled**. Otherwise every new Project silently acquires every cost-bearing capability, which is the auto-adoption #428 exists to prevent.
+**Capability master gates are fail-closed and that is a mechanism, not a default.** Two of 1.4's four gates go with their capabilities — `skills.enabled` with the generation pipeline and `cortex.canopy.enabled` with the map — leaving `vault_evolution.enabled` and `cortex.enabled`. Today all four default **`true`** in the schema, and `capabilityEnabled` returns `defaultEnabled ?? true` for an absent path (`config/capabilities.ts`). What actually makes a new project capture-only is a *write at provision time* — `reseedCaptureOnly()` seeding `false` for every gate (`vault/provision.ts`). On a Deployment, where Projects appear from a member's first write with no ceremony, the server-side predicate must therefore be the **inverse**: an absent row reads **disabled**. Otherwise every new Project silently acquires every cost-bearing capability, which is the auto-adoption #428 exists to prevent.
 
 Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`, `notifications.domains`, `symbionts` and `release_provenance.package_map`. They are classified whole, as their own rows below, and the completeness gate collapses any leaf beneath them onto the block prefix.
 
@@ -538,9 +579,9 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `embedding.provider` | REPLACE | Deployment | Core | Self-hosted embedding provider; Cloudflare always uses Workers AI bge-m3 | #1124 |
 | `embedding.model` | REPLACE | Deployment | Core | Self-hosted embedding model; Cloudflare always uses Workers AI bge-m3 | #1124 |
 | `embedding.prevent_deep_sleep` | REPLACE | Deployment | Core | Wake policy for the embedding job; a Deployment-side scheduling concern | #915 |
-| `daemon.log_level` | KEEP | Member | MS | The Member Service's own log verbosity on this machine | #915 |
-| `daemon.log_retention_days` | KEEP | Member | MS | Local log retention on this machine | #915 |
-| `daemon.stale_session_threshold_ms` | KEEP | Member | MS | Local session-liveness heuristic for capture on this machine | #915 |
+| `daemon.log_level` | KEEP | Member | M | Log verbosity of the member binary on this machine | C1 |
+| `daemon.log_retention_days` | KEEP | Member | M | Local log retention on this machine | C1 |
+| `daemon.stale_session_threshold_ms` | KEEP | Member | M | Local session-liveness heuristic for capture on this machine | C1 |
 | `capture.transcript_paths` | KEEP | Member | M | Where this machine's agents write transcripts | #915 |
 | `capture.plan_dirs` | KEEP | Member | M | Where this machine's agents write plans | #915 |
 | `capture.ignore_plan_dirs_in_git` | KEEP | Member | M | Local plan-capture filter | #915 |
@@ -556,7 +597,7 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `release_provenance.github.token_env` | REPLACE | Project | Core | Names one repository's credential slot | #915 |
 | `release_provenance.github.max_lookups_per_run` | REPLACE | Project | Core | Per-repository API budget | #915 |
 | `release_provenance.package_map` | REPLACE | Project | Core | Monorepo package to tag mapping for one repository | #915 |
-| `agent.harness` | REPLACE | Deployment | Core | Which harness the Deployment runs tasks under | #919 |
+| `agent.harness` | REPLACE | Deployment | Core | Which harness the Deployment runs tasks under. **Planned REPLACE by #1151** per plan §2.5: which harness a worker drives is resolved by detection against a Deployment-declared preference and fallback order. | #1151 |
 | `agent.model` | REPLACE | Deployment | Core | Model pin the Deployment applies when a task sets none | #919 |
 | `agent.reasoningLevel` | REPLACE | Deployment | Core | Default reasoning tier the Deployment resolves through the provider's map | #919 |
 | `agent.provider.type` | REPLACE | Deployment | Core | Selects the provider, and with it which endpoint family the Deployment's credential is sent to | #915 |
@@ -600,9 +641,9 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `maintenance.auto_integrity_check` | REPLACE | Deployment | C | SQLite integrity/FK check has no D1 equivalent | #913 |
 | `maintenance.auto_integrity_check_interval_hours` | REPLACE | Deployment | C | Schedule for the above | #913 |
 | `update.channel` | KEEP | Member | M | Which build this machine installs | #915 |
-| `skills.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent | #915 |
-| `skills.confidence_threshold` | REPLACE | Deployment | Core | Advanced setting governed by the skills capability | #915 |
-| `skills.usage_stale_days` | REPLACE | Deployment | Core | Advanced setting governed by the skills capability | #915 |
+| `skills.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent. **Planned DROP in #1170 (sweep)** per plan §2.4 D3: it gates a generation pipeline that goes, and hand-written skills need no admission gate. | #1170 |
+| `skills.confidence_threshold` | REPLACE | Deployment | Core | Advanced setting governed by the skills capability. **Planned DROP in #1170 (sweep)** per plan §2.4 D3: it scores candidates, of which there will be none. | #1170 |
+| `skills.usage_stale_days` | REPLACE | Deployment | Core | Advanced setting governed by the skills capability. **Planned DROP in #1170 (sweep)** per plan §2.4 D3: it ages a generated skill, of which there will be none. | #1170 |
 | `vault_evolution.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent | #915 |
 | `notifications.enabled` | KEEP | Member | M | Per-viewer delivery preference | #915 |
 | `notifications.system_notifications` | KEEP | Member | M | Per-viewer OS notification preference | #915 |
@@ -611,32 +652,42 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `cortex.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent | #915 |
 | `cortex.instructions.inject_on_session_start` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/session`, once per session | #1026 |
 | `cortex.instructions.inject_on_subagent_start` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/session`, once per subagent | #1026 |
-| `cortex.digest.tier` | REPLACE | Deployment | Core | Digest size the Deployment generates and serves at session start, nearest tier held when the exact one is absent | #1026 |
-| `cortex.digest.inject_on_session_start` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/session`; off unless a Deployment asks for it | #1026 |
+| `cortex.digest.tier` | REPLACE | Deployment | Core | Digest size the Deployment generates and serves at session start, nearest tier held when the exact one is absent. **Planned DROP in #1170 (sweep)** per plan §1 and §3 D2: it sizes an artifact that goes. | #1170 |
+| `cortex.digest.inject_on_session_start` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/session`; off unless a Deployment asks for it. **Planned DROP in #1170 (sweep)** per plan §2.4: session start will serve `instructions.template` and nothing generated. | #1170 |
 | `cortex.spores.inject_on_prompt_submit` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/prompt` | #1026 |
 | `cortex.spores.max_per_prompt` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/prompt`, clamped to 0..10 | #1026 |
 | `cortex.plans.inject_intent_nudge_on_prompt_submit` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/prompt`, once per session | #1026 |
-| `cortex.canopy.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent | #915 |
-| `cortex.canopy.refresh.background_enabled` | REPLACE | Deployment | Core | Deployment-side map refresh policy | #920 |
-| `cortex.canopy.refresh.background_period_minutes` | REPLACE | Deployment | Core | Deployment-side map refresh schedule | #920 |
-| `cortex.canopy.exclude.default_patterns` | REPLACE | Deployment | Core | Map scan exclusion applied Deployment-side | #920 |
-| `cortex.canopy.exclude.patterns` | REPLACE | Deployment | Core | Map scan exclusion applied Deployment-side | #920 |
-| `cortex.canopy.min_file_bytes` | DROP | — | — | Retired per-file injection threshold | #920 |
-| `cortex.canopy.inject_on_pre_tool_use` | DROP | — | — | Retired Canopy entry injection | #920 |
+| `cortex.canopy.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent. **Planned DROP in #1170 (sweep)** per plan §1: it gates a map that goes. | #1170 |
+| `cortex.canopy.refresh.background_enabled` | REPLACE | Deployment | Core | Deployment-side map refresh policy. **Planned DROP in #1170 (sweep)** per plan §1: refresh policy for a map that goes. | #1170 |
+| `cortex.canopy.refresh.background_period_minutes` | REPLACE | Deployment | Core | Deployment-side map refresh schedule. **Planned DROP in #1170 (sweep)** per plan §1: refresh schedule for a map that goes. | #1170 |
+| `cortex.canopy.exclude.default_patterns` | REPLACE | Deployment | Core | Map scan exclusion applied Deployment-side. **Planned DROP in #1170 (sweep)** per plan §1: scan exclusion for a map that goes. | #1170 |
+| `cortex.canopy.exclude.patterns` | REPLACE | Deployment | Core | Map scan exclusion applied Deployment-side. **Planned DROP in #1170 (sweep)** per plan §1: scan exclusion for a map that goes. | #1170 |
+| `cortex.canopy.min_file_bytes` | DROP | — | — | Retired per-file injection threshold | #1170 |
+| `cortex.canopy.inject_on_pre_tool_use` | DROP | — | — | Retired Canopy entry injection | #1170 |
 | `appearance.theme` | KEEP | Member | M | Per-viewer dashboard theme | #918 |
 | `appearance.mode` | KEEP | Member | M | Per-viewer light/dark; Deployment-wide would flip every member's dashboard | #918 |
 | `appearance.font` | KEEP | Member | M | Per-viewer dashboard typography | #918 |
 | `appearance.density` | KEEP | Member | M | Per-viewer dashboard density | #918 |
 
+**Planned additions.** Seven Deployment leaves land with their code and take rows then — the leaf registry (`core/settings.ts`) and this table are held equal in both directions, so a leaf named here before it exists would refuse every write: `instructions.template`, the static session-start instructions any member edits, ≤4 KB, Markdown only, validated on write, and the leaf that replaces the `cortex-instructions` and `cortex-prompt-builder` tasks (plan §2.4, **#1150**); `worker.harness` and `worker.harness_fallback`, the harness a worker prefers and the order it falls back through, each overridable per task (plan §2.5, **#1151**); `retention.transcripts`, the window raw segments and their blobs are kept for, default indefinite (plan §2.2, **#1147**); and `import.enabled`, `import.window_days` and `import.max_sessions_per_harness`, the bounds on the join-time backfill — 30 days and 50 sessions per harness (plan §2.2, **#1148**).
+
 **Project-tier `release_provenance.*` has no store yet, and that is a deferral rather than an oversight.** Step 6 builds `project_capabilities`, keyed on the four capability ids, and nothing else per Project — so the eight repo-specific `release_provenance` leaves are classified but not writable, and `setLeaf` refuses them. They are per-repository settings for a feature (#922 owns release provenance) whose per-Project store lands with the surface that configures it. The same rule as the two blocks below: a tier without a mechanism is recorded as such rather than assigned quietly.
 
 Two further blocks are **not settled here**, and are marked so rather than assigned silently. `backup.*` describes Deployment backup policy but leads with a filesystem path that has no meaning on a Worker; #923 owns backup/restore and owns the per-target mechanism with it. `maintenance.*` is `PRAGMA optimize` and SQLite integrity checking, neither of which exists on D1 — a capability row without a per-target mechanism is how one target quietly loses a feature (§3.3), so it belongs with the self-hosted work in #913.
 
-## 8. Release blockers and non-blocking follow-ups
+## 8. Release blockers
 
-Every row in §7 is `Blk` except one: **#928** (native Cloudflare intelligence-provider integration), which #905 records as explicitly non-blocking.
+`myco/v2.0.0` publishes only when every gate below is satisfied on live data. Each is the plan's own gate (plan §8), and each fails by observation rather than by claim.
 
-The release gate is **#927**. `myco/v2.0.0` publishes only after every release-scoped child #906–#926 is closed with merged, current evidence and #927's full matrix is satisfied on **both** targets.
+1. **Fresh machine.** Plugin alone → a first tool answer; one installer command → first injection, a captured session **and a spore**, on Claude Code, Codex and Cursor.
+2. **Sandbox.** A sandbox holding only a join code captures a session and its plan.
+3. **External agent.** Copilot code review reads context over MCP with a grant and saves a spore whose author is the grant.
+4. **Workers.** A worker on a laptop and a worker on a VM each complete the three run outcomes with close evidence, on at least two harnesses.
+5. **Both front doors** pass the same ingest parity and eval suites.
+6. **KPIs.** The page shows the six measures with n, from live data.
+7. **After the sweep** (plan §5): `packages/myco/src/agent/` is gone, the capture surface is under 4,000 lines, no daemon, Compose, Containers, digest, Canopy, Team-Host or skill-lifecycle code remains, and the ledger gate in §9 passes.
+
+Every row in §7 is `Blk` except one: **#928** (native Cloudflare intelligence-provider integration), recorded as explicitly non-blocking.
 
 ## 9. The gate
 

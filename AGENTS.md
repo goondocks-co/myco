@@ -25,7 +25,7 @@ Myco captures project memory and serves it back through context injection, MCP t
 - `AGENTS.md` is the canonical rules file. Agent-specific instruction files should stay thin and point back here.
 - Hooks in `src/hooks/` must stay thin and delegate to the member seam (`src/member/`): build the envelope, append it to the spool, drain under the hook's own budget. Do not put business logic or long-running processing in hook entry points. The hooks+member import closure is gated (`tests/meta/member-seam-boundary.test.ts`): no daemon, grove, vault, db, host, or installer code behind a hook.
 - The server is the authority for event processing, session recording, spores, and digest work in 2.0 member mode; the daemon remains so for 1.4-era local vaults until Plan 6.
-- Recurring daemon work must go through the PowerManager. Do not add ad hoc polling timers.
+- Recurring Deployment work goes through the server wake tick; the member binary registers no timers. Do not add ad hoc polling timers on either side.
 - Session ID is the durable key. Do not tie persistent state to hook lifecycle events.
 - Write paths must be additive and idempotent. Do not overwrite or delete accumulated vault history casually.
 - Maintain one canonical source of truth per concern. Derived files, stubs, and mirrors should stay thin and point back to it.
@@ -65,7 +65,7 @@ Myco captures project memory and serves it back through context injection, MCP t
 Myco installs once at the per-user/global level for every symbiont; project-local files are an opt-in override, not the default.
 
 - All symbionts install at the agent's global config location (e.g. `~/.claude/settings.json`, `~/.codex/config.toml`). Per-project `.agents/` folders are no longer required.
-- Two global launchers — `~/.myco/launcher.cjs` (hooks) and `~/.myco/mcp-launcher.cjs` (MCP) — bridge every agent to the daemon. Project-local launchers override per-project when present.
+- Hooks invoke the `myco` binary directly by absolute path, written by the installer. MCP is remote HTTP served by the Deployment; there is no local launcher or bridge process.
 - Settings-merge for shared agent config files is required: Myco's hook/MCP/skills entries are upserted; user-pre-existing keys (e.g. Codex `[features].hooks`) must be preserved across install/uninstall cycles. Use audit-tracked TOML writes for Codex; atomic writes for every other agent.
 - Per-project overrides live in the dashboard's **Symbionts** page, not in CLI flags or hand-edited config.
 - Capture buffer lives under `~/.myco/buffer/<grove>/`. Do not reintroduce `.agents/myco-buffer/`; the migration walker archives any residue.
@@ -74,7 +74,7 @@ Myco installs once at the per-user/global level for every symbiont; project-loca
 
 Three actors interact with Myco. Mixing them is the source of architectural drift.
 
-- **Myco agent** — Myco's own LLM-powered intelligence harness (skill-survey, full-intelligence, plan generation, etc.). Does work users don't do. Has its own internal tool surface under `packages/myco/src/agent/tools/` — **not** the same as the MCP surface.
+- **Myco agent** — Myco's own intelligence runs, driven on a worker. Does work users don't do. Its tools come from the run-scoped MCP surface: a run-scoped credential whose allowlist is the task definition's, enforced at the MCP chokepoint — **not** the member's tool set.
 - **Symbiont** — coding agents like Claude Code, Cursor, opencode, Codex that integrate with Myco via hooks + the MCP bridge + installed skills. Symbionts **use Myco; they do not control it**.
 - **User** — the human. Uses Myco, controls Myco, reviews Myco-agent-generated data, and administers the Myco agent.
 
@@ -86,11 +86,11 @@ The surface each actor touches is fixed:
 | **Skills** (`packages/myco/skills/` built-in + vault-generated) | Symbionts | Workflows; may instruct the symbiont to invoke the CLI. |
 | **CLI** (`packages/myco/src/cli/`) | Users (primary) and Symbionts (via skills) | Bootstrap + admin. |
 | **UI** (`packages/myco/ui/`) | Users | Primary interface for ongoing work. |
-| **Agent harness tools** (`packages/myco/src/agent/tools/`) | Myco agent | Internal; not exposed via MCP. |
+| **Run tools** (the run-scoped MCP surface) | Myco agent | A run's allowlist from its task definition; writes attributed to the run. |
 
 **Non-rules** (these are violations to push back on):
 - Symbionts do **not** drive admin ops (restart, update, restore, backup). Add no MCP tool that does.
-- The Myco agent does **not** share a tool surface with Symbionts. If the harness needs a capability, add it under `agent/tools/`, not `tools/`.
+- The Myco agent does **not** share a tool surface with Symbionts. If a run needs a capability, add it to the run-scoped MCP surface and to the task definition's allowlist, not to the member tool set.
 - "Agent-native parity" is scoped to the agent's editorial work — not a license to mirror every UI button as an MCP tool.
 
 Full discussion: [`docs/architecture/actors-and-boundaries.md`](docs/architecture/actors-and-boundaries.md).
@@ -143,5 +143,5 @@ Every shared resource below has exactly one sanctioned writer. Adding a second e
 
 - When `capture.ignore_plan_dirs_in_git` is enabled, custom directories in `capture.plan_dirs` may be intentionally gitignored after capture into Myco.
 - Do not force-add files from intentionally gitignored custom plan directories unless the user explicitly asks.
-- When orienting in this codebase — finding a feature, locating files relevant to a change, or understanding an unfamiliar subsystem — use Myco first: call `myco tool call myco_cortex --json --input '{"op":"canopy_map"}'` as the CLI path, or `myco_cortex({"op":"canopy_map"})` via MCP when the host exposes Myco tools cleanly, before falling back to Glob/Grep.
+- Myco tools take a `project` argument; pass this repo's git remote (or the project id from session-start context) — writes without it are refused.
 <!-- myco:managed:end -->
