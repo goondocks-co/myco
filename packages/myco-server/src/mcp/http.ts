@@ -8,14 +8,14 @@
  * POST, one JSON response, per request. A body that is not JSON-RPC is refused
  * in the route's shape, the same envelope the pipeline's own refusals carry.
  *
- * A member and an External Agent grant reach the same answer through their
- * own context; the tool surface decides what each may call.
+ * A member, a run's credential and an External Agent grant reach the same
+ * answer through their own context; the tool surface decides what each may call.
  */
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import type { ServerEnv } from '../core/adapters.js';
-import type { GrantContext, RouteContext } from '../context.js';
+import type { GrantContext, RouteContext, RunContext } from '../context.js';
 import { SERVER_PROTOCOL } from '../constants.js';
-import { grantToolContext, toolContext, type ToolContext } from './context.js';
+import { grantToolContext, runToolContext, toolContext, type ToolContext } from './context.js';
 import { createProtocolServer } from './server.js';
 
 /** The refusal an `answered` route gives a body that is not JSON-RPC: the pipeline's shape, the `parse` classifier. */
@@ -35,6 +35,10 @@ export async function handleMcp(env: ServerEnv, ctx: RouteContext): Promise<Resp
 
 export async function handleGrantMcp(env: ServerEnv, ctx: GrantContext): Promise<Response> {
   return answerMcp(grantToolContext(env, ctx), ctx.body);
+}
+
+export async function handleRunMcp(env: ServerEnv, ctx: RunContext): Promise<Response> {
+  return answerMcp(runToolContext(env, ctx), ctx.body);
 }
 
 /** One JSON-RPC body answered for one principal. */

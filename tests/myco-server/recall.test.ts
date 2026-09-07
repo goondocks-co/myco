@@ -57,7 +57,7 @@ function store(): { db: RelationalStore; sqlite: Database } {
 const spore = (id: string, over: Partial<SporeInsert> = {}): SporeInsert => ({
   id, agentId: AGENT, sessionId: null, promptId: null, observationType: 'gotcha',
   content: `content of ${id}`, context: null, filePath: null, tags: null,
-  contentHash: null, properties: null, createdAt: NOW, ...over,
+  contentHash: null, properties: null, author: null, createdAt: NOW, ...over,
 });
 
 const compose = (

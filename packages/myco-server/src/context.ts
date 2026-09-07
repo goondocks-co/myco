@@ -1,4 +1,5 @@
 import type { RuntimeClaims } from './auth/tokens.js';
+import type { HeldRun } from './core/runs.js';
 import type { OwnerConfig } from './auth/owner/config.js';
 import type { OwnerSession } from './auth/owner/cookie.js';
 import type { DashboardMember } from './auth/identity-link.js';
@@ -43,6 +44,18 @@ export interface RouteContext {
   bodyBytes: number;
   now: number;
   /** The request's own origin: where a runtime this request dispatches calls back to, so one Deployment never sends its runtime to another. */
+  origin: string;
+}
+
+/** Context for a json route reached over a run's credential: the live run the credential dispatched, the run's own Project — the request's, whatever the header named — and the body the pipeline read. The member behind it is the harness member; nothing of a person travels here. */
+export interface RunContext {
+  projectId: string;
+  run: HeldRun;
+  memberId: string;
+  tokenId: string;
+  body: string;
+  bodyBytes: number;
+  now: number;
   origin: string;
 }
 

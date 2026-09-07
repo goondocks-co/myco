@@ -64,6 +64,8 @@ export interface SporeInsert {
   tags: string | null;
   contentHash: string | null;
   properties: string | null;
+  /** The principal instance that wrote it: a member id, a run id; null on rows written before the column existed. */
+  author: string | null;
   createdAt: number;
 }
 
@@ -81,6 +83,7 @@ export interface SporeRow {
   tags: string | null;
   contentHash: string | null;
   properties: string | null;
+  author: string | null;
   createdAt: number;
   updatedAt: number | null;
   embedded: number;
@@ -101,7 +104,7 @@ export interface ListSporesOptions {
 
 const COLUMNS = `id, agent_id AS agentId, session_id AS sessionId, prompt_id AS promptId,
   observation_type AS observationType, status, content, context, importance,
-  file_path AS filePath, tags, content_hash AS contentHash, properties,
+  file_path AS filePath, tags, content_hash AS contentHash, properties, author,
   created_at AS createdAt, updated_at AS updatedAt, embedded`;
 
 /**
@@ -114,12 +117,12 @@ const COLUMNS = `id, agent_id AS agentId, session_id AS sessionId, prompt_id AS 
 export async function insertSpore(db: RelationalStore, scope: ReadScope, row: SporeInsert): Promise<SporeRow | null> {
   return db.prepare(`INSERT INTO spores
       (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, context,
-       importance, file_path, tags, content_hash, properties, created_at, embedded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+       importance, file_path, tags, content_hash, properties, author, created_at, embedded)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
       RETURNING ${COLUMNS}`)
     .bind(scope.projectId, row.id, row.agentId, row.sessionId, row.promptId, row.observationType,
       row.status ?? 'active', row.content, row.context, row.importance ?? 5, row.filePath,
-      row.tags, row.contentHash, row.properties, row.createdAt)
+      row.tags, row.contentHash, row.properties, row.author, row.createdAt)
     .first<SporeRow>();
 }
 
@@ -191,6 +194,8 @@ export interface ResolutionEventInsert {
   newSporeId: string | null;
   reason: string | null;
   sessionId: string | null;
+  /** The principal instance that resolved it, as `SporeInsert.author`. */
+  author: string | null;
   createdAt: number;
 }
 
@@ -211,11 +216,11 @@ export async function resolveSpore(
     db.prepare(`UPDATE spores SET status = ?, updated_at = ? WHERE project_id = ? AND id = ? RETURNING id`)
       .bind(status, now, scope.projectId, event.sporeId),
     db.prepare(`INSERT INTO resolution_events
-        (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, created_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+        (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, author, created_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM spores WHERE project_id = ? AND id = ?)`)
       .bind(scope.projectId, event.id, event.agentId, event.sporeId, event.action,
-        event.newSporeId, event.reason, event.sessionId, event.createdAt,
+        event.newSporeId, event.reason, event.sessionId, event.author, event.createdAt,
         scope.projectId, event.sporeId),
   ]);
   return moved.results.length === 1;
@@ -278,20 +283,20 @@ export async function consolidateSpores(
 ): Promise<{ wisdom: SporeRow | null; consolidated: number }> {
   const insert = db.prepare(`INSERT INTO spores
       (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, context,
-       importance, file_path, tags, content_hash, properties, created_at, embedded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+       importance, file_path, tags, content_hash, properties, author, created_at, embedded)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
       RETURNING ${COLUMNS}`)
     .bind(scope.projectId, wisdom.id, wisdom.agentId, wisdom.sessionId, wisdom.promptId, wisdom.observationType,
       wisdom.status ?? 'active', wisdom.content, wisdom.context, wisdom.importance ?? 5, wisdom.filePath,
-      wisdom.tags, wisdom.contentHash, wisdom.properties, wisdom.createdAt);
+      wisdom.tags, wisdom.contentHash, wisdom.properties, wisdom.author, wisdom.createdAt);
   const moves = sources.flatMap((sporeId) => [
     db.prepare(`UPDATE spores SET status = 'consolidated', updated_at = ? WHERE project_id = ? AND id = ? AND status = 'active' RETURNING id`)
       .bind(now, scope.projectId, sporeId),
     db.prepare(`INSERT INTO resolution_events
-        (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, created_at)
-        SELECT ?, ?, ?, ?, 'consolidate', ?, ?, ?, ?
+        (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, author, created_at)
+        SELECT ?, ?, ?, ?, 'consolidate', ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM spores WHERE project_id = ? AND id = ? AND status = 'consolidated' AND updated_at = ?)`)
-      .bind(scope.projectId, crypto.randomUUID(), event.agentId, sporeId, wisdom.id, event.reason, event.sessionId, event.createdAt,
+      .bind(scope.projectId, crypto.randomUUID(), event.agentId, sporeId, wisdom.id, event.reason, event.sessionId, event.author, event.createdAt,
         scope.projectId, sporeId, now),
   ]);
   const results = await db.batch([insert, ...moves]);

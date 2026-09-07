@@ -18,7 +18,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { HARNESS_MEMBER_ID } from '../core/harness.js';
 import { staleAfter } from '../core/jobs-run.js';
-import { getRun, type RunRow } from '../core/runs.js';
+import { getRun, liveRunsOfCredential, type HeldRun, type RunRow } from '../core/runs.js';
 
 /** The session a run's recorded context names, or null when it names none. */
 export function sessionNamedByRun(run: RunRow): string | null {
@@ -32,13 +32,35 @@ export function sessionNamedByRun(run: RunRow): string | null {
   }
 }
 
+/** True while a run's runtime is taken to be alive: the row is `running` and this instant is inside its own bound. One predicate serves the run routes and the run principal on MCP. */
+export function isLiveRun(run: RunRow, now: number): boolean {
+  if (run.status !== 'running') return false;
+  const attemptAt = run.resumedAt ?? run.startedAt;
+  return attemptAt !== null && staleAfter(attemptAt, run.runContext) > now;
+}
+
 /** The live run of one of these tasks that this caller holds, or null. */
 export async function heldRun(env: ServerEnv, ctx: RouteContext, runId: string, tasks: readonly string[]): Promise<RunRow | null> {
   if (ctx.memberId !== HARNESS_MEMBER_ID) return null;
   const run = await getRun(env.db, { projectId: ctx.projectId }, runId);
   if (run === null || run.dispatchedBy !== ctx.tokenId) return null;
-  if (run.task === null || !tasks.includes(run.task) || run.status !== 'running') return null;
-  const attemptAt = run.resumedAt ?? run.startedAt;
-  if (attemptAt === null || staleAfter(attemptAt, run.runContext) <= ctx.now) return null;
+  if (run.task === null || !tasks.includes(run.task) || !isLiveRun(run, ctx.now)) return null;
   return run;
+}
+
+/**
+ * The one live run a harness credential holds, in whichever Project, or null.
+ *
+ * A credential is minted per launch and a row names it in `dispatched_by`, so a
+ * live run is found by the credential alone and the request needs to name no
+ * run id. Exactly one row may hold it: no write path gives two rows one
+ * credential, so two live rows is an ambiguity this answers as none held rather
+ * than by choosing. A credential of any other member holds no run here, whatever
+ * `dispatched_by` says — a person's own credential that claimed a run stays a
+ * member's.
+ */
+export async function heldRunOfCredential(env: ServerEnv, auth: { memberId: string; tokenId: string }, now: number): Promise<HeldRun | null> {
+  if (auth.memberId !== HARNESS_MEMBER_ID) return null;
+  const live = (await liveRunsOfCredential(env.db, auth.tokenId)).filter((run) => isLiveRun(run, now));
+  return live.length === 1 ? live[0] : null;
 }

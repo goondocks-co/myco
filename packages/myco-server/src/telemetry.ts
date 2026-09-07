@@ -61,6 +61,7 @@ export const CLASSIFIERS = [
   'refresh_too_early', 'lineage_expired',
   'enrollment_unknown', 'enrollment_used', 'enrollment_expired', 'enrollment_revoked', 'identity_claimed',
   'project_archived',
+  'run_scope', 'no_run', 'project_mismatch',
 ] as const;
 export type Classifier = (typeof CLASSIFIERS)[number];
 

@@ -39,7 +39,7 @@ async function setup() {
       id, agentId: 'myco-agent', sessionId: null, promptId: null,
       observationType: over.type ?? 'gotcha', status: (over.status ?? 'active') as 'active',
       content: over.content ?? `${id} body`, context: null, filePath: null, tags: null,
-      contentHash: null, properties: null, createdAt: over.createdAt ?? NOW - 1_000,
+      contentHash: null, properties: null, author: null, createdAt: over.createdAt ?? NOW - 1_000,
     });
 
   const post = async (token: string, path: string, body: unknown, extra: Record<string, string> = {}) =>

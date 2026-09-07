@@ -21,6 +21,13 @@ import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { EXTERNAL_TOOLS, externalDefinitions } from '@myco-server-worker/mcp/external.js';
 import { grantToolContext, memberOf } from '@myco-server-worker/mcp/context.js';
 import { handlePlans } from '@myco-server-worker/mcp/tools/plans.js';
+import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
+import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { recordDispatch } from '@myco-server-worker/core/runs.js';
+import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
+import { NO_OP, TOOL_REGISTRY } from '@myco-server-worker/mcp/registry.js';
+import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
+import { NO_LIVE_RUN, RUN_PROJECT_MISMATCH, RUN_SCOPE } from '@myco-server-worker/pipeline.js';
 import { envelope, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 
 const rpc = (method: string, params?: unknown, id: number = 1) => JSON.stringify({ jsonrpc: '2.0', id, method, ...(params === undefined ? {} : { params }) });
@@ -503,5 +510,179 @@ describe('POST /mcp over an External Agent grant', () => {
     const tools = lines.map((l) => JSON.parse(l)).filter((e) => e.kind === 'mcp_tool').map((e) => ({ tool: e.tool, status: e.status, grantId: e.grantId }));
     expect(tools).toEqual([{ tool: 'unknown', status: 'unknown_tool', grantId: grant.id }, { tool: 'myco_spores', status: 'unknown_tool', grantId: grant.id }]);
     expect(() => memberOf(grantToolContext(serverEnv, { projectId: 'proj_1', grantId: grant.id, body: '', now: 0 }), 'myco_plans')).toThrow('Unknown tool: myco_plans');
+  });
+});
+
+/**
+ * The run principal: a credential the dispatcher minted for one run, presented
+ * to `/mcp`. Bound to the run's Project, admitted to the `(tool, op)` pairs its
+ * task declares and to nothing else, refused on every member route that is not
+ * the run-control plane, and every write it makes names the run as author.
+ */
+const RUN_NOW = 1_700_000_000_000;
+const SWEEP = 'supersession-sweep';
+
+async function runSetup() {
+  const e = sqliteEnv();
+  e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [RUN_NOW]);
+  e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at)
+                VALUES ('proj_1', 'sess_1', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [RUN_NOW - 10_000, RUN_NOW, RUN_NOW - 10_000, RUN_NOW]);
+  e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+                VALUES ('proj_1', 'sess_1', 'p_1', 'e_1', 'hello', 'user', 'h_1', ?, ?, 'tok_1', ?)`, [RUN_NOW - 5_000, RUN_NOW - 5_000, RUN_NOW - 5_000]);
+  await ensureMember(e.db, HARNESS_MEMBER_ID, Date.now(), 'harness runtime');
+  const harness = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, Date.now());
+  const member = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+
+  /** A dispatched row for this credential; `running` unless the test wants it left `pending`. */
+  const dispatch = async (credential: { tokenId: string }, runId: string, task: string, over: { sessionId?: string | null; status?: string; projectId?: string; startedAt?: number; dryRun?: boolean } = {}) => {
+    const projectId = over.projectId ?? 'proj_1';
+    const runContext = JSON.stringify({ ...(over.sessionId === null ? {} : { session_id: over.sessionId ?? 'sess_1' }), timeoutSeconds: 300 });
+    expect(await recordDispatch(e.db, { projectId }, { id: runId, agentId: 'myco-agent', task, provider: 'anthropic', model: null, runContext, dispatchedBy: credential.tokenId, startedAt: over.startedAt ?? Date.now(), dryRun: over.dryRun })).toBe(true);
+    e.sqlite.run(`UPDATE agent_runs SET status = ? WHERE project_id = ? AND id = ?`, [over.status ?? 'running', projectId, runId]);
+  };
+  const call = async (token: string, name: string, args: Record<string, unknown> = {}, extra: Record<string, string> = {}) => {
+    const res = await worker.fetch(post(token, rpc('tools/call', { name, arguments: args }), extra), e.env);
+    const body = await res.json() as any;
+    return { status: res.status, body, result: body.result?.structuredContent?.result, error: body.error };
+  };
+  const list = async (token: string, extra: Record<string, string> = {}) => {
+    const res = await worker.fetch(post(token, rpc('tools/list'), extra), e.env);
+    return { status: res.status, body: await res.json() as any };
+  };
+  const writes = (from: number) => e.executed.slice(from).filter((sql) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql));
+  return { ...e, harness, member, dispatch, call, list, writes };
+}
+
+/** Every `(tool, op)` the registry keys, as the registry resolves it. */
+const everyRegistryCall = (): Array<{ tool: string; op: string; args: Record<string, unknown> }> =>
+  Object.entries(TOOL_REGISTRY).flatMap(([tool, entry]) =>
+    Object.keys(entry.ops).map((op) => ({ tool, op, args: op === NO_OP ? { query: 'x' } : { op, id: 'x', content: 'x', type: 'gotcha', query: 'x' } })));
+
+describe('POST /mcp over a run credential', () => {
+  it('lists exactly the run surface its task declares, with each op enum narrowed, and lists nothing for a task with no mapped tools', async () => {
+    const { harness, dispatch, list } = await runSetup();
+    await dispatch(harness, 'run_1', SWEEP);
+    const listed = await list(harness.token);
+    expect(listed.status).toBe(200);
+    const expected = runDefinitions(runAllowlist(TASK_TOOLS[SWEEP], { dryRun: false }));
+    expect(listed.body.result.tools).toEqual(expected.map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema, annotations: d.annotations })));
+    expect(listed.body.result.tools.map((t: any) => t.name)).toEqual(['myco_spores']);
+    expect(listed.body.result.tools[0].inputSchema.properties.op.enum.sort()).toEqual(['get', 'list', 'obsolete', 'save', 'supersede']);
+
+    for (const task of ['title-summary', 'container-smoke']) {
+      const h = await runSetup();
+      await h.dispatch(h.harness, 'run_x', task);
+      expect({ task, tools: (await h.list(h.harness.token)).body.result.tools }).toEqual({ task, tools: [] });
+      const from = h.executed.length;
+      expect({ task, code: (await h.call(h.harness.token, 'myco_spores', { op: 'list' })).error.data.code }).toEqual({ task, code: 'unknown_tool' });
+      expect({ task, writes: h.writes(from) }).toEqual({ task, writes: [] });
+    }
+  });
+
+  it('refuses every (tool, op) the registry keys outside the run\'s allowlist as a tool that does not exist, writing nothing', async () => {
+    const { harness, dispatch, call, executed, writes } = await runSetup();
+    await dispatch(harness, 'run_1', SWEEP);
+    const allow = runAllowlist(TASK_TOOLS[SWEEP], { dryRun: false });
+    const outside = everyRegistryCall().filter(({ tool, op }) => !(allow.get(tool as any)?.has(op) ?? false));
+    expect(outside.length).toBeGreaterThan(10);
+    expect(outside.map((c) => `${c.tool}:${c.op}`)).toEqual(expect.arrayContaining(['myco_plans:save', 'myco_cortex:digest', 'myco_agent:runs', 'myco_search:*', 'myco_spores:consolidate']));
+    const from = executed.length;
+    for (const { tool, op, args } of outside) {
+      const answered = await call(harness.token, tool, args);
+      expect({ tool, op, code: answered.error?.data?.code }).toEqual({ tool, op, code: 'unknown_tool' });
+    }
+    expect(writes(from)).toEqual([]);
+  });
+
+  it('is bound to the run\'s Project: a header naming another is refused before any handler, a project_id naming another is a tool that does not exist, and its own is admitted', async () => {
+    const { harness, dispatch, call, list } = await runSetup();
+    await dispatch(harness, 'run_1', SWEEP);
+    const foreign = await list(harness.token, { [PROJECT_HEADER]: 'proj_2' });
+    expect({ status: foreign.status, code: foreign.body.error.data.code, message: foreign.body.error.message }).toEqual({ status: 400, code: 'project_mismatch', message: RUN_PROJECT_MISMATCH });
+    expect((await call(harness.token, 'myco_spores', { op: 'list', project_id: 'proj_2' })).error.data.code).toBe('unknown_tool');
+    expect((await call(harness.token, 'myco_spores', { op: 'list', project_id: 'proj_nowhere' })).error.data.code).toBe('unknown_tool');
+    expect((await call(harness.token, 'myco_spores', { op: 'list', project_id: 'proj_1' })).result).toMatchObject({ total: 0 });
+  });
+
+  it('holds no surface without exactly one live run: none, pending, completed, stale, or two rows naming one credential', async () => {
+    const none = await runSetup();
+    const answered = await none.list(none.harness.token);
+    expect({ status: answered.status, code: answered.body.error.data.code, message: answered.body.error.message }).toEqual({ status: 400, code: 'no_run', message: NO_LIVE_RUN });
+
+    const pending = await runSetup();
+    await pending.dispatch(pending.harness, 'run_1', SWEEP, { status: 'pending' });
+    expect((await pending.list(pending.harness.token)).body.error.data.code).toBe('no_run');
+
+    const completed = await runSetup();
+    await completed.dispatch(completed.harness, 'run_1', SWEEP, { status: 'completed' });
+    expect((await completed.list(completed.harness.token)).body.error.data.code).toBe('no_run');
+
+    const stale = await runSetup();
+    await stale.dispatch(stale.harness, 'run_1', SWEEP, { startedAt: Date.now() - 3_600_000 });
+    expect((await stale.list(stale.harness.token)).body.error.data.code).toBe('no_run');
+
+    // No write path gives two rows one credential (run-admission.ts); the row is inserted by hand to pin the fail-closed answer.
+    const two = await runSetup();
+    await two.dispatch(two.harness, 'run_1', SWEEP);
+    await two.dispatch(two.harness, 'run_2', SWEEP, { projectId: 'proj_2', sessionId: null });
+    expect((await two.list(two.harness.token)).body.error.data.code).toBe('no_run');
+  });
+
+  it('attributes every write to the run: its agent, the run id as author, the dispatch-named session and its latest prompt; a member\'s write names the member', async () => {
+    const { harness, member, dispatch, call, sqlite } = await runSetup();
+    await dispatch(harness, 'run_1', SWEEP);
+    const saved = (await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'seen by the run' })).result;
+    expect(sqlite.query(`SELECT agent_id, author, session_id, prompt_id FROM spores WHERE id = ?`).get(saved.id)).toEqual({ agent_id: 'myco-agent', author: 'run_1', session_id: 'sess_1', prompt_id: 'p_1' });
+    const second = (await call(harness.token, 'myco_spores', { op: 'save', type: 'decision', content: 'the successor' })).result;
+    expect((await call(harness.token, 'myco_spores', { op: 'supersede', old_spore_id: saved.id, new_spore_id: second.id, reason: 'replaced' })).result.status).toBe('superseded');
+    expect(sqlite.query(`SELECT agent_id, author, session_id FROM resolution_events WHERE spore_id = ?`).get(saved.id)).toEqual({ agent_id: 'myco-agent', author: 'run_1', session_id: 'sess_1' });
+    expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', session_id: 'sess_other' })).result).toEqual({ ok: false, error: 'session_id not found' });
+    expect((await call(harness.token, 'myco_spores', { op: 'get', id: saved.id })).result.author).toBe('run_1');
+
+    const mine = (await call(member.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'seen by a person' })).result;
+    expect(sqlite.query(`SELECT agent_id, author FROM spores WHERE id = ?`).get(mine.id)).toEqual({ agent_id: 'user', author: 'mem_machine_1' });
+  });
+
+  it('writes with no session, still authored by the run, when the dispatch names a session the Project does not hold', async () => {
+    const { harness, dispatch, call, sqlite } = await runSetup();
+    await dispatch(harness, 'run_1', SWEEP, { sessionId: 'sess_missing' });
+    const saved = (await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'orphaned dispatch' })).result;
+    expect(sqlite.query(`SELECT author, session_id FROM spores WHERE id = ?`).get(saved.id)).toEqual({ author: 'run_1', session_id: null });
+  });
+
+  it('gives a dry run its reads and none of its writes', async () => {
+    const { harness, dispatch, call, list } = await runSetup();
+    await dispatch(harness, 'run_1', SWEEP, { dryRun: true });
+    expect((await list(harness.token)).body.result.tools[0].inputSchema.properties.op.enum.sort()).toEqual(['get', 'list']);
+    expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x' })).error.data.code).toBe('unknown_tool');
+    expect((await call(harness.token, 'myco_spores', { op: 'list' })).result).toMatchObject({ total: 0 });
+  });
+
+  it('is refused on every member route that is not the run-control plane, live run or not, in the route\'s shape and writing nothing, while a member is admitted', async () => {
+    const { env, harness, member, dispatch, executed, writes } = await runSetup();
+    await dispatch(harness, 'run_1', SWEEP);
+    const from = executed.length;
+    const asJson = async (token: string, path: string, body: unknown) => {
+      const res = await worker.fetch(new Request(`https://s${path}`, { method: 'POST', headers: memberHeaders(token), body: JSON.stringify(body) }), env);
+      return { status: res.status, body: await res.json() as any };
+    };
+    for (const [path, body, shape] of [
+      ['/spores/save', { id: 'sp_x', agentId: 'user', observationType: 'gotcha', content: 'x' }, 'persisted'],
+      ['/spores/list', {}, 'persisted'],
+      ['/events', [envelope()], 'persisted'],
+      ['/context/prompt', { sessionId: 'sess_1', promptId: 'p_1' }, 'persisted'],
+      ['/tokens/refresh', {}, 'refreshed'],
+    ] as const) {
+      const answered = await asJson(harness.token, path, body);
+      expect({ path, status: answered.status, body: answered.body }).toEqual({ path, status: 200, body: { [shape]: false, code: 'run_scope', reason: RUN_SCOPE } });
+    }
+    const blob = await worker.fetch(new Request(`https://s/blobs/${'a'.repeat(64)}`, { method: 'POST', headers: memberHeaders(harness.token, { 'content-type': 'text/plain; charset=utf-8', 'content-length': '1' }), body: new Uint8Array([1]) }), env);
+    expect(await blob.json()).toEqual({ stored: false, code: 'run_scope', reason: RUN_SCOPE });
+    expect(writes(from)).toEqual([]);
+    expect((await asJson(member.token, '/spores/list', {})).body.persisted).toBe(true);
+
+    const idle = await runSetup();
+    const idleAnswer = await worker.fetch(new Request('https://s/spores/list', { method: 'POST', headers: memberHeaders(idle.harness.token), body: '{}' }), idle.env);
+    expect(await idleAnswer.json()).toEqual({ persisted: false, code: 'run_scope', reason: RUN_SCOPE });
   });
 });

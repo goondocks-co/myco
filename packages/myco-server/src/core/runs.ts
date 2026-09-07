@@ -474,14 +474,27 @@ export interface RunRow {
   dispatchedBy: string | null;
 }
 
-const RUN_SELECT = `SELECT id, agent_id AS agentId, task, status, run_context AS runContext, started_at AS startedAt,
+const RUN_COLUMNS = `id, agent_id AS agentId, task, status, run_context AS runContext, started_at AS startedAt,
     resumed_at AS resumedAt, completed_at AS completedAt, error, checkpoints,
     resumable, resume_status AS resumeStatus, resume_attempts AS resumeAttempts,
-    dry_run AS dryRun, dispatched_by AS dispatchedBy
-  FROM agent_runs WHERE project_id = ? AND id = ?`;
+    dry_run AS dryRun, dispatched_by AS dispatchedBy`;
+
+const RUN_SELECT = `SELECT ${RUN_COLUMNS} FROM agent_runs WHERE project_id = ? AND id = ?`;
 
 export async function getRun(db: RelationalStore, scope: ReadScope, runId: string): Promise<RunRow | null> {
   return db.prepare(RUN_SELECT).bind(scope.projectId, runId).first<RunRow>();
+}
+
+/** A run row with the Project it belongs to: what a read keyed by credential answers, since a credential spans every Project of its Deployment. */
+export type HeldRun = RunRow & { projectId: string };
+
+/** Every `running` row this credential dispatched, in any Project — read by the credential alone, which `idx_agent_runs_credential` serves. */
+export async function liveRunsOfCredential(db: RelationalStore, tokenId: string): Promise<HeldRun[]> {
+  const { results } = await db
+    .prepare(`SELECT project_id AS projectId, ${RUN_COLUMNS} FROM agent_runs WHERE dispatched_by = ? AND status = 'running'`)
+    .bind(tokenId)
+    .all<HeldRun>();
+  return results;
 }
 
 /** The hash of the material the server built this run's prompt from, as its context records it. */
