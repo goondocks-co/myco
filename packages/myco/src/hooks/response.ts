@@ -33,6 +33,16 @@ export interface HookResponse {
   promptId?: string;
 }
 
+/**
+ * Every field a manifest may map to a wire name, as a value rather than a
+ * type: a `hookResponse.fieldNames` key is checked against this list, so a
+ * typo maps nothing and is caught rather than silently emitting no field.
+ */
+export const SEMANTIC_FIELDS = [
+  'additionalContext', 'additionalSteps', 'continue', 'stopReason',
+  'userMessage', 'followupMessage', 'systemMessage', 'promptId',
+] as const satisfies readonly (keyof HookResponse)[];
+
 type SemanticField = keyof HookResponse;
 
 /**

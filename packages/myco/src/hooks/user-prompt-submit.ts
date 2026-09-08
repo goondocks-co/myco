@@ -8,6 +8,7 @@ import { firstHeading, sha256Text } from '../member/text.js';
 import type { HookResponse } from './response.js';
 import { planTagEnvelopeRegex } from '../plans/tag-envelopes.js';
 import { HOOK_CONFIG } from './hook-config.generated.js';
+import { transcriptWritesTurnRows } from './turn-rows.js';
 
 const RECALL_PATH = '/context/prompt';
 
@@ -56,7 +57,7 @@ export async function main(opts: HookMainOptions = {}) {
     // lines, and the server's parse is the only writer. Shipping as well would
     // mint a second event for the same row — the ids never meet on the raw
     // insert, so only the projection key hides the duplicate.
-    const transcriptWritesRows = HOOK_CONFIG[agent]?.capabilities.turnRowSource === 'transcript';
+    const transcriptWritesRows = transcriptWritesTurnRows(agent);
     const events: OutboundEvent[] = transcriptWritesRows
       ? []
       : [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];

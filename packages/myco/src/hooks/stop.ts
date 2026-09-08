@@ -4,6 +4,7 @@ import { responseEvent, type OutboundEvent } from '../member/envelope.js';
 import { planBackstop, planRootFor } from '../member/plan-files.js';
 import { readSessionState, type SessionState } from '../member/session-state.js';
 import { deriveTranscriptCapture, shipTranscriptSegments, transcriptPointerFor } from '../member/transcript.js';
+import { transcriptWritesTurnRows } from './turn-rows.js';
 
 export type StopPhase = 'response' | 'transcript';
 const ALL_PHASES: readonly StopPhase[] = ['response', 'transcript'];
@@ -63,7 +64,9 @@ export async function main(opts: HookMainOptions = {}) {
     const phases = new Set(parsePhasesArg(run.argv));
     const events: OutboundEvent[] = [];
     const transcript = phases.has('transcript') ? transcriptPhase(run) : undefined;
-    if (phases.has('response')) {
+    // The transcript already holds this reply for a symbiont that keeps one,
+    // and the parse derives it; shipping here would write the turn twice.
+    if (phases.has('response') && !transcriptWritesTurnRows(run.agent)) {
       const hookText = typeof run.input.lastResponse === 'string' ? run.input.lastResponse.trim() : '';
       const text = hookText || transcript?.lastAssistantText?.trim() || '';
       if (text) {

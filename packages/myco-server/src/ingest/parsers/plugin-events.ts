@@ -11,8 +11,11 @@
  * line carrying an unknown `v` fails the segment. Skipping such a line would
  * drop a turn with nothing to show for it.
  *
- * A `prompt` line carries the id the member's own hook minted, so the row the
- * parse writes is the row the member named. Nothing derives a prompt id.
+ * A `prompt` line normally carries the id the member's own hook minted, so the
+ * row the parse writes is the row the member named. A line written while the
+ * hook could not answer carries none, and its id is derived from the byte that
+ * produced it — the turn is still the user's work, and dropping it loses a
+ * prompt at the moment capture is already degraded.
  */
 import {
   lineTime, offsetIdFor, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
@@ -94,8 +97,8 @@ export function pluginEventsParser(options: {
 
         if (type === 'prompt') {
           const text = typeof line.text === 'string' ? strip(line.text) : '';
-          const named = str(line.promptId);
-          if (text.trim() === '' || named === undefined) continue;
+          if (text.trim() === '') continue;
+          const named = str(line.promptId) ?? await offsetIdFor('prompt', input.sessionId, offset);
           promptId = named;
           events.push({
             kind: 'prompt',

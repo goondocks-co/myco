@@ -21,7 +21,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'bun:test';
 
-import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { parseOnce } from '@myco-server-worker/ingest/parse.js';
 import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -30,6 +29,7 @@ import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
 import { deriveTranscriptCapture } from '@myco/member/transcript.js';
 import { emptySessionState } from '@myco/member/session-state.js';
+import { runHook } from '../member/helpers/hooks.js';
 import type { Database } from 'bun:sqlite';
 
 const MACHINE = 'mach_1';
@@ -116,6 +116,61 @@ describe('native plugin transcripts land one row per fact', () => {
     }, NOW);
     expect(count(sqlite, 'events')).toBe(before);
     expect(count(sqlite, 'prompt_batches')).toBe(1);
+  });
+});
+
+describe('the hook path itself, end to end', () => {
+  /**
+   * The gates above read a hand-written transcript, which proves the parse but
+   * not the hook that feeds it. This drives the real `user-prompt-submit`
+   * through the same runner a harness invokes, for a transcript-carrying agent
+   * and for one whose hooks still ship, and reads what each left on the spool.
+   *
+   * The contrast is the gate: a capability that stopped being read would show
+   * up as the two agents behaving alike, which no single-agent assertion sees.
+   */
+  const runFor = async (symbiont: string): Promise<{ stdout: string; posted: string[] }> => {
+    const held = { ...process.env };
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hookarm-'));
+    Object.assign(process.env, {
+      MYCO_SERVER_URL: 'https://example.invalid',
+      MYCO_MEMBER_TOKEN: 'A'.repeat(43),
+      MYCO_PROJECT: PROJECT,
+      MYCO_HOME: home,
+    });
+    try {
+      const posted: string[] = [];
+      const fetchImpl = (async (url: string, init?: { body?: string }) => {
+        if (String(url).endsWith('/events') && typeof init?.body === 'string') {
+          posted.push((JSON.parse(init.body) as { kind: string }).kind);
+        }
+        return new Response(JSON.stringify({ persisted: true }), { status: 200 });
+      }) as never;
+      // A transcript path is present in every real invocation, and Claude
+      // Code's own manifest drops a prompt that arrives without one.
+      const transcript = path.join(home, 'transcript.jsonl');
+      fs.writeFileSync(transcript, '');
+      const { stdout } = await runHook(
+        'user-prompt-submit',
+        { session_id: SESSION, prompt: 'add a retry', transcript_path: transcript, cwd: home },
+        { fetch: fetchImpl, symbiont, credential: 'env' },
+      );
+      return { stdout, posted };
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in held)) delete process.env[key];
+      Object.assign(process.env, held);
+    }
+  };
+
+  it('returns a prompt id and writes no prompt for a transcript-carrying agent', async () => {
+    const { stdout, posted } = await runFor('opencode');
+    expect(typeof (JSON.parse(stdout || '{}') as { promptId?: string }).promptId).toBe('string');
+    expect(posted).toEqual([]);
+  });
+
+  it('writes the prompt for an agent whose hooks still carry its turn rows', async () => {
+    const { posted } = await runFor('claude-code');
+    expect(posted).toContain('prompt');
   });
 });
 

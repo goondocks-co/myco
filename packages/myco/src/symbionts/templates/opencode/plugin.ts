@@ -17,7 +17,7 @@
  */
 // myco:plugin-marker — Myco owns this file; `myco remove` deletes it while it carries this line.
 import { execFileSync } from "node:child_process";
-import { accessSync, appendFileSync, constants as fsConstants, mkdirSync, readFileSync, statSync } from "node:fs";
+import { accessSync, appendFileSync, closeSync, constants as fsConstants, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -40,8 +40,8 @@ import { dirname, join, resolve } from "node:path";
 //
 // Contract: the containing file has already defined imports for
 //   `readFileSync`, `appendFileSync`, `mkdirSync`, `statSync`, `accessSync`,
-//   `constants as fsConstants`, `join`, `dirname`, `resolve`, `homedir`,
-//   `execFile`/`execFileSync`
+//   `openSync`, `closeSync`, `constants as fsConstants`, `join`, `dirname`,
+//   `resolve`, `homedir`, `execFileSync`
 // and nothing else from the outer file.
 //
 // Export discipline: opencode's legacy-plugin loader throws on any module
@@ -192,6 +192,40 @@ function transcriptPathFor(directory: string, agent: string, sessionId: string):
 }
 
 /**
+ * Claim this session's transcript for this module instance.
+ *
+ * A project-local plugin and a global one can both load for one session, and
+ * both are legitimately Myco's. Two writers would mint two prompt ids and
+ * append two lines per turn under one transcript identity, which the server
+ * reads as real content — the doubling this design exists to remove, arriving
+ * by install topology instead.
+ *
+ * The claim is the file: the first writer creates it exclusively and records
+ * the claim, and a second instance finding a file it did not create stays
+ * silent for that session. `wx` is atomic on every platform Myco installs on,
+ * so the race resolves without a lock file to clean up.
+ */
+const claimedSessions = new Map<string, boolean>();
+
+function holdsTranscriptClaim(directory: string, agent: string, sessionId: string): boolean {
+  const held = claimedSessions.get(sessionId);
+  if (held !== undefined) return held;
+  const filePath = transcriptPathFor(directory, agent, sessionId);
+  let claimed: boolean;
+  try {
+    mkdirSync(dirname(filePath), { recursive: true });
+    closeSync(openSync(filePath, "wx"));
+    claimed = true;
+  } catch {
+    // Either another instance created it, or the directory is unwritable; both
+    // mean this instance does not write.
+    claimed = false;
+  }
+  claimedSessions.set(sessionId, claimed);
+  return claimed;
+}
+
+/**
  * Append one record to the transcript.
  *
  * The `session` record must be written first and stay small: project
@@ -206,9 +240,9 @@ function appendTranscriptLine(
   sessionId: string,
   record: Record<string, unknown>,
 ): void {
+  if (!holdsTranscriptClaim(directory, agent, sessionId)) return;
   const filePath = transcriptPathFor(directory, agent, sessionId);
   try {
-    mkdirSync(dirname(filePath), { recursive: true });
     appendFileSync(filePath, `${JSON.stringify({ v: MYCO_TRANSCRIPT_FORMAT, ...record })}\n`, "utf-8");
   } catch {
     // A transcript that cannot be written loses capture for this turn. It must
@@ -218,6 +252,14 @@ function appendTranscriptLine(
 
 /**
  * Run one Myco hook verb, handing it `payload` on stdin.
+ *
+ * The resolved home travels to the binary as `MYCO_HOME`. A spawned binary
+ * resolves its own home from the environment and never walks the project's
+ * `runtime.home` pin, so a pinned project would otherwise write its transcript
+ * to the pinned home while the hook's spool, registry and retention used the
+ * default one. One side resolves the home and tells the other. This mirrors
+ * the same injection the installer makes for an MCP server entry, and for the
+ * same reason.
  *
  * Returns the hook's parsed response, or null when Myco is not installed, the
  * binary fails, or the output is not the expected shape. Never throws and
@@ -236,6 +278,7 @@ function runMycoHook(
       ["hook", verb, "--symbiont", agent, "--credential", MYCO_CREDENTIAL_SOURCE],
       {
         cwd: directory,
+        env: { ...process.env, MYCO_HOME: resolveMycoHome(directory) },
         input: JSON.stringify(payload),
         timeout: MYCO_HOOK_TIMEOUT_MS,
         maxBuffer: 4 * 1024 * 1024,
@@ -417,8 +460,12 @@ export const MycoPlugin = async ({
         prompt: text,
         cwd: root,
       });
+      // A hook that did not answer leaves this turn with no id. Keeping the
+      // previous turn's would file this turn's tool and response lines under
+      // the prompt before it.
       const promptId = answer?.promptId;
       if (promptId) promptIds.set(sessionId, promptId);
+      else promptIds.delete(sessionId);
 
       appendTranscriptLine(root, AGENT, sessionId, {
         type: "prompt",

@@ -34,10 +34,13 @@ export function findTranscriptFor(agent: string, sessionId: string): string | nu
 
 /**
  * Prefix naming the member's state root. A root that begins with it resolves
- * through `resolveMycoHome`, never through an environment spelling: the home
- * is a `runtime.home` pin first and `$MYCO_HOME` only after, so a manifest
- * writing `${MYCO_HOME}` would read the literal when the variable is unset
- * and the wrong directory when a pin is set.
+ * through `resolveMycoHome`, never through a literal `${MYCO_HOME}`, which
+ * expands to itself when the variable is unset.
+ *
+ * The resolver reads the environment. A plugin that writes under a project's
+ * `runtime.home` pin therefore passes the home it resolved to the binary it
+ * runs, so the process doing the discovery and the process that wrote the
+ * transcript name one directory.
  */
 const MEMBER_HOME_PREFIX = '@memberHome';
 

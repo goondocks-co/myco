@@ -12,29 +12,6 @@ import {
  * `fromIdx`, or null when no balanced literal surrounds it. Walks backward
  * to the unmatched opening brace, then forward to its balanced close.
  */
-function enclosingObjectLiteral(source: string, fromIdx: number): string | null {
-  let depth = 0;
-  let open = -1;
-  for (let i = fromIdx; i >= 0; i--) {
-    const ch = source[i];
-    if (ch === '}') depth++;
-    else if (ch === '{') {
-      if (depth === 0) { open = i; break; }
-      depth--;
-    }
-  }
-  if (open === -1) return null;
-  depth = 0;
-  for (let i = open; i < source.length; i++) {
-    const ch = source[i];
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) return source.slice(open, i + 1);
-    }
-  }
-  return null;
-}
 
 /**
  * Drift guards for the capture event policy table — the single source of
@@ -83,15 +60,4 @@ describe('capture event policy table', () => {
     expect(captureEventPolicy(undefined).replayable).toBe(false);
   });
 
-  it('covers every event type a 1.4 buffer can carry', () => {
-    // The daemon's policy table serves buffers written by 1.4 binaries. The
-    // native plugins write transcript lines and run the binary's hook verbs,
-    // so they emit no daemon event type of their own and contribute nothing
-    // to this set; the member hooks emit server envelopes, not daemon events.
-    const emitted = new Set<string>(Object.keys(CAPTURE_EVENT_POLICY));
-
-    const tableTypes = new Set(Object.keys(CAPTURE_EVENT_POLICY));
-    const missingFromTable = [...emitted].filter((type) => !tableTypes.has(type));
-    expect(missingFromTable).toEqual([]);
-  });
 });

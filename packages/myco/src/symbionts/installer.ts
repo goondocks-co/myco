@@ -1893,6 +1893,32 @@ export class SymbiontInstaller {
    * Used for agents whose hook system is plugin-based rather than JSON entry-based
    * (e.g., opencode's TypeScript plugin system).
    */
+  /**
+   * The plugin file this symbiont would install, rendered for `source`.
+   *
+   * A sandbox image ships no registry, so its plugin must name the `env`
+   * credential the way a sandbox hook command does. `renderMemberHooks`
+   * answers null for a plugin-file symbiont because there is no hook block to
+   * write; this is that symbiont's equivalent, and the two are the only places
+   * a credential source is chosen.
+   */
+  renderMemberPlugin(source: CredentialSource): string | null {
+    const reg = this.manifest.registration;
+    if (reg?.hooksFormat !== HOOKS_FORMAT_PLUGIN_FILE) return null;
+    const templateFile = reg.hooksTemplateFile ?? 'plugin.ts';
+    if (templateFile.endsWith('.json')) return null;
+    const templateContent = this.loadTemplateRaw(templateFile);
+    if (templateContent === null) return null;
+    const rendered = this.substituteCredentialSource(
+      this.substituteMycoLauncher(this.injectSharedPluginHelpers(templateContent)),
+      source,
+    );
+    if (rendered.includes(CREDENTIAL_SOURCE_PLACEHOLDER)) {
+      throw new Error(`Refusing to emit a plugin for ${this.manifest.name}: the credential source was not substituted`);
+    }
+    return rendered;
+  }
+
   private installPluginHookFile(): boolean {
     const reg = this.manifest.registration;
     if (!reg?.hooksTarget) return false;

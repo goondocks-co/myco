@@ -223,7 +223,7 @@ const TranscriptDiscoverySchema = z.object({
    * losing them is not recoverable.
    */
   retention: z.enum(['harness', 'member']).default('harness'),
-});
+}).strict();
 
 export type TranscriptDiscovery = z.infer<typeof TranscriptDiscoverySchema>;
 
@@ -629,7 +629,7 @@ const CapabilitiesSchema = z.object({
    * `pathBearingTools` must be non-empty too.
    */
   pathBearingTools: z.array(CanopyReadToolSchema).default([]),
-}).default(() => ({
+}).strict().default(() => ({
   preToolUseInjection: false,
   sessionStartInjection: false,
   subagentStartInjection: false,
@@ -684,6 +684,16 @@ const HookFieldPathSchema = z.union([
   z.array(z.string().min(1)).min(1),
 ]);
 
+/**
+ * A manifest, with every key it may carry declared.
+ *
+ * Strict at the root: an undeclared key is refused by name rather than
+ * dropped. A key in the wrong place reads exactly like a key that does not
+ * exist — `hookResponse` written beside `registration` instead of inside it
+ * parses clean and silently does nothing, and the only symptom is the
+ * behaviour it was meant to configure never arriving. Refusing at codegen
+ * turns that into a build failure that names the key.
+ */
 export const SymbiontManifestSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -741,7 +751,7 @@ export const SymbiontManifestSchema = z.object({
    * that need phase-aware dispatch.
    */
   hooks: HooksManifestSchema.optional(),
-}).refine(
+}).strict().refine(
   (m) => {
     const reads = m.capabilities?.canopyReadTools ?? [];
     const paths = m.capabilities?.pathBearingTools ?? [];

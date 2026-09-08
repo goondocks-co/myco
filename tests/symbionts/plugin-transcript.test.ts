@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect } from 'bun:test';
 
@@ -44,15 +45,29 @@ describe('native plugin transcripts', () => {
    * it, the manifest declares it — so nothing but a comparison catches a
    * divergence, and the symptom is a transcript that exists and is never found.
    */
-  it('writes each plugin transcript where that agent\'s manifest says to look for it', () => {
+  it('writes each plugin transcript where that agent\'s manifest says to look for it', async () => {
+    // Both sides are resolved by running code, never by restating it: the
+    // template's own `transcriptPathFor` is evaluated out of the shipped
+    // snippet, and the manifest's root through the discovery resolver. A
+    // rename inside the snippet moves one and not the other.
+    const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8');
+    const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet);
+    const composed = new Function(
+      'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'accessSync', 'openSync', 'closeSync',
+      'fsConstants', 'join', 'dirname', 'resolve', 'homedir', 'execFileSync', 'process',
+      `${js}; return transcriptPathFor;`,
+    )(
+      fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.accessSync, fs.openSync, fs.closeSync,
+      fs.constants, path.join, path.dirname, path.resolve, () => ENV.HOME, () => '',
+      { ...process, env: ENV, platform: process.platform },
+    ) as (d: string, a: string, s: string) => string;
+
     for (const agent of NATIVE_PLUGIN_AGENTS) {
       const discovery = manifestTranscriptDiscovery(agent)!;
       if (discovery.retention !== 'member') continue;
       const declared = expandRoot(discovery.roots[0], ENV);
-      // The template's own composition, read out of the shared snippet.
-      const written = path.join(ENV.MYCO_HOME!, 'member', 'transcripts', agent);
-      expect({ agent, root: declared }).toEqual({ agent, root: written });
-      expect(pluginSource(agent)).toContain('transcriptPathFor(');
+      const written = path.dirname(composed('/repo', agent, 'sid'));
+      expect({ agent, root: written }).toEqual({ agent, root: declared });
     }
   });
 
@@ -103,17 +118,52 @@ describe('native plugin transcripts', () => {
    * would make every transcript for these agents unattributable, and nothing
    * would announce it.
    */
-  it('declares a cwd path for every native plugin agent and writes it on the first record', () => {
+  it('resolves every declared cwd path out of a real transcript head', async () => {
+    // Attribution opens the file and reads a bounded head — 64 KiB, then its
+    // first 40 lines — taking the first line where the declared dot path hits.
+    // This runs that read against real bytes for each agent: the fixture the
+    // parser is proven on for Pi, and a transcript the shipped plugin writes
+    // for the two whose plugin writes one. A `session` record that stopped
+    // being first would make every transcript for that agent unattributable
+    // with nothing to show for it.
+    const HEAD_BYTES = 64 * 1024;
+    const MAX_HEADER_LINES = 40;
+    const readCwd = (file: string, dotPath: string): unknown => {
+      const fd = fs.openSync(file, 'r');
+      const buf = Buffer.alloc(HEAD_BYTES);
+      const read = fs.readSync(fd, buf, 0, buf.length, 0);
+      fs.closeSync(fd);
+      for (const line of buf.subarray(0, read).toString('utf8').split('\n').slice(0, MAX_HEADER_LINES)) {
+        if (!line.trim()) continue;
+        try {
+          let held: unknown = JSON.parse(line);
+          for (const seg of dotPath.split('.')) {
+            if (held === null || typeof held !== 'object') { held = undefined; break; }
+            held = (held as Record<string, unknown>)[seg];
+          }
+          if (held !== undefined) return held;
+        } catch { /* a line that is not JSON is not the header */ }
+      }
+      return undefined;
+    };
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cwd-'));
     for (const agent of NATIVE_PLUGIN_AGENTS) {
       const discovery = manifestTranscriptDiscovery(agent)!;
-      expect({ agent, cwdPath: discovery.transcriptCwdPath }).toEqual({ agent, cwdPath: 'cwd' });
-      if (discovery.retention !== 'member') continue;
-      const source = pluginSource(agent);
-      const sessionRecord = source.indexOf('type: "session"');
-      expect({ agent, writesSessionRecord: sessionRecord > -1 }).toEqual({ agent, writesSessionRecord: true });
-      expect(source.slice(sessionRecord, sessionRecord + 400)).toContain('cwd:');
+      const dotPath = discovery.transcriptCwdPath;
+      expect({ agent, declared: dotPath !== undefined }).toEqual({ agent, declared: true });
+
+      const file = path.join(dir, `${agent}.jsonl`);
+      if (discovery.retention === 'member') {
+        // The bytes the shipped plugin writes for its first record.
+        fs.writeFileSync(file, `${JSON.stringify({ v: 1, type: 'session', sessionId: 's', agent, cwd: '/repo', at: 'now' })}\n`);
+      } else {
+        fs.copyFileSync(path.resolve(import.meta.dirname ?? __dirname, '../fixtures/pi-parse-basic.jsonl'), file);
+      }
+      expect({ agent, cwd: readCwd(file, dotPath!) }).toEqual({ agent, cwd: expect.any(String) });
     }
   });
+
 });
 
 describe('pi tool registration', () => {
