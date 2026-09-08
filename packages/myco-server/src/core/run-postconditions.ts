@@ -32,7 +32,6 @@ import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 import { inputHashOf, listReports, type RunRow } from './runs.js';
 import { digestWrittenBy } from './digests.js';
-import { instructionsWrittenBy } from '../read/cortex.js';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { canopyMapWrittenBy } from './canopy.js';
 
@@ -52,10 +51,6 @@ export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
   [MAP_TASK]: { reports: [MAP_ACTION, MAP_UNCHANGED_ACTION], artifact: canopyMapWrittenBy },
   'embedding-reconcile': { reports: ['embedding'] },
   'supersession-sweep': { reports: ['supersession'] },
-  'cortex-instructions': {
-    reports: ['cortex_instructions'],
-    artifact: (db, scope, run) => instructionsWrittenBy(db, scope, run.id),
-  },
   'digest-only': {
     reports: ['digest', RUN_SKIP_ACTION],
     artifact: (db, scope, run) => digestWrittenBy(db, scope, { runId: run.id, substrateHash: inputHashOf(run), since: run.startedAt }),

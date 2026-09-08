@@ -11,7 +11,7 @@ import path from 'node:path';
 import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
-import { memberMcpTemplate } from '@myco/symbionts/member-hooks.js';
+import { MEMBER_MCP_LEVERS, memberMcpTemplate } from '@myco/symbionts/member-hooks.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); roots.length = 0; });
@@ -26,10 +26,12 @@ function memberInstaller(name: string): { installer: SymbiontInstaller; root: st
 
 describe('memberMcpTemplate', () => {
   it('appends the credential flag to an args launcher and to a command-list launcher, and refuses a launcher with neither', () => {
+    // Every member entry also carries the levers the Deployment surface needs;
+    // the launcher assertions below are about the flag, not about that set.
     expect(memberMcpTemplate({ myco: { type: 'stdio', command: '/bin/myco', args: ['mcp'] } }, 'registry'))
-      .toEqual({ myco: { type: 'stdio', command: '/bin/myco', args: ['mcp', CREDENTIAL_FLAG, 'registry'] } });
+      .toEqual({ myco: { type: 'stdio', command: '/bin/myco', args: ['mcp', CREDENTIAL_FLAG, 'registry'], ...MEMBER_MCP_LEVERS } });
     expect(memberMcpTemplate({ myco: { type: 'local', command: ['/bin/myco', 'mcp'] } }, 'env'))
-      .toEqual({ myco: { type: 'local', command: ['/bin/myco', 'mcp', CREDENTIAL_FLAG, 'env'] } });
+      .toEqual({ myco: { type: 'local', command: ['/bin/myco', 'mcp', CREDENTIAL_FLAG, 'env'], ...MEMBER_MCP_LEVERS } });
     expect(() => memberMcpTemplate({ myco: { url: 'https://x' } }, 'env')).toThrow(/no argument list/);
   });
 });

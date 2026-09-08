@@ -16,7 +16,7 @@
  * A view over the registry: nothing here resolves an op or dispatches a call.
  * Fails closed: a (tool, op) not listed does not exist on this surface.
  */
-import { NO_OP, type ServedTool } from '../core/tool-catalogue.js';
+import { NO_OP, PROJECT_PIVOT, type ServedTool } from '../core/tool-catalogue.js';
 import { TOOL_DEFINITIONS, type ToolDefinition } from './definitions.js';
 
 /** The op key of a tool without an op concept; the registry resolves such a tool to the same key. */
@@ -24,7 +24,7 @@ const ANY_OP = NO_OP;
 
 export const EXTERNAL_TOOL_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
   myco_search: new Set([ANY_OP]),
-  myco_cortex: new Set(['digest']),
+  myco_cortex: new Set(['instructions']),
   myco_plans: new Set(['list', 'get']),
   myco_sessions: new Set(['list', 'get']),
   myco_skills: new Set(['list', 'get']),
@@ -41,13 +41,13 @@ export function isExternalCall(tool: ServedTool, op: string): boolean {
   return ops.has(ANY_OP) || ops.has(op);
 }
 
-/** What `project_id` means on the surface: the grant's own Project, named or not. */
-export const EXTERNAL_PROJECT_ID_DESCRIPTION = 'The Project this access key reads and records into. Optional; it may name only that Project.';
+/** What the tenancy argument means on the surface: the grant's own Project, named or not. */
+export const EXTERNAL_PROJECT_DESCRIPTION = 'The Project this access key reads and records into. Optional; it may name only that Project.';
 
 /**
  * The definitions a narrowed surface lists: the allowlisted names, each
  * definition as the Deployment serves it to a member with its `op` enum
- * narrowed to the ops the surface answers and `project_id` described for a
+ * narrowed to the ops the surface answers and the tenancy argument described for a
  * principal bound to one Project. An agent reads the schema before it calls; a
  * schema that offers `save` and refuses it sends the agent into a refusal it
  * could have avoided. The narrowing is presentation: `callTool` judges every
@@ -60,12 +60,12 @@ export function narrowDefinitions(allowlist: Readonly<Record<string, ReadonlySet
     const properties = { ...d.inputSchema.properties };
     const op = properties.op;
     if (!ops.has(ANY_OP) && op !== undefined && Array.isArray(op.enum)) properties.op = { ...op, enum: op.enum.filter((v) => typeof v === 'string' && ops.has(v)) };
-    if (properties.project_id !== undefined) properties.project_id = { ...properties.project_id, description: projectIdDescription };
+    if (properties[PROJECT_PIVOT] !== undefined) properties[PROJECT_PIVOT] = { ...properties[PROJECT_PIVOT], description: projectIdDescription };
     return { ...d, inputSchema: { ...d.inputSchema, properties } };
   });
 }
 
 /** The definitions the external surface lists. */
 export function externalDefinitions(): ToolDefinition[] {
-  return narrowDefinitions(EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_PROJECT_ID_DESCRIPTION);
+  return narrowDefinitions(EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_PROJECT_DESCRIPTION);
 }

@@ -18,8 +18,8 @@ const FIXTURE_PROJECT_ID = assertGroveProjectId(createProjectId());
 function mockClient(): DaemonClient {
   return {
     get: vi.fn(async (endpoint: string) => {
-      if (endpoint === '/api/digest') {
-        return { ok: true, data: { tiers: [{ tier: 5000, content: 'digest', generated_at: 1 }] } };
+      if (endpoint === '/api/cortex/instructions') {
+        return { ok: true, data: { content: 'instructions', agent_id: 'user', generated_at: 1 } };
       }
       return { ok: true, data: {} };
     }),
@@ -49,7 +49,7 @@ describe('createMycoTools requires caller-supplied tenancy', () => {
       // the anchor vault.
       let caught: unknown;
       try {
-        await tools.callTool('myco_cortex', { op: 'digest', tier: 5000 });
+        await tools.callTool('myco_cortex', { op: 'instructions' });
       } catch (err) {
         caught = err;
       }
@@ -72,7 +72,7 @@ describe('createMycoTools requires caller-supplied tenancy', () => {
 
       let caught: unknown;
       try {
-        await tools.callTool('myco_cortex', { op: 'digest', tier: 5000 });
+        await tools.callTool('myco_cortex', { op: 'instructions' });
       } catch (err) {
         caught = err;
       }
@@ -99,10 +99,10 @@ describe('createMycoTools requires caller-supplied tenancy', () => {
       expect(requestContext.tenancySource).toBe('caller');
 
       const tools = createMycoTools(vaultDir, mockClient(), { requestContext });
-      const result = await tools.callTool('myco_cortex', { op: 'digest', tier: 5000 }) as {
+      const result = await tools.callTool('myco_cortex', { op: 'instructions' }) as {
         content: string;
       };
-      expect(result.content).toBe('digest');
+      expect(result.content).toContain('instructions');
     } finally {
       fs.rmSync(vaultDir, { recursive: true, force: true });
     }
@@ -120,10 +120,10 @@ describe('createMycoTools requires caller-supplied tenancy', () => {
       expect(requestContext.tenancySource).toBe('caller');
 
       const tools = createMycoTools(vaultDir, mockClient(), { requestContext });
-      const result = await tools.callTool('myco_cortex', { op: 'digest', tier: 5000 }) as {
+      const result = await tools.callTool('myco_cortex', { op: 'instructions' }) as {
         content: string;
       };
-      expect(result.content).toBe('digest');
+      expect(result.content).toContain('instructions');
     } finally {
       fs.rmSync(vaultDir, { recursive: true, force: true });
     }

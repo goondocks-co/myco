@@ -8,7 +8,8 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
-import { settingsWriter, DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES } from '@myco-server-worker/core/settings.js';
+import { settingsWriter, instructionsTemplate, DEPLOYMENT_LEAVES, INSTRUCTIONS_TEMPLATE_LEAF, PROJECT_CAPABILITIES } from '@myco-server-worker/core/settings.js';
+import { INSTRUCTIONS_TEMPLATE_MAX_BYTES } from '@myco-server-worker/constants.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
@@ -159,5 +160,57 @@ describe('the deployment leaf registry', () => {
     // Both directions: the runtime cannot accept a leaf the ledger did not assign
     // here, and cannot silently ignore one it did.
     expect([...DEPLOYMENT_LEAVES].sort()).toEqual([...deployment].sort());
+  });
+});
+
+
+/**
+ * A leaf that carries a rule refuses a value that violates it, at the write.
+ *
+ * The rule lives on the leaf's declaration, so the refusal is the same whatever
+ * surface asked. A leaf shipped with its rule from its first commit has no
+ * stored value that predates it, which is what lets its reader parse without a
+ * fallback branch.
+ */
+describe('the instructions template leaf', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('accepts Markdown at the ceiling and refuses a byte past it', async () => {
+    const { db, w } = rig();
+    const atCap = 'a'.repeat(INSTRUCTIONS_TEMPLATE_MAX_BYTES);
+    expect(await w.setLeaf(INSTRUCTIONS_TEMPLATE_LEAF, atCap, 'member_1', NOW)).toEqual({ applied: true });
+    expect(await instructionsTemplate(db)).toBe(atCap);
+
+    const over = 'a'.repeat(INSTRUCTIONS_TEMPLATE_MAX_BYTES + 1);
+    const refused = await w.setLeaf(INSTRUCTIONS_TEMPLATE_LEAF, over, 'member_1', NOW);
+    expect(refused).toEqual({ applied: false, refusal: { reason: 'invalid_value', leaf: INSTRUCTIONS_TEMPLATE_LEAF, detail: `expected at most ${INSTRUCTIONS_TEMPLATE_MAX_BYTES} bytes, got ${INSTRUCTIONS_TEMPLATE_MAX_BYTES + 1}` } });
+    expect(await instructionsTemplate(db)).toBe(atCap);
+  });
+
+  it('measures the ceiling in bytes, not characters', async () => {
+    const { w } = rig();
+    // Four bytes each, so a quarter of the ceiling in characters exceeds it.
+    const wide = '𝄞'.repeat(INSTRUCTIONS_TEMPLATE_MAX_BYTES / 2);
+    const answered = await w.setLeaf(INSTRUCTIONS_TEMPLATE_LEAF, wide, 'member_1', NOW);
+    expect(answered.applied).toBe(false);
+  });
+
+  it('refuses a value that is not Markdown text', async () => {
+    const { db, w } = rig();
+    for (const value of [42, true, null, { a: 1 }, ['a'], 'has a \u0000 control byte']) {
+      const answered = await w.setLeaf(INSTRUCTIONS_TEMPLATE_LEAF, value, 'member_1', NOW);
+      expect({ value, applied: answered.applied }).toEqual({ value, applied: false });
+    }
+    expect(await instructionsTemplate(db)).toBe('');
+  });
+
+  it('answers empty where the Deployment has written none', async () => {
+    const { db } = rig();
+    expect(await instructionsTemplate(db)).toBe('');
+  });
+
+  it('leaves every other leaf taking any JSON value', async () => {
+    const { w } = rig();
+    expect(await w.setLeaf('agent.model', { anything: [1, 2] }, 'member_1', NOW)).toEqual({ applied: true });
   });
 });

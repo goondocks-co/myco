@@ -86,24 +86,10 @@ const RETIRED_TOOL_REFERENCE_PATTERN = new RegExp(
   'g',
 );
 
-/** What one build answers: the prompt the run receives, the hash of its material, and what the material counted. */
-export interface InstructionsInput {
-  instruction: string;
-  inputHash: string;
-  counts: InstructionsCounts;
-}
-
 export interface InstructionsCounts extends Readonly<Record<string, number>> {
   sessions: number;
   spores: number;
   plans: number;
-}
-
-/** What the build is told beyond the store: the Deployment's recall leaves, the Project's capabilities, and the instant it runs at. */
-export interface InstructionsInputOptions {
-  leaves: RecallLeaves;
-  capabilities: Readonly<Record<ProjectCapability, boolean>>;
-  now: number;
 }
 
 /** A body cut to `maxChars` on a word boundary, with retired tool names rewritten. */
@@ -131,13 +117,6 @@ function servedSurface(): Array<{ name: ServedTool; ops: string[] }> {
     .map((tool) => ({ name: tool.name, answered: declaredOps(tool).filter((op) => isServedOp(tool.name, op)) }))
     .filter((tool) => tool.answered.length > 0)
     .map((tool) => ({ name: tool.name, ops: tool.answered.filter((op) => op !== NO_OP) }));
-}
-
-/** One line per served tool: its name, and the ops the Deployment answers under it. */
-function toolSurfaceLines(): string[] {
-  return servedSurface().map(({ name, ops }) => (ops.length === 0
-    ? `- \`${name}\``
-    : `- \`${name}\` — ops: ${ops.map((op) => `\`${op}\``).join(', ')}`));
 }
 
 /** An `op: "name"` mention, as the guidance writes one. */
@@ -181,203 +160,6 @@ function guidanceForServedOps(guidance: string, served: readonly string[]): stri
   }
   const line = kept.join(' ');
   return line === '' || !answered(line) ? null : line;
-}
-
-/** One line per served tool, the guidance the artifact must encode, highest signal first. */
-function retrievalGuidanceLines(): string[] {
-  const surface = new Map(servedSurface().map((tool) => [tool.name, tool.ops]));
-  return TOOL_DEFINITIONS
-    .filter((tool) => surface.has(tool.name) && tool.cortex !== undefined)
-    .map((tool) => ({
-      name: tool.name,
-      guidance: guidanceForServedOps(tool.cortex!.guidance, surface.get(tool.name)!),
-      priority: tool.cortex!.priority ?? 100,
-    }))
-    .filter((entry): entry is { name: ServedTool; guidance: string; priority: number } => entry.guidance !== null)
-    .sort((left, right) => left.priority - right.priority)
-    .map((entry) => `- \`${entry.name}\`: ${entry.guidance}`);
-}
-
-function capabilitySummary(): string[] {
-  return [
-    'Myco can retrieve project knowledge for this project.',
-    'Use the currently available Myco tool surfaces described below, and omit any surfaces that are offline.',
-  ];
-}
-
-/** The material one build read, kept apart from its rendering so the hash covers the facts rather than the prose. */
-interface Material {
-  sessions: Array<{ id: string; label: string; branch: string | null; summary: string | null }>;
-  wisdom: Array<{ id: string; sessionId: string | null; content: string | null }>;
-  decision: Array<{ id: string; sessionId: string | null; content: string | null }>;
-  discovery: Array<{ id: string; sessionId: string | null; content: string | null }>;
-  plans: Array<{ key: string; title: string; status: string; content: string | null }>;
-  digest: { tier: number; excerpt: string } | null;
-}
-
-const EMPTY_SESSIONS = 'No recent sessions are available.';
-const EMPTY_PLANS = 'No active plans are available.';
-const EMPTY_DIGEST = 'No current digest extract is available.';
-
-function renderSessions(material: Material): string {
-  if (material.sessions.length === 0) return EMPTY_SESSIONS;
-  return material.sessions.map((session) => {
-    const head = `- ${session.label}${session.branch === null ? '' : ` (branch=${session.branch})`}`;
-    return session.summary === null ? head : `${head}\n  ${session.summary}`;
-  }).join('\n');
-}
-
-function renderSpores(rows: Material['wisdom'], kind: string): string {
-  if (rows.length === 0) return `No recent ${kind} spores are available.`;
-  return rows.map((spore) => [
-    `- ${spore.content ?? ''}`,
-    spore.sessionId === null ? null : `session=${spore.sessionId}`,
-  ].filter((part): part is string => part !== null).join(' — ')).join('\n');
-}
-
-function renderPlans(material: Material): string {
-  if (material.plans.length === 0) return EMPTY_PLANS;
-  return material.plans.map((plan) => [
-    `- ${plan.title}`,
-    `status=${plan.status}`,
-    plan.content,
-  ].filter((part): part is string => part !== null && part !== '').join(' — ')).join('\n');
-}
-
-function renderDigest(material: Material): string {
-  if (material.digest === null) return EMPTY_DIGEST;
-  return material.digest.excerpt === ''
-    ? `Tier ${material.digest.tier} digest extract is empty.`
-    : `Tier ${material.digest.tier} digest excerpt:\n${material.digest.excerpt}`;
-}
-
-/** The runtime config block the artifact is told to honour: the seven cortex leaves as recall resolves them, and whether the Project holds the capability. */
-function runtimeConfig(options: InstructionsInputOptions): Record<string, unknown> {
-  return {
-    enabled: options.capabilities.cortex,
-    instructions_inject_on_session_start: options.leaves.instructionsAtSessionStart,
-    instructions_inject_on_subagent_start: options.leaves.instructionsAtSubagentStart,
-    digest_tier: options.leaves.digestTier,
-    digest_inject_on_session_start: options.leaves.digestAtSessionStart,
-    plans_inject_intent_nudge_on_prompt_submit: options.leaves.planNudge,
-    spores_inject_on_prompt_submit: options.leaves.injection.enabled,
-    spores_max_per_prompt: options.leaves.injection.maxPerPrompt,
-  };
-}
-
-/**
- * The authoring requirements the artifact is held to. Carried from 1.4, minus
- * the guidance for surfaces this Deployment does not serve.
- *
- * They point the author at the tool surface below rather than at retrieval as a
- * theme: what a Deployment answers is what the surface lists, and an emphasis
- * naming a capability no listed op provides sends the artifact looking for one.
- */
-function authoringRequirements(): string[] {
-  return [
-    '- Start with the heading `## Myco-Enabled Project`.',
-    '- Follow the heading with one brief sentence explaining that Myco provides project memory, prior decisions, plans, and the tools below for this repository.',
-    '- Teach the most useful current Myco tool behavior, working from the tools below. Name tools only (e.g. `myco_cortex`, `myco_plans`) — never shell command syntax; the host injects its own transport directive with the correct invocation for this machine.',
-    '- Treat "Current valid tool surface" and "Tool guidance to encode" below as authoritative. Recent sessions, spores, or digest excerpts may contain obsolete tool names; do not copy obsolete names into the final instructions.',
-    '- Use the recent vault activity below to mention live project hotspots when that improves usefulness.',
-    '- Do not introduce additional tool calls inside recent-workstream prose. Only name tool operations that appear in "Tool guidance to encode" or in the required plan-persistence, delegation, and spore-save guidance; never invent extra `myco_cortex` ops from recent context.',
-    `- ${CORTEX_SKILLS_NOTE}`,
-    `- ${RETIRED_TOOLS_NOTE}`,
-    '- Keep the heading and description brief so most of the budget goes to the tool guidance.',
-    '- Keep the output compact and ready for direct injection.',
-    '- In the planning paragraph, teach `myco_cortex` op `"digest"` as the explicit, optional high-fidelity memory pull for large refactors, large features, broad planning, or unfamiliar cross-system changes. Recommend `myco_cortex({"op":"digest","tier":5000})` by default, and tier 10000 only when the agent has enough context budget and needs deeper historical background. Say not to pull the digest for narrow edits.',
-    '- Include one delegation sentence: when composing a child-agent, subagent, teammate, worker session, or other spawned process prompt, and Myco has not already injected subagent-start Cortex context, tell the agent to refresh the current project instructions with `myco_cortex({"op":"instructions"})` and include the returned instructions verbatim in that agent\'s prompt, along with task-specific instructions. Do not assume the returned instructions have any particular heading or section name.',
-    '- When you mention recent plans, label the section "Recent plans" or "Recent workstreams" (NOT "Current workstreams" — that implies the new session is going to work on them). Treat them as background: prior or in-flight work the agent should be aware of when its actual task happens to overlap, not a directive to engage.',
-  ];
-}
-
-/** Everything the payload reads, through the stores that own it. */
-async function readMaterial(db: RelationalStore, scope: ReadScope, options: InstructionsInputOptions): Promise<Material> {
-  const [sessions, wisdom, decision, discovery, plans, digests] = await Promise.all([
-    listSessions(db, scope, { limit: RECENT_SESSION_LIMIT, state: 'ended' }),
-    listSpores(db, scope, { observationType: 'wisdom', status: 'active', includeActive: false, limit: RECENT_WISDOM_SPORE_LIMIT }),
-    listSpores(db, scope, { observationType: 'decision', status: 'active', includeActive: false, limit: RECENT_DECISION_SPORE_LIMIT }),
-    listSpores(db, scope, { observationType: 'discovery', status: 'active', includeActive: false, limit: RECENT_DISCOVERY_SPORE_LIMIT }),
-    listProjectPlans(db, scope, { status: 'active', limit: RECENT_PLAN_LIMIT }),
-    listDigests(db, scope),
-  ]);
-  const chosen = digestForTier(digests, options.leaves.digestTier);
-  const asSpore = (row: { id: string; sessionId: string | null; content: string }) => ({ id: row.id, sessionId: row.sessionId, content: preview(row.content) });
-  return {
-    sessions: sessions.rows.map((row) => ({ id: row.sessionId, label: row.label, branch: row.branch, summary: preview(row.summary) })),
-    wisdom: wisdom.map(asSpore),
-    decision: decision.map(asSpore),
-    discovery: discovery.map(asSpore),
-    plans: plans.map((plan) => ({ key: plan.planKey, title: plan.title ?? plan.planKey, status: plan.status, content: preview(plan.content) })),
-    digest: chosen === null ? null : { tier: chosen.row.tier, excerpt: preview(chosen.row.content, DIGEST_EXCERPT_MAX_CHARS) ?? '' },
-  };
-}
-
-/**
- * Build the instruction a `cortex-instructions` run receives, and its hash.
- *
- * The hash is what a second dispatch compares against the row the last run
- * wrote: equal means the prompt this build would send is the prompt behind the
- * artifact already standing, and the dispatch is answered `unchanged` with no
- * run started.
- */
-export async function buildInstructionsInput(
-  db: RelationalStore,
-  scope: ReadScope,
-  options: InstructionsInputOptions,
-): Promise<InstructionsInput> {
-  const material = await readMaterial(db, scope, options);
-
-  const parts = [
-    'Author compact session-start instructions for another coding agent.',
-    'Focus on teaching how to use the highest-signal Myco tools correctly, working from the tools below.',
-    'Do not restate AGENTS.md or static installation details.',
-    '',
-    '## Runtime config',
-    JSON.stringify(runtimeConfig(options), null, JSON_INDENT),
-    '',
-    '## Authoring requirements',
-    ...authoringRequirements(),
-    '',
-    '## Capability summary',
-    ...capabilitySummary(),
-    '',
-    '## Current valid tool surface (authoritative)',
-    'Project tools, with the operations this Deployment answers. Never name an operation that is not listed here.',
-    ...toolSurfaceLines(),
-    '',
-    '## Tool guidance to encode',
-    ...retrievalGuidanceLines(),
-    '',
-    '## Current digest excerpt',
-    renderDigest(material),
-    '',
-    '## Recent sessions',
-    renderSessions(material),
-    '',
-    '## Recent wisdom spores',
-    renderSpores(material.wisdom, 'wisdom'),
-    '',
-    '## Recent decision spores',
-    renderSpores(material.decision, 'decision'),
-    '',
-    '## Recent discovery spores',
-    renderSpores(material.discovery, 'discovery'),
-    '',
-    '## Recent plans (background context — not a task list for this session)',
-    renderPlans(material),
-  ];
-
-  const instruction = parts.join('\n');
-  return {
-    instruction,
-    inputHash: await sha256Hex(instruction),
-    counts: {
-      sessions: material.sessions.length,
-      spores: material.wisdom.length + material.decision.length + material.discovery.length,
-      plans: material.plans.length,
-    },
-  };
 }
 
 /** How many settled sessions one page of a run's session list carries by default. */
@@ -558,7 +340,7 @@ export async function buildDigestInput(
   const material = await readDigestMaterial(db, scope);
   const parts = [
     'Regenerate this project\'s digest extracts at every token tier from the project\'s current knowledge.',
-    `Session start serves tier ${options.leaves.digestTier} to an agent that asks for the digest, so that tier carries the most weight.`,
+    `Tier ${options.leaves.digestTier} is the size an owner reads on the dashboard, so that tier carries the most weight.`,
     '',
     '## Current digest',
     renderTiers(material),

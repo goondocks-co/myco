@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { DaemonClient } from '@myco/daemon/client.js';
 import type { Database } from '@myco/db/client.js';
 import { ToolError, isToolError } from './error.js';
+import { effectiveOp } from './op-resolution.js';
 import { isMutatingToolCall, assertProjectAdmitsToolWrite } from './lease-admission.js';
 import { isCallerTenancy, requireProjectId, type MycoRequestContext } from '@myco/grove/request-context.js';
 import {
@@ -384,7 +385,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     context: MycoRequestContext,
     start: number,
   ): Promise<unknown> {
-    const op = input.op ?? 'digest';
+    const op = input.op ?? effectiveOp(TOOL_CORTEX, input);
     const cortex = await import('./cortex.js');
 
     switch (op) {

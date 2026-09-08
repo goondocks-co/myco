@@ -104,30 +104,6 @@ describe('the run that stands in for a replaced one', () => {
     expect(f.rows().filter((r) => r.task === 'title-summary')).toHaveLength(2);
   });
 
-  it('builds the successor\'s prompt so an instructed task does not run empty, and leaves a still Project alone', async () => {
-    const f = fixture();
-    await dispatched(f, 'run_a', 'cortex-instructions', { timeoutSeconds: 900, input_hash: 'the ended run\'s own' });
-    await markRunReplaced(f.db, SCOPE, 'run_a');
-
-    const outcome = await requeueReplaced(f.env, { run: (await getRun(f.db, SCOPE, 'run_a'))!, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 1);
-    expect(outcome).toMatchObject({ requeued: true });
-    const successor = (outcome as { runId: string }).runId;
-    // The prompt the server built rides the row, and the hash beside it is this
-    // build's, so the artifact the successor writes is filed under something.
-    const built = f.sqlite.query(`SELECT instruction, run_context c FROM agent_runs WHERE id = ?`).get(successor) as { instruction: string | null; c: string };
-    expect(built.instruction).toContain('## Recent sessions');
-    const hash = (JSON.parse(built.c) as { input_hash?: string }).input_hash;
-    expect(hash).toHaveLength(64);
-    expect(hash).not.toBe('the ended run\'s own');
-
-    // A Project standing where its artifact already stands is left alone: the
-    // successor would spend a model call over material nobody moved.
-    f.sqlite.run(`INSERT INTO cortex_instructions (project_id, id, agent_id, content, input_hash, source_run_id, generated_at) VALUES ('proj_1', 'ci_1', 'myco-agent', 'x', ?, ?, ?)`, [hash!, successor, NOW]);
-    await dispatched(f, 'run_b', 'cortex-instructions', { timeoutSeconds: 900 }, NOW + 2);
-    await markRunReplaced(f.db, SCOPE, 'run_b');
-    expect(await requeueReplaced(f.env, { run: (await getRun(f.db, SCOPE, 'run_b'))!, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 3))
-      .toEqual({ requeued: false, reason: 'unchanged' });
-  });
 
   it('builds a digest successor from the material alone when the run it stands in for asked for that', async () => {
     const f = fixture();

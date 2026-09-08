@@ -64,7 +64,7 @@ import {
 export const TOOL_OP_CLASSIFICATION: Record<string, { read: readonly string[]; write: readonly string[] } | null> = {
   [TOOL_SEARCH]: null,
   [TOOL_CORTEX]: {
-    read: ['digest', 'instructions', 'canopy_map', 'canopy_entry', 'notifications', 'maintenance_summary', 'projects_activity'],
+    read: ['instructions', 'digest', 'canopy_map', 'canopy_entry', 'notifications', 'maintenance_summary', 'projects_activity'],
     write: [],
   },
   // `get` is a read HERE, but it is not write-free: retrieving a plan from a

@@ -99,13 +99,17 @@ describe('the member tool surface over a real Deployment', () => {
     const called = await cli(env, 'call', 'myco_plans', '--input', '{"op":"list"}');
     expect(called.envelope).toEqual({ ok: true, tool: 'myco_plans', result: [] });
 
-    const saved = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', content: 'over the wire' }));
+    // A write names its Project; the member credential reaches every Project of the Deployment.
+    const unnamed = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', content: 'no project named' }));
+    expect({ ok: unnamed.envelope.ok, code: unnamed.envelope.error?.code }).toEqual({ ok: false, code: 'invalid_input' });
+
+    const saved = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', content: 'over the wire', project: 'proj_1' }));
     expect({ ok: saved.envelope.ok, type: saved.envelope.result?.observation_type }).toEqual({ ok: true, type: 'gotcha' });
 
     const found = await cli(env, 'call', 'myco_search', '--input', '{"query":"wire"}');
     expect(found.envelope.ok).toBe(true);
     expect(found.envelope.result?.results).toMatchObject([{ type: 'spore', id: saved.envelope.result?.id }]);
-    const notServed = await cli(env, 'call', 'myco_cortex', '--input', '{"op":"canopy_entry"}');
+    const notServed = await cli(env, 'call', 'myco_cortex', '--input', '{"op":"notifications"}');
     expect({ ok: notServed.envelope.ok, code: notServed.envelope.error?.code }).toEqual({ ok: false, code: 'not_served' });
 
     const refused = await cli(memberEnv(url, token, '..'), 'call', 'myco_plans', '--input', '{}');
@@ -159,7 +163,7 @@ describe('the external read-only surface over a real Deployment', () => {
       await expect(bot.callTool({ name: 'myco_spores', arguments: { op: 'consolidate' } })).rejects.toThrow(/Unknown tool: myco_spores/);
       await expect(bot.callTool({ name: 'myco_plans', arguments: { op: 'save', content: '# p' } })).rejects.toThrow(/Unknown tool: myco_plans/);
       await expect(bot.callTool({ name: 'myco_agent', arguments: { op: 'runs' } })).rejects.toThrow(/Unknown tool: myco_agent/);
-      await expect(bot.callTool({ name: 'myco_plans', arguments: { op: 'list', project_id: 'proj_2' } })).rejects.toThrow(/Unknown tool: myco_plans/);
+      await expect(bot.callTool({ name: 'myco_plans', arguments: { op: 'list', project: 'proj_2' } })).rejects.toThrow(/Unknown tool: myco_plans/);
 
       const rotated = await rotateExternalGrant(db, { projectId: 'proj_1' }, grant.id, 'mem_machine_1', Date.now());
       await expect(bot.callTool({ name: 'myco_plans', arguments: { op: 'list' } })).rejects.toMatchObject({ status: 401 });

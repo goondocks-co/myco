@@ -34,6 +34,7 @@
 import type { RelationalStore } from './adapters.js';
 import { leafValues } from './settings.js';
 import { listSporesByIds, type SporeRow } from './spores.js';
+import { getPlan } from '../read/plans.js';
 import type { ReadScope } from '../read/scope.js';
 import { selectRelevantSpores } from '@goondocks/myco-shared/relevance';
 import { semanticHits, type SemanticSearch } from '../read/embedding.js';
@@ -42,13 +43,15 @@ import { VECTOR_QUERY_LIMIT } from './embedding/vectors.js';
 
 /** A prompt shorter than this carries too little to serve against. */
 export const MIN_PROMPT_CHARS = 10;
-/** The rendered context's ceiling in estimated tokens. */
+/** The rendered block's ceiling in estimated tokens. */
 export const INJECTION_BUDGET_TOKENS = 300;
-/** How much of a spore's text one rendered line carries. */
-export const INJECTION_PREVIEW_CHARS = 300;
+/** The fewest items a prompt carrying any must serve, and what the per-line cap is derived from. */
+export const INJECTION_MIN_ITEMS = 5;
+/** The most items one prompt carries. Reached only where the lines run shorter than their cap. */
+export const INJECTION_TARGET_ITEMS = 7;
 /** The leaf defaults, applied where the Deployment has written none. */
 export const INJECT_ON_PROMPT_SUBMIT_DEFAULT = true;
-export const MAX_PER_PROMPT_DEFAULT = 3;
+export const MAX_PER_PROMPT_DEFAULT = INJECTION_TARGET_ITEMS;
 /** The widest selection an operator may ask for. */
 export const MAX_PER_PROMPT_CEILING = 10;
 
@@ -56,7 +59,43 @@ export const MAX_PER_PROMPT_CEILING = 10;
 const CHARS_PER_TOKEN = 4;
 export const estimateTokens = (text: string): number => Math.ceil(text.length / CHARS_PER_TOKEN);
 
-const HEADER = 'Relevant vault observations:';
+const HEADER = 'Relevant project memory — retrieve any item in full by id:';
+/** Emitted only where the pool held more than the budget served. */
+const SEARCH_LINE = 'More may match — search with myco_search.';
+
+/**
+ * The budget arithmetic, derived rather than chosen.
+ *
+ * Every constant below follows from the token ceiling and the item floor, so a
+ * change to either moves the caps with it and `injection.test.ts` fails the
+ * pair that no longer fits. A cap picked by hand silently serves fewer items
+ * than the floor: at four characters to a token a 200-character line costs 50
+ * tokens, and five of those exhaust the ceiling.
+ *
+ * The cap divides the budget by the FLOOR, not the ceiling of seven. Dividing
+ * by seven would buy a seventh item at the price of every line, cutting each to
+ * roughly half a sentence; dividing by five keeps a line long enough to carry a
+ * trigger and its guidance, and the fill rule still serves seven where the
+ * lines happen to run short.
+ */
+const FIXED_TOKENS = estimateTokens(HEADER) + estimateTokens(`\n${SEARCH_LINE}`);
+/** The most one rendered line may cost. */
+export const MAX_LINE_TOKENS = Math.floor((INJECTION_BUDGET_TOKENS - FIXED_TOKENS) / INJECTION_MIN_ITEMS);
+/** `estimateTokens` is `ceil(len / 4)`, so a line of this many characters costs exactly `MAX_LINE_TOKENS`. */
+const MAX_LINE_CHARS = MAX_LINE_TOKENS * CHARS_PER_TOKEN;
+/**
+ * The `\n- [<id>] (<label>) ` a spore's line carries, which is what the text cap
+ * is derived against. A plan key is a path and runs longer; its line costs more
+ * and `itemsWithinBudget` drops it on the budget rather than on this number, so
+ * a long key spends a plan's place and never the block's ceiling.
+ */
+const MAX_ID_CHARS = 32;
+const MAX_LABEL_CHARS = 'plan: in_progress'.length;
+const MAX_PREFIX_CHARS = '\n- ['.length + MAX_ID_CHARS + '] ('.length + MAX_LABEL_CHARS + ') '.length;
+
+/** The most an item's text may carry, and the cut a fallback preview takes. */
+export const AGENT_LINE_MAX_CHARS = MAX_LINE_CHARS - MAX_PREFIX_CHARS;
+export const INJECTION_PREVIEW_CHARS = AGENT_LINE_MAX_CHARS;
 
 /** The leaves this selector reads. */
 export const INJECTION_LEAVES: readonly string[] = ['cortex.spores.inject_on_prompt_submit', 'cortex.spores.max_per_prompt'];
@@ -70,7 +109,7 @@ export interface InjectionLeaves {
 export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_max' | 'repeat' | 'empty' | 'provider_unavailable';
 
 export interface InjectionSelection {
-  spores: SporeRow[];
+  items: InjectionItem[];
   context: string;
   skipped: InjectionSkip | null;
 }
@@ -79,6 +118,7 @@ export interface InjectionRecord {
   promptId: string;
   promptHash: string;
   sporeIds: string[];
+  planIds: string[];
   createdAt: number;
 }
 
@@ -111,45 +151,89 @@ export async function readInjectionLeaves(db: RelationalStore): Promise<Injectio
   return injectionLeaves(Object.fromEntries(INJECTION_LEAVES.map((leaf) => [leaf, parse(byLeaf.get(leaf))])));
 }
 
-/** One rendered line's text for a spore: its type and the opening of its observation on one line. */
-function preview(spore: SporeRow): string {
-  const line = spore.content.replace(/\s+/g, ' ').trim();
-  return line.length > INJECTION_PREVIEW_CHARS ? `${line.slice(0, INJECTION_PREVIEW_CHARS)}…` : line;
+/** One line of an item's text: whitespace folded, cut at the cap the budget derives. */
+export function oneLine(text: string): string {
+  const line = text.replace(/\s+/g, ' ').trim();
+  return line.length > AGENT_LINE_MAX_CHARS ? `${line.slice(0, AGENT_LINE_MAX_CHARS)}…` : line;
 }
 
-/** The header and one line per spore, stopping at the token budget. A selection that renders no line renders nothing. */
-export function renderInjectionContext(spores: readonly SporeRow[]): string {
-  let text = HEADER;
-  let tokens = estimateTokens(text);
-  for (const spore of spores) {
-    const line = `\n- (${spore.observationType}) ${preview(spore)}`;
-    const lineTokens = estimateTokens(line);
-    if (tokens + lineTokens > INJECTION_BUDGET_TOKENS) break;
-    text += line;
-    tokens += lineTokens;
+/**
+ * One candidate for a prompt: what it is, how to fetch it, and what it says.
+ *
+ * A spore renders its `agent_line` where one is derived and the opening of its
+ * observation where none is. The line is the projection an agent reads; the
+ * Markdown behind it is for a person.
+ */
+export interface InjectionItem {
+  kind: 'spore' | 'plan';
+  id: string;
+  label: string;
+  text: string;
+}
+
+const itemLine = (item: InjectionItem): string => `\n- [${item.id}] (${item.label}) ${oneLine(item.text)}`;
+
+/**
+ * The items that fit, in the order given.
+ *
+ * The caller orders the candidates and this takes the longest prefix that fits
+ * the budget and the item ceiling. Dropping from the tail IS the drop order —
+ * the caller has already put plans after spores and the weakest score last — so
+ * a line too long to fit costs itself and everything behind it rather than
+ * silently reordering what remains.
+ */
+export function itemsWithinBudget(items: readonly InjectionItem[]): InjectionItem[] {
+  const kept: InjectionItem[] = [];
+  let tokens = estimateTokens(HEADER) + estimateTokens(`\n${SEARCH_LINE}`);
+  for (const item of items) {
+    if (kept.length === INJECTION_TARGET_ITEMS) break;
+    const cost = estimateTokens(itemLine(item));
+    if (tokens + cost > INJECTION_BUDGET_TOKENS) break;
+    kept.push(item);
+    tokens += cost;
   }
-  return text === HEADER ? '' : text;
+  return kept;
+}
+
+/**
+ * The block a prompt is served: a header, one line per item carrying its id,
+ * and the search line where the pool held more than the budget served.
+ *
+ * The id is what makes the block actionable — an agent that wants the whole
+ * item asks for it by id rather than by guessing a search that finds it again.
+ */
+export function renderInjectionContext(items: readonly InjectionItem[], more: boolean): string {
+  if (items.length === 0) return '';
+  return [HEADER, ...items.map(itemLine), more ? `\n${SEARCH_LINE}` : ''].join('');
+}
+
+/** Every id of one column served anywhere in this session. */
+async function servedIds(db: RelationalStore, scope: ReadScope, sessionId: string, column: 'spore_ids' | 'plan_ids'): Promise<Set<string>> {
+  const { results } = await db
+    .prepare(`SELECT ${column} AS ids FROM spore_injections WHERE project_id = ? AND session_id = ?`)
+    .bind(scope.projectId, sessionId)
+    .all<{ ids: string | null }>();
+  const ids = new Set<string>();
+  for (const row of results) for (const id of parseIds(row.ids ?? '')) ids.add(id);
+  return ids;
 }
 
 /** Every spore served anywhere in this session. */
-export async function injectedSporeIds(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<Set<string>> {
-  const { results } = await db
-    .prepare(`SELECT spore_ids FROM spore_injections WHERE project_id = ? AND session_id = ?`)
-    .bind(scope.projectId, sessionId)
-    .all<{ spore_ids: string }>();
-  const ids = new Set<string>();
-  for (const row of results) for (const id of parseIds(row.spore_ids)) ids.add(id);
-  return ids;
-}
+export const injectedSporeIds = (db: RelationalStore, scope: ReadScope, sessionId: string): Promise<Set<string>> =>
+  servedIds(db, scope, sessionId, 'spore_ids');
+
+/** Every plan served anywhere in this session. A plan repeated across a session's prompts is the same waste a repeated spore is. */
+export const injectedPlanIds = (db: RelationalStore, scope: ReadScope, sessionId: string): Promise<Set<string>> =>
+  servedIds(db, scope, sessionId, 'plan_ids');
 
 /** This session's records, newest first. */
 export async function injectionsForSession(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<InjectionRecord[]> {
   const { results } = await db
-    .prepare(`SELECT prompt_id, prompt_hash, spore_ids, created_at FROM spore_injections
+    .prepare(`SELECT prompt_id, prompt_hash, spore_ids, plan_ids, created_at FROM spore_injections
                WHERE project_id = ? AND session_id = ? ORDER BY created_at DESC`)
     .bind(scope.projectId, sessionId)
-    .all<{ prompt_id: string; prompt_hash: string; spore_ids: string; created_at: number }>();
-  return results.map((r) => ({ promptId: r.prompt_id, promptHash: r.prompt_hash, sporeIds: parseIds(r.spore_ids), createdAt: r.created_at }));
+    .all<{ prompt_id: string; prompt_hash: string; spore_ids: string; plan_ids: string | null; created_at: number }>();
+  return results.map((r) => ({ promptId: r.prompt_id, promptHash: r.prompt_hash, sporeIds: parseIds(r.spore_ids), planIds: parseIds(r.plan_ids ?? ''), createdAt: r.created_at }));
 }
 
 /**
@@ -173,7 +257,7 @@ export async function injectionForPrompt(db: RelationalStore, scope: ReadScope, 
     createdAt: row.created_at,
     spores: sporeIds.flatMap((id) => {
       const spore = byId.get(id);
-      return spore === undefined ? [] : [{ id: spore.id, observationType: spore.observationType, preview: preview(spore) }];
+      return spore === undefined ? [] : [{ id: spore.id, observationType: spore.observationType, preview: oneLine(spore.agentLine ?? spore.content) }];
     }),
   };
 }
@@ -188,15 +272,21 @@ function parseIds(raw: string): string[] {
 }
 
 /**
- * The spores one prompt is served, and the record of having served them.
+ * The items one prompt is served, and the record of having served them.
  *
  * The gates run in a fixed order — the Project's capability, the Deployment's
  * leaf, the prompt's length, the cap, then the pool — and each answers by name,
  * so a caller reports which gate closed rather than an empty answer that could
  * mean any of them.
  *
- * The record names every spore selected. The rendered context stops at the
- * token budget, so a prompt may carry fewer lines than the record holds ids.
+ * Two pools feed one budget. Spores rank by Mutual Proximity over the semantic
+ * candidates; plans rank by similarity alone. Spores stand ahead of every plan,
+ * and within each kind the weakest score stands last, so the budget drops plans
+ * before spores and the weakest first.
+ *
+ * The record names exactly what the block rendered. A record naming more than
+ * the agent saw would count an observation as served that never reached it, and
+ * the session-wide exclusion set would then withhold it from every later prompt.
  */
 export async function selectSporesForPrompt(
   db: RelationalStore,
@@ -206,7 +296,7 @@ export async function selectSporesForPrompt(
   input: { sessionId: string; promptId: string; promptHash: string; prompt: string; now: number },
   resolveSemantic?: () => Promise<SemanticSearch | null>,
 ): Promise<InjectionSelection> {
-  const nothing = (skipped: InjectionSkip): InjectionSelection => ({ spores: [], context: '', skipped });
+  const nothing = (skipped: InjectionSkip): InjectionSelection => ({ items: [], context: '', skipped });
   if (!capabilityOn) return nothing('capability');
   if (!leaves.enabled) return nothing('disabled');
   if (input.prompt.length < MIN_PROMPT_CHARS) return nothing('short_prompt');
@@ -217,24 +307,41 @@ export async function selectSporesForPrompt(
   let values: number[];
   try { values = await semantic.provider.embed(input.prompt); }
   catch (error) { if (error instanceof EmbeddingUnavailable) return nothing('provider_unavailable'); throw error; }
-  const [pool, already] = await Promise.all([
+
+  const [sporeHits, planHits, servedSpores, servedPlans] = await Promise.all([
     semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'spore', status: 'active' } }),
+    semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'plan' } }),
     injectedSporeIds(db, scope, input.sessionId),
+    injectedPlanIds(db, scope, input.sessionId),
   ]);
-  const relevant = selectRelevantSpores(pool.map((s) => ({ id: s.record_id, similarity: s.score, alreadyInjected: already.has(s.record_id),
+
+  const relevant = selectRelevantSpores(sporeHits.map((s) => ({ id: s.record_id, similarity: s.score, alreadyInjected: servedSpores.has(s.record_id),
     ...(s.neighbor_mean === null || s.neighbor_std === null ? {} : { neighborMean: s.neighbor_mean, neighborStd: s.neighbor_std }),
   })), { maxResults: leaves.maxPerPrompt });
   const hydrated = await listSporesByIds(db, scope, relevant.map((s) => s.id));
-  const byId = new Map(hydrated.filter((s) => s.status === 'active').map((s) => [s.id, s]));
-  const selected = relevant.flatMap((s) => byId.has(s.id) ? [byId.get(s.id)!] : []);
-  if (selected.length === 0) return nothing('empty');
+  const bySpore = new Map(hydrated.filter((s) => s.status === 'active').map((s) => [s.id, s]));
+  const sporeItems: InjectionItem[] = relevant.flatMap((s) => {
+    const row = bySpore.get(s.id);
+    return row === undefined ? [] : [{ kind: 'spore' as const, id: row.id, label: row.observationType, text: row.agentLine ?? row.content }];
+  });
 
+  const planCandidates = planHits.filter((h) => !servedPlans.has(h.record_id)).slice(0, leaves.maxPerPrompt);
+  const planRows = await Promise.all(planCandidates.map((h) => getPlan(db, scope, h.record_id)));
+  const planItems: InjectionItem[] = planRows.flatMap((row) =>
+    row === null ? [] : [{ kind: 'plan' as const, id: row.planKey, label: `plan: ${row.status}`, text: row.title ?? row.planKey }]);
+
+  const ordered = [...sporeItems, ...planItems];
+  const served = itemsWithinBudget(ordered);
+  if (served.length === 0) return nothing('empty');
+
+  const idsOf = (kind: InjectionItem['kind']): string[] => served.filter((i) => i.kind === kind).map((i) => i.id);
   const written = await db
-    .prepare(`INSERT OR IGNORE INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, created_at)
-              VALUES (?, ?, ?, ?, ?, ?)`)
-    .bind(scope.projectId, input.sessionId, input.promptId, input.promptHash, JSON.stringify(selected.map((s) => s.id)), input.now)
+    .prepare(`INSERT OR IGNORE INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, plan_ids, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .bind(scope.projectId, input.sessionId, input.promptId, input.promptHash,
+      JSON.stringify(idsOf('spore')), JSON.stringify(idsOf('plan')), input.now)
     .run();
   if (written.meta.changes !== 1) return nothing('repeat');
 
-  return { spores: selected, context: renderInjectionContext(selected), skipped: null };
+  return { items: served, context: renderInjectionContext(served, ordered.length > served.length), skipped: null };
 }

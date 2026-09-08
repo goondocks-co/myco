@@ -27,7 +27,6 @@ export const TASK_ADMISSION: Readonly<Record<string, RunAdmissionGate>> = {
   [MAP_TASK]: { kind: 'capability', capability: 'canopy' },
   'embedding-reconcile': { kind: 'embedding' },
   'container-smoke': { kind: 'capability', capability: 'cortex' },
-  'cortex-instructions': { kind: 'capability', capability: 'cortex' },
   'cortex-prompt-builder': { kind: 'capability', capability: 'cortex' },
   'digest-only': { kind: 'capability', capability: 'cortex' },
 
@@ -62,7 +61,6 @@ export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
   [MAP_TASK]: ['code_grep', 'fs_list', 'fs_read', 'fs_tree', 'vault_report'],
   'embedding-reconcile': [],
   'container-smoke': [],
-  'cortex-instructions': ['vault_read_digest', 'vault_report', 'vault_sessions', 'vault_spore', 'vault_spores'],
   'cortex-prompt-builder': ['vault_read_digest', 'vault_report', 'vault_search_fts', 'vault_search_semantic', 'vault_sessions', 'vault_skill_records', 'vault_spores'],
   'digest-only': ['vault_read_digest', 'vault_report', 'vault_sessions', 'vault_spore', 'vault_spores', 'vault_write_digest'],
 
@@ -143,7 +141,6 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   // so the cadence is daily and an owner turns it on after one measured run.
   // A dispatch whose input matches the artifact already written costs nothing,
   // which is what makes a daily interval safe once it is on.
-  'cortex-instructions': { enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 },
   'cortex-prompt-builder': null,
   // Declared and switched off, for the ceiling rather than the clock. A digest
   // run is the dearest thing this Deployment starts — three tiers rewritten by a
@@ -176,7 +173,6 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
  */
 export const TASK_RUN_TIMEOUT_SECONDS: Readonly<Record<string, number>> = {
   [MAP_TASK]: 900,
-  'cortex-instructions': 900,
   'digest-only': 1800,
 };
 

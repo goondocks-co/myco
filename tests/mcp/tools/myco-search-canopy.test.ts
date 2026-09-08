@@ -15,6 +15,7 @@ import { describe, it, expect } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleMycoSearch } from '@myco/tools/search.js';
 import { DaemonClient } from '@myco/daemon/client.js';
+import { PROJECT_PIVOT } from '@myco/tools/pivot.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
   const client = {
@@ -63,7 +64,7 @@ describe('myco_search type=canopy', () => {
         input: {
           op: 'canopy_entry',
           id: 'p:src/auth/login.ts',
-          project_id: 'p',
+          [PROJECT_PIVOT]: 'p',
           path: 'src/auth/login.ts',
         },
       },

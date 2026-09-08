@@ -4,7 +4,7 @@
  * The seven definitions in `packages/myco/src/tools/definitions.ts` are what
  * every skill and agent has learned; the server serves the same names, the same
  * schemas and the same descriptions, minus the retired Grove pivot and with one
- * named difference — the `project_id` description, which speaks of a Deployment
+ * named difference — the tenancy argument's description, which speaks of a Deployment
  * rather than a Grove. A second difference fails here by name.
  *
  * The registry is held complete against each tool's op enum: every op is served
@@ -13,17 +13,18 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { TOOL_DEFINITIONS as MEMBER_DEFINITIONS } from '@myco/tools/definitions.js';
+import { GROVE_PIVOT, PROJECT_PIVOT as MEMBER_PROJECT_PIVOT } from '@myco/tools/pivot.js';
 import { EXTERNAL_TOOL_ALLOWLIST as MEMBER_ALLOWLIST, isAllowedExternalCall } from '@myco/mcp/external-surface.js';
-import { SERVED_TOOLS, type ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
+import { isWriteOp, PROJECT_PIVOT, SERVED_TOOLS, WRITE_OPS, type ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
-import { EXTERNAL_PROJECT_ID_DESCRIPTION, EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
+import { EXTERNAL_PROJECT_DESCRIPTION, EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
 import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
 import { RUN_TOOL_MAP, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 
-/** The one property whose description the server words for a Deployment. */
-const EXCEPTED = 'project_id';
-const RETIRED = 'grove_id';
+/** The one property whose description the server words for a Deployment. Both sides spell the key once, and this holds the two spellings equal. */
+const EXCEPTED = PROJECT_PIVOT;
+const RETIRED = GROVE_PIVOT;
 /** Properties the Deployment serves beyond the member definition, by tool: each is a named difference, worded in the server definition. */
 const ADDED: Record<string, readonly string[]> = {
   myco_plans: ['prompt_id'], myco_search: ['mode', 'session_id'],
@@ -70,13 +71,60 @@ const opsOf = (def: { inputSchema: { properties: Record<string, unknown> } }): s
 };
 
 describe('tool parity', () => {
+
+  /**
+   * A retired spelling of the tenancy key must not reappear on either side.
+   *
+   * Neither validator refuses an argument a schema does not declare — the
+   * member's `validateInput` walks the declared properties and the Deployment's
+   * `declaredOnly` drops the rest — so a definition that declared BOTH
+   * spellings, or a site that reverted to the old one, would be admitted and
+   * ignored rather than refused. This wave hit that three times: the external
+   * narrowing, a grant write test, and a leaf sample helper.
+   */
+  it('declares the tenancy key under one spelling, and never the retired one', () => {
+    const RETIRED_PIVOT = 'project_id';
+    for (const defs of [TOOL_DEFINITIONS, MEMBER_DEFINITIONS]) {
+      for (const d of defs) {
+        expect({ tool: d.name, retired: RETIRED_PIVOT in d.inputSchema.properties }).toEqual({ tool: d.name, retired: false });
+      }
+    }
+    expect(PROJECT_PIVOT).not.toBe(RETIRED_PIVOT);
+  });
+
+  it('spells the tenancy key once on each side, and the two agree', () => {
+    expect(PROJECT_PIVOT).toBe(MEMBER_PROJECT_PIVOT);
+    for (const def of TOOL_DEFINITIONS) {
+      expect({ tool: def.name, retired: RETIRED in def.inputSchema.properties }).toEqual({ tool: def.name, retired: false });
+    }
+  });
+
+  /**
+   * The write markers are one list, and the run surface derives from it rather
+   * than restating it. A second list would drift, and the surface that drifted
+   * would be the one that decides whether a dry run may write.
+   */
+  it('marks every write op once, and every marked op is one the registry serves', () => {
+    for (const [tool, ops] of Object.entries(WRITE_OPS)) {
+      for (const op of ops ?? []) {
+        const entry = TOOL_REGISTRY[tool as ServedTool].ops[op];
+        expect({ tool, op, served: entry !== undefined && 'handler' in entry }).toEqual({ tool, op, served: true });
+      }
+    }
+    for (const def of TOOL_DEFINITIONS) {
+      const ops = opsOf(def) ?? [NO_OP];
+      const writes = ops.some((op) => isWriteOp(def.name, op));
+      expect({ tool: def.name, writes, readOnlyHint: def.annotations?.readOnlyHint }).toEqual({ tool: def.name, writes, readOnlyHint: !writes });
+    }
+  });
+
   it('serves exactly the catalogued tools, and the member side declares every one of them', () => {
     expect(TOOL_DEFINITIONS.map((d) => d.name).sort()).toEqual([...SERVED_TOOLS].sort());
     const member = byName(MEMBER_DEFINITIONS);
     expect(TOOL_DEFINITIONS.filter((d) => !member.has(d.name)).map((d) => d.name)).toEqual([]);
   });
 
-  it('serves each definition as the member side declares it, minus the Grove pivot, with the project_id description as the only worded difference', () => {
+  it('serves each definition as the member side declares it, minus the Grove pivot, with the tenancy description as the only worded difference', () => {
     const member = byName(MEMBER_DEFINITIONS);
     for (const server of TOOL_DEFINITIONS) {
       expect({ tool: server.name, definition: server }).toEqual({ tool: server.name, definition: expected(member.get(server.name)!, server) });
@@ -132,10 +180,13 @@ describe('tool parity', () => {
       const op = d.inputSchema.properties.op as { enum?: readonly unknown[] } | undefined;
       const offered = op?.enum === undefined ? null : [...op.enum].sort();
       expect({ tool: d.name, offered }).toEqual({ tool: d.name, offered: op?.enum === undefined ? null : [...EXTERNAL_TOOL_ALLOWLIST[d.name]].sort() });
-      const pivot = d.inputSchema.properties.project_id as { description?: string } | undefined;
-      expect({ tool: d.name, pivot: pivot?.description ?? null }).toEqual({ tool: d.name, pivot: pivot === undefined ? null : EXTERNAL_PROJECT_ID_DESCRIPTION });
+      // Read through the shared key: spelling it here would pass vacuously the
+      // moment the key moved, which is the direction this narrowing fails in.
+      const pivot = d.inputSchema.properties[EXCEPTED] as { description?: string } | undefined;
+      expect({ tool: d.name, declared: pivot !== undefined, pivot: pivot?.description ?? null })
+        .toEqual({ tool: d.name, declared: true, pivot: EXTERNAL_PROJECT_DESCRIPTION });
       const rest = (def: (typeof TOOL_DEFINITIONS)[number]) => {
-        const { op: _op, project_id: _pivot, ...properties } = def.inputSchema.properties as Record<string, unknown>;
+        const { op: _op, [EXCEPTED]: _pivot, ...properties } = def.inputSchema.properties as Record<string, unknown>;
         return { ...def, inputSchema: { ...def.inputSchema, properties } };
       };
       expect({ tool: d.name, rest: rest(d) }).toEqual({ tool: d.name, rest: rest(served.get(d.name)!) });

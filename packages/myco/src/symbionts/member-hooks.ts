@@ -65,10 +65,21 @@ export function memberMcpTemplate(template: Record<string, unknown>, source: Cre
   const out: Record<string, unknown> = {};
   for (const [name, def] of Object.entries(template)) {
     if (!def || typeof def !== 'object' || Array.isArray(def)) throw new Error(`Refusing to emit a member MCP server: ${name} is not an object`);
-    const server = def as Record<string, unknown>;
+    const server = { ...(def as Record<string, unknown>), ...MEMBER_MCP_LEVERS };
     if (Array.isArray(server.args)) out[name] = { ...server, args: [...server.args, CREDENTIAL_FLAG, source] };
     else if (Array.isArray(server.command)) out[name] = { ...server, command: [...server.command, CREDENTIAL_FLAG, source] };
     else throw new Error(`Refusing to emit a member MCP server: ${name} declares no argument list to carry ${CREDENTIAL_FLAG} ${source}`);
   }
   return out;
 }
+
+/**
+ * What a member's MCP entry declares beyond its launcher.
+ *
+ * `alwaysLoad` keeps the tools in front of the agent. A host that defers a
+ * server until a tool search names it will not surface memory to an agent that
+ * does not already know to look for it, and an agent that does not know the
+ * project cannot know to search. The cost is a connection at session start,
+ * which is what the bridge's start-up health probe is for.
+ */
+export const MEMBER_MCP_LEVERS: Readonly<Record<string, unknown>> = { alwaysLoad: true };

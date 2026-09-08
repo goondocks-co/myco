@@ -6,6 +6,7 @@ import {
   TOOL_SKILLS,
   TOOL_SPORES,
 } from './tools/definitions.js';
+import { PROJECT_PIVOT } from './tools/pivot.js';
 
 export interface SearchResultRow {
   id?: string;
@@ -143,7 +144,7 @@ function retrieveHint(
       input: {
         op: 'canopy_entry',
         id,
-        ...(row.project_id ? { project_id: row.project_id } : {}),
+        ...(row.project_id ? { [PROJECT_PIVOT]: row.project_id } : {}),
         ...(row.path ? { path: row.path } : {}),
       },
     };

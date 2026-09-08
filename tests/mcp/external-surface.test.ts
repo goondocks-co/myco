@@ -74,7 +74,7 @@ describe('EXTERNAL_TOOL_ALLOWLIST — verbatim per the plan brief', () => {
       'myco_cortex', 'myco_plans', 'myco_search', 'myco_sessions', 'myco_skills', 'myco_spores',
     ]);
     expect([...EXTERNAL_TOOL_ALLOWLIST.myco_search]).toEqual(['*']);
-    expect([...EXTERNAL_TOOL_ALLOWLIST.myco_cortex]).toEqual(['digest']);
+    expect([...EXTERNAL_TOOL_ALLOWLIST.myco_cortex]).toEqual(['instructions']);
     expect([...EXTERNAL_TOOL_ALLOWLIST.myco_plans].sort()).toEqual(['get', 'list']);
     expect([...EXTERNAL_TOOL_ALLOWLIST.myco_sessions].sort()).toEqual(['get', 'list']);
     expect([...EXTERNAL_TOOL_ALLOWLIST.myco_skills].sort()).toEqual(['get', 'list']);
@@ -326,8 +326,8 @@ describe('external MCP production activation posture', () => {
 describe('isAllowedExternalCall', () => {
   it('(a) admits every allowlisted (tool, op), including the schema default when op is omitted', () => {
     expect(isAllowedExternalCall('myco_search', { query: 'x' })).toBe(true);
-    expect(isAllowedExternalCall('myco_cortex', { op: 'digest' })).toBe(true);
-    expect(isAllowedExternalCall('myco_cortex', {})).toBe(true); // default op is 'digest'
+    expect(isAllowedExternalCall('myco_cortex', { op: 'instructions' })).toBe(true);
+    expect(isAllowedExternalCall('myco_cortex', {})).toBe(true); // default op is 'instructions'
     expect(isAllowedExternalCall('myco_plans', { op: 'list' })).toBe(true);
     expect(isAllowedExternalCall('myco_plans', {})).toBe(true); // default op is 'list'
     expect(isAllowedExternalCall('myco_plans', { op: 'get', id: 'p1' })).toBe(true);
@@ -339,7 +339,7 @@ describe('isAllowedExternalCall', () => {
     expect(isAllowedExternalCall('myco_spores', { op: 'get', id: 'sp1' })).toBe(true);
   });
 
-  it('(b) refuses every write / operator op, and myco_cortex ops other than digest', () => {
+  it('(b) refuses every write / operator op, and myco_cortex ops other than instructions', () => {
     expect(isAllowedExternalCall('myco_spores', { op: 'save', content: 'x', type: 'decision' })).toBe(false);
     expect(isAllowedExternalCall('myco_spores', { op: 'supersede' })).toBe(false);
     expect(isAllowedExternalCall('myco_spores', { op: 'consolidate' })).toBe(false);
@@ -348,7 +348,7 @@ describe('isAllowedExternalCall', () => {
     expect(isAllowedExternalCall('myco_plans', { op: 'save', content: 'x' })).toBe(false);
     expect(isAllowedExternalCall('myco_cortex', { op: 'maintenance_summary' })).toBe(false);
     expect(isAllowedExternalCall('myco_cortex', { op: 'projects_activity' })).toBe(false);
-    expect(isAllowedExternalCall('myco_cortex', { op: 'instructions' })).toBe(false);
+    expect(isAllowedExternalCall('myco_cortex', { op: 'notifications' })).toBe(false);
     expect(isAllowedExternalCall('myco_cortex', { op: 'canopy_map' })).toBe(false);
     expect(isAllowedExternalCall('myco_cortex', { op: 'canopy_entry' })).toBe(false);
     expect(isAllowedExternalCall('myco_cortex', { op: 'notifications' })).toBe(false);
@@ -480,8 +480,8 @@ function mockDaemonClient(capturedGets: CapturedGet[] = []): DaemonClient {
   return {
     get: vi.fn(async (endpoint: string, options?: { headers?: Record<string, string> }) => {
       capturedGets.push({ endpoint, options });
-      if (endpoint === '/api/digest') {
-        return { ok: true, data: { tiers: [{ tier: 5000, content: 'external digest', generated_at: 1 }] } };
+      if (endpoint === '/api/cortex/instructions') {
+        return { ok: true, data: { content: 'external instructions', agent_id: 'user', generated_at: 1 } };
       }
       return { ok: true, data: {} };
     }),
@@ -658,9 +658,9 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     const names = listed.tools.map((t) => t.name).sort();
     expect(names).toEqual(['myco_cortex', 'myco_plans', 'myco_search', 'myco_sessions', 'myco_skills', 'myco_spores']);
 
-    const digest = await client.callTool({ name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } });
-    expect(digest.content[0]).toEqual({ type: 'text', text: 'external digest' });
-    expect(capturedGets.some((c) => c.endpoint === '/api/digest')).toBe(true);
+    const served = await client.callTool({ name: 'myco_cortex', arguments: { op: 'instructions' } });
+    expect(JSON.parse((served.content[0] as { text: string }).text).content).toContain('external instructions');
+    expect(capturedGets.some((c) => c.endpoint === '/api/cortex/instructions')).toBe(true);
 
     const plans = await client.callTool({ name: 'myco_plans', arguments: { op: 'list' } });
     expect(plans.isError).not.toBe(true);
@@ -1023,13 +1023,13 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
       'myco_cortex', 'myco_plans', 'myco_search', 'myco_sessions', 'myco_skills', 'myco_spores',
     ]);
 
-    const digest = await client.callTool({ name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } });
-    expect(digest.content[0]).toEqual({ type: 'text', text: 'external digest' });
+    const served = await client.callTool({ name: 'myco_cortex', arguments: { op: 'instructions' } });
+    expect(JSON.parse((served.content[0] as { text: string }).text).content).toContain('external instructions');
 
     // The served Grove was resolved WITHOUT a caller-supplied grove_id — the
-    // internal loopback call (`/api/digest`) carries the derived grove_id
+    // internal loopback call (`/api/cortex/instructions`) carries the derived grove_id
     // but no project_id (grove-wide, not any one project).
-    const digestCall = capturedGets.find((c) => c.endpoint === '/api/digest');
+    const digestCall = capturedGets.find((c) => c.endpoint === '/api/cortex/instructions');
     expect(digestCall?.options?.headers?.['x-myco-grove-id']).toBe(grove.id);
     expect(digestCall?.options?.headers?.['x-myco-project-id']).toBeUndefined();
 
@@ -1056,7 +1056,7 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     });
     await client.connect(transport);
 
-    const plans = await client.callTool({ name: 'myco_plans', arguments: { op: 'list', project_id: projectId } });
+    const plans = await client.callTool({ name: 'myco_plans', arguments: { op: 'list', project: projectId } });
     expect(plans.isError).not.toBe(true);
 
     await client.close();

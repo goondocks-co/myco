@@ -9,6 +9,7 @@ import { handleCanopyMap, type CanopyMapResult } from './canopy-map.js';
 import { requestContextHeaders, requireProjectId, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { buildEndpoint } from './shared.js';
 import type { ToolFailure } from './error.js';
+import { PROJECT_PIVOT } from './pivot.js';
 
 export type CortexFailure = ToolFailure;
 
@@ -19,7 +20,7 @@ export interface CortexInput {
   op?: 'digest' | 'instructions' | 'canopy_map' | 'canopy_entry' | 'notifications' | 'maintenance_summary' | 'projects_activity';
   tier?: number;
   id?: string;
-  project_id?: string;
+  [PROJECT_PIVOT]?: string;
   path?: string;
   unread_only?: boolean;
   limit?: number;
@@ -199,8 +200,8 @@ function resolveCanopyEntry(
     }
     return parsed;
   }
-  if (input.project_id && input.path) {
-    return { projectId: input.project_id, path: input.path };
+  if (input[PROJECT_PIVOT] && input.path) {
+    return { projectId: input[PROJECT_PIVOT], path: input.path };
   }
   if (!input.id) return null;
   return parseCanopyRecordId(input.id);

@@ -16,31 +16,23 @@
  * always carries the vault as it stood at the instant it launched.
  */
 import type { ServerEnv } from './adapters.js';
-import { buildDigestInput, buildInstructionsInput } from './cortex-input.js';
+import { buildDigestInput } from './cortex-input.js';
 import { readRecallLeaves } from './recall.js';
-import { settingsWriter } from './settings.js';
-import { newestInstructionsHash } from '../read/cortex.js';
-
-/** The task whose run authors this Project's session-start instructions. */
-export const CORTEX_INSTRUCTIONS_TASK = 'cortex-instructions';
 
 /** The task whose run regenerates this Project's digest extracts. */
 export const DIGEST_TASK = 'digest-only';
 
 /** The tasks whose runs read their prompt back over `/runs/instruction`. */
-export const INSTRUCTED_TASKS: readonly string[] = [CORTEX_INSTRUCTIONS_TASK, DIGEST_TASK];
+export const INSTRUCTED_TASKS: readonly string[] = [DIGEST_TASK];
 
 /** The tasks whose runs list this Project's sessions over the run routes. */
-export const SESSION_LIST_TASKS: readonly string[] = [CORTEX_INSTRUCTIONS_TASK, DIGEST_TASK];
+export const SESSION_LIST_TASKS: readonly string[] = [DIGEST_TASK];
 
 /** The tasks whose runs read this Project's digest over the run routes. */
-export const DIGEST_READ_TASKS: readonly string[] = [CORTEX_INSTRUCTIONS_TASK, DIGEST_TASK];
+export const DIGEST_READ_TASKS: readonly string[] = [DIGEST_TASK];
 
 /** The tasks whose runs write this Project's digest over the run routes. */
 export const DIGEST_WRITE_TASKS: readonly string[] = [DIGEST_TASK];
-
-/** The report action a `cortex-instructions` run records its artifact under. */
-export const CORTEX_INSTRUCTIONS_ACTION = 'cortex_instructions';
 
 /** What one build answers: the run's prompt, the hash of the material behind it, and what that material counted. */
 export interface TaskInput {
@@ -69,18 +61,6 @@ export interface TaskInputBuilder {
 }
 
 export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
-  [CORTEX_INSTRUCTIONS_TASK]: {
-    async build(env, projectId, now) {
-      const [leaves, capabilities] = await Promise.all([
-        readRecallLeaves(env.db),
-        settingsWriter(env.db).capabilities(projectId),
-      ]);
-      return buildInstructionsInput(env.db, { projectId }, { leaves, capabilities, now });
-    },
-    currentHash(env, projectId) {
-      return newestInstructionsHash(env.db, { projectId });
-    },
-  },
   [DIGEST_TASK]: {
     async build(env, projectId, now, options) {
       const leaves = await readRecallLeaves(env.db);

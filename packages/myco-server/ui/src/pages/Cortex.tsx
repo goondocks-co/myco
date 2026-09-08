@@ -11,8 +11,8 @@ import { PageLoading } from '../components/ui/page-loading';
 import { Panel } from '../components/ui/panel';
 import { SubtabPill } from '../components/ui/subtab-pill';
 import {
-  DIGEST_OUTCOME_TEXT, digestRefusalText, INSTRUCTIONS_OUTCOME_TEXT, refusalText, useDigestRevisions, useDigests,
-  useInstructions, useRefreshInstructions, useRegenerateDigest, useCanopyMap, useRefreshMap, mapRefusalText, useRun,
+  DIGEST_OUTCOME_TEXT, digestRefusalText, useDigestRevisions, useDigests,
+  useInstructions, useRegenerateDigest, useCanopyMap, useRefreshMap, mapRefusalText, useRun,
   type DigestRow, type InstructionsCounts,
 } from '../hooks/use-intelligence';
 import { cn } from '../lib/cn';
@@ -105,33 +105,6 @@ function writtenFrom(counts: InstructionsCounts | null): string | null {
 }
 
 /**
- * Asks for this project's instructions to be written again, and says how it
- * went. A run writes them, so a started run is named with a link to itself; a
- * project that has not moved since the last write is told so and starts nothing.
- */
-function RefreshInstructions({ projectId }: { projectId: string }) {
-  const refresh = useRefreshInstructions(projectId);
-  const answer = refresh.data;
-  const note = refresh.error ? refusalText(refresh.error) : answer ? INSTRUCTIONS_OUTCOME_TEXT[answer.outcome] : null;
-  const busy = refresh.isPending;
-  return (
-    <div className="flex flex-col items-end gap-1">
-      <button
-        type="button"
-        aria-disabled={busy}
-        aria-busy={busy}
-        onClick={() => { if (!busy) refresh.mutate({}); }}
-        className={cn(button, 'inline-flex h-8 items-center gap-2 font-medium', busy && 'opacity-60')}
-      >
-        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-        {busy ? 'Asking…' : 'Refresh instructions'}
-      </button>
-      <AskNote projectId={projectId} note={note} runId={answer?.runId} />
-    </div>
-  );
-}
-
-/**
  * Asks for this project's digest to be written again, and says how it went.
  * "From scratch" tells the run to write every tier from the project's material
  * alone instead of carrying the current text forward.
@@ -171,19 +144,18 @@ function Instructions({ projectId }: { projectId: string }) {
   return (
     <PageLoading isLoading={instructions.isPending} error={instructions.error}>
       {instructions.data && (instructions.data.instructions.length === 0 ? (
-        <Panel title="Instructions" actions={<RefreshInstructions projectId={projectId} />}>
-          <p className="font-sans text-sm text-on-surface-variant">No instructions generated yet. They appear here once the instructions task has run.</p>
+        <Panel title="Instructions">
+          <p className="font-sans text-sm text-on-surface-variant">Session-start instructions are written under Settings, not generated here.</p>
         </Panel>
       ) : (
         <div className="flex flex-col gap-4">
-          {instructions.data.instructions.map((row, index) => (
-            <Panel key={row.id} eyebrow={row.agentId} title="Current instructions" actions={
+          {instructions.data.instructions.map((row) => (
+            <Panel key={row.id} eyebrow={row.agentId} title="Retired: generated instructions" actions={
               <div className="flex flex-wrap items-start gap-2">
                 <Badge variant="secondary" title={formatDateTime(row.generatedAt)}>generated {formatRelative(row.generatedAt)}</Badge>
                 {row.sourceRunId !== null && (
                   <Link to={`${runBase}/${encodeURIComponent(row.sourceRunId)}`} className={inlineLink}>from run {row.sourceRunId}</Link>
                 )}
-                {index === 0 && <RefreshInstructions projectId={projectId} />}
               </div>
             }>
               {writtenFrom(row.counts) !== null && (

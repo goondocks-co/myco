@@ -154,7 +154,7 @@ describe('runServerTask', () => {
     await ensureMember(fixture.db, HARNESS_MEMBER_ID, now, 'member', 'harness runtime');
     const minted = await issueMemberToken(fixture.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, now);
     await recordDispatch(fixture.db, { projectId: 'proj_1' }, {
-      id: 'run_cortex_1', agentId: AGENT, task: 'cortex-instructions', instruction: 'THE SERVER PROMPT',
+      id: 'run_cortex_1', agentId: AGENT, task: 'digest-only', instruction: 'THE SERVER PROMPT',
       provider: 'anthropic', model: null, runContext: JSON.stringify({ input_hash: 'h' }), dispatchedBy: minted.tokenId, startedAt: now,
     });
     const client = new ServerClient(
@@ -173,11 +173,9 @@ describe('runServerTask', () => {
       },
       supports: () => false,
     } as unknown as AgentHarness;
-    await runServerTask({ client, budget, runId: 'run_cortex_1', taskName: 'cortex-instructions', harness: observing, admission: 'cortex' });
-    expect(seen!.names).toEqual(['vault_report', 'vault_spores', 'vault_spore', 'vault_sessions', 'vault_read_digest']);
+    await runServerTask({ client, budget, runId: 'run_cortex_1', taskName: 'digest-only', harness: observing, admission: 'cortex' });
+    expect(seen!.names).toEqual(['vault_report', 'vault_spores', 'vault_spore', 'vault_sessions', 'vault_read_digest', 'vault_write_digest']);
     expect(seen!.prompt).toContain('THE SERVER PROMPT');
-    expect(seen!.prompt).toContain('## Phase: research');
-    expect(seen!.prompt).toContain('## Phase: author');
   });
 
   it('fails an unknown task by name without claiming anything', async () => {

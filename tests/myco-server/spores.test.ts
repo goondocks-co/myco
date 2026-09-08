@@ -8,7 +8,7 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
-  countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore,
+  consolidateSpores, countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore,
   type SporeInsert,
 } from '@myco-server-worker/core/spores.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -182,5 +182,47 @@ describe('resolution', () => {
     await insertSpore(db, SCOPE, spore('gone'));
     await resolveSpore(db, SCOPE, 'obsolete', event('re2', 'gone', { action: 'obsolete', newSporeId: null }), NOW);
     expect(await listSupersededSporeIds(db, SCOPE, 'gone')).toEqual([]);
+  });
+});
+
+/**
+ * The consolidation path, executed rather than asserted.
+ *
+ * Its `resolution_events` INSERT carries a literal in the `action` position, so
+ * its placeholder count and its column count differ by one and a miscount is
+ * invisible to `tsc`. It is also the one write an External Agent grant never
+ * reaches, so nothing else in the suite executes it with the columns two lanes
+ * added. Reading the stored rows back is what makes those columns safe to add
+ * from a hunk neither lane can verify by reading.
+ */
+describe('a consolidation, executed', () => {
+  it('stores the wisdom spore with its agent line and files the events with their provenance', async () => {
+    const { db, sqlite } = store();
+    await insertSpore(db, SCOPE, spore('a'));
+    await insertSpore(db, SCOPE, spore('b'));
+
+    const { wisdom, consolidated } = await consolidateSpores(
+      db,
+      SCOPE,
+      spore('w', { observationType: 'wisdom', content: 'the merged note', agentLine: 'selector drops the tail → keep the record equal to the render', author: 'mem_1', provenance: { kind: 'pr', ref: 'goondocks/myco#1150' } }),
+      ['a', 'b'],
+      { agentId: AGENT, reason: 'one note covers both', sessionId: null, author: 'mem_1', provenance: { kind: 'pr', ref: 'goondocks/myco#1150' }, createdAt: NOW + 1 },
+      NOW + 1,
+    );
+
+    expect(consolidated).toBe(2);
+    expect(wisdom).toMatchObject({ id: 'w', agentLine: 'selector drops the tail → keep the record equal to the render', author: 'mem_1', provenanceKind: 'pr', provenanceRef: 'goondocks/myco#1150' });
+
+    const events = sqlite.query(`SELECT spore_id, action, new_spore_id, author, provenance_kind, provenance_ref FROM resolution_events ORDER BY spore_id`).all();
+    expect(events).toEqual([
+      { spore_id: 'a', action: 'consolidate', new_spore_id: 'w', author: 'mem_1', provenance_kind: 'pr', provenance_ref: 'goondocks/myco#1150' },
+      { spore_id: 'b', action: 'consolidate', new_spore_id: 'w', author: 'mem_1', provenance_kind: 'pr', provenance_ref: 'goondocks/myco#1150' },
+    ]);
+  });
+
+  it('leaves the agent line null where no run has derived one', async () => {
+    const { db } = store();
+    const row = await insertSpore(db, SCOPE, spore('a'));
+    expect(row?.agentLine).toBeNull();
   });
 });

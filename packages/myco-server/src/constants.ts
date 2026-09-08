@@ -73,3 +73,6 @@ export const MEMBER_ID = new RegExp(`^${MEMBER_ID_SEGMENT}$`);
  */
 export const LINEAGE_REPLAY_GRACE_MS = 120_000;
 export const TOKEN_ID_BYTES = 12;
+
+/** The most a Deployment's session-start instructions may carry. A person edits this text; it is not generated. */
+export const INSTRUCTIONS_TEMPLATE_MAX_BYTES = 4096;

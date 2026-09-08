@@ -25,7 +25,7 @@ import { effectiveOp } from '../tools/op-resolution.js';
  *  proven contract (worker/src/mcp/server.ts:22-87). */
 export const EXTERNAL_TOOL_ALLOWLIST: Record<string, ReadonlySet<string>> = {
   myco_search:   new Set(['*']),            // query-only tool
-  myco_cortex:   new Set(['digest']),       // NEVER maintenance_summary/projects_activity
+  myco_cortex:   new Set(['instructions']), // NEVER maintenance_summary/projects_activity
   myco_plans:    new Set(['list', 'get']),
   myco_sessions: new Set(['list', 'get']),
   myco_skills:   new Set(['list', 'get']),

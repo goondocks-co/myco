@@ -2,6 +2,11 @@
  * The recall surface: what a member's hooks are served for one prompt, and for
  * one session or subagent start.
  *
+ * A session start may name the repository's git remote. Binding it here costs
+ * one idempotent write on a call the member already makes, and it is what lets
+ * a later tool call name this Project by its remote rather than by an id the
+ * agent has no way to know.
+ *
  * The route answers within the hook's own budget, so it composes and answers in
  * one call and holds no state of its own beyond the records `core/recall.ts`
  * writes. `skipped` names, for every contributor that served nothing, the gate
@@ -16,6 +21,7 @@ import { resolveSemanticSearch } from '../core/search.js';
 import { settingsWriter } from '../core/settings.js';
 import { refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
+import { MAX_REMOTE_CHARS, normalizeRemote, recordProjectRemote } from '../core/remotes.js';
 
 const MAX_SESSION_CHARS = 384;
 const MAX_PROMPT_ID_CHARS = 192;
@@ -68,6 +74,25 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
       ? 'compact context requires sessionId and a positive safe-integer compaction ordinal'
       : 'session context requires sessionId and kind "start" or "subagent"';
     return Response.json(refused(ctx, refusal(reason, 'parse')));
+  }
+
+  // A session start is where a member first names its repository, and the
+  // binding is what lets a later tool call address this Project by remote.
+  //
+  // A remote past the bound is a fault of the caller's own making and is
+  // refused. A remote this Deployment cannot normalize is DROPPED:
+  // the member sends whatever `git remote get-url origin` prints, and a
+  // checkout whose origin is a filesystem path is an ordinary clone rather than
+  // a malformed request. Refusing it would cost that repository its whole
+  // session block — the Project line, the instructions, everything — on every
+  // session, to bind a name no caller looks up.
+  const named = body.remote;
+  if (named !== undefined) {
+    if (typeof named !== 'string' || named.length > MAX_REMOTE_CHARS) {
+      return Response.json(refused(ctx, refusal(`remote must be a string of at most ${MAX_REMOTE_CHARS} characters`, 'parse')));
+    }
+    const remote = normalizeRemote(named);
+    if (remote !== null) await recordProjectRemote(env.db, ctx.projectId, remote, ctx.now);
   }
 
   const [leaves, capabilityOn] = await Promise.all([

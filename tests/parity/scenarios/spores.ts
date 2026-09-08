@@ -40,19 +40,19 @@ export const spores: ParityScenario = {
     await post(session, 'prompt', { promptId: p2, text: 'and carry on with it', origin: 'user' }, stamp + 2);
 
     // A save naming the session carries that session and its latest prompt.
-    const first = await mcp({ op: 'save', type: 'decision', content: `recency is the selector ${stamp}`, session_id: session });
+    const first = await mcp({ op: 'save', type: 'decision', content: `recency is the selector ${stamp}`, session_id: session, project: target.projectId });
     const oldId = String(first.id);
     const saved = (await target.sql(`SELECT session_id, prompt_id, status FROM spores WHERE id = ${lit(oldId)}`))[0]!;
     expect([saved.session_id, saved.prompt_id, saved.status]).toEqual([session, p2, 'active']);
 
     // A session the caller's machine does not hold is one refusal, whatever the cause.
-    const refused = await mcp({ op: 'save', type: 'decision', content: 'nowhere', session_id: `no-such-${stamp}` });
+    const refused = await mcp({ op: 'save', type: 'decision', content: 'nowhere', session_id: `no-such-${stamp}`, project: target.projectId });
     expect(refused.error).toBe('session_id not found');
 
     // A supersede reads as lineage from both ends, through the tool and the owner route.
-    const second = await mcp({ op: 'save', type: 'decision', content: `recency with a cap ${stamp}`, session_id: session });
+    const second = await mcp({ op: 'save', type: 'decision', content: `recency with a cap ${stamp}`, session_id: session, project: target.projectId });
     const newId = String(second.id);
-    expect(await mcp({ op: 'supersede', old_spore_id: oldId, new_spore_id: newId, reason: 'narrowed', session_id: session }))
+    expect(await mcp({ op: 'supersede', old_spore_id: oldId, new_spore_id: newId, reason: 'narrowed', session_id: session, project: target.projectId }))
       .toEqual({ old_spore: oldId, new_spore: newId, status: 'superseded' });
 
     const older = await mcp({ op: 'get', id: oldId });

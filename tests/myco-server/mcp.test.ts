@@ -8,14 +8,17 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import { isServedTool, isWriteOp, PROJECT_PIVOT } from '@myco-server-worker/core/tool-catalogue.js';
+import { opOf } from '@myco-server-worker/mcp/registry.js';
 import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';
 import { archiveProject } from '@myco-server-worker/read/sessions.js';
 import { upsertDigest } from '@myco-server-worker/core/digests.js';
 import { insertSkillRecord } from '@myco-server-worker/core/skills.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
-import { NO_DIGEST_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
-import { FIRST_MODERN_REVISION, SERVED_PROTOCOL_VERSIONS } from '@myco-server-worker/mcp/server.js';
+import { NO_INSTRUCTIONS_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
+import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
+import { FIRST_MODERN_REVISION, SERVED_PROTOCOL_VERSIONS, SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_MAX_BYTES } from '@myco-server-worker/mcp/server.js';
 import { issueExternalGrant, revokeExternalGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
@@ -31,6 +34,9 @@ import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surfac
 import { NO_LIVE_RUN, RUN_PROJECT_MISMATCH, RUN_SCOPE } from '@myco-server-worker/pipeline.js';
 import { envelope, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 
+/** The Project every fixture request names in its header, and the one a write falls back to here. */
+const FIXTURE_PROJECT = 'proj_1';
+
 const rpc = (method: string, params?: unknown, id: number = 1) => JSON.stringify({ jsonrpc: '2.0', id, method, ...(params === undefined ? {} : { params }) });
 const post = (token: string, body: string, extra: Record<string, string> = {}) => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token, extra), body });
 
@@ -39,8 +45,14 @@ async function setup() {
   const now = Date.now();
   const t1 = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
   const t2 = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now);
+  // A write names its Project, as a well-behaved caller does. A test whose
+  // subject IS the tenancy rule passes `project` itself, or none deliberately.
+  const named = (name: string, args: Record<string, unknown>): Record<string, unknown> =>
+    isServedTool(name) && isWriteOp(name, opOf(name, args)) && args[PROJECT_PIVOT] === undefined
+      ? { ...args, [PROJECT_PIVOT]: FIXTURE_PROJECT }
+      : args;
   const call = async (token: string, name: string, args: Record<string, unknown> = {}, extra: Record<string, string> = {}) => {
-    const res = await worker.fetch(post(token, rpc('tools/call', { name, arguments: args }), extra), e.env);
+    const res = await worker.fetch(post(token, rpc('tools/call', { name, arguments: named(name, args) }), extra), e.env);
     const body = await res.json() as any;
     return { status: res.status, body, result: body.result?.structuredContent?.result, error: body.error };
   };
@@ -83,7 +95,7 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_search', { query: 'anything' })).result).toMatchObject({ results: [], mode: 'fts', provider_unavailable: true });
     const never = await call(t1.token, 'myco_plans', { op: 'delete', id: 'x' });
     expect({ code: never.error.data.code, offered: /not offered/.test(never.error.message) }).toEqual({ code: 'not_served', offered: true });
-    expect((await call(t1.token, 'myco_cortex', { op: 'canopy_entry' })).error.data.code).toBe('not_served');
+    expect((await call(t1.token, 'myco_cortex', { op: 'notifications' })).error.data.code).toBe('not_served');
   });
 
   it('records, reads, lists, supersedes and consolidates spores under the built-in user agent', async () => {
@@ -239,7 +251,7 @@ describe('POST /mcp', () => {
 
   it('ignores an argument the tool does not declare: myco_agent cannot pivot, and an unknown key never reaches a handler', async () => {
     const { call, t1 } = await setup();
-    expect((await call(t1.token, 'myco_agent', { project_id: 'proj_unknown' })).result).toEqual({ ok: true, op: 'runs', data: { runs: [], cursor: null } });
+    expect((await call(t1.token, 'myco_agent', { project: 'proj_unknown' })).result).toEqual({ ok: true, op: 'runs', data: { runs: [], cursor: null } });
     expect((await call(t1.token, 'myco_plans', { limit: 5, purge: true })).result).toEqual([]);
   });
 
@@ -281,23 +293,28 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_sessions', { op: 'get', id: 'nope' })).result).toEqual({ ok: false, error: 'Session not found' });
   });
 
-  it('answers the digest at the requested tier, the nearest tier as a fallback, and the no-digest text when none exists', async () => {
+  it('answers the instructions template beside the Project id, and says so when none is written', async () => {
     const { call, db, t1 } = await setup();
-    expect((await call(t1.token, 'myco_cortex')).result).toEqual({ content: NO_DIGEST_MESSAGE, tier: 5000, fallback: false });
-    await upsertDigest(db, { projectId: 'proj_1' }, { id: 'd1', agentId: 'user', tier: 1500, content: 'brief', substrateHash: null, generatedAt: 10 });
-    const nearest = (await call(t1.token, 'myco_cortex', { tier: 5000 })).result;
-    expect(nearest).toEqual({ content: 'brief', tier: 1500, fallback: true, generated_at: 10 });
-    const exact = (await call(t1.token, 'myco_cortex', { tier: 1500 })).result;
-    expect(exact.fallback).toBe(false);
-    expect((await call(t1.token, 'myco_cortex', { op: 'instructions' })).result).toEqual({ ok: false, error: 'Cortex instructions not available' });
+    // The default op: an agent that names none is answered the standing guidance.
+    expect((await call(t1.token, 'myco_cortex')).result)
+      .toEqual({ content: NO_INSTRUCTIONS_MESSAGE, project_id: 'proj_1', configured: false });
+
+    await settingsWriter(db).setLeaf(INSTRUCTIONS_TEMPLATE_LEAF, '# Keep the plan current.', 'mem_machine_1', 10);
+    expect((await call(t1.token, 'myco_cortex', { op: 'instructions' })).result)
+      .toEqual({ content: '# Keep the plan current.', project_id: 'proj_1', configured: true });
+
+    // The Project id it answers is the one the call addressed, which is what a write must name.
+    expect((await call(t1.token, 'myco_cortex', { project: 'proj_2' })).result)
+      .toMatchObject({ project_id: 'proj_2' });
+
     const activity = (await call(t1.token, 'myco_cortex', { op: 'projects_activity' })).result;
     expect(activity.projects.map((p: any) => p.id).sort()).toEqual(['proj_1', 'proj_2']);
   });
 
-  it('serializes a digest as its text and every other result as JSON, beside the structured result', async () => {
+  it('serializes every result as JSON, beside the structured result', async () => {
     const { env, t1 } = await setup();
-    const digest = await (await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_cortex', arguments: {} })), env)).json() as any;
-    expect(digest.result.content).toEqual([{ type: 'text', text: NO_DIGEST_MESSAGE }]);
+    const cortex = await (await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_cortex', arguments: {} })), env)).json() as any;
+    expect(JSON.parse(cortex.result.content[0].text)).toEqual(cortex.result.structuredContent.result);
     const plans = await (await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_plans', arguments: {} })), env)).json() as any;
     expect({ text: plans.result.content[0].text, structured: plans.result.structuredContent }).toEqual({ text: '[]', structured: { result: [] } });
   });
@@ -320,12 +337,12 @@ describe('POST /mcp', () => {
     expect(filtered.data.runs.map((r: any) => r.id)).toEqual(['r_user']);
   });
 
-  it('reads another Project through project_id without creating one, and answers an unknown Project as absent', async () => {
+  it('reads another Project through the tenancy argument without creating one, and answers an unknown Project as absent', async () => {
     const { call, sqlite, t1 } = await setup();
     const before = (sqlite.query(`SELECT COUNT(*) c FROM projects`).get() as any).c;
-    expect((await call(t1.token, 'myco_plans', { project_id: 'proj_2' })).result).toEqual([]);
-    expect((await call(t1.token, 'myco_plans', { project_id: 'proj_unknown' })).result).toEqual({ ok: false, error: 'Project not found' });
-    expect((await call(t1.token, 'myco_sessions', { project_id: 'proj_unknown' })).result).toEqual({ ok: false, error: 'Project not found' });
+    expect((await call(t1.token, 'myco_plans', { project: 'proj_2' })).result).toEqual([]);
+    expect((await call(t1.token, 'myco_plans', { project: 'proj_unknown' })).result).toEqual({ ok: false, error: 'Project not found' });
+    expect((await call(t1.token, 'myco_sessions', { project: 'proj_unknown' })).result).toEqual({ ok: false, error: 'Project not found' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM projects`).get() as any).c).toBe(before);
   });
 
@@ -337,6 +354,16 @@ describe('POST /mcp', () => {
     expect({ status: probe.status, code: body.error?.code, id: body.id }).toEqual({ status: 200, code: -32601, id: 1 });
     const init = await worker.fetch(post(t1.token, rpc('initialize', { protocolVersion: SERVED_PROTOCOL_VERSIONS[0], capabilities: {}, clientInfo: { name: 't', version: '0' } })), env);
     expect(((await init.json()) as any).result.protocolVersion).toBe(SERVED_PROTOCOL_VERSIONS[0]);
+  });
+
+  it('tells a client what Myco is and how tenancy works, in the handshake, under the ceiling that rides every one', async () => {
+    const { env, t1 } = await setup();
+    expect(Buffer.byteLength(SERVER_INSTRUCTIONS, 'utf8')).toBeLessThanOrEqual(SERVER_INSTRUCTIONS_MAX_BYTES);
+    const init = await worker.fetch(post(t1.token, rpc('initialize', { protocolVersion: SERVED_PROTOCOL_VERSIONS[0], capabilities: {}, clientInfo: { name: 't', version: '0' } })), env);
+    const body = await init.json() as any;
+    expect(body.result.instructions).toBe(SERVER_INSTRUCTIONS);
+    // The rule an agent cannot discover from a schema: a read falls back, a write does not.
+    expect(body.result.instructions).toContain('A write without it is refused.');
   });
 
   it('answers a storage failure inside a call as a retryable JSON-RPC error at 503', async () => {
@@ -377,8 +404,8 @@ describe('POST /mcp over an External Agent grant', () => {
     const listed = await (await worker.fetch(grantRequest(grant.key, rpc('tools/list')), env)).json() as any;
     expect(listed.result.tools.map((t: any) => t.name).sort()).toEqual([...EXTERNAL_TOOLS].sort());
     expect(listed.result.tools).toEqual(externalDefinitions().map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema, annotations: d.annotations })));
-    await memberCall('myco_spores', { op: 'save', type: 'gotcha', content: 'seen by the bot' });
-    await upsertDigest(db, { projectId: 'proj_1' }, { id: 'd-bot', agentId: 'user', tier: 5000, content: 'the digest', substrateHash: null, generatedAt: 10 });
+    await memberCall('myco_spores', { op: 'save', type: 'gotcha', content: 'seen by the bot', project: 'proj_1' });
+    await settingsWriter(db).setLeaf(INSTRUCTIONS_TEMPLATE_LEAF, 'the standing guidance', 'mem_machine_1', 10);
     const spores = await callAs(grant.key, 'myco_spores', { op: 'list' });
     expect({ total: spores.result.total, content: spores.result.spores[0].content }).toEqual({ total: 1, content: 'seen by the bot' });
     expect((await callAs(grant.key, 'myco_spores', { op: 'get', id: spores.result.spores[0].id })).result.content).toBe('seen by the bot');
@@ -388,7 +415,7 @@ describe('POST /mcp over an External Agent grant', () => {
     expect((await callAs(grant.key, 'myco_plans', { op: 'list' })).result).toEqual([]);
     expect((await callAs(grant.key, 'myco_sessions', {})).result).toEqual([]);
     expect((await callAs(grant.key, 'myco_skills', { op: 'list' })).result).toEqual([]);
-    expect((await callAs(grant.key, 'myco_cortex', { op: 'digest', tier: 5000 })).result.content).toBe('the digest');
+    expect((await callAs(grant.key, 'myco_cortex', { op: 'instructions' })).result.content).toBe('the standing guidance');
     const search = await callAs(grant.key, 'myco_search', { query: 'seen' });
     expect(search.result.results).toMatchObject([{ type: 'spore', id: spores.result.spores[0].id }]);
   });
@@ -422,15 +449,15 @@ describe('POST /mcp over an External Agent grant', () => {
     }
   });
 
-  it('accepts project_id naming its own Project, refuses any other value as a tool that does not exist without looking the Project up, and reads its own Project whatever the header names', async () => {
+  it('accepts a tenancy argument naming its own Project, refuses any other value as a tool that does not exist without looking the Project up, and reads its own Project whatever the header names', async () => {
     const { grant, callAs, memberCall, executed } = await grantSetup();
-    await memberCall('myco_spores', { op: 'save', type: 'gotcha', content: 'in proj_1' });
+    await memberCall('myco_spores', { op: 'save', type: 'gotcha', content: 'in proj_1', project: 'proj_1' });
     const plain = await callAs(grant.key, 'myco_spores', { op: 'list' });
-    const own = await callAs(grant.key, 'myco_spores', { op: 'list', project_id: 'proj_1' });
+    const own = await callAs(grant.key, 'myco_spores', { op: 'list', project: 'proj_1' });
     expect(own.body).toEqual(plain.body);
     const from = executed.length;
-    const foreign = await callAs(grant.key, 'myco_spores', { op: 'list', project_id: 'proj_2' });
-    const absent = await callAs(grant.key, 'myco_spores', { op: 'list', project_id: 'proj_nowhere' });
+    const foreign = await callAs(grant.key, 'myco_spores', { op: 'list', project: 'proj_2' });
+    const absent = await callAs(grant.key, 'myco_spores', { op: 'list', project: 'proj_nowhere' });
     expect({ foreign: foreign.error, absent: absent.error }).toEqual({ foreign: { code: -32000, message: 'Unknown tool: myco_spores', data: { code: 'unknown_tool' } }, absent: foreign.error });
     expect(executed.slice(from).filter((sql) => /\bprojects\b/i.test(sql))).toEqual([]);
     const misnamed = await callAs(grant.key, 'myco_spores', { op: 'list' }, { [PROJECT_HEADER]: 'proj_2' });
@@ -440,8 +467,8 @@ describe('POST /mcp over an External Agent grant', () => {
 
   it('records use once per interval, keys the limiter on the grant id, never charges the source bucket, and issues no write but that record on any allowlisted read', async () => {
     const { db, grant, callAs, memberCall, lastUsed, tokenKeys, sourceKeys, executed } = await grantSetup();
-    const spore = (await memberCall('myco_spores', { op: 'save', type: 'gotcha', content: 'seed' })).result.id as string;
-    const plan = (await memberCall('myco_plans', { op: 'save', content: '# p', session_id: 'sess-seed', plan_key: 'seed' })).result;
+    const spore = (await memberCall('myco_spores', { op: 'save', type: 'gotcha', content: 'seed', project: 'proj_1' })).result.id as string;
+    const plan = (await memberCall('myco_plans', { op: 'save', content: '# p', session_id: 'sess-seed', plan_key: 'seed', project: 'proj_1' })).result;
     await insertSkillRecord(db, { projectId: 'proj_1' }, { id: 'skill-seed', agentId: 'user', name: 'seed', displayName: 'Seed', description: 'd', candidateId: null, sourceIds: '[]', path: 'skills/seed/SKILL.md', createdAt: 5 });
     await upsertDigest(db, { projectId: 'proj_1' }, { id: 'd-seed', agentId: 'user', tier: 5000, content: 'seed digest', substrateHash: null, generatedAt: 10 });
     const from = executed.length;
@@ -451,7 +478,7 @@ describe('POST /mcp over an External Agent grant', () => {
     expect(typeof first).toBe('number');
     const reads: Array<[string, Record<string, unknown>]> = [
       ['myco_sessions', {}], ['myco_skills', {}], ['myco_spores', {}], ['myco_cortex', {}], ['myco_search', { query: 'q' }],
-      ['myco_spores', { op: 'get', id: spore }], ['myco_plans', { op: 'get', id: plan.id }], ['myco_skills', { op: 'get', id: 'skill-seed' }], ['myco_sessions', { op: 'get', id: 'sess-seed' }], ['myco_cortex', { op: 'digest', tier: 5000 }],
+      ['myco_spores', { op: 'get', id: spore }], ['myco_plans', { op: 'get', id: plan.id }], ['myco_skills', { op: 'get', id: 'skill-seed' }], ['myco_sessions', { op: 'get', id: 'sess-seed' }], ['myco_cortex', { op: 'instructions' }],
     ];
     for (const [name, args] of reads) {
       const res = await callAs(grant.key, name, args);
@@ -561,8 +588,14 @@ async function runSetup() {
     expect(await recordDispatch(e.db, { projectId }, { id: runId, agentId: 'myco-agent', task, provider: 'anthropic', model: null, runContext, dispatchedBy: credential.tokenId, startedAt: over.startedAt ?? Date.now(), dryRun: over.dryRun })).toBe(true);
     e.sqlite.run(`UPDATE agent_runs SET status = ? WHERE project_id = ? AND id = ?`, [over.status ?? 'running', projectId, runId]);
   };
+  // A write names its Project, as a well-behaved caller does. A test whose
+  // subject IS the tenancy rule passes `project` itself, or none deliberately.
+  const named = (name: string, args: Record<string, unknown>): Record<string, unknown> =>
+    isServedTool(name) && isWriteOp(name, opOf(name, args)) && args[PROJECT_PIVOT] === undefined
+      ? { ...args, [PROJECT_PIVOT]: FIXTURE_PROJECT }
+      : args;
   const call = async (token: string, name: string, args: Record<string, unknown> = {}, extra: Record<string, string> = {}) => {
-    const res = await worker.fetch(post(token, rpc('tools/call', { name, arguments: args }), extra), e.env);
+    const res = await worker.fetch(post(token, rpc('tools/call', { name, arguments: named(name, args) }), extra), e.env);
     const body = await res.json() as any;
     return { status: res.status, body, result: body.result?.structuredContent?.result, error: body.error };
   };
@@ -573,6 +606,82 @@ async function runSetup() {
   const writes = (from: number) => e.executed.slice(from).filter((sql) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql));
   return { ...e, harness, member, dispatch, call, list, writes };
 }
+
+
+/**
+ * A Project addressed by the repository's git remote, on every principal.
+ *
+ * The remote is the only name an agent can read off a checkout. `SERVER_INSTRUCTIONS`
+ * tells every caller it is acceptable, so a member, a run and a grant must all
+ * be able to use it. A run or a grant naming its OWN Project by remote is the
+ * case that answers `unknown_tool` without the chokepoint's lookup, which reads
+ * as a tool that does not exist rather than as a Project it may not see.
+ */
+describe('POST /mcp addressed by git remote', () => {
+  const REMOTE = 'git@github.com:goondocks/myco.git';
+  const NAME = 'github.com/goondocks/myco';
+
+  it('binds the remote at session start and then resolves a member read by it', async () => {
+    const { env, sqlite, call, t1 } = await setup();
+    const bind = await worker.fetch(
+      new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(t1.token), body: JSON.stringify({ sessionId: 's_remote', kind: 'start', remote: REMOTE }) }),
+      env,
+    );
+    expect(bind.status).toBe(200);
+    expect(sqlite.query(`SELECT remote, project_id AS p FROM project_remotes`).all()).toEqual([{ remote: NAME, p: 'proj_1' }]);
+
+    // The same Project, named the way a checkout knows it.
+    expect((await call(t1.token, 'myco_sessions', { project: REMOTE })).result).toEqual([]);
+    // A remote no Project has claimed is absent, never someone else's Project.
+    expect((await call(t1.token, 'myco_sessions', { project: 'git@github.com:someone/else.git' })).result)
+      .toEqual({ ok: false, error: 'Project not found' });
+  });
+
+  it('serves a session block for a checkout whose origin is a path, and binds nothing', async () => {
+    const { env, sqlite, t1 } = await setup();
+    const res = await worker.fetch(
+      new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(t1.token), body: JSON.stringify({ sessionId: 's_path', kind: 'start', remote: '/srv/git/repo.git' }) }),
+      env,
+    );
+    const body = await res.json() as any;
+    expect({ status: res.status, persisted: body.persisted }).toEqual({ status: 200, persisted: true });
+    expect(body.parts.map((p: any) => p.kind)).toContain('project');
+    expect(sqlite.query(`SELECT COUNT(*) AS n FROM project_remotes`).get()).toEqual({ n: 0 });
+  });
+
+  it('refuses a remote past the bound rather than dropping it', async () => {
+    const { env, t1 } = await setup();
+    const res = await worker.fetch(
+      new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(t1.token), body: JSON.stringify({ sessionId: 's_long', kind: 'start', remote: `https://github.com/${'a'.repeat(600)}` }) }),
+      env,
+    );
+    expect((await res.json() as any).persisted).toBe(false);
+  });
+
+  it('admits a grant naming its own Project by remote, and refuses another Project by remote', async () => {
+    const { env, sqlite, grant, callAs, t1 } = await grantSetup();
+    await worker.fetch(
+      new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(t1.token), body: JSON.stringify({ sessionId: 's_g', kind: 'start', remote: REMOTE }) }),
+      env,
+    );
+    sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_other', 'proj_other', 0)`).run();
+    sqlite.query(`INSERT INTO project_remotes (remote, project_id, first_seen_at) VALUES ('github.com/goondocks/other', 'proj_other', 0)`).run();
+
+    expect((await callAs(grant.key, 'myco_spores', { op: 'list', project: REMOTE })).error).toBeUndefined();
+    expect((await callAs(grant.key, 'myco_spores', { op: 'list', project: 'git@github.com:goondocks/other.git' })).error.data.code).toBe('unknown_tool');
+  });
+
+  it('admits a run naming its own Project by remote', async () => {
+    const { env, sqlite, harness, dispatch, call, member } = await runSetup();
+    await dispatch(harness, 'run_1', SWEEP);
+    await worker.fetch(
+      new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(member.token), body: JSON.stringify({ sessionId: 's_r', kind: 'start', remote: REMOTE }) }),
+      env,
+    );
+    expect(sqlite.query(`SELECT remote FROM project_remotes`).all()).toEqual([{ remote: NAME }]);
+    expect((await call(harness.token, 'myco_spores', { op: 'list', project: REMOTE })).error).toBeUndefined();
+  });
+});
 
 /** Every `(tool, op)` the registry keys, as the registry resolves it. */
 const everyRegistryCall = (): Array<{ tool: string; op: string; args: Record<string, unknown> }> =>
@@ -606,7 +715,7 @@ describe('POST /mcp over a run credential', () => {
     const allow = runAllowlist(TASK_TOOLS[SWEEP], { dryRun: false });
     const outside = everyRegistryCall().filter(({ tool, op }) => !(allow.get(tool as any)?.has(op) ?? false));
     expect(outside.length).toBeGreaterThan(10);
-    expect(outside.map((c) => `${c.tool}:${c.op}`)).toEqual(expect.arrayContaining(['myco_plans:save', 'myco_cortex:digest', 'myco_agent:runs', 'myco_search:*', 'myco_spores:consolidate']));
+    expect(outside.map((c) => `${c.tool}:${c.op}`)).toEqual(expect.arrayContaining(['myco_plans:save', 'myco_cortex:instructions', 'myco_agent:runs', 'myco_search:*', 'myco_spores:consolidate']));
     const from = executed.length;
     for (const { tool, op, args } of outside) {
       const answered = await call(harness.token, tool, args);
@@ -615,14 +724,14 @@ describe('POST /mcp over a run credential', () => {
     expect(writes(from)).toEqual([]);
   });
 
-  it('is bound to the run\'s Project: a header naming another is refused before any handler, a project_id naming another is a tool that does not exist, and its own is admitted', async () => {
+  it('is bound to the run\'s Project: a header naming another is refused before any handler, a tenancy argument naming another is a tool that does not exist, and its own is admitted', async () => {
     const { harness, dispatch, call, list } = await runSetup();
     await dispatch(harness, 'run_1', SWEEP);
     const foreign = await list(harness.token, { [PROJECT_HEADER]: 'proj_2' });
     expect({ status: foreign.status, code: foreign.body.error.data.code, message: foreign.body.error.message }).toEqual({ status: 400, code: 'project_mismatch', message: RUN_PROJECT_MISMATCH });
-    expect((await call(harness.token, 'myco_spores', { op: 'list', project_id: 'proj_2' })).error.data.code).toBe('unknown_tool');
-    expect((await call(harness.token, 'myco_spores', { op: 'list', project_id: 'proj_nowhere' })).error.data.code).toBe('unknown_tool');
-    expect((await call(harness.token, 'myco_spores', { op: 'list', project_id: 'proj_1' })).result).toMatchObject({ total: 0 });
+    expect((await call(harness.token, 'myco_spores', { op: 'list', project: 'proj_2' })).error.data.code).toBe('unknown_tool');
+    expect((await call(harness.token, 'myco_spores', { op: 'list', project: 'proj_nowhere' })).error.data.code).toBe('unknown_tool');
+    expect((await call(harness.token, 'myco_spores', { op: 'list', project: 'proj_1' })).result).toMatchObject({ total: 0 });
   });
 
   it('holds no surface without exactly one live run: none, pending, completed, stale, or two rows naming one credential', async () => {

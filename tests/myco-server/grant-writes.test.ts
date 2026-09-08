@@ -114,7 +114,7 @@ describe('an External Agent grant writes as itself', () => {
 
     const from = executed.length;
     for (const projectId of ['proj_2', 'proj_nowhere']) {
-      const foreign = await callAs(grant.key, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', project_id: projectId });
+      const foreign = await callAs(grant.key, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', project: projectId });
       expect({ projectId, error: foreign.error }).toEqual({ projectId, error: { code: -32000, message: 'Unknown tool: myco_spores', data: { code: 'unknown_tool' } } });
     }
     expect(executed.slice(from).filter((sql) => /\bprojects\b/i.test(sql))).toEqual([]);

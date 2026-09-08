@@ -112,7 +112,7 @@ describe('tool op classification meta gate', () => {
     expect(isMutatingToolCall('myco_spores', { op: 'supersede' })).toBe(true);
     expect(isMutatingToolCall('myco_spores', { op: 'consolidate' })).toBe(true);
     expect(isMutatingToolCall('myco_spores', { op: 'obsolete' })).toBe(true);
-    expect(isMutatingToolCall('myco_cortex', {})).toBe(false); // defaults to digest
+    expect(isMutatingToolCall('myco_cortex', {})).toBe(false); // defaults to instructions
     expect(isMutatingToolCall('myco_agent', {})).toBe(false); // defaults to runs
   });
 });

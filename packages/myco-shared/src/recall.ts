@@ -4,7 +4,16 @@ export type SessionContextIdentity = (
   | { kind: 'compact'; compaction: number }
 ) & { agentId?: string; agentType?: string };
 
-export type SessionContextRequest = SessionContextIdentity & { sessionId: string };
+export type SessionContextRequest = SessionContextIdentity & {
+  sessionId: string;
+  /**
+   * The repository's normalized-able git remote, sent at session start so the
+   * Deployment can bind it to this Project. A tool call may then name the
+   * Project by the remote an agent can read off the checkout, rather than by an
+   * id it has no way to know.
+   */
+  remote?: string;
+};
 
 const MAX_AGENT_CHARS = 192;
 

@@ -2,7 +2,7 @@
  * Resolve a per-call effective `MycoRequestContext` from raw tool input.
  *
  * Stream J's agent-native parity contract: every vault-scoped MCP tool
- * accepts optional `grove_id` / `project_id` body fields that pivot the
+ * accepts optional `grove_id` / `project` body fields that pivot the
  * call to a different (Grove, project) than the harness launched under.
  * This mirrors the daemon UI's project switcher — without it, agents
  * spawned inside one project can't drive intelligence reads or actions
@@ -10,12 +10,12 @@
  *
  * Resolution rules:
  *   - No fields supplied            → return `baseContext` unchanged.
- *   - Only `project_id` supplied    → swap `projectId` on the base
+ *   - Only `project` supplied       → swap `projectId` on the base
  *                                     context (same Grove/database;
  *                                     in-process services pivot via
  *                                     `projectScopeFromRequestContext`).
  *   - `grove_id` supplied (with or  → re-resolve the full context
- *     without `project_id`)           against the Grove registry, which
+ *     without `project`)              against the Grove registry, which
  *                                     yields a new `databasePath` and
  *                                     forces the dispatcher to open the
  *                                     target Grove's DB.
@@ -48,10 +48,14 @@ import {
   resolveProjectVaultDir,
 } from '@myco/grove/paths.js';
 
+import { GROVE_PIVOT, PIVOT_FIELD_NAMES, PROJECT_PIVOT } from './pivot.js';
+
+export { GROVE_PIVOT, PIVOT_FIELD_NAMES, PROJECT_PIVOT } from './pivot.js';
+
 /** The two scope-pivot fields any tool input may carry. */
 export interface CallContextPivot {
-  grove_id?: unknown;
-  project_id?: unknown;
+  [GROVE_PIVOT]?: unknown;
+  [PROJECT_PIVOT]?: unknown;
 }
 
 export interface CallContextConstraint {
@@ -71,8 +75,8 @@ interface ResolveCallContextOptions {
 export function readPivot(input: unknown): { groveId?: string; projectId?: string } {
   if (!input || typeof input !== 'object') return {};
   const obj = input as CallContextPivot;
-  const groveId = readPivotField(obj.grove_id, 'grove_id');
-  const projectId = readPivotField(obj.project_id, 'project_id');
+  const groveId = readPivotField(obj[GROVE_PIVOT], GROVE_PIVOT);
+  const projectId = readPivotField(obj[PROJECT_PIVOT], PROJECT_PIVOT);
   return { groveId, projectId };
 }
 
@@ -131,7 +135,7 @@ export function resolveCallContext(
   // membership stay the same — only the row-scope filter changes.
   if (!groveId && projectId) {
     if (!isGroveEraId(projectId, 'project')) {
-      // For myco_cortex, `project_id` historically carries a Canopy
+      // For myco_cortex, the tenancy key may carry a Canopy
       // project id (md5 hex hash). We only treat it as a scope pivot
       // when it matches the Grove project format. Everything else
       // passes through to the handler unchanged.
@@ -169,7 +173,7 @@ export function resolveCallContext(
   let resolvedProjectRoot: string;
   if (projectId) {
     if (!isGroveEraId(projectId, 'project')) {
-      throw new ToolError('invalid_input', `Invalid project_id: expected proj_<32 hex>, got ${projectId}`);
+      throw new ToolError('invalid_input', `Invalid ${PROJECT_PIVOT}: expected proj_<32 hex>, got ${projectId}`);
     }
     const registered = findRegisteredProject({
       projectId,
@@ -200,7 +204,7 @@ export function resolveCallContext(
   return {
     projectRoot: resolvedProjectRoot,
     // Preserve the caller's cwd across the pivot — switching Grove or
-    // pivoting project_id doesn't change "where the user is right now".
+    // pivoting the tenancy key doesn't change "where the user is right now".
     callerRoot: baseContext.callerRoot,
     projectId: resolvedProjectId,
     groveId: grove.id,
@@ -215,19 +219,14 @@ export function resolveCallContext(
   };
 }
 
-/** Stable list of pivot keys; used by the dispatcher to strip them from
- * the input before handler dispatch (so handlers don't accidentally
- * forward them as URL query params or column filters). */
-export const PIVOT_FIELD_NAMES = ['grove_id', 'project_id'] as const;
-
 /** Returns input minus the pivot keys. Returns the same reference when
  * no pivot keys are present — avoids unnecessary object churn on the
  * hot path. */
 export function stripPivotFields<T extends Record<string, unknown>>(input: T): T {
-  if (!('grove_id' in input) && !('project_id' in input)) return input;
+  if (!PIVOT_FIELD_NAMES.some((name) => name in input)) return input;
   const next: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
-    if (key === 'grove_id' || key === 'project_id') continue;
+    if ((PIVOT_FIELD_NAMES as readonly string[]).includes(key)) continue;
     next[key] = value;
   }
   return next as T;

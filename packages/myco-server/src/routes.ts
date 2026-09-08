@@ -32,7 +32,7 @@ import {
   handleRegisterAgent, handleRunAdmission,
   handleRunReports, handleWriteReport, handleRecordRunEvents, handleSupersedeRuns, handleUpdateRun, handleWriteState,
 } from './api/runs.js';
-import { handleDigestWrite, handleInstructionsWrite, handleRunDigest, handleRunInstruction, handleRunSessions } from './api/cortex-tasks.js';
+import { handleDigestWrite, handleRunDigest, handleRunInstruction, handleRunSessions } from './api/cortex-tasks.js';
 import { handleEmbeddingStep } from './api/embedding-task.js';
 import {
   handleCredentialActivity, handleCredentials, handleInvitations, handleMembers, handleMintInvitation,
@@ -129,7 +129,6 @@ export const ROUTES: readonly Route[] = [
   // credential that dispatched a live run of such a task.
   { method: 'POST', path: '/runs/instruction', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunInstruction },
   { method: 'POST', path: '/runs/embedding-step', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleEmbeddingStep },
-  { method: 'POST', path: '/runs/instructions-write', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleInstructionsWrite },
   { method: 'POST', path: '/runs/sessions', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSessions },
   { method: 'POST', path: '/runs/digest', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunDigest },
   { method: 'POST', path: '/runs/digest-write', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleDigestWrite },
@@ -239,7 +238,7 @@ export const RETIRED_ROUTES: readonly RetiredRoute[] = [
   { method: 'POST', path: '/routed-capture/transcript', replacedBy: ['POST /blobs/{sha256}', 'transcript.segment'] },
   { method: 'POST', path: '/routed-capture/plan', replacedBy: ['plan'] },
   { method: 'POST', path: '/context/subagent', replacedBy: ['subagent.start'] },
-  { method: 'POST', path: '/runs/cortex-instructions', replacedBy: ['POST /runs/instructions-write'] },
+  { method: 'POST', path: '/runs/cortex-instructions', replacedBy: ['POST /runs/digest-write'] },
 ];
 
 /**

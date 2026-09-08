@@ -7,7 +7,7 @@
  */
 import { CANOPY_DEFAULT_EXCLUDE_PATTERNS } from '@goondocks/myco-shared/canopy';
 
-export type LeafKind = 'toggle' | 'number' | 'text' | 'select' | 'json' | 'patterns';
+export type LeafKind = 'toggle' | 'number' | 'text' | 'textarea' | 'select' | 'json' | 'patterns';
 
 export interface LeafField {
   leaf: string;
@@ -17,6 +17,13 @@ export interface LeafField {
   options?: readonly (string | number)[];
   min?: number;
   max?: number;
+  /**
+   * Characters a `textarea` accepts. The browser counts UTF-16 units and the
+   * leaf's rule counts UTF-8 bytes, so text outside the Basic Multilingual
+   * Plane reaches the server over its byte ceiling and is refused there. The
+   * field is a courtesy; the write is the gate.
+   */
+  maxLength?: number;
   step?: number;
   unit?: string;
   note?: string;
@@ -88,12 +95,13 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Cortex',
     note: 'What each session receives at start and on every prompt.',
     leaves: [
+      { leaf: 'instructions.template', label: 'Session-start instructions', kind: 'textarea', maxLength: 4096, note: 'Markdown every session is handed at start, beside its project id. Up to 4 KB of UTF-8; anything longer is refused when you save.' },
       { leaf: 'cortex.instructions.inject_on_session_start', label: 'Instructions at session start', kind: 'toggle' },
       { leaf: 'cortex.instructions.inject_on_subagent_start', label: 'Instructions when a subagent starts', kind: 'toggle' },
-      { leaf: 'cortex.digest.inject_on_session_start', label: 'Digest at session start', kind: 'toggle' },
-      { leaf: 'cortex.digest.tier', label: 'Digest size', kind: 'select', options: [1500, 5000, 10000], unit: 'tokens' },
+      { leaf: 'cortex.digest.inject_on_session_start', label: 'Digest at session start', kind: 'toggle', readOnly: true, note: 'Session start serves the instructions above and nothing generated; this setting changes nothing and is removed with the digest.' },
+      { leaf: 'cortex.digest.tier', label: 'Digest size', kind: 'select', options: [1500, 5000, 10000], unit: 'tokens', note: 'Sizes the digest a scheduled run writes. It is no longer served at session start.' },
       { leaf: 'cortex.spores.inject_on_prompt_submit', label: 'Spores on every prompt', kind: 'toggle' },
-      { leaf: 'cortex.spores.max_per_prompt', label: 'Spores per prompt', kind: 'number', min: 0, max: 10 },
+      { leaf: 'cortex.spores.max_per_prompt', label: 'Items per prompt', kind: 'number', min: 0, max: 10, note: 'Spores and plans share this count; the 300-token budget may serve fewer.' },
       { leaf: 'cortex.plans.inject_intent_nudge_on_prompt_submit', label: 'Plan nudge on every prompt', kind: 'toggle' },
     ],
   },

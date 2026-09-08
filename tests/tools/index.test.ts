@@ -20,11 +20,11 @@ const FIXTURE_CONTEXT = resolveLegacyRequestContext(FIXTURE_VAULT, {
   tenancySource: 'caller',
 });
 
-function mockClient(options?: { digest?: unknown }): DaemonClient {
+function mockClient(options?: { instructions?: unknown }): DaemonClient {
   return {
     get: vi.fn(async (endpoint: string) => {
-      if (endpoint === '/api/digest') {
-        return { ok: true, data: options?.digest ?? { tiers: [] } };
+      if (endpoint === '/api/cortex/instructions') {
+        return { ok: true, data: options?.instructions ?? { content: '# Start here', agent_id: 'user', generated_at: 1 } };
       }
       return { ok: true, data: {} };
     }),
@@ -44,20 +44,11 @@ describe('Myco tools dispatcher', () => {
   });
 
   it('dispatches a core tool through the shared path', async () => {
-    const tools = createMycoTools('/tmp/myco-vault', mockClient({
-      digest: {
-        tiers: [{ tier: 5000, content: 'digest', generated_at: 1 }],
-      },
-    }), { requestContext: FIXTURE_CONTEXT });
+    const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
 
-    const result = await tools.callTool('myco_cortex', { op: 'digest', tier: 5000 });
+    const result = await tools.callTool('myco_cortex', { op: 'instructions' });
 
-    expect(result).toEqual({
-      content: 'digest',
-      tier: 5000,
-      fallback: false,
-      generated_at: 1,
-    });
+    expect(result).toEqual({ content: '# Start here', agent_id: 'user', generated_at: 1 });
   });
 
   it('rejects unknown tools', async () => {
@@ -90,7 +81,7 @@ describe('Myco tools dispatcher', () => {
   it('validates schema enum values before dispatch', async () => {
     const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
 
-    await expect(tools.callTool('myco_cortex', { op: 'digest', tier: 1234 })).rejects.toThrow("Invalid argument 'tier'");
+    await expect(tools.callTool('myco_cortex', { op: 'not_an_op' })).rejects.toThrow("Invalid argument 'op'");
   });
 
   it('validates array item types before dispatch', async () => {
@@ -149,16 +140,13 @@ describe('Myco tools dispatcher', () => {
     // readFileSync compete for disk and can exceed the default 2s timeout.
     // 10s preserves the assertion shape without flaking on saturated CI/local
     // runs.
-    it('myco_cortex digest log carries tier + duration_ms', async () => {
+    it('myco_cortex instructions log carries the op + duration_ms', async () => {
       const vaultDir = freshVault();
-      const tools = createMycoTools(vaultDir, mockClient({
-        digest: { tiers: [{ tier: 5000, content: 'd', generated_at: 1 }] },
-      }), { requestContext: callerContext(vaultDir) });
-      await tools.callTool('myco_cortex', { op: 'digest', tier: 5000 });
+      const tools = createMycoTools(vaultDir, mockClient(), { requestContext: callerContext(vaultDir) });
+      await tools.callTool('myco_cortex', { op: 'instructions' });
       const entry = await readLastLog(vaultDir);
       expect(entry.tool).toBe('myco_cortex');
-      expect(entry.op).toBe('digest');
-      expect(entry.tier).toBe(5000);
+      expect(entry.op).toBe('instructions');
       expect(typeof entry.duration_ms).toBe('number');
       fs.rmSync(vaultDir, { recursive: true, force: true });
     }, 10_000);

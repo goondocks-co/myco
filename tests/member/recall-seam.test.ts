@@ -319,14 +319,31 @@ describe('the prompt hook', () => {
 const admit = () => rig.env.sqlite
   .query(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`)
   .run(Date.now());
+/** The Deployment's session-start text is a Settings leaf, not a generated row. */
 const guidance = (content = 'Keep the plan current.') => rig.env.sqlite
-  .query(`INSERT INTO cortex_instructions (project_id, id, agent_id, content, input_hash, source_run_id, generated_at) VALUES ('proj_1', ?, 'agent_1', ?, 'h', NULL, ?)`)
-  .run(`ci_${content.length}`, content, Date.now());
+  .query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('instructions.template', ?, ?, 'test')`)
+  .run(JSON.stringify(content), Date.now());
+/** Every start block leads with the Project the agent works in. */
+const PROJECT_LINE = 'Project:: `proj_1` — pass this as `project` on Myco tool calls; a write without it is refused.';
 const delivered = () => readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, SESSION).delivered;
 const darkTo = (path: string): FetchLike => async (input, init) => {
   const req = new Request(input, init);
   if (new URL(req.url).pathname === path) throw new Error('connection refused');
   return rig.fetch(req);
+};
+
+/**
+ * One session-context body without the repository's own remote.
+ *
+ * The hook reads `git remote get-url origin` from the checkout it runs in, so
+ * the value differs between a clone, a worktree and CI. What the seam owes is
+ * that the field travels; which repository this suite happens to sit in is not
+ * a contract.
+ */
+const askedBody = (raw: string): Record<string, unknown> => {
+  const { remote, ...rest } = JSON.parse(raw) as Record<string, unknown>;
+  if (remote !== undefined) expect(typeof remote).toBe('string');
+  return rest;
 };
 
 describe('the session-start hook', () => {
@@ -352,7 +369,7 @@ describe('the session-start hook', () => {
       expect(delivered()).toContain(`cortex-compact:${ordinal}`);
     }
     for (const source of ['startup', 'resume', 'clear', 'fork']) expect((await start(spy.fetch, source)).stdout).toBe('');
-    expect(spy.requests.filter((r) => r.path === '/context/session').map((r) => JSON.parse(r.body!)))
+    expect(spy.requests.filter((r) => r.path === '/context/session').map((r) => askedBody(r.body!)))
       .toEqual([{ sessionId: SESSION, kind: 'start' }, { sessionId: SESSION, kind: 'compact', compaction: 1 }, { sessionId: SESSION, kind: 'compact', compaction: 2 }]);
     expect(rig.env.sqlite.query('SELECT kind FROM session_injections ORDER BY kind').all())
       .toEqual([{ kind: 'cortex' }, { kind: 'cortex-compact:1' }, { kind: 'cortex-compact:2' }]);
@@ -413,7 +430,7 @@ describe('the session-start hook', () => {
 
     const asked = spy.requests.filter((r) => r.path === '/context/session');
     expect(asked).toHaveLength(1);
-    expect(JSON.parse(asked[0].body!)).toEqual({ sessionId: SESSION, kind: 'start' });
+    expect(askedBody(asked[0].body!)).toEqual({ sessionId: SESSION, kind: 'start' });
     // The session event is on the wire before the block is asked for.
     expect(spy.requests.map((r) => r.path).indexOf('/context/session'))
       .toBeLessThan(spy.requests.map((r) => r.path).indexOf('/events'));
@@ -421,6 +438,7 @@ describe('the session-start hook', () => {
     // The block, then the branch this checkout is on, then the session — each
     // its own paragraph, in the order the harness has received them in.
     expect(out.stdout).toBe([
+      PROJECT_LINE,
       'Keep the plan current.',
       `Branch:: \`${runGit(['rev-parse', '--abbrev-ref', 'HEAD'], process.cwd())}\``,
       `Session:: \`${SESSION}\``,
@@ -444,7 +462,10 @@ describe('the session-start hook', () => {
     const spy = recordingFetch(rig.fetch);
     const out = await start(spy.fetch);
     expect(spy.requests.map((r) => r.path)).toContain('/context/session');
-    expect(out.stdout).toBe('');
+    // The Project id reaches an unadmitted Project: a write is refused without
+    // it, so the capability holds back the Deployment's text and not the id.
+    expect(out.stdout.startsWith(PROJECT_LINE)).toBe(true);
+    expect(out.stdout).not.toContain('Keep the plan current.');
     // `capability` is settled for the life of the session, so the kind is marked.
     expect(delivered()).toEqual(['cortex']);
 
@@ -453,19 +474,23 @@ describe('the session-start hook', () => {
     expect(again.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
   });
 
-  it('asks again while the admitted Project simply holds nothing yet', async () => {
+  it('is served the Project id even where the Deployment holds no text, and asks nothing again', async () => {
     admit();
     const first = recordingFetch(rig.fetch);
     const out = await start(first.fetch);
-    expect(out.stdout).toBe('');
-    // Nothing settled: an artifact written later still reaches this session.
-    expect(delivered()).toEqual([]);
+    expect(out.stdout.startsWith(PROJECT_LINE)).toBe(true);
+    expect(out.stdout).not.toContain('Keep the plan current.');
+    // The Project line is a block, so the session is served and settled. Text
+    // written after this start reaches the NEXT session, not this one.
+    expect(delivered()).toEqual(['cortex']);
 
+    // The session has been served, so it does not ask again: text written now
+    // reaches the next session rather than this one.
     guidance();
     const second = recordingFetch(rig.fetch);
     const later = await start(second.fetch);
-    expect(second.requests.map((r) => r.path).filter((p) => p === '/context/session')).toHaveLength(1);
-    expect(later.stdout.startsWith('Keep the plan current.')).toBe(true);
+    expect(second.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
+    expect(later.stdout).toBe('');
     expect(delivered()).toEqual(['cortex']);
   });
 
@@ -536,11 +561,12 @@ describe('the subagent-start hook', () => {
 
     const asked = spy.requests.filter((r) => r.path === '/context/session');
     expect(asked).toHaveLength(1);
-    expect(JSON.parse(asked[0].body!)).toEqual({ sessionId: SESSION, kind: 'subagent', agentId: 'a1', agentType: 'code-reviewer' });
+    expect(askedBody(asked[0].body!)).toEqual({ sessionId: SESSION, kind: 'subagent', agentId: 'a1', agentType: 'code-reviewer' });
     expect(JSON.parse(out.stdout)).toEqual({
       hookSpecificOutput: {
         hookEventName: 'SubagentStart',
-        additionalContext: 'You are a delegated subagent working inside a Myco-connected project.\n'
+        additionalContext: `${PROJECT_LINE}\n\n`
+          + 'You are a delegated subagent working inside a Myco-connected project.\n'
           + 'Follow these managed Cortex instructions as current project guidance.\n'
           + 'Apply them to your assigned task, and defer broad orchestration decisions back to the parent agent.\n\n'
           + 'Keep the plan current.',

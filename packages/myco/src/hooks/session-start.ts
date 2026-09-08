@@ -26,9 +26,9 @@ const SESSION_RECALL_PATH = '/context/session';
  * 1 500 ms waiting for its first turn above, and the seam runs on what the
  * budget has left after that wait.
  */
-function recall(sessionId: string, branch: string | undefined) {
+function recall(sessionId: string, branch: string | undefined, remote: string | undefined) {
   return async (run: HookRun): Promise<HookResponse | undefined> => {
-    const request = sessionContextRequest(run);
+    const request = sessionContextRequest(run, remote);
     if (request === undefined) return undefined;
     const served = await servedOnce(run, SESSION_RECALL_PATH, request);
     if (served === undefined) return undefined;
@@ -74,8 +74,10 @@ export async function main(opts: HookMainOptions = {}) {
     }
 
     let branch: string | undefined;
+    let remote: string | undefined;
     try {
       branch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], process.cwd());
+      remote = runGit(['remote', 'get-url', 'origin'], process.cwd()) || undefined;
     } catch { /* not a git repo */ }
 
     const lineage = sessionLineage(agent, sessionId, transcriptPath);
@@ -106,7 +108,7 @@ export async function main(opts: HookMainOptions = {}) {
       events,
       // A symbiont whose harness discards a SessionStart answer is asked for
       // nothing: the call would spend the hook's budget on a block nobody reads.
-      context: HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true ? recall(sessionId, branch) : undefined,
+      context: HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true ? recall(sessionId, branch, remote) : undefined,
       record: captured.length === 0 ? undefined : (state) => {
         for (const [hash, promptId] of captured) {
           state.prompts[hash] = promptId;

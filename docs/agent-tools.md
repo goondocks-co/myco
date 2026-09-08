@@ -18,7 +18,7 @@ Seven local tools are available to any symbiont Myco has connected.
 
 The MCP surface is intentionally limited to **read and editorial** operations — symbionts use Myco's project intelligence; they do not administer Myco. Administrative operations such as restart, update, backup, restore, and maintenance live in the **CLI** and **UI**. See [Actors and Boundaries](architecture/actors-and-boundaries.md).
 
-Every vault-scoped tool accepts optional `grove_id` and `project_id` fields so agents can work with the same Grove/project selection model shown in the dashboard.
+Every vault-scoped tool accepts an optional `project` field — a project id or the repository's git remote — and the local runtime also accepts `grove_id`, so agents can work with the same Grove/project selection model shown in the dashboard. A read without `project` uses the caller's own project; a write without it is refused.
 
 ### Search & Cortex
 
