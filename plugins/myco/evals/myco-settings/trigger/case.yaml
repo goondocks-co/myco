@@ -3,7 +3,7 @@ name: myco-settings-trigger
 runs: 3
 max_turns: 4
 prompt: |
-  Add a deployment setting for how long we keep transcripts, with a sensible range.
+  Add a deployment setting bounding how many spores one extraction run may write, with a sensible range.
 graders:
   - tool_used:
       tool: Skill

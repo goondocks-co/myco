@@ -3,7 +3,7 @@ name: myco-trigger
 runs: 3
 max_turns: 4
 prompt: |
-  Why does this repo drain the outbox on a lease instead of a timer? Check whether that was decided before.
+  Why was this approach chosen here rather than the obvious alternative? Check whether a prior session already decided it.
 graders:
   - tool_used:
       tool: Skill
