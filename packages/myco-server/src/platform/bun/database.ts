@@ -9,10 +9,11 @@ import { SERVER_SCHEMA_VERSION } from '../../constants.js';
 import { readSchemaVersion } from '../../db/migrate.js';
 import { sqliteRelationalStore } from './sqlite.js';
 import { configureSqliteLibrary } from './sqlite-library.js';
+import type { NativeSqlite } from './native.js';
 
 /** Opens the database on the mounted volume with foreign keys enforced and write-ahead logging on. */
-export function openDatabase(databasePath: string): Database {
-  configureSqliteLibrary();
+export function openDatabase(databasePath: string, native?: NativeSqlite): Database {
+  configureSqliteLibrary(native);
   if (!databasePath) throw new Error('a self-hosted deployment requires a database path on its mounted volume');
   // `create: false`: a mistyped or unmounted path must surface as a missing
   // database, not as a running server on an empty one it silently made.

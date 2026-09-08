@@ -11,12 +11,18 @@ const decode = (row: Row): StoredVector => ({
   metadata: JSON.parse(row.metadata_json) as VectorMetadata,
 });
 
-/** sqlite-vec ranks the filtered partition using native cosine distance. */
-export function sqliteVectorStore(sqlite: Database): VectorStore {
+/**
+ * sqlite-vec ranks the filtered partition using native cosine distance.
+ *
+ * `vec0` is loaded from the path a deployment carries it at, and located in the
+ * installed package when a deployment names none.
+ */
+export function sqliteVectorStore(sqlite: Database, vec0?: string | null): VectorStore {
   let initialized = false;
   const initialize = (): void => {
     if (initialized) return;
-    load(sqlite);
+    if (vec0 === undefined || vec0 === null) load(sqlite);
+    else sqlite.loadExtension(vec0);
     sqlite.exec(`CREATE TABLE IF NOT EXISTS local_vectors (
       project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}), model_key TEXT NOT NULL, id TEXT NOT NULL,
       embedding BLOB NOT NULL, metadata_json TEXT NOT NULL,

@@ -32,8 +32,15 @@ import { LIVE_RUN_STATUSES } from '../../core/runs.js';
 import { httpHarnessLaunch } from './harness-runner.js';
 import { RuntimeDraining } from '../../core/harness.js';
 import { configureSqliteLibrary } from './sqlite-library.js';
+import type { StaticAssets } from './static.js';
+import type { NativeSqlite } from './native.js';
+import type { BunServerEnv } from './env.js';
+import type { TrustedProxyConfig } from './source.js';
 
 class StartupError extends Error {}
+
+/** The port a deployment binds when none is named. */
+export const DEFAULT_PORT = 8787;
 
 /** A required value, from the file its `*_FILE` variable names or from the variable itself. */
 function secretOf(name: string, required: boolean): string | undefined {
@@ -100,6 +107,8 @@ export interface StartedDeployment {
   stop(): Promise<void>;
   /** The launch this process bound, or nothing when it names no runtime. */
   harnessLaunch?: ReturnType<typeof httpHarnessLaunch>;
+  /** The environment this deployment serves against, for a caller that acts on it beside serving it. */
+  env: BunServerEnv;
 }
 
 /**
@@ -116,8 +125,8 @@ export interface StartedDeployment {
  * the Cloudflare target migrates through `wrangler d1 migrations apply` —
  * equally an operator action, off the request path.
  */
-export function migrateOnly(databasePath: string): number {
-  configureSqliteLibrary();
+export function migrateOnly(databasePath: string, native?: NativeSqlite): number {
+  configureSqliteLibrary(native);
   const sqlite = new Database(databasePath, { create: true });
   try {
     sqlite.exec('PRAGMA foreign_keys = ON');
@@ -198,6 +207,143 @@ export function exitFailureLine(argv: readonly string[], message: string): strin
   return `${argv.includes('--live-runs') ? 'myco-server could not read the volume' : 'myco-server failed to start'}: ${message}\n`;
 }
 
+/**
+ * What a deployment needs to start, whoever assembled it.
+ *
+ * The environment is one source and a deployment's own stored configuration is
+ * another; both land here, and the start path below reads nothing else.
+ */
+export interface DeploymentOptions extends TrustedProxyConfig {
+  databasePath: string;
+  blobDir: string;
+  port?: number;
+  transport?: 'loopback' | 'proxy';
+  sourceFrom?: 'socket' | 'proxy';
+  bind?: 'loopback' | 'all';
+  /** A dashboard build mounted as a directory. */
+  uiDir?: string;
+  /** A dashboard build the deployment carries. */
+  uiAssets?: StaticAssets;
+  /** The native artifacts the deployment carries, or absent to locate them on the host. */
+  native?: NativeSqlite;
+  origin?: string;
+  fleet?: number;
+  SECRET_WRAP_KEY?: string;
+  SESSION_SECRET?: string;
+  GITHUB_CLIENT_ID?: string;
+  GITHUB_CLIENT_SECRET?: string;
+  /**
+   * The launch this deployment binds, built from a callback origin it can only
+   * read once the socket is bound. Absent, every dispatch answers that no
+   * runtime is available.
+   */
+  harnessLaunchFor?: (callbackOrigin: () => string) => NonNullable<Parameters<typeof serve>[0]['harnessLaunch']>;
+}
+
+/** What an operator sets a source-identity value under, in the vocabulary of the surface that holds it. */
+export interface SourceNames {
+  sourceFrom: string;
+  header: string;
+  hops: string;
+}
+
+/**
+ * A deployment declaring a proxy source establishes identity only with a header
+ * it trusts and at least one hop; declaring neither leaves it answering 503 to
+ * every request while reporting healthy. Refusing at startup reports it once.
+ */
+export function assertSourceIdentity(
+  config: { sourceFrom?: string; header?: string; trustedHops?: number },
+  names: SourceNames,
+): void {
+  if (config.sourceFrom !== 'proxy') return;
+  if ((config.header ?? '') === '') {
+    throw new StartupError(`${names.sourceFrom}=proxy requires ${names.header} to name the header this deployment's proxy sets`);
+  }
+  if ((config.trustedHops ?? 1) < 1) {
+    throw new StartupError(`${names.sourceFrom}=proxy requires ${names.hops} to be at least 1`);
+  }
+}
+
+/** The names a caller that supplies options directly would fix a source-identity value under. */
+const OPTION_NAMES: SourceNames = { sourceFrom: 'sourceFrom', header: 'trustedHeader', hops: 'trustedHops' };
+
+/**
+ * Where a deployment reads its caller's address from, decided rather than left
+ * open.
+ *
+ * A deployment that names neither a socket source nor a trusted header
+ * establishes no identity, and the core answers 503 to every request while
+ * `/health` stays 200 — a server that looks up and serves nothing. A deployment
+ * that names a header is behind a proxy and keeps reading it; one that names
+ * nothing at all is reached directly, which is the only remaining shape.
+ */
+export function resolvedSourceFrom(options: { sourceFrom?: 'socket' | 'proxy'; header?: string }): 'socket' | 'proxy' {
+  if (options.sourceFrom !== undefined) return options.sourceFrom;
+  return (options.header ?? '') === '' ? 'socket' : 'proxy';
+}
+
+/**
+ * Bring a deployment up: validate its options, bind the launch to the
+ * port the socket resolves to, serve, and drain on the orchestrator's signal.
+ *
+ * Every value is decided by the caller. This is the one start path, and the two
+ * front doors differ only in where they read their values from — so the
+ * refusals live here, where both meet them, rather than in one caller.
+ */
+export async function startDeployment(options: DeploymentOptions): Promise<StartedDeployment> {
+  const sourceFrom = resolvedSourceFrom(options);
+  assertSourceIdentity({ ...options, sourceFrom }, OPTION_NAMES);
+
+  // The requested port is not the bound one where the kernel chooses it, and a
+  // runtime told the wrong address posts its ending nowhere. The origin is read
+  // at each launch, from the socket, and a launch before the socket is bound is
+  // one the queue holds rather than one the row fails on.
+  let boundPort: number | null = null;
+  const harnessLaunch = options.harnessLaunchFor?.(() => {
+    if (boundPort === null) throw new RuntimeDraining('the deployment has not bound its port, so no runtime can be told where to call back');
+    return `http://127.0.0.1:${boundPort}`;
+  });
+
+  const started = await serve({
+    databasePath: options.databasePath,
+    blobDir: options.blobDir,
+    port: options.port ?? DEFAULT_PORT,
+    transport: options.transport ?? 'loopback',
+    bind: options.bind ?? 'loopback',
+    sourceFrom,
+    header: options.header,
+    trustedHops: options.trustedHops ?? 1,
+    uiDir: options.uiDir,
+    ...(options.uiAssets === undefined ? {} : { uiAssets: options.uiAssets }),
+    ...(options.native === undefined ? {} : { native: options.native }),
+    ...(harnessLaunch === undefined ? {} : { harnessLaunch }),
+    origin: options.origin,
+    ...(options.fleet === undefined ? {} : { fleet: options.fleet }),
+    SECRET_WRAP_KEY: options.SECRET_WRAP_KEY,
+    SESSION_SECRET: options.SESSION_SECRET,
+    GITHUB_CLIENT_ID: options.GITHUB_CLIENT_ID,
+    GITHUB_CLIENT_SECRET: options.GITHUB_CLIENT_SECRET,
+  });
+  boundPort = started.port;
+
+  // SIGTERM is the orchestrator asking for a drain, and the drain is what is
+  // awaited here: exiting on the same tick as the stop call ends the process
+  // with in-flight requests still open, which is the thing
+  // `stop_grace_period` exists to avoid. A second signal exits immediately, so
+  // an operator is never stuck behind a request that will not finish.
+  let draining = false;
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(signal, () => {
+      if (draining) process.exit(0);
+      draining = true;
+      void started.stop().then(() => process.exit(0), () => process.exit(1));
+    });
+  }
+
+  return { port: started.port, stop: started.stop, env: started.env, ...(harnessLaunch === undefined ? {} : { harnessLaunch }) };
+}
+
 export async function main(): Promise<StartedDeployment | undefined> {
   if (process.argv.includes('--migrate-only')) {
     migrateOnly(requireEnv('MYCO_DATABASE'));
@@ -221,18 +367,10 @@ export async function main(): Promise<StartedDeployment | undefined> {
   if (sourceFrom !== undefined && sourceFrom !== 'socket' && sourceFrom !== 'proxy') {
     throw new StartupError(`MYCO_SOURCE_FROM must be 'socket' or 'proxy', and is ${JSON.stringify(sourceFrom)}`);
   }
-  // A deployment declaring a proxy source without naming the header it trusts
-  // establishes no identity, which the core answers 503 to. Refusing at startup
-  // reports it once, rather than as every request failing.
-  if (sourceFrom === 'proxy' && (process.env.MYCO_TRUSTED_HEADER ?? '') === '') {
-    throw new StartupError("MYCO_SOURCE_FROM=proxy requires MYCO_TRUSTED_HEADER to name the header this deployment's proxy sets");
-  }
-  // `trustedHops` below 1 establishes no identity at all (source.ts:59), which
-  // the core answers 503 to. A deployment declaring a proxy source and zero
-  // hops serves nothing; refusing here reports it once instead of per request.
-  if (sourceFrom === 'proxy' && positiveInt('MYCO_TRUSTED_HOPS', 1) < 1) {
-    throw new StartupError('MYCO_SOURCE_FROM=proxy requires MYCO_TRUSTED_HOPS to be at least 1');
-  }
+  assertSourceIdentity(
+    { sourceFrom, header: process.env.MYCO_TRUSTED_HEADER, trustedHops: positiveInt('MYCO_TRUSTED_HOPS', 1) },
+    { sourceFrom: 'MYCO_SOURCE_FROM', header: 'MYCO_TRUSTED_HEADER', hops: 'MYCO_TRUSTED_HOPS' },
+  );
 
   // A fleet of none is not a fleet: refusing at startup reports it once, rather than as every dispatch running unbounded.
   const fleetEnv = (): number => {
@@ -252,25 +390,16 @@ export async function main(): Promise<StartedDeployment | undefined> {
     throw new StartupError(`MYCO_UI_DIR names ${uiDir}, which holds no index.html`);
   }
 
-  const port = positiveInt('MYCO_PORT', 8787);
-  // The requested port is not the bound one where the kernel chooses it, and a
-  // runtime told the wrong address posts its ending nowhere. The origin is read
-  // at each launch, from the socket, and a launch before the socket is bound is
-  // one the queue holds rather than one the row fails on.
-  let boundPort: number | null = null;
-  const harnessLaunch = harnessLaunchFromEnv(() => {
-    if (boundPort === null) throw new RuntimeDraining('the deployment has not bound its port, so no runtime can be told where to call back');
-    return `http://127.0.0.1:${boundPort}`;
-  });
-
-  const started = await serve({
+  return startDeployment({
     bind,
     uiDir,
     databasePath: requireEnv('MYCO_DATABASE'),
     blobDir: requireEnv('MYCO_BLOB_DIR'),
-    port,
+    port: positiveInt('MYCO_PORT', DEFAULT_PORT),
     transport,
-    ...(harnessLaunch === undefined ? {} : { harnessLaunch }),
+    harnessLaunchFor: process.env.MYCO_HARNESS === undefined || process.env.MYCO_HARNESS === ''
+      ? undefined
+      : (callbackOrigin) => harnessLaunchFromEnv(callbackOrigin)!,
     sourceFrom,
     header: process.env.MYCO_TRUSTED_HEADER,
     origin: process.env.MYCO_ORIGIN,
@@ -281,23 +410,6 @@ export async function main(): Promise<StartedDeployment | undefined> {
     GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET: secretOf('GITHUB_CLIENT_SECRET', false),
   });
-  boundPort = started.port;
-
-  // SIGTERM is the orchestrator asking for a drain, and the drain is what is
-  // awaited here: exiting on the same tick as the stop call ends the process
-  // with in-flight requests still open, which is the thing
-  // `stop_grace_period` exists to avoid. A second signal exits immediately, so
-  // an operator is never stuck behind a request that will not finish.
-  let draining = false;
-  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-    process.on(signal, () => {
-      if (draining) process.exit(0);
-      draining = true;
-      void started.stop().then(() => process.exit(0), () => process.exit(1));
-    });
-  }
-
-  return { port: started.port, stop: started.stop, ...(harnessLaunch === undefined ? {} : { harnessLaunch }) };
 }
 
 if (import.meta.main) {

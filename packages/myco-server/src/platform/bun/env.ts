@@ -11,6 +11,7 @@ import { diskBlobStore, DIGEST_MISMATCH_MESSAGE } from './blobs.js';
 import { inProcessRateLimiter } from './limiter.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
 import { sqliteVectorStore } from './vectors.js';
+import type { NativeSqlite } from './native.js';
 import { configuredEmbeddingProvider } from '../../core/embedding/configured-provider.js';
 
 export const SOURCE_LIMIT = { limit: 600, periodMs: 60_000 };
@@ -33,6 +34,8 @@ export interface BunServerConfig extends OwnerBindings {
   origin?: string;
   /** How many runtimes the self-hosted runner may start at once (`MYCO_FLEET`). */
   fleet?: number;
+  /** The native artifacts this deployment carries, or absent to locate them on the host. */
+  native?: NativeSqlite;
 }
 
 /** This store reports a digest rejection in its own words; nothing else does. */
@@ -86,7 +89,7 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
   const wrappingKey = wrappingKeyFromText(async () => config.SECRET_WRAP_KEY, 'SECRET_WRAP_KEY');
   const pending = new Set<Promise<void>>();
   return {
-    vectors: sqliteVectorStore(config.sqlite),
+    vectors: sqliteVectorStore(config.sqlite, config.native?.vec0),
     embeddingProvider: () => configuredEmbeddingProvider(db, wrappingKey, fetch),
     afterResponse: (work) => {
       const tracked: Promise<void> = work().catch(() => undefined).finally(() => { pending.delete(tracked); });
