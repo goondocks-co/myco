@@ -21,8 +21,11 @@ const FIXTURES = path.join(REPO_ROOT, 'tests', 'fixtures');
 /** One named fixture per registered parser; a parser with no entry fails the coverage gate below. */
 const FIXTURE_FOR: Record<string, string> = {
   'claude-code': 'claude-parse-basic.jsonl',
+  cline: 'cline-parse-basic.jsonl',
   codex: 'codex-parse-basic.jsonl',
   cursor: 'cursor-parse-basic.jsonl',
+  opencode: 'opencode-parse-basic.jsonl',
+  pi: 'pi-parse-basic.jsonl',
 };
 
 const SESSION = 's1';
@@ -53,6 +56,45 @@ const kinds = (events: DerivedEvent[]): string[] => events.map((e) => e.kind);
 const only = (events: DerivedEvent[], kind: string): DerivedEvent[] => events.filter((e) => e.kind === kind);
 
 describe('parser registry', () => {
+  /**
+   * What each fixture must yield, counted from the records it holds.
+   *
+   * Without a floor the registry-wide tests below pass vacuously on an empty
+   * result: they iterate derived events, and a parser that derives none
+   * satisfies every one of them. A parser reading the wrong record shape
+   * therefore ships green and captures nothing.
+   */
+  const FLOOR: Record<string, Record<string, number>> = {
+    'claude-code': { prompt: 2, response: 2, 'tool.use': 1, 'tool.failure': 1, plan: 1 },
+    cline: { prompt: 1, response: 1, 'tool.use': 1, 'tool.failure': 1 },
+    codex: { prompt: 1, response: 1, 'tool.use': 1 },
+    cursor: { prompt: 1, response: 1 },
+    opencode: { prompt: 1, response: 1, 'tool.use': 1, 'tool.failure': 1 },
+    pi: { prompt: 1, response: 1, 'tool.use': 1 },
+  };
+
+
+  it('derives at least one event for every agent that declares a parser', async () => {
+    // The floor under every test below: an agent whose parser reads a shape its
+    // transcripts do not carry derives nothing, and nothing else here notices.
+    for (const agent of Object.keys(PARSERS)) {
+      expect({ agent, derived: (await parseFixture(agent)).length > 0 }).toEqual({ agent, derived: true });
+    }
+  });
+
+  it('derives the kinds its fixture holds, in the counts the fixture holds them', async () => {
+    for (const agent of Object.keys(PARSERS)) {
+      const floor = FLOOR[agent];
+      expect({ agent, declared: floor !== undefined }).toEqual({ agent, declared: true });
+      const derived = kinds(await parseFixture(agent));
+      // Every kind derived is counted, not only the declared ones: a parser
+      // that started emitting a kind the fixture cannot justify fails here too.
+      const counted: Record<string, number> = {};
+      for (const kind of derived) counted[kind] = (counted[kind] ?? 0) + 1;
+      expect({ agent, counted }).toEqual({ agent, counted: floor });
+    }
+  });
+
   it('gives every registered parser a named fixture, so a parser cannot ship unproven', () => {
     expect(Object.keys(PARSERS).filter((agent) => FIXTURE_FOR[agent] === undefined)).toEqual([]);
     for (const file of Object.values(FIXTURE_FOR)) expect({ file, exists: fs.existsSync(path.join(FIXTURES, file)) }).toEqual({ file, exists: true });

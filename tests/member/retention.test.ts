@@ -47,7 +47,7 @@ describe('spool retention', () => {
     const file = path.join(spool.dir, 'sess-old.jsonl');
     const t0 = Date.now();
     // Under the cap: untouched.
-    expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS - DAY)).toEqual({ quarantined: [], pruned: 0, releasedBlobs: 0 });
+    expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS - DAY)).toEqual({ quarantined: [], pruned: 0, releasedBlobs: 0, prunedTranscripts: 0 });
     expect(fs.existsSync(file)).toBe(true);
     // Past the cap: moved, not deleted; the bytes survive.
     const r = applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY);
@@ -61,7 +61,7 @@ describe('spool retention', () => {
     // Pruning reads the file's own age: age it past 60 days on disk.
     const past = (Date.now() - MEMBER_SPOOL_QUARANTINE_PRUNE_MS - DAY) / 1000;
     fs.utimesSync(quarantined, past, past);
-    expect(applySpoolRetention(spool, Date.now())).toEqual({ quarantined: [], pruned: 1, releasedBlobs: 0 });
+    expect(applySpoolRetention(spool, Date.now())).toEqual({ quarantined: [], pruned: 1, releasedBlobs: 0, prunedTranscripts: 0 });
     expect(fs.existsSync(quarantined)).toBe(false);
   });
 
@@ -80,11 +80,11 @@ describe('spool retention', () => {
     // One ack lands far in the future, then the pass ends on retry: the state's updatedAt is "now".
     await spool.drainSession('sess-live', client, unboundedBudget(), { now: () => far, force: true });
     expect(spool.depth('sess-live')).toBe(2);
-    expect(applySpoolRetention(spool, far + DAY)).toEqual({ quarantined: [], pruned: 0, releasedBlobs: 0 });
+    expect(applySpoolRetention(spool, far + DAY)).toEqual({ quarantined: [], pruned: 0, releasedBlobs: 0, prunedTranscripts: 0 });
     expect(fs.existsSync(path.join(spool.dir, 'sess-live.jsonl'))).toBe(true);
     await spool.drainSession('sess-live', client, unboundedBudget(), { now: () => far + DAY, force: true });
     expect(spool.sessionIds()).toEqual([]);
-    expect(applySpoolRetention(spool, far + 2 * DAY)).toEqual({ quarantined: [], pruned: 0, releasedBlobs: 0 });
+    expect(applySpoolRetention(spool, far + 2 * DAY)).toEqual({ quarantined: [], pruned: 0, releasedBlobs: 0, prunedTranscripts: 0 });
   });
 
   it('measures the acknowledgement, not the file: a session still appending while permanently offline is quarantined', () => {

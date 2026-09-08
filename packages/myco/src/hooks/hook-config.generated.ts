@@ -27,6 +27,8 @@ export interface HookCapabilities {
   preToolUseInjection: boolean;
   sessionStartInjection: boolean;
   subagentStartInjection: boolean;
+  /** Which side writes this symbiont's turn rows; see the manifest schema. */
+  turnRowSource: 'hook' | 'transcript';
 }
 
 export interface HookConfigEntry {
@@ -85,7 +87,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
-      "subagentStartInjection": false
+      "subagentStartInjection": false,
+      "turnRowSource": "hook"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -95,7 +98,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       ],
       "patterns": [
         "brain/{sessionId}/.system_generated/logs/transcript_full.jsonl"
-      ]
+      ],
+      "retention": "harness"
     },
     "hookResponse": {
       "format": "antigravity-inject-steps"
@@ -180,7 +184,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": true,
       "sessionStartInjection": true,
-      "subagentStartInjection": true
+      "subagentStartInjection": true,
+      "turnRowSource": "hook"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -189,7 +194,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "patterns": [
         "*/{sessionId}.jsonl"
       ],
-      "transcriptCwdPath": "cwd"
+      "transcriptCwdPath": "cwd",
+      "retention": "harness"
     },
     "capturePrompts": {
       "shapes": [
@@ -434,7 +440,25 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
-      "subagentStartInjection": false
+      "subagentStartInjection": false,
+      "turnRowSource": "transcript"
+    },
+    "transcriptDiscovery": {
+      "roots": [
+        "@memberHome/member/transcripts/cline"
+      ],
+      "patterns": [
+        "{sessionId}.jsonl"
+      ],
+      "transcriptCwdPath": "cwd",
+      "retention": "member"
+    },
+    "hookResponse": {
+      "format": "json",
+      "fieldNames": {
+        "additionalContext": "additionalContext",
+        "promptId": "promptId"
+      }
     },
     "captureRules": [
       {
@@ -515,7 +539,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": true,
       "sessionStartInjection": true,
-      "subagentStartInjection": true
+      "subagentStartInjection": true,
+      "turnRowSource": "hook"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -525,7 +550,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "*/*/*/rollout-*-{sessionId}.jsonl"
       ],
       "sessionIdPattern": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-      "transcriptCwdPath": "payload.cwd"
+      "transcriptCwdPath": "payload.cwd",
+      "retention": "harness"
     },
     "capturePrompts": {
       "shapes": [
@@ -763,7 +789,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": true,
       "sessionStartInjection": true,
-      "subagentStartInjection": true
+      "subagentStartInjection": true,
+      "turnRowSource": "hook"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -771,7 +798,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       ],
       "patterns": [
         "{sessionId}/events.jsonl"
-      ]
+      ],
+      "retention": "harness"
     }
   },
   "cursor": {
@@ -838,7 +866,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
-      "subagentStartInjection": false
+      "subagentStartInjection": false,
+      "turnRowSource": "hook"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -847,7 +876,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "patterns": [
         "*/agent-transcripts/{sessionId}.txt",
         "*/agent-transcripts/{sessionId}/{sessionId}.jsonl"
-      ]
+      ],
+      "retention": "harness"
     },
     "hookResponse": {
       "format": "json",
@@ -900,7 +930,25 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
-      "subagentStartInjection": false
+      "subagentStartInjection": false,
+      "turnRowSource": "transcript"
+    },
+    "transcriptDiscovery": {
+      "roots": [
+        "@memberHome/member/transcripts/opencode"
+      ],
+      "patterns": [
+        "{sessionId}.jsonl"
+      ],
+      "transcriptCwdPath": "cwd",
+      "retention": "member"
+    },
+    "hookResponse": {
+      "format": "json",
+      "fieldNames": {
+        "additionalContext": "additionalContext",
+        "promptId": "promptId"
+      }
     }
   },
   "pi": {
@@ -926,7 +974,26 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
-      "subagentStartInjection": false
+      "subagentStartInjection": false,
+      "turnRowSource": "transcript"
+    },
+    "transcriptDiscovery": {
+      "roots": [
+        "~/.pi/agent/sessions"
+      ],
+      "patterns": [
+        "*/*_{sessionId}.jsonl"
+      ],
+      "sessionIdPattern": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+      "transcriptCwdPath": "cwd",
+      "retention": "harness"
+    },
+    "hookResponse": {
+      "format": "json",
+      "fieldNames": {
+        "additionalContext": "additionalContext",
+        "promptId": "promptId"
+      }
     }
   },
   "windsurf": {
@@ -968,7 +1035,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": false,
-      "subagentStartInjection": false
+      "subagentStartInjection": false,
+      "turnRowSource": "hook"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -976,7 +1044,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       ],
       "patterns": [
         "{sessionId}.jsonl"
-      ]
+      ],
+      "retention": "harness"
     }
   }
 } as const;

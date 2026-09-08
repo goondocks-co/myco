@@ -101,6 +101,9 @@ const KNOWN_MCP_SERVERS_KEYS = ['mcpServers', 'servers', 'mcp'] as const;
  */
 const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 
+/** Where a plugin template names the credential source the binary is to read. */
+const CREDENTIAL_SOURCE_PLACEHOLDER = '{{mycoCredentialSource}}';
+
 /** `hooksFormat` value selecting verbatim plugin-file install over JSON merge. */
 const HOOKS_FORMAT_PLUGIN_FILE = 'plugin-file';
 
@@ -1839,6 +1842,35 @@ export class SymbiontInstaller {
   }
 
   /**
+   * Name the credential source in a plugin template.
+   *
+   * A plugin runs the binary's hook verbs, and the binary reads no source the
+   * command did not declare. `renderMemberHooks` writes the flag for a
+   * config-file symbiont; this writes it for a plugin-file one, so both kinds
+   * of install declare where their credential comes from.
+   */
+  private substituteCredentialSource(content: string, source: CredentialSource = 'registry'): string {
+    return content.split(CREDENTIAL_SOURCE_PLACEHOLDER).join(source);
+  }
+
+  /**
+   * Refuse a rendered template that still carries an install-time placeholder.
+   *
+   * Checking for the one placeholder this method just substituted can never
+   * fire. A template that drifts to a name nothing substitutes renders a
+   * plugin that runs `--credential {{…}}`, and the hook runner reports a
+   * failed spawn as an absent binary — so the install looks clean and captures
+   * nothing.
+   */
+  private refuseUnsubstituted(rendered: string, what: string): string {
+    const left = /\{\{[A-Za-z0-9_.-]+\}\}/.exec(rendered);
+    if (left !== null) {
+      throw new Error(`Refusing to emit ${what} for symbiont ${this.manifest.name}: ${left[0]} was not substituted`);
+    }
+    return rendered;
+  }
+
+  /**
    * Walk a JSON hooks template and substitute install-time placeholders.
    *
    * Two placeholders today:
@@ -1878,6 +1910,29 @@ export class SymbiontInstaller {
    * Used for agents whose hook system is plugin-based rather than JSON entry-based
    * (e.g., opencode's TypeScript plugin system).
    */
+  /**
+   * The plugin file this symbiont would install, rendered for `source`.
+   *
+   * A sandbox image ships no registry, so its plugin must name the `env`
+   * credential the way a sandbox hook command does. `renderMemberHooks`
+   * answers null for a plugin-file symbiont because there is no hook block to
+   * write; this is that symbiont's equivalent, and the two are the only places
+   * a credential source is chosen.
+   */
+  renderMemberPlugin(source: CredentialSource): string | null {
+    const reg = this.manifest.registration;
+    if (reg?.hooksFormat !== HOOKS_FORMAT_PLUGIN_FILE) return null;
+    const templateFile = reg.hooksTemplateFile ?? 'plugin.ts';
+    if (templateFile.endsWith('.json')) return null;
+    const templateContent = this.loadTemplateRaw(templateFile);
+    if (templateContent === null) return null;
+    const rendered = this.substituteCredentialSource(
+      this.substituteMycoLauncher(this.injectSharedPluginHelpers(templateContent)),
+      source,
+    );
+    return this.refuseUnsubstituted(rendered, 'a plugin');
+  }
+
   private installPluginHookFile(): boolean {
     const reg = this.manifest.registration;
     if (!reg?.hooksTarget) return false;
@@ -1914,7 +1969,10 @@ export class SymbiontInstaller {
       const substituted = this.resolveHookTemplatePlaceholders(parsed);
       resolved = JSON.stringify(substituted, null, 2) + '\n';
     } else {
-      resolved = this.substituteMycoLauncher(withHelpers);
+      resolved = this.refuseUnsubstituted(
+        this.substituteCredentialSource(this.substituteMycoLauncher(withHelpers)),
+        'a plugin file',
+      );
     }
 
     return this.writeManagedFile(

@@ -210,7 +210,20 @@ const TranscriptDiscoverySchema = z.object({
    * coverage, rather than assuming they belong to the project being audited.
    */
   transcriptCwdPath: z.string().optional(),
-});
+  /**
+   * Who prunes this store.
+   *
+   * `harness` — the agent writes and ages its own transcripts, and Myco only
+   * reads them. `member` — Myco's plugin writes the transcript and Myco's
+   * retention pass deletes it, so the importable history reaches back only as
+   * far as the member's window rather than the agent's.
+   *
+   * Read as a safety boundary: nothing in the member may delete a store
+   * declared `harness`, because those bytes are the user's own history and
+   * losing them is not recoverable.
+   */
+  retention: z.enum(['harness', 'member']).default('harness'),
+}).strict();
 
 export type TranscriptDiscovery = z.infer<typeof TranscriptDiscoverySchema>;
 
@@ -485,7 +498,7 @@ const RegistrationSchema = z.object({
   settingsFormat: z.enum(['json', 'toml']).default('json'),
   /** Instruction file that stubs out to AGENTS.md. Only for agents that don't read AGENTS.md natively. */
   instructionsFile: z.string().optional(),
-});
+}).strict();
 
 /**
  * Declarative description of a tool call that performs a file read, used by
@@ -583,6 +596,22 @@ const CapabilitiesSchema = z.object({
    */
   toolTransport: z.enum(['mcp', 'cli']).default('mcp'),
   /**
+   * Which side writes this symbiont's turn rows.
+   *
+   *  - 'hook' (default): the prompt-submit hook ships the `prompt` event and
+   *    the tool, response and subagent hooks ship rows keyed to the id it
+   *    minted.
+   *  - 'transcript': the transcript is the only writer. The hook still mints
+   *    the prompt id, returns it for the runtime to stamp on its transcript
+   *    lines, and injects — but ships no `prompt`, so one prompt is one row.
+   *
+   * Declaring 'hook' where the transcript is also parsed writes each turn
+   * twice: the hook's id is minted per invocation and the parse derives its
+   * own, so the two never meet on the raw insert and only the projection key
+   * hides the second write.
+   */
+  turnRowSource: z.enum(['hook', 'transcript']).default('hook'),
+  /**
    * Declarations of tool calls that Canopy should treat as file reads. The
    * PreToolUse resolver consults this list to decide whether to inject context
    * for a given tool call and where the path lives. See `CanopyReadToolSchema`.
@@ -600,11 +629,12 @@ const CapabilitiesSchema = z.object({
    * `pathBearingTools` must be non-empty too.
    */
   pathBearingTools: z.array(CanopyReadToolSchema).default([]),
-}).default(() => ({
+}).strict().default(() => ({
   preToolUseInjection: false,
   sessionStartInjection: false,
   subagentStartInjection: false,
   toolTransport: 'mcp' as const,
+  turnRowSource: 'hook' as const,
   canopyReadTools: [],
   pathBearingTools: [],
 }));
@@ -654,6 +684,16 @@ const HookFieldPathSchema = z.union([
   z.array(z.string().min(1)).min(1),
 ]);
 
+/**
+ * A manifest, with every key it may carry declared.
+ *
+ * Strict at the root: an undeclared key is refused by name rather than
+ * dropped. A key in the wrong place reads exactly like a key that does not
+ * exist — `hookResponse` written beside `registration` instead of inside it
+ * parses clean and silently does nothing, and the only symptom is the
+ * behaviour it was meant to configure never arriving. Refusing at codegen
+ * turns that into a build failure that names the key.
+ */
 export const SymbiontManifestSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -711,7 +751,7 @@ export const SymbiontManifestSchema = z.object({
    * that need phase-aware dispatch.
    */
   hooks: HooksManifestSchema.optional(),
-}).refine(
+}).strict().refine(
   (m) => {
     const reads = m.capabilities?.canopyReadTools ?? [];
     const paths = m.capabilities?.pathBearingTools ?? [];

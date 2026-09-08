@@ -62,6 +62,7 @@ interface HookConfigEntry {
     preToolUseInjection: boolean;
     sessionStartInjection: boolean;
     subagentStartInjection: boolean;
+    turnRowSource: 'hook' | 'transcript';
   };
   transcriptDiscovery?: unknown;
   hookResponse?: unknown;
@@ -157,6 +158,7 @@ function hookConfigEntryFor(manifest: SymbiontManifest): HookConfigEntry {
       preToolUseInjection: manifest.capabilities?.preToolUseInjection === true,
       sessionStartInjection: manifest.capabilities?.sessionStartInjection === true,
       subagentStartInjection: manifest.capabilities?.subagentStartInjection === true,
+      turnRowSource: manifest.capabilities?.turnRowSource ?? 'hook',
     },
   };
   if (manifest.capture?.transcriptDiscovery) {
@@ -222,6 +224,8 @@ export interface HookCapabilities {
   preToolUseInjection: boolean;
   sessionStartInjection: boolean;
   subagentStartInjection: boolean;
+  /** Which side writes this symbiont's turn rows; see the manifest schema. */
+  turnRowSource: 'hook' | 'transcript';
 }
 
 export interface HookConfigEntry {

@@ -8,6 +8,7 @@ import { firstHeading, sha256Text } from '../member/text.js';
 import type { HookResponse } from './response.js';
 import { planTagEnvelopeRegex } from '../plans/tag-envelopes.js';
 import { HOOK_CONFIG } from './hook-config.generated.js';
+import { transcriptWritesTurnRows } from './turn-rows.js';
 
 const RECALL_PATH = '/context/prompt';
 
@@ -51,12 +52,20 @@ export async function main(opts: HookMainOptions = {}) {
 
     const promptId = mintId();
     const hash = sha256Text(text);
-    const events: OutboundEvent[] = [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
+    // A symbiont whose transcript carries this turn writes no row here: the id
+    // travels back on the response, the runtime stamps it on its transcript
+    // lines, and the server's parse is the only writer. Shipping as well would
+    // mint a second event for the same row — the ids never meet on the raw
+    // insert, so only the projection key hides the duplicate.
+    const transcriptWritesRows = transcriptWritesTurnRows(agent);
+    const events: OutboundEvent[] = transcriptWritesRows
+      ? []
+      : [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
     // A plan a person pasted inside a tag envelope is captured with the prompt.
     // Text a runtime injected around a person's prompt is never scanned: a
     // system reminder that quotes a plan is not a plan.
     const plans: Array<[string, string]> = [];
-    if (decision.origin === undefined || decision.origin === 'human') {
+    if (!transcriptWritesRows && (decision.origin === undefined || decision.origin === 'human')) {
       const state = readSessionState(spool.dir, sessionId);
       let position = state.planTagCount;
       for (const tag of HOOK_CONFIG[agent]?.planTags ?? []) {
@@ -84,8 +93,8 @@ export async function main(opts: HookMainOptions = {}) {
         for (const [planHash, planKey] of plans) state.planHashes[planHash] = planKey;
         state.planTagCount += plans.length;
       },
-      response,
-      context: recall(sessionId, promptId, text, response),
+      response: { ...response, promptId },
+      context: recall(sessionId, promptId, text, { ...response, promptId }),
     };
   });
 }

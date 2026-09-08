@@ -1,69 +1,83 @@
-// Managed by Myco. Regenerated on `myco update`. Edit src/symbionts/templates/cline/plugin.ts in the Myco repo instead.
-// myco:plugin-marker:cline
-//
-// Myco Codebase Intelligence Plugin for Cline.
-//
-// This plugin runs inside Cline's SDK plugin runtime and communicates with the
-// local Myco daemon over HTTP. It has no external runtime imports so Cline keeps
-// working in projects where Myco is absent or the daemon is down.
-
-import { readFileSync, appendFileSync, mkdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+/**
+ * Myco plugin for Cline.
+ *
+ * Cline rewrites two whole-file JSON documents per session in place, so no
+ * byte offset survives a turn and its own store cannot be shipped as a delta.
+ * This plugin writes an append-only transcript instead, at
+ * `<MYCO_HOME>/member/transcripts/cline/<sessionId>.jsonl`, and the Myco
+ * binary ships it like any other harness's.
+ *
+ * The plugin makes no network call. It writes lines and it runs `myco hook
+ * <verb>`; the binary owns the credential, the spool, the server-held offset
+ * and every refusal. With no binary installed the plugin is inert.
+ *
+ * Cline is served at reduced tier: capture, tools over MCP, and injection at
+ * session start and prompt submit.
+ */
+// myco:plugin-marker — Myco owns this file; `myco remove` deletes it while it carries this line.
 import { execFileSync } from "node:child_process";
+import { accessSync, appendFileSync, closeSync, constants as fsConstants, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 
-const TOOL_OUTPUT_PREVIEW_CHARS = 200;
-const MYCO_FETCH_TIMEOUT_MS = 3000;
-const RESUME_CONTEXT_MAX_CHARS = 4000;
-const MYCO_AUTH_HEADER = "x-myco-auth";
-const MYCO_METADATA_MARKER = "myco";
-const COMPACTION_HEADING = "## Myco - Project Context\n\n";
+// <myco:shared-helpers>
+// ---------------------------------------------------------------------------
+// Shared plugin helpers — the whole of a native plugin's contact with Myco.
+//
+// This block is maintained in
+//   src/symbionts/templates/_shared/plugin-helpers.ts.snippet
+// and injected into each plugin file at install time by SymbiontInstaller.
+// The plugin files on disk also carry an inline copy between the
+// `// <myco:shared-helpers>` markers so they stay valid TypeScript for
+// Vitest imports; a unit test enforces the inline copy matches the snippet.
+//
+// A plugin makes NO network call. It writes transcript lines and it runs the
+// Myco binary's hook verbs. The binary owns credential resolution, the
+// write-ahead spool, the offline latch, blob spill, the server-held offset and
+// every refusal code; a second implementation of those inside a harness
+// runtime would be a second member, and the wire contract only has one.
+//
+// Contract: the containing file has already defined imports for
+//   `readFileSync`, `appendFileSync`, `mkdirSync`, `statSync`, `accessSync`,
+//   `openSync`, `closeSync`, `writeSync`, `unlinkSync`,
+//   `constants as fsConstants`, `join`, `dirname`, `resolve`, `homedir`,
+//   `execFileSync`
+// and nothing else from the outer file.
+//
+// Export discipline: opencode's legacy-plugin loader throws on any module
+// export that isn't a function, killing the whole plugin at load. Only
+// FUNCTION exports may be added to this snippet (or to the plugin files).
+//
+// DO NOT edit this block inside a plugin file directly — edit the snippet
+// and run the installer (or rerun the template-sync test to update the
+// inlined copy). Changes here apply to every plugin the next time it
+// installs/updates.
+// ---------------------------------------------------------------------------
 
-const REQUEST_CONTEXT_HEADERS = {
-  projectRoot: "x-myco-project-root",
-  projectId: "x-myco-project-id",
-  sessionId: "x-myco-session-id",
-} as const;
+/** Version of the transcript line format. A parser meeting an unknown value fails the segment. */
+const MYCO_TRANSCRIPT_FORMAT = 1;
 
-const BATCH_KIND = {
-  INITIAL: "initial",
-  STEERING: "steering",
-} as const;
+/** Ceiling on a hook subprocess, so a stalled binary never blocks the harness. */
+const MYCO_HOOK_TIMEOUT_MS = 5000;
 
-type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
-type AnyRecord = Record<string, unknown>;
-
-let setupWorkspaceRoot: string | undefined;
-let setupSessionId: string | undefined;
-let setupBranch: string | undefined;
-let cachedDaemonPort: { statePath: string; port: number | null } | undefined;
-const activeSessions = new Set<string>();
-const injectedSessions = new Set<string>();
-const seenPromptKeys = new Set<string>();
-const currentParentBatchBySession = new Map<string, number>();
-const lastAssistantMessageBySession = new Map<string, string>();
-
-function isRecord(value: unknown): value is AnyRecord {
-  return typeof value === "object" && value !== null;
-}
-
-function pickString(record: unknown, keys: readonly string[]): string | undefined {
-  if (!isRecord(record)) return undefined;
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.length > 0) return value;
-  }
-  return undefined;
-}
+/**
+ * Where the binary reads this install's credential, substituted at install
+ * time exactly as a hook command's `--credential` flag is.
+ *
+ * Declared, never inferred from the environment: a plugin that guessed would
+ * let an unrelated variable redirect capture to another Deployment. `registry`
+ * is the installed default; a sandbox image renders `env`, which is the only
+ * source that admits a loopback `http://` Deployment.
+ */
+const MYCO_CREDENTIAL_SOURCE = "{{mycoCredentialSource}}";
 
 const RUNTIME_PIN_INSECURE_MODE_MASK = 0o022;
 
 /**
- * Read a `runtime.home` pin only when it passes the same G7 trust check the
- * CLI shim uses (`checkRuntimeCommandTrust` in bin/runtime-redirect.cjs): a
- * group/other-writable or foreign-owned pin is refused so a hostile local user
- * can't redirect capture to a daemon they control. Returns the trimmed value
- * (an absolute home path) or null.
+ * Read a `runtime.home` or `runtime.command` pin only when it passes the same
+ * trust check the CLI shim uses: a group/other-writable or foreign-owned pin is
+ * refused, so a hostile local user cannot redirect capture to a runtime they
+ * control. Returns the trimmed value or null.
  */
 function readTrustedPin(filePath: string): string | null {
   try {
@@ -80,25 +94,6 @@ function readTrustedPin(filePath: string): string | null {
   }
 }
 
-/**
- * Resolve the `runtime.home` pin for a project: walk up from `directory` for a
- * project pin (`<dir>/.myco/runtime.home`), then the machine pin
- * (`~/.myco/runtime.home`). Mirrors the layered resolution in
- * bin/runtime-redirect.cjs. Returns the absolute home path or null.
- */
-function readRuntimeHomePin(directory: string): string | null {
-  let dir = resolve(directory);
-  while (true) {
-    const pin = readTrustedPin(join(dir, ".myco", "runtime.home"));
-    if (pin) return expandTilde(pin);
-    const parent = join(dir, "..");
-    if (resolve(parent) === dir) break;
-    dir = resolve(parent);
-  }
-  const machine = readTrustedPin(join(homedir(), ".myco", "runtime.home"));
-  return machine ? expandTilde(machine) : null;
-}
-
 function expandTilde(value: string): string {
   if (value === "~") return homedir();
   if (value.startsWith("~/")) return join(homedir(), value.slice(2));
@@ -106,10 +101,26 @@ function expandTilde(value: string): string {
 }
 
 /**
- * Resolve this project's Myco home — the daemon it routes to. A trusted
- * `runtime.home` pin wins so a dogfood project pinned to `~/.myco-dev` reads
- * `~/.myco-dev/service/daemon.json` instead of the prod `~/.myco`. Falls back
- * to `MYCO_HOME`, then the machine `~/.myco`.
+ * The `runtime.home` pin for a project: a project pin found by walking up from
+ * `directory`, then the machine pin. Returns an absolute path or null.
+ */
+function readRuntimeHomePin(directory: string): string | null {
+  let dir = resolve(directory);
+  while (true) {
+    const pin = readTrustedPin(join(dir, ".myco", "runtime.home"));
+    if (pin) return expandTilde(pin);
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  const machine = readTrustedPin(join(homedir(), ".myco", "runtime.home"));
+  return machine ? expandTilde(machine) : null;
+}
+
+/**
+ * This project's Myco home. A trusted `runtime.home` pin wins so a dogfood
+ * project pinned to `~/.myco-dev` writes and reads there; then `MYCO_HOME`;
+ * then `~/.myco`. Identity is the home, never a path this file guesses.
  */
 function resolveMycoHome(directory?: string): string {
   if (directory) {
@@ -121,506 +132,501 @@ function resolveMycoHome(directory?: string): string {
   return expandTilde(configured);
 }
 
-function readTomlString(raw: string, section: string, key: string): string | null {
-  let currentSection: string | null = null;
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    const header = /^\[([^\]]+)\]$/.exec(trimmed);
-    if (header) {
-      currentSection = header[1]!;
-      continue;
-    }
-    if (currentSection !== section) continue;
-    const match = /^([A-Za-z0-9_-]+)\s*=\s*["']([^"']*)["']/.exec(trimmed);
-    if (match?.[1] === key) return match[2]!;
+/**
+ * Managed-binary layout; mirrors scripts/managed-paths.mjs, which a plugin
+ * cannot import. Agreement is gated by tests/symbionts/pi-binary-resolution.test.ts.
+ */
+function managedBinaryPath(mycoHome: string): string {
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
+    return join(localAppData, "Myco", "bin", "myco.exe");
   }
-  return null;
+  return join(mycoHome, "bin", "myco");
 }
 
-function projectUsesGrove(directory: string): boolean {
+/** A file that exists and (on POSIX) is executable; mode-0644 binaries fail. */
+function isRunnableBinary(candidate: string): boolean {
   try {
-    const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
-    return /\[grove\][^\[]*\bid\s*=/.test(raw);
+    const stat = statSync(candidate);
+    if (!stat.isFile()) return false;
+    if (process.platform !== "win32") accessSync(candidate, fsConstants.X_OK);
+    return true;
   } catch {
     return false;
   }
 }
 
-function readProjectAndGroveIds(directory: string): { projectId: string; groveId: string } | null {
+/**
+ * The Myco binary, in the contract order: project-scope `runtime.command` pin
+ * by upward walk, then the machine pin, then the runnable managed binary, then
+ * the bare name. Every step uses one home — the directory-aware
+ * `resolveMycoHome(directory)` — so a pinned project's fallbacks come from its
+ * own home. The bare name is the last resort: a GUI-launched agent's PATH need
+ * not contain it.
+ */
+function resolveMycoBinary(directory: string): string {
+  let dir = resolve(directory);
+  while (true) {
+    const pin = readTrustedPin(join(dir, ".myco", "runtime.command"));
+    if (pin) return pin;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  const home = resolveMycoHome(directory);
+  const machinePin = readTrustedPin(join(home, "runtime.command"));
+  if (machinePin) return machinePin;
+  const managed = managedBinaryPath(home);
+  if (isRunnableBinary(managed)) return managed;
+  return process.platform === "win32" ? "myco.exe" : "myco";
+}
+
+/**
+ * Where this agent's plugin-written transcript lives. Must agree with the
+ * agent's manifest `transcriptDiscovery` root, which declares the same
+ * directory as `@memberHome/member/transcripts/<agent>`; a gate resolves both
+ * and compares them.
+ */
+function transcriptPathFor(directory: string, agent: string, sessionId: string): string {
+  return join(resolveMycoHome(directory), "member", "transcripts", agent, `${sessionId}.jsonl`);
+}
+
+/**
+ * How long a claim may go untouched before another instance may take the
+ * session.
+ *
+ * The number is not what makes a takeover safe — a session idle longer than
+ * this is an ordinary gap, and one will be taken over from a holder that is
+ * still alive. What makes it safe is that every acting instance re-reads the
+ * claim before it writes or spawns, so the displaced holder stops at its next
+ * action and exactly one instance goes on speaking for the session.
+ */
+const CLAIM_STALE_MS = 15 * 60 * 1000;
+
+/** How often a holder rewrites its claim while it is writing. */
+const CLAIM_TOUCH_MS = 30 * 1000;
+
+/**
+ * Where a session's writer records that it holds the session.
+ *
+ * Beside the transcripts rather than among them: a lock is not a transcript
+ * and must not be discovered, parsed or aged as one.
+ */
+function claimPathFor(directory: string, agent: string, sessionId: string): string {
+  return join(resolveMycoHome(directory), "member", "claims", `${agent}-${sessionId}.lock`);
+}
+
+/**
+ * Whether this instance is the one that speaks for this session.
+ *
+ * A project-local plugin and a global one can both load for one session, and
+ * both are legitimately Myco's. Two participants would mint two prompt ids,
+ * append two lines per turn under one transcript identity and inject two
+ * context blocks — the doubling this design removes, arriving by install
+ * topology instead. One instance holds the session; the others stay silent.
+ *
+ * The claim names a writer that is STILL WRITING, which is neither a file that
+ * exists nor a pid that answers:
+ *
+ *   - Claiming by the transcript's existence hands every resumed session to
+ *     nobody, since the runtime that reopens `--session`/`--resume` finds a
+ *     file it did not create.
+ *   - Claiming by a pid alone hands a session to nobody whenever that pid is
+ *     recycled onto an unrelated live process, which on Linux takes hours on a
+ *     busy machine, and the session then captures nothing for its whole life.
+ *     A pid also cannot separate two plugin instances loaded into one harness
+ *     process, which is the commonest pair of all.
+ *
+ * So the holder rewrites its claim as it writes, and a claim left untouched
+ * past `CLAIM_STALE_MS` is taken over whatever pid it names. A holder verifies
+ * it still owns the claim before each append, so a takeover that guessed wrong
+ * costs one writer rather than producing two.
+ */
+const claimedSessions = new Map<string, boolean>();
+const claimTouchedAt = new Map<string, number>();
+
+/**
+ * This module instance's identity.
+ *
+ * Not the pid: a project-local plugin and a global one load into ONE harness
+ * process and share it, so a pid cannot tell the two apart — which is the very
+ * pair a claim exists to arbitrate. Minted per load, so each instance is
+ * distinguishable wherever it runs.
+ */
+const MYCO_INSTANCE_ID = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+/** The instance a claim names and when it last said so, or null when the claim is absent or unreadable. */
+function claimHolder(claimPath: string): { instance: string; at: number } | null {
   try {
-    const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
-    const projectId = readTomlString(raw, "project", "id");
-    const groveId = readTomlString(raw, "grove", "id");
-    if (!projectId || !groveId) return null;
-    return { projectId, groveId };
+    const [instance, at] = readFileSync(claimPath, "utf-8").trim().split(/\s+/);
+    if (!instance) return null;
+    return { instance, at: Number.parseInt(at ?? "0", 10) || 0 };
   } catch {
     return null;
   }
 }
 
-function buildRequestContextHeaders(directory: string, sessionId?: string): Record<string, string> {
+function writeClaim(claimPath: string): void {
   try {
-    const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
-    const projectId = readTomlString(raw, "project", "id");
-    if (!projectId) return {};
-    return {
-      [REQUEST_CONTEXT_HEADERS.projectRoot]: resolve(directory),
-      [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
-      ...(sessionId ? { [REQUEST_CONTEXT_HEADERS.sessionId]: sessionId } : {}),
-    };
+    const handle = openSync(claimPath, "w");
+    writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()}`);
+    closeSync(handle);
   } catch {
-    return {};
+    // A claim that cannot be rewritten ages out and the session is taken over.
   }
 }
 
-function resolveDaemonStatePath(directory: string): string {
-  if (!projectUsesGrove(directory)) return join(directory, ".myco", "daemon.json");
-  // One daemon per home: the HOME is the discriminator, the daemon always
-  // lives under `service/`. A dev-pinned project resolves a dev home via the
-  // `runtime.home` pin and reads that daemon instead of prod.
-  return join(resolveMycoHome(directory), "service", "daemon.json");
-}
-
-function readDaemonState(directory: string): { port: number | null; authToken: string | null } {
+function takeClaim(claimPath: string): boolean {
   try {
-    const raw = readFileSync(resolveDaemonStatePath(directory), "utf-8");
-    const info = JSON.parse(raw) as { port?: unknown; auth_token?: unknown };
-    return {
-      port: typeof info.port === "number" ? info.port : null,
-      authToken: typeof info.auth_token === "string" && info.auth_token.length > 0 ? info.auth_token : null,
-    };
+    const handle = openSync(claimPath, "wx");
+    writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()}`);
+    closeSync(handle);
+    return true;
   } catch {
-    return { port: null, authToken: null };
+    return false;
   }
 }
 
-function getDaemonPort(directory: string): number | null {
-  const statePath = resolveDaemonStatePath(directory);
-  if (!cachedDaemonPort || cachedDaemonPort.statePath !== statePath) {
-    cachedDaemonPort = { statePath, port: readDaemonState(directory).port };
-  }
-  return cachedDaemonPort.port;
-}
-
-function refreshDaemonPort(directory: string): number | null {
-  const statePath = resolveDaemonStatePath(directory);
-  cachedDaemonPort = { statePath, port: readDaemonState(directory).port };
-  return cachedDaemonPort.port;
-}
-
-function withRequestContextHeaders(directory: string, sessionId: string | undefined, init?: RequestInit): RequestInit {
-  const headers = new Headers(init?.headers);
-  const ctxHeaders = buildRequestContextHeaders(directory, sessionId);
-  let hasContextSwitchingHeader = false;
-  for (const [key, value] of Object.entries(ctxHeaders)) {
-    if (!headers.has(key)) headers.set(key, value);
-    if (key === REQUEST_CONTEXT_HEADERS.projectId) hasContextSwitchingHeader = true;
-  }
-  if (hasContextSwitchingHeader && !headers.has(MYCO_AUTH_HEADER)) {
-    const token = readDaemonState(directory).authToken;
-    if (token) headers.set(MYCO_AUTH_HEADER, token);
-  }
-  return { ...init, headers };
-}
-
-async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), MYCO_FETCH_TIMEOUT_MS);
+function holdsSessionClaim(directory: string, agent: string, sessionId: string): boolean {
+  const key = `${agent}-${sessionId}`;
+  const held = claimedSessions.get(key);
+  if (held !== undefined) return held;
+  const claimPath = claimPathFor(directory, agent, sessionId);
+  let claimed = false;
   try {
-    const res = await fetch(url, { ...init, signal: controller.signal });
-    return res.ok ? res : null;
+    mkdirSync(dirname(claimPath), { recursive: true, mode: 0o700 });
+    claimed = takeClaim(claimPath);
+    if (!claimed) {
+      const holder = claimHolder(claimPath);
+      // Stale beyond any gap a writing instance leaves, or naming nothing
+      // readable: the session is free whatever pid is recorded.
+      if (holder === null || Date.now() - holder.at > CLAIM_STALE_MS) {
+        try { unlinkSync(claimPath); } catch { /* another instance took it first */ }
+        claimed = takeClaim(claimPath);
+      }
+    }
   } catch {
+    claimed = false;
+  }
+  claimedSessions.set(key, claimed);
+  if (claimed) claimTouchedAt.set(key, Date.now());
+  return claimed;
+}
+
+/**
+ * Whether this instance still holds the session, rewriting its claim as it
+ * goes. A holder whose claim now names another process stops: the other
+ * instance took a session this one appeared to have abandoned, and two writers
+ * under one transcript identity is the outcome being avoided.
+ *
+ * The claim is READ on every call and rewritten only on a cadence. Reading is
+ * a few bytes; deferring it to the same cadence would let a displaced instance
+ * go on writing and injecting for the rest of the interval, which is the
+ * window this exists to close.
+ */
+function keepsSessionClaim(directory: string, agent: string, sessionId: string): boolean {
+  if (!holdsSessionClaim(directory, agent, sessionId)) return false;
+  const key = `${agent}-${sessionId}`;
+  const claimPath = claimPathFor(directory, agent, sessionId);
+  const holder = claimHolder(claimPath);
+  if (holder !== null && holder.instance !== MYCO_INSTANCE_ID) {
+    claimedSessions.set(key, false);
+    noteOnce(key, `another instance took session ${sessionId}; this one stops writing`);
+    return false;
+  }
+  const touched = claimTouchedAt.get(key) ?? 0;
+  if (Date.now() - touched >= CLAIM_TOUCH_MS) {
+    writeClaim(claimPath);
+    claimTouchedAt.set(key, Date.now());
+  }
+  return true;
+}
+
+/**
+ * One line on stderr per session per subject.
+ *
+ * Capture that stops has to say so somewhere a person can find it. Repeating
+ * it per record would bury the harness's own output, so each subject speaks
+ * once for the session it concerns.
+ */
+const noted = new Set<string>();
+
+function noteOnce(key: string, message: string): void {
+  if (noted.has(key)) return;
+  noted.add(key);
+  try {
+    process.stderr.write(`[myco] ${message}\n`);
+  } catch {
+    // A harness that closed stderr is not a reason to fail capture.
+  }
+}
+
+/**
+ * Append one record to the transcript.
+ *
+ * The `session` record must be written first and stay small: project
+ * attribution reads the working directory from a bounded head of the file
+ * (64 KiB, then its first 40 lines) and takes the first line where the
+ * declared dot-path hits. A large or late first record makes every transcript
+ * for this agent unattributable, and nothing announces it.
+ */
+function appendTranscriptLine(
+  directory: string,
+  agent: string,
+  sessionId: string,
+  record: Record<string, unknown>,
+): void {
+  if (!keepsSessionClaim(directory, agent, sessionId)) return;
+  const filePath = transcriptPathFor(directory, agent, sessionId);
+  try {
+    mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
+    appendFileSync(filePath, `${JSON.stringify({ v: MYCO_TRANSCRIPT_FORMAT, ...record })}\n`, "utf-8");
+  } catch (error) {
+    // Capture for this session is lost. It must never take the harness down
+    // with it, and it must not be lost quietly.
+    noteOnce(`write-${agent}-${sessionId}`, `cannot write ${filePath}: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
+  }
+}
+
+/**
+ * Run one Myco hook verb, handing it `payload` on stdin.
+ *
+ * The resolved home travels to the binary as `MYCO_HOME`. A spawned binary
+ * resolves its own home from the environment and never walks the project's
+ * `runtime.home` pin, so a pinned project would otherwise write its transcript
+ * to the pinned home while the hook's spool, registry and retention used the
+ * default one. One side resolves the home and tells the other. This mirrors
+ * the same injection the installer makes for an MCP server entry, and for the
+ * same reason.
+ *
+ * Returns the hook's parsed response, or null when Myco is not installed, the
+ * binary fails, or the output is not the expected shape. Never throws and
+ * never rejects: a capture path that breaks the host is worse than one that
+ * captures nothing, and a plugin-only install legitimately has no binary.
+ */
+function runMycoHook(
+  directory: string,
+  agent: string,
+  sessionId: string,
+  verb: string,
+  payload: Record<string, unknown>,
+): { additionalContext?: string; promptId?: string } | null {
+  // The instance that does not speak for this session runs nothing: a second
+  // participant would spawn a second hook per turn, mint an id nothing uses
+  // and place a second context block in front of the model.
+  //
+  // Re-checked rather than remembered, exactly as the write path is. An
+  // instance displaced while idle would otherwise keep injecting from a memo
+  // taken before it lost the session — and an agent whose transcript it never
+  // writes, like Pi, would reach that state on every session, since a claim
+  // taken once and never touched goes stale on its own.
+  if (!keepsSessionClaim(directory, agent, sessionId)) return null;
+  try {
+    const stdout = execFileSync(
+      resolveMycoBinary(directory),
+      ["hook", verb, "--symbiont", agent, "--credential", MYCO_CREDENTIAL_SOURCE],
+      {
+        cwd: directory,
+        env: { ...process.env, MYCO_HOME: resolveMycoHome(directory) },
+        input: JSON.stringify(payload),
+        timeout: MYCO_HOOK_TIMEOUT_MS,
+        maxBuffer: 4 * 1024 * 1024,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "ignore"],
+      },
+    );
+    const trimmed = typeof stdout === "string" ? stdout.trim() : "";
+    if (!trimmed) return {};
+    if (!trimmed.startsWith("{")) return { additionalContext: trimmed };
+    return JSON.parse(trimmed) as { additionalContext?: string; promptId?: string };
+  } catch (error) {
+    noteOnce(`hook-${agent}-${sessionId}`, `${agent} session ${sessionId}: could not run \`myco hook ${verb}\`: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
+// </myco:shared-helpers>
 
-async function fetchFromDaemon(
-  directory: string,
-  urlPath: string,
-  sessionId: string | undefined,
-  init?: RequestInit,
-): Promise<Response | null> {
-  const port = getDaemonPort(directory);
-  if (!port) return null;
-  const requestInit = withRequestContextHeaders(directory, sessionId, init);
-  const first = await fetchWithTimeout(`http://localhost:${port}${urlPath}`, requestInit);
-  if (first) return first;
-  const freshPort = refreshDaemonPort(directory);
-  if (!freshPort || freshPort === port) return null;
-  return fetchWithTimeout(`http://localhost:${freshPort}${urlPath}`, requestInit);
+const AGENT = "cline";
+
+/** Marks a message this plugin injected, so it is never captured as a prompt. */
+const MYCO_METADATA_MARKER = "myco";
+
+/** Heading placed above injected context so the model sees a labelled block. */
+const CONTEXT_HEADING = "## Myco - Project Context\n\n";
+
+/**
+ * Cline's model-facing user message wraps the real prompt in a mode envelope
+ * while its session metadata keeps the clean text. The hook context exposes
+ * the model-facing form, so the envelope is stripped at the boundary; the
+ * server-side parser strips it again for anything that reaches it unstripped.
+ */
+const USER_INPUT_ENVELOPES: ReadonlyArray<{ open: string; close: string }> = [
+  { open: '<user_input mode="act">', close: "</user_input>" },
+  { open: '<user_input mode="plan">', close: "</user_input>" },
+];
+
+const sessions = new Map<string, { directory: string; started: boolean; promptId?: string; lastPrompt?: string }>();
+
+function nowIso(): string {
+  return new Date().toISOString();
 }
 
-async function postJson(
-  directory: string,
-  urlPath: string,
-  body: Record<string, unknown>,
-  sessionId?: string,
-): Promise<{ ok: boolean; data?: unknown }> {
-  const res = await fetchFromDaemon(directory, urlPath, sessionId, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res) return { ok: false };
-  try {
-    return { ok: true, data: await res.json() };
-  } catch {
-    return { ok: true };
+function stripEnvelope(text: string): string {
+  for (const { open, close } of USER_INPUT_ENVELOPES) {
+    const trimmed = text.trim();
+    if (trimmed.startsWith(open) && trimmed.endsWith(close)) {
+      return trimmed.slice(open.length, trimmed.length - close.length).trim();
+    }
   }
+  return text;
 }
 
-function resolveBufferDir(directory: string): string | null {
-  const ids = readProjectAndGroveIds(directory);
-  if (!ids) return null;
-  return join(resolveMycoHome(directory), "groves", ids.groveId, "projects", ids.projectId, "buffer");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isMycoMessage(message: any): boolean {
+  return message?.metadata?.[MYCO_METADATA_MARKER] === true;
 }
 
-function bufferEvent(directory: string, sessionId: string, event: Record<string, unknown>): void {
-  try {
-    const bufferDir = resolveBufferDir(directory);
-    if (!bufferDir) return;
-    mkdirSync(bufferDir, { recursive: true });
-    const { session_id: _sid, ...payload } = event;
-    appendFileSync(join(bufferDir, `${sessionId}.jsonl`), JSON.stringify({
-      ...payload,
-      timestamp: payload.timestamp ?? new Date().toISOString(),
-    }) + "\n");
-  } catch {
-    // Best-effort: never break Cline.
-  }
-}
-
-function isIgnoredResponse(data: unknown): boolean {
-  return isRecord(data) && typeof data.ignored === "string" && data.ignored.length > 0;
-}
-
-export function shouldBufferPluginFallback(result: { ok: boolean; data?: unknown }, eventType: string | undefined): boolean {
-  if (!result.ok) return true;
-  const data = result.data;
-  if (isIgnoredResponse(data)) return false;
-  const persisted = isRecord(data) ? data.persisted : undefined;
-  if (typeof persisted === "boolean") {
-    if (persisted) return false;
-    return isRecord(data) && data.buffered !== true;
-  }
-  return eventType === "stop";
-}
-
-async function postEventWithBuffer(
-  directory: string,
-  sessionId: string,
-  event: Record<string, unknown>,
-): Promise<unknown> {
-  const result = await postJson(directory, "/events", event, sessionId);
-  const eventType = typeof event.type === "string" ? event.type : undefined;
-  if (shouldBufferPluginFallback(result, eventType)) {
-    bufferEvent(directory, sessionId, event);
-    return undefined;
-  }
-  return result.data;
-}
-
-function detectGitBranch(directory: string): string | undefined {
-  if (setupBranch) return setupBranch;
-  try {
-    const out = execFileSync("git", ["-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], {
-      encoding: "utf-8",
-      timeout: 1000,
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-    return out && out !== "HEAD" ? out : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function snapshotFromContext(context: unknown): AnyRecord | undefined {
-  if (!isRecord(context)) return undefined;
-  return isRecord(context.snapshot) ? context.snapshot : undefined;
-}
-
-export function extractSessionId(context: unknown): string | undefined {
-  const snapshot = snapshotFromContext(context);
-  return pickString(snapshot, ["conversationId", "runId", "agentId"])
-    ?? pickString(context, ["sessionId", "conversationId", "runId", "agentId"])
-    ?? setupSessionId;
-}
-
-export function extractWorkspaceRoot(context: unknown): string {
-  const workspaceRoot = setupWorkspaceRoot
-    ?? pickString(context, ["cwd", "directory", "workspaceRoot"])
-    ?? pickString(snapshotFromContext(context), ["workspaceRoot"]);
-  return workspaceRoot ? resolve(workspaceRoot) : process.cwd();
-}
-
-function extractParentSessionId(context: unknown): string | undefined {
-  const snapshot = snapshotFromContext(context);
-  return pickString(snapshot, ["parentAgentId"]) ?? pickString(context, ["parentAgentId"]);
-}
-
-function textFromMessageContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((part): part is AnyRecord => isRecord(part))
-    .filter((part) => part.type === "text" && typeof part.text === "string")
-    .map((part) => part.text as string)
-    .join("\n")
-    .trim();
-}
-
-function isMycoSyntheticMessage(message: unknown): boolean {
-  if (!isRecord(message)) return false;
-  const metadata = message.metadata;
-  return isRecord(metadata) && metadata[MYCO_METADATA_MARKER] === true;
-}
-
-export function extractLatestUserPrompt(context: unknown): { key: string; text: string } | null {
-  const snapshot = snapshotFromContext(context);
-  const request = isRecord(context) && isRecord(context.request) ? context.request : undefined;
-  const messages = Array.isArray(request?.messages)
-    ? request.messages
-    : Array.isArray(snapshot?.messages)
-      ? snapshot.messages
-      : [];
-
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (!isRecord(message) || message.role !== "user" || isMycoSyntheticMessage(message)) continue;
-    const text = textFromMessageContent(message.content);
-    if (!text) continue;
-    const id = typeof message.id === "string" && message.id.length > 0 ? message.id : String(i);
-    return { key: id, text };
-  }
-  return null;
-}
-
-function collectAssistantText(message: unknown): string {
-  if (!isRecord(message)) return "";
-  return textFromMessageContent(message.content);
-}
-
-export function summarizeToolOutput(output: unknown): string {
-  const text = typeof output === "string"
-    ? output
-    : output == null
-      ? ""
-      : JSON.stringify(output);
-  return text.length > TOOL_OUTPUT_PREVIEW_CHARS ? text.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) + "..." : text;
-}
-
-function toolNameFromContext(context: unknown): string {
-  if (!isRecord(context)) return "unknown";
-  const toolCall = isRecord(context.toolCall) ? context.toolCall : undefined;
-  const tool = isRecord(context.tool) ? context.tool : undefined;
-  return pickString(toolCall, ["toolName", "name"]) ?? pickString(tool, ["name"]) ?? "unknown";
-}
-
-function toolInputFromContext(context: unknown): unknown {
-  if (!isRecord(context)) return {};
-  return context.input ?? (isRecord(context.toolCall) ? context.toolCall.input : undefined) ?? {};
-}
-
-async function mycoRegisterSession(directory: string, sessionId: string, parentSessionId: string | undefined): Promise<void> {
-  if (activeSessions.has(sessionId)) return;
-  activeSessions.add(sessionId);
-  await postJson(directory, "/sessions/register", {
-    session_id: sessionId,
-    agent: "cline",
-    parent_session_id: parentSessionId,
-    branch: detectGitBranch(directory),
-    started_at: new Date().toISOString(),
-  }, sessionId);
-}
-
-async function mycoUnregisterSession(directory: string, sessionId: string): Promise<void> {
-  activeSessions.delete(sessionId);
-  await postJson(directory, "/sessions/unregister", { session_id: sessionId }, sessionId);
-}
-
-async function mycoPostUserPrompt(directory: string, sessionId: string, prompt: string): Promise<{ batchId?: string }> {
-  const parentBatch = currentParentBatchBySession.get(sessionId);
-  const kind: BatchKind = parentBatch == null ? BATCH_KIND.INITIAL : BATCH_KIND.STEERING;
-  const result = await postEventWithBuffer(directory, sessionId, {
-    type: "user_prompt",
-    session_id: sessionId,
-    agent: "cline",
-    prompt,
-    kind,
-    parent_prompt_batch_id: kind === BATCH_KIND.INITIAL ? null : parentBatch,
-  });
-  const batchId = isRecord(result) && typeof result.batchId === "string" ? result.batchId : undefined;
-  if (kind === BATCH_KIND.INITIAL && batchId != null) currentParentBatchBySession.set(sessionId, batchId);
-  return { batchId };
-}
-
-async function mycoPostToolUse(directory: string, sessionId: string, toolName: string, toolInput: unknown, toolOutput: unknown): Promise<void> {
-  await postEventWithBuffer(directory, sessionId, {
-    type: "tool_use",
-    session_id: sessionId,
-    agent: "cline",
-    tool_name: toolName,
-    tool_input: toolInput,
-    output_preview: summarizeToolOutput(toolOutput),
-  });
-}
-
-async function mycoPostStop(directory: string, sessionId: string, lastAssistantMessage: string | undefined): Promise<void> {
-  const payload = {
-    type: "stop" as const,
-    session_id: sessionId,
-    agent: "cline",
-    last_assistant_message: lastAssistantMessage,
-  };
-  bufferEvent(directory, sessionId, payload);
-  await postJson(directory, "/events/stop", payload, sessionId);
-}
-
-async function fetchMycoSessionContext(directory: string, sessionId: string): Promise<string | null> {
-  const result = await postJson(directory, "/context", { session_id: sessionId }, sessionId);
-  if (!result.ok) return null;
-  const text = isRecord(result.data) && typeof result.data.text === "string" ? result.data.text.trim() : "";
-  return text ? text : null;
-}
-
-async function fetchMycoResumeContext(directory: string, sessionId: string, parentSessionId: string): Promise<string | null> {
-  const result = await postJson(directory, "/context/resume", {
-    session_id: sessionId,
-    parent_session_id: parentSessionId,
-  }, sessionId);
-  if (!result.ok) return null;
-  const text = isRecord(result.data) && typeof result.data.text === "string" ? result.data.text.trim() : "";
-  return text && text.length <= RESUME_CONTEXT_MAX_CHARS ? text : null;
-}
-
-async function fetchPerPromptContext(
-  directory: string,
-  sessionId: string,
-  prompt: string,
-  batchId: string | undefined,
-): Promise<string | null> {
-  const result = await postJson(directory, "/context/prompt", {
-    session_id: sessionId,
-    prompt,
-    parent_prompt_batch_id: batchId,
-  }, sessionId);
-  if (!result.ok) return null;
-  const text = isRecord(result.data) && typeof result.data.additionalContext === "string"
-    ? result.data.additionalContext.trim()
-    : "";
-  return text ? text : null;
-}
-
-function makeSyntheticUserMessage(text: string): AnyRecord {
-  return {
-    id: `myco-${Date.now()}`,
-    role: "user",
-    content: [{ type: "text", text }],
-    createdAt: Date.now(),
-    metadata: { [MYCO_METADATA_MARKER]: true },
-  };
-}
-
-async function maybeInjectContext(context: unknown, directory: string, sessionId: string, prompt: string, batchId?: string): Promise<AnyRecord | undefined> {
-  const request = isRecord(context) && isRecord(context.request) ? context.request : undefined;
-  if (!request || !Array.isArray(request.messages)) return undefined;
-  const additions: string[] = [];
-
-  if (!injectedSessions.has(sessionId)) {
-    injectedSessions.add(sessionId);
-    const parentSessionId = extractParentSessionId(context);
-    const sessionContext = parentSessionId
-      ? await fetchMycoResumeContext(directory, sessionId, parentSessionId)
-      : await fetchMycoSessionContext(directory, sessionId);
-    if (sessionContext) additions.push(sessionContext);
-  }
-
-  const perPromptContext = await fetchPerPromptContext(directory, sessionId, prompt, batchId);
-  if (perPromptContext) additions.push(perPromptContext);
-  if (additions.length === 0) return undefined;
-
-  return {
-    messages: [
-      ...request.messages,
-      makeSyntheticUserMessage(COMPACTION_HEADING + additions.join("\n\n")),
-    ],
-  };
-}
-
-async function handleBeforeModel(context: unknown): Promise<AnyRecord | undefined> {
-  const sessionId = extractSessionId(context);
-  if (!sessionId) return undefined;
-  const directory = extractWorkspaceRoot(context);
-  await mycoRegisterSession(directory, sessionId, extractParentSessionId(context));
-
-  const prompt = extractLatestUserPrompt(context);
-  if (!prompt) return undefined;
-  const promptKey = `${sessionId}:${prompt.key}`;
-  if (seenPromptKeys.has(promptKey)) return undefined;
-  seenPromptKeys.add(promptKey);
-
-  const { batchId } = await mycoPostUserPrompt(directory, sessionId, prompt.text);
-  return maybeInjectContext(context, directory, sessionId, prompt.text, batchId);
-}
-
-async function handleAfterModel(context: unknown): Promise<void> {
-  const sessionId = extractSessionId(context);
-  if (!sessionId || !isRecord(context)) return;
-  const text = collectAssistantText(context.assistantMessage);
-  if (text) lastAssistantMessageBySession.set(sessionId, text);
-}
-
-async function handleAfterTool(context: unknown): Promise<void> {
-  const sessionId = extractSessionId(context);
-  if (!sessionId || !isRecord(context)) return;
-  const directory = extractWorkspaceRoot(context);
-  await mycoPostToolUse(
-    directory,
+/** Open a session: the `session` record is written first so attribution can read the cwd from the head. */
+function openSession(sessionId: string, directory: string): string | undefined {
+  const state = sessions.get(sessionId);
+  if (state?.started) return undefined;
+  sessions.set(sessionId, { directory, started: true });
+  appendTranscriptLine(directory, AGENT, sessionId, {
+    type: "session",
     sessionId,
-    toolNameFromContext(context),
-    toolInputFromContext(context),
-    isRecord(context.result) ? context.result.output : context.result,
-  );
-}
-
-async function handleAfterRun(context: unknown): Promise<void> {
-  const sessionId = extractSessionId(context);
-  if (!sessionId) return;
-  const directory = extractWorkspaceRoot(context);
-  await mycoPostStop(directory, sessionId, lastAssistantMessageBySession.get(sessionId));
-  await mycoUnregisterSession(directory, sessionId);
-}
-
-async function handleEvent(event: unknown): Promise<void> {
-  if (!isRecord(event)) return;
-  if (event.type === "run-started") {
-    const snapshot = isRecord(event.snapshot) ? event.snapshot : undefined;
-    const sessionId = pickString(snapshot, ["conversationId", "runId", "agentId"]);
-    if (sessionId) await mycoRegisterSession(extractWorkspaceRoot({ snapshot }), sessionId, pickString(snapshot, ["parentAgentId"]));
-  }
+    agent: AGENT,
+    cwd: directory,
+    at: nowIso(),
+  });
+  const answer = runMycoHook(directory, AGENT, sessionId, "session-start", {
+    conversationId: sessionId,
+    transcript_path: transcriptPathFor(directory, AGENT, sessionId),
+    cwd: directory,
+  });
+  return answer?.additionalContext;
 }
 
 export const MycoClinePlugin = {
   name: "myco",
-  manifest: {
-    capabilities: ["hooks"],
+  manifest: { capabilities: ["hooks"] },
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setup(_api: any, ctx: any) {
+    const sessionId = ctx?.session?.sessionId;
+    const directory = ctx?.workspaceInfo?.rootPath ?? process.cwd();
+    if (sessionId) openSession(sessionId, directory);
   },
-  setup: (_api: unknown, ctx: unknown) => {
-    if (!isRecord(ctx)) return;
-    setupSessionId = isRecord(ctx.session) ? pickString(ctx.session, ["sessionId"]) : undefined;
-    if (isRecord(ctx.workspaceInfo)) {
-      setupWorkspaceRoot = pickString(ctx.workspaceInfo, ["rootPath"]);
-      setupBranch = pickString(ctx.workspaceInfo, ["latestGitBranchName"]);
-    }
-  },
+
   hooks: {
-    beforeModel: handleBeforeModel,
-    afterModel: handleAfterModel,
-    afterTool: handleAfterTool,
-    afterRun: handleAfterRun,
-    onEvent: handleEvent,
+    /**
+     * Prompt submit: mint the id through the hook, write the prompt line, and
+     * append the served block as a synthetic user message.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    beforeModel: async (request: any, ctx: any) => {
+      const sessionId = ctx?.session?.sessionId ?? ctx?.conversationId;
+      if (!sessionId) return undefined;
+      const directory = ctx?.workspaceInfo?.rootPath ?? sessions.get(sessionId)?.directory ?? process.cwd();
+
+      const startContext = openSession(sessionId, directory);
+
+      const messages = Array.isArray(request?.messages) ? request.messages : [];
+      const last = [...messages].reverse().find((m: { role?: string }) => m?.role === "user");
+      if (isMycoMessage(last)) return undefined;
+      const raw = typeof last?.content === "string" ? last.content : undefined;
+      const text = raw ? stripEnvelope(raw) : undefined;
+
+      const state = sessions.get(sessionId);
+      let context = startContext;
+      if (text && text.trim() && text !== state?.lastPrompt) {
+        const answer = runMycoHook(directory, AGENT, sessionId, "user-prompt-submit", {
+          conversationId: sessionId,
+          transcript_path: transcriptPathFor(directory, AGENT, sessionId),
+          prompt: text,
+          cwd: directory,
+        });
+        sessions.set(sessionId, { directory, started: true, promptId: answer?.promptId, lastPrompt: text });
+        appendTranscriptLine(directory, AGENT, sessionId, {
+          type: "prompt",
+          sessionId,
+          promptId: answer?.promptId,
+          text,
+          origin: "human",
+          at: nowIso(),
+        });
+        context = answer?.additionalContext ?? context;
+      }
+
+      if (!context) return undefined;
+      return {
+        messages: [
+          ...messages,
+          {
+            role: "user",
+            content: `${CONTEXT_HEADING}${context}`,
+            metadata: { [MYCO_METADATA_MARKER]: true },
+          },
+        ],
+      };
+    },
+
+    /** The assistant's turn becomes a transcript line; no subprocess runs here. */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    afterModel: async (response: any, ctx: any) => {
+      const sessionId = ctx?.session?.sessionId ?? ctx?.conversationId;
+      if (!sessionId) return;
+      const state = sessions.get(sessionId);
+      const directory = state?.directory ?? ctx?.workspaceInfo?.rootPath ?? process.cwd();
+      const text = typeof response?.content === "string" ? response.content : response?.text;
+      if (typeof text !== "string" || !text.trim()) return;
+      appendTranscriptLine(directory, AGENT, sessionId, {
+        type: "response",
+        sessionId,
+        promptId: state?.promptId,
+        text,
+        at: nowIso(),
+      });
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    afterTool: async (call: any, ctx: any) => {
+      const sessionId = ctx?.session?.sessionId ?? ctx?.conversationId;
+      if (!sessionId) return;
+      const state = sessions.get(sessionId);
+      const directory = state?.directory ?? ctx?.workspaceInfo?.rootPath ?? process.cwd();
+      appendTranscriptLine(directory, AGENT, sessionId, {
+        type: "tool",
+        sessionId,
+        promptId: state?.promptId,
+        name: call?.name ?? call?.tool,
+        input: call?.input ?? call?.args,
+        output: typeof call?.output === "string" ? call.output : undefined,
+        failed: call?.error !== undefined,
+        at: nowIso(),
+      });
+    },
+
+    /** Turn end: ship the delta this run appended. */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    afterRun: async (_result: any, ctx: any) => {
+      const sessionId = ctx?.session?.sessionId ?? ctx?.conversationId;
+      if (!sessionId) return;
+      const state = sessions.get(sessionId);
+      const directory = state?.directory ?? ctx?.workspaceInfo?.rootPath ?? process.cwd();
+      runMycoHook(directory, AGENT, sessionId, "stop", {
+        conversationId: sessionId,
+        transcript_path: transcriptPathFor(directory, AGENT, sessionId),
+        cwd: directory,
+      });
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onEvent: async (event: any, snapshot: any) => {
+      if (event?.type !== "run-started") return;
+      const sessionId = snapshot?.conversationId ?? snapshot?.runId ?? snapshot?.agentId;
+      if (!sessionId) return;
+      openSession(sessionId, snapshot?.workspaceRoot ?? process.cwd());
+    },
   },
 };
 
