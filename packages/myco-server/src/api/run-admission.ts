@@ -51,13 +51,13 @@ export async function heldRun(env: ServerEnv, ctx: RouteContext, runId: string, 
 /**
  * The one live run a harness credential holds, in whichever Project, or null.
  *
- * A credential is minted per launch and a row names it in `dispatched_by`, so a
- * live run is found by the credential alone and the request needs to name no
- * run id. Exactly one row may hold it: no write path gives two rows one
- * credential, so two live rows is an ambiguity this answers as none held rather
- * than by choosing. A credential of any other member holds no run here, whatever
- * `dispatched_by` says — a person's own credential that claimed a run stays a
- * member's.
+ * The dispatcher mints a fresh credential for every launch and the row names it
+ * in `dispatched_by`, so a live run is found by the credential alone and the
+ * request needs to name no run id. The store itself does not forbid two rows
+ * naming one credential — the minting caller is what keeps them apart — so two
+ * live rows is an ambiguity this answers as none held rather than by choosing.
+ * A credential of any other member holds no run here, whatever `dispatched_by`
+ * says — a person's own credential that claimed a run stays a member's.
  */
 export async function heldRunOfCredential(env: ServerEnv, auth: { memberId: string; tokenId: string }, now: number): Promise<HeldRun | null> {
   if (auth.memberId !== HARNESS_MEMBER_ID) return null;

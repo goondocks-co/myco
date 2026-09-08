@@ -381,6 +381,9 @@ describe('POST /mcp over an External Agent grant', () => {
     const spores = await callAs(grant.key, 'myco_spores', { op: 'list' });
     expect({ total: spores.result.total, content: spores.result.spores[0].content }).toEqual({ total: 1, content: 'seen by the bot' });
     expect((await callAs(grant.key, 'myco_spores', { op: 'get', id: spores.result.spores[0].id })).result.content).toBe('seen by the bot');
+    expect(spores.result.spores.map((s: any) => 'author' in s)).toEqual([false]);
+    expect('author' in (await callAs(grant.key, 'myco_spores', { op: 'get', id: spores.result.spores[0].id })).result).toBe(false);
+    expect('author' in (await memberCall('myco_spores', { op: 'get', id: spores.result.spores[0].id })).result).toBe(true);
     expect((await callAs(grant.key, 'myco_plans', { op: 'list' })).result).toEqual([]);
     expect((await callAs(grant.key, 'myco_sessions', {})).result).toEqual([]);
     expect((await callAs(grant.key, 'myco_skills', { op: 'list' })).result).toEqual([]);
@@ -621,7 +624,7 @@ describe('POST /mcp over a run credential', () => {
     await stale.dispatch(stale.harness, 'run_1', SWEEP, { startedAt: Date.now() - 3_600_000 });
     expect((await stale.list(stale.harness.token)).body.error.data.code).toBe('no_run');
 
-    // No write path gives two rows one credential (run-admission.ts); the row is inserted by hand to pin the fail-closed answer.
+    // The dispatcher mints one credential per launch; two rows naming one is recorded here directly to pin the fail-closed answer.
     const two = await runSetup();
     await two.dispatch(two.harness, 'run_1', SWEEP);
     await two.dispatch(two.harness, 'run_2', SWEEP, { projectId: 'proj_2', sessionId: null });

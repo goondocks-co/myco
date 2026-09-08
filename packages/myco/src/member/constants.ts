@@ -30,6 +30,7 @@ export const MEMBER_CODES = [
   'refresh_too_early', 'lineage_expired',
   'enrollment_unknown', 'enrollment_used', 'enrollment_expired', 'enrollment_revoked', 'identity_claimed',
   'project_archived',
+  'run_scope', 'no_run', 'project_mismatch',
   'unavailable',
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];

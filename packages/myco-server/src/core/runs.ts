@@ -485,7 +485,7 @@ export async function getRun(db: RelationalStore, scope: ReadScope, runId: strin
   return db.prepare(RUN_SELECT).bind(scope.projectId, runId).first<RunRow>();
 }
 
-/** A run row with the Project it belongs to: what a read keyed by credential answers, since a credential spans every Project of its Deployment. */
+/** A run row with the Project it belongs to: what a read keyed by credential answers; a credential spans every Project of its Deployment. */
 export type HeldRun = RunRow & { projectId: string };
 
 /** Every `running` row this credential dispatched, in any Project — read by the credential alone, which `idx_agent_runs_credential` serves. */

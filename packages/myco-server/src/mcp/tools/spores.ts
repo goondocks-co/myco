@@ -19,6 +19,13 @@ import type { ToolInput } from '../validate.js';
 
 const TOOL = 'myco_spores';
 
+/** A spore as this principal reads it: the row entire for a member or a run; without `author` for an External Agent grant, which is told who wrote nothing. */
+function visible(ctx: ToolContext, row: SporeRow): Record<string, unknown> {
+  const shaped = snake<Record<string, unknown>>(row);
+  if (ctx.principal.kind === 'grant') delete shaped.author;
+  return shaped;
+}
+
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
 const int = (v: unknown): number | undefined => (typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined);
 
@@ -44,7 +51,7 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
       listSupersedingSporeIds(db, scope, id),
       listSupersededSporeIds(db, scope, id),
     ]);
-    return { ...snake<Record<string, unknown>>(spore), superseded_by: supersededBy, predecessors };
+    return { ...visible(ctx, spore), superseded_by: supersededBy, predecessors };
   }
 
   if (op === 'save') {
@@ -117,5 +124,5 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
     offset: int(input.offset),
   };
   const [spores, total] = await Promise.all([listSpores(db, scope, options), countSpores(db, scope, options)]);
-  return { spores: spores.map((s: SporeRow) => snake(s)), total, offset: options.offset ?? 0, limit: options.limit };
+  return { spores: spores.map((s: SporeRow) => visible(ctx, s)), total, offset: options.offset ?? 0, limit: options.limit };
 }

@@ -389,15 +389,15 @@ export function createServer(deps: ServerDeps) {
     if (route.auth === 'public') return route.handler(request);
     if (route.auth !== 'member') return unauthorized();
     // A run's credential — the harness member's — is not a member's authority. It
-    // reaches the run principal on a route that serves one, and the run-control
-    // plane it holds today under each handler's own `heldRun` (`runtime: 'legacy'`,
-    // until #1146 moves those operations onto MCP); on every other member route,
-    // stream routes and the refresh route included, it is refused before its body
-    // or its Project is read. A refreshed run credential would name a token no run
-    // row holds, so a run credential is not refreshable by construction of this rule.
+    // reaches the run principal on a route that serves one, and the run routes it
+    // holds today with their own admission (`legacyRunRoute`, until #1146 moves
+    // those operations onto MCP); on every other member route, stream routes and
+    // the refresh route included, it is refused before its body or its Project is
+    // read. A refreshed credential names a token no run row holds, so refusing the
+    // refresh route here is what keeps a run credential unrefreshable.
     if (auth.memberId === HARNESS_MEMBER_ID) {
-      if (servesRun(route)) return asRun(request, env, auth, route, url, now);
-      if (route.runtime !== 'legacy') return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
+      if (servesRun(route)) return asRun(request, env, auth, route, now);
+      if (route.legacyRunRoute !== true) return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
     }
     if (auth.machineId === null) return refuse(auth, shapeOf(route), NO_MACHINE_IDENTITY, 'no_machine_identity');
 
@@ -473,7 +473,7 @@ export function createServer(deps: ServerDeps) {
    * existence here: the run row's key already guarantees it exists, and a run
    * never spends a Project seat. The body is read as on every json route.
    */
-  async function asRun(request: Request, env: ServerEnv, auth: MemberAuth, route: RunRoute, url: URL, now: number): Promise<Response> {
+  async function asRun(request: Request, env: ServerEnv, auth: MemberAuth, route: RunRoute, now: number): Promise<Response> {
     const projectId = requestedProject(request);
     if (projectId === null) return refuse(auth, shapeOf(route), NO_PROJECT, 'no_project');
     const held = await heldRunOfCredential(env, auth, now);
@@ -484,7 +484,7 @@ export function createServer(deps: ServerDeps) {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
       bodyBytes = body.bytes;
-      return await route.run(env, { projectId: held.projectId, run: held, memberId: auth.memberId, tokenId: auth.tokenId, body: body.text, bodyBytes: body.bytes, now, origin: url.origin });
+      return await route.run(env, { projectId: held.projectId, run: held, tokenId: auth.tokenId, body: body.text, now });
     } catch (err) {
       return failed(env, auth, route, err, bodyBytes);
     }

@@ -34,7 +34,7 @@ describe('route table', () => {
   it('admits a run credential as a member on the run-control plane alone: every /runs/ route is flagged legacy, no other route is, and /mcp is the one route that serves the run principal', () => {
     for (const r of ROUTES) {
       if (r.auth !== 'member') continue;
-      expect({ path: r.path, legacy: r.runtime === 'legacy' }).toEqual({ path: r.path, legacy: r.path.startsWith('/runs/') });
+      expect({ path: r.path, legacy: r.legacyRunRoute === true }).toEqual({ path: r.path, legacy: r.path.startsWith('/runs/') });
       expect({ path: r.path, run: r.bodyMode === 'json' && r.run !== undefined }).toEqual({ path: r.path, run: r.path === '/mcp' });
     }
   });

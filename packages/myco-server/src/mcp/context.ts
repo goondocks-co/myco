@@ -44,7 +44,7 @@ export interface RunPrincipal {
   kind: 'run';
   runId: string;
   task: string | null;
-  /** The agent the run was dispatched under; every write it makes carries it as `agent_id`. */
+  /** The agent the run dispatched under; every write it makes carries it as `agent_id`. */
   agentId: string;
   /** The session the run's dispatch named, or null; the only session a run may write against. */
   sessionId: string | null;

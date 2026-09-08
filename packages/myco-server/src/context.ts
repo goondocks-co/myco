@@ -47,16 +47,13 @@ export interface RouteContext {
   origin: string;
 }
 
-/** Context for a json route reached over a run's credential: the live run the credential dispatched, the run's own Project — the request's, whatever the header named — and the body the pipeline read. The member behind it is the harness member; nothing of a person travels here. */
+/** Context for a json route reached over a run's credential: the live run the credential dispatched, the run's own Project — the request's, whatever the header named — and the body the pipeline read. Nothing of a person travels here. */
 export interface RunContext {
   projectId: string;
   run: HeldRun;
-  memberId: string;
   tokenId: string;
   body: string;
-  bodyBytes: number;
   now: number;
-  origin: string;
 }
 
 /** Context for a route reached over an External Agent grant: the grant's Project, the grant, and the body the pipeline read. Nothing of a member travels here, and nothing is charged: a grant writes nothing. */

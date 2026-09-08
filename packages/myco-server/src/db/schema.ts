@@ -1096,7 +1096,7 @@ const V23_STATEMENTS: readonly string[] = [
  * `agent_id` names the actor class — the built-in `user` agent for a member,
  * the run's agent for a run — and `author` names the instance: the member id
  * behind a member's tool call, the run id behind a run's. A row written before
- * this step has no principal to name and stays null; every write since names
+ * this step has no principal to name and stays null; every later write names
  * one. An External Agent grant takes the same column when its write surface
  * lands (#1149).
  */
