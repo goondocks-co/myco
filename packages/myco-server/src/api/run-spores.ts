@@ -179,7 +179,7 @@ export async function handleRunSporeCreate(env: ServerEnv, ctx: RouteContext): P
   const spore = await insertSpore(env.db, scope, {
     id: mintSporeId(observationType), agentId: run.agentId, sessionId, promptId, observationType,
     content, context, importance: importanceOf(body.importance), filePath: null,
-    tags: sporeTags(body.tags), contentHash: null, properties, createdAt: ctx.now,
+    tags: sporeTags(body.tags), contentHash: null, properties, author: run.id, createdAt: ctx.now,
   });
   return Response.json({ persisted: true, held: true, spore });
 }
@@ -214,7 +214,7 @@ export async function handleRunSporeResolve(env: ServerEnv, ctx: RouteContext): 
   const sessionId = sessionNamedByRun(run);
   const resolved = await resolveSpore(env.db, scope, plan.status, {
     id: crypto.randomUUID(), agentId: run.agentId, sporeId: plan.sporeId, action: plan.action,
-    newSporeId: plan.newSporeId, reason: plan.reason, sessionId, createdAt: ctx.now,
+    newSporeId: plan.newSporeId, reason: plan.reason, sessionId, author: run.id, createdAt: ctx.now,
   }, ctx.now);
   return Response.json({ persisted: true, held: true, resolved, action: plan.action, spore: plan.sporeId });
 }

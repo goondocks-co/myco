@@ -56,7 +56,7 @@ function fixture() {
     seq += 1;
     await insertSpore(e.db, SCOPE, {
       id: `sp_${seq}`, agentId: 'myco-agent', sessionId: null, promptId: null, observationType,
-      content, context: null, filePath: null, tags: null, contentHash: null, properties: null, createdAt: NOW - seq,
+      content, context: null, filePath: null, tags: null, contentHash: null, properties: null, author: null, createdAt: NOW - seq,
     });
   };
   const plan = (title: string, content: string) => {

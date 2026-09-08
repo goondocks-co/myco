@@ -18,6 +18,8 @@ import { SERVED_TOOLS, type ServedTool } from '@myco-server-worker/core/tool-cat
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { EXTERNAL_PROJECT_ID_DESCRIPTION, EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
 import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
+import { RUN_TOOL_MAP, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
+import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 
 /** The one property whose description the server words for a Deployment. */
 const EXCEPTED = 'project_id';
@@ -124,6 +126,25 @@ describe('tool parity', () => {
     ];
     for (const [tool, args] of table) expect({ tool, args, server: judged(tool, args) }).toEqual({ tool, args, server: isAllowedExternalCall(tool, args) });
     expect({ server: judged('myco_plans', { op: '' }), member: isAllowedExternalCall('myco_plans', { op: '' }) }).toEqual({ server: false, member: true });
+  });
+
+  it('maps every run tool onto a served registry entry that some task declares, and lists a run its allowlisted names with the op enum narrowed', () => {
+    const declared = new Set(Object.values(TASK_TOOLS).flat());
+    for (const [source, targets] of Object.entries(RUN_TOOL_MAP)) {
+      expect({ source, declared: declared.has(source) }).toEqual({ source, declared: true });
+      expect({ source, targets: targets.length > 0 }).toEqual({ source, targets: true });
+      for (const { tool, op } of targets) {
+        expect({ source, tool, served: (SERVED_TOOLS as readonly string[]).includes(tool) }).toEqual({ source, tool, served: true });
+        const entry = TOOL_REGISTRY[tool];
+        const keyed = op === NO_OP ? entry.defaultOp === null && NO_OP in entry.ops : op in entry.ops && 'handler' in entry.ops[op];
+        expect({ source, tool, op, keyed }).toEqual({ source, tool, op, keyed: true });
+      }
+    }
+    const allow = runAllowlist(TASK_TOOLS['supersession-sweep'], { dryRun: false });
+    expect([...allow.entries()].map(([tool, ops]) => [tool, [...ops].sort()])).toEqual([['myco_spores', ['get', 'list', 'obsolete', 'save', 'supersede']]]);
+    expect(runDefinitions(allow).map((d) => [d.name, (d.inputSchema.properties.op as { enum: string[] }).enum.sort()])).toEqual([['myco_spores', ['get', 'list', 'obsolete', 'save', 'supersede']]]);
+    expect([...runAllowlist(TASK_TOOLS['supersession-sweep'], { dryRun: true }).get('myco_spores')!].sort()).toEqual(['get', 'list']);
+    expect(runAllowlist(TASK_TOOLS['title-summary'], { dryRun: false }).size).toBe(0);
   });
 
   it('names an issue, or never, on every op it does not serve', () => {

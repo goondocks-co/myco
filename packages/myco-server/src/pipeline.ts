@@ -2,6 +2,8 @@ import type { ErrorClassifier, ServerEnv } from './core/adapters.js';
 import { stampOwnerRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
+import { heldRunOfCredential } from './api/run-admission.js';
+import { HARNESS_MEMBER_ID } from './core/harness.js';
 import { authenticateGrant, GRANT_KEY_PATTERN, touchGrant } from './auth/grants.js';
 import { HSTS_MAX_AGE_SECONDS, LINEAGE_REPLAY_GRACE_MS, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from './constants.js';
 import { sha256Hex } from './hash.js';
@@ -58,6 +60,9 @@ const RETRY_AFTER = { 'retry-after': String(RETRY_AFTER_SECONDS) };
 const unauthorized = () => Response.json({ error: 'unauthorized' }, { status: 401, headers: { 'www-authenticate': 'Bearer realm="myco"' } });
 const unavailable = () => Response.json({ error: UNAVAILABLE }, { status: 503, headers: RETRY_AFTER });
 type MemberRoute = Extract<Route, { auth: 'member' }>;
+/** A json member route that serves the run principal. */
+type RunRoute = Extract<MemberRoute, { bodyMode: 'json' }> & { run: NonNullable<Extract<MemberRoute, { bodyMode: 'json' }>['run']> };
+const servesRun = (route: MemberRoute): route is RunRoute => route.bodyMode === 'json' && route.run !== undefined;
 /** A member route that also admits an External Agent grant. */
 type GrantRoute = Extract<MemberRoute, { bodyMode: 'json' }> & { grant: NonNullable<Extract<MemberRoute, { bodyMode: 'json' }>['grant']> };
 const admitsGrant = (route: Route): route is GrantRoute => route.auth === 'member' && route.bodyMode === 'json' && route.grant !== undefined;
@@ -124,6 +129,12 @@ const unsupportedProtocol = () =>
   Response.json({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL }, { status: 409 });
 export const NO_MACHINE_IDENTITY = 'token has no machine identity';
 export const NO_PROJECT = 'project header required';
+/** What a run's credential is told on a member route that is not its run's surface. */
+export const RUN_SCOPE = 'a run credential reaches only its run\'s surface';
+/** What a run's credential is told when no live run names it. */
+export const NO_LIVE_RUN = 'credential holds no live run';
+/** What a run's credential is told when the Project header names a Project other than the run's. */
+export const RUN_PROJECT_MISMATCH = 'project header names a Project other than the run\'s';
 /** The routes a member's capture writes through — the ones charged to its quota. */
 const captureRoute = (route: MemberRoute): boolean => route.quotaPrecheck !== false;
 /** What may be presented as a Project id on the wire. Exported so the member can be pinned against it: the member decides a Project id at `myco member join` and the server never sees it until the first capture, so a member that admits more than this prints "joined" and is then refused every request. */
@@ -151,8 +162,8 @@ function requestedProject(request: Request): string | null {
 const PROTOCOL_VALUE = /^[0-9]+$/;
 
 /** A terminal refusal of the caller's own request: 200, never retried, in the route's refusal shape, carrying the classifier as its `code` beside the `reason`; telemetry carries the classifier only. */
-function refuse(auth: MemberAuth, shape: Shape, reason: string, classifier: Classifier): Response {
-  emit({ kind: shape === 'stored' ? 'blob_refused' : shape === 'answered' ? 'mcp_refused' : 'ingest_refused', memberId: auth.memberId, tokenId: auth.tokenId, reason: classifier });
+function refuse(auth: MemberAuth, shape: Shape, reason: string, classifier: Classifier, named: Record<string, string> = {}): Response {
+  emit({ kind: shape === 'stored' ? 'blob_refused' : shape === 'answered' ? 'mcp_refused' : 'ingest_refused', memberId: auth.memberId, tokenId: auth.tokenId, reason: classifier, ...named });
   return refusalResponse(shape, classifier, reason, 'terminal');
 }
 
@@ -377,6 +388,17 @@ export function createServer(deps: ServerDeps) {
     const { route, params } = matched;
     if (route.auth === 'public') return route.handler(request);
     if (route.auth !== 'member') return unauthorized();
+    // A run's credential — the harness member's — is not a member's authority. It
+    // reaches the run principal on a route that serves one, and the run routes it
+    // holds today with their own admission (`legacyRunRoute`, until #1146 moves
+    // those operations onto MCP); on every other member route, stream routes and
+    // the refresh route included, it is refused before its body or its Project is
+    // read. A refreshed credential names a token no run row holds, so refusing the
+    // refresh route here is what keeps a run credential unrefreshable.
+    if (auth.memberId === HARNESS_MEMBER_ID) {
+      if (servesRun(route)) return asRun(request, env, auth, route, now);
+      if (route.legacyRunRoute !== true) return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
+    }
     if (auth.machineId === null) return refuse(auth, shapeOf(route), NO_MACHINE_IDENTITY, 'no_machine_identity');
 
     // The Project is resolved once, ahead of both body modes, so a request that
@@ -439,6 +461,30 @@ export function createServer(deps: ServerDeps) {
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
         body: body.text, bodyBytes: body.bytes, now, origin: url.origin,
       });
+    } catch (err) {
+      return failed(env, auth, route, err, bodyBytes);
+    }
+  }
+
+  /**
+   * The run principal: the one live run this credential dispatched, in the run's
+   * own Project. The header must name that Project — one Project per request is
+   * an invariant every principal obeys — and nothing resolves a Project into
+   * existence here: the run row's key already guarantees it exists, and a run
+   * never spends a Project seat. The body is read as on every json route.
+   */
+  async function asRun(request: Request, env: ServerEnv, auth: MemberAuth, route: RunRoute, now: number): Promise<Response> {
+    const projectId = requestedProject(request);
+    if (projectId === null) return refuse(auth, shapeOf(route), NO_PROJECT, 'no_project');
+    const held = await heldRunOfCredential(env, auth, now);
+    if (held === null) return refuse(auth, shapeOf(route), NO_LIVE_RUN, 'no_run');
+    if (projectId !== held.projectId) return refuse(auth, shapeOf(route), RUN_PROJECT_MISMATCH, 'project_mismatch', { runId: held.id });
+    let bodyBytes = 0;
+    try {
+      const body = await readBoundedBody(request, MAX_BODY_BYTES);
+      if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
+      bodyBytes = body.bytes;
+      return await route.run(env, { projectId: held.projectId, run: held, tokenId: auth.tokenId, body: body.text, now });
     } catch (err) {
       return failed(env, auth, route, err, bodyBytes);
     }

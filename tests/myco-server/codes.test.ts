@@ -5,18 +5,29 @@ import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEA
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { CLASSIFIERS, UNAVAILABLE, type Classifier } from '@myco-server-worker/telemetry.js';
-import { ENROLLMENT_TTL_MS, issueEnrollmentAuthority, revokeEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
+import { ENROLLMENT_TTL_MS, ensureMember, issueEnrollmentAuthority, revokeEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
+import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import { blobPost, envelope, memberHeaders, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
 
-/** A migrated environment with a member of machine_1, a second member of machine_2 in the same project, and a member without a machine identity. */
+/** A migrated environment with a member of machine_1, a second member of machine_2 in the same project, a member without a machine identity, and a run credential of the harness member. */
 async function rig() {
   const e = sqliteEnv();
   const now = Date.now();
   const t1 = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
   const t2 = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now);
   const anonymous = await issueMemberToken(e.db, { memberId: 'mem_anon', machineId: null }, now);
+  e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [now]);
+  await ensureMember(e.db, HARNESS_MEMBER_ID, now, 'harness runtime');
+  const harness = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, now);
+  /** A `running` row in proj_1 dispatched under the harness credential. */
+  const running = async () => {
+    expect(await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_1', agentId: 'myco-agent', task: 'supersession-sweep', provider: 'anthropic', model: null, runContext: JSON.stringify({ timeoutSeconds: 300 }), dispatchedBy: harness.tokenId, startedAt: now })).toBe(true);
+    e.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE project_id = 'proj_1' AND id = 'run_1'`);
+  };
+  const mcp = (token: string, extra: Record<string, string> = {}) => fetch(memberPost(token, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), '/mcp', extra));
   /** A member of machine_1 whose refresh window is open now. */
   const windowed = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2));
   const fetch = (req: Request) => worker.fetch(req, e.env);
@@ -41,7 +52,7 @@ async function rig() {
   /** A join presenting `key`, from a machine of its own so no join can collide with another. */
   const join = (key: string, machineId = 'machine_join') =>
     fetch(new Request('https://s/members/join', { method: 'POST', headers: { 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json' }, body: JSON.stringify({ key, machineId }) }));
-  return { e, t1, t2, anonymous, windowed, now, fetch, post, upload, segment, transcript, join };
+  return { e, t1, t2, anonymous, harness, running, mcp, windowed, now, fetch, post, upload, segment, transcript, join };
 }
 type Rig = Awaited<ReturnType<typeof rig>>;
 
@@ -111,6 +122,9 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
     expect((await json(await r.post(r.t1.token, {}))).persisted).toBe(true);
     return r.post(r.t1.token, { eventId: uuid(5), createdAt: 2_000, payload: { promptId: uuid(2), text: 'rewritten', origin: 'user' } });
   },
+  run_scope: (r) => r.post(r.harness.token, {}),
+  no_run: (r) => r.mcp(r.harness.token),
+  project_mismatch: async (r) => { await r.running(); return r.mcp(r.harness.token, { [PROJECT_HEADER]: 'proj_2' }); },
   refresh_too_early: (r) => r.fetch(memberPost(r.t1.token, '{}', '/tokens/refresh')),
   lineage_expired: (r) => {
     r.e.sqlite.query(`UPDATE member_credentials SET lineage_started_at = expires_at - ? WHERE id = ?`).run(MEMBER_TOKEN_MAX_LINEAGE_MS, r.windowed.tokenId);
@@ -134,13 +148,20 @@ describe('refusal codes', () => {
       } finally { console.log = orig; }
       const body = await json(res);
       // Each member route answers under its own key, and the join route under `joined`;
-      // a refusal is that key false, never an absent key or a bare error object.
-      const refusing = body.persisted === false || body.stored === false || body.refreshed === false || body.projected === false || body.joined === false;
-      observed.push({ classifier, status: res.status, code: body.code, refusing, reason: typeof body.reason === 'string' && body.reason.length > 0 });
+      // a refusal is that key false, never an absent key or a bare error object. The
+      // answered route speaks JSON-RPC: its refusal is an error envelope at 400 whose
+      // `data.code` is the classifier.
+      const answered = body.jsonrpc === '2.0' && typeof body.error === 'object' && body.error !== null;
+      const error = answered ? body.error as { message?: unknown; data?: { code?: unknown } } : null;
+      const refusing = answered || body.persisted === false || body.stored === false || body.refreshed === false || body.projected === false || body.joined === false;
+      const code = error === null ? body.code : error.data?.code;
+      const reason = error === null ? body.reason : error.message;
+      observed.push({ classifier, status: res.status, code, refusing, reason: typeof reason === 'string' && reason.length > 0 });
       const last = JSON.parse(lines[lines.length - 1]) as Record<string, unknown>;
       if ('reason' in last) expect({ classifier, telemetry: last.reason }).toEqual({ classifier, telemetry: classifier });
     }
-    expect(observed).toEqual(CLASSIFIERS.map((classifier) => ({ classifier, status: 200, code: classifier, refusing: true, reason: true })));
+    const ANSWERED_ONLY = new Set<Classifier>(['no_run', 'project_mismatch']);
+    expect(observed).toEqual(CLASSIFIERS.map((classifier) => ({ classifier, status: ANSWERED_ONLY.has(classifier) ? 400 : 200, code: classifier, refusing: true, reason: true })));
   });
 
   it('answers a server-side failure on every member route with 503 and the unavailable code, which is not a classifier', async () => {

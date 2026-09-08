@@ -46,6 +46,64 @@ export const TASK_ADMISSION: Readonly<Record<string, RunAdmissionGate>> = {
 
 export const RETAINED_TASKS = Object.keys(TASK_ADMISSION);
 
+/**
+ * The tools each retained task DECLARES, in the task file's own vocabulary.
+ *
+ * A run's MCP surface is built from this list (`mcp/run-surface.ts`): the
+ * task's `toolOverrides`, or the union of its phases' `tools` and
+ * `deferredTools`, and nothing a task inherits — a task that declares no tools
+ * of its own has an empty surface, so the health probe never holds the agent's
+ * whole default set. The task files live under
+ * `packages/myco/src/agent/definitions/tasks/` until #1170 deletes them;
+ * `tests/myco-server/task-tools.test.ts` holds this table equal to them, both
+ * ways, until then. #1152 re-homes the outcome tasks here with their tools.
+ */
+export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
+  [MAP_TASK]: ['code_grep', 'fs_list', 'fs_read', 'fs_tree', 'vault_report'],
+  'embedding-reconcile': [],
+  'container-smoke': [],
+  'cortex-instructions': ['vault_read_digest', 'vault_report', 'vault_sessions', 'vault_spore', 'vault_spores'],
+  'cortex-prompt-builder': ['vault_read_digest', 'vault_report', 'vault_search_fts', 'vault_search_semantic', 'vault_sessions', 'vault_skill_records', 'vault_spores'],
+  'digest-only': ['vault_read_digest', 'vault_report', 'vault_sessions', 'vault_spore', 'vault_spores', 'vault_write_digest'],
+
+  'skill-survey': [
+    'vault_report', 'vault_search_fts', 'vault_search_semantic', 'vault_sessions', 'vault_skill_candidates', 'vault_skill_records',
+    'vault_skill_survey_apply_reconciliation', 'vault_skill_survey_bundle_decisions', 'vault_skill_survey_prepare',
+    'vault_skill_survey_reconciliation_plan', 'vault_spores', 'vault_state',
+  ],
+  'skill-generate': ['code_grep', 'fs_read', 'vault_finalize_skill', 'vault_report', 'vault_skill_candidates', 'vault_skill_records', 'vault_spores', 'vault_stage_skill'],
+  'skill-evolve': [
+    'code_grep', 'fs_read', 'vault_edit_skill', 'vault_report', 'vault_scan_skill_contamination', 'vault_search_fts', 'vault_set_state',
+    'vault_skill_candidates', 'vault_skill_records', 'vault_spores', 'vault_write_skill',
+  ],
+
+  'vault-evolve': [
+    'phase_emit_metadata', 'vault_create_spore', 'vault_mark_processed', 'vault_read_digest', 'vault_release_state', 'vault_report',
+    'vault_resolve_spore', 'vault_search_fts', 'vault_search_semantic', 'vault_sessions', 'vault_set_state', 'vault_spores', 'vault_state',
+    'vault_unprocessed', 'vault_update_session', 'vault_write_digest',
+  ],
+  'vault-seed': [
+    'code_grep', 'fs_list', 'fs_read', 'fs_tree', 'phase_emit_metadata', 'vault_create_spore', 'vault_read_digest', 'vault_release_state',
+    'vault_report', 'vault_search_semantic', 'vault_spores', 'vault_write_digest',
+  ],
+  'supersession-sweep': ['vault_create_spore', 'vault_report', 'vault_resolve_spore', 'vault_spore', 'vault_spores'],
+  'extract-only': [
+    'vault_create_spore', 'vault_mark_processed', 'vault_report', 'vault_resolve_spore', 'vault_search_fts', 'vault_search_semantic',
+    'vault_sessions', 'vault_set_state', 'vault_spores', 'vault_state', 'vault_unprocessed', 'vault_update_session',
+  ],
+  'review-session': [
+    'vault_create_spore', 'vault_mark_processed', 'vault_report', 'vault_resolve_spore', 'vault_search_fts', 'vault_search_semantic',
+    'vault_sessions', 'vault_set_state', 'vault_spores', 'vault_state', 'vault_unprocessed', 'vault_update_session',
+  ],
+
+  'title-summary': ['vault_report', 'vault_session_summary_material', 'vault_unprocessed', 'vault_update_session'],
+};
+
+/** The tools a task declares, or none for a task this Deployment does not serve. */
+export function taskTools(task: string | null): readonly string[] {
+  return task === null ? [] : TASK_TOOLS[task] ?? [];
+}
+
 /** The states a scheduled task may run in, in the words the 1.4 task files use. */
 export type ScheduleState = 'active' | 'idle' | 'sleep';
 
