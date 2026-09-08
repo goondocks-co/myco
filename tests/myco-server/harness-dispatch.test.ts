@@ -54,7 +54,7 @@ describe('POST /api/harness/dispatch', () => {
     const launches: Array<{ runId: string; timeoutSeconds: number; envVars: Record<string, string> }> = [];
     const bound = env;
     const dispatched = await dispatchTask(
-      withHarness(serverEnvFromBindings(bound as never), { launch: async (spec) => { launches.push(spec); } }),
+      withHarness(() => serverEnvFromBindings(bound as never), { launch: async (spec) => { launches.push(spec); } }),
       'container-smoke', 'proj_1', { serverUrl: 'https://s', actor: 'mem_owner', timeoutSeconds: 240 }, Date.now(),
     );
     // The provider reaching the runtime is asserted below, off the environment itself.

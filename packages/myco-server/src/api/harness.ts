@@ -1,11 +1,10 @@
 /**
- * The harness routes: an owner's dispatch of one task, and the runtime probe —
- * the acceptance surface for a held runtime.
+ * The harness dispatch route: an owner's ask for one task to be run.
  *
- * A target without a runtime answers a refusal naming the capability, which
- * local dev and the parity harness treat as the expected answer. The dispatch
- * itself is `core/harness.ts`; this route decides only how it is asked for and
- * answered.
+ * A Deployment with no runtime attached answers a refusal naming the
+ * capability, which local dev and the parity harness treat as the expected
+ * answer. The dispatch itself is `core/harness.ts`; this route decides only how
+ * it is asked for and answered.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';

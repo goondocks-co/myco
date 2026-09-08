@@ -29,7 +29,7 @@ function fixture() {
   // The entry maps its own deployment, so a launch reaches it only as the
   // recording runtime: the successor is queued and marked, and starts nothing.
   const bindings = { ...e.env, HARNESS_LAUNCH_MODE: 'record' };
-  const base = withHarness(e.serverEnv, { launch: async (spec) => { launches.push(spec); } });
+  const base = withHarness(() => e.serverEnv, { launch: async (spec) => { launches.push(spec); } });
   const env: ServerEnv = { ...base, wake: async () => {} };
   const setting = (leaf: string, value: unknown) => e.sqlite.run(
     `INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`, [leaf, JSON.stringify(value), NOW]);

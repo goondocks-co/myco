@@ -15,7 +15,7 @@ import {
   updateCloudflareDeployment,
   DEPLOY_CONFIG_NAME,
 } from '@myco/server/cloudflare-lifecycle.js';
-import { stagingDir, WORKER_ENTRY } from '@myco/server/cloudflare-stage.js';
+import { stagingDir, stagingRoot, WORKER_ENTRY } from '@myco/server/cloudflare-stage.js';
 import { readDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 
@@ -23,13 +23,14 @@ const ACCOUNT = 'a'.repeat(32);
 const DB_ID = '11111111-2222-4333-8444-555555555555';
 const STORE = 'f'.repeat(32);
 
-let calls: { args: string[]; input?: string }[] = [];
+let calls: { args: string[]; input?: string; cwd?: string }[] = [];
 
 /** Answers each wrangler subcommand the way the real one does; the account's state accumulates across calls like the real one's. */
 const buckets = new Set<string>();
 const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunner => ({
   async run(_command, args, options) {
-    calls.push({ args: [...args], input: (options as { input?: string } | undefined)?.input });
+    const opts = options as { input?: string; cwd?: string } | undefined;
+    calls.push({ args: [...args], input: opts?.input, cwd: opts?.cwd });
     const flat = args.join(' ');
     if (flat.includes('r2 bucket create')) {
       const name = args[args.indexOf('create') + 1]!;
@@ -99,6 +100,27 @@ describe('create', () => {
     await expect(createCloudflareDeployment({ ...options, runner: failing })).rejects.toThrow();
     const record = readDeploymentRecord(home)!;
     expect({ db: record.databaseId, store: record.storeId }).toEqual({ db: DB_ID, store: STORE });
+  });
+
+  it('GATE: every command runs in a directory this binary owns, never the one the operator stands in', async () => {
+    // Wrangler walks UP from its working directory looking for a config, so a
+    // command run from wherever the operator happens to be can pick up a
+    // checkout's wrangler.toml — the second config source staging removes.
+    const { home, dir, options } = setup();
+    await createCloudflareDeployment({ ...options, runner: runner() });
+    const root = stagingRoot(home);
+    expect(calls.length).toBeGreaterThan(0);
+    // Read off what each command was actually handed, not off intent: the two
+    // directories this binary owns, and nothing else.
+    const owned = [dir, root];
+    for (const call of calls) {
+      expect({ args: call.args.join(' '), owned: owned.includes(call.cwd ?? '') }).toEqual({ args: call.args.join(' '), owned: true });
+    }
+    expect(calls.some((c) => c.cwd === process.cwd())).toBe(false);
+    // Every command reading a config reads the staged one.
+    for (const call of calls.filter((c) => c.args.includes('-c'))) {
+      expect({ args: call.args.join(' '), cwd: call.cwd }).toEqual({ args: call.args.join(' '), cwd: dir });
+    }
   });
 
   it('puts the Deployment on the domain the operator named, in the record and in the config it deploys', async () => {
@@ -185,15 +207,39 @@ describe('rollback', () => {
 });
 
 /**
- * The two flags that no longer apply. A flag silently ignored is a flag an
- * operator believes did something.
+ * The two flags that no longer apply to this target. A flag silently ignored is
+ * a flag an operator believes did something; both are refused by name and the
+ * verb is driven to prove it, rather than the help text being read back.
  */
 describe('the flags this target refuses by name', () => {
-  it('refuses --dir and --no-drain, and says why each is gone', async () => {
-    const help = (await import('@myco/cli/server.js')).SERVER_HELP;
-    expect(help).not.toContain('--dir <packages/myco-server checkout>');
-    expect(help).toContain('create --target cloudflare --account-id <id>');
-    // The verb itself refuses them; the help no longer offers them.
-    expect(help).not.toMatch(/update --target cloudflare \[--no-drain\]/);
+  const drive = async (argv: string[]): Promise<{ exited: boolean; said: string }> => {
+    const said: string[] = [];
+    const error = console.error;
+    const exit = process.exit;
+    console.error = (line: unknown) => { said.push(String(line)); };
+    process.exit = ((code?: number) => { throw new Error(`exit ${code ?? 0}`); }) as typeof process.exit;
+    try {
+      const { run } = await import('@myco/cli/server.js');
+      await run(argv);
+      return { exited: false, said: said.join('\n') };
+    } catch (err) {
+      if (!(err instanceof Error) || !err.message.startsWith('exit ')) throw err;
+      return { exited: true, said: said.join('\n') };
+    } finally {
+      console.error = error;
+      process.exit = exit;
+    }
+  };
+
+  it('refuses --dir, naming what carries the deploy instead', async () => {
+    const refused = await drive(['create', '--target', 'cloudflare', '--account-id', ACCOUNT, '--dir', '/some/checkout']);
+    expect({ exited: refused.exited, names: /--dir is not a flag for this target/.test(refused.said) }).toEqual({ exited: true, names: true });
+    expect(refused.said).toContain('travel in this binary');
+  });
+
+  it('refuses --no-drain, naming why there is nothing to drain', async () => {
+    const refused = await drive(['update', '--target', 'cloudflare', '--account-id', ACCOUNT, '--no-drain']);
+    expect({ exited: refused.exited, names: /--no-drain is not a flag for this target/.test(refused.said) }).toEqual({ exited: true, names: true });
+    expect(refused.said).toContain('waits for nothing');
   });
 });

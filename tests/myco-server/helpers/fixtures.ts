@@ -145,15 +145,14 @@ export type LaunchSpec = { runId: string; timeoutSeconds: number; envVars: Recor
  * runtime; `sink` collects each spec a launch receives.
  */
 export function withHarness(
-  env: ServerEnv | (() => ServerEnv),
+  resolve: () => ServerEnv,
   options: { sink?: LaunchSpec[]; launch?: (spec: LaunchSpec) => Promise<void> } = {},
 ): ServerEnv {
   const sink = options.sink ?? [];
   const launch = options.launch ?? (async (spec: LaunchSpec) => { sink.push(spec); });
-  // Taken as a thunk and answered through a getter, so a deployment that
-  // re-maps per access keeps doing so: a test that swaps a binding to inject a
-  // storage failure still sees it, as it would in production.
-  const resolve = typeof env === 'function' ? env : () => env;
+  // A thunk, not a deployment: `sqliteEnv` re-maps on every access so a test can
+  // swap a binding mid-test and see the failure it injects. Taking a value here
+  // would flatten that at construction, silently, at every call site.
   return new Proxy({} as ServerEnv, {
     get: (_t, key) => (key === 'harnessLaunch' ? launch : resolve()[key as keyof ServerEnv]),
     has: (_t, key) => key === 'harnessLaunch' || key in resolve(),

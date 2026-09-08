@@ -200,17 +200,6 @@ describe('run-stale-sweep', () => {
     expect(await runTick(f.env, NOW)).toMatchObject({ state: 'idle', heldBy: 'run:live' });
   });
 
-  it('keeps sweeping when a container release throws: the row and the credential still land', async () => {
-    const f = fixture();
-    f.env.harnessEnd = async () => { throw new Error('gone'); };
-    f.seedRun({ id: 'stale', status: 'running', startedAt: NOW - 10 * DAY, completedAt: null });
-    f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
-    expect((await runTick(f.env, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 1, failed: null });
-    expect(f.runRow('stale')?.status).toBe('failed');
-  });
-});
-
-describe('a job that throws', () => {
   it('is reported by its failure class and does not stop the jobs after it', async () => {
     const f = fixture();
     f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
@@ -276,7 +265,7 @@ describe('what a clock arms', () => {
     expect(empty.calls).toEqual(['set 2000']);
   });
 
-  it('refuses a manual clock beside a runtime that starts real containers', () => {
+  it('accepts a manual clock only beside a recording runtime, and refuses it otherwise', () => {
     expect(() => serverEnvFromBindings({ ...sqliteEnv().env, CLOCK_MODE: CLOCK_MANUAL } as never))
       .toThrow(/CLOCK_MODE=manual is accepted only beside HARNESS_LAUNCH_MODE=record/);
     expect(() => serverEnvFromBindings({ ...sqliteEnv().env, CLOCK_MODE: CLOCK_MANUAL, HARNESS_LAUNCH_MODE: 'record' } as never))

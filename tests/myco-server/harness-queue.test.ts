@@ -23,7 +23,7 @@ function fixture(opts: { bound?: boolean; refuse?: () => Error | undefined } = {
   const e = sqliteEnv();
   const launches: Launch[] = [];
   const wakes: number[] = [];
-  const base = opts.bound === false ? e.serverEnv : withHarness(e.serverEnv, {
+  const base = opts.bound === false ? e.serverEnv : withHarness(() => e.serverEnv, {
     launch: async (spec) => {
       const refusal = opts.refuse?.();
       if (refusal !== undefined) throw refusal;

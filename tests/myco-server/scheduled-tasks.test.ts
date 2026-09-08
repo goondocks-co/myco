@@ -21,7 +21,7 @@ const SMOKE: TaskSchedule = TASK_SCHEDULE['container-smoke']!;
 function fixture(opts: { bound?: boolean } = {}) {
   const e = sqliteEnv();
   const launches: Array<{ runId: string; envVars: Record<string, string> }> = [];
-  const base = opts.bound === false ? e.serverEnv : withHarness(e.serverEnv, { launch: async (spec) => { launches.push(spec); } });
+  const base = opts.bound === false ? e.serverEnv : withHarness(() => e.serverEnv, { launch: async (spec) => { launches.push(spec); } });
   const env: ServerEnv = { ...base, wake: async () => {} };
   const setting = (leaf: string, value: unknown) => e.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`, [leaf, JSON.stringify(value), NOW]);
   const token = seedCredential(e.sqlite, { id: 'mt_seed' });

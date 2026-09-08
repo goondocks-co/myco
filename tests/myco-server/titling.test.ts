@@ -26,7 +26,7 @@ function harness(opts: { bound?: boolean; refuse?: boolean } = {}) {
   const e = sqliteEnv();
   const launches: Launch[] = [];
   const sealed = serverEnvFromBindings({ ...e.env, SECRET_WRAP_KEY: { get: async () => WRAP_KEY } } as never);
-  const env: ServerEnv = opts.bound === false ? sealed : withHarness(sealed, {
+  const env: ServerEnv = opts.bound === false ? sealed : withHarness(() => sealed, {
     launch: async (spec) => { if (opts.refuse) throw new Error('the runtime refused the launch'); launches.push(spec); },
   });
   const setting = (leaf: string, value: unknown) =>

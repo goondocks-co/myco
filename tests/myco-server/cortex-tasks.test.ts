@@ -40,7 +40,7 @@ async function fixture(opts: { capability?: boolean } = {}) {
   const launches: Launch[] = [];
   // The entry maps its own deployment, so a launch reaches it only as the recording runtime.
   const bindings = { ...e.env, ...OWNER_ENV, HARNESS_LAUNCH_MODE: 'record' } as never;
-  const base = withHarness(serverEnvFromBindings(bindings), { launch: async (spec) => { launches.push(spec); } });
+  const base = withHarness(() => serverEnvFromBindings(bindings), { launch: async (spec) => { launches.push(spec); } });
   const env: ServerEnv = { ...base, wake: async () => {} };
   const setting = (leaf: string, value: unknown) =>
     e.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`, [leaf, JSON.stringify(value), NOW]);
