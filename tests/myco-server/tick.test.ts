@@ -218,8 +218,8 @@ describe('a job that throws', () => {
     const broken: ServerEnv = { ...f.env, db: { prepare: (sql: string) => (sql.includes('resumable = 0 AND') ? { bind: () => ({ run: async () => { throw new Error('D1_ERROR: nope'); }, all: async () => { throw new Error('D1_ERROR: nope'); }, first: async () => { throw new Error('D1_ERROR: nope'); } }) } : f.env.db.prepare(sql)) as never, batch: f.env.db.batch } };
     const report = await runTick(broken, NOW);
     expect(report.jobs.map((j) => j.name)).toEqual(SERVER_JOBS.filter((j) => j.runsThrough !== 'idle').map((j) => j.name));
-    expect(report.jobs[0]).toMatchObject({ name: 'agent-run-retention', failed: expect.any(String) });
-    expect(report.jobs[1]).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null });
+    expect(report.jobs.find((j) => j.name === 'agent-run-retention')).toMatchObject({ name: 'agent-run-retention', failed: expect.any(String) });
+    expect(report.jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null });
   });
 });
 
