@@ -249,9 +249,9 @@ export async function run(args: string[]): Promise<void> {
       }
 
       if (command === 'update') {
-        // A running Deployment serves the schema it started against. Migrating
-        // underneath it moves the store while the old process reads it, so the
-        // service stops first and is brought back on the migrated volume.
+        // A running Deployment serves the schema it started against, so the
+        // service stops before the store moves and starts again on the
+        // migrated volume.
         const spec = localSpec();
         const running = statusOfService(servicePaths(spec)).loaded;
         if (running) {
