@@ -134,6 +134,7 @@ Every shared resource below has exactly one sanctioned writer. Adding a second e
 
 ## Project Conventions
 
+- **External agents** (Copilot code review, other non-members holding an access key): read with `myco_search`, and record what you found with `myco_spores` `op: "save"` citing the pull request you reviewed as `provenance_kind: "pr"` — see [docs/external-agents.md](docs/external-agents.md).
 - Use `@myco/*` path aliases for imports from `src/*`.
 - Mirror source tests at `tests/<module>.test.ts`.
 - `db/migrations.ts` contains an intentional NUL byte (a collision-safe map-key delimiter); binary-skipping search tools (`grep -I` default, ripgrep default) silently miss matches there — pass `-a`/`--text`, or use the Read tool.

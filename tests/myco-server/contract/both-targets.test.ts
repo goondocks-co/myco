@@ -304,8 +304,8 @@ describe('access administration agrees on both stores', () => {
       const foreign = await rotateExternalGrant(t.env.db, { projectId: 'proj_2' }, rotated!.id, 'mem_machine_1', now + 2);
       outcomes.push({
         revoked, afterRevoke,
-        oldKey: await authenticateGrant(t.env.db, await sha256Hex(grant.key)),
-        newKey: (await authenticateGrant(t.env.db, await sha256Hex(rotated!.key)))?.projectId,
+        oldKey: await authenticateGrant(t.env.db, await sha256Hex(grant.key), now + 3),
+        newKey: (await authenticateGrant(t.env.db, await sha256Hex(rotated!.key), now + 3))?.projectId,
         foreign,
         stillLive: (await authenticateServerMemberToken(t.env.db, await sha256Hex(token), now + 1)) !== null,
       });
@@ -408,7 +408,7 @@ describe('archival refuses capture the same on both stores', () => {
 });
 
 describe('an External Agent grant reads the same on both stores', () => {
-  it('lists the read-only surface, answers a read, refuses a write as a tool that does not exist, and refuses a revoked grant with 401, identically on each target', async () => {
+  it('lists its surface, answers a read, records a spore as itself, refuses a write off that surface as a tool that does not exist, and refuses a revoked grant with 401, identically on each target', async () => {
     const keys = new Map<Target, { key: string; id: string }>();
     for (const t of TARGETS) keys.set(t, await issueExternalGrant(t.env.db, { projectId: 'proj_1' }, 'bot', 'mem_machine_1', Date.now()));
     const rpc = (method: string, params?: unknown) => JSON.stringify({ jsonrpc: '2.0', id: 1, method, ...(params === undefined ? {} : { params }) });
@@ -417,8 +417,24 @@ describe('an External Agent grant reads the same on both stores', () => {
     agreeing(listed, { status: 200, body: JSON.parse(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: externalDefinitions().map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema, annotations: d.annotations })) } })) });
     const read = await onBoth((t) => t.fetch(over(t, rpc('tools/call', { name: 'myco_plans', arguments: { op: 'list' } }))));
     agreeing(read, { status: 200, body: { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '[]' }], structuredContent: { result: [] } } } });
-    const write = await onBoth((t) => t.fetch(over(t, rpc('tools/call', { name: 'myco_spores', arguments: { op: 'save', type: 'gotcha', content: 'x' } }))));
+    // The write the surface serves: the id differs per target, so the agreement
+    // read here is what the row says about who wrote it.
+    const recorded = new Map<Target, string>();
+    for (const t of TARGETS) {
+      const res = await t.fetch(over(t, rpc('tools/call', { name: 'myco_spores', arguments: { op: 'save', type: 'gotcha', content: 'the reviewer found it' } })));
+      recorded.set(t, ((await res.json()) as any).result.structuredContent.result.id as string);
+    }
+    const attributed = await Promise.all(TARGETS.map(async (t) => {
+      const row = await t.env.db.prepare(`SELECT agent_id, author, session_id FROM spores WHERE id = ?`).bind(recorded.get(t)!).first<{ agent_id: string; author: string; session_id: string | null }>();
+      const id = keys.get(t)!.id;
+      return { byGrant: row?.agent_id === id && row?.author === id, session: row?.session_id ?? null };
+    }));
+    expect(attributed).toEqual([{ byGrant: true, session: null }, { byGrant: true, session: null }]);
+
+    const write = await onBoth((t) => t.fetch(over(t, rpc('tools/call', { name: 'myco_spores', arguments: { op: 'consolidate' } }))));
     agreeing(write, { status: 200, body: { jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'Unknown tool: myco_spores', data: { code: 'unknown_tool' } } } });
+    const plan = await onBoth((t) => t.fetch(over(t, rpc('tools/call', { name: 'myco_plans', arguments: { op: 'save', content: '# p' } }))));
+    agreeing(plan, { status: 200, body: { jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'Unknown tool: myco_plans', data: { code: 'unknown_tool' } } } });
     for (const t of TARGETS) await revokeExternalGrant(t.env.db, { projectId: 'proj_1' }, keys.get(t)!.id, 'mem_machine_1', Date.now());
     const revoked = await onBoth((t) => t.fetch(over(t, rpc('tools/list'))));
     agreeing(revoked, { status: 401, body: { error: 'unauthorized' } });
