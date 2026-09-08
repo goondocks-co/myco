@@ -8,16 +8,48 @@
  * added to the committed file reaches production on the next render instead of
  * waiting for someone to notice a hand-maintained copy drifted.
  */
-import { createHash } from 'node:crypto';
 import type { DeploymentRecord } from './cloudflare.js';
 import { WRANGLER_TEMPLATE } from './wrangler-template.js';
 import { VECTOR_BINDINGS } from './vector-config.js';
 
-const CONTAINERS_HEADER = '[[containers]]';
+/**
+ * Every configuration table a rendered deploy config may declare.
+ *
+ * Each is a surface the free plan serves. Containers are a paid surface, and a
+ * table added without a decision moves every operator onto a plan they did not
+ * choose, so a new one has to be named here before it can ship.
+ */
+export const FREE_TIER_SURFACES = [
+  '[observability]',
+  '[observability.logs]',
+  '[[d1_databases]]',
+  '[[r2_buckets]]',
+  '[[ratelimits]]',
+  '[assets]',
+  '[triggers]',
+  '[[durable_objects.bindings]]',
+  '[[migrations]]',
+  '[[secrets_store_secrets]]',
+  '[ai]',
+  '[[vectorize]]',
+  '[vars]',
+] as const;
+
 const DATABASE_ID_PLACEHOLDER = '<YOUR_D1_DATABASE_ID>';
-const DOCKERFILE_IMAGE_LINE = 'image = "./harness/Dockerfile"';
-const FLEET_LINE_RE = /^max_instances = \d+$/m;
-const HARNESS_IMAGE_RE = /^registry\.cloudflare\.com\/[0-9a-f]{32}\/[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$/;
+const SOURCE_ENTRY_LINE = 'main = "src/index.ts"';
+
+/**
+ * What a staged deploy runs and how wrangler must treat it: the carried bundle
+ * is already built, and the staging directory beside it holds the dashboard and
+ * the migrations. `no_bundle` turns `find_additional_modules` on by default,
+ * which sweeps every file under the entry's directory into the Worker script,
+ * so the entry sits alone in its own directory AND the sweep is turned off.
+ */
+const STAGED_ENTRY_LINES = [
+  'main = "worker/worker.js"',
+  'no_bundle = true',
+  'find_additional_modules = false',
+].join('\n');
 
 /** Raised when the record cannot feed the renderer; names every missing fact. */
 export class DeployConfigIncomplete extends Error {
@@ -57,16 +89,12 @@ export function renderDeployConfig(record: DeploymentRecord): string {
   const routes = routesLine(record.url);
   if (routes !== null) header.push(routes);
 
-  let body = WRANGLER_TEMPLATE.replace(DATABASE_ID_PLACEHOLDER, record.databaseId!) + VECTOR_BINDINGS;
-  if (record.harnessImage !== undefined && record.harnessImage !== '') {
-    if (!HARNESS_IMAGE_RE.test(record.harnessImage)) {
-      throw new Error(`the deployment record's harnessImage is not a digest-pinned registry URI: ${JSON.stringify(record.harnessImage)} (~/.myco/server/cloudflare/record.json)`);
-    }
-    if (!body.includes(DOCKERFILE_IMAGE_LINE)) {
-      throw new Error('the template carries no Dockerfile image line to pin; renderDeployConfig and wrangler.toml have drifted');
-    }
-    body = body.replace(DOCKERFILE_IMAGE_LINE, `image = "${record.harnessImage}"`);
+  if (!WRANGLER_TEMPLATE.includes(SOURCE_ENTRY_LINE)) {
+    throw new Error('the template carries no source entry line to replace; renderDeployConfig and wrangler.toml have drifted');
   }
+  let body = WRANGLER_TEMPLATE
+    .replace(SOURCE_ENTRY_LINE, STAGED_ENTRY_LINES)
+    .replace(DATABASE_ID_PLACEHOLDER, record.databaseId!) + VECTOR_BINDINGS;
   if (record.storeId !== undefined && record.storeId !== '') {
     body += [
       '',
@@ -77,12 +105,8 @@ export function renderDeployConfig(record: DeploymentRecord): string {
       '',
     ].join('\n');
   }
-  if (record.fleet !== undefined) {
-    if (!Number.isInteger(record.fleet) || record.fleet < 1) {
-      throw new Error(`the deployment record's fleet is not a whole number of runtimes: ${JSON.stringify(record.fleet)} (~/.myco/server/cloudflare/record.json)`);
-    }
-    if (!FLEET_LINE_RE.test(body)) throw new Error('the template carries no max_instances line to set; renderDeployConfig and wrangler.toml have drifted');
-    body = body.replace(FLEET_LINE_RE, `max_instances = ${record.fleet}`);
+  if (record.fleet !== undefined && (!Number.isInteger(record.fleet) || record.fleet < 1)) {
+    throw new Error(`the deployment record's fleet is not a whole number of runtimes: ${JSON.stringify(record.fleet)} (~/.myco/server/cloudflare/record.json)`);
   }
   // What the Worker is told about itself: the origin the clock's runs call back to, and the fleet the dispatcher counts against. Both are the record's, never a request's.
   const vars: string[] = [];
@@ -92,54 +116,26 @@ export function renderDeployConfig(record: DeploymentRecord): string {
   return `${header.join('\n')}\n${body}`;
 }
 
-/** Every `[[containers]]` line a rendered config carries: each table's header and its fields, trimmed, with comments and blank lines dropped. */
-function containersTableLines(config: string): string[] {
-  const kept: string[] = [];
-  let inside = false;
-  for (const raw of config.split('\n')) {
-    const line = raw.trim();
-    if (line.startsWith('[')) inside = line === CONTAINERS_HEADER;
-    if (!inside || line === '' || line.startsWith('#')) continue;
-    kept.push(line);
-  }
-  return kept;
-}
-
-/**
- * The identity of a deploy's container settings.
- *
- * The platform replaces the container instances when the `[[containers]]` table
- * changes — the image line or any other field — so a deploy compares this
- * against the one the record carries to decide whether it is rolling.
- * Comments and indentation reach no instance and move it not at all; a field's
- * value moves it.
- */
-export function containersTableHash(config: string): string {
-  const lines = containersTableLines(config);
-  if (lines.length === 0) throw new Error('the rendered config carries no [[containers]] table; containersTableHash and wrangler.toml have drifted');
-  return createHash('sha256').update(lines.join('\n')).digest('hex');
-}
-
 /**
  * The committed configuration shaped for a local parity/dev boot:
  * `global_fetch_strictly_public` dropped (a scenario's loopback provider stub
  * must be reachable), the `[assets]` table dropped (a fresh worktree holds no
- * ui/dist, and every parity route is worker-owned), and the container tables
- * dropped (a local container needs Docker; the probe surface answers a
- * refusal where the binding is absent). A multi-line flags array or a second
- * flag fails loudly rather than shipping a silently different runtime.
+ * ui/dist, and every parity route is worker-owned), and the retired class's
+ * migration dropped. A multi-line flags array or a second flag fails loudly
+ * rather than shipping a silently different runtime.
  */
-const PARITY_DROPPED_HEADERS = ['[assets]', CONTAINERS_HEADER];
+const PARITY_DROPPED_HEADERS = ['[assets]'];
 
 /**
- * Whether a table is dropped for parity: the assets and the container, and the
- * Durable Object that fronts the container with its migration — a local
- * container needs Docker. The clock is a Durable Object too, needs nothing,
- * and rides into parity so the wake is proven on this target as on the other.
+ * Whether a table is dropped for parity: the assets, and any class-lifecycle
+ * migration naming a class this Worker no longer exports — a local boot
+ * resolves every named class against the code it is running. The clock is
+ * exported and rides into parity so the wake is proven on this target as on
+ * the other.
  */
 function parityDrops(header: string, block: readonly string[]): boolean {
   if (PARITY_DROPPED_HEADERS.includes(header)) return true;
-  if (header === '[[durable_objects.bindings]]' || header === '[[migrations]]') return block.some((line) => line.includes('"HarnessContainer"'));
+  if (header === '[[migrations]]') return block.some((line) => line.includes('"HarnessContainer"'));
   return false;
 }
 

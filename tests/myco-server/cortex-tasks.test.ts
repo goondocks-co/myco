@@ -26,7 +26,7 @@ import {
   RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS,
 } from '@myco-server-worker/core/cortex-input.js';
 import { SPORE_BODY_CHARS } from '@myco-server-worker/core/spores.js';
-import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { memberHeaders, sqliteEnv, withHarness } from './helpers/fixtures.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 
 const NOW = 1_800_000_000_000;
@@ -38,12 +38,9 @@ type Launch = { runId: string; timeoutSeconds: number; envVars: Record<string, s
 async function fixture(opts: { capability?: boolean } = {}) {
   const e = sqliteEnv();
   const launches: Launch[] = [];
-  const HARNESS = {
-    idFromName: (name: string) => ({ name }),
-    get: () => ({ launch: async (spec: Launch) => { launches.push(spec); } }),
-  };
-  const bindings = { ...e.env, ...OWNER_ENV, HARNESS } as never;
-  const base = serverEnvFromBindings(bindings);
+  // The entry maps its own deployment, so a launch reaches it only as the recording runtime.
+  const bindings = { ...e.env, ...OWNER_ENV, HARNESS_LAUNCH_MODE: 'record' } as never;
+  const base = withHarness(() => serverEnvFromBindings(bindings), { launch: async (spec) => { launches.push(spec); } });
   const env: ServerEnv = { ...base, wake: async () => {} };
   const setting = (leaf: string, value: unknown) =>
     e.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`, [leaf, JSON.stringify(value), NOW]);

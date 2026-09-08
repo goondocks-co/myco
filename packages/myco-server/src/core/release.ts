@@ -26,7 +26,6 @@ export interface ReleasableRun {
  * ended is left to its own deadline.
  */
 export async function releaseRun(env: ServerEnv, _scope: ReadScope, run: ReleasableRun, now: number, options: { drain: boolean } = { drain: true }): Promise<void> {
-  try { await env.harnessEnd?.(run.id); } catch { /* the hold's own deadline still ends the container */ }
   if (run.dispatchedBy !== null) await revokeCredentialOfMember(env.db, HARNESS_MEMBER_ID, run.dispatchedBy, now);
   // The capacity this run held is spent at once on the queue; the sweep passes false and leaves it to the tick that runs it.
   if (options.drain) {

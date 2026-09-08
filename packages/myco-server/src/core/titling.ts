@@ -26,7 +26,7 @@ export const TITLE_MAX_CHARS = 80;
 export const SUMMARY_MAX_CHARS = 1200;
 /** How long a titling run may take. The task definition says the same (`title-summary.yaml`); this is the bound the claim's in-flight window is computed from. */
 export const TITLING_RUN_TIMEOUT_SECONDS = 300;
-/** How long a run's container may outlive the run's own bound before its hold is released; the same margin the hosted runtime applies (`HOLD_OVERRUN_MARGIN_MS`, pinned equal by test). */
+/** How long a run may outlive its own bound before the Deployment gives up on it; the dispatcher's own margin, re-exported so the owner window is computed from one number. */
 export { RUN_OVERRUN_MARGIN_MS };
 /** How long after an owner's ask a second ask is refused: the run's own bound plus the overrun margin, so a run still writing is never raced by a second one. */
 export const OWNER_TITLING_WINDOW_MS = TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_OVERRUN_MARGIN_MS;

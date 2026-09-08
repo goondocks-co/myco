@@ -12,7 +12,6 @@ import type {
   PlatformDescriptor, RateLimiter, RelationalStore, ServerEnv,
 } from '../../core/adapters.js';
 import { cloudflareSourceOf } from './source.js';
-import type { HarnessContainer } from './harness-container.js';
 import { CLOCK_MANUAL, CLOCK_NAME, type DeploymentClock } from './deployment-clock.js';
 import { markRecordedLaunch } from '../../core/runs.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
@@ -35,13 +34,11 @@ export interface CloudflareBindings extends OwnerBindings {
    * attempt to seal or open rather than refusing unrelated traffic at boot.
    */
   SECRET_WRAP_KEY?: { get(): Promise<string> };
-  /** The harness container namespace; absent in local dev and the parity harness, where the probe answers a refusal. */
-  HARNESS?: DurableObjectNamespace<HarnessContainer>;
   /** The Deployment's clock: one Durable Object holding the next wake. Absent under a configuration that declares none. */
   CLOCK?: DurableObjectNamespace<DeploymentClock>;
-  /** `record`: a launch that records the run and starts nothing — the parity harness's runtime, never an operator's. Refused beside a real runtime. */
+  /** `record`: a launch that records the run and starts nothing — the parity harness's runtime, never an operator's. */
   HARNESS_LAUNCH_MODE?: string;
-  /** `manual` for a Deployment whose clock ticks only when a caller asks; refused beside a runtime that runs real containers. */
+  /** `manual` for a Deployment whose clock ticks only when a caller asks; accepted only beside a recording runtime. */
   CLOCK_MODE?: string;
   /** The origin this Deployment is reached at, rendered into the deploy config from the deployment record. */
   MYCO_ORIGIN?: string;
@@ -89,9 +86,11 @@ export function cloudflarePlatform(bindings: CloudflareBindings): PlatformDescri
       },
       {
         capability: 'harness-runtime',
-        label: bindings.HARNESS_LAUNCH_MODE === 'record' ? 'Harness runtime — recording, starts no container' : 'Harness runtime',
-        present: !absent('HARNESS') || bindings.HARNESS_LAUNCH_MODE === 'record',
-        operatorNames: ['HARNESS'],
+        label: bindings.HARNESS_LAUNCH_MODE === 'record' ? 'Harness runtime — recording, starts nothing' : 'Harness runtime',
+        // A worker attaches with a member credential, so there is no binding an
+        // operator sets and none that can be reported missing.
+        present: bindings.HARNESS_LAUNCH_MODE === 'record',
+        operatorNames: [],
       },
     ],
     classifyError: classifyD1Error,
@@ -124,45 +123,20 @@ function fleetOf(value: string | undefined): number | null {
 }
 
 export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: DeferredWork): ServerEnv {
-  if (bindings.HARNESS_LAUNCH_MODE === 'record' && bindings.HARNESS !== undefined) {
-    throw new Error('HARNESS_LAUNCH_MODE=record is refused beside a bound HARNESS: a Deployment records launches or runs them, never both');
-  }
-  if (bindings.CLOCK_MODE === CLOCK_MANUAL && bindings.HARNESS !== undefined) {
-    throw new Error('CLOCK_MODE=manual is refused beside a bound HARNESS: a Deployment that starts runtimes keeps its own clock');
+  // A clock that ticks only when asked runs no scheduled work of its own, which
+  // is serviceable for a recording deployment and silent breakage for any other.
+  if (bindings.CLOCK_MODE === CLOCK_MANUAL && bindings.HARNESS_LAUNCH_MODE !== 'record') {
+    throw new Error('CLOCK_MODE=manual is accepted only beside HARNESS_LAUNCH_MODE=record: a Deployment that serves keeps its own clock');
   }
   return {
     ...(bindings.VECTORIZE === undefined ? {} : { vectors: cloudflareVectorStore(bindings.VECTORIZE) }),
     embeddingProvider: async () => bindings.AI === undefined ? null : cloudflareEmbeddingProvider(bindings.AI),
-    ...(bindings.HARNESS_LAUNCH_MODE === 'record' && bindings.HARNESS === undefined ? { harnessLaunch: recordingLaunch(bindings) } : {}),
+    ...(bindings.HARNESS_LAUNCH_MODE === 'record' ? { harnessLaunch: recordingLaunch(bindings) } : {}),
     ...(bindings.MYCO_ORIGIN === undefined || bindings.MYCO_ORIGIN === '' ? {} : { origin: bindings.MYCO_ORIGIN }),
     ...(fleetOf(bindings.MYCO_FLEET) === null ? {} : { fleet: fleetOf(bindings.MYCO_FLEET)! }),
     // The runtime hands every request a deferral, and the work rides it past the
     // answer. A caller that supplies none has asked for the answer alone: nothing
     // starts, so no work of one request can outlive it unobserved.
-    ...(bindings.HARNESS === undefined ? {} : {
-      harnessLaunch: async (spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }): Promise<void> => {
-        const namespace = bindings.HARNESS!;
-        await namespace.get(namespace.idFromName(spec.runId)).launch(spec);
-      },
-      harnessProbe: async (runId: string, timeoutSeconds: number): Promise<Record<string, unknown>> => {
-        // One Durable Object per run, keyed by the run id; inlined so the shared
-        // test graph never loads the containers package's workerd-only imports.
-        const namespace = bindings.HARNESS!;
-        const stub = namespace.get(namespace.idFromName(runId));
-        await stub.beginRun(runId, timeoutSeconds);
-        const answered = await stub.fetch('http://harness/probe');
-        // A start failure arrives as a text/plain response, and that text is
-        // the one line saying why; it must reach the caller, never a parser.
-        const text = await answered.text();
-        let container: unknown = text;
-        try { container = JSON.parse(text); } catch { /* the text stands */ }
-        return { held: true, status: answered.status, ok: answered.ok, container };
-      },
-      harnessEnd: async (runId: string): Promise<void> => {
-        const namespace = bindings.HARNESS!;
-        await namespace.get(namespace.idFromName(runId)).endRun();
-      },
-    }),
     ...(bindings.CLOCK === undefined ? {} : {
       wake: async (): Promise<void> => {
         const clock = bindings.CLOCK!;

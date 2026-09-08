@@ -37,27 +37,29 @@ describe('the events route', () => {
     await e.deferred.settle();
   });
 
-  it('launches one titling run for an ended session when a runtime is bound, calling back to the request\'s own origin', async () => {
+  it('dispatches one titling run for an ended session, and the session\'s second end dispatches nothing', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     e.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.provider.type', '"openai-compatible"', 1, 'test'), ('agent.provider.base_url', '"http://models.internal/v1"', 1, 'test')`).run();
-    const launches: Array<{ runId: string; timeoutSeconds: number; envVars: Record<string, string> }> = [];
-    const bound = { ...e.env, HARNESS: { idFromName: (name: string) => ({ name }), get: () => ({ launch: async (spec: never) => { launches.push(spec); } }) } };
+    const bound = { ...e.env, HARNESS_LAUNCH_MODE: 'record' };
     const post = async (over: Record<string, unknown>) => (await worker.fetch(memberPost(t.token, envelope(over)), bound, e.deferred)).json() as Promise<Record<string, unknown>>;
 
     expect((await post({ eventId: uuid(1), kind: 'session.start', payload: { agent: 'claude-code', startedAt: 1_000 } })).persisted).toBe(true);
     expect((await post({ eventId: uuid(2), kind: 'prompt', payload: { promptId: uuid(20), text: 'hi', origin: 'user' } })).persisted).toBe(true);
     expect(await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_000 } })).toEqual({ persisted: true, projected: true });
     await e.deferred.settle();
-    expect(launches).toHaveLength(1);
-    const vars = launches[0]!.envVars;
-    expect({ task: vars.MYCO_TASK, url: vars.MYCO_SERVER_URL, admission: vars.MYCO_TASK_ADMISSION, params: JSON.parse(vars.MYCO_TASK_PARAMS!) })
-      .toEqual({ task: 'title-summary', url: 'https://s', admission: 'captureDriven', params: { session_id: 'sess_1', mode: 'claim', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS } });
+    // The recorder marks the row it took, so the dispatch is read where it lands
+    // rather than from a runtime the entry cannot be given. The environment a
+    // dispatch carries is asserted against the dispatcher itself in titling.test.ts.
+    const runs = () => e.sqlite.query(`SELECT status, task, harness, run_context AS runContext FROM agent_runs`).all() as Array<Record<string, unknown>>;
+    expect(runs()).toEqual([{
+      status: 'pending', task: 'title-summary', harness: 'record',
+      runContext: JSON.stringify({ session_id: 'sess_1', mode: 'claim', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS }),
+    }]);
     expect((e.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = 'sess_1'`).get() as { titled_at: number | null }).titled_at).not.toBeNull();
-    expect(e.sqlite.query(`SELECT status, task, run_context FROM agent_runs WHERE id = ?`).get(launches[0]!.runId)).toEqual({ status: 'pending', task: 'title-summary', run_context: JSON.stringify({ session_id: 'sess_1', mode: 'claim', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS }) });
-    // A second end of the same session finds the claim spent and launches nothing.
+    // A second end of the same session finds the claim spent and dispatches nothing.
     expect((await post({ eventId: uuid(4), kind: 'session.end', createdAt: 6_000, payload: { endedAt: 6_000 } })).projected).toBe(true);
     await e.deferred.settle();
-    expect(launches).toHaveLength(1);
+    expect(runs()).toHaveLength(1);
   });
 });

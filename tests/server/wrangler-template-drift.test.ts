@@ -8,11 +8,8 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { WRANGLER_TEMPLATE } from '@myco/server/wrangler-template.js';
-import { DeployConfigIncomplete, parityWranglerConfig, renderDeployConfig } from '@myco/server/deploy-config.js';
-import { harnessImageUri } from '@myco/server/cloudflare.js';
+import { DeployConfigIncomplete, FREE_TIER_SURFACES, parityWranglerConfig, renderDeployConfig } from '@myco/server/deploy-config.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
-import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from '@myco-server-worker/core/harness.js';
-import { TASK_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/task-catalogue.js';
 
 const SHIPPED = fileURLToPath(new URL('../../packages/myco-server/wrangler.toml', import.meta.url));
 
@@ -31,20 +28,27 @@ describe('wrangler template', () => {
     expect(WRANGLER_TEMPLATE).toBe(readFileSync(SHIPPED, 'utf8'));
   });
 
-  it('spares every run inside its own budget from a rollout, and renders that grace into the deploy config', () => {
-    // The platform replaces an instance only once its connection to its Durable
-    // Object is older than this. `wrangler.toml`'s container table binds ONE
-    // Durable Object per run, so connection age is run age: a grace period at
-    // or above the longest task budget spares every run still inside its bound.
-    const grace = Number(/^rollout_active_grace_period = (\d+)$/m.exec(WRANGLER_TEMPLATE)?.[1]);
-    expect(Number.isInteger(grace)).toBe(true);
-    for (const [task, seconds] of Object.entries(TASK_RUN_TIMEOUT_SECONDS)) {
-      expect({ task, spared: grace >= seconds }).toEqual({ task, spared: true });
-    }
-    expect(grace).toBeGreaterThanOrEqual(DEFAULT_DISPATCH_TIMEOUT_SECONDS);
-    // The container table is where wrangler reads it, and the renderer carries the whole table through.
-    expect(WRANGLER_TEMPLATE.split('[[containers]]')[1]).toContain(`rollout_active_grace_period = ${grace}`);
-    expect(renderDeployConfig(record({ databaseId: 'd1-uuid' }))).toContain(`rollout_active_grace_period = ${grace}`);
+  it('declares only surfaces the free plan serves, and retires the class it no longer exports', () => {
+    // Containers are a paid-plan surface, and the Deployment is meant to run on
+    // the free one. A class this Worker no longer exports keeps its lifecycle
+    // entry so the platform is told the namespace is gone, once.
+    expect(WRANGLER_TEMPLATE).not.toContain('[[containers]]');
+    expect(WRANGLER_TEMPLATE).not.toContain('name = "HARNESS"');
+    // The rendered config is what deploys, so it is what is checked: the
+    // template alone misses the vector bindings and the store block the
+    // renderer appends.
+    const rendered = renderDeployConfig(record({ databaseId: 'd1-uuid', storeId: 'store-1', url: 'https://myco.example.com' }));
+    const headers = (text: string) => [...text.matchAll(/^(\[\[?[a-z0-9_.]+\]?\])$/gm)].map((m) => m[1]!);
+    // Nothing ships that is not on the list, in the committed base or in what
+    // a deploy actually reads.
+    expect(headers(WRANGLER_TEMPLATE).filter((table) => !FREE_TIER_SURFACES.includes(table as never))).toEqual([]);
+    expect(headers(rendered).filter((table) => !FREE_TIER_SURFACES.includes(table as never))).toEqual([]);
+    // And nothing is on the list that no longer ships, so a retired surface
+    // cannot sit here granting silent permission to a future one.
+    const shipped = new Set([...headers(WRANGLER_TEMPLATE), ...headers(rendered)]);
+    expect(FREE_TIER_SURFACES.filter((table) => !shipped.has(table))).toEqual([]);
+    expect(WRANGLER_TEMPLATE).toContain('deleted_classes = [ "HarnessContainer" ]');
+    expect(WRANGLER_TEMPLATE.match(/deleted_classes/g)).toHaveLength(1);
   });
 
   it('carries the placeholder the renderer substitutes, exactly once', () => {
@@ -66,19 +70,27 @@ describe('renderDeployConfig', () => {
     expect(config.split('secret_name = "myco-secret-wrap-key"').length).toBe(3);
   });
 
-  it('sets the fleet the record names as max_instances and MYCO_FLEET beside the origin, and refuses a fleet that is not a count', () => {
+  it('tells the Worker the fleet and the origin the record names, and refuses a fleet that is not a count', () => {
     const config = renderDeployConfig(record({ url: 'https://myco.example.com', databaseId: 'd1-uuid', fleet: 3 }));
-    expect(config).toContain('max_instances = 3');
-    expect(config).not.toContain('max_instances = 12');
     expect(config).toContain('[vars]');
     expect(config).toContain('MYCO_ORIGIN = "https://myco.example.com"');
     expect(config).toContain('MYCO_FLEET = "3"');
     expect(config.match(/^\[vars\]$/gm)).toHaveLength(1);
-    const untouched = renderDeployConfig(record({ databaseId: 'd1-uuid' }));
-    expect(untouched).toContain('max_instances = 12');
-    expect(untouched).not.toContain('[vars]');
+    expect(renderDeployConfig(record({ databaseId: 'd1-uuid' }))).not.toContain('[vars]');
     expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', fleet: 0 }))).toThrow(/fleet/);
     expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', fleet: 2.5 }))).toThrow(/fleet/);
+  });
+
+  it('runs the carried bundle, alone in its own directory, with wrangler bundling nothing and sweeping nothing', () => {
+    // `no_bundle` turns `find_additional_modules` on by default, which would
+    // carry the staged dashboard and migrations into the Worker script.
+    const config = renderDeployConfig(record({ databaseId: 'd1-uuid' }));
+    expect(config).toContain('main = "worker/worker.js"');
+    expect(config).toContain('no_bundle = true');
+    expect(config).toContain('find_additional_modules = false');
+    expect(config).not.toContain('main = "src/index.ts"');
+    // Nothing in a deploy names an image: the deploy ships code, never a container.
+    expect(config).not.toMatch(/^image = /m);
   });
 
   it('renders no route for a workers.dev URL and no store block without a store id', () => {
@@ -112,12 +124,13 @@ describe('parityWranglerConfig', () => {
     }
   });
 
-  it('drops the container tables a local boot cannot serve, which the committed file carries, and keeps the clock', () => {
-    expect(WRANGLER_TEMPLATE).toContain('[[containers]]');
-    expect(WRANGLER_TEMPLATE).toContain('class_name = "HarnessContainer"');
+  it('drops the retired class a local boot cannot resolve, which the committed file names, and keeps the clock', () => {
+    // A local boot resolves every class a migration names against the code it
+    // runs, and this Worker exports the clock alone.
     expect(WRANGLER_TEMPLATE).toContain('class_name = "DeploymentClock"');
+    expect(WRANGLER_TEMPLATE).toContain('deleted_classes = [ "HarnessContainer" ]');
     const config = parityWranglerConfig();
-    for (const dropped of ['[[containers]]', 'HARNESS', 'HarnessContainer', 'v1-harness']) {
+    for (const dropped of ['HarnessContainer', 'deleted_classes']) {
       expect(config).not.toContain(dropped);
     }
     for (const kept of ['[[durable_objects.bindings]]', 'name = "CLOCK"', 'class_name = "DeploymentClock"', '[[migrations]]', 'tag = "v2-clock"', '[triggers]']) {
@@ -126,43 +139,5 @@ describe('parityWranglerConfig', () => {
     // One binding table and one migration table survive: the clock's.
     expect(config.match(/^\[\[durable_objects\.bindings\]\]$/gm)).toHaveLength(1);
     expect(config.match(/^\[\[migrations\]\]$/gm)).toHaveLength(1);
-  });
-});
-
-describe('harness image pinning', () => {
-  const ACCOUNT = 'a'.repeat(32);
-  const URI = `registry.cloudflare.com/${ACCOUNT}/myco-server-harnesscontainer@sha256:${'b'.repeat(64)}`;
-
-  it('pins the record image over the Dockerfile form, and keeps the Dockerfile form on a record without one', () => {
-    const pinned = renderDeployConfig(record({ databaseId: 'd1-uuid', harnessImage: URI }));
-    expect(pinned).toContain(`image = "${URI}"`);
-    expect(pinned).not.toContain('image = "./harness/Dockerfile"');
-    const unpinned = renderDeployConfig(record({ databaseId: 'd1-uuid' }));
-    expect(unpinned).toContain('image = "./harness/Dockerfile"');
-  });
-
-  it('refuses a harnessImage that is not a digest-pinned registry URI, naming the record', () => {
-    expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', harnessImage: 'myco-server-harnesscontainer:latest' })))
-      .toThrow(/harnessImage.*record\.json/);
-  });
-
-  it('composes the URI from the LAST exported manifest digest', () => {
-    const out = [
-      `#12 exporting manifest sha256:${'c'.repeat(64)} done`,
-      `#12 exporting manifest sha256:${'d'.repeat(64)} done`,
-      'Image already exists remotely, skipping push',
-    ].join('\n');
-    expect(harnessImageUri(out, ACCOUNT, 'myco-server')).toBe(`registry.cloudflare.com/${ACCOUNT}/myco-server-harnesscontainer@sha256:${'d'.repeat(64)}`);
-  });
-
-  it('derives the image name suffix from the template container class', () => {
-    const cls = /class_name = "([A-Za-z0-9]+)"/.exec(WRANGLER_TEMPLATE.split('[[containers]]')[1]!)?.[1];
-    expect(cls).toBe('HarnessContainer');
-    const out = `#12 exporting manifest sha256:${'c'.repeat(64)} done`;
-    expect(harnessImageUri(out, ACCOUNT, 'w')).toContain(`/w-${cls!.toLowerCase()}@sha256:`);
-  });
-
-  it('refuses build output with no manifest digest', () => {
-    expect(() => harnessImageUri('Login Succeeded', ACCOUNT, 'myco-server')).toThrow(/manifest digest/);
   });
 });

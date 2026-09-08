@@ -49,7 +49,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 91;
+const EMIT_CALLS = 90;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -136,7 +136,6 @@ export default { fetch: handleRequest, scheduled };
 `;
 
 const CANONICAL_INDEX = `export { default, handleRequest } from './entry/cloudflare.js';
-export { HarnessContainer } from './platform/cloudflare/harness-container.js';
 export { DeploymentClock } from './platform/cloudflare/deployment-clock.js';`;
 
 const env = () => ({
@@ -934,10 +933,9 @@ describe('gates', () => {
     const keys = [...block![1].matchAll(/^\s*(\w+):/gm)].map((m) => m[1]).sort();
     expect(keys.length).toBeGreaterThan(0);
     const toml = readFileSync(join(WORKER, 'wrangler.toml'), 'utf8');
-    // HARNESS and CLOCK are optional in Env — the harness is absent in local dev
-    // and the parity harness, and a test env binds no clock — so they sit outside
+    // CLOCK is optional in Env — a test env binds no clock — so it sits outside
     // the required-binding equality, like SECRET_WRAP_KEY.
-    const bound = [...toml.matchAll(/^(?:binding|name) = "(\w+)"$/gm)].map((m) => m[1]).filter((name) => name !== 'myco-server' && name !== 'HARNESS' && name !== 'CLOCK').sort();
+    const bound = [...toml.matchAll(/^(?:binding|name) = "(\w+)"$/gm)].map((m) => m[1]).filter((name) => name !== 'myco-server' && name !== 'CLOCK').sort();
     expect(bound).toEqual(keys);
     expect(/^migrations_dir = "([^"]*)"$/m.exec(toml)?.[1]).toBe(MIGRATIONS_DIR);
   });
@@ -1112,7 +1110,6 @@ describe('gates', () => {
       'owner POST /api/enrollment',
       'owner POST /api/enrollment/{id}/revoke',
       'owner POST /api/harness/dispatch',
-      'owner POST /api/harness/probe',
       'owner POST /api/members/{memberId}/revoke',
       'owner POST /api/projects',
       'owner POST /api/projects/{projectId}/archive',

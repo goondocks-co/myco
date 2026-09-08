@@ -1,11 +1,10 @@
 /**
- * The harness routes: an owner's dispatch of one task, and the runtime probe —
- * the acceptance surface for a held runtime.
+ * The harness dispatch route: an owner's ask for one task to be run.
  *
- * A target without a runtime answers a refusal naming the capability, which
- * local dev and the parity harness treat as the expected answer. The dispatch
- * itself is `core/harness.ts`; this route decides only how it is asked for and
- * answered.
+ * A Deployment with no runtime attached answers a refusal naming the
+ * capability, which local dev and the parity harness treat as the expected
+ * answer. The dispatch itself is `core/harness.ts`; this route decides only how
+ * it is asked for and answered.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
@@ -69,21 +68,4 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   }
   const { dispatched: _dispatched, ...answer } = outcome;
   return ok(answer);
-}
-
-export async function handleHarnessProbe(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  if (env.harnessProbe === undefined) {
-    return Response.json({ error: 'harness_unavailable', message: DISPATCH_REFUSAL_MESSAGE.harness_unavailable }, { status: 409 });
-  }
-  const body = await readJsonObject(ctx.request);
-  if (body === null) return badRequest('body must be a JSON object');
-  const timeoutSeconds = typeof body.timeoutSeconds === 'number' && body.timeoutSeconds > 0 && body.timeoutSeconds <= 600 ? body.timeoutSeconds : 120;
-  // One well-known runtime by default, reused: a fresh name per call would
-  // strand a warm container per probe until its idle window ends, and the
-  // fleet is finite. A NAMED runtime is probed in place — the window into a
-  // dispatched run's live state.
-  const runId = typeof body.runId === 'string' && body.runId.length > 0 && body.runId.length <= 128 ? body.runId : 'probe';
-  const answer = await env.harnessProbe(runId, timeoutSeconds);
-  emit({ kind: 'harness_probe', runId, actor: ctx.member.id });
-  return ok({ runId, timeoutSeconds, ...answer });
 }
