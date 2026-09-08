@@ -33,7 +33,7 @@ import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import { assertGroveProjectId, createProjectId, createHostId } from '@myco/grove/ids.js';
 import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
-import { teamFetch, teamTestPort } from '../helpers/team-socket.js';
+import { boundTeamPort, teamFetch } from '../helpers/team-socket.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
@@ -119,13 +119,11 @@ let memberToken: string;
 
     // --- host daemon: real overlay listener, real content-claim routes ---
     const hostLogger = new DaemonLogger(path.join(tmp, 'host-logs'));
-    teamPort = teamTestPort();
     hostServer = new DaemonServer({
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
       logger: hostLogger,
       daemonStateAuthority: stubAuthority,
       lockNamespace: testPerUserLockNamespace,
-      teamPort: teamPort,
       // servedGroveId designates `grove` as the ONE Grove this host serves —
       // required since Task 2's servedGroveRefusal fail-closed filter now
       // refuses every team request when the designation is absent, even
@@ -134,6 +132,7 @@ let memberToken: string;
     });
     registerContentClaimRoutes(hostServer, { machineId: 'host-machine', logger: hostLogger });
     await hostServer.start(0);
+    teamPort = boundTeamPort(hostServer);
 
     // The public edge in front of the host's socket. The member dials THIS,
     // over real TLS, through the production dialer.

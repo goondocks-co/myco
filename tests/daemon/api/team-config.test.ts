@@ -16,7 +16,7 @@
  * Hermetic: MYCO_HOME / MYCO_TEAM_HOME are fresh tmpdirs per test.
  */
 import { writeHostRecordFixture } from '../../helpers/host-registry-fixture.js';
-import { teamFetch, teamTestPort } from '../../helpers/team-socket.js';
+import { boundTeamPort, teamFetch } from '../../helpers/team-socket.js';
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -67,7 +67,7 @@ import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.
 import { seedExternalMcpConfig } from '../../helpers/external-mcp-config-fixture.js';
 import { issueTestMemberToken } from '../../helpers/member-token.js';
 
-let teamSock: string;
+let teamSock: number;
 
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
@@ -297,9 +297,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
     };
     const hostVaultDir = path.join(tmp, 'host-anchor', '.myco');
     const logger = new DaemonLogger(path.join(tmp, 'host-logs'));
-    teamSock = teamTestPort();
     const server = new DaemonServer({
-      teamPort: teamSock,
       vaultDir: hostVaultDir,
       logger,
       daemonStateAuthority: stubAuthority,
@@ -308,6 +306,7 @@ describe('(b) overlay integration: team-write is admitted only for the served gr
     registerTeamConfigRoutes(server, { hostServe, mycoHome: process.env.MYCO_HOME! });
     registerTeamAgentTaskRoutes(server, { hostServe, mycoHome: process.env.MYCO_HOME! });
     await server.start(0);
+    teamSock = boundTeamPort(server);
     servers.push(server);
     return server;
   }

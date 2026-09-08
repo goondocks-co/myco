@@ -1,30 +1,34 @@
 /**
  * Test transport for the Team Host listener, which binds a loopback TCP port.
  *
- * The listener bound an `AF_UNIX` socket before, which `fetch` cannot address —
- * hence this helper. It survives the move to a port because the shape it hides
- * is still worth hiding: tests name an endpoint BEFORE the server starts (they
- * pass it into the server config), so they need a port reserved up front rather
- * than read back after bind.
+ * `fetch` cannot address the listener by port alone with a stable `Host`
+ * header, and the MCP client transport insists on a URL plus a fetch, so both
+ * shapes live here: {@link teamFetch} for a single request, {@link portFetch}
+ * for a client that wants a `fetch`.
+ *
+ * NO HELPER HANDS OUT A PORT. A test learns the listener's port the same way
+ * production does — from `server.teamPort` after `start()`, the number the
+ * kernel actually gave the daemon. Reserving one up front (bind :0, read,
+ * close, pass it in) leaves a window in which a parallel test process takes it;
+ * the daemon then falls back to an ephemeral port and the test talks to
+ * whatever now holds the stale number. `tests/meta/team-port-readback.test.ts`
+ * keeps that shape out.
  */
 import http from 'node:http';
-import net from 'node:net';
-import type { AddressInfo } from 'node:net';
 
 /**
- * Reserve a free loopback port.
+ * The port the team listener actually bound, refusing the alternative.
  *
- * Binds :0, reads what the kernel picked, and releases it — so the number is
- * known before the daemon starts and can be passed into its config. There is a
- * window between release and the daemon's bind in which something else could
- * take it; that is acceptable in a test and is why production never does this
- * (the daemon binds :0 itself and reports what it got).
+ * `server.teamPort` is null until `start()` has bound the listener and stays
+ * null when host serving is off. A null reaching {@link teamFetch} would dial a
+ * nonsense address several assertions later; this names the setup mistake at
+ * the point it is made.
  */
-export function teamTestPort(): number {
-  const probe = net.createServer();
-  probe.listen(0, '127.0.0.1');
-  const port = (probe.address() as AddressInfo).port;
-  probe.close();
+export function boundTeamPort(server: { teamPort: number | null }): number {
+  const port = server.teamPort;
+  if (port === null) {
+    throw new Error('team listener is not bound: start() a server configured with hostServe first');
+  }
   return port;
 }
 
