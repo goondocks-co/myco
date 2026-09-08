@@ -1,12 +1,20 @@
 /**
- * The external read-only surface: what an External Agent grant may call.
+ * The external surface: what an External Agent grant may call.
  *
  * An explicit per-(tool, op) allowlist, never a tool-name filter and never a
- * `readOnlyHint` denylist — the same six entries the member-side surface
- * declares (`packages/myco/src/mcp/external-surface.ts`), held equal by
- * `tests/myco-server/tool-parity.test.ts`. A view over the registry: nothing
- * here resolves an op or dispatches a call. Fails closed: a (tool, op) not
- * listed does not exist on this surface.
+ * `readOnlyHint` denylist. Six tool names of project-scoped reads, plus the two
+ * spore writes a grant records its findings through — `save` and `supersede`,
+ * each attributed to the grant itself (`auth/grants.ts`). `consolidate` and
+ * `obsolete` are absent: both move rows a grant did not write. No plan write
+ * exists here at all.
+ *
+ * The reads are the six the member-side surface declares
+ * (`packages/myco/src/mcp/external-surface.ts`); the two writes are served
+ * here alone, named in `tests/myco-server/tool-parity.test.ts`, which holds the
+ * two allowlists equal once those named pairs are added to the member's.
+ *
+ * A view over the registry: nothing here resolves an op or dispatches a call.
+ * Fails closed: a (tool, op) not listed does not exist on this surface.
  */
 import { NO_OP, type ServedTool } from '../core/tool-catalogue.js';
 import { TOOL_DEFINITIONS, type ToolDefinition } from './definitions.js';
@@ -20,7 +28,7 @@ export const EXTERNAL_TOOL_ALLOWLIST: Readonly<Record<string, ReadonlySet<string
   myco_plans: new Set(['list', 'get']),
   myco_sessions: new Set(['list', 'get']),
   myco_skills: new Set(['list', 'get']),
-  myco_spores: new Set(['list', 'get']),
+  myco_spores: new Set(['list', 'get', 'save', 'supersede']),
 };
 
 /** The tool names the surface advertises. */
@@ -34,7 +42,7 @@ export function isExternalCall(tool: ServedTool, op: string): boolean {
 }
 
 /** What `project_id` means on the surface: the grant's own Project, named or not. */
-export const EXTERNAL_PROJECT_ID_DESCRIPTION = 'The Project this access key reads. Optional; it may name only that Project.';
+export const EXTERNAL_PROJECT_ID_DESCRIPTION = 'The Project this access key reads and records into. Optional; it may name only that Project.';
 
 /**
  * The definitions a narrowed surface lists: the allowlisted names, each

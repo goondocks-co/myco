@@ -38,6 +38,11 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'sleep',
     converges: 'no run whose runtime went away stays live past its bound: each is failed by name and released as a finished run is',
   },
+  {
+    name: 'grant-expiry',
+    runsThrough: 'sleep',
+    converges: 'no External Agent grant past its expiry is left live: each is ended at the instant it expired and named as expired, and every row, agent and attribution survives',
+  },
   { name: 'search-index', runsThrough: 'idle', converges: 'every referenced text blob has a complete full-text index' },
   { name: 'embedding-reconcile', runsThrough: 'idle', converges: 'every eligible project memory record has a current vector and settled spore hubness' },
   // #1158 join UX

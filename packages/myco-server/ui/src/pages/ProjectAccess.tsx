@@ -8,7 +8,7 @@ import { PageLoading } from '../components/ui/page-loading';
 import { Panel } from '../components/ui/panel';
 import { StatusDot } from '../components/ui/status-dot';
 import { KeyReveal } from '../components/access/KeyReveal';
-import { refusalText, useAccessActions, useGrants, useMembers, type GrantRow } from '../hooks/use-access';
+import { GRANT_EXPIRY_ACTOR, refusalText, useAccessActions, useGrants, useMembers, type GrantRow } from '../hooks/use-access';
 import { formatRelative } from '../lib/format';
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
@@ -29,11 +29,17 @@ export function ProjectAccess() {
   const [rotateError, setRotateError] = useState<string | null>(null);
   const [revokeError, setRevokeError] = useState<string | null>(null);
   const nameOf = (id: string | null) => (id === null ? null : members.data?.members.find((m) => m.id === id)?.label ?? id);
+  // An access key that ran out its own clock ended with nobody ending it, so it names no one.
+  const endedLabel = (g: GrantRow) => {
+    if (g.revokedBy === GRANT_EXPIRY_ACTOR) return 'expired';
+    const by = nameOf(g.revokedBy);
+    return `${g.rotatedTo ? 'rotated' : 'revoked'}${by ? ` by ${by}` : ''}`;
+  };
   const list = grants.data?.grants ?? [];
 
   return (
     <PageContainer>
-      <PageHeader title="Access" subtitle="External agents that may read this project. They see the project's memory and nothing else; they never write." />
+      <PageHeader title="Access" subtitle="External agents that may read this project and record what they find. They see this project's memory and nothing else, and every note they leave is signed with their own name." />
       <PageLoading isLoading={grants.isPending} error={grants.error}>
         <Panel padded title="External agents" actions={<button type="button" className={primary} onClick={() => { setLabel(''); setRevealed(null); setAddOpen(true); }}>Add external agent</button>}>
           {list.length === 0 ? (
@@ -46,7 +52,7 @@ export function ProjectAccess() {
                   <div className="min-w-0 flex-1">
                     <div className="text-on-surface">{g.label ?? g.id}</div>
                     <div className="text-xs text-on-surface-variant">
-                      added {formatRelative(g.createdAt)} by {nameOf(g.createdBy)} · {g.revokedAt !== null ? `${g.rotatedTo ? 'rotated' : 'revoked'}${nameOf(g.revokedBy) ? ` by ${nameOf(g.revokedBy)}` : ''}` : g.lastUsedAt === null ? 'never used' : `last used ${formatRelative(g.lastUsedAt)}`}
+                      added {formatRelative(g.createdAt)} by {nameOf(g.createdBy)} · {g.revokedAt !== null ? endedLabel(g) : g.lastUsedAt === null ? 'never used' : `last used ${formatRelative(g.lastUsedAt)}`}
                     </div>
                   </div>
                   {g.revokedAt === null && (

@@ -9,14 +9,16 @@
  * absent, never created. A run, whose credential the dispatcher minted for one
  * run: its call reads that run's Project and no other, and may call only the
  * `(tool, op)` pairs its task declares (`run-surface.ts`). An External Agent
- * grant, whose row names one Project: its call reads that Project and no
- * other. For a run and a grant, `project_id` is judged before any handler runs
- * (`server.ts callTool`), so here it is never a pivot.
+ * grant, whose row names one Project: its call reads and records into that
+ * Project and no other, and names no session — it cites a pull request or a
+ * commit instead. For a run and a grant, `project_id` is judged before any
+ * handler runs (`server.ts callTool`), so here it is never a pivot.
  *
  * A write names the principal behind it twice: `agent_id` is the actor class —
- * the built-in `user` agent for a member, the run's agent for a run — and
- * `author` is the instance, a member id or a run id. `writerOf` answers both
- * for the handlers that write.
+ * the built-in `user` agent for a member, the run's agent for a run, the
+ * grant's own agent row for a grant — and `author` is the instance, a member
+ * id, a run id or a grant id. `writerOf` answers both for the handlers that
+ * write.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { GrantContext, RouteContext, RunContext } from '../context.js';
@@ -120,11 +122,12 @@ export interface Writer {
   author: string;
 }
 
-/** The principal a write is attributed to. A grant has no write surface yet (#1149 gives it an agent row and an author value); until then a grant reaching a write is refused as the allowlist refuses it. */
+/** The principal a write is attributed to: the actor class and the instance. A grant is both — its `agents` row is minted with it, one per grant id. */
 export function writerOf(ctx: ToolContext, tool: string): Writer {
   const p = ctx.principal;
   if (p.kind === 'member') return { agentId: USER_AGENT_ID, author: p.memberId };
   if (p.kind === 'run') return { agentId: p.agentId, author: p.runId };
+  if (p.kind === 'grant') return { agentId: p.grantId, author: p.grantId };
   throw unknownTool(tool);
 }
 
@@ -146,6 +149,10 @@ export const SESSION_NOT_FOUND = 'session_id not found';
  * whose session the Project does not hold writes with no session rather than
  * failing the row's key — the `author` column still names the run, whose
  * context names the session.
+ *
+ * **A grant names none.** It holds no Myco session, so it writes with none and
+ * cites the pull request or commit that produced the finding; naming any
+ * session is the same one refusal.
  */
 export async function sessionOf(ctx: ToolContext, scope: ReadScope, input: ToolInput, tool: string): Promise<{ ok: true; sessionId: string | null } | ToolFailure> {
   const named = typeof input.session_id === 'string' && input.session_id.length > 0 ? input.session_id : undefined;
@@ -155,6 +162,7 @@ export async function sessionOf(ctx: ToolContext, scope: ReadScope, input: ToolI
     if (own === null) return { ok: true, sessionId: null };
     return { ok: true, sessionId: (await projectHoldsSession(ctx.env.db, scope, own)) ? own : null };
   }
+  if (ctx.principal.kind === 'grant') return named === undefined ? { ok: true, sessionId: null } : failure(SESSION_NOT_FOUND);
   if (named === undefined) return { ok: true, sessionId: null };
   const { machineId } = memberOf(ctx, tool);
   if (!(await sessionHeldByMachine(ctx.env.db, scope, named, machineId))) return failure(SESSION_NOT_FOUND);

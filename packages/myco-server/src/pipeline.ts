@@ -329,7 +329,7 @@ export function createServer(deps: ServerDeps) {
   ): Promise<Response> {
     let auth: GrantAuth | null;
     try {
-      auth = await authenticateGrant(env.db, await sha256Hex(key));
+      auth = await authenticateGrant(env.db, await sha256Hex(key), now);
     } catch (err) {
       if (!(err instanceof SchemaMismatchError)) throw err;
       emit({ kind: 'schema_mismatch', expected: err.expected, found: err.found });
