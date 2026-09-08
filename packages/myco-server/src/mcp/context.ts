@@ -26,6 +26,7 @@ import type { ReadScope } from '../read/scope.js';
 import { sessionNamedByRun } from '../api/run-admission.js';
 import { resolveTenancyArgument } from '../api/scope.js';
 import { taskTools } from '../core/task-catalogue.js';
+import { readWindowFor, type ReadWindow } from '../core/read-window.js';
 import { PROJECT_PIVOT } from '../core/tool-catalogue.js';
 import { projectHoldsSession, sessionHeldByMachine } from '../read/sessions.js';
 import { runAllowlist, type RunAllowlist } from './run-surface.js';
@@ -51,8 +52,12 @@ export interface RunPrincipal {
   agentId: string;
   /** The session the run's dispatch named, or null; the only session a run may write against. */
   sessionId: string | null;
+  /** The context the dispatch recorded, as stored; the run tools parse what they need from it and never take it from arguments. */
+  runContext: string | null;
   tokenId: string;
   allow: RunAllowlist;
+  /** How much of the Project one pass of this run may read. */
+  window: ReadWindow;
 }
 
 export type Principal = MemberPrincipal | GrantPrincipal | RunPrincipal;
@@ -91,8 +96,10 @@ export function runToolContext(env: ServerEnv, ctx: RunContext): ToolContext {
     env,
     projectId: ctx.projectId,
     principal: {
-      kind: 'run', runId: run.id, task: run.task, agentId: run.agentId, sessionId: sessionNamedByRun(run), tokenId: ctx.tokenId,
+      kind: 'run', runId: run.id, task: run.task, agentId: run.agentId, sessionId: sessionNamedByRun(run),
+      runContext: run.runContext, tokenId: ctx.tokenId,
       allow: runAllowlist(taskTools(run.task), { dryRun: run.dryRun === 1 }),
+      window: readWindowFor(run.task),
     },
     now: ctx.now,
   };
@@ -114,6 +121,12 @@ export function boundProject(ctx: ToolContext): string | null {
 /** The member behind a call that writes on its behalf. A grant or a run never reaches such a call — the allowlist refuses it first — and is refused the same way here. */
 export function memberOf(ctx: ToolContext, tool: string): MemberPrincipal {
   if (ctx.principal.kind !== 'member') throw unknownTool(tool);
+  return ctx.principal;
+}
+
+/** The run behind a call on the run-only surface. Only a run principal reaches those tools; any other is refused as a tool that does not exist. */
+export function runOf(ctx: ToolContext, tool: string): RunPrincipal {
+  if (ctx.principal.kind !== 'run') throw unknownTool(tool);
   return ctx.principal;
 }
 

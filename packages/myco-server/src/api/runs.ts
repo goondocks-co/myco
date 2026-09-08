@@ -125,47 +125,6 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
   return Response.json({ persisted: true, claimed: false, running: outcome.running });
 }
 
-/** Read one agent state value. */
-export async function handleReadState(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const agentId = str(body.agentId);
-  const key = str(body.key);
-  if (agentId === null || key === null) return Response.json(refused(ctx, refusal('read requires agentId and key', 'parse')));
-
-  const row = await getState(env.db, { projectId: ctx.projectId }, agentId, key);
-  return Response.json({ persisted: true, value: row?.value ?? null, updatedAt: row?.updatedAt ?? null });
-}
-
-/**
- * Write one agent state value, guarded by the value the caller computed against.
- *
- * `expected` absent means the caller read no value; `applied: false` reports that
- * another writer moved it in between, and is the caller's signal to read again
- * rather than an error.
- */
-export async function handleWriteState(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const agentId = str(body.agentId);
-  const key = str(body.key);
-  const value = str(body.value, MAX_STATE_BYTES);
-  const expected = strOrNull(body.expected, MAX_STATE_BYTES);
-  if (agentId === null || key === null || value === null || expected === undefined) {
-    return Response.json(refused(ctx, refusal('write requires agentId, key and a value within the state bound', 'parse')));
-  }
-
-  // One attempt: the caller holds the read this write is guarded by, so retrying
-  // here would recompute nothing and would overwrite the value it just lost to.
-  let applied = false;
-  await mutateState(env.db, { projectId: ctx.projectId }, agentId, key, (current) => {
-    applied = current === expected;
-    return applied ? value : null;
-  }, ctx.now);
-
-  return Response.json({ persisted: true, applied });
-}
-
 /**
  * Register the agent identity this Deployment runs under.
  *
@@ -485,17 +444,6 @@ export async function handleRunReports(env: ServerEnv, ctx: RouteContext): Promi
   const runId = str(body.runId);
   if (runId === null) return Response.json(refused(ctx, refusal('reports requires runId', 'parse')));
   return Response.json({ persisted: true, reports: await listReports(env.db, { projectId: ctx.projectId }, runId) });
-}
-
-/** Whether this Project is admitted to a capability, answered without attempting a run. */
-export async function handleRunAdmission(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const capability = (PROJECT_CAPABILITIES as readonly string[]).includes(body.capability as string)
-    ? (body.capability as ProjectCapability) : null;
-  if (capability === null) return Response.json(refused(ctx, refusal('admission requires a known capability', 'parse')));
-  const admission = await projectAdmission(env.db, { projectId: ctx.projectId }, capability);
-  return Response.json({ persisted: true, ...admission });
 }
 
 /**

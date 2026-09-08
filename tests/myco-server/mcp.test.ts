@@ -682,7 +682,7 @@ describe('POST /mcp addressed by git remote', () => {
       env,
     );
     expect(sqlite.query(`SELECT remote FROM project_remotes`).all()).toEqual([{ remote: NAME }]);
-    expect((await call(harness.token, 'myco_spores', { op: 'list', project: REMOTE })).error).toBeUndefined();
+    expect((await call(harness.token, 'myco_run_spores', { op: 'list', project: REMOTE })).error).toBeUndefined();
   });
 });
 
@@ -699,13 +699,16 @@ describe('POST /mcp over a run credential', () => {
     expect(listed.status).toBe(200);
     const expected = runDefinitions(runAllowlist(TASK_TOOLS[SWEEP], { dryRun: false }));
     expect(listed.body.result.tools).toEqual(expected.map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema, annotations: d.annotations })));
-    expect(listed.body.result.tools.map((t: any) => t.name)).toEqual(['myco_spores']);
-    expect(listed.body.result.tools[0].inputSchema.properties.op.enum.sort()).toEqual(['get', 'list', 'obsolete', 'save', 'supersede']);
+    expect(listed.body.result.tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_spores', 'myco_spores']);
+    const spores = listed.body.result.tools.find((t: any) => t.name === 'myco_spores');
+    expect(spores.inputSchema.properties.op.enum.sort()).toEqual(['consolidate', 'obsolete', 'save', 'supersede']);
 
-    for (const task of ['title-summary', 'container-smoke']) {
+    // A task that declares no tools of its own still closes: `report` is the run
+    // protocol rather than a task capability.
+    for (const task of ['container-smoke']) {
       const h = await runSetup();
       await h.dispatch(h.harness, 'run_x', task);
-      expect({ task, tools: (await h.list(h.harness.token)).body.result.tools }).toEqual({ task, tools: [] });
+      expect({ task, tools: (await h.list(h.harness.token)).body.result.tools.map((t: any) => t.name) }).toEqual({ task, tools: ['myco_run'] });
       const from = h.executed.length;
       expect({ task, code: (await h.call(h.harness.token, 'myco_spores', { op: 'list' })).error.data.code }).toEqual({ task, code: 'unknown_tool' });
       expect({ task, writes: h.writes(from) }).toEqual({ task, writes: [] });
@@ -718,7 +721,7 @@ describe('POST /mcp over a run credential', () => {
     const allow = runAllowlist(TASK_TOOLS[SWEEP], { dryRun: false });
     const outside = everyRegistryCall().filter(({ tool, op }) => !(allow.get(tool as any)?.has(op) ?? false));
     expect(outside.length).toBeGreaterThan(10);
-    expect(outside.map((c) => `${c.tool}:${c.op}`)).toEqual(expect.arrayContaining(['myco_plans:save', 'myco_cortex:instructions', 'myco_agent:runs', 'myco_search:*', 'myco_spores:consolidate']));
+    expect(outside.map((c) => `${c.tool}:${c.op}`)).toEqual(expect.arrayContaining(['myco_plans:save', 'myco_cortex:instructions', 'myco_agent:runs', 'myco_search:*', 'myco_sessions:list']));
     const from = executed.length;
     for (const { tool, op, args } of outside) {
       const answered = await call(harness.token, tool, args);
@@ -732,9 +735,9 @@ describe('POST /mcp over a run credential', () => {
     await dispatch(harness, 'run_1', SWEEP);
     const foreign = await list(harness.token, { [PROJECT_HEADER]: 'proj_2' });
     expect({ status: foreign.status, code: foreign.body.error.data.code, message: foreign.body.error.message }).toEqual({ status: 400, code: 'project_mismatch', message: RUN_PROJECT_MISMATCH });
-    expect((await call(harness.token, 'myco_spores', { op: 'list', project: 'proj_2' })).error.data.code).toBe('unknown_tool');
-    expect((await call(harness.token, 'myco_spores', { op: 'list', project: 'proj_nowhere' })).error.data.code).toBe('unknown_tool');
-    expect((await call(harness.token, 'myco_spores', { op: 'list', project: 'proj_1' })).result).toMatchObject({ total: 0 });
+    expect((await call(harness.token, 'myco_run_spores', { op: 'list', project: 'proj_2' })).error.data.code).toBe('unknown_tool');
+    expect((await call(harness.token, 'myco_run_spores', { op: 'list', project: 'proj_nowhere' })).error.data.code).toBe('unknown_tool');
+    expect((await call(harness.token, 'myco_run_spores', { op: 'list', project: 'proj_1' })).result).toMatchObject({ total: 0 });
   });
 
   it('holds no surface without exactly one live run: none, pending, completed, stale, or two rows naming one credential', async () => {
@@ -770,7 +773,8 @@ describe('POST /mcp over a run credential', () => {
     expect((await call(harness.token, 'myco_spores', { op: 'supersede', old_spore_id: saved.id, new_spore_id: second.id, reason: 'replaced' })).result.status).toBe('superseded');
     expect(sqlite.query(`SELECT agent_id, author, session_id FROM resolution_events WHERE spore_id = ?`).get(saved.id)).toEqual({ agent_id: 'myco-agent', author: 'run_1', session_id: 'sess_1' });
     expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', session_id: 'sess_other' })).result).toEqual({ ok: false, error: 'session_id not found' });
-    expect((await call(harness.token, 'myco_spores', { op: 'get', id: saved.id })).result.author).toBe('run_1');
+    // A run reads a body through its own bounded inventory, not the member tool.
+    expect((await call(harness.token, 'myco_run_spores', { op: 'get', id: saved.id })).result.spore.author).toBe('run_1');
 
     const mine = (await call(member.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'seen by a person' })).result;
     expect(sqlite.query(`SELECT agent_id, author FROM spores WHERE id = ?`).get(mine.id)).toEqual({ agent_id: 'user', author: 'mem_machine_1' });
@@ -786,9 +790,11 @@ describe('POST /mcp over a run credential', () => {
   it('gives a dry run its reads and none of its writes', async () => {
     const { harness, dispatch, call, list } = await runSetup();
     await dispatch(harness, 'run_1', SWEEP, { dryRun: true });
-    expect((await list(harness.token)).body.result.tools[0].inputSchema.properties.op.enum.sort()).toEqual(['get', 'list']);
+    const tools = (await list(harness.token)).body.result.tools;
+    expect(tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_spores']);
+    expect(tools.find((t: any) => t.name === 'myco_run_spores').inputSchema.properties.op.enum.sort()).toEqual(['get', 'list']);
     expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x' })).error.data.code).toBe('unknown_tool');
-    expect((await call(harness.token, 'myco_spores', { op: 'list' })).result).toMatchObject({ total: 0 });
+    expect((await call(harness.token, 'myco_run_spores', { op: 'list' })).result).toMatchObject({ total: 0 });
   });
 
   it('is refused on every member route that is not the run-control plane, live run or not, in the route\'s shape and writing nothing, while a member is admitted', async () => {
@@ -862,7 +868,7 @@ describe('POST /mcp refuses an argument the schema does not declare', () => {
   it('for a run and for a grant, on a tool on their surface, with the same shape', async () => {
     const run = await runSetup();
     await run.dispatch(run.harness, 'run_1', SWEEP);
-    expectRefusedByName('myco_spores', await run.call(run.harness.token, 'myco_spores', { op: 'list', [STRAY]: 'x' }));
+    expectRefusedByName('myco_run_spores', await run.call(run.harness.token, 'myco_run_spores', { op: 'list', [STRAY]: 'x' }));
     const { grant, callAs } = await grantSetup();
     expectRefusedByName('myco_spores', await callAs(grant.key, 'myco_spores', { op: 'list', [STRAY]: 'x' }));
   });

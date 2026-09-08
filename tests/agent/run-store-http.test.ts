@@ -80,50 +80,6 @@ describe('HTTP RunStore — claim', () => {
   });
 });
 
-describe('HTTP RunStore — state', () => {
-  it('carries an atomic read-modify-write over the wire', async () => {
-    const { store } = await harness();
-    const append = (entry: string) => (current: string | null): string =>
-      JSON.stringify([...(current ? (JSON.parse(current) as string[]) : []), entry]);
-
-    await store.mutateState('decisions', append('phase-a'), PROJECT);
-    await store.mutateState('decisions', append('phase-b'), PROJECT);
-    expect(JSON.parse((await store.getState('decisions', PROJECT))!.value)).toEqual(['phase-a', 'phase-b']);
-  });
-
-  it('keeps both concurrent appends, retrying the loser from its own read', async () => {
-    const { store } = await harness();
-    const append = (entry: string) => (current: string | null): string =>
-      JSON.stringify([...(current ? (JSON.parse(current) as string[]) : []), entry]);
-    await store.mutateState('decisions', () => JSON.stringify(['seed']), PROJECT);
-
-    await Promise.all([
-      store.mutateState('decisions', append('phase-a'), PROJECT),
-      store.mutateState('decisions', append('phase-b'), PROJECT),
-    ]);
-    expect(JSON.parse((await store.getState('decisions', PROJECT))!.value).sort()).toEqual(['phase-a', 'phase-b', 'seed']);
-  });
-
-  it('reports contention rather than a write that did not land, once attempts are spent', async () => {
-    const { store, sqlite } = await harness();
-    await store.mutateState('k', () => 'v0', PROJECT);
-    let calls = 0;
-    // Another writer moves the value between this caller's read and its write,
-    // every round. Written straight to the store so the move is synchronous and
-    // the race is deterministic rather than a matter of scheduling.
-    await expect(store.mutateState('k', (current) => {
-      calls += 1;
-      sqlite.query(`UPDATE agent_state SET value = ? WHERE project_id = ? AND key = 'k'`).run(`moved-${calls}`, PROJECT);
-      return `${current}!`;
-    }, PROJECT)).rejects.toBeInstanceOf(RunControlError);
-    expect(calls).toBe(HTTP_MUTATE_ATTEMPTS);
-  });
-
-  it('answers an unset key as absent rather than an empty value', async () => {
-    const { store } = await harness();
-    expect(await store.getState('never-written', PROJECT)).toBeNull();
-  });
-});
 
 describe('HTTP RunStore — lifecycle', () => {
   it('updates a run and reads it back', async () => {
@@ -149,12 +105,5 @@ describe('HTTP RunStore — lifecycle', () => {
     await store.recordRunEvent({ runId: 'r_unknown', eventType: 'phase_end' });
     const rows = sqlite.query(`SELECT run_id AS r, event_type AS e FROM agent_run_events ORDER BY id`).all() as Array<{ r: string; e: string }>;
     expect(rows).toEqual([{ r: 'r1', e: 'phase_start' }]);
-  });
-
-  it('answers admission for the capability the task needs', async () => {
-    const admitted = await harness();
-    expect(await admitted.store.admitProject(PROJECT)).toEqual({ admitted: true });
-    const refused = await harness({ admit: false });
-    expect((await refused.store.admitProject(PROJECT)).admitted).toBe(false);
   });
 });

@@ -81,35 +81,6 @@ export async function handleRunInstruction(env: ServerEnv, ctx: RouteContext): P
   return Response.json({ persisted: true, held: true, instruction: await runInstruction(env.db, { projectId: ctx.projectId }, runId) });
 }
 
-/** The Project's settled sessions, newest first: what a run needs to name a hotspot by title. */
-export async function handleRunSessions(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = str(body.runId);
-  if (runId === null) return Response.json(refused(ctx, refusal('sessions requires runId', 'parse')));
-  const run = await heldRun(env, ctx, runId, SESSION_LIST_TASKS);
-  if (run === null) return Response.json(UNHELD);
-
-  const asked = typeof body.limit === 'number' && Number.isSafeInteger(body.limit) ? body.limit : RUN_SESSIONS_DEFAULT_LIMIT;
-  // A digest run reads its material once and writes every tier from it, so its
-  // page is the tier window's rather than the surface's own.
-  const ceiling = run.task === DIGEST_TASK ? DIGEST_SESSION_PAGE_LIMIT : RUN_SESSIONS_MAX_LIMIT;
-  const limit = Math.min(Math.max(asked, 1), ceiling);
-  const page = await listSessions(env.db, { projectId: ctx.projectId }, { limit, state: 'ended' });
-  return Response.json({
-    persisted: true,
-    held: true,
-    sessions: page.rows.map((row) => ({
-      id: row.sessionId,
-      label: preview(row.label, RUN_SESSION_LABEL_CHARS),
-      startedAt: row.startedAt,
-      endedAt: row.endedAt,
-      title: preview(row.title, RUN_SESSION_TITLE_CHARS),
-      summary: preview(row.summary, RUN_SESSION_SUMMARY_CHARS),
-    })),
-  });
-}
-
 /** The Project's digest: one tier in full, or what each tier holds when the caller names none. */
 export async function handleRunDigest(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);

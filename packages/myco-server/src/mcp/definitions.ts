@@ -44,14 +44,17 @@ export interface ToolAnnotations {
 }
 
 export interface ToolDefinition {
-  name: ServedTool;
+  name: string;
   description: string;
   inputSchema: ToolInputSchema;
   annotations?: ToolAnnotations;
   cortex?: { guidance: string; priority?: number };
 }
 
-export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
+/** A definition of one of the catalogued tools; the run-only surface declares its own beside these. */
+export type ServedToolDefinition = ToolDefinition & { name: ServedTool };
+
+export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
   {
     "name": "myco_search",
     "description": "Search project sessions, spores, plans, skills, prompts and responses. Results include stable IDs and entity retrieval hints where available. Use before making design decisions or debugging non-obvious issues.",
