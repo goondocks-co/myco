@@ -43,7 +43,6 @@ describe('a worker drives one run on each harness', () => {
         runRoot: join(resolveMycoHome(), 'worker', 'smoke'),
         only: [harness],
         once: true,
-        heartbeatMs: 30_000,
         pollIdleMs: 1_000,
         log: (line) => { lines.push(line); },
         signal: stopping.signal,
@@ -54,11 +53,14 @@ describe('a worker drives one run on each harness', () => {
 });
 
 describe('a killed worker\'s run', () => {
-  it('returns to the queue at lease expiry and is claimed again', () => {
-    // Driven by hand: dispatch a run, let a worker claim it, kill the worker
-    // process, and watch the row. Before the lease expires it stays `running`
-    // and a second worker answers `claimed: false`; after it, the row is
-    // `queued` with no lease and no credential, and the next claim takes it.
-    expect(SERVER).not.toBe('');
-  });
+  // Driven by hand, against a Deployment with a real worker attached:
+  //   1. dispatch a run and let the worker claim it;
+  //   2. `kill -9` the worker process;
+  //   3. before the lease expires the row is `running` and a second worker
+  //      answers `claimed: false`;
+  //   4. after it, the row is `queued` with no lease and no credential;
+  //   5. a restarted worker claims it.
+  // The same behaviour is held against the clock in `worker-lease.test.ts`;
+  // what this proves is that a real process dying produces it.
+  it.skip('returns to the queue at lease expiry and is claimed again', () => {});
 });

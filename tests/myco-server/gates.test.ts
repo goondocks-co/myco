@@ -1254,4 +1254,31 @@ describe('gates', () => {
     expect(count(e.sqlite, 'events')).toBe(before);
     expect(e.executed.filter((sql) => /UPDATE\s+member_credentials/i.test(sql))).toEqual([]);
   });
+
+  it('spells a run-status set in one place, so a predicate cannot drift from the one the writes use', () => {
+    // Two constants name what a run in flight is. A statement spelling either
+    // set by hand is a second copy that answers the same today and diverges the
+    // first time one of them changes.
+    const offenders: string[] = [];
+    for (const file of files(SRC)) {
+      const relative = file.slice(SRC.length);
+      if (relative.endsWith('core/runs.ts')) continue;
+      for (const line of readFileSync(file, 'utf8').split('\n')) {
+        if (/status\s+IN\s*\(\s*'(pending|running|queued)'/.test(line)) offenders.push(`${relative}: ${line.trim().slice(0, 80)}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('declares each run-status set exactly once, and nothing else spells one', () => {
+    const source = readFileSync(join(SRC, 'core', 'runs.ts'), 'utf8');
+    const spelled = [...source.matchAll(/status IN \('pending'[^)]*\)/g)].map((m) => m[0]);
+    // Three sets, three definitions, and no fourth spelling in the file that owns them.
+    // Three sets, three definitions, in the order the file declares them.
+    expect([...spelled].sort()).toEqual([
+      "status IN ('pending', 'queued')",
+      "status IN ('pending', 'running')",
+      "status IN ('pending', 'running', 'queued')",
+    ]);
+  });
 });

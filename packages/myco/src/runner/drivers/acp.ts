@@ -27,17 +27,39 @@ function commandOf(harness: Harness): { command: string; args: readonly string[]
   return { command: harness.binary, args: [] };
 }
 
-/** One JSON-RPC connection over a child's pipes. */
-class Connection {
+/** What a connection writes to and reads from: a child's pipes, or a peer a test provides. */
+export interface Channel {
+  write(line: string): void;
+  onLine(read: (line: string) => void): void;
+  onClose(closed: () => void): void;
+}
+
+/** A call that will never be answered: the peer went away mid-call. */
+export class PeerClosed extends Error {
+  constructor(readonly detail: string) { super(`the harness closed the connection: ${detail}`); }
+}
+
+/**
+ * One JSON-RPC connection to an agent peer.
+ *
+ * Every pending call is rejected when the peer closes, so a harness that dies
+ * mid-turn ends the run with what it said rather than leaving the worker
+ * waiting on an answer that cannot come.
+ */
+export class Connection {
   private held = '';
   private next = 1;
-  private readonly waiting = new Map<number, (value: Record<string, unknown>) => void>();
+  private readonly waiting = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }>();
+  private closed: PeerClosed | null = null;
   readonly updates: Array<Record<string, unknown>> = [];
-  private drain: (() => void) | null = null;
 
-  constructor(private readonly child: ReturnType<typeof spawn>) {
-    child.stdout?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => { this.held += chunk; this.read(); });
+  constructor(private readonly channel: Channel) {
+    channel.onLine((chunk) => { this.held += chunk; this.read(); });
+    channel.onClose(() => {
+      this.closed = new PeerClosed('it wrote no answer');
+      for (const pending of this.waiting.values()) pending.reject(this.closed);
+      this.waiting.clear();
+    });
   }
 
   private read(): void {
@@ -49,22 +71,55 @@ class Connection {
         try {
           const message = JSON.parse(line) as Record<string, unknown>;
           const id = typeof message.id === 'number' ? message.id : null;
-          if (id !== null && this.waiting.has(id)) { this.waiting.get(id)!(message); this.waiting.delete(id); }
-          else if (typeof message.method === 'string') { this.updates.push(message); this.drain?.(); }
-        } catch { /* the harness writes prose beside the protocol; the protocol is what is read */ }
+          if (id !== null && this.waiting.has(id)) { this.waiting.get(id)!.resolve(message); this.waiting.delete(id); }
+          else if (typeof message.method === 'string') this.updates.push(message);
+        } catch { /* a harness writes prose beside the protocol; the protocol is what is read */ }
       }
       at = this.held.indexOf('\n');
     }
   }
 
-  onUpdate(drain: () => void): void { this.drain = drain; }
-
   call(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (this.closed !== null) return Promise.reject(this.closed);
     const id = this.next++;
-    return new Promise((resolve) => {
-      this.waiting.set(id, resolve);
-      this.child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+    return new Promise((resolve, reject) => {
+      this.waiting.set(id, { resolve, reject });
+      this.channel.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
     });
+  }
+}
+
+/**
+ * One turn over an agent peer: a session naming this run's server, a prompt,
+ * and the stop reason the turn ended on. Written against a channel rather than
+ * a process so a peer can answer it without one.
+ */
+export async function* turnOver(channel: Channel, id: string, spec: RunSpec, detailOnFailure: () => string): AsyncIterable<RunEvent> {
+  const connection = new Connection(channel);
+  try {
+    await connection.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    const session = await connection.call('session/new', { cwd: spec.scratchDir, mcpServers: [serverOf(spec)] });
+    const sessionId = ((session.result ?? {}) as Record<string, unknown>).sessionId;
+    yield { kind: 'started', harness: id, sessionId: typeof sessionId === 'string' ? sessionId : null };
+
+    const answered = await connection.call('session/prompt', { sessionId, prompt: [{ type: 'text', text: spec.prompt }] });
+    for (const update of connection.updates) {
+      const params = (update.params ?? {}) as Record<string, unknown>;
+      const chunk = (params.update ?? {}) as Record<string, unknown>;
+      const said = (chunk.content ?? {}) as Record<string, unknown>;
+      if (typeof said.text === 'string' && said.text.length > 0) {
+        yield { kind: 'message', role: chunk.sessionUpdate === 'agent_thought_chunk' ? 'thought' : 'assistant', text: said.text };
+      }
+    }
+    const result = (answered.result ?? {}) as Record<string, unknown>;
+    const reason = typeof result.stopReason === 'string' ? result.stopReason : '';
+    const known = STOP.find((s) => s === reason) ?? null;
+    yield known === null
+      ? { kind: 'ended', stop: 'error', detail: `the harness answered no stop reason: ${detailOnFailure()}` }
+      : { kind: 'ended', stop: known, detail: null };
+    await connection.call('session/close', { sessionId }).catch(() => undefined);
+  } catch (error) {
+    yield { kind: 'ended', stop: 'error', detail: error instanceof PeerClosed ? `${error.message} ${detailOnFailure()}`.trim() : String(error) };
   }
 }
 
@@ -95,33 +150,14 @@ export function acpDriver(id: string): Driver {
       child.stderr?.on('data', (chunk: string) => { errors += chunk; });
       const stop = (): void => { child.kill('SIGTERM'); };
       signal.addEventListener('abort', stop, { once: true });
-
+      child.stdout?.setEncoding('utf8');
+      const channel: Channel = {
+        write: (line) => { child.stdin?.write(line); },
+        onLine: (read) => { child.stdout?.on('data', (chunk: string) => { read(chunk); }); },
+        onClose: (closed) => { child.once('close', closed); child.once('error', closed); },
+      };
       try {
-        const connection = new Connection(child);
-        await connection.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
-        const session = await connection.call('session/new', { cwd: spec.scratchDir, mcpServers: [serverOf(spec)] });
-        const sessionId = ((session.result ?? {}) as Record<string, unknown>).sessionId;
-        yield { kind: 'started', harness: id, sessionId: typeof sessionId === 'string' ? sessionId : null };
-
-        const answered = await connection.call('session/prompt', {
-          sessionId,
-          prompt: [{ type: 'text', text: spec.prompt }],
-        });
-        for (const update of connection.updates) {
-          const params = (update.params ?? {}) as Record<string, unknown>;
-          const chunk = (params.update ?? {}) as Record<string, unknown>;
-          const said = (chunk.content ?? {}) as Record<string, unknown>;
-          if (typeof said.text === 'string' && said.text.length > 0) {
-            yield { kind: 'message', role: chunk.sessionUpdate === 'agent_thought_chunk' ? 'thought' : 'assistant', text: said.text };
-          }
-        }
-        const result = (answered.result ?? {}) as Record<string, unknown>;
-        const reason = typeof result.stopReason === 'string' ? result.stopReason : '';
-        const known = STOP.find((s) => s === reason) ?? null;
-        yield known === null
-          ? { kind: 'ended', stop: 'error', detail: `the harness answered no stop reason: ${errors.slice(0, 2000)}` }
-          : { kind: 'ended', stop: known, detail: null };
-        await connection.call('session/close', { sessionId });
+        yield* turnOver(channel, id, spec, () => errors.slice(0, 2000));
       } finally {
         signal.removeEventListener('abort', stop);
         child.kill('SIGTERM');

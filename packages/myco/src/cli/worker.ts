@@ -30,7 +30,7 @@ A worker offers the harnesses it finds installed and logged in. The Deployment
 chooses which one runs each task, from the harness it prefers and the order it
 falls back through.`;
 
-const HEARTBEAT_MS = 30_000;
+/** What a worker waits before its first answer tells it the Deployment's own cadence. */
 const POLL_IDLE_MS = 2_000;
 
 /** Every `--harness` given, in order. */
@@ -72,7 +72,6 @@ export async function run(args: string[]): Promise<boolean> {
     runRoot: path.join(resolveMycoHome(), 'worker', 'runs'),
     ...(only.length === 0 ? {} : { only }),
     ...(flags.get('once') === 'true' ? { once: true } : {}),
-    heartbeatMs: HEARTBEAT_MS,
     pollIdleMs: POLL_IDLE_MS,
     log: (line) => { console.log(`worker: ${line}`); },
     signal: stopping.signal,

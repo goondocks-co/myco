@@ -31,10 +31,16 @@ export interface RunSpec {
   mcpConfigPath: string;
   /** The Deployment's harness credential, where it holds one; empty where the harness uses its own login. */
   credentialEnv: Record<string, string>;
-  timeoutSeconds: number;
 }
 
-/** A driver: a harness, started and read as one event stream. */
+/**
+ * A driver: a harness, started and read as one event stream.
+ *
+ * A driver carries no bound of its own. What releases a hung harness is the
+ * Deployment: the run outruns its budget, the sweep takes the lease, the next
+ * renewal is declined, and the worker aborts the signal it passed in. One clock
+ * decides, and it is the one that also decides what the run's row says.
+ */
 export interface Driver {
   id: string;
   run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent>;

@@ -1,4 +1,4 @@
-import { heldByWords } from '../../../src/core/run-holds';
+import { heldByWords } from '@goondocks/myco-shared/run-holds';
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';

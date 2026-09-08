@@ -17,7 +17,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { DeploymentContext } from '../context.js';
 import { claimNextRun, endLeasedRun, renewLease, type OfferedHarness } from '../core/harness.js';
-import { WORKER_POLL_MAX_MS } from '../constants.js';
+import { WORKER_HEARTBEAT_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { ok } from './scope.js';
 
 const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
@@ -72,8 +72,11 @@ export async function handleWorkerClaim(env: ServerEnv, ctx: DeploymentContext):
     harnesses: offered(asked.harnesses),
     now: ctx.now,
   });
-  if (!outcome.claimed) return ok({ persisted: true, claimed: false, reason: outcome.reason, pollAfterMs: WORKER_POLL_MAX_MS });
-  return ok({ persisted: true, claimed: true, run: outcome.run });
+  // The Deployment decides the cadence and says it on every answer: a worker
+  // carries none of its own, so a lease changed here changes what every
+  // attached worker does without shipping one.
+  if (!outcome.claimed) return ok({ persisted: true, claimed: false, reason: outcome.reason, pollAfterMs: WORKER_POLL_IDLE_MS });
+  return ok({ persisted: true, claimed: true, heartbeatMs: WORKER_HEARTBEAT_MS, run: outcome.run });
 }
 
 /** Extend the lease on a run this worker holds. `held: false` tells a worker another holds its run now, so it stops driving it. */

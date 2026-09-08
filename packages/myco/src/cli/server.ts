@@ -32,8 +32,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import { readDeploymentMembership } from '../member/registry.js';
 import { runWorker } from '../runner/loop.js';
 
-/** The cadence a worker inside the server process keeps: three missed renewals lose a lease, and an idle poll waits briefly. */
-const WORKER_HEARTBEAT_MS = 30_000;
+/** What a worker waits before its first answer tells it the Deployment's own cadence. */
 const WORKER_POLL_IDLE_MS = 2_000;
 import {
   DEFAULT_LOCAL_RECORD,
@@ -182,7 +181,6 @@ async function startLocalWorker(port: number): Promise<void> {
     serverUrl,
     token: membership.token,
     runRoot: path.join(resolveMycoHome(), 'worker', 'runs'),
-    heartbeatMs: WORKER_HEARTBEAT_MS,
     pollIdleMs: WORKER_POLL_IDLE_MS,
     log: (line) => { console.log(`worker: ${line}`); },
     signal: stopping.signal,

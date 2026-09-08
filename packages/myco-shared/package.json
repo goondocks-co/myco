@@ -18,6 +18,14 @@
       "import": "./dist/recall.js",
       "types": "./dist/recall.d.ts"
     },
+    "./harness-providers": {
+      "import": "./dist/harness-providers.js",
+      "types": "./dist/harness-providers.d.ts"
+    },
+    "./run-holds": {
+      "import": "./dist/run-holds.js",
+      "types": "./dist/run-holds.d.ts"
+    },
     "./repository": {
       "import": "./dist/repository.js",
       "types": "./dist/repository.d.ts"

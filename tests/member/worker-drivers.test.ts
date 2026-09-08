@@ -18,6 +18,7 @@ import { DRIVERS, driverFor } from '@myco/runner/drivers/registry.js';
 import { reachedEnd, type RunEvent } from '@myco/runner/events.js';
 import { discardRunDir, mcpConfigOf, MCP_SERVER_NAME, writeRunDir } from '@myco/runner/mcp-config.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
+import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 
 const CONNECTION = { serverUrl: 'https://deployment.example', projectId: 'proj_1', runToken: 'tok_run_secret_value' };
 
@@ -31,6 +32,18 @@ describe('the harness manifest', () => {
       expect(harness.binary.length).toBeGreaterThan(0);
     }
     expect(Object.keys(DRIVERS).sort()).toEqual(HARNESSES.map((h) => h.id).sort());
+  });
+
+  it('names the same harnesses the Deployment opens a credential for, and each its own provider', () => {
+    // A harness is not a provider: handing one another's key fails in a way
+    // that reads as a bad credential rather than as a wrong table.
+    expect(Object.keys(HARNESS_CREDENTIALS).sort()).toEqual(HARNESSES.map((h) => h.id).sort());
+    expect(Object.fromEntries(Object.entries(HARNESS_CREDENTIALS).map(([id, c]) => [id, c.provider]))).toEqual({
+      'claude-code': 'anthropic', codex: 'openai', opencode: 'anthropic', cursor: 'anthropic', antigravity: 'google',
+    });
+    for (const [id, declared] of Object.entries(HARNESS_CREDENTIALS)) {
+      expect({ id, variables: declared.variables.length > 0 }).toEqual({ id, variables: true });
+    }
   });
 
   it('names three launch shapes, and the two harnesses with native drivers speak no protocol of their own', () => {

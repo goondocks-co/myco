@@ -40,7 +40,7 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   // target: a store that is missing, misconfigured, or unreachable all read as unusable
   // here rather than only the one shape a single platform happens to produce.
   const capabilities = deploymentCapabilities(env);
-  let workers = { workersAttached: 0, runsQueued: 0 };
+  let workers = { workersBusy: 0, runsQueued: 0 };
   let found: number | null = null;
   let projects: Awaited<ReturnType<typeof listVisibleProjects>> = [];
   try {
@@ -53,9 +53,9 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   return ok({
     schema: { expected: SERVER_SCHEMA_VERSION, found, matches: found === SERVER_SCHEMA_VERSION },
     capabilities,
-    // What a capability list cannot answer: whether a worker is attached right
-    // now. A Deployment can be configured to run tasks and have none, and the
-    // queue growing beside no attached worker is the shape of that.
+    // What a capability list cannot answer: whether the queue is moving. A
+    // Deployment can be configured to run tasks and have no worker driving any,
+    // and a queue growing beside nothing busy is the shape of that.
     workers,
     projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
   });

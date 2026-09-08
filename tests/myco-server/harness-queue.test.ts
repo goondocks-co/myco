@@ -179,6 +179,23 @@ describe('the drain', () => {
     expect(f.run(digest.runId)?.status).toBe('queued');
   });
 
+  it('stops at a Deployment-wide holder: what holds one runtime-served run holds every later one', async () => {
+    const f = fixture();
+    const running = (await f.dispatch()) as { runId: string };
+    f.setting('agent.limits.concurrent_runs', 1);
+    const behind = (await f.dispatch('container-smoke', NOW + 1)) as { runId: string };
+    const further = (await f.dispatch('container-smoke', NOW + 2)) as { runId: string };
+    expect([f.run(behind.runId)?.status, f.run(further.runId)?.status]).toEqual(['queued', 'queued']);
+    // The fleet and the run limit describe the Deployment, so the drain stops
+    // at the first rather than walking the queue to no purpose.
+    expect(await drainQueue(f.env, NOW + 3)).toBe(0);
+    expect([f.run(behind.runId)?.status, f.run(further.runId)?.status]).toEqual(['queued', 'queued']);
+    // The place freed by the running run is spent on exactly one of them.
+    f.complete(running.runId);
+    expect(await drainQueue(f.env, NOW + 4)).toBe(1);
+    expect([f.run(behind.runId)?.status, f.run(further.runId)?.status].filter((s) => s === 'pending')).toHaveLength(1);
+  });
+
   it('never launches without a runtime: an unbound Deployment leaves the queue for the runtime that arrives', async () => {
     const f = fixture({ bound: false });
     expect(await f.dispatch()).toMatchObject({ dispatched: false, refusal: 'harness_unavailable' });

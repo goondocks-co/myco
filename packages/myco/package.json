@@ -61,7 +61,6 @@
     "directory": "packages/myco"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^1.4.0",
     "@anthropic-ai/claude-agent-sdk": "^0.3.224",
     "@anthropic-ai/sdk": "^0.115.0",
     "@inquirer/prompts": "^8.5.2",

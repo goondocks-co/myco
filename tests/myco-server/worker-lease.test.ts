@@ -12,7 +12,7 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { claimNextRun, endLeasedRun, expireLeases, renewLease, chooseHarness, RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/harness.js';
 import { getRun, workerLiveness } from '@myco-server-worker/core/runs.js';
-import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS, WORKER_POLL_MAX_MS } from '@myco-server-worker/constants.js';
+import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { TASK_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/task-catalogue.js';
 import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
 
@@ -78,6 +78,31 @@ describe('the claim queue', () => {
     expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'`).get()).toEqual({ n: 1 });
   });
 
+  it('holds a claim at the limits the Deployment set, and records the limit on the run', async () => {
+    const f = fixture();
+    f.e.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.limits.concurrent_runs', '1', ?, 'test')`, [NOW]);
+    f.queue('run_1', NOW);
+    f.queue('run_2', NOW + 1);
+    const [ta, tb] = [await f.worker('mem_a'), await f.worker('mem_b')];
+
+    // One run at a time: the first worker takes one, the second is held by the
+    // limit rather than taking the other, and the limit is on the row an
+    // operator reads.
+    const first = await claimNextRun(f.e.serverEnv, { tokenId: ta, machineId: 'm1', harnesses: OFFERED, now: NOW + 2 });
+    expect(first.claimed).toBe(true);
+    expect(await claimNextRun(f.e.serverEnv, { tokenId: tb, machineId: 'm2', harnesses: OFFERED, now: NOW + 3 }))
+      .toEqual({ claimed: false, reason: 'at_limit' });
+    expect(f.row('run_2')).toMatchObject({ status: 'queued' });
+    expect(f.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = 'run_2'`).get()).toEqual({ heldBy: 'concurrent_runs' });
+    expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'`).get()).toEqual({ n: 1 });
+    // Nothing is minted for a claim a limit refused.
+    expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials WHERE revoked_at IS NULL AND member_id = ?`).get(HARNESS_MEMBER_ID)).toEqual({ n: 1 });
+
+    // The first ending frees the place, and the second run is taken.
+    f.e.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = 'run_1'`, [NOW + 4]);
+    expect((await claimNextRun(f.e.serverEnv, { tokenId: tb, machineId: 'm2', harnesses: OFFERED, now: NOW + 5 })).claimed).toBe(true);
+  });
+
   it('leaves a queued run that still names a launch credential to the launch that holds it', async () => {
     const f = fixture();
     f.queue('run_held', NOW);
@@ -89,7 +114,10 @@ describe('the claim queue', () => {
   });
 
   it('leaves the three tasks the launch seam serves out of the queue a worker reads', async () => {
-    for (const task of RUNTIME_SERVED_TASKS) {
+    // Named here rather than read from the constant: a list that loops over
+    // itself passes on an empty one.
+    expect([...RUNTIME_SERVED_TASKS].sort()).toEqual(['canopy-map', 'container-smoke', 'embedding-reconcile']);
+    for (const task of ['canopy-map', 'container-smoke', 'embedding-reconcile']) {
       const f = fixture(task);
       f.queue(`run_${task}`, NOW);
       expect({ task, outcome: await claimNextRun(f.e.serverEnv, { tokenId: await f.worker('mem_w'), machineId: 'm1', harnesses: OFFERED, now: NOW + 1 }) })
@@ -221,22 +249,35 @@ describe('the lease', () => {
     // The numbers are tunable; the relation is not. A lease survives three
     // missed renewals, and expires before a run's own budget can, so the two
     // never answer the same question.
+    // Two missed renewals survive; the third is the expiry.
     expect(WORKER_HEARTBEAT_MS * 3).toBeLessThanOrEqual(WORKER_LEASE_MS);
     const shortest = Math.min(...Object.values(TASK_RUN_TIMEOUT_SECONDS)) * 1000;
     expect(WORKER_LEASE_MS).toBeLessThan(shortest + RUN_OVERRUN_MARGIN_MS);
-    expect(WORKER_POLL_MAX_MS).toBeLessThan(WORKER_LEASE_MS);
   });
 });
 
 describe('what an operator reads', () => {
-  it('counts the workers holding a live lease and the runs still waiting', async () => {
+  it('counts the workers driving a run and the runs still waiting, and stops counting a worker that finished', async () => {
     const f = fixture();
     f.queue('run_1', NOW);
     f.queue('run_2', NOW + 1);
-    expect(await workerLiveness(f.e.db, NOW)).toEqual({ workersAttached: 0, runsQueued: 2 });
-    await claimNextRun(f.e.serverEnv, { tokenId: await f.worker('mem_a'), machineId: 'm1', harnesses: OFFERED, now: NOW });
-    expect(await workerLiveness(f.e.db, NOW + 1)).toEqual({ workersAttached: 1, runsQueued: 1 });
-    // A lease nobody renews stops counting as an attached worker.
-    expect(await workerLiveness(f.e.db, NOW + WORKER_LEASE_MS + 1)).toEqual({ workersAttached: 0, runsQueued: 1 });
+    const ta = await f.worker('mem_a');
+    expect(await workerLiveness(f.e.db, NOW)).toEqual({ workersBusy: 0, runsQueued: 2 });
+    await claimNextRun(f.e.serverEnv, { tokenId: ta, machineId: 'm1', harnesses: OFFERED, now: NOW });
+    expect(await workerLiveness(f.e.db, NOW + 1)).toEqual({ workersBusy: 1, runsQueued: 1 });
+    // A lease nobody renews stops counting.
+    expect(await workerLiveness(f.e.db, NOW + WORKER_LEASE_MS + 1)).toEqual({ workersBusy: 0, runsQueued: 1 });
+  });
+
+  it('stops counting a worker the moment its run ends, rather than until the lease would have lapsed', async () => {
+    const f = fixture();
+    f.queue('run_1', NOW);
+    const ta = await f.worker('mem_a');
+    await claimNextRun(f.e.serverEnv, { tokenId: ta, machineId: 'm1', harnesses: OFFERED, now: NOW });
+    expect(await workerLiveness(f.e.db, NOW + 1)).toEqual({ workersBusy: 1, runsQueued: 0 });
+    expect(await endLeasedRun(f.e.serverEnv, { tokenId: ta, now: NOW + 2 }, { projectId: 'proj_1', runId: 'run_1', status: 'completed' }))
+      .toEqual({ ended: true });
+    expect(await workerLiveness(f.e.db, NOW + 3)).toEqual({ workersBusy: 0, runsQueued: 0 });
+    expect(f.row('run_1')).toMatchObject({ leasedBy: null, leaseExpiresAt: null });
   });
 });

@@ -78,14 +78,18 @@ export const TOKEN_ID_BYTES = 12;
 export const INSTRUCTIONS_TEMPLATE_MAX_BYTES = 4096;
 
 /**
- * The lease a worker holds on a run it claimed, and the cadence that renews it.
+ * The lease a worker holds on a run it claimed, the cadence that renews it, and
+ * how long a worker waits before asking for work again.
  *
- * The relation between the three is what the gate holds, not the values:
- * a lease survives three missed heartbeats, and expires strictly before the
+ * The relation is what the gate holds, not the values: a lease survives two
+ * missed renewals and lapses on the third, and expires strictly before the
  * shortest task budget plus its overrun margin, so a run's own budget and its
- * worker's liveness never answer the same question. The poll bound sits under
- * every platform's request ceiling.
+ * worker's liveness never answer the same question.
+ *
+ * The Deployment decides all three and tells a worker on every claim. A worker
+ * carries no cadence of its own, so changing one here changes what every
+ * attached worker does without shipping a binary.
  */
 export const WORKER_LEASE_MS = 90_000;
 export const WORKER_HEARTBEAT_MS = 30_000;
-export const WORKER_POLL_MAX_MS = 25_000;
+export const WORKER_POLL_IDLE_MS = 2_000;

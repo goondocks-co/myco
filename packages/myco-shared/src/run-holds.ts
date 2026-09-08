@@ -1,10 +1,11 @@
 /**
  * What can hold a queued run, and each in the reader's words.
  *
- * This module imports nothing. The dashboard renders these words and the core
- * decides them, so they live where both can read them without the dashboard
- * compiling the core — the same shape `core/skill-types.ts` and
- * `read/search-types.ts` take for the same reason.
+ * A value both the server and the dashboard read at RUNTIME, so it lives in the
+ * shared package rather than in either. The dashboard's build stage carries this
+ * package whole; it carries the server's own source only by a hand-listed file,
+ * so a runtime import reaching into the server cannot resolve in the container
+ * image. A type-only import can, having been erased before the bundler looks.
  *
  * Three are limits an owner sets, one is the size of what the operator
  * deployed, `runtime` is a runtime that will not take a run at this instant,

@@ -7,9 +7,9 @@
  * runs, never whether.
  */
 import type { RelationalStore } from './adapters.js';
-import { HELD_BY_WORDS, type HeldBy } from './run-holds.js';
+import { HELD_BY_WORDS, type HeldBy } from '@goondocks/myco-shared/run-holds';
 
-export { HELD_BY_WORDS, heldByWords, type HeldBy } from './run-holds.js';
+export { HELD_BY_WORDS, heldByWords, type HeldBy } from '@goondocks/myco-shared/run-holds';
 import { leafValues } from './settings.js';
 
 

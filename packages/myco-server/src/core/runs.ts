@@ -97,6 +97,9 @@ export interface StateRow {
   updatedAt: number;
 }
 
+/** A run a dispatch has written and no runtime has taken: what the launch path's own claim moves. */
+export const UNCLAIMED_RUN_STATUSES = "status IN ('pending', 'queued')";
+
 const CLAIM_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, instruction, harness, provider, model, status, dry_run, started_at, run_context, dispatched_by)
   SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?
@@ -122,7 +125,7 @@ const CLAIM_SQL = `INSERT INTO agent_runs
 const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
    SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?),
        started_at = COALESCE(started_at, ?), held_by = NULL
- WHERE project_id = ? AND id = ? AND status IN ('pending', 'queued') AND dispatched_by = ?`;
+ WHERE project_id = ? AND id = ? AND ${UNCLAIMED_RUN_STATUSES} AND dispatched_by = ?`;
 
 /**
  * The one exclusion rule: a run is never counted by a limit it is itself being
@@ -159,6 +162,7 @@ export const LIVE_RUN_STATUSES = "status IN ('pending', 'running')";
  * of a run that is merely waiting for another worker to take it.
  */
 export const IN_FLIGHT_RUN_STATUSES = "status IN ('pending', 'running', 'queued')";
+
 
 /**
  * The limit check, as part of the write that launches: each limit is either
@@ -1062,17 +1066,38 @@ export async function claimQueuedRun(
   db: RelationalStore,
   candidate: ClaimCandidate,
   claim: { dispatchedBy: string; leasedBy: string; leaseExpiresAt: number; harness: string; now: number },
+  admission: WriteAdmission,
 ): Promise<ClaimedRunRow | null> {
   const { results } = await db.prepare(
     `UPDATE agent_runs
         SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, lease_expires_at = ?, harness = ?, held_by = NULL
-      WHERE project_id = ? AND id = ? AND status = 'queued' AND dispatched_by IS NULL
+      WHERE project_id = ? AND id = ? AND status = 'queued' AND dispatched_by IS NULL${ADMISSION_WHERE}
       RETURNING project_id AS projectId, id, task, instruction, run_context AS runContext, dry_run AS dryRun`,
   ).bind(
     claim.now, claim.dispatchedBy, claim.leasedBy, claim.leaseExpiresAt, claim.harness,
     candidate.projectId, candidate.id,
+    ...admissionParams({ projectId: candidate.projectId }, candidate.task, candidate.id, admission),
   ).all<ClaimedRunRow>();
   return results[0] ?? null;
+}
+
+/**
+ * Release the lease a finished run held.
+ *
+ * Separate from the terminal write, and deliberately not a run-update column: a
+ * run writes its own outcome through that surface and must not be able to hand
+ * its lease to nobody. The lease is the worker's and the release is the
+ * Deployment's.
+ */
+export async function clearLease(db: RelationalStore, scope: ReadScope, runId: string): Promise<void> {
+  await db.prepare(`UPDATE agent_runs SET leased_by = NULL, lease_expires_at = NULL WHERE project_id = ? AND id = ?`)
+    .bind(scope.projectId, runId).run();
+}
+
+/** Record what holds a queued run, so an operator reads the wait on the run rather than inferring it. */
+export async function recordQueueHolder(db: RelationalStore, scope: ReadScope, runId: string, heldBy: string): Promise<void> {
+  await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE project_id = ? AND id = ? AND status = 'queued'`)
+    .bind(heldBy, scope.projectId, runId).run();
 }
 
 /** The prompt a claim rebuilt, and the hash and counts the server filed it under, onto the row a worker now holds. */
@@ -1095,12 +1120,17 @@ export async function renewRunLease(
   return result.meta.changes === 1;
 }
 
-/** Every run whose lease has lapsed, with the credential each still names, so the release can retire what the row held. */
+/**
+ * Every run whose lease has lapsed, with the credential each still names, so the
+ * release can retire what the row held. Unordered on purpose: expiry is not a
+ * queue and every row read here is requeued, so an order would buy a sort over
+ * the running rows and change nothing.
+ */
 export async function lapsedLeases(db: RelationalStore, now: number, limit: number): Promise<Array<{ projectId: string; id: string; leasedBy: string; dispatchedBy: string | null }>> {
   const { results } = await db.prepare(
     `SELECT project_id AS projectId, id, leased_by AS leasedBy, dispatched_by AS dispatchedBy FROM agent_runs
       WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
-      ORDER BY lease_expires_at LIMIT ?`,
+      LIMIT ?`,
   ).bind(now, limit).all<{ projectId: string; id: string; leasedBy: string; dispatchedBy: string | null }>();
   return results;
 }
@@ -1122,14 +1152,23 @@ export async function requeueLapsedLease(db: RelationalStore, scope: ReadScope, 
   return result.meta.changes === 1;
 }
 
-/** How many workers hold a live lease, and how many runs wait to be claimed: what an operator reads to know a Deployment can run tasks. */
-export async function workerLiveness(db: RelationalStore, now: number): Promise<{ workersAttached: number; runsQueued: number }> {
+/**
+ * How many workers hold a run right now, and how many runs wait for one.
+ *
+ * A lease is a fact about a BUSY worker, so this counts what is being driven
+ * and what is waiting — the pair that tells an operator whether the queue is
+ * moving. It cannot see a worker that is attached and idle: nothing a claim
+ * writes survives an answer of "no work", so an idle worker and no worker read
+ * alike. Telling those apart needs a last-seen the claim poll writes, which is
+ * a column this schema does not have.
+ */
+export async function workerLiveness(db: RelationalStore, now: number): Promise<{ workersBusy: number; runsQueued: number }> {
   const row = await db.prepare(
     `SELECT
-       (SELECT COUNT(DISTINCT leased_by) FROM agent_runs WHERE leased_by IS NOT NULL AND lease_expires_at > ?) AS workersAttached,
+       (SELECT COUNT(DISTINCT leased_by) FROM agent_runs WHERE status = 'running' AND lease_expires_at > ?) AS workersBusy,
        (SELECT COUNT(*) FROM agent_runs WHERE status = 'queued') AS runsQueued`,
-  ).bind(now).first<{ workersAttached: number; runsQueued: number }>();
-  return { workersAttached: Number(row?.workersAttached ?? 0), runsQueued: Number(row?.runsQueued ?? 0) };
+  ).bind(now).first<{ workersBusy: number; runsQueued: number }>();
+  return { workersBusy: Number(row?.workersBusy ?? 0), runsQueued: Number(row?.runsQueued ?? 0) };
 }
 
 export async function hasQueuedRun(db: RelationalStore): Promise<boolean> {

@@ -25,11 +25,12 @@ import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { WORKER_LEASE_MS } from '../constants.js';
 import { emit } from '../telemetry.js';
-import { claimQueuedRun, lapsedLeases, nextClaimable, recordClaimedInput, renewRunLease, requeueLapsedLease, type ClaimedRunRow } from './runs.js';
+import { claimQueuedRun, clearLease, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, renewRunLease, requeueLapsedLease, type ClaimedRunRow } from './runs.js';
 import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openProviderCredential } from './provider-credentials.js';
 import { leafValues } from './settings.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
+import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
 import { buildTaskInput } from './task-inputs.js';
 
@@ -784,20 +785,6 @@ export interface OfferedHarness {
   authenticated: boolean;
 }
 
-/**
- * The Deployment credential each harness reads, and the variable it reads it
- * under. One rule decides the Anthropic variable for both the launch path and
- * the claim: a subscription token and an API key are the same slot and
- * different names, and the value says which.
- */
-const HARNESS_SECRET: Readonly<Record<string, 'anthropic' | 'openai'>> = {
-  'claude-code': 'anthropic',
-  codex: 'openai',
-  opencode: 'anthropic',
-  cursor: 'anthropic',
-  antigravity: 'openai',
-};
-
 /** What a claim answers a worker: the run, the harness chosen for it, and the credentials it runs under. */
 export interface ClaimedRun extends ClaimedRunRow {
   harness: string;
@@ -809,7 +796,7 @@ export interface ClaimedRun extends ClaimedRunRow {
 
 export type ClaimOutcome =
   | { claimed: true; run: ClaimedRun }
-  | { claimed: false; reason: 'no_work' | 'no_harness' | 'lost_race' };
+  | { claimed: false; reason: 'no_work' | 'no_harness' | 'lost_race' | 'at_limit' };
 
 /**
  * Which harness runs this task: the Deployment's preference and fallback order,
@@ -848,12 +835,21 @@ async function harnessPreference(env: ServerEnv, task: string): Promise<{ prefer
  * and this is what the Deployment injects per run.
  */
 async function harnessCredentialEnv(env: ServerEnv, harness: string): Promise<Record<string, string>> {
-  const slot = HARNESS_SECRET[harness];
-  if (slot === undefined) return {};
-  const key = await openProviderCredential(env.db, env.wrappingKey, slot);
+  const declared = HARNESS_CREDENTIALS[harness];
+  if (declared === undefined) return {};
+  // Only the chosen harness's own provider is opened. A claim answering every
+  // key the Deployment holds would widen what one answer discloses to every
+  // provider at once, for keys the run cannot use.
+  if (declared.provider === 'google') return {};
+  const key = await openProviderCredential(env.db, env.wrappingKey, declared.provider);
   if (key === null) return {};
-  if (slot === 'openai') return { OPENAI_API_KEY: key };
-  return { [key.startsWith(SUBSCRIPTION_TOKEN_PREFIX) ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY']: key };
+  // One rule decides the Anthropic variable on both paths: a subscription token
+  // and an API key are the same slot under different names, and the value says
+  // which. A harness declaring one variable takes it.
+  const variable = declared.variables.length === 1
+    ? declared.variables[0]!
+    : (key.startsWith(SUBSCRIPTION_TOKEN_PREFIX) ? declared.variables[0]! : declared.variables[1]!);
+  return { [variable]: key };
 }
 
 /**
@@ -895,12 +891,19 @@ export async function claimNextRun(
   await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: harness, model: null, enabled: true }, worker.now);
   const minted = await issueMemberToken(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, worker.now);
 
+  // The claim carries the same admission the launch does, in the write. A run
+  // held by a limit stays queued with that limit recorded on it, and two
+  // workers deciding at once cannot both pass a limit of one.
+  const limits = await readDispatchLimits(env);
   const row = await claimQueuedRun(env.db, candidate, {
     dispatchedBy: minted.tokenId, leasedBy: worker.tokenId, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, now: worker.now,
-  });
+  }, { limits, now: worker.now });
   if (row === null) {
     await retireDispatchCredential(env, minted.tokenId, worker.now);
-    return { claimed: false, reason: 'lost_race' };
+    const held = await admitDispatch(env, candidate.task, worker.now, limits, candidate.id);
+    if (held === null) return { claimed: false, reason: 'lost_race' };
+    await recordQueueHolder(env.db, scope, candidate.id, held);
+    return { claimed: false, reason: 'at_limit' };
   }
   if (built !== null && !built.unchanged) await recordClaimedInput(env.db, scope, row.id, built.input);
 
@@ -951,6 +954,9 @@ export async function endLeasedRun(
     ...(run.error === undefined || run.error === null ? {} : { error: run.error.slice(0, MAX_RUN_ERROR_CHARS) }),
   });
   if (changed === 0) return { ended: false, reason: 'the run had already ended' };
+  // The lease goes with the run: a worker that has finished holds nothing, and
+  // a lease left behind reports it busy until the lease would have lapsed.
+  await clearLease(env.db, scope, run.runId);
   await retireDispatchCredential(env, row.dispatchedBy, worker.now);
   emit({ kind: 'worker_ended', runId: run.runId, projectId: run.projectId, status: run.status, tokenId: worker.tokenId });
   return { ended: true };

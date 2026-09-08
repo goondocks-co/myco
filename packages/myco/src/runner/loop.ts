@@ -27,6 +27,7 @@ interface ClaimedRun {
   harness: string;
   runToken: string;
   credentialEnv: Record<string, string>;
+  /** The run's own budget, as the Deployment decided it. The worker records it; the Deployment enforces it through the sweep. */
   timeoutSeconds: number;
 }
 
@@ -38,7 +39,7 @@ export interface WorkerOptions {
   only?: readonly string[];
   /** Stop after one run rather than polling forever. */
   once?: boolean;
-  heartbeatMs: number;
+  /** What a worker waits when the Deployment says nothing about it. Every answer carries the Deployment's own cadence, which is what a worker actually keeps. */
   pollIdleMs: number;
   log: (line: string) => void;
   fetchImpl?: typeof fetch;
@@ -61,6 +62,14 @@ async function post(options: WorkerOptions, path: string, body: unknown): Promis
   }
 }
 
+/** What the Deployment said, when it said a positive number; the fallback otherwise. */
+function waitOf(told: unknown, fallback: number): number {
+  return typeof told === 'number' && Number.isFinite(told) && told > 0 ? told : fallback;
+}
+
+/** What a worker keeps only until a Deployment tells it otherwise, which is on its first answer. */
+const DEFAULT_HEARTBEAT_MS = 30_000;
+
 const asRun = (value: unknown): ClaimedRun | null =>
   (value !== null && typeof value === 'object' && typeof (value as ClaimedRun).id === 'string' ? value as ClaimedRun : null);
 
@@ -72,7 +81,7 @@ const asRun = (value: unknown): ClaimedRun | null =>
  * writes it can see; nothing here reads the harness's own account of its
  * success.
  */
-async function drive(options: WorkerOptions, run: ClaimedRun): Promise<{ status: 'completed' | 'failed'; error: string | null }> {
+async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: number): Promise<{ status: 'completed' | 'failed' | 'lost'; error: string | null }> {
   const driver = driverFor(run.harness);
   if (driver === null) return { status: 'failed', error: `no driver serves the harness ${run.harness}` };
 
@@ -92,7 +101,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun): Promise<{ status:
       options.log(`lease lost on ${run.id}; another worker holds it`);
       stopping.abort();
     });
-  }, options.heartbeatMs);
+  }, heartbeatMs);
 
   const events: RunEvent[] = [];
   try {
@@ -101,7 +110,6 @@ async function drive(options: WorkerOptions, run: ClaimedRun): Promise<{ status:
       scratchDir,
       mcpConfigPath,
       credentialEnv: run.credentialEnv,
-      timeoutSeconds: run.timeoutSeconds,
     }, stopping.signal)) {
       events.push(event);
       if (event.kind === 'ended') options.log(`run ${run.id} ended ${event.stop}`);
@@ -114,7 +122,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun): Promise<{ status:
     discardRunDir(scratchDir);
   }
 
-  if (lost) return { status: 'failed', error: null };
+  if (lost) return { status: 'lost', error: null };
   const last = events.at(-1);
   if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: 'the harness wrote no ending' };
   return last.stop === 'end_turn'
@@ -135,13 +143,20 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
     const answer = await post(options, '/worker/claim', { harnesses });
     if (answer === null) { await sleep(options.pollIdleMs, options.signal); continue; }
     if (answer.persisted === false) { options.log(`the Deployment refused the claim: ${String(answer.code)}`); return driven; }
-    if (answer.claimed !== true) { await sleep(options.pollIdleMs, options.signal); continue; }
+    if (answer.claimed !== true) { await sleep(waitOf(answer.pollAfterMs, options.pollIdleMs), options.signal); continue; }
 
     const run = asRun(answer.run);
     if (run === null) { await sleep(options.pollIdleMs, options.signal); continue; }
-    options.log(`claimed ${run.id} (${run.task}) on ${run.harness}`);
-    const outcome = await drive(options, run);
-    await post(options, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error });
+    options.log(`claimed ${run.id} (${run.task}) on ${run.harness}, budget ${run.timeoutSeconds}s`);
+    // The cadence is the Deployment's, carried on the claim it answered.
+    const outcome = await drive(options, run, waitOf(answer.heartbeatMs, DEFAULT_HEARTBEAT_MS));
+    // A worker that lost its lease writes nothing: the run belongs to whoever
+    // holds it now, and a late outcome would be one worker reporting on
+    // another's run. The Deployment refuses such a write anyway; not making it
+    // is what keeps the two accounts of a run from disagreeing.
+    if (outcome.status !== 'lost') {
+      await post(options, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error });
+    }
     driven += 1;
     if (options.once === true) return driven;
   }
