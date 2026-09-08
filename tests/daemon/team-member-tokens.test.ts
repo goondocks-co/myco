@@ -27,7 +27,7 @@ import {
 import { createAuthThrottle } from '@myco/team-host/auth-throttle';
 import { getMachineId } from '@myco/machine-id';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
-import { teamFetch, teamTestPort } from '../helpers/team-socket.js';
+import { boundTeamPort, teamFetch } from '../helpers/team-socket.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
 const HOST_BEARER = 'the-shared-host-bearer-nobody-should-accept';
@@ -73,12 +73,10 @@ describeTeamTransport('per-member tokens on the team listener', () => {
 
     handlerCalls = 0;
     resolvedMachineIds = [];
-    teamPort = teamTestPort();
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
-      teamPort: teamPort,
       hostServe: { bearer: HOST_BEARER, hostId: 'hostid-abc', label: 'host', servedGroveId: servedGrove.id },
       lockNamespace: testPerUserLockNamespace,
       onRequestContext: (ctx) => { resolvedMachineIds.push(ctx.machineId); },
@@ -88,6 +86,7 @@ describeTeamTransport('per-member tokens on the team listener', () => {
       return { body: { ok: true } };
     });
     await server.start(0);
+    teamPort = boundTeamPort(server);
   });
 
   afterEach(async () => {

@@ -48,7 +48,7 @@ import { assertGroveProjectId, createProjectId, createHostId } from '@myco/grove
 import { createHostRegistryOperations, type HostRecord } from '@myco/host/registry.js';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
 import { getMachineId } from '@myco/machine-id.js';
-import { teamFetch, teamTestPort } from '../helpers/team-socket.js';
+import { boundTeamPort, teamFetch } from '../helpers/team-socket.js';
 import { HOST_BEARER_SECRET, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { CANONICAL_PROJECT_SKILLS_DIR } from '@myco/skills/publication.js';
@@ -168,7 +168,6 @@ let memberToken: string;
 
     // --- host daemon: real overlay listener, real content-claim + skill-record routes ---
     const hostLogger = new DaemonLogger(path.join(tmp, 'host-logs'));
-    teamPort = teamTestPort();
     hostServer = new DaemonServer({
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
       logger: hostLogger,
@@ -178,7 +177,6 @@ let memberToken: string;
       // required since Task 2's servedGroveRefusal fail-closed filter now
       // refuses every overlay request when the designation is absent, even
       // one naming a real, owned Grove.
-      teamPort: teamPort,
       hostServe: { bearer: HOST_BEARER, servedGroveId: grove.id },
     });
     registerContentClaimRoutes(hostServer, { machineId: 'host-machine', logger: hostLogger });
@@ -207,6 +205,7 @@ let memberToken: string;
       lockNamespace: testPerUserLockNamespace,
     });
     await hostServer.start(0);
+    teamPort = boundTeamPort(hostServer);
     // The public edge in front of the host's socket: the member dials THIS,
     // over real TLS, through the production dialer.
     edge = await startFunnelEdge({ port: teamPort });
