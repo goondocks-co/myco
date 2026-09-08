@@ -18,14 +18,15 @@ import { NO_DIGEST_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
 import { FIRST_MODERN_REVISION, SERVED_PROTOCOL_VERSIONS } from '@myco-server-worker/mcp/server.js';
 import { issueExternalGrant, revokeExternalGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
-import { EXTERNAL_TOOLS, externalDefinitions } from '@myco-server-worker/mcp/external.js';
+import { EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
 import { grantToolContext, memberOf } from '@myco-server-worker/mcp/context.js';
 import { handlePlans } from '@myco-server-worker/mcp/tools/plans.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
-import { NO_OP, TOOL_REGISTRY } from '@myco-server-worker/mcp/registry.js';
+import type { ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
+import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { NO_LIVE_RUN, RUN_PROJECT_MISMATCH, RUN_SCOPE } from '@myco-server-worker/pipeline.js';
 import { envelope, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
@@ -371,7 +372,7 @@ async function grantSetup(opts: Parameters<typeof sqliteEnv>[0] = {}) {
 }
 
 describe('POST /mcp over an External Agent grant', () => {
-  it('lists the six read-only tools as the member side declares them, and answers every allowlisted op in the member-side shape', async () => {
+  it('lists the six tools as the member side declares them, narrowed to the ops it answers, and answers every allowlisted read in the member-side shape', async () => {
     const { env, db, grant, callAs, memberCall } = await grantSetup();
     const listed = await (await worker.fetch(grantRequest(grant.key, rpc('tools/list')), env)).json() as any;
     expect(listed.result.tools.map((t: any) => t.name).sort()).toEqual([...EXTERNAL_TOOLS].sort());
@@ -396,13 +397,25 @@ describe('POST /mcp over an External Agent grant', () => {
     const { grant, callAs } = await grantSetup();
     const unknown = await callAs(grant.key, 'myco_nope');
     expect({ status: unknown.status, error: unknown.error }).toEqual({ status: 200, error: { code: -32000, message: 'Unknown tool: myco_nope', data: { code: 'unknown_tool' } } });
-    const refused: Array<[string, Record<string, unknown>]> = [
-      ['myco_spores', { op: 'save', type: 'gotcha', content: 'x' }], ['myco_spores', { op: 'supersede', old_spore_id: 'a', new_spore_id: 'b' }],
-      ['myco_spores', { op: 'consolidate' }], ['myco_spores', { op: 'obsolete', id: 'a', reason: 'r' }],
-      ['myco_plans', { op: 'save', content: 'x', session_id: 's', plan_key: 'k' }], ['myco_plans', { op: 'delete', id: 'x' }],
-      ['myco_cortex', { op: 'instructions' }], ['myco_cortex', { op: 'projects_activity' }], ['myco_cortex', { op: 'canopy_map' }],
-      ['myco_agent', { op: 'runs' }], ['myco_agent', {}], ['myco_sessions', { op: 'purge' }], ['myco_plans', { op: '' }],
-    ];
+    // The refusals are the registry minus the surface, enumerated rather than
+    // listed: an op added to a tool is refused here from the moment it exists,
+    // and an op added to the surface leaves this list by the same edit.
+    const refused: Array<[string, Record<string, unknown>]> = [];
+    for (const [tool, entry] of Object.entries(TOOL_REGISTRY)) {
+      for (const op of Object.keys(entry.ops)) {
+        const args = op === NO_OP ? {} : { op };
+        if (isExternalCall(tool as ServedTool, opOf(tool as ServedTool, args))) continue;
+        refused.push([tool, args]);
+      }
+    }
+    refused.push(['myco_plans', { op: '' }]);
+    const named = refused.map(([tool, args]) => `${tool}:${args.op ?? ''}`);
+    expect(named).toContain('myco_spores:consolidate');
+    expect(named).toContain('myco_spores:obsolete');
+    expect(named).toContain('myco_plans:save');
+    expect(named).toContain('myco_agent:runs');
+    expect(named).not.toContain('myco_spores:save');
+    expect(named).not.toContain('myco_spores:supersede');
     for (const [name, args] of refused) {
       const res = await callAs(grant.key, name, args);
       expect({ name, args, status: res.status, error: res.error }).toEqual({ name, args, status: 200, error: { ...unknown.error, message: `Unknown tool: ${name}` } });
@@ -425,7 +438,7 @@ describe('POST /mcp over an External Agent grant', () => {
     expect((await memberCall('myco_spores', { op: 'list' }, { [PROJECT_HEADER]: 'proj_2' })).result.total).toBe(0);
   });
 
-  it('records use once per interval, keys the limiter on the grant id, never charges the source bucket, and issues no write but that record on any allowlisted call', async () => {
+  it('records use once per interval, keys the limiter on the grant id, never charges the source bucket, and issues no write but that record on any allowlisted read', async () => {
     const { db, grant, callAs, memberCall, lastUsed, tokenKeys, sourceKeys, executed } = await grantSetup();
     const spore = (await memberCall('myco_spores', { op: 'save', type: 'gotcha', content: 'seed' })).result.id as string;
     const plan = (await memberCall('myco_plans', { op: 'save', content: '# p', session_id: 'sess-seed', plan_key: 'seed' })).result;

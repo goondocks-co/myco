@@ -304,8 +304,8 @@ describe('access administration agrees on both stores', () => {
       const foreign = await rotateExternalGrant(t.env.db, { projectId: 'proj_2' }, rotated!.id, 'mem_machine_1', now + 2);
       outcomes.push({
         revoked, afterRevoke,
-        oldKey: await authenticateGrant(t.env.db, await sha256Hex(grant.key)),
-        newKey: (await authenticateGrant(t.env.db, await sha256Hex(rotated!.key)))?.projectId,
+        oldKey: await authenticateGrant(t.env.db, await sha256Hex(grant.key), now + 3),
+        newKey: (await authenticateGrant(t.env.db, await sha256Hex(rotated!.key), now + 3))?.projectId,
         foreign,
         stillLive: (await authenticateServerMemberToken(t.env.db, await sha256Hex(token), now + 1)) !== null,
       });

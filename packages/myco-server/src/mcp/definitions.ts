@@ -508,6 +508,18 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           },
           "description": "Tags for discoverability — component names, technologies, concepts"
         },
+        "provenance_kind": {
+          "type": "string",
+          "enum": [
+            "pr",
+            "commit"
+          ],
+          "description": "What a write with no session cites instead, for op: \"save\" and \"supersede\". Give with provenance_ref."
+        },
+        "provenance_ref": {
+          "type": "string",
+          "description": "The pull request URL for provenance_kind: \"pr\", or the commit sha for \"commit\". Give with provenance_kind."
+        },
         "project_id": {
           "type": "string",
           "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."

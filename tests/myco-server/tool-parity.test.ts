@@ -25,7 +25,28 @@ import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 const EXCEPTED = 'project_id';
 const RETIRED = 'grove_id';
 /** Properties the Deployment serves beyond the member definition, by tool: each is a named difference, worded in the server definition. */
-const ADDED: Record<string, readonly string[]> = { myco_plans: ['prompt_id'], myco_search: ['mode', 'session_id'] };
+const ADDED: Record<string, readonly string[]> = {
+  myco_plans: ['prompt_id'], myco_search: ['mode', 'session_id'],
+  // #1149: what a grant's write cites in place of the session it has none of.
+  myco_spores: ['provenance_kind', 'provenance_ref'],
+};
+
+/**
+ * The (tool, op) pairs the Deployment's external surface serves and the member
+ * side does not, each named with the child that added it.
+ *
+ * The gate stays two-directional across this: the server allowlist must equal
+ * the member's plus exactly these pairs. A server entry missing from both
+ * fails, and an entry named here that the server does not serve fails too, so
+ * neither surface can drift in either direction unnoticed.
+ *
+ * #1149: an External Agent grant records what it found. The member-side
+ * surface (`packages/myco/src/mcp/external-surface.ts`) narrows the 1.4
+ * daemon's own listener, which is not edited before the #1170 sweep.
+ */
+const SERVER_ONLY_EXTERNAL_CALLS: Readonly<Record<string, readonly string[]>> = {
+  myco_spores: ['save', 'supersede'],
+};
 
 const byName = <T extends { name: string }>(defs: readonly T[]): Map<string, T> => new Map(defs.map((d) => [d.name, d]));
 
@@ -90,7 +111,16 @@ describe('tool parity', () => {
 
   it('serves the external surface the member side declares: the same (tool, op) allowlist, every entry a registry key, and the listed definitions exactly the allowlisted names', () => {
     const entries = (list: Readonly<Record<string, ReadonlySet<string>>>) => Object.entries(list).map(([tool, ops]) => [tool, [...ops].sort()]).sort();
-    expect(entries(EXTERNAL_TOOL_ALLOWLIST)).toEqual(entries(MEMBER_ALLOWLIST));
+    const withServerOnly = Object.fromEntries(Object.entries(MEMBER_ALLOWLIST).map(
+      ([tool, ops]) => [tool, new Set([...ops, ...(SERVER_ONLY_EXTERNAL_CALLS[tool] ?? [])])],
+    ));
+    expect(entries(EXTERNAL_TOOL_ALLOWLIST)).toEqual(entries(withServerOnly));
+    for (const [tool, ops] of Object.entries(SERVER_ONLY_EXTERNAL_CALLS)) {
+      for (const op of ops) {
+        expect({ tool, op, server: EXTERNAL_TOOL_ALLOWLIST[tool]?.has(op) ?? false, member: MEMBER_ALLOWLIST[tool]?.has(op) ?? false })
+          .toEqual({ tool, op, server: true, member: false });
+      }
+    }
     for (const [tool, ops] of Object.entries(EXTERNAL_TOOL_ALLOWLIST)) {
       expect({ tool, served: (SERVED_TOOLS as readonly string[]).includes(tool) }).toEqual({ tool, served: true });
       const entry = TOOL_REGISTRY[tool as ServedTool];
@@ -124,7 +154,11 @@ describe('tool parity', () => {
       ['myco_cortex', { op: 'canopy_entry' }], ['myco_cortex', { op: 'notifications' }],
       ['myco_agent', { op: 'runs' }], ['myco_agent', {}], ['myco_sessions', { op: 'purge' }], ['myco_plans', { op: 5 }],
     ];
-    for (const [tool, args] of table) expect({ tool, args, server: judged(tool, args) }).toEqual({ tool, args, server: isAllowedExternalCall(tool, args) });
+    const serverOnly = (tool: ServedTool, args: Record<string, unknown>) => (SERVER_ONLY_EXTERNAL_CALLS[tool] ?? []).includes(opOf(tool, args));
+    for (const [tool, args] of table) {
+      expect({ tool, args, server: judged(tool, args) })
+        .toEqual({ tool, args, server: serverOnly(tool, args) ? true : isAllowedExternalCall(tool, args) });
+    }
     expect({ server: judged('myco_plans', { op: '' }), member: isAllowedExternalCall('myco_plans', { op: '' }) }).toEqual({ server: false, member: true });
   });
 
