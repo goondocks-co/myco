@@ -181,7 +181,7 @@ export async function unarchiveProject(db: RelationalStore, projectId: string): 
   return (await projectExists(db, projectId)) ? 'not_archived' : 'absent';
 }
 
-/** A project's sessions, most recently started first, over `idx_sessions_recent`. The key is `first_received_at` paired with `session_id`: a keyset page must order by a column no later write moves, or an actively capturing session slips above the cursor between two pages and appears on neither. */
+/** A project's sessions, most recently started first. The key is `first_received_at` paired with `session_id`: a keyset page must order by a column no later write moves, or an actively capturing session slips above the cursor between two pages and appears on neither. */
 export interface SessionFilters {
   branch?: string;
   /** Sessions started at or after this instant (ms). */
