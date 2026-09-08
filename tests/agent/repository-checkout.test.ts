@@ -128,7 +128,7 @@ describe('code task runner', () => {
     const fixture = sqliteEnv();
     fixture.env.SECRET_WRAP_KEY = { get: async () => btoa('r'.repeat(32)) };
     const now = Date.now();
-    await ensureMember(fixture.db, 'mem_harness', now, 'harness');
+    await ensureMember(fixture.db, 'mem_harness', now, 'member', 'harness');
     const minted = await issueMemberToken(fixture.db, { memberId: 'mem_harness', machineId: 'machine_1' }, now);
     fixture.sqlite.query("INSERT INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by) VALUES ('proj_1','skills',1,1,'test')").run();
     await projectRepositories(fixture.db, deploymentSecretStore(fixture.db, fixture.serverEnv.wrappingKey)).save('proj_1', {

@@ -166,7 +166,7 @@ export async function scopeOf(ctx: ToolContext, input: ToolInput): Promise<ReadS
   if (ctx.principal.kind !== 'member') return { projectId: ctx.projectId };
   const named = input.project_id;
   if (typeof named !== 'string' || named.length === 0) return { projectId: ctx.projectId };
-  return resolveProjectScope(ctx.env.db, { id: ctx.principal.memberId, label: null }, named);
+  return resolveProjectScope(ctx.env.db, { id: ctx.principal.memberId, label: null, role: 'member' }, named);
 }
 
 /** The arguments without the pivot key, so no handler forwards it as a filter. */

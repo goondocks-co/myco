@@ -1,5 +1,5 @@
 import type { ErrorClassifier, ServerEnv } from './core/adapters.js';
-import { stampOwnerRequest } from './core/activity.js';
+import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
 import { heldRunOfCredential } from './api/run-admission.js';
@@ -239,6 +239,8 @@ export function createServer(deps: ServerDeps) {
       const bounded = await boundedRequest(request, bodyBound);
       if (bounded === null) return refuseOversized(bodyBound);
       try {
+        // A join leaves no session and no run, so the clock the tick reads sees it only here.
+        await stampRequest(env.db, now);
         return await matched.route.handler(env, bounded, now);
       } catch (err) {
         emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
@@ -272,7 +274,7 @@ export function createServer(deps: ServerDeps) {
           return await matched.route.handler(env, { ...context, member });
         }
         if (member === null) return anonymous();
-        await stampOwnerRequest(env.db, now);
+        await stampRequest(env.db, now);
         return await matched.route.handler(env, { ...context, member });
       } catch (err) {
         emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });

@@ -5,6 +5,8 @@ import { sha256Hex } from '../hash.js';
 import { heldBytes, TOKEN_LIVE } from '../ingest/quota.js';
 import { emit, SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
 import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
+import { isAdmin } from './roles.js';
+import type { DashboardMember } from './identity-link.js';
 
 export const MEMBER_TOKEN_BYTES = 32;
 export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -140,9 +142,20 @@ export function revokeCredentialStatement(db: RelationalStore, revokedBy: string
     .bind(nowMs, revokedBy, tokenId);
 }
 
+/**
+ * Revoke a credential as the member asking, at the reach their role gives them.
+ *
+ * An admin administers membership and reaches any credential of the Deployment.
+ * A member reaches only their own, which is what lets anyone end a laptop they
+ * have lost without also letting them end everybody else's capture. The two
+ * cases are the two statements above; this chooses between them and never
+ * widens either.
+ */
 export async function revokeCredentialAsMember(
-  db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number,
+  db: RelationalStore, actor: DashboardMember, tokenId: string, nowMs: number,
 ): Promise<{ revoked: boolean; revokedBy: string }> {
+  const revokedBy = actor.id;
+  if (!isAdmin(actor.role)) return { revoked: await revokeCredentialOfMember(db, revokedBy, tokenId, nowMs), revokedBy };
   const result = await revokeCredentialStatement(db, revokedBy, tokenId, nowMs).run();
   const revoked = result.meta.changes === 1;
   emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked });

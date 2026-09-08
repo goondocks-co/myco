@@ -39,7 +39,7 @@ if (args.includes('--grant')) {
     console.error(USAGE);
     process.exit(2);
   }
-  await ensureMember(db, memberId, now);
+  await ensureMember(db, memberId, now, 'admin');
   const issued = await issueMemberToken(db, { memberId, machineId }, now);
   console.log(`-- token_id ${issued.tokenId} expires_at ${issued.expiresAt}`);
   for (const statement of statements) console.log(`${statement};`);

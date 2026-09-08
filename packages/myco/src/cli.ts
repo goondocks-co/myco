@@ -40,6 +40,7 @@ Commands:
   attach <project> --host <h>   Route a project to a Team Host (going-forward)
   detach <project>         Clear a project's Team Host mapping (resolves local again)
   host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key|members|revoke)
+  login <invite-link>      Redeem an invite link and sign this machine in
   member <op>              2.0 member: join | leave | drain | status | refresh
   settings                 Print harness settings for a sandboxed agent (--harness <name> --project <id>)
   version                  Show plugin version
@@ -116,6 +117,7 @@ const DELEGATED_HELP: Record<string, () => Promise<string>> = {
   leave: async () => (await import('./cli/join.js')).LEAVE_HELP,
   host: async () => (await import('./cli/host.js')).HOST_HELP,
   member: async () => (await import('./cli/member.js')).MEMBER_HELP,
+  login: async () => (await import('./cli/login.js')).LOGIN_HELP,
   settings: async () => (await import('./cli/settings.js')).SETTINGS_HELP,
   server: async () => (await import('./cli/server.js')).SERVER_HELP,
 };
@@ -248,6 +250,10 @@ async function main(): Promise<void> {
   // 2.0 member operations — registry and spool under MYCO_HOME, never a project
   // vault, so they sit above the myco.yaml gate and work from any cwd.
   if (cmd === 'member') return (await import('./cli/member.js')).run(args);
+
+  // #1158: redeeming an invite link is the FIRST thing a machine does, before it
+  // has a vault, a config file or a project — so it sits above the myco.yaml gate.
+  if (cmd === 'login') { await (await import('./cli/login.js')).run(args); return; }
 
   // Self-hosted Deployment lifecycle — a Compose bundle under MYCO_HOME, no
   // project vault, so it sits above the myco.yaml gate and works from any cwd.

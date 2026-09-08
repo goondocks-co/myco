@@ -53,7 +53,7 @@ async function fixture(opts: { capability?: boolean } = {}) {
   setting('agent.provider.base_url', 'http://models.internal/v1');
   e.sqlite.run(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', ?, ?, 'test')`, [opts.capability === false ? 0 : 1, NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
-  await ensureMember(e.db, HARNESS_MEMBER_ID, NOW, 'harness runtime');
+  await ensureMember(e.db, HARNESS_MEMBER_ID, NOW, 'member', 'harness runtime');
   const minted = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, NOW);
 
   const call = async (path: string, body: unknown, token = minted.token) =>

@@ -12,7 +12,8 @@ import { readHookInput } from '../hooks/input.js';
 import type { NormalizedHookInput } from '../hooks/normalize.js';
 import { writeHookResponse, type HookResponse } from '../hooks/response.js';
 import { canStartRequest, clippedRequestBudget, resolveHookBudget, type HookBudget } from './budget.js';
-import { parseCredentialFlag, resolveCredential, type CredentialRecord, type CredentialSource } from './credential.js';
+import { parseCredentialFlag, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
+import { ensureJoinedFromCode } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
 import { refreshDue, refreshMemberCredential, refreshableRoot, rotatedCredential } from './refresh.js';
 import { applySpoolRetention } from './retention.js';
@@ -102,6 +103,11 @@ export async function runMemberHook(
 
     const argv = opts.argv ?? process.argv;
     const source = opts.credential === undefined ? parseCredentialFlag(argv) : opts.credential;
+    // A sandbox arrives holding a join code and nothing else; this turns it into a
+    // registry entry on disk so the resolve below finds a credential like any other
+    // run. The root is the one `resolveCredential` reads, so the entry it writes is
+    // the entry that resolve looks for.
+    await ensureJoinedFromCode({ fetch: opts.fetch as typeof fetch | undefined, root: resolveMemberProjectRoot() });
     const credential = resolveCredential(source);
     if (!credential) return;
 
