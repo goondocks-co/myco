@@ -15,6 +15,8 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_events_token_only', 'a credential\'s events are counted by token across its Projects'],
   ['idx_search_blob_pending', 'pending search work is ordered across the Deployment by its last attempt'],
   ['idx_transcripts_backlog', 'the transcript parse backlog is ordered across the Deployment, live before imported'],
+  ['idx_agent_runs_claimable', 'a worker claims the next queued run across the Deployment, in queue order'],
+  ['idx_agent_runs_lease', 'the lease foreign key is checked by credential alone, and worker liveness reads leases by the credential that holds them'],
 ]);
 
 /** True when `statement` creates one of the indexes above. */
