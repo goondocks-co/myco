@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "myco": {
+      "serverUrl": "${DEPLOYMENT_URL}/mcp"
+    }
+  }
+}

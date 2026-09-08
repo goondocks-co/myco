@@ -41,6 +41,12 @@ If you already have Node, you can install with npm instead. This is a thin boots
 npm install -g @goondocks/myco
 ```
 
+### Plugin only
+
+The plugin is the other half of the install and stands on its own. Install it from your agent's plugin marketplace, give it your deployment's URL and an access key, and you get the Myco skills and tools with no binary on the machine. Capture starts when the binary is installed too; the `/myco-setup` skill covers that step.
+
+The access key reaches one project, is minted by a deployment administrator, and expires after ninety days by default.
+
 ## Upgrade Existing Installs
 
 Myco keeps itself up to date **automatically** — the local service self-updates from the release channel in the background while it's idle. You can also trigger an upgrade from the **Upgrade** section of the dashboard's **Settings** page. There is nothing to run by hand and no `npm update` step.

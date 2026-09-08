@@ -1,0 +1,12 @@
+# Should not invoke the `myco-setup` skill.
+name: myco-setup-no-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  My tests are failing after I upgraded a dependency. Work out why.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-setup
+      negate: true
+    with_only: true

@@ -5,6 +5,7 @@
  * member-side tool answers.
  */
 import { describe, expect, it } from 'bun:test';
+import { SHIPPED_SKILLS } from '@goondocks/myco-shared/skills';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEADER } from '@myco-server-worker/constants.js';
@@ -13,7 +14,6 @@ import { opOf } from '@myco-server-worker/mcp/registry.js';
 import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';
 import { archiveProject } from '@myco-server-worker/read/sessions.js';
 import { upsertDigest } from '@myco-server-worker/core/digests.js';
-import { insertSkillRecord } from '@myco-server-worker/core/skills.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { validateInput } from '@myco-server-worker/mcp/validate.js';
@@ -323,12 +323,16 @@ describe('POST /mcp', () => {
   });
 
   it('reads skills and runs in the member-side shapes', async () => {
-    const { call, db, sqlite, t1 } = await setup();
-    await insertSkillRecord(db, { projectId: 'proj_1' }, { id: 'sk1', agentId: 'user', name: 'debug-capture', displayName: 'Debug capture', description: 'd', candidateId: null, sourceIds: '[]', path: 'skills/debug-capture/SKILL.md', createdAt: 5 });
+    const { call, sqlite, t1 } = await setup();
+    // Skills are the files the plugin ships, not rows: the answer is the same on
+    // a Deployment that has never stored anything, which is the state a fresh
+    // install is in when an agent makes its first call.
     const listed = (await call(t1.token, 'myco_skills')).result;
-    expect(listed.map((s: any) => [s.id, s.display_name, s.usage_count])).toEqual([['sk1', 'Debug capture', 0]]);
-    const got = (await call(t1.token, 'myco_skills', { op: 'get', id: 'debug-capture' })).result;
-    expect({ id: got.id, content: got.content }).toEqual({ id: 'sk1', content: null });
+    expect(listed.map((s: any) => s.name)).toEqual(SHIPPED_SKILLS.map((s) => s.name));
+    expect(listed.every((s: any) => s.description.length > 0 && s.content === undefined)).toBe(true);
+    const first = SHIPPED_SKILLS[0];
+    const got = (await call(t1.token, 'myco_skills', { op: 'get', id: first.name })).result;
+    expect({ name: got.name, content: got.content }).toEqual({ name: first.name, content: first.content });
     expect((await call(t1.token, 'myco_skills', { op: 'get', id: 'nope' })).result).toEqual({ ok: false, error: 'Skill not found' });
     expect((await call(t1.token, 'myco_agent')).result).toEqual({ ok: true, op: 'runs', data: { runs: [], cursor: null } });
     expect((await call(t1.token, 'myco_agent', { op: 'run', id: 'nope' })).result).toEqual({ ok: false, op: 'run', error: 'run not found' });
@@ -370,9 +374,13 @@ describe('POST /mcp', () => {
   });
 
   it('answers a storage failure inside a call as a retryable JSON-RPC error at 503', async () => {
-    const e = sqliteEnv({ onSql: (sql) => { if (/FROM skill_records/.test(sql)) throw new Error('storage is away'); } });
+    // Keyed on a tool whose default op reads storage. `myco_skills` answers from
+    // the shipped catalogue and issues no query, so a fault injected on its
+    // former table would never fire and this gate would pass while proving
+    // nothing.
+    const e = sqliteEnv({ onSql: (sql) => { if (/FROM sessions/.test(sql)) throw new Error('storage is away'); } });
     const t1 = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-    const res = await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_skills', arguments: {} })), e.env);
+    const res = await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_sessions', arguments: {} })), e.env);
     const body = await res.json() as any;
     expect({ status: res.status, retry: res.headers.get('retry-after') !== null, code: body.error?.data?.code }).toEqual({ status: 503, retry: true, code: 'unavailable' });
   });
@@ -417,7 +425,7 @@ describe('POST /mcp over an External Agent grant', () => {
     expect('author' in (await memberCall('myco_spores', { op: 'get', id: spores.result.spores[0].id })).result).toBe(true);
     expect((await callAs(grant.key, 'myco_plans', { op: 'list' })).result).toEqual([]);
     expect((await callAs(grant.key, 'myco_sessions', {})).result).toEqual([]);
-    expect((await callAs(grant.key, 'myco_skills', { op: 'list' })).result).toEqual([]);
+    expect((await callAs(grant.key, 'myco_skills', { op: 'list' })).result.map((s: any) => s.name)).toEqual(SHIPPED_SKILLS.map((s) => s.name));
     expect((await callAs(grant.key, 'myco_cortex', { op: 'instructions' })).result.content).toBe('the standing guidance');
     const search = await callAs(grant.key, 'myco_search', { query: 'seen' });
     expect(search.result.results).toMatchObject([{ type: 'spore', id: spores.result.spores[0].id }]);
@@ -472,7 +480,6 @@ describe('POST /mcp over an External Agent grant', () => {
     const { db, grant, callAs, memberCall, lastUsed, tokenKeys, sourceKeys, executed } = await grantSetup();
     const spore = (await memberCall('myco_spores', { op: 'save', type: 'gotcha', content: 'seed', project: 'proj_1' })).result.id as string;
     const plan = (await memberCall('myco_plans', { op: 'save', content: '# p', session_id: 'sess-seed', plan_key: 'seed', project: 'proj_1' })).result;
-    await insertSkillRecord(db, { projectId: 'proj_1' }, { id: 'skill-seed', agentId: 'user', name: 'seed', displayName: 'Seed', description: 'd', candidateId: null, sourceIds: '[]', path: 'skills/seed/SKILL.md', createdAt: 5 });
     await upsertDigest(db, { projectId: 'proj_1' }, { id: 'd-seed', agentId: 'user', tier: 5000, content: 'seed digest', substrateHash: null, generatedAt: 10 });
     const from = executed.length;
     const keysFrom = tokenKeys.length;
@@ -481,7 +488,7 @@ describe('POST /mcp over an External Agent grant', () => {
     expect(typeof first).toBe('number');
     const reads: Array<[string, Record<string, unknown>]> = [
       ['myco_sessions', {}], ['myco_skills', {}], ['myco_spores', {}], ['myco_cortex', {}], ['myco_search', { query: 'q' }],
-      ['myco_spores', { op: 'get', id: spore }], ['myco_plans', { op: 'get', id: plan.id }], ['myco_skills', { op: 'get', id: 'skill-seed' }], ['myco_sessions', { op: 'get', id: 'sess-seed' }], ['myco_cortex', { op: 'instructions' }],
+      ['myco_spores', { op: 'get', id: spore }], ['myco_plans', { op: 'get', id: plan.id }], ['myco_skills', { op: 'get', id: SHIPPED_SKILLS[0].name }], ['myco_sessions', { op: 'get', id: 'sess-seed' }], ['myco_cortex', { op: 'instructions' }],
     ];
     for (const [name, args] of reads) {
       const res = await callAs(grant.key, name, args);
@@ -527,8 +534,8 @@ describe('POST /mcp over an External Agent grant', () => {
     const original = console.log;
     console.log = (line: unknown) => { lines.push(String(line)); };
     try {
-      const faulty = await grantSetup({ onSql: (sql) => { if (/FROM skill_records/.test(sql)) throw new Error('storage is away'); } });
-      const fault = await worker.fetch(grantRequest(faulty.grant.key, rpc('tools/call', { name: 'myco_skills', arguments: {} })), faulty.env);
+      const faulty = await grantSetup({ onSql: (sql) => { if (/FROM sessions/.test(sql)) throw new Error('storage is away'); } });
+      const fault = await worker.fetch(grantRequest(faulty.grant.key, rpc('tools/call', { name: 'myco_sessions', arguments: {} })), faulty.env);
       expect({ status: fault.status, retry: fault.headers.get('retry-after') !== null, code: ((await fault.json()) as any).error?.data?.code }).toEqual({ status: 503, retry: true, code: 'unavailable' });
       expect(lines.map((l) => JSON.parse(l)).filter((e) => e.kind === 'mcp_error').map((e) => ({ grantId: e.grantId, memberId: e.memberId }))).toEqual([{ grantId: faulty.grant.id, memberId: undefined }]);
 

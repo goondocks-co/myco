@@ -8,6 +8,7 @@
       "@goondocks/myco-shared/recall": ["../myco-shared/src/recall.ts"],
       "@goondocks/myco-shared/repository": ["../myco-shared/src/repository.ts"],
       "@goondocks/myco-shared/canopy": ["../myco-shared/src/canopy.ts"],
+      "@goondocks/myco-shared/skills": ["../myco-shared/src/skills.generated.ts"],
       "@goondocks/myco-shared/skill-candidates": ["../myco-shared/src/skill-candidates.ts"]
     },
     "lib": [

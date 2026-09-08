@@ -1,0 +1,12 @@
+# Should not invoke the `myco-settings` skill.
+name: myco-settings-no-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Change the default port this dev script listens on.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-settings
+      negate: true
+    with_only: true

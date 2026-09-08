@@ -1,0 +1,11 @@
+# Should invoke the `myco-rules` skill.
+name: myco-rules-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Add a project rule to AGENTS.md that we never commit generated bundles by hand.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-rules
+    with_only: true

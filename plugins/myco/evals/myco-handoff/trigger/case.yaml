@@ -1,0 +1,11 @@
+# Should invoke the `myco-handoff` skill.
+name: myco-handoff-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  I'm running low on context and someone else is picking this up tomorrow. Prepare a handoff.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-handoff
+    with_only: true

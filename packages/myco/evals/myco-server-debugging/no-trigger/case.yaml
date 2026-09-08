@@ -1,0 +1,12 @@
+# Should not invoke the `myco-server-debugging` skill.
+name: myco-server-debugging-no-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  A unit test asserts the wrong string. Fix the assertion.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-server-debugging
+      negate: true
+    with_only: true

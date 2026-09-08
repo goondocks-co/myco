@@ -2,6 +2,16 @@
 
 Myco integrates with coding agents through **symbionts** — a term inspired by [mycorrhizal symbiosis](https://en.wikipedia.org/wiki/Mycorrhizal_network), the relationship between fungi and their host trees. Each symbiont connects Myco to an agent's native context, tools, skills, and permissions while preserving that agent's own memory, reasoning, and workflow.
 
+## Two ways in
+
+Myco installs in two independent halves, and either works on its own.
+
+**The plugin** carries the skills and the Myco tools. Install it from your agent's own plugin marketplace, paste in your deployment's URL and an access key, and the tools answer. Nothing is captured, and that is a complete configuration for reading — an agent can search what your team already knows and record what it learns.
+
+**The installer** adds the rest: session capture, plan capture, import, and the worker. It places the `myco` binary and writes each agent's hooks with the binary's absolute path, which is the reason a plugin cannot do it — a downloadable bundle has neither the binary nor the path it will live at.
+
+The access key the plugin uses reaches one project, is minted by a deployment administrator, and expires after ninety days by default. The `/myco-setup` skill walks through installing the second half, and ships with the plugin so it is there before the binary is.
+
 ## Install once, every project works
 
 Symbionts connect once per user, not once per project. A single install means:
@@ -124,8 +134,8 @@ The first plugin-based symbiont. OpenCode has no JSON hook file — hooks ship a
 | Component | Global location |
 |-----------|-----------------|
 | Plugin | `~/.config/opencode/plugins/myco.ts` |
-| MCP | `~/.config/opencode/opencode.json` (key: `mcp`, remote/URL transport) |
-| Skills | `~/.config/opencode/skills/` → Myco's skill store |
+| MCP | `~/.config/opencode/opencode.json` (key: `mcp`, local command transport) |
+| Skills | `~/.agents/skills/` → Myco's skill store |
 
 **Plan mode note:** OpenCode's Plan mode only allows `edit` on existing files under `.opencode/plans/*.md`. To author a new plan in Plan mode, create the file first in Build mode (`touch .opencode/plans/my-plan.md`) before switching to Plan mode.
 
@@ -136,7 +146,7 @@ A plugin-based symbiont like OpenCode. Pi has no JSON hook file and no native MC
 | Component | Global location |
 |-----------|-----------------|
 | Extension | `~/.pi/agent/extensions/myco/index.ts` |
-| Skills | `~/.pi/agent/skills/` → Myco's skill store |
+| Skills | `~/.agents/skills/` → Myco's skill store |
 
 ## Per-project overrides
 

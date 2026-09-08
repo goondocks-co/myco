@@ -1,0 +1,11 @@
+# Should invoke the `myco` skill.
+name: myco-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Why does this repo drain the outbox on a lease instead of a timer? Check whether that was decided before.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco
+    with_only: true

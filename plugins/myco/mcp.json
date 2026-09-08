@@ -1,0 +1,25 @@
+{
+  "inputs": [
+    {
+      "id": "deployment_url",
+      "type": "promptString",
+      "description": "The base URL of your team's Myco deployment, for example https://myco.example.com",
+      "password": false
+    },
+    {
+      "id": "access_key",
+      "type": "promptString",
+      "description": "A project access key from your deployment dashboard. It reaches one project and expires.",
+      "password": true
+    }
+  ],
+  "servers": {
+    "myco": {
+      "type": "http",
+      "url": "${input:deployment_url}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${input:access_key}"
+      }
+    }
+  }
+}
