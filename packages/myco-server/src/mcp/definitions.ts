@@ -514,7 +514,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
             "pr",
             "commit"
           ],
-          "description": "What a write with no session cites instead, for op: \"save\" and \"supersede\". Give with provenance_ref."
+          "description": "What a write with no session cites instead, on any of op: \"save\", \"supersede\", \"consolidate\" and \"obsolete\". Give with provenance_ref."
         },
         "provenance_ref": {
           "type": "string",

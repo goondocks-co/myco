@@ -89,7 +89,8 @@ const freshId = (): string => `${GRANT_ID_PREFIX}${toBase64Url(crypto.getRandomV
  */
 const grantAgent = (db: RelationalStore, grantId: string, nowMs: number) =>
   db.prepare(`INSERT INTO agents (id, name, source, enabled, created_at, updated_at)
-              SELECT id, COALESCE(label, ?), ?, 1, ?, ? FROM external_grants WHERE id = ?`)
+              SELECT id, COALESCE(label, ?), ?, 1, ?, ? FROM external_grants WHERE id = ?
+              ON CONFLICT (id) DO NOTHING`)
     .bind(GRANT_AGENT_FALLBACK_NAME, GRANT_AGENT_SOURCE, nowMs, nowMs, grantId);
 
 /** Mints a grant for the scope's Project, with its agent row. The key is answered once; only its digest is stored. */
@@ -220,17 +221,21 @@ export async function touchGrant(db: RelationalStore, grantId: string, nowMs: nu
  *
  * `revoked_at` takes the instant the grant expired rather than the instant the
  * job noticed, so a second delivery of one wake writes what the first wrote
- * and the record says when the grant actually ended. The row and its agent
- * survive: a spore's `author` points at both.
+ * and the record says when the grant actually ended. A row carrying no expiry
+ * at all is swept too, at the instant it is found: `authenticateGrant` already
+ * refuses it, and leaving it live in the listing would make this job's
+ * convergence a claim the table contradicts. The row and its agent survive: a
+ * spore's `author` points at both.
  *
  * The bound is a subquery rather than `UPDATE … LIMIT`, which is a compile-time
  * SQLite option and not offered by every store this runs against.
  */
 export async function expireGrants(db: RelationalStore, nowMs: number, limit: number): Promise<number> {
   const result = await db
-    .prepare(`UPDATE external_grants SET revoked_at = expires_at, revoked_by = ?
-               WHERE id IN (SELECT id FROM external_grants WHERE revoked_at IS NULL AND expires_at <= ? LIMIT ?)`)
-    .bind(GRANT_EXPIRY_ACTOR, nowMs, limit)
+    .prepare(`UPDATE external_grants SET revoked_at = COALESCE(expires_at, ?), revoked_by = ?
+               WHERE id IN (SELECT id FROM external_grants
+                             WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at <= ?) LIMIT ?)`)
+    .bind(nowMs, GRANT_EXPIRY_ACTOR, nowMs, limit)
     .run();
   return result.meta.changes;
 }

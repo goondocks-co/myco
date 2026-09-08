@@ -12,6 +12,7 @@ import {
   issueExternalGrant, rotateExternalGrant, touchGrant,
 } from '@myco-server-worker/auth/grants.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
+import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, PRINCIPAL, asOwner, asOwnerPost } from './helpers/owner.js';
 
@@ -161,6 +162,37 @@ describe('external grants', () => {
     expect(await expireGrants(e.db, at, 2)).toBe(2);
     expect(await expireGrants(e.db, at, 2)).toBe(1);
     expect(await expireGrants(e.db, at, 2)).toBe(0);
+  });
+
+  it('gives a grant minted before it had an agent row one, so its first write is not refused by the key it hangs on', async () => {
+    const e = sqliteEnv();
+    const grant = await issueExternalGrant(e.db, { projectId: 'proj_1' }, 'legacy bot', 'mem_machine_1', NOW);
+    // The shape of a grant that predates this column's owner: the row, no agent.
+    e.sqlite.query(`DELETE FROM agents WHERE id = ?`).run(grant.id);
+    expect(agentOf(e, grant.id)).toBeNull();
+    const writes = () => {
+      try {
+        e.sqlite.query(`INSERT INTO spores (project_id, id, agent_id, observation_type, content, author, created_at)
+                        VALUES ('proj_1', ?, ?, 'discovery', 'x', ?, ?)`).run(`sp-${grant.id}`, grant.id, grant.id, NOW);
+        return true;
+      } catch { return false; }
+    };
+    expect(writes()).toBe(false);
+
+    for (const statement of SCHEMA_DDL.filter((x) => !/ALTER TABLE \w+ ADD COLUMN/.test(x))) e.sqlite.exec(statement);
+    expect(agentOf(e, grant.id)).toEqual({ id: grant.id, name: 'legacy bot', source: GRANT_AGENT_SOURCE, enabled: 1 });
+    expect(writes()).toBe(true);
+  });
+
+  it('mints the agent row again without failing, so a re-run of the mint is a no-op rather than a conflict', async () => {
+    const e = sqliteEnv();
+    const grant = await issueExternalGrant(e.db, { projectId: 'proj_1' }, 'bot', 'mem_machine_1', NOW);
+    await e.db.prepare(`INSERT INTO agents (id, name, source, enabled, created_at, updated_at)
+                        SELECT id, COALESCE(label, ?), ?, 1, ?, ? FROM external_grants WHERE id = ?
+                        ON CONFLICT (id) DO NOTHING`)
+      .bind(GRANT_AGENT_FALLBACK_NAME, GRANT_AGENT_SOURCE, NOW, NOW, grant.id).run();
+    expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM agents WHERE id = ?`).get(grant.id)).toEqual({ c: 1 });
+    expect(agentOf(e, grant.id)).toMatchObject({ name: 'bot' });
   });
 
   it('records use at most once per interval, in the statement, and never for a revoked grant', async () => {

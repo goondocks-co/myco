@@ -38,7 +38,6 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'sleep',
     converges: 'no run whose runtime went away stays live past its bound: each is failed by name and released as a finished run is',
   },
-  // #1149 External Agent grants.
   {
     name: 'grant-expiry',
     runsThrough: 'sleep',

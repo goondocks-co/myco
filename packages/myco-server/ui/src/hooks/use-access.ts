@@ -48,11 +48,15 @@ export interface GrantRow {
   label: string | null;
   createdBy: string;
   createdAt: number;
+  expiresAt: number | null;
   lastUsedAt: number | null;
   revokedAt: number | null;
   revokedBy: string | null;
   rotatedTo: string | null;
 }
+
+/** The one value `revokedBy` carries that is not a member: the expiry sweep, which has no actor to name. */
+export const GRANT_EXPIRY_ACTOR = 'expiry';
 
 export function useMembers() {
   return useQuery({ queryKey: ['members'], queryFn: ({ signal }) => fetchJson<{ members: MemberRow[] }>('/api/members', signal) });

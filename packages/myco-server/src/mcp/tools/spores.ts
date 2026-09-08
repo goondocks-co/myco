@@ -12,8 +12,9 @@
  *
  * A write that names no session may cite what produced it instead — a pull
  * request or a commit — which is the only provenance an externally hosted agent
- * has. The citation is parsed here and carried whole: a kind without a ref
- * never reaches the store.
+ * has. Every one of the four writes parses the citation and carries it: a kind
+ * without a ref never reaches the store, and no op accepts a citation it would
+ * then drop.
  */
 import { consolidateSpores, countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore, type ResolutionAction, type SporeProvenance, type SporeRow, type SporeStatus } from '../../core/spores.js';
 import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags } from '../../core/spore-writes.js';
@@ -120,9 +121,11 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
     const planned = await planSporeResolution(db, scope, { action: 'obsolete', sporeId: str(input.id), reason: str(input.reason) });
     if (!planned.ok) return failure(planned.reason);
     const plan = planned.plan;
+    const cited = provenanceOf(input);
+    if (!cited.ok) return cited;
     const session = await sessionOf(ctx, scope, input, TOOL);
     if (!session.ok) return session;
-    if (!(await resolve(ctx, scope, plan.sporeId, plan.status, 'obsolete', null, plan.reason, session.sessionId, null))) return failure('spore_id not found');
+    if (!(await resolve(ctx, scope, plan.sporeId, plan.status, 'obsolete', null, plan.reason, session.sessionId, cited.provenance))) return failure('spore_id not found');
     return { spore: plan.sporeId, status: plan.status };
   }
 
