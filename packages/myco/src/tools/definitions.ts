@@ -6,6 +6,7 @@
 import { MCP_SEARCH_DEFAULT_LIMIT, MCP_SESSIONS_DEFAULT_LIMIT, MCP_SKILLS_DEFAULT_LIMIT } from '../constants.js';
 import { OBSERVATION_TYPES, PLAN_STATUSES, SPORE_STATUSES } from '../vault/types.js';
 import { RELEASE_CONFIDENCE, RELEASE_STATES } from '../db/queries/release-provenance.js';
+import { GROVE_PIVOT, PROJECT_PIVOT } from './pivot.js';
 
 /** Writable plan statuses. */
 const WRITABLE_PLAN_STATUS = PLAN_STATUSES;
@@ -71,7 +72,7 @@ const PROP_BRANCH = 'Git branch name to find related sessions and plans';
 const PROP_SINCE = 'ISO timestamp — entries after this date';
 const PROP_TAGS = 'Tags for discoverability — component names, technologies, concepts';
 const PROP_GROVE_ID_PIVOT = 'Optional Grove id to pivot this call to a different Grove (default: harness Grove). Mirrors the UI\'s project switcher; switches the underlying database when supplied.';
-const PROP_PROJECT_ID_PIVOT = 'Optional Grove project id (proj_<32 hex>) to pivot this call to a different project (default: harness project). When supplied alone, scopes within the current Grove.';
+const PROP_PROJECT_PIVOT = 'The project this call reads or writes: a Grove project id (proj_<32 hex>) or the repository\'s git remote. Optional on a read, which falls back to the caller\'s own project; required on a write. When supplied alone, scopes within the current Grove.';
 
 // --- Tool definitions ---
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
@@ -100,15 +101,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         release_confidence: { type: 'string', enum: [...RELEASE_CONFIDENCE], description: 'Optional filter for release provenance confidence' },
         since: { type: 'number', description: 'Optional created_at lower bound in epoch seconds' },
         until: { type: 'number', description: 'Optional created_at upper bound in epoch seconds' },
-        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
-        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
+        [GROVE_PIVOT]: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        [PROJECT_PIVOT]: { type: 'string', description: PROP_PROJECT_PIVOT },
       },
       required: ['query'],
     },
   },
   {
     name: TOOL_CORTEX,
-    description: 'Retrieve Cortex-produced project intelligence. op: "digest" returns the pre-computed project digest at tier 1500, 5000, or 10000. op: "instructions" returns the generated project instruction brief when available. op: "canopy_map" returns the rendered project Canopy map for the resolved request context. op: "canopy_entry" retrieves one Canopy file summary from the resolved request context by id (`project_id:path`) or path. op: "notifications" returns notifications for the request scope (use unread_only and limit to filter). op: "maintenance_summary" returns the per-Grove maintenance summary (db sizes, last backup/optimize, integrity status, and overdue flags). op: "projects_activity" returns the cross-Grove project activity feed (last activity, scheduled runs, active flag).',
+    description: 'Retrieve project intelligence. op: "instructions" (default) returns the project\'s session-start instructions and its project id. op: "notifications" returns notifications for the request scope (use unread_only and limit to filter). op: "maintenance_summary" returns the per-Grove maintenance summary (db sizes, last backup/optimize, integrity status, and overdue flags). op: "projects_activity" returns the cross-project activity feed (last activity, scheduled runs, active flag). op: "digest", op: "canopy_map" and op: "canopy_entry" are served by the local runtime only; a Deployment answers them not_served.',
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -116,18 +117,18 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Use op: "digest" for broad orientation, op: "canopy_map" as the default opener for project layout, op: "canopy_entry" to retrieve a Canopy result returned by search, op: "notifications" to read pending operator notifications, op: "maintenance_summary" to answer "are any Groves overdue for backup/optimize/integrity?", and op: "projects_activity" to see which projects are still active across the machine.',
+      guidance: 'Use op: "instructions" to read the project\'s standing guidance and learn its project id, op: "notifications" to read pending operator notifications, op: "maintenance_summary" to answer "are any Groves overdue for backup/optimize/integrity?", and op: "projects_activity" to see which projects are still active. Search with myco_search rather than pulling a project summary; there is no digest.',
       priority: 10,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
-        op: { type: 'string', enum: ['digest', 'instructions', 'canopy_map', 'canopy_entry', 'notifications', 'maintenance_summary', 'projects_activity'], description: 'Operation (default: "digest")' },
+        op: { type: 'string', enum: ['instructions', 'digest', 'canopy_map', 'canopy_entry', 'notifications', 'maintenance_summary', 'projects_activity'], description: 'Operation (default: "instructions")' },
         tier: { type: 'number', enum: [1500, 5000, 10000], description: 'Digest token budget tier. Larger tiers include more detail. Default: 5000.' },
-        id: { type: 'string', description: 'Canopy entry id for op: "canopy_entry" in the form project_id:path' },
-        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
-        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        id: { type: 'string', description: 'Canopy entry id for op: "canopy_entry" in the form <project>:path' },
         path: { type: 'string', description: 'Canopy file path for op: "canopy_entry"' },
+        [PROJECT_PIVOT]: { type: 'string', description: PROP_PROJECT_PIVOT },
+        [GROVE_PIVOT]: { type: 'string', description: PROP_GROVE_ID_PIVOT },
         unread_only: { type: 'boolean', description: 'op: "notifications" — return only unread entries (default: false)' },
         limit: { type: 'number', description: 'op: "notifications" — max entries to return' },
       },
@@ -161,8 +162,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
         limit: { type: 'number', description: 'Max results for op: "list"' },
         force_remote: { type: 'boolean', description: 'Allow op: "delete" to remove a plan belonging to another machine. Enqueues a tombstone for team sync.' },
-        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
-        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
+        [GROVE_PIVOT]: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        [PROJECT_PIVOT]: { type: 'string', description: PROP_PROJECT_PIVOT },
       },
     },
   },
@@ -190,8 +191,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         since: { type: 'string', description: PROP_SINCE },
         status: { type: 'string', description: 'Filter by session status (e.g., active, completed)' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SESSIONS_DEFAULT_LIMIT})` },
-        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
-        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
+        [GROVE_PIVOT]: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        [PROJECT_PIVOT]: { type: 'string', description: PROP_PROJECT_PIVOT },
       },
     },
   },
@@ -211,8 +212,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         id: { type: 'string', description: 'Skill id or name for op: "get"' },
         status: { type: 'string', description: 'Filter by status: active, stale, retired' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SKILLS_DEFAULT_LIMIT})` },
-        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
-        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
+        [GROVE_PIVOT]: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        [PROJECT_PIVOT]: { type: 'string', description: PROP_PROJECT_PIVOT },
       },
     },
   },
@@ -249,8 +250,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         reason: { type: 'string', description: 'Reason for op: "supersede", "consolidate", or "obsolete" (required for "obsolete")' },
         session_id: { type: 'string', description: 'Session id the spore belongs to for op: "save" and "consolidate", or the session acting for op: "supersede" and "obsolete"; from the Session:: line when known' },
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
-        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
-        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
+        [GROVE_PIVOT]: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        [PROJECT_PIVOT]: { type: 'string', description: PROP_PROJECT_PIVOT },
       },
     },
   },

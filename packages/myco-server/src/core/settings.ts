@@ -1,16 +1,19 @@
 import type { RelationalStore } from './adapters.js';
+import { INSTRUCTIONS_TEMPLATE_MAX_BYTES } from '../constants.js';
 
 /**
  * Deployment Settings: one operation every write goes through.
  *
  * 1.4 resolved settings across four tiers; 2.0 keeps two, and the server tier is
- * this one. Every write validates, authorizes, persists, records its actor, and
- * re-arms the schedule that may have moved — in that order, in one place.
+ * this one. Every write admits the leaf, authorizes the actor, checks the
+ * leaf's own rule, persists, records its actor, and re-arms the schedule that
+ * may have moved — in that order, in one place.
  *
  * The order matters more than the steps. A write that persists before it
- * authorizes has already happened when it is refused; one that re-arms before it
- * persists arms against a value the store does not hold; and one that skips the
- * actor leaves an audit trail that cannot answer who changed what. Splitting
+ * authorizes has already happened when it is refused; one that checks the
+ * leaf's rule before authorizing answers a caller it would refuse anyway; one
+ * that re-arms before it persists arms against a value the store does not hold; and one that skips the actor leaves an audit
+ * trail that cannot answer who changed what. Splitting
  * these across call sites is how three of the four eventually go missing on one
  * path and nobody notices, which is why the gate holds every write to this module.
  */
@@ -20,6 +23,23 @@ export const PROJECT_CAPABILITIES = ['cortex', 'canopy', 'skills', 'vault_evolut
 export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
 
 /**
+ * The rule a leaf's value satisfies at write, or `{}` for a leaf that takes any
+ * JSON value.
+ *
+ * Declarative data rather than a validator function: the Settings page renders
+ * a field from it, a gate reads it, and a function could do neither. A leaf
+ * that shipped before this existed keeps `{}` — giving it a rule now would
+ * refuse values a Deployment already holds.
+ *
+ * `markdown` means text: a string, no ASCII control character but newline and
+ * tab, within `maxBytes` of UTF-8.
+ */
+export type LeafSpec =
+  | Record<string, never>
+  | { readonly type: 'integer'; readonly min: number; readonly max: number }
+  | { readonly type: 'markdown'; readonly maxBytes: number };
+
+/**
  * The leaves this tier owns, from §7.8 of the architecture ledger.
  *
  * Held here rather than derived from the member's schema: the member package is
@@ -27,73 +47,111 @@ export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
  * decision the ledger records rather than something the shape of a config file
  * implies. A meta gate holds this list against the ledger so the two cannot drift.
  */
-export const DEPLOYMENT_LEAVES: readonly string[] = [
-  'agent.cold_project_threshold_days',
-  'agent.event_tasks_enabled',
-  'agent.harness',
-  'agent.limits.concurrent_runs',
-  'agent.limits.task_concurrent_runs',
-  'agent.limits.task_runs_per_hour',
-  'agent.model',
-  'agent.provider.base_url',
-  'agent.provider.context_length',
-  'agent.provider.effort_map.default.effort',
-  'agent.provider.effort_map.default.verbosity',
-  'agent.provider.effort_map.high.effort',
-  'agent.provider.effort_map.high.verbosity',
-  'agent.provider.effort_map.low.effort',
-  'agent.provider.effort_map.low.verbosity',
-  'agent.provider.local_backend',
-  'agent.provider.model',
-  'agent.provider.reasoning_map.default',
-  'agent.provider.reasoning_map.high',
-  'agent.provider.reasoning_map.low',
-  'agent.provider.thinking_budget_map.default',
-  'agent.provider.thinking_budget_map.high',
-  'agent.provider.thinking_budget_map.low',
-  'agent.provider.type',
-  'agent.reasoningLevel',
-  'agent.run_retention_days',
-  'agent.scheduled_tasks_active_window_days',
-  'agent.scheduled_tasks_enabled',
-  'agent.semantic_write_check_enabled',
-  'agent.summary_batch_interval',
-  'agent.tasks',
-  'backup.auto_interval_hours',
-  'backup.retention.keep_daily',
-  'backup.retention.keep_weekly',
-  'cortex.canopy.exclude.default_patterns',
-  'cortex.canopy.exclude.patterns',
-  'cortex.canopy.refresh.background_enabled',
-  'cortex.canopy.refresh.background_period_minutes',
-  'cortex.digest.inject_on_session_start',
-  'cortex.digest.tier',
-  'cortex.instructions.inject_on_session_start',
-  'cortex.instructions.inject_on_subagent_start',
-  'cortex.plans.inject_intent_nudge_on_prompt_submit',
-  'cortex.spores.inject_on_prompt_submit',
-  'cortex.spores.max_per_prompt',
-  'embedding.base_url',
-  'embedding.model',
-  'embedding.prevent_deep_sleep',
-  'embedding.provider',
-  'maintenance.auto_integrity_check',
-  'maintenance.auto_integrity_check_interval_hours',
-  'maintenance.auto_optimize',
-  'maintenance.auto_optimize_interval_hours',
-  'notifications.retention_days',
-  'release_provenance.reconcile_interval_minutes',
-  // #1147 — transcript-first ingest
-  'retention.transcripts',
-  'skills.confidence_threshold',
-  'skills.usage_stale_days',
-];
+export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
+  'agent.cold_project_threshold_days': {},
+  'agent.event_tasks_enabled': {},
+  'agent.harness': {},
+  'agent.limits.concurrent_runs': {},
+  'agent.limits.task_concurrent_runs': {},
+  'agent.limits.task_runs_per_hour': {},
+  'agent.model': {},
+  'agent.provider.base_url': {},
+  'agent.provider.context_length': {},
+  'agent.provider.effort_map.default.effort': {},
+  'agent.provider.effort_map.default.verbosity': {},
+  'agent.provider.effort_map.high.effort': {},
+  'agent.provider.effort_map.high.verbosity': {},
+  'agent.provider.effort_map.low.effort': {},
+  'agent.provider.effort_map.low.verbosity': {},
+  'agent.provider.local_backend': {},
+  'agent.provider.model': {},
+  'agent.provider.reasoning_map.default': {},
+  'agent.provider.reasoning_map.high': {},
+  'agent.provider.reasoning_map.low': {},
+  'agent.provider.thinking_budget_map.default': {},
+  'agent.provider.thinking_budget_map.high': {},
+  'agent.provider.thinking_budget_map.low': {},
+  'agent.provider.type': {},
+  'agent.reasoningLevel': {},
+  'agent.run_retention_days': {},
+  'agent.scheduled_tasks_active_window_days': {},
+  'agent.scheduled_tasks_enabled': {},
+  'agent.semantic_write_check_enabled': {},
+  'agent.summary_batch_interval': {},
+  'agent.tasks': {},
+  'backup.auto_interval_hours': {},
+  'backup.retention.keep_daily': {},
+  'backup.retention.keep_weekly': {},
+  'cortex.canopy.exclude.default_patterns': {},
+  'cortex.canopy.exclude.patterns': {},
+  'cortex.canopy.refresh.background_enabled': {},
+  'cortex.canopy.refresh.background_period_minutes': {},
+  'cortex.digest.inject_on_session_start': {},
+  'cortex.digest.tier': {},
+  'cortex.instructions.inject_on_session_start': {},
+  'cortex.instructions.inject_on_subagent_start': {},
+  'cortex.plans.inject_intent_nudge_on_prompt_submit': {},
+  'cortex.spores.inject_on_prompt_submit': {},
+  'cortex.spores.max_per_prompt': {},
+  'embedding.base_url': {},
+  'embedding.model': {},
+  'embedding.prevent_deep_sleep': {},
+  'embedding.provider': {},
+  'instructions.template': { type: 'markdown', maxBytes: INSTRUCTIONS_TEMPLATE_MAX_BYTES },
+  'maintenance.auto_integrity_check': {},
+  'maintenance.auto_integrity_check_interval_hours': {},
+  'maintenance.auto_optimize': {},
+  'maintenance.auto_optimize_interval_hours': {},
+  'notifications.retention_days': {},
+  'release_provenance.reconcile_interval_minutes': {},
+  // #1147 — transcript-first ingest. 0 keeps transcripts indefinitely; a write
+  // has no delete, so 0 is how a Deployment returns to keeping everything.
+  'retention.transcripts': { type: 'integer', min: 0, max: 3650 },
+  'skills.confidence_threshold': {},
+  'skills.usage_stale_days': {},
+};
+
+/** The leaves this tier owns. Derived from the specs, so a leaf cannot be named in one and missing from the other. */
+export const DEPLOYMENT_LEAVES: readonly string[] = Object.keys(DEPLOYMENT_LEAF_SPECS);
 
 const DEPLOYMENT_LEAF_SET = new Set(DEPLOYMENT_LEAVES);
+
+/** Any ASCII control character but newline and tab; a stored setting is text a person edits, not a control stream. */
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+
+/** What the value violates, or null when it satisfies the leaf's rule. */
+export function leafRuleViolation(spec: LeafSpec, value: unknown): string | null {
+  if (!('type' in spec)) return null;
+  if (spec.type === 'integer') {
+    if (typeof value !== 'number' || !Number.isInteger(value)) return 'expected a whole number';
+    if (value < spec.min || value > spec.max) return `expected a whole number from ${spec.min} to ${spec.max}`;
+    return null;
+  }
+  if (typeof value !== 'string') return 'expected Markdown text';
+  if (CONTROL_CHARACTERS.test(value)) return 'expected Markdown text without control characters';
+  const bytes = new TextEncoder().encode(value).length;
+  return bytes > spec.maxBytes ? `expected at most ${spec.maxBytes} bytes, got ${bytes}` : null;
+}
+
+/** The Deployment's session-start instructions, empty where none is written. */
+export async function instructionsTemplate(db: RelationalStore): Promise<string> {
+  const raw = (await leafValues(db, [INSTRUCTIONS_TEMPLATE_LEAF])).get(INSTRUCTIONS_TEMPLATE_LEAF);
+  if (raw === undefined) return '';
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === 'string' ? parsed : '';
+  } catch {
+    return '';
+  }
+}
+
+/** The leaf carrying the text every session starts from. */
+export const INSTRUCTIONS_TEMPLATE_LEAF = 'instructions.template';
 
 /** Why a settings write did not apply. Each names a fault in the caller's own request; none is retryable. */
 export type SettingsRefusal =
   | { reason: 'not_deployment_tier'; leaf: string }
+  | { reason: 'invalid_value'; leaf: string; detail: string }
   | { reason: 'unauthorized'; leaf: string }
   | { reason: 'unknown_capability'; capability: string };
 
@@ -202,6 +260,10 @@ export function settingsWriter(
       }
       if (!(await authorize({ leaf, value, actor }))) {
         return { applied: false, refusal: { reason: 'unauthorized', leaf } };
+      }
+      const detail = leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, value);
+      if (detail !== null) {
+        return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
       }
       await db
         .prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)

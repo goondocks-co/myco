@@ -263,34 +263,6 @@ describe('Cortex', () => {
     expect(screen.queryByText(/Written from/)).toBeNull();
   });
 
-  it('asks for the instructions again and names each outcome in the reader\'s words', async () => {
-    const answers: Response[] = [
-      Response.json({ runId: 'run_new', task: 'cortex-instructions', projectId: 'x', queued: false, timeoutSeconds: 300, provider: 'anthropic' }),
-      Response.json({ runId: 'run_q', task: 'cortex-instructions', projectId: 'x', queued: true, heldBy: 'concurrent_runs' }),
-      Response.json({ outcome: 'unchanged' }),
-      Response.json({ error: 'max_runs_per_day', message: 'ceiling met' }, { status: 409 }),
-    ];
-    server(base({
-      '/api/projects/x/cortex/instructions': () => Response.json({ instructions: [instructionsRow()] }),
-      '/api/projects/x/digests': () => Response.json({ digests: [] }),
-      '/api/harness/dispatch': () => answers.shift()!,
-    }));
-    mount('/p/x/cortex');
-    const press = async () => fireEvent.click(await screen.findByRole('button', { name: /Refresh instructions/ }));
-
-    await press();
-    expect(await screen.findByText(/Writing new instructions/)).toBeTruthy();
-    expect(screen.getByText('see the run').getAttribute('href')).toBe('/p/x/runs/run_new');
-
-    await press();
-    expect(await screen.findByText(/Waiting for a runtime/)).toBeTruthy();
-
-    await press();
-    expect(await screen.findByText('Nothing has changed since these were written')).toBeTruthy();
-
-    await press();
-    expect(await screen.findByText(/already been written once today/)).toBeTruthy();
-  });
 
   it('shows a digest by tier and opens an earlier revision', async () => {
     server(base({

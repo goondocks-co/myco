@@ -45,8 +45,8 @@ function mockClient(capturedGets: CapturedGet[] = []): DaemonClient {
   return {
     get: vi.fn(async (endpoint: string, options?: { headers?: Record<string, string> }) => {
       capturedGets.push({ endpoint, options });
-      if (endpoint === '/api/digest') {
-        return { ok: true, data: { tiers: [{ tier: 5000, content: 'transport digest', generated_at: 1 }] } };
+      if (endpoint === '/api/cortex/instructions') {
+        return { ok: true, data: { content: 'transport instructions', agent_id: 'user', generated_at: 1 } };
       }
       return { ok: true, data: {} };
     }),
@@ -62,7 +62,7 @@ function mockClient(capturedGets: CapturedGet[] = []): DaemonClient {
  *   - `/health` so `DaemonClient.ensureRunning()` returns true.
  *   - `/mcp` via the real `createStreamableMcpHttpHandler` so the bridge
  *     forwards into the same in-process tool runtime the HTTP client uses.
- *   - `/api/digest` and `/api/log` so the cortex tool's daemon round-trips
+ *   - `/api/cortex/instructions` and `/api/log` so the cortex tool's daemon round-trips
  *     resolve. (DaemonClient calls these from the in-process tool runtime.)
  */
 async function startDaemonStub(vaultDir: string, mcpHandler: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void>): Promise<URL> {
@@ -76,9 +76,9 @@ async function startDaemonStub(vaultDir: string, mcpHandler: (req: http.Incoming
       res.end(JSON.stringify({ myco: true }));
       return;
     }
-    if (req.url === '/api/digest') {
+    if (req.url === '/api/cortex/instructions') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ tiers: [{ tier: 5000, content: 'transport digest', generated_at: 1 }] }));
+      res.end(JSON.stringify({ content: 'transport instructions', agent_id: 'user', generated_at: 1 }));
       return;
     }
     if (req.url === '/api/log') {
@@ -173,16 +173,18 @@ describe('MCP transport parity', () => {
       const httpList = await httpClient.listTools();
       const stdioNames = stdioList.tools.map((tool) => tool.name).sort();
       const httpNames = httpList.tools.map((tool) => tool.name).sort();
-      const stdioCall = await stdioClient.callTool({ name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } });
-      const httpCall = await httpClient.callTool({ name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } });
+      const stdioCall = await stdioClient.callTool({ name: 'myco_cortex', arguments: { op: 'instructions' } });
+      const httpCall = await httpClient.callTool({ name: 'myco_cortex', arguments: { op: 'instructions' } });
 
       expect(stdioNames).toEqual(httpNames);
       expect(stdioNames).toContain('myco_cortex');
       expect(stdioNames).toContain('myco_spores');
-      expect(stdioCall.content[0]).toEqual({ type: 'text', text: 'transport digest' });
-      expect(httpCall.content[0]).toEqual({ type: 'text', text: 'transport digest' });
+      expect(stdioCall.content[0]).toEqual(httpCall.content[0]);
+      for (const call of [stdioCall, httpCall]) {
+        expect(JSON.parse((call.content[0] as { text: string }).text).content).toContain('transport instructions');
+      }
       const digestHeaders = capturedGets
-        .filter((call) => call.endpoint === '/api/digest')
+        .filter((call) => call.endpoint === '/api/cortex/instructions')
         .map((call) => call.options?.headers);
       expect(digestHeaders).toHaveLength(2);
       expect(digestHeaders).toEqual([

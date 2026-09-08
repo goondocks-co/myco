@@ -4,14 +4,14 @@
  *
  * Three principals reach the tool surface. A member, whose credential is
  * Deployment-wide: its call reads the request's header Project unless it
- * names another with `project_id`, and a named Project resolves through the
+ * names another with `project`, and a named Project resolves through the
  * read scope only — a Project the Deployment has never seen is answered as
  * absent, never created. A run, whose credential the dispatcher minted for one
  * run: its call reads that run's Project and no other, and may call only the
  * `(tool, op)` pairs its task declares (`run-surface.ts`). An External Agent
  * grant, whose row names one Project: its call reads and records into that
  * Project and no other, and names no session — it cites a pull request or a
- * commit instead. For a run and a grant, `project_id` is judged before any
+ * commit instead. For a run and a grant, `project` is judged before any
  * handler runs (`server.ts callTool`), so here it is never a pivot.
  *
  * A write names the principal behind it twice: `agent_id` is the actor class —
@@ -24,8 +24,9 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { GrantContext, RouteContext, RunContext } from '../context.js';
 import type { ReadScope } from '../read/scope.js';
 import { sessionNamedByRun } from '../api/run-admission.js';
-import { resolveProjectScope } from '../api/scope.js';
+import { resolveTenancyArgument } from '../api/scope.js';
 import { taskTools } from '../core/task-catalogue.js';
+import { PROJECT_PIVOT } from '../core/tool-catalogue.js';
 import { projectHoldsSession, sessionHeldByMachine } from '../read/sessions.js';
 import { runAllowlist, type RunAllowlist } from './run-surface.js';
 import { unknownTool, type ToolInput } from './validate.js';
@@ -169,16 +170,22 @@ export async function sessionOf(ctx: ToolContext, scope: ReadScope, input: ToolI
   return { ok: true, sessionId: named };
 }
 
-/** The scope this call reads: a run's or a grant's own Project; for a member, the named Project when `project_id` is given and known, else the header Project; null when the named Project is not one the caller may see. */
+/** The tenancy argument this call names, or undefined when it names none. */
+export function namedProject(input: ToolInput): string | undefined {
+  const named = input[PROJECT_PIVOT];
+  return typeof named === 'string' && named.length > 0 ? named : undefined;
+}
+
+/** The scope this call reads: a run's or a grant's own Project; for a member, the named Project when one is given and known, else the header Project; null when the named Project is not one the caller may see. */
 export async function scopeOf(ctx: ToolContext, input: ToolInput): Promise<ReadScope | null> {
   if (ctx.principal.kind !== 'member') return { projectId: ctx.projectId };
-  const named = input.project_id;
-  if (typeof named !== 'string' || named.length === 0) return { projectId: ctx.projectId };
-  return resolveProjectScope(ctx.env.db, { id: ctx.principal.memberId }, named);
+  const named = namedProject(input);
+  if (named === undefined) return { projectId: ctx.projectId };
+  return resolveTenancyArgument(ctx.env.db, { id: ctx.principal.memberId }, named);
 }
 
 /** The arguments without the pivot key, so no handler forwards it as a filter. */
 export function withoutPivot(input: ToolInput): ToolInput {
-  const { project_id: _pivot, ...rest } = input;
+  const { [PROJECT_PIVOT]: _pivot, ...rest } = input;
   return rest;
 }

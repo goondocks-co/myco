@@ -12,12 +12,12 @@
 
 /**
  * Every tool schema defaults `op` to `'list'` except `myco_cortex`
- * (`'digest'`) and `myco_agent` (`'runs'`) — the SAME defaults
+ * (`'instructions'`) and `myco_agent` (`'runs'`) — the SAME defaults
  * `tools/definitions.ts` documents, so an omitted `op` is judged exactly
  * as the real handler would interpret it.
  */
 const DEFAULT_OP: Record<string, string> = {
-  myco_cortex: 'digest',
+  myco_cortex: 'instructions',
   myco_agent: 'runs',
 };
 

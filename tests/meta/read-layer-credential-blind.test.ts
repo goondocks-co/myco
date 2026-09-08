@@ -148,6 +148,9 @@ describe('read layer', () => {
     //                     session_injections, and holds the INSERT OR IGNORE
     //                     whose once-per-session rule lives in the primary key
     //                     rather than in a caller
+    //   core/remotes.ts   git remotes as Project names — it OWNS project_remotes,
+    //                     and holds the INSERT OR IGNORE whose one-remote-one-Project
+    //                     rule lives in the primary key rather than in a caller
     //   core/backup.ts    the backup engine — it OWNS backups, and its dump and
     //                     additive restore are row transport over every table,
     //                     which no facade abstraction can carry
@@ -155,7 +158,7 @@ describe('read layer', () => {
     //                     and its sweep spans every table a session projected
     //                     into as one commit, so no facade owns the whole of it
     //   pipeline.ts   one quota re-read on the ingest admission path
-    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/repositories\.ts$/, /^core\/canopy\.ts$/, /^core\/runs\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/digests\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/search-index\.ts$/, /^core\/embedding\/(reconcile|hubness|jobs)\.ts$/, /^core\/spores\.ts$/, /^core\/tombstones\.ts$/, /^pipeline\.ts$/];
+    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/repositories\.ts$/, /^core\/canopy\.ts$/, /^core\/runs\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/digests\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/remotes\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/search-index\.ts$/, /^core\/embedding\/(reconcile|hubness|jobs)\.ts$/, /^core\/spores\.ts$/, /^core\/tombstones\.ts$/, /^pipeline\.ts$/];
     const offenders: string[] = [];
     for (const file of tsFiles(SRC)) {
       const rel = file.slice(SRC.length);

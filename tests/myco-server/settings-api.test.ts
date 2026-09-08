@@ -171,12 +171,19 @@ describe('project capability admission through the surface', () => {
   });
 });
 
-import { DEPLOYMENT_LEAVES } from '@myco-server-worker/core/settings.js';
+import { DEPLOYMENT_LEAF_SPECS, DEPLOYMENT_LEAVES } from '@myco-server-worker/core/settings.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { memberPost } from './helpers/fixtures.js';
 
 /** A value shaped for the leaf, from its name: the kinds the dashboard catalogue renders. */
 function sampleFor(leaf: string): unknown {
+  // A leaf that declares a rule is sampled FROM that rule, never guessed from
+  // its name: a guess that happens to satisfy today's rule stops satisfying it
+  // the moment the rule tightens, and the guess is what would need finding.
+  const spec = DEPLOYMENT_LEAF_SPECS[leaf];
+  if (spec !== undefined && 'type' in spec) {
+    return spec.type === 'integer' ? spec.min : `# sample ${leaf}`;
+  }
   if (leaf === 'agent.tasks') return { digest: { model: 'claude' } };
   if (/thinking_budget_map/.test(leaf)) return { adaptive: true };
   if (/patterns$/.test(leaf)) return ['dist/**'];

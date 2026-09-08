@@ -44,8 +44,8 @@ function mockClient(capturedGets: CapturedGet[] = []): DaemonClient {
   return {
     get: vi.fn(async (endpoint: string, options?: { headers?: Record<string, string> }) => {
       capturedGets.push({ endpoint, options });
-      if (endpoint === '/api/digest') {
-        return { ok: true, data: { tiers: [{ tier: 5000, content: 'HTTP MCP digest', generated_at: 1 }] } };
+      if (endpoint === '/api/cortex/instructions') {
+        return { ok: true, data: { content: 'HTTP MCP instructions', agent_id: 'user', generated_at: 1 } };
       }
       return { ok: true, data: {} };
     }),
@@ -89,11 +89,11 @@ describe('streamable HTTP MCP', () => {
     await client.connect(transport);
     const listed = await client.listTools();
     const names = listed.tools.map((tool) => tool.name);
-    const called = await client.callTool({ name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } });
+    const called = await client.callTool({ name: 'myco_cortex', arguments: { op: 'instructions' } });
 
     expect(names).toContain('myco_cortex');
     expect(names).toContain('myco_spores');
-    expect(called.content[0]).toEqual({ type: 'text', text: 'HTTP MCP digest' });
+    expect(JSON.parse((called.content[0] as { text: string }).text).content).toContain('HTTP MCP instructions');
 
     await client.close();
   });
@@ -186,7 +186,7 @@ describe('streamable HTTP MCP', () => {
       jsonrpc: '2.0',
       id: 1,
       method: 'tools/call',
-      params: { name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } },
+      params: { name: 'myco_cortex', arguments: { op: 'instructions' } },
     });
     const response = await fetch(url.toString(), {
       method: 'POST',
@@ -225,7 +225,7 @@ describe('streamable HTTP MCP', () => {
       jsonrpc: '2.0',
       id: 1,
       method: 'tools/call',
-      params: { name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } },
+      params: { name: 'myco_cortex', arguments: { op: 'instructions' } },
     });
     try {
       const response = await fetch(url.toString(), {
@@ -286,14 +286,14 @@ describe('streamable HTTP MCP', () => {
 
     try {
       await client.connect(transport);
-      await client.callTool({ name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } });
+      await client.callTool({ name: 'myco_cortex', arguments: { op: 'instructions' } });
       await client.close();
     } finally {
       if (previousHome === undefined) delete process.env.MYCO_HOME;
       else process.env.MYCO_HOME = previousHome;
     }
 
-    const digestCall = capturedGets.find((call) => call.endpoint === '/api/digest');
+    const digestCall = capturedGets.find((call) => call.endpoint === '/api/cortex/instructions');
     expect(digestCall?.options?.headers).toMatchObject({
       'x-myco-project-root': projectRoot,
       'x-myco-project-id': 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -342,7 +342,7 @@ describe('streamable HTTP MCP', () => {
         jsonrpc: '2.0',
         id: 1,
         method: 'tools/call',
-        params: { name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } },
+        params: { name: 'myco_cortex', arguments: { op: 'instructions' } },
       });
       const response = await fetch(url.toString(), {
         method: 'POST',

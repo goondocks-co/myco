@@ -30,6 +30,18 @@ export function isServedTool(name: string): name is ServedTool {
 export const NO_OP = '*';
 
 /**
+ * The tenancy key every tool declares: a project id or a git remote.
+ *
+ * One spelling, here, for the definitions, the scope resolver and the
+ * chokepoint's write check. `validate.ts` skips an argument the schema does not
+ * declare and `server.ts declaredOnly` drops it before a handler runs, so a
+ * site that spells the key by hand is admitted and ignored rather than refused.
+ * The member side spells it once too (`packages/myco/src/tools/pivot.ts`), and
+ * `tests/myco-server/tool-parity.test.ts` holds the two equal.
+ */
+export const PROJECT_PIVOT = 'project';
+
+/**
  * Every op of a served tool this Deployment does not answer, named with the
  * issue that delivers it, or `never` for one a Deployment does not offer.
  *
@@ -43,9 +55,30 @@ export const NO_OP = '*';
  * declared op enum.
  */
 export const UNSERVED_OPS: Readonly<Partial<Record<ServedTool, Readonly<Record<string, string>>>>> = {
-  myco_cortex: { canopy_entry: 'never', notifications: '#922', maintenance_summary: '#923' },
+  myco_cortex: { digest: '#1170', canopy_map: '#1170', canopy_entry: '#1170', notifications: '#922', maintenance_summary: '#923' },
   myco_plans: { delete: 'never' },
 };
+
+/**
+ * Every op that writes, by tool.
+ *
+ * One list, three readers: the run surface drops these for a dry run, the MCP
+ * chokepoint refuses one that names no Project, and a gate holds the set equal
+ * to what each tool's `readOnlyHint` publishes. Names only, as above — the
+ * handler is what performs the write, and handlers live with the MCP surface.
+ *
+ * Names only, as above: `run-surface.ts` and the chokepoint both read it, and
+ * neither imports the registry.
+ */
+export const WRITE_OPS: Readonly<Partial<Record<ServedTool, readonly string[]>>> = {
+  myco_plans: ['save'],
+  myco_spores: ['save', 'supersede', 'consolidate', 'obsolete'],
+};
+
+/** Whether this op of this tool writes. */
+export function isWriteOp(tool: ServedTool, op: string): boolean {
+  return (WRITE_OPS[tool] ?? []).includes(op);
+}
 
 /** Whether this Deployment answers this op of this tool. */
 export function isServedOp(tool: ServedTool, op: string): boolean {

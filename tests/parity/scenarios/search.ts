@@ -42,7 +42,7 @@ export const search: ParityScenario = {
     await post('prompt', { promptId: prompt, blob: key, origin: 'user' });
     await post('response', { responseId: response, promptId: prompt, blob: key });
     await post('plan', { planKey: plan, promptId: prompt, title: `${word} titleword`, blob: key, status: 'active' });
-    const spore = await mcp<{ id: string }>('myco_spores', { op: 'save', type: 'decision', content: `${word} advice` });
+    const spore = await mcp<{ id: string }>('myco_spores', { op: 'save', type: 'decision', content: `${word} advice`, project: target.projectId });
     await target.sql(`UPDATE sessions SET title = ${lit(word)} WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`);
     await target.sql(`INSERT INTO skill_records(project_id,id,agent_id,name,display_name,description,path,created_at,updated_at) VALUES (${lit(target.projectId)},${lit(word)},'user',${lit(word)},'Search skill','procedure','skills/search',${stamp},${stamp})`);
     let indexed = await owner(word);

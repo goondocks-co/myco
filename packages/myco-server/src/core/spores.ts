@@ -44,8 +44,8 @@ export const SPORE_FULL_READ_BUDGET = 12;
 /** The largest body one full read carries, so a single spore cannot flood a model's context; a body longer than this arrives cut, and the answer says so. */
 export const SPORE_BODY_CHARS = SPORE_PREVIEW_CHARS * 40;
 
-/** The tasks whose runs read this Project's spores over the run routes: the sweep that resolves them, the instructions run that cites them, and the digest run that writes from them. */
-export const SPORE_READ_TASKS: readonly string[] = ['supersession-sweep', 'cortex-instructions', 'digest-only'];
+/** The tasks whose runs read this Project's spores over the run routes: the sweep that resolves them, and the digest run that writes from them. */
+export const SPORE_READ_TASKS: readonly string[] = ['supersession-sweep', 'digest-only'];
 
 /** The tasks whose runs also record and resolve spores. A run that only reads never reaches the two writes. */
 export const SPORE_TOOL_TASKS: readonly string[] = ['supersession-sweep'];
@@ -74,6 +74,14 @@ export interface SporeInsert {
   author: string | null;
   /** What the write cites when it names no session; absent on a write that names one. */
   provenance?: SporeProvenance | null;
+  /**
+   * The ≈40-token projection injection and search previews render, or null
+   * until a run derives one.
+   *
+   * Optional so a write site that has no line omits it rather than spelling a
+   * null; every line is null until an extraction run derives one.
+   */
+  agentLine?: string | null;
   createdAt: number;
 }
 
@@ -94,6 +102,7 @@ export interface SporeRow {
   author: string | null;
   provenanceKind: string | null;
   provenanceRef: string | null;
+  agentLine: string | null;
   createdAt: number;
   updatedAt: number | null;
   embedded: number;
@@ -115,7 +124,7 @@ export interface ListSporesOptions {
 const COLUMNS = `id, agent_id AS agentId, session_id AS sessionId, prompt_id AS promptId,
   observation_type AS observationType, status, content, context, importance,
   file_path AS filePath, tags, content_hash AS contentHash, properties, author,
-  provenance_kind AS provenanceKind, provenance_ref AS provenanceRef,
+  provenance_kind AS provenanceKind, provenance_ref AS provenanceRef, agent_line AS agentLine,
   created_at AS createdAt, updated_at AS updatedAt, embedded`;
 
 /**
@@ -128,13 +137,13 @@ const COLUMNS = `id, agent_id AS agentId, session_id AS sessionId, prompt_id AS 
 export async function insertSpore(db: RelationalStore, scope: ReadScope, row: SporeInsert): Promise<SporeRow | null> {
   return db.prepare(`INSERT INTO spores
       (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, context,
-       importance, file_path, tags, content_hash, properties, author, provenance_kind, provenance_ref, created_at, embedded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+       importance, file_path, tags, content_hash, properties, author, provenance_kind, provenance_ref, agent_line, created_at, embedded)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
       RETURNING ${COLUMNS}`)
     .bind(scope.projectId, row.id, row.agentId, row.sessionId, row.promptId, row.observationType,
       row.status ?? 'active', row.content, row.context, row.importance ?? 5, row.filePath,
       row.tags, row.contentHash, row.properties, row.author,
-      row.provenance?.kind ?? null, row.provenance?.ref ?? null, row.createdAt)
+      row.provenance?.kind ?? null, row.provenance?.ref ?? null, row.agentLine ?? null, row.createdAt)
     .first<SporeRow>();
 }
 
@@ -298,13 +307,13 @@ export async function consolidateSpores(
 ): Promise<{ wisdom: SporeRow | null; consolidated: number }> {
   const insert = db.prepare(`INSERT INTO spores
       (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, context,
-       importance, file_path, tags, content_hash, properties, author, provenance_kind, provenance_ref, created_at, embedded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+       importance, file_path, tags, content_hash, properties, author, provenance_kind, provenance_ref, agent_line, created_at, embedded)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
       RETURNING ${COLUMNS}`)
     .bind(scope.projectId, wisdom.id, wisdom.agentId, wisdom.sessionId, wisdom.promptId, wisdom.observationType,
       wisdom.status ?? 'active', wisdom.content, wisdom.context, wisdom.importance ?? 5, wisdom.filePath,
       wisdom.tags, wisdom.contentHash, wisdom.properties, wisdom.author,
-      wisdom.provenance?.kind ?? null, wisdom.provenance?.ref ?? null, wisdom.createdAt);
+      wisdom.provenance?.kind ?? null, wisdom.provenance?.ref ?? null, wisdom.agentLine ?? null, wisdom.createdAt);
   const moves = sources.flatMap((sporeId) => [
     db.prepare(`UPDATE spores SET status = 'consolidated', updated_at = ? WHERE project_id = ? AND id = ? AND status = 'active' RETURNING id`)
       .bind(now, scope.projectId, sporeId),

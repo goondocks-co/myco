@@ -48,7 +48,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 90;
+const EMIT_CALLS = 91;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -645,11 +645,6 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
       },
-      'POST /runs/instructions-write': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/instructions-write', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/instructions-write', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', content: '# instructions' }) }),
-      },
       'POST /runs/sessions': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/sessions', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -1109,7 +1104,6 @@ describe('gates', () => {
       'member POST /runs/failed',
       'member POST /runs/get',
       'member POST /runs/instruction',
-      'member POST /runs/instructions-write',
       'member POST /runs/report',
       'member POST /runs/reports',
       'member POST /runs/repository',

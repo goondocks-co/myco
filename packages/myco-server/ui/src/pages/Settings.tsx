@@ -121,9 +121,10 @@ function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefine
           ? <PatternInput label={field.label} patterns={value} readOnly={field.readOnly} pending={actions.setLeaf.isPending} onSave={save} />
           : <span role="alert" className="text-tertiary">Stored patterns must be an array of strings.</span>)}
         {field.kind === 'toggle' && (
-          <button type="button" id={`leaf-${field.leaf}`} role="switch" aria-checked={value === true} aria-label={field.label} disabled={actions.setLeaf.isPending}
+          <button type="button" id={`leaf-${field.leaf}`} role="switch" aria-checked={value === true} aria-label={field.label}
+            disabled={actions.setLeaf.isPending || field.readOnly === true}
             onClick={() => save(value !== true)}
-            className={`${button} ${value === true ? 'bg-primary/15 text-primary' : ''}`}>
+            className={`${button} ${value === true ? 'bg-primary/15 text-primary' : ''} ${field.readOnly === true ? 'opacity-60' : ''}`}>
             {value === true ? 'On' : 'Off'}
           </button>
         )}
@@ -138,6 +139,13 @@ function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefine
           <input id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} w-full`} type={field.kind === 'number' ? 'number' : 'text'}
             min={field.min} max={field.max} step={field.step} value={shown} placeholder="Server default"
             onChange={(e) => setDraft(e.target.value)} onBlur={commitText} onKeyDown={(e) => { if (e.key === 'Enter') commitText(); }} />
+        )}
+        {field.kind === 'textarea' && (
+          <div className="flex w-full flex-col gap-1">
+            <textarea id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} min-h-32 w-full`} value={shown} readOnly={field.readOnly}
+              maxLength={field.maxLength} placeholder={field.readOnly ? 'Nothing stored' : 'Server default'} onChange={(e) => setDraft(e.target.value)} />
+            {!field.readOnly && <button type="button" className={button} disabled={draft === null || actions.setLeaf.isPending} onClick={commitText}>Save</button>}
+          </div>
         )}
         {field.kind === 'json' && (
           <div className="flex w-full flex-col gap-1">

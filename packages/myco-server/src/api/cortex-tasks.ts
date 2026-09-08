@@ -27,10 +27,9 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { heldRun } from './run-admission.js';
 import { digestForTier, listDigests, upsertDigest } from '../core/digests.js';
-import { inputHashOf, upsertCortexInstructions, runInstruction, type RunRow } from '../core/runs.js';
+import { inputHashOf, runInstruction, type RunRow } from '../core/runs.js';
 import { DIGEST_TIERS } from '../core/recall.js';
-import {
-  CORTEX_INSTRUCTIONS_TASK, DIGEST_READ_TASKS, DIGEST_TASK, DIGEST_WRITE_TASKS, INSTRUCTED_TASKS, SESSION_LIST_TASKS,
+import { DIGEST_READ_TASKS, DIGEST_TASK, DIGEST_WRITE_TASKS, INSTRUCTED_TASKS, SESSION_LIST_TASKS,
 } from '../core/task-inputs.js';
 import {
   DIGEST_SESSION_PAGE_LIMIT, preview, RUN_SESSION_LABEL_CHARS, RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS,
@@ -82,36 +81,6 @@ export async function handleRunInstruction(env: ServerEnv, ctx: RouteContext): P
   return Response.json({ persisted: true, held: true, instruction: await runInstruction(env.db, { projectId: ctx.projectId }, runId) });
 }
 
-/**
- * The artifact a `cortex-instructions` run writes: the Project's session-start
- * instructions, filed under the hash of the material the server handed it.
- */
-export async function handleInstructionsWrite(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = str(body.runId);
-  const content = str(body.content, MAX_STATE_BYTES);
-  if (runId === null || content === null) {
-    return Response.json(refused(ctx, refusal(`instructions require runId and content of 1 to ${MAX_STATE_BYTES} characters`, 'parse')));
-  }
-  const run = await heldRun(env, ctx, runId, [CORTEX_INSTRUCTIONS_TASK]);
-  if (run === null) return Response.json({ ...UNHELD, written: false });
-
-  const inputHash = inputHashOf(run);
-  // A run dispatched with no recorded hash cannot file the artifact: the hash is
-  // what every later dispatch compares its own build against.
-  if (inputHash === null || run.dryRun === 1) return Response.json({ persisted: true, held: true, written: false });
-
-  await upsertCortexInstructions(env.db, { projectId: ctx.projectId }, {
-    agentId: run.agentId,
-    content,
-    inputHash,
-    generatedAt: ctx.now,
-    sourceRunId: runId,
-  });
-  return Response.json({ persisted: true, held: true, written: true });
-}
-
 /** The Project's settled sessions, newest first: what a run needs to name a hotspot by title. */
 export async function handleRunSessions(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
@@ -161,8 +130,11 @@ export async function handleRunDigest(env: ServerEnv, ctx: RouteContext): Promis
   }
   // The run that WRITES the digest is served the tier it asked for or nothing:
   // handed a neighbour's body under the name of an absent tier, it carries that
-  // body forward as the tier's own and the two collapse into one. A run that
-  // only reads is served the nearest tier, and told which it got.
+  // body forward as the tier's own and the two collapse into one.
+  //
+  // The digest task is the only one holding this surface, so `exactOnly` is
+  // always true and the nearest-tier answer below is unreachable. It stands for
+  // the reading task #1152 re-homes here.
   const chosen = digestForTier(rows, tier);
   const exactOnly = run.task !== null && DIGEST_WRITE_TASKS.includes(run.task);
   const served = chosen === null || (exactOnly && chosen.fallback) ? null : chosen;

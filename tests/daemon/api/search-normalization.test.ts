@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { normalizeSearchNamespace } from '@myco/daemon/api/search.js';
 import { normalizeSearchResults } from '@myco/search-results.js';
+import { PROJECT_PIVOT } from '@myco/tools/pivot.js';
 
 describe('normalizeSearchNamespace', () => {
   it('maps singular MCP type filters to semantic namespaces', () => {
@@ -57,7 +58,7 @@ describe('normalizeSearchResults', () => {
       { tool: 'myco_sessions', input: { op: 'get', id: 's1' } },
       { tool: 'myco_skills', input: { op: 'get', id: 'sk1' } },
       { tool: 'myco_agent', input: { op: 'run', id: 'run1' } },
-      { tool: 'myco_cortex', input: { op: 'canopy_entry', id: 'proj:src/app.ts', project_id: 'proj', path: 'src/app.ts' } },
+      { tool: 'myco_cortex', input: { op: 'canopy_entry', id: 'proj:src/app.ts', [PROJECT_PIVOT]: 'proj', path: 'src/app.ts' } },
     ]);
   });
 });
