@@ -181,16 +181,30 @@ async function envelopeFor(target: ParseTarget, event: DerivedEvent): Promise<Re
 /**
  * Whether the row this event names is now in the store.
  *
- * A duplicate counts, and so does an id conflict. Both mean the row is already
- * there: a derived event's id IS its row identity (`rowIdentity`), so two
- * different rows cannot share one, and a conflict can only be this same row
- * derived again — by a pass that saw a wider window and attributed it to the
- * turn it belongs to. The earlier derivation is the better one and stands.
+ * A duplicate counts: the same row with the same content is already there.
+ *
+ * An id conflict also counts, and it is NOT the same thing. The id covers the
+ * row's identity, not its content, so a conflict means this row is stored with
+ * DIFFERENT content — and the stored version wins. This pass's version is
+ * dropped, and `transcript_row_conflict` is emitted so the loss is visible
+ * rather than inferred. It still counts as landed: the row exists and the
+ * cursor must move, and stopping the transcript over a row already recorded
+ * would cost every row after it, which is the larger loss.
+ *
+ * A backfill inherits that rule and should not want it. Re-importing a
+ * transcript over rows an older parser or a hook already wrote keeps the older
+ * content silently, which is the wrong default for #1148 — it needs an explicit
+ * decision about which version wins, not this one.
  *
  * Every other refusal is a genuine failure and stops the transcript where it
  * stands, which is what keeps the cursor from passing a row that never landed.
  */
-const landed = (result: IngestResult): boolean => result.persisted === true || result.code === 'event_id_conflict';
+function landed(result: IngestResult, target: ParseTarget, event: DerivedEvent): boolean {
+  if (result.persisted === true) return true;
+  if (result.code !== 'event_id_conflict') return false;
+  emit({ kind: 'transcript_row_conflict', projectId: target.projectId, transcriptId: target.transcriptId, eventKind: event.kind });
+  return true;
+}
 
 
 export interface PassReport {
@@ -310,7 +324,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     for (const [n, write] of writes.entries()) {
       const slice = results.slice(offset, offset + write.statements.length);
       offset += write.statements.length;
-      if (landed(write.interpret(slice))) { derived += 1; continue; }
+      if (landed(write.interpret(slice), target, group[n])) { derived += 1; continue; }
       // The cursor stops at the byte of the event that did not land, never past it.
       await stop(env.db, target, 'parse', now);
       return { derived, calls: calls + 1, nextOffset: group[n].offset, failure: 'parse' };

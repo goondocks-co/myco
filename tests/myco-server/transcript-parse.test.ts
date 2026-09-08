@@ -19,7 +19,7 @@ import {
   parseOnce, parseTranscripts, pendingTranscriptBytes,
   TRANSCRIPT_PARSE_CALLS_PER_PASS, TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT,
 } from '@myco-server-worker/ingest/parse.js';
-import { freeOrphanedBlobs, transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
+import { freeOrphanedBlobs, TOMBSTONE_SWEEP_GRACE_MS, transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
 import { listTranscripts } from '@myco-server-worker/read/transcript.js';
 import { listSessions, listSessionSummaries } from '@myco-server-worker/read/sessions.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
@@ -482,13 +482,34 @@ describe('transcript retention', () => {
     expect((sqlite.query(`SELECT COUNT(*) c FROM blobs WHERE key = ?`).get('f'.repeat(64)) as { c: number }).c).toBe(0);
   });
 
+  /** A deletion, which is the only thing that leaves a blob behind. */
+  const deleted = (sqlite: Database, at = NOW) =>
+    sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, 'gone', NULL, ?, 'm')`, PROJECT, at);
+
   it('collects orphans whether or not a retention window is set', async () => {
     const { sqlite, serverEnv } = await rig(body(1));
     sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, PROJECT, 'e'.repeat(64), NOW);
+    deleted(sqlite);
     // No window: raw segments are kept forever, and bytes nothing references
     // are still not kept.
     expect(await transcriptRetention(serverEnv, NOW)).toBe(1);
     expect(count(sqlite, 'transcript_segments')).toBeGreaterThan(0);
+  });
+
+  it('does not go looking for orphans on a Deployment where nothing was deleted', async () => {
+    const { sqlite, serverEnv } = await rig(body(1));
+    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, PROJECT, 'd'.repeat(64), NOW);
+    // The steady state: the scan is the expensive half and nothing could have
+    // made an orphan, so it is not run and the row stands until one is.
+    expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
+    expect((sqlite.query(`SELECT COUNT(*) c FROM blobs WHERE key = ?`).get('d'.repeat(64)) as { c: number }).c).toBe(1);
+  });
+
+  it('stops looking once a deletion is old enough to have drained', async () => {
+    const { sqlite, serverEnv } = await rig(body(1));
+    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, PROJECT, 'c'.repeat(64), NOW);
+    deleted(sqlite, NOW - TOMBSTONE_SWEEP_GRACE_MS - 1);
+    expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
   });
 
   it('leaves a blob a surviving row still names', async () => {

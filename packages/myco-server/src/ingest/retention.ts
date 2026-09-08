@@ -43,6 +43,18 @@ export const TRANSCRIPT_RETENTION_BLOBS_PER_PASS = 8;
 const CANDIDATE_SEGMENTS = 256;
 
 /**
+ * Store and blob calls one sweep may spend, in the units the parse pass counts.
+ *
+ * Worst case: the leaf, the orphan select, its object deletes and one batched
+ * row delete, the candidate select, one batched segment delete, one reference
+ * check, and the page's object deletes with one batched row delete. Both
+ * halves are bounded by `TRANSCRIPT_RETENTION_BLOBS_PER_PASS`, which is what
+ * keeps the total inside a hosted runtime's per-invocation cap alongside the
+ * other jobs.
+ */
+export const TRANSCRIPT_RETENTION_CALLS_PER_PASS = 2 * TRANSCRIPT_RETENTION_BLOBS_PER_PASS + 6;
+
+/**
  * No raw transcript segment outlives the Deployment's window, and a blob no
  * surviving row references goes with it. Derived rows are never pruned, and
  * neither is the transcript row: what the segments held is already projected,
@@ -56,12 +68,17 @@ const CANDIDATE_SEGMENTS = 256;
  * unreachable.
  */
 export async function transcriptRetention(env: ServerEnv, now: number): Promise<number> {
-  // Orphans first, and regardless of the window. A deleted session frees a
+  // Orphans first, and regardless of the window: a deleted session frees a
   // bounded page of blobs and the rows naming the rest are already gone, so
-  // this is the only route back to them — and whether a Deployment keeps its
-  // raw segments for thirty days or forever says nothing about bytes nothing
+  // this is the only route back to them. Whether a Deployment keeps its raw
+  // segments for thirty days or forever says nothing about bytes nothing
   // references at all.
-  const orphans = await freeOrphanedBlobs(env);
+  //
+  // Gated, though. The steady state is that there are no orphans, and asking
+  // costs a scan of `blobs` against five reference checks — cheap per row and
+  // paid on every tick forever. A deletion is the only thing that makes an
+  // orphan, so the sweep runs only where one has happened recently.
+  const orphans = (await orphansPossible(env.db, now)) ? await freeOrphanedBlobs(env) : 0;
 
   const window = transcriptRetentionDays((await leafValues(env.db, ['retention.transcripts'])).get('retention.transcripts'));
   if (window === 'unreadable') {
@@ -83,12 +100,17 @@ export async function transcriptRetention(env: ServerEnv, now: number): Promise<
 
   // Cut the page to the blobs this pass can account for, then take every
   // segment naming one of them: the rows and the objects go together.
-  const admitted = new Map<string, string>();
+  // A blob key is unique per Project, not across them: the same content in two
+  // Projects is two rows and two objects, and a page keyed by content alone
+  // would delete one Project's segment while accounting for another's blob.
+  const at = (projectId: string, key: string) => `${projectId}\u0000${key}`;
+  const admitted = new Map<string, { projectId: string; key: string }>();
   for (const c of candidates) {
-    if (!admitted.has(c.blob_key) && admitted.size >= TRANSCRIPT_RETENTION_BLOBS_PER_PASS) continue;
-    admitted.set(c.blob_key, c.project_id);
+    const id = at(c.project_id, c.blob_key);
+    if (!admitted.has(id) && admitted.size >= TRANSCRIPT_RETENTION_BLOBS_PER_PASS) continue;
+    admitted.set(id, { projectId: c.project_id, key: c.blob_key });
   }
-  const doomed = candidates.filter((c) => admitted.has(c.blob_key));
+  const doomed = candidates.filter((c) => admitted.has(at(c.project_id, c.blob_key)));
 
   await env.db.batch(doomed.map((d) => env.db
     .prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id = ? AND base_offset = ?`)
@@ -96,6 +118,30 @@ export async function transcriptRetention(env: ServerEnv, now: number): Promise<
 
   emit({ kind: 'transcript_retention_pruned', segments: doomed.length, blobs: await freeBlobs(env, admitted) });
   return doomed.length + orphans;
+}
+
+/**
+ * Whether a deletion has happened that could have left a blob behind.
+ *
+ * A tombstone is the only writer that removes rows naming a blob while leaving
+ * the blob, so its own record is the signal. Reading it is one indexed lookup
+ * against a table with one row per deleted session; the sweep it guards is a
+ * scan of every blob in the Deployment against five reference checks. Paying
+ * the first on every tick to skip the second is the whole point.
+ *
+ * A sweep runs for every tombstone newer than the window it last swept, and
+ * `TOMBSTONE_SWEEP_GRACE_MS` keeps it running for a while afterwards so a
+ * deletion whose blobs took several passes to drain is finished rather than
+ * abandoned.
+ */
+export const TOMBSTONE_SWEEP_GRACE_MS = 6 * 60 * 60 * 1000;
+
+async function orphansPossible(db: ServerEnv['db'], now: number): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT 1 AS present FROM session_tombstones WHERE created_at > ? LIMIT 1`)
+    .bind(now - TOMBSTONE_SWEEP_GRACE_MS)
+    .first<{ present: number }>();
+  return row !== null;
 }
 
 /**
@@ -128,21 +174,23 @@ export async function freeOrphanedBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>): P
  * admitted key in one statement rather than one apiece, which is what lets a
  * whole page be accounted for inside the call budget.
  */
-async function freeBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>, admitted: ReadonlyMap<string, string>): Promise<number> {
-  const keys = [...admitted.keys()];
-  if (keys.length === 0) return 0;
+async function freeBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>, admitted: ReadonlyMap<string, { projectId: string; key: string }>): Promise<number> {
+  const page = [...admitted.values()];
+  if (page.length === 0) return 0;
   const holders = ['transcript_segments', 'prompt_batches', 'responses', 'plans', 'attachments'];
-  const placeholders = keys.map(() => '?').join(', ');
+  // Every reference check carries the Project, so a key held in one Project
+  // cannot keep the same content alive in another.
+  const pairs = page.map(() => '(project_id = ? AND blob_key = ?)').join(' OR ');
   const { results: held } = await env.db
-    .prepare(holders.map((table) => `SELECT DISTINCT blob_key AS k FROM ${table} WHERE blob_key IN (${placeholders})`).join(' UNION '))
-    .bind(...holders.flatMap(() => keys))
-    .all<{ k: string }>();
+    .prepare(holders.map((table) => `SELECT DISTINCT project_id AS p, blob_key AS k FROM ${table} WHERE ${pairs}`).join(' UNION '))
+    .bind(...holders.flatMap(() => page.flatMap((b) => [b.projectId, b.key])))
+    .all<{ p: string; k: string }>();
 
-  const stillHeld = new Set(held.map((r) => r.k));
-  const orphaned = keys.filter((k) => !stillHeld.has(k));
+  const stillHeld = new Set(held.map((r) => `${r.p}\u0000${r.k}`));
+  const orphaned = page.filter((b) => !stillHeld.has(`${b.projectId}\u0000${b.key}`));
   if (orphaned.length === 0) return 0;
-  for (const key of orphaned) await env.blobs.delete(`${admitted.get(key)!}/${key}`);
-  await env.db.batch(orphaned.map((key) => env.db
-    .prepare(`DELETE FROM blobs WHERE project_id = ? AND key = ?`).bind(admitted.get(key)!, key)));
+  for (const b of orphaned) await env.blobs.delete(`${b.projectId}/${b.key}`);
+  await env.db.batch(orphaned.map((b) => env.db
+    .prepare(`DELETE FROM blobs WHERE project_id = ? AND key = ?`).bind(b.projectId, b.key)));
   return orphaned.length;
 }
