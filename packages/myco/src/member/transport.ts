@@ -48,6 +48,7 @@ const EVENTS_PATH = '/events';
 const LINK_GITHUB_PATH = '/members/link-github';
 const BLOBS_PATH = '/blobs';
 const REFRESH_PATH = '/tokens/refresh';
+const IMPORT_PLAN_PATH = '/import/plan';
 const HEALTH_PATH = '/health';
 const JSON_CONTENT_TYPE = 'application/json';
 const RETRY_AFTER_HEADER = 'retry-after';
@@ -136,6 +137,12 @@ export class ServerClient {
       budget,
     });
     return classifyBlobAnswer(raw);
+  }
+
+  /** Ask what to ship for an import. The answer is advice — every rule it applies the write path applies again — so it is classified like any other answer and a refusal ends the pass. */
+  async importPlan(request: unknown, budget: RequestBudget): Promise<Outcome> {
+    const raw = await this.request('POST', IMPORT_PLAN_PATH, { body: JSON.stringify(request), headers: { 'content-type': JSON_CONTENT_TYPE }, budget });
+    return classifyEventAnswer(raw);
   }
 
   async refresh(budget: RequestBudget): Promise<RefreshOutcome> {

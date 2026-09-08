@@ -12,6 +12,7 @@ import { plans } from './scenarios/plans.ts';
 import { spores } from './scenarios/spores.ts';
 import { recall } from './scenarios/recall.ts';
 import { tick } from './scenarios/tick.ts';
+import { importParity } from './scenarios/import.ts';
 import { dispatchQueue } from './scenarios/dispatch-queue.ts';
 import { scheduledTasks } from './scenarios/scheduled-tasks.ts';
 import { cortex } from './scenarios/cortex.ts';
@@ -19,7 +20,7 @@ import { replacedRun } from './scenarios/replaced-run.ts';
 import { search } from './scenarios/search.ts';
 import { grants } from './scenarios/grants.ts';
 
-const scenarios = [repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants];
+const scenarios = [repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity];
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

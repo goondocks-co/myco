@@ -19,7 +19,7 @@ import { firstHeading, sha256Text } from './text.js';
 import { SymbiontRegistry } from '../symbionts/registry.js';
 import type { TranscriptTurn } from '../symbionts/adapter.js';
 import { canStartRequest, clippedRequestBudget, type HookBudget } from './budget.js';
-import { TRANSCRIPT_SLICE_BYTES, type MemberCode } from './constants.js';
+import { TRANSCRIPT_HEAD_HASH_BYTES, TRANSCRIPT_SLICE_BYTES, type MemberCode } from './constants.js';
 import {
   attachmentEvent, deriveId, planEvent, planKeyForTag, promptEvent, queuedPromptIdFor, transcriptSegmentEvent, TEXT_MEDIA_TYPE,
   type EnvelopeContext, type OutboundEvent,
@@ -180,6 +180,30 @@ export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: st
   return { events, lastAssistantText, record };
 }
 
+/**
+ * The digest of a transcript's first bytes, or null when it has too few.
+ *
+ * What the Deployment's integrity gate compares a later segment against: a file
+ * truncated and rewritten in place keeps its path and its inode, so it keeps
+ * its identity, and only the content of its head says it is a different file.
+ *
+ * Null below the prefix length rather than a digest of what is there: a digest
+ * over a partial head would change as the file grew, and every ordinary append
+ * would read as a replacement.
+ */
+export function transcriptHeadHash(filePath: string): string | null {
+  let stat: fs.Stats;
+  try { stat = fs.statSync(filePath); } catch { return null; }
+  if (stat.size < TRANSCRIPT_HEAD_HASH_BYTES) return null;
+  try {
+    const head = readSlice(filePath, 0, TRANSCRIPT_HEAD_HASH_BYTES);
+    if (head.byteLength < TRANSCRIPT_HEAD_HASH_BYTES) return null;
+    return crypto.createHash('sha256').update(head).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
 export interface ShipResult {
   shipped: number;
   endedBy: 'done' | 'budget' | 'retry' | 'parked' | 'refused' | 'unauthorized' | 'route_missing' | 'protocol' | 'absent';
@@ -204,7 +228,7 @@ const readSlice = (file: string, offset: number, length: number): Buffer => {
  */
 export async function shipTranscriptSegments(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
-  opts: { now?: () => number; until?: number } = {},
+  opts: { now?: () => number; until?: number; headHash?: string } = {},
 ): Promise<ShipResult> {
   const now = opts.now ?? Date.now;
   const { sessionId } = ctx;
@@ -254,7 +278,7 @@ export async function shipTranscriptSegments(
     const source = { path: pointer.path, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), mediaType: TEXT_MEDIA_TYPE, size: bytes.byteLength };
 
     // Built before the upload so both refusal paths can name the segment they lost.
-    const event = transcriptSegmentEvent(ctx, { transcriptId: pointer.transcriptId, baseOffset: offset, blobSource: source, originPath: pointer.path });
+    const event = transcriptSegmentEvent(ctx, { transcriptId: pointer.transcriptId, baseOffset: offset, blobSource: source, originPath: pointer.path, headHash: opts.headHash });
     const logRefusal = (code: MemberCode, reason: string): void => {
       spool.appendRefused({ eventId: event.envelope.eventId, sessionId, kind: event.envelope.kind, code, reason, at: now() });
     };

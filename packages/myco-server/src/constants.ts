@@ -43,6 +43,24 @@ export const HSTS_MAX_AGE_SECONDS = 31_536_000;
 export const TOKEN_ID_PREFIX = 'mt_';
 
 /**
+ * The bounds a bounded import may be asked for (#1148).
+ *
+ * Here rather than beside the policy that reads them: `core/settings.ts`
+ * declares the leaf ranges and `core/import-policy.ts` reads the leaves
+ * through it, so a bound declared in the policy module would close a cycle
+ * between the two.
+ *
+ * These are the CEILINGS, not the defaults. The default bound is the
+ * Deployment's leaf, or the anchor's 30 days and 50 sessions per harness where
+ * it has set none; the repeatable command exists to ask for more, so what
+ * limits it is the leaf's own range.
+ */
+export const IMPORT_WINDOW_DAYS_MAX = 3650;
+export const IMPORT_MAX_SESSIONS_MAX = 1000;
+/** Candidates one plan request may carry; the member trims to its newest this many before asking. */
+export const IMPORT_PLAN_MAX_CANDIDATES = 1000;
+
+/**
  * The path an invite link carries. The dashboard builds `<origin>/join#<key>`
  * from it and `myco login` reads the same shape; the key rides in the fragment,
  * which no browser puts on the wire.

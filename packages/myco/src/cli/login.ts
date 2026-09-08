@@ -19,6 +19,7 @@ import { getMachineId } from '../machine-id.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
+import { runImport } from '../member/import.js';
 import { exchangeJoinCode, parseJoinCode, recordJoinAnswer, JOIN_CODE_REFUSALS } from '../member/join-code.js';
 
 export const LOGIN_HELP = `Usage: myco login <invite-link>
@@ -120,5 +121,18 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   out(`Signed in to ${code.serverUrl} as ${answer.memberId} (${answer.role}).`);
   if (root !== undefined) out(`  Connected ${root} to project ${answer.projectId}. Your agents capture there from now on.`);
   else out('  No project yet — connect your first one with `myco member join`.');
+
+  // A machine arrives with history, and the bounded pass over what is already
+  // on its disk runs once, here. Only where the invitation named a Project:
+  // without one there is nothing to import into. A failed import never fails
+  // the sign-in — the machine is signed in, and `myco import` fetches the
+  // history whenever the person wants it.
+  if (root !== undefined) {
+    const report = await runImport({ serverUrl: code.serverUrl }, {
+      fetch: deps.fetch, now: deps.now, cwd: deps.cwd, mycoHome: deps.mycoHome ?? resolveMycoHome(), machineId,
+    }).catch(() => null);
+    const imported = report?.projects.reduce((n, p) => n + p.agents.reduce((m, a) => m + a.imported, 0), 0) ?? 0;
+    if (imported > 0) out(`  Imported ${imported} past sessions. Run \`myco import\` to reach further back.`);
+  }
   return true;
 }
