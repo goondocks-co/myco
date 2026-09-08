@@ -1,0 +1,156 @@
+/**
+ * Codex's rollout file: one JSON object per line, wrapping a `response_item`.
+ *
+ *   payload.type = 'message'        role `user` carries `input_text` blocks,
+ *                                   role `assistant` carries `output_text`.
+ *   payload.type = 'function_call'  a tool call; `call_id` names the
+ *                                   `function_call_output` that answers it.
+ *
+ * `session_meta`, `event_msg`, `turn_context` and `reasoning` records carry no
+ * row and are skipped. Codex declares no plan tags, so this parser derives no
+ * plans; a Codex plan reaches the server as a plan-file event from the member.
+ */
+import { uuidv5 } from '../../hash.js';
+import {
+  blocksOf, isBlock, lineTime, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  type DerivedEvent, type ParserInput, type TranscriptParser,
+} from './index.js';
+
+const TOOL_NAME_CHARS = 64;
+
+/** The text of a Codex content array: the block types that carry words. */
+function codexText(content: unknown): string {
+  return blocksOf(content)
+    .filter((b) => b.type === 'input_text' || b.type === 'output_text' || b.type === 'text')
+    .map((b) => (typeof b.text === 'string' ? b.text : ''))
+    .filter((t) => t !== '')
+    .join('\n\n');
+}
+
+const promptIdAt = (sessionId: string, offset: number): Promise<string> => uuidv5('codex-prompt', sessionId, String(offset));
+const responseIdAt = (sessionId: string, offset: number): Promise<string> => uuidv5('response', sessionId, String(offset));
+const toolCallIdFor = (sessionId: string, callId: string): Promise<string> => uuidv5('tool-call', sessionId, callId);
+
+interface PendingCall {
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+  promptId?: string;
+  createdAt: number;
+  offset: number;
+}
+
+/** A function call's arguments, which Codex ships as a JSON string. */
+function argumentsOf(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw ?? {};
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return { arguments: raw };
+  }
+}
+
+export const codexParser: TranscriptParser = {
+  agent: 'codex',
+  fidelity: 'full',
+
+  async parse({ lines, sessionId, now }: ParserInput): Promise<DerivedEvent[]> {
+    const events: DerivedEvent[] = [];
+    const pending = new Map<string, PendingCall>();
+    let promptId: string | undefined;
+    let reply: { text: string[]; offset: number; createdAt: number; promptId?: string } | null = null;
+
+    const flushReply = async (): Promise<void> => {
+      if (reply === null) return;
+      const held = reply;
+      reply = null;
+      const text = held.text.join('\n\n').trim();
+      if (text === '') return;
+      events.push({
+        kind: 'response',
+        payload: { responseId: await responseIdAt(sessionId, held.offset), promptId: held.promptId, text },
+        createdAt: held.createdAt,
+        offset: held.offset,
+      });
+    };
+
+    for (const { value, offset } of lines) {
+      if (str(value.type) !== 'response_item' || !isBlock(value.payload)) continue;
+      const payload = value.payload;
+      const createdAt = lineTime(value, now);
+      const kind = str(payload.type);
+
+      if (kind === 'message') {
+        const text = codexText(payload.content);
+        if (text.trim() === '') continue;
+        if (str(payload.role) === 'user') {
+          await flushReply();
+          promptId = await promptIdAt(sessionId, offset);
+          events.push({ kind: 'prompt', payload: { promptId, text, origin: 'user', promptKind: 'message' }, createdAt, offset });
+          continue;
+        }
+        if (reply === null) reply = { text: [], offset, createdAt, promptId };
+        reply.text.push(text);
+        continue;
+      }
+
+      if (kind === 'function_call') {
+        const callId = str(payload.call_id) ?? str(payload.id);
+        const name = str(payload.name);
+        if (callId === undefined || name === undefined) continue;
+        pending.set(callId, {
+          toolCallId: await toolCallIdFor(sessionId, callId),
+          toolName: name.slice(0, TOOL_NAME_CHARS),
+          input: argumentsOf(payload.arguments),
+          promptId,
+          createdAt,
+          offset,
+        });
+        continue;
+      }
+
+      if (kind === 'function_call_output') {
+        const callId = str(payload.call_id);
+        const call = callId === undefined ? undefined : pending.get(callId);
+        if (call === undefined || callId === undefined) continue;
+        pending.delete(callId);
+        const output = (typeof payload.output === 'string' ? payload.output : codexText(payload.output)).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
+        const failed = payload.success === false;
+        events.push({
+          kind: failed ? 'tool.failure' : 'tool.use',
+          payload: {
+            toolCallId: call.toolCallId,
+            promptId: call.promptId,
+            toolName: call.toolName,
+            input: call.input,
+            ...(output === '' ? {} : { output }),
+            success: !failed,
+            ...(failed ? { errorMessage: output === '' ? 'tool failed' : output } : {}),
+          },
+          createdAt: call.createdAt,
+          offset: call.offset,
+        });
+      }
+    }
+
+    await flushReply();
+
+    for (const call of pending.values()) {
+      events.push({
+        kind: 'tool.failure',
+        payload: {
+          toolCallId: call.toolCallId,
+          promptId: call.promptId,
+          toolName: call.toolName,
+          input: call.input,
+          success: false,
+          errorMessage: 'tool call has no result in the transcript',
+        },
+        createdAt: call.createdAt,
+        offset: call.offset,
+      });
+    }
+
+    return events.sort((a, b) => a.offset - b.offset);
+  },
+};

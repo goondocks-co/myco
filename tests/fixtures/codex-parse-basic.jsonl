@@ -1,0 +1,6 @@
+{"type": "session_meta", "payload": {"id": "c1", "cwd": "/repo"}}
+{"type": "response_item", "timestamp": "2026-09-01T10:00:01Z", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "summarise the ingest path"}]}}
+{"type": "response_item", "timestamp": "2026-09-01T10:00:02Z", "payload": {"type": "reasoning", "content": [{"type": "text", "text": "thinking"}]}}
+{"type": "response_item", "timestamp": "2026-09-01T10:00:03Z", "payload": {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{\"command\":\"ls\"}"}}
+{"type": "response_item", "timestamp": "2026-09-01T10:00:04Z", "payload": {"type": "function_call_output", "call_id": "call_1", "output": "events.ts\nkinds.ts"}}
+{"type": "response_item", "timestamp": "2026-09-01T10:00:05Z", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Two modules carry it."}]}}
