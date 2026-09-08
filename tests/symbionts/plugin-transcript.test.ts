@@ -203,7 +203,12 @@ describe('pi tool registration', () => {
  * Every gate below drives real plugin code rather than a restatement of it:
  * a rename or a changed rule inside the snippet moves what these observe.
  */
-function snippetModule(env: NodeJS.ProcessEnv, spawns: { env?: NodeJS.ProcessEnv; args: string[] }[] = []) {
+function snippetModule(
+  env: NodeJS.ProcessEnv,
+  spawns: { env?: NodeJS.ProcessEnv; args: string[] }[] = [],
+  noted: string[] = [],
+  execImpl?: (bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => string,
+) {
   const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8');
   const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet.split('{{mycoCredentialSource}}').join('registry'));
   return new Function(
@@ -213,8 +218,8 @@ function snippetModule(env: NodeJS.ProcessEnv, spawns: { env?: NodeJS.ProcessEnv
   )(
     fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.accessSync, fs.openSync, fs.closeSync,
     fs.writeSync, fs.unlinkSync, fs.constants, path.join, path.dirname, path.resolve, () => env.HOME,
-    (_bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => { spawns.push({ env: opts?.env, args }); return '{}'; },
-    { ...process, env, platform: process.platform },
+    execImpl ?? ((_bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => { spawns.push({ env: opts?.env, args }); return '{}'; }),
+    { ...process, env, platform: process.platform, stderr: { write: (line: string) => { noted.push(String(line)); return true; } } },
   ) as {
     transcriptPathFor: (d: string, a: string, s: string) => string;
     appendTranscriptLine: (d: string, a: string, s: string, r: Record<string, unknown>) => void;
@@ -256,7 +261,7 @@ describe('one instance speaks for a session', () => {
 
     // The runtime that held the session is gone; its claim names a dead pid.
     const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_2.lock');
-    fs.writeFileSync(claim, '2147483646');
+    fs.writeFileSync(claim, `gone-instance ${Date.now() - 60 * 60 * 1000}`);
 
     const resumed = snippetModule(env);
     expect(resumed.holdsSessionClaim('/repo', 'opencode', 'ses_2')).toBe(true);
@@ -276,7 +281,7 @@ describe('one instance speaks for a session', () => {
     const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_stale.lock');
     fs.mkdirSync(path.dirname(claim), { recursive: true });
     // This process is live and is not the holder: exactly the recycled-pid case.
-    fs.writeFileSync(claim, `${process.pid} ${Date.now() - mod.CLAIM_STALE_MS - 1000}`);
+    fs.writeFileSync(claim, `other-instance ${Date.now() - mod.CLAIM_STALE_MS - 1000}`);
 
     expect(mod.holdsSessionClaim('/repo', 'opencode', 'ses_stale')).toBe(true);
     mod.appendTranscriptLine('/repo', 'opencode', 'ses_stale', { type: 'prompt', text: 'x' });
@@ -288,7 +293,7 @@ describe('one instance speaks for a session', () => {
     const mod = snippetModule(env);
     const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_fresh.lock');
     fs.mkdirSync(path.dirname(claim), { recursive: true });
-    fs.writeFileSync(claim, `${process.pid} ${Date.now()}`);
+    fs.writeFileSync(claim, `other-instance ${Date.now()}`);
 
     expect(mod.holdsSessionClaim('/repo', 'opencode', 'ses_fresh')).toBe(false);
     mod.appendTranscriptLine('/repo', 'opencode', 'ses_fresh', { type: 'prompt', text: 'x' });
@@ -304,10 +309,59 @@ describe('one instance speaks for a session', () => {
     first.appendTranscriptLine('/repo', 'opencode', 'ses_lost', { type: 'prompt', text: 'one' });
 
     const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_lost.lock');
-    fs.writeFileSync(claim, `${process.pid + 1} ${Date.now()}`);
+    fs.writeFileSync(claim, `other-instance ${Date.now()}`);
 
     first.appendTranscriptLine('/repo', 'opencode', 'ses_lost', { type: 'prompt', text: 'two' });
     expect(fs.readFileSync(first.transcriptPathFor('/repo', 'opencode', 'ses_lost'), 'utf-8').split('\n').filter(Boolean)).toHaveLength(1);
+  });
+
+  it('runs no hook from an instance displaced while it was idle', () => {
+    // The write path re-reads the claim; the hook path has to as well. An
+    // instance that remembered holding the session would keep injecting after
+    // another took it — and an agent that never appends, like Pi, reaches that
+    // state on every session once its claim ages.
+    const env = sandboxEnv();
+    const firstSpawns: { args: string[] }[] = [];
+    const secondSpawns: { args: string[] }[] = [];
+    const first = snippetModule(env, firstSpawns);
+    const second = snippetModule(env, secondSpawns);
+
+    expect(first.runMycoHook('/repo', 'opencode', 'ses_idle', 'session-start', {})).not.toBeNull();
+
+    // The holder falls idle long enough for its claim to age, and the other
+    // instance takes the session through the real path.
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_idle.lock');
+    const [instance] = fs.readFileSync(claim, 'utf-8').split(/\s+/);
+    fs.writeFileSync(claim, `${instance} ${Date.now() - first.CLAIM_STALE_MS - 1000}`);
+    expect(second.holdsSessionClaim('/repo', 'opencode', 'ses_idle')).toBe(true);
+
+    first.runMycoHook('/repo', 'opencode', 'ses_idle', 'user-prompt-submit', {});
+    second.runMycoHook('/repo', 'opencode', 'ses_idle', 'user-prompt-submit', {});
+    expect({ displaced: firstSpawns.length, holder: secondSpawns.length }).toEqual({ displaced: 1, holder: 1 });
+  });
+
+  it('says once per session when it cannot write, and once when it cannot run the hook', () => {
+    // Capture that stops has to be findable on the machine where it stopped.
+    const env = sandboxEnv();
+    const noted: string[] = [];
+    const mod = snippetModule(env, [], noted, () => { throw new Error('no binary'); });
+
+    mod.runMycoHook('/repo', 'opencode', 'ses_note', 'session-start', {});
+    mod.runMycoHook('/repo', 'opencode', 'ses_note', 'user-prompt-submit', {});
+    const hookLines = noted.filter((l) => l.includes('myco hook'));
+    expect(hookLines).toHaveLength(1);
+    expect(hookLines[0]).toContain('opencode');
+    expect(hookLines[0]).toContain('ses_note');
+
+    // A transcript directory that cannot be created is a write failure.
+    const blocked = sandboxEnv();
+    fs.mkdirSync(path.dirname(blocked.MYCO_HOME!), { recursive: true });
+    fs.writeFileSync(blocked.MYCO_HOME!, 'not a directory');
+    const notedWrite: string[] = [];
+    const blockedMod = snippetModule(blocked, [], notedWrite);
+    blockedMod.appendTranscriptLine('/repo', 'opencode', 'ses_blocked', { type: 'prompt' });
+    blockedMod.appendTranscriptLine('/repo', 'opencode', 'ses_blocked', { type: 'response' });
+    expect(notedWrite.filter((l) => l.includes('not captured')).length).toBeLessThanOrEqual(1);
   });
 
   it('runs no hook from an instance that does not hold the session, so nothing injects twice', () => {

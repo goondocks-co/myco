@@ -191,7 +191,16 @@ function transcriptPathFor(directory: string, agent: string, sessionId: string):
   return join(resolveMycoHome(directory), "member", "transcripts", agent, `${sessionId}.jsonl`);
 }
 
-/** How long a claim may go untouched before another instance may take the session. */
+/**
+ * How long a claim may go untouched before another instance may take the
+ * session.
+ *
+ * The number is not what makes a takeover safe — a session idle longer than
+ * this is an ordinary gap, and one will be taken over from a holder that is
+ * still alive. What makes it safe is that every acting instance re-reads the
+ * claim before it writes or spawns, so the displaced holder stops at its next
+ * action and exactly one instance goes on speaking for the session.
+ */
 const CLAIM_STALE_MS = 15 * 60 * 1000;
 
 /** How often a holder rewrites its claim while it is writing. */
@@ -225,6 +234,8 @@ function claimPathFor(directory: string, agent: string, sessionId: string): stri
  *   - Claiming by a pid alone hands a session to nobody whenever that pid is
  *     recycled onto an unrelated live process, which on Linux takes hours on a
  *     busy machine, and the session then captures nothing for its whole life.
+ *     A pid also cannot separate two plugin instances loaded into one harness
+ *     process, which is the commonest pair of all.
  *
  * So the holder rewrites its claim as it writes, and a claim left untouched
  * past `CLAIM_STALE_MS` is taken over whatever pid it names. A holder verifies
@@ -234,13 +245,22 @@ function claimPathFor(directory: string, agent: string, sessionId: string): stri
 const claimedSessions = new Map<string, boolean>();
 const claimTouchedAt = new Map<string, number>();
 
-/** The pid a claim names, or null when the claim is absent or unreadable. */
-function claimHolder(claimPath: string): { pid: number; at: number } | null {
+/**
+ * This module instance's identity.
+ *
+ * Not the pid: a project-local plugin and a global one load into ONE harness
+ * process and share it, so a pid cannot tell the two apart — which is the very
+ * pair a claim exists to arbitrate. Minted per load, so each instance is
+ * distinguishable wherever it runs.
+ */
+const MYCO_INSTANCE_ID = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+/** The instance a claim names and when it last said so, or null when the claim is absent or unreadable. */
+function claimHolder(claimPath: string): { instance: string; at: number } | null {
   try {
-    const [pid, at] = readFileSync(claimPath, "utf-8").trim().split(/\s+/);
-    const parsed = Number.parseInt(pid, 10);
-    if (!Number.isInteger(parsed) || parsed <= 0) return null;
-    return { pid: parsed, at: Number.parseInt(at ?? "0", 10) || 0 };
+    const [instance, at] = readFileSync(claimPath, "utf-8").trim().split(/\s+/);
+    if (!instance) return null;
+    return { instance, at: Number.parseInt(at ?? "0", 10) || 0 };
   } catch {
     return null;
   }
@@ -249,7 +269,7 @@ function claimHolder(claimPath: string): { pid: number; at: number } | null {
 function writeClaim(claimPath: string): void {
   try {
     const handle = openSync(claimPath, "w");
-    writeSync(handle, `${process.pid} ${Date.now()}`);
+    writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()}`);
     closeSync(handle);
   } catch {
     // A claim that cannot be rewritten ages out and the session is taken over.
@@ -259,7 +279,7 @@ function writeClaim(claimPath: string): void {
 function takeClaim(claimPath: string): boolean {
   try {
     const handle = openSync(claimPath, "wx");
-    writeSync(handle, `${process.pid} ${Date.now()}`);
+    writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()}`);
     closeSync(handle);
     return true;
   } catch {
@@ -295,16 +315,21 @@ function holdsSessionClaim(directory: string, agent: string, sessionId: string):
 
 /**
  * Whether this instance still holds the session, rewriting its claim as it
- * goes. A holder whose claim now names another process stops writing: the
- * other instance took a session this one appeared to have abandoned, and two
- * writers under one transcript identity is the outcome being avoided.
+ * goes. A holder whose claim now names another process stops: the other
+ * instance took a session this one appeared to have abandoned, and two writers
+ * under one transcript identity is the outcome being avoided.
+ *
+ * The claim is READ on every call and rewritten only on a cadence. Reading is
+ * a few bytes; deferring it to the same cadence would let a displaced instance
+ * go on writing and injecting for the rest of the interval, which is the
+ * window this exists to close.
  */
 function keepsSessionClaim(directory: string, agent: string, sessionId: string): boolean {
   if (!holdsSessionClaim(directory, agent, sessionId)) return false;
   const key = `${agent}-${sessionId}`;
   const claimPath = claimPathFor(directory, agent, sessionId);
   const holder = claimHolder(claimPath);
-  if (holder !== null && holder.pid !== process.pid) {
+  if (holder !== null && holder.instance !== MYCO_INSTANCE_ID) {
     claimedSessions.set(key, false);
     noteOnce(key, `another instance took session ${sessionId}; this one stops writing`);
     return false;
@@ -389,7 +414,13 @@ function runMycoHook(
   // The instance that does not speak for this session runs nothing: a second
   // participant would spawn a second hook per turn, mint an id nothing uses
   // and place a second context block in front of the model.
-  if (!holdsSessionClaim(directory, agent, sessionId)) return null;
+  //
+  // Re-checked rather than remembered, exactly as the write path is. An
+  // instance displaced while idle would otherwise keep injecting from a memo
+  // taken before it lost the session — and an agent whose transcript it never
+  // writes, like Pi, would reach that state on every session, since a claim
+  // taken once and never touched goes stale on its own.
+  if (!keepsSessionClaim(directory, agent, sessionId)) return null;
   try {
     const stdout = execFileSync(
       resolveMycoBinary(directory),
@@ -409,7 +440,7 @@ function runMycoHook(
     if (!trimmed.startsWith("{")) return { additionalContext: trimmed };
     return JSON.parse(trimmed) as { additionalContext?: string; promptId?: string };
   } catch (error) {
-    noteOnce(`hook-${agent}-${sessionId}`, `could not run \`myco hook\`: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
+    noteOnce(`hook-${agent}-${sessionId}`, `${agent} session ${sessionId}: could not run \`myco hook ${verb}\`: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
     return null;
   }
 }
