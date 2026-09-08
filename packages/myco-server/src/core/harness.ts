@@ -808,6 +808,13 @@ export type ClaimOutcome =
  * narrow the choice; their absence is not a refusal, so a machine with a
  * logged-in harness runs work the moment it attaches and an operator configures
  * a preference only to override that.
+ *
+ * Ids are matched against what the worker offers, never against a list this
+ * server keeps. A worker released later carries harnesses this server has never
+ * heard of, and a Deployment names one and gets it. The same rule answers an id
+ * nobody offers: it yields no run rather than a substitute, so an operator who
+ * misspells a preference reads an unrun queue instead of work quietly sent to
+ * another vendor on another vendor's key.
  */
 export function chooseHarness(preferred: string | null, fallback: readonly string[], override: string | null, offered: readonly OfferedHarness[]): string | null {
   const ready = offered.filter((h) => h.authenticated).map((h) => h.id);
