@@ -179,8 +179,8 @@ export const RUN_SESSION_LABEL_CHARS = 80;
  * Carried from 1.4 (`packages/myco/src/constants.ts` `DIGEST_TIER_MIN_CONTEXT`),
  * where they name the smallest context window a tier's synthesis may run in.
  * The material bound is DERIVED from them rather than equal to them: a window
- * holds the run's whole conversation, and what `/runs/sessions` and
- * `/runs/spores` hand a `digest-only` run is sized so one reading of the
+ * holds the run's whole conversation, and what a `digest-only` run's read
+ * window (`core/read-window.ts`) hands it is sized so one reading of the
  * material fits inside it.
  */
 export const DIGEST_TIER_MIN_CONTEXT_TOKENS: Readonly<Record<number, number>> = {
@@ -222,7 +222,7 @@ export function materialRowsForTier(tier: number, previewChars: number, overhead
   return Math.max(1, Math.floor((tokens * CHARS_PER_TOKEN) / (previewChars + overheadChars)));
 }
 
-/** How many spore previews one page of `/runs/spores` hands a digest run. */
+/** How many spore previews one inventory page hands a digest run. */
 export const DIGEST_SPORE_PAGE_LIMIT = materialRowsForTier(DIGEST_MATERIAL_TIER, SPORE_PREVIEW_CHARS, SPORE_ROW_OVERHEAD_CHARS);
 
 /**
@@ -238,7 +238,7 @@ export const DIGEST_FULL_READ_BODY_CHARS = Math.min(
   SPORE_BODY_CHARS,
   Math.floor((DIGEST_TIER_MIN_CONTEXT_TOKENS[DIGEST_MATERIAL_TIER]! * CHARS_PER_TOKEN) / SPORE_FULL_READ_BUDGET),
 );
-/** How many session rows one page of `/runs/sessions` hands a digest run. */
+/** How many session rows one page hands a digest run. */
 export const DIGEST_SESSION_PAGE_LIMIT = materialRowsForTier(DIGEST_MATERIAL_TIER, RUN_SESSION_SUMMARY_CHARS, SESSION_ROW_OVERHEAD_CHARS);
 
 /** What the run is told when the owner asks for the digest to be written from the material alone. */

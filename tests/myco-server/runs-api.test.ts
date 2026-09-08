@@ -100,7 +100,6 @@ describe('POST /runs/claim', () => {
   });
 });
 
-
 describe('agent registration', () => {
   it('is idempotent and keeps the identity across a re-declaration', async () => {
     const { env, sqlite } = await harness();

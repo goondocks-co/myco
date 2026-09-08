@@ -14,8 +14,9 @@
  * handler calls, transitively. A spelling this scan cannot resolve fails the
  * gate rather than passing it, so a read never slips through unread.
  *
- * `input` must be a whole identifier. A hyphen before it means a module path
- * such as `cortex-input.js`, whose extension would read as a key.
+ * `input` must be a whole identifier: a preceding word character, `$`, `.` or
+ * `-` means something else — a module path such as `cortex-input.js`, whose
+ * extension would read as a key, or a nested `obj.input.foo`.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -36,13 +37,13 @@ const CONSTANTS: Readonly<Record<string, string>> = { PROJECT_PIVOT };
 /** The keys `source` reads off an `input` object; an index this scan cannot resolve is a failure, never a pass. */
 function inputReads(source: string, where: string): string[] {
   const keys = new Set<string>();
-  for (const m of source.matchAll(/(?<![\w-])input\.([A-Za-z_]\w*)/g)) keys.add(m[1]);
-  for (const m of source.matchAll(/(?<![\w-])input\['([^']+)'\]/g)) keys.add(m[1]);
+  for (const m of source.matchAll(/(?<![\w$.-])input\.([A-Za-z_]\w*)/g)) keys.add(m[1]);
+  for (const m of source.matchAll(/(?<![\w$.-])input\['([^']+)'\]/g)) keys.add(m[1]);
   const loops = new Map<string, string[]>();
   for (const m of source.matchAll(/for \(const (\w+) of \[([^\]]*)\] as const\)/g)) {
     loops.set(m[1], [...m[2].matchAll(/'([^']+)'/g)].map((k) => k[1]));
   }
-  for (const m of source.matchAll(/(?<![\w-])input\[([A-Za-z_]\w*)\]/g)) {
+  for (const m of source.matchAll(/(?<![\w$.-])input\[([A-Za-z_]\w*)\]/g)) {
     const spelled = CONSTANTS[m[1]];
     const looped = loops.get(m[1]);
     if (spelled !== undefined) keys.add(spelled);

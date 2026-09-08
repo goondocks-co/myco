@@ -111,7 +111,9 @@ describe('the routes a Cortex run holds', () => {
     const f = await fixture();
     f.liveRun('run_1', TASK, { input_hash: 'h1' }, 'THE PROMPT');
     const before = f.executed.length;
-    await f.answered('/runs/spores', { runId: 'run_1' });
+    // A surviving run route, so the assertion runs against a real answer
+    // rather than an auth refusal.
+    expect(await f.answered('/runs/digest', { runId: 'run_1' })).toMatchObject({ held: true });
     expect(f.executed.slice(before).some((sql) => sql.includes('instruction'))).toBe(false);
   });
 

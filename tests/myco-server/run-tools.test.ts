@@ -15,12 +15,16 @@ import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
-import { RUN_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
+import { RUN_TOOLS, SERVED_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
+import { EXTERNAL_TOOL_ALLOWLIST } from '@myco-server-worker/mcp/external.js';
+import { NO_OP } from '@myco-server-worker/mcp/registry.js';
 import { readWindowFor } from '@myco-server-worker/core/read-window.js';
 import { SPORE_PREVIEW_CHARS } from '@myco-server-worker/core/spores.js';
 import { RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { GRANT_INSTRUCTIONS, RUN_INSTRUCTIONS, SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_MAX_BYTES } from '@myco-server-worker/mcp/server.js';
 import { ROUTES } from '@myco-server-worker/routes.js';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 
 const NOW = Date.now();
@@ -98,16 +102,28 @@ describe('the run surface and the member surface do not overlap', () => {
   });
 
   it('tells a member and a grant that every run-only (tool, op) does not exist, and writes nothing', async () => {
-    const { executed, db, member, call } = await setup();
-    await issueExternalGrant(db, { projectId: 'proj_1' }, 'copilot', 'owner', NOW);
+    const { env, executed, db, member, call } = await setup();
+    const grant = await issueExternalGrant(db, { projectId: 'proj_1' }, 'copilot', 'owner', NOW);
+    const args = { key: 'k', value: 'v', prompt_id: 'p_1', title: 't', summary: 's', id: 'x', action: 'a' };
+    const asGrant = async (name: string, a: Record<string, unknown>) => {
+      const res = await worker.fetch(grantRequest(grant.key, rpc('tools/call', { name, arguments: a })), env);
+      return (await res.json() as any).error;
+    };
     const before = executed.length;
     for (const [tool, entry] of Object.entries(RUN_TOOL_REGISTRY)) {
       for (const op of Object.keys(entry.ops)) {
-        const answered = await call(member.token, tool, { op, key: 'k', value: 'v', prompt_id: 'p_1', title: 't', summary: 's', id: 'x', action: 'a' });
-        expect({ tool, op, code: answered.error?.data?.code }).toEqual({ tool, op, code: 'unknown_tool' });
+        expect({ who: 'member', tool, op, code: (await call(member.token, tool, { op, ...args })).error?.data?.code })
+          .toEqual({ who: 'member', tool, op, code: 'unknown_tool' });
+        expect({ who: 'grant', tool, op, code: (await asGrant(tool, { op, ...args }))?.data?.code })
+          .toEqual({ who: 'grant', tool, op, code: 'unknown_tool' });
       }
     }
-    expect(executed.slice(before).filter((sql) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql))).toEqual([]);
+    // A grant's own `last_used_at` stamp is authentication bookkeeping the
+    // credential earns by presenting, not a write the refused call made.
+    const domainWrites = executed.slice(before)
+      .filter((sql) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql))
+      .filter((sql) => !/UPDATE external_grants SET last_used_at/.test(sql));
+    expect(domainWrites).toEqual([]);
   });
 
   it('routes no surviving /runs/* path to an operation the run surface serves, and every remaining path is classified', () => {
@@ -129,11 +145,45 @@ describe('the run surface and the member surface do not overlap', () => {
     // someone answers whether a run tool performs it.
     expect(present).toEqual(Object.keys(RUN_ROUTE_REASONS).sort());
     // And every path a run tool performs is gone, unless it carries the seam's
-    // exemption. This is the issue's disjointness gate.
-    for (const [path, reason] of Object.entries(RUN_ROUTE_REASONS)) {
+    // exemption. Asserted over the union of the table and `ROUTES` rather than
+    // over the table alone: keyed on the surviving set, this direction would be
+    // degenerate and re-adding a deleted route as `null` would pass.
+    const routed = new Set(present);
+    for (const path of new Set([...Object.keys(RUN_ROUTE_REASONS), ...present])) {
+      const reason = RUN_ROUTE_REASONS[path] ?? null;
       if (reason === null) continue;
       expect({ path, keyed: reason.op in RUN_TOOL_REGISTRY[reason.tool].ops }).toEqual({ path, keyed: true });
-      expect({ path, until: reason.until }).toEqual({ path, until: '#1170' });
+      expect({ path, present: routed.has(path), exempt: reason.until }).toEqual({ path, present: true, exempt: '#1170' });
+    }
+    // A path the table maps with no exemption must be gone from the router.
+    for (const [path, reason] of Object.entries(RUN_ROUTE_REASONS)) {
+      if (reason !== null && reason.until !== undefined) continue;
+      expect({ path, mapped: reason !== null && routed.has(path) }).toEqual({ path, mapped: false });
+    }
+  });
+});
+
+/** The server source this suite scans, so a structural rule is checked rather than trusted. */
+const SRC = join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'src');
+
+describe('the surface decision stays in one place', () => {
+  it('reads the principal once, in surfaceFor, and nowhere else in the chokepoint', () => {
+    const source = readFileSync(join(SRC, 'mcp', 'server.ts'), 'utf8');
+    const before = source.slice(0, source.indexOf('export function surfaceFor'));
+    const after = source.slice(source.indexOf('/** The op a run\'s call resolves to'));
+    for (const [where, text] of [['before surfaceFor', before], ['after surfaceFor', after]] as const) {
+      expect({ where, reads: /principal\.kind\s*===/.test(text) }).toEqual({ where, reads: false });
+    }
+  });
+
+  it('names no task in a run tool handler, so a bound lives in the read window alone', () => {
+    const dir = join(SRC, 'mcp', 'tools');
+    const files = readdirSync(dir).filter((f) => f.startsWith('run') && f.endsWith('.ts'));
+    expect(files.length).toBeGreaterThan(0);
+    for (const f of files) {
+      const source = readFileSync(join(dir, f), 'utf8');
+      expect({ file: f, names: /DIGEST_TASK|TITLING_TASK|'(digest-only|title-summary|supersession-sweep|container-smoke|embedding-reconcile|extract-only|vault-evolve|vault-seed|review-session)'/.test(source) })
+        .toEqual({ file: f, names: false });
     }
   });
 });
@@ -152,17 +202,34 @@ describe('the handshake is the principal\'s', () => {
     for (const [what, text] of [['member', SERVER_INSTRUCTIONS], ['run', RUN_INSTRUCTIONS], ['grant', GRANT_INSTRUCTIONS]] as const) {
       expect({ what, within: Buffer.byteLength(text, 'utf8') <= SERVER_INSTRUCTIONS_MAX_BYTES }).toEqual({ what, within: true });
     }
-    // The rule an unbound principal alone is subject to: a write without a
-    // Project is refused only where the credential is not already bound to one.
-    const REFUSAL = 'A write without it is refused.';
-    expect(SERVER_INSTRUCTIONS).toContain(REFUSAL);
-    expect(RUN_INSTRUCTIONS).not.toContain(REFUSAL);
-    expect(GRANT_INSTRUCTIONS).not.toContain(REFUSAL);
-    // And neither bound principal is pointed at a tool it cannot reach.
-    for (const [what, text] of [['run', RUN_INSTRUCTIONS], ['grant', GRANT_INSTRUCTIONS]] as const) {
-      expect({ what, plans: text.includes('myco_plans') }).toEqual({ what, plans: false });
+    // Derived, not probed: every tool a string names must be one that
+    // principal can call. A literal probe passes for any op nobody thought to
+    // list, which is the failure this replaces.
+    const named = (text: string): Array<{ tool: string; op: string | null }> =>
+      [...text.matchAll(/`(myco_[a-z_]+)`(?:\s+op\s+"([a-z_]+)")?/g)].map((m) => ({ tool: m[1], op: m[2] ?? null }));
+    const vocabulary = new Set<string>([...SERVED_TOOLS, ...RUN_TOOLS]);
+    const reaches: Record<string, (tool: string, op: string | null) => boolean> = {
+      member: (tool) => (SERVED_TOOLS as readonly string[]).includes(tool),
+      grant: (tool, op) => (EXTERNAL_TOOL_ALLOWLIST[tool]?.has(op ?? NO_OP) ?? false) || (op === null && EXTERNAL_TOOL_ALLOWLIST[tool] !== undefined),
+      run: (tool, op) => {
+        const targets = Object.values(RUN_TOOL_MAP).flat();
+        return targets.some((t) => t.tool === tool && (op === null || t.op === op));
+      },
+    };
+    for (const [who, text] of [['member', SERVER_INSTRUCTIONS], ['run', RUN_INSTRUCTIONS], ['grant', GRANT_INSTRUCTIONS]] as const) {
+      const mentions = named(text);
+      for (const { tool, op } of mentions) {
+        expect({ who, tool, known: vocabulary.has(tool) }).toEqual({ who, tool, known: true });
+        expect({ who, tool, op, reachable: reaches[who](tool, op) }).toEqual({ who, tool, op, reachable: true });
+      }
     }
-    expect(RUN_INSTRUCTIONS).not.toContain('myco_cortex');
+    // The unnamed-write refusal is a property of the chokepoint, not a tool
+    // name: it applies to an unbound principal alone.
+    const REFUSAL = 'A write without it is refused.';
+    const unbound = { member: true, run: false, grant: false };
+    for (const [who, text] of [['member', SERVER_INSTRUCTIONS], ['run', RUN_INSTRUCTIONS], ['grant', GRANT_INSTRUCTIONS]] as const) {
+      expect({ who, states: text.includes(REFUSAL) }).toEqual({ who, states: unbound[who] });
+    }
   });
 });
 
@@ -262,6 +329,9 @@ describe('the session page a run reads', () => {
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at)
                 VALUES ('proj_1', 'live', 'm1', 'tok_1', ?, ?, ?)`, [NOW, NOW, NOW]);
 
+    const small = (await call(harness.token, 'myco_run_sessions', { op: 'list', limit: 2 }) as any).result.sessions;
+    expect(small.length).toBe(2);
+
     const served = (await call(harness.token, 'myco_run_sessions', { op: 'list', limit: 9999 }) as any).result.sessions;
     expect(served.map((r: any) => r.id)).not.toContain('live');
     expect(served.length).toBeLessThanOrEqual(window.sessionPage);
@@ -269,6 +339,28 @@ describe('the session page a run reads', () => {
     expect(row.title.length).toBeLessThanOrEqual(window.sessionTitleChars + 1);
     expect(row.label.length).toBeLessThanOrEqual(window.sessionLabelChars + 1);
     expect(row.summary.length).toBeLessThanOrEqual(window.sessionSummaryChars + 1);
+  });
+
+  it('caps the session page at the window even when the Project holds more', async () => {
+    const { harness, dispatch, call, sqlite } = await setup();
+    await dispatch('run_d', DIGEST);
+    const cap = readWindowFor(DIGEST).sessionPage;
+    for (let i = 0; i < cap + 3; i += 1) {
+      sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at, ended_at)
+                  VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?, ?, ?)`, [`c${i}`, NOW - 5_000 + i, NOW, NOW - 5_000 + i, NOW]);
+    }
+    const served = (await call(harness.token, 'myco_run_sessions', { op: 'list', limit: 9999 }) as any).result.sessions;
+    expect(served.length).toBe(cap);
+  });
+
+  it('leaves a sweep its own body bound, wider than a digest run\'s', async () => {
+    const { harness, dispatch, call, spore } = await setup();
+    await dispatch('run_s', SWEEP);
+    const sweep = readWindowFor(SWEEP);
+    spore('sp_long', 'z'.repeat(sweep.sporeBodyChars + 500));
+    const answered = (await call(harness.token, 'myco_run_spores', { op: 'get', id: 'sp_long' }) as any).result;
+    expect(answered.spore.content.length).toBe(sweep.sporeBodyChars);
+    expect(answered.truncated).toBe(true);
   });
 
   it('hands a digest run its tier window rather than the page a sweep may ask for', async () => {
@@ -312,12 +404,26 @@ describe('a run\'s state is a compare-and-set', () => {
     expect((await call(harness.token, 'myco_run', { op: 'state_get', key: 'k' }) as any).result.value).toBe('from-b');
   });
 
-  it('keeps state under the run\'s own agent, and loses state_set on a dry run', async () => {
+  it('keeps state under the run\'s own agent and its own Project, and loses state_set on a dry run', async () => {
     const { harness, dispatch, call, sqlite, list } = await setup();
     await dispatch('run_e', 'extract-only');
     await call(harness.token, 'myco_run', { op: 'state_set', key: 'shared', value: 'one' });
     expect(sqlite.query(`SELECT agent_id AS a, value AS v FROM agent_state WHERE project_id = 'proj_1' AND key = 'shared'`).all())
       .toEqual([{ a: 'myco-agent', v: 'one' }]);
+
+    // A second Project's run moves its own row and leaves the first standing.
+    const other = await setup();
+    other.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_2', 'proj_2', ?)`, [NOW]);
+    other.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at, dispatched_by, run_context)
+                      VALUES ('proj_2', 'run_o', 'myco-agent', 'extract-only', 'running', 0, ?, ?, '{"timeoutSeconds":300}')`, [NOW, other.harness.tokenId]);
+    const res = await worker.fetch(new Request('https://s/mcp', {
+      method: 'POST',
+      headers: { ...memberHeaders(other.harness.token), 'x-myco-project': 'proj_2' },
+      body: rpc('tools/call', { name: 'myco_run', arguments: { op: 'state_set', key: 'shared', value: 'two' } }),
+    }), other.env);
+    expect(((await res.json() as any).result.structuredContent.result).applied).toBe(true);
+    expect(other.sqlite.query(`SELECT project_id AS p, value AS v FROM agent_state WHERE key = 'shared' ORDER BY p`).all())
+      .toEqual([{ p: 'proj_2', v: 'two' }]);
 
     const dry = await setup();
     await dry.dispatch('run_dry', 'extract-only', { dryRun: true });
@@ -393,6 +499,33 @@ describe('a titling run reads and writes its own session', () => {
     const { harness, dispatch, call } = await setup();
     await dispatch('run_t', TITLING, { sessionId: null, mode: 'claim' });
     expect((await call(harness.token, 'myco_run_sessions', { op: 'material' }) as any).result).toEqual({ ok: false, error: 'this run names no session' });
+  });
+});
+
+describe('a sweep consolidates through the member op', () => {
+  it('records the wisdom spore and moves every active source in one write, and refuses a source already resolved', async () => {
+    const { harness, dispatch, call, spore, sqlite } = await setup();
+    await dispatch('run_s', SWEEP);
+    spore('sp_a', 'first source');
+    spore('sp_b', 'second source');
+    spore('sp_gone', 'already resolved');
+    sqlite.run(`UPDATE spores SET status = 'superseded' WHERE id = 'sp_gone'`);
+
+    const answered = (await call(harness.token, 'myco_spores', {
+      op: 'consolidate', source_spore_ids: ['sp_a', 'sp_b'], consolidated_content: 'the wisdom', observation_type: 'wisdom', project: 'proj_1',
+    }) as any).result;
+    expect(answered.sources_consolidated).toBe(2);
+    expect(sqlite.query(`SELECT status FROM spores WHERE id IN ('sp_a','sp_b') ORDER BY id`).all())
+      .toEqual([{ status: 'consolidated' }, { status: 'consolidated' }]);
+    expect(sqlite.query(`SELECT author FROM spores WHERE id = ?`).get(answered.new_spore_id)).toEqual({ author: 'run_s' });
+
+    // The member op counts only sources that were active, and leaves a
+    // resolved one where it stands.
+    const second = (await call(harness.token, 'myco_spores', {
+      op: 'consolidate', source_spore_ids: ['sp_gone'], consolidated_content: 'again', observation_type: 'wisdom', project: 'proj_1',
+    }) as any).result;
+    expect(second.sources_consolidated).toBe(0);
+    expect(sqlite.query(`SELECT status FROM spores WHERE id = 'sp_gone'`).get()).toEqual({ status: 'superseded' });
   });
 });
 

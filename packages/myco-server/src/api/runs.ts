@@ -125,8 +125,6 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
   return Response.json({ persisted: true, claimed: false, running: outcome.running });
 }
 
-
-
 /**
  * Register the agent identity this Deployment runs under.
  *
@@ -447,7 +445,6 @@ export async function handleRunReports(env: ServerEnv, ctx: RouteContext): Promi
   if (runId === null) return Response.json(refused(ctx, refusal('reports requires runId', 'parse')));
   return Response.json({ persisted: true, reports: await listReports(env.db, { projectId: ctx.projectId }, runId) });
 }
-
 
 /**
  * Record how a run failed, and what that means for resuming it.

@@ -95,11 +95,11 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
   { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, handler: handleRefresh },
-  // The run control plane. `legacyRunRoute: true` admits the harness credential as a
+  // The run's own channel. `legacyRunRoute: true` admits the harness credential as a
   // member here alone, with whatever admission each handler performs itself —
-  // `heldRun` on the task surfaces, none on the state and run-row handlers — until
-  // #1146 moves these operations onto the run-scoped MCP surface and deletes them.
-  // `quotaPrecheck: false`: the byte quota bounds what a
+  // `heldRun` on the task surfaces, none on the run-row handlers. The model's tool
+  // surface is `/mcp`; these are the worker's and the push-launch seam's, and go
+  // with the seam. `quotaPrecheck: false`: the byte quota bounds what a
   // member's CAPTURE may write, and charging a Deployment's own scheduled
   // intelligence against a human's capture allowance would let ordinary agent
   // work exhaust that member's ability to record their sessions.
@@ -112,8 +112,6 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/runs/reports', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunReports },
   { method: 'POST', path: '/runs/report', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteReport },
   { method: 'POST', path: '/runs/events', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRecordRunEvents },
-  // What a titling run reads and writes: admitted only to the harness credential that dispatched a live `title-summary` run bound to the named session.
-  // What a spore task's run reads and writes: an inventory of previews, one spore in full, and the two writes — admitted only to the harness credential that dispatched a live run of such a task.
   // What a Cortex run reads and writes: the prompt the server built for it, the
   // Project's settled sessions and its digest, and what it owes — the instructions
   // artifact, or one digest extract per tier — admitted only to the harness

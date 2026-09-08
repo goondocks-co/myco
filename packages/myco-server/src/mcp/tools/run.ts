@@ -23,7 +23,11 @@ const MAX_ACTION_CHARS = 192;
 const MAX_SUMMARY_CHARS = 4_096;
 const MAX_DETAILS_CHARS = 65_536;
 const MAX_KEY_CHARS = 192;
-/** The largest state value this surface accepts, bounding one row against a caller that would grow it without limit. */
+/**
+ * The largest state value this surface accepts, bounding one row against a
+ * caller that would grow it without limit. Characters, matching how the tool
+ * validates its arguments; the ingest path's own bound is in bytes.
+ */
 export const MAX_STATE_VALUE_CHARS = 256 * 1024;
 /** How much of the digest the token carries. */
 const VERSION_CHARS = 16;
@@ -74,10 +78,12 @@ export async function handleRun(input: ToolInput, ctx: ToolContext): Promise<unk
   const current = row?.value ?? null;
   if ((await versionOf(current)) !== named) return { key, applied: false };
 
-  let applied = false;
-  await mutateState(db, scope, run.agentId, key, (live) => {
-    applied = live === current;
-    return applied ? value : null;
+  let matched = false;
+  const settled = await mutateState(db, scope, run.agentId, key, (live) => {
+    matched = live === current;
+    return matched ? value : null;
   }, ctx.now);
-  return { key, applied };
+  // `mutateState` answers false when every attempt lost the guard, which is
+  // contention rather than a landed write; the caller reads again either way.
+  return { key, applied: matched && settled };
 }

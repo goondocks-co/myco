@@ -81,7 +81,6 @@ export async function handleRunInstruction(env: ServerEnv, ctx: RouteContext): P
   return Response.json({ persisted: true, held: true, instruction: await runInstruction(env.db, { projectId: ctx.projectId }, runId) });
 }
 
-
 /** The Project's digest: one tier in full, or what each tier holds when the caller names none. */
 export async function handleRunDigest(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);

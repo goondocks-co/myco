@@ -15,12 +15,23 @@ describe('route table', () => {
    * member's ability to record their own sessions.
    */
   /**
-   * The two routes a member's capture writes through. The quota bounds capture,
-   * so every other member route is exempt and declares `quotaPrecheck: false`;
-   * naming the two rather than the thirty-odd keeps the gate the size of the
-   * rule it enforces, and a new capture route has to be named here to pass.
+   * Member routes exempt from the byte quota that are not run routes, each
+   * labelled with what it does instead of a member's capture.
+   *
+   * Fail-closed on purpose: exemption is a decision, so a new route declaring
+   * `quotaPrecheck: false` fails here until someone names it. Inverting this to
+   * name the capture routes instead would make every future route exempt by
+   * default, which is the direction that costs the user.
    */
-  const CAPTURE_ROUTES = new Set(['/events', '/blobs/{sha256}']);
+  const NON_RUN_EXEMPT = new Set([
+    '/tokens/refresh',        // mints a successor credential; the server's own bookkeeping
+    '/mcp',                   // reads and tool writes, charged where they store
+    '/members/link-github',   // identity, not capture
+    '/spores/save', '/spores/list', '/spores/get', '/spores/resolve',  // the member's own spore surface
+    '/context/prompt', '/context/session',                              // injection reads
+  ]);
+  const quotaExempt = (r: { path: string; legacyRunRoute?: true }): boolean =>
+    r.legacyRunRoute === true || NON_RUN_EXEMPT.has(r.path);
 
   it('declares an auth kind and a body mode for every route, a shape for every member route, and charges every member route to the quota but the named exemptions', () => {
     for (const r of ROUTES) {
@@ -31,7 +42,7 @@ describe('route table', () => {
       if (r.bodyMode === 'stream') expect(r.maxBodyBytes).toBe(MAX_BLOB_BYTES);
       if (r.auth === 'member') {
         expect({ path: r.path, shape: r.shape }).toEqual({ path: r.path, shape: r.bodyMode === 'stream' ? 'stored' : r.path === '/tokens/refresh' ? 'refreshed' : r.path === '/mcp' ? 'answered' : 'persisted' });
-        expect({ path: r.path, quotaPrecheck: r.quotaPrecheck }).toEqual({ path: r.path, quotaPrecheck: CAPTURE_ROUTES.has(r.path) ? undefined : false });
+        expect({ path: r.path, quotaPrecheck: r.quotaPrecheck }).toEqual({ path: r.path, quotaPrecheck: quotaExempt(r) ? false : undefined });
       }
     }
     expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /runs/claim', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/report', 'POST /runs/events', 'POST /runs/instruction', 'POST /runs/embedding-step', 'POST /runs/digest', 'POST /runs/digest-write', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /context/prompt', 'POST /context/session', 'POST /runs/repository', 'POST /runs/canopy-map', 'POST /mcp', 'POST /members/link-github']);
