@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
-  buildDigestInput, buildInstructionsInput, CONTENT_PREVIEW_MAX_CHARS, DIGEST_EXCERPT_MAX_CHARS,
+  buildDigestInput, CONTENT_PREVIEW_MAX_CHARS, DIGEST_EXCERPT_MAX_CHARS,
   DIGEST_FRESH_DIRECTION, DIGEST_FULL_READ_BODY_CHARS, DIGEST_MATERIAL_TIER, DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT,
   DIGEST_TIER_MIN_CONTEXT_TOKENS, MATERIAL_ROW_KEYS_ESTIMATE_CHARS, materialRowsForTier, preview,
   RECENT_PLAN_LIMIT, RECENT_SESSION_LIMIT, RECENT_WISDOM_SPORE_LIMIT, RUN_SESSION_LABEL_CHARS,
@@ -96,142 +96,21 @@ describe('the preview a payload carries', () => {
   });
 });
 
-describe('the instructions input', () => {
-  it('carries the 1.4 limits and counts what it read', async () => {
-    const f = fixture();
-    for (let i = 0; i < RECENT_SESSION_LIMIT + 3; i += 1) f.session(`Session ${i}`, `summary ${i}`);
-    for (let i = 0; i < RECENT_WISDOM_SPORE_LIMIT + 2; i += 1) await f.spore('wisdom', `wisdom ${i}`);
-    for (let i = 0; i < RECENT_PLAN_LIMIT + 2; i += 1) f.plan(`Plan ${i}`, `- [ ] step ${i}`);
-    const built = await f.build();
-    expect(built.counts).toEqual({ sessions: RECENT_SESSION_LIMIT, spores: RECENT_WISDOM_SPORE_LIMIT, plans: RECENT_PLAN_LIMIT });
-    expect(built.instruction).toContain('## Recent sessions');
-    expect(built.instruction).toContain('Session 0');
-    expect(built.instruction).not.toContain('Session 8');
-    expect(built.instruction).toContain('## Recent decision spores');
-    expect(built.instruction).toContain('No recent decision spores are available.');
-  });
 
-  it('cuts the digest excerpt at its own bound and names the tier it read', async () => {
-    const f = fixture();
-    await upsertDigest(f.db, SCOPE, { id: 'd1', agentId: 'myco-agent', tier: 5000, content: 'x'.repeat(DIGEST_EXCERPT_MAX_CHARS * 2), substrateHash: null, generatedAt: NOW });
-    const built = await f.build();
-    expect(built.instruction).toContain('Tier 5000 digest excerpt:');
-    const excerpt = built.instruction.split('Tier 5000 digest excerpt:\n')[1]!.split('\n')[0]!;
-    expect(excerpt.length).toBeLessThanOrEqual(DIGEST_EXCERPT_MAX_CHARS + 1);
-  });
-
-  it('names the tools this Deployment answers, and no others', async () => {
-    const built = await fixture().build();
-    for (const name of answeredTools()) expect(built.instruction).toContain(`\`${name}\``);
-    expect(built.instruction).not.toContain('vault_search_fts');
-    expect(built.instruction).not.toContain('myco_remember');
-  });
-
-  it('names a tool no op of which the registry answers nowhere in the prompt', async () => {
-    const built = await fixture().build();
-    const silent = SERVED_TOOLS.filter((name) => !answeredTools().includes(name));
-    expect(silent).toEqual([]);
-    for (const name of silent) expect(built.instruction).not.toContain(name);
-  });
-
-  it('lists, under every tool it names, only the ops the registry answers', async () => {
-    const built = await fixture().build();
-    const surface = built.instruction.split('## Current valid tool surface (authoritative)\n')[1]!.split('\n\n')[0]!;
-    expect(surface).toContain('- `myco_cortex` — ops: `digest`, `instructions`, `canopy_map`, `projects_activity`');
-    expect(surface).toContain('- `myco_plans` — ops: `list`, `get`, `save`');
-    expect(surface).toContain('canopy_map');
-    expect(surface).not.toContain('`delete`');
-  });
-
-  it('teaches no op the Deployment does not answer, anywhere in the prompt', async () => {
-    const built = await fixture().build();
-    const named = [...built.instruction.matchAll(/"?\bop"?\s*:\s*"([a-z_]+)"/g)].map((m) => m[1]!);
-    expect(named.length).toBeGreaterThan(0);
-    const unanswered = [...new Set(named)].filter((op) => !ANSWERED_OPS.includes(op));
-    expect(unanswered).toEqual([]);
-    expect(named).toContain('digest');
-    expect(named).toContain('instructions');
-    for (const retired of ['canopy_entry', 'notifications', 'maintenance_summary']) {
-      expect({ op: retired, present: built.instruction.includes(retired) }).toEqual({ op: retired, present: false });
-    }
-  });
-
-  it('keeps the guidance of a tool whose ops are all answered, and rewrites the one whose ops are not', async () => {
-    const built = await fixture().build();
-    const guidance = built.instruction.split('## Tool guidance to encode\n')[1]!.split('\n\n')[0]!.split('\n');
-    const cortexLine = guidance.find((line) => line.startsWith('- `myco_cortex`'))!;
-    expect(cortexLine).toBe('- `myco_cortex`: Use op: "digest" for broad orientation, op: "canopy_map" as the default opener for project layout, and op: "projects_activity" to see which projects are still active across the machine.');
-    const plansLine = guidance.find((line) => line.startsWith('- `myco_plans`'))!;
-    expect(plansLine).toContain(TOOL_DEFINITIONS.find((t) => t.name === 'myco_plans')!.cortex!.guidance);
-  });
-
-  it('renders the runtime config from the leaves recall resolves', async () => {
-    const f = fixture();
-    const built = await f.build();
-    expect(built.instruction).toContain('"digest_tier": 5000');
-    expect(built.instruction).toContain('"instructions_inject_on_session_start": true');
-  });
-});
-
-describe('the input hash', () => {
-  it('is the hash of the prompt itself, so every line the model reads is covered', async () => {
-    const f = fixture();
-    f.session('One', 'first');
-    const built = await f.build();
-    expect(built.inputHash).toBe(await sha256Hex(built.instruction));
-    // The static prose is inside that: the guidance lines and the authoring
-    // requirements are part of the prompt, so an edit to either moves the hash
-    // with no second constant to remember to bump.
-    expect(built.instruction).toContain('## Authoring requirements');
-    expect(built.instruction).toContain('## Tool guidance to encode');
-  });
-
-  it('stands still over the same material and never carries the clock', async () => {
-    const f = fixture();
-    f.session('One', 'first');
-    const first = await f.build();
-    const second = await f.build({ now: NOW + 86_400_000 });
-    expect(second.inputHash).toBe(first.inputHash);
-  });
-
-  it('moves on a new session, a new spore, a new plan and a new digest', async () => {
-    const f = fixture();
-    const seen = new Set<string>();
-    seen.add((await f.build()).inputHash);
-    f.session('One', 'first');
-    seen.add((await f.build()).inputHash);
-    await f.spore('decision', 'we chose the queue');
-    seen.add((await f.build()).inputHash);
-    f.plan('Plan one', 'do the thing');
-    seen.add((await f.build()).inputHash);
-    await upsertDigest(f.db, SCOPE, { id: 'd1', agentId: 'myco-agent', tier: 5000, content: 'the digest', substrateHash: null, generatedAt: NOW });
-    seen.add((await f.build()).inputHash);
-    expect(seen.size).toBe(5);
-  });
-
-  it('moves on a leaf and on a capability', async () => {
-    const f = fixture();
-    const base = await f.build();
-    const leafMoved = await f.build({ leaves: { ...LEAVES, digestTier: 10000 } });
-    const capabilityMoved = await f.build({ capabilities: { ...CAPABILITIES, cortex: false } });
-    expect(leafMoved.inputHash).not.toBe(base.inputHash);
-    expect(capabilityMoved.inputHash).not.toBe(base.inputHash);
-    expect(leafMoved.inputHash).not.toBe(capabilityMoved.inputHash);
-  });
-
-  it('does not move on a session whose end has not landed', async () => {
-    const f = fixture();
-    const base = await f.build();
-    f.sqlite.run(
-      `INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at)
-       VALUES ('proj_1', 'live', 'm1', 'tok_1', ?, ?, 'claude-code', ?)`,
-      [NOW, NOW, NOW],
-    );
-    expect((await f.build()).inputHash).toBe(base.inputHash);
-  });
-});
 
 describe('the input a digest run is handed', () => {
+  /**
+   * The hash covers the prompt itself, so an edit to any line the model reads
+   * moves it with no second constant to remember to bump.
+   */
+  it('is the hash of the prompt itself, and stands still over the same material', async () => {
+    const f = fixture();
+    f.session('One', 'first');
+    const built = await f.digest();
+    expect(built.inputHash).toBe(await sha256Hex(built.instruction));
+    expect((await f.digest({ now: NOW + 86_400_000 })).inputHash).toBe(built.inputHash);
+  });
+
   it('names what each tier holds, and says so plainly when the project holds none', async () => {
     const f = fixture();
     expect((await f.digest()).instruction).toContain('No digest has been written yet');

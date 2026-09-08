@@ -298,19 +298,11 @@ export function useInstructions(projectId: string) {
   return useQuery({ queryKey: ['instructions', projectId], queryFn: ({ signal }) => fetchJson<{ instructions: InstructionsRow[] }>(`${project(projectId)}/cortex/instructions`, signal) });
 }
 
-/** The task that writes a project's session-start instructions. */
-export const INSTRUCTIONS_TASK = 'cortex-instructions';
 /** The task that writes a project's digest at every tier. */
 export const DIGEST_TASK = 'digest-only';
 
 /** What the server answers when asked to write one of these again: a run started, a run waiting, or nothing to do. */
 export type DispatchOutcome = 'running' | 'queued' | 'unchanged';
-
-export const INSTRUCTIONS_OUTCOME_TEXT: Record<DispatchOutcome, string> = {
-  running: 'Writing new instructions — they land in a few minutes',
-  queued: 'Waiting for a runtime — this starts as one frees up',
-  unchanged: 'Nothing has changed since these were written',
-};
 
 /**
  * What the server answers when asked to write the digest again. There is no
@@ -379,15 +371,6 @@ async function askForArtifact(task: string, projectId: string, ask: DispatchAsk)
   });
   if (answered.outcome === 'unchanged') return { outcome: 'unchanged' };
   return { outcome: answered.queued === true ? 'queued' : 'running', ...(answered.runId === undefined ? {} : { runId: answered.runId }) };
-}
-
-/** Asks for this project's instructions again; on an answer, the stored instructions are read again. */
-export function useRefreshInstructions(projectId: string) {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (ask: DispatchAsk = {}) => askForArtifact(INSTRUCTIONS_TASK, projectId, ask),
-    onSuccess: () => client.invalidateQueries({ queryKey: ['instructions', projectId] }),
-  });
 }
 
 /** Asks for this project's digest again; on an answer, the stored digests are read again. */

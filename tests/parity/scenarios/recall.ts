@@ -66,7 +66,7 @@ export const recall: ParityScenario = {
     await post(session, 'prompt', { promptId: p1, text: planning, origin: 'user' }, stamp + 1);
 
     await admit(true);
-    const spore = await mcp({ op: 'save', type: 'decision', content: `the hook answers before the drain ${stamp}`, session_id: session });
+    const spore = await mcp({ op: 'save', type: 'decision', content: `the hook answers before the drain ${stamp}`, session_id: session, project: target.projectId });
     expect(spore.id).toBeDefined();
 
     // The planning nudge remains available when semantic recall has no provider.
@@ -102,22 +102,24 @@ export const recall: ParityScenario = {
     // A starting session is served the Project's instructions, trimmed and with
     // no heading, and is served nothing a second time.
     const guidance = `Keep the plan for ${stamp} current.`;
-    await target.sql(`INSERT INTO cortex_instructions (project_id, id, agent_id, content, input_hash, source_run_id, generated_at)
-      VALUES (${lit(target.projectId)}, ${lit(`ci-${stamp}`)}, 'user', ${lit(`  ${guidance}  `)}, ${lit(`h-${stamp}`)}, NULL, ${stamp})`);
+    await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('instructions.template', ${lit(JSON.stringify(`  ${guidance}  `))}, ${stamp}, 'test')`);
     const startSession = `parity-recall-start-${stamp}`;
     const atStart = await servedAtStart(startSession);
     expect(atStart.persisted).toBe(true);
-    expect(atStart.parts?.map((p) => p.kind)).toEqual(['instructions']);
-    expect(atStart.context).toBe(guidance);
+    expect(atStart.parts?.map((p) => p.kind)).toEqual(['project', 'instructions']);
+    // The Project line stands first: it is the value a write is refused without.
+    expect(atStart.context?.startsWith('Project:: ')).toBe(true);
+    expect(atStart.context).toContain(target.projectId);
+    expect(atStart.context?.endsWith(guidance)).toBe(true);
     expect(atStart.kind).toBe('cortex');
     expect(await servedAtStart(startSession))
-      .toEqual({ persisted: true, context: '', parts: [], skipped: ['digest:off', 'repeat'], kind: 'cortex' });
+      .toEqual({ persisted: true, context: '', parts: [], skipped: ['repeat'], kind: 'cortex' });
 
     // Two delegations of one type are two subagents, and each is served.
     for (const agentId of ['a1', 'a2']) {
       const delegated = await servedToSubagent(startSession, agentId, 'code-reviewer');
       expect({ agentId, parts: delegated.parts?.map((p) => p.kind), kind: delegated.kind })
-        .toEqual({ agentId, parts: ['instructions'], kind: `cortex:${agentId}` });
+        .toEqual({ agentId, parts: ['project', 'instructions'], kind: `cortex:${agentId}` });
       expect(delegated.context?.endsWith(guidance)).toBe(true);
     }
     expect(await target.sql(`SELECT kind FROM session_injections WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(startSession)} ORDER BY kind`))
@@ -126,7 +128,7 @@ export const recall: ParityScenario = {
     for (const compaction of [1, 2]) {
       const payload = { sessionId: startSession, kind: 'compact', compaction };
       const restored = await sessionBlock(payload);
-      expect(restored.context).toBe(guidance);
+      expect(restored.context?.endsWith(guidance)).toBe(true);
       expect(restored.kind).toBe(`cortex-compact:${compaction}`);
       expect((await sessionBlock(payload)).skipped).toContain('repeat');
     }
@@ -145,21 +147,26 @@ export const recall: ParityScenario = {
     await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('cortex.instructions.inject_on_session_start', 'false', ${stamp}, 'test')`);
     try {
       const off = await sessionBlock({ sessionId: startSession, kind: 'compact', compaction: 3 });
-      expect(off.context).toBe('');
-      expect(off.skipped).toEqual(['instructions:off', 'digest:off']);
+      // The Project line survives a Deployment that holds its own text back.
+      expect(off.parts?.map((p) => p.kind)).toEqual(['project']);
+      expect(off.skipped).toEqual(['instructions:off']);
     } finally {
       await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'cortex.instructions.inject_on_session_start'`);
+      await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'instructions.template'`);
     }
 
-    // A Project withdrawn from `cortex` is served an empty block naming the gate, and records nothing.
+    // A Project withdrawn from `cortex` is served nothing on a prompt, and at
+    // session start is served its own Project id and nothing else: a write is
+    // refused without the id, so the capability holds back the Deployment's
+    // text rather than the name every write has to carry.
     await admit(false);
     const withdrawn = `parity-recall-off-${stamp}`;
     expect(await served(withdrawn, crypto.randomUUID(), planning))
       .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'] });
-    expect(await servedAtStart(withdrawn))
-      .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'], kind: 'cortex' });
-    expect(await target.sql(`SELECT COUNT(*) AS n FROM session_injections WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(withdrawn)}`))
-      .toEqual([{ n: 0 }]);
+    const atStartOff = await servedAtStart(withdrawn);
+    expect({ parts: atStartOff.parts?.map((p) => p.kind), skipped: atStartOff.skipped, kind: atStartOff.kind })
+      .toEqual({ parts: ['project'], skipped: ['capability'], kind: 'cortex' });
+    expect(atStartOff.context).toContain(target.projectId);
 
     await admit(true);
   },

@@ -9,6 +9,7 @@ import { upsertPlan } from '@myco/db/queries/plans.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import type { DaemonClient } from '@myco/daemon/client.js';
 import { createMycoTools } from '@myco/tools/index.js';
+import { PROJECT_PIVOT } from '@myco/tools/pivot.js';
 import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { seedCanopyEntry } from '../helpers/db.js';
@@ -62,86 +63,24 @@ function createFixture(projectId = PROJECT_A): {
 }
 
 describe('Myco tools request-context dispatch', () => {
-  it('honors the request context by default and pivots when input carries a project_id (Stream J)', async () => {
+  it('honors the request context by default and pivots when input names another project', async () => {
+    const now = Math.floor(Date.now() / 1000);
     const fixture = createFixture();
     try {
       fixture.withDb(() => {
-        writeCanopyMap({
-          project_id: PROJECT_A,
-          machine_id: 'machine-a',
-          content: '## Project A',
-          inputs_hash: 'hash-a',
-          token_estimate: 10,
-          generated_by_run_id: null,
-        });
-        writeCanopyMap({
-          project_id: PROJECT_B,
-          machine_id: 'machine-a',
-          content: '## Project B',
-          inputs_hash: 'hash-b',
-          token_estimate: 10,
-          generated_by_run_id: null,
-        });
+        upsertSession({ id: 'sess-a', project_id: PROJECT_A, agent: 'codex', started_at: now + 1, created_at: now + 1 });
+        upsertSession({ id: 'sess-b', project_id: PROJECT_B, agent: 'codex', started_at: now + 2, created_at: now + 2 });
       });
       const tools = createMycoTools(fixture.vaultDir, mockClient(), { requestContext: fixture.requestContext });
 
-      // No pivot: request context wins.
-      const baseline = await tools.callTool('myco_cortex', { op: 'canopy_map' }) as { content: string };
-      expect(baseline.content).toBe('## Project A');
+      // No pivot: the request context wins.
+      const baseline = await tools.callTool('myco_sessions', {}) as Array<{ id: string }>;
+      expect(baseline.map((row) => row.id)).toEqual(['sess-a']);
 
-      // Stream J — agent passes a Grove project id pivot. Same Grove, so
-      // the same DB; only the row scope flips. Mirrors the UI's project
-      // switcher.
-      const pivoted = await tools.callTool('myco_cortex', {
-        op: 'canopy_map',
-        project_id: PROJECT_B,
-      }) as { content: string };
-      expect(pivoted.content).toBe('## Project B');
-    } finally {
-      fixture.cleanup();
-    }
-  });
-
-  it('pivots Canopy entry lookups when input carries a Grove project_id (Stream J)', async () => {
-    const fixture = createFixture();
-    try {
-      fixture.withDb(() => {
-        seedCanopyEntry(fixture.db, {
-          project_id: PROJECT_A,
-          path: 'src/shared.ts',
-          llm_description: 'Project A entry',
-        });
-        seedCanopyEntry(fixture.db, {
-          project_id: PROJECT_B,
-          path: 'src/shared.ts',
-          llm_description: 'Project B entry',
-        });
-      });
-      const tools = createMycoTools(fixture.vaultDir, mockClient(), { requestContext: fixture.requestContext });
-
-      // Pivot via project_id: cortex op resolves under PROJECT_B's scope,
-      // returns the PROJECT_B row.
-      const pathLookup = await tools.callTool('myco_cortex', {
-        op: 'canopy_entry',
-        project_id: PROJECT_B,
-        path: 'src/shared.ts',
-      }) as { project_id: string; llm_description: string };
-      expect(pathLookup.project_id).toBe(PROJECT_B);
-      expect(pathLookup.llm_description).toBe('Project B entry');
-
-      // Non-Grove-format `project_id` (legacy Canopy id) does NOT pivot.
-      // It's treated as the legacy Canopy id hint and flows into the
-      // canopy_entry handler which compares against the resolved
-      // request context (still PROJECT_A). Cross-project ids surface
-      // as a typed error rather than silently leaking data.
-      const crossProjectId = await tools.callTool('myco_cortex', {
-        op: 'canopy_entry',
-        id: 'project-b:src/shared.ts',
-      }) as { ok: false; error: string };
-      expect(crossProjectId).toEqual({
-        ok: false,
-        error: 'Canopy entry is outside the current project context',
-      });
+      // The agent names another project. Same Grove, so the same database;
+      // only the row scope flips.
+      const pivoted = await tools.callTool('myco_sessions', { [PROJECT_PIVOT]: PROJECT_B }) as Array<{ id: string }>;
+      expect(pivoted.map((row) => row.id)).toEqual(['sess-b']);
     } finally {
       fixture.cleanup();
     }

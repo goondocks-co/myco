@@ -30,25 +30,17 @@ const CLI_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespace);
 
 /** Minimal `DaemonClient` stand-in for the LOCAL daemon's `/mcp` handler.
- *  Only `get('/api/digest', ...)` is exercised by the tools under test
+ *  Only `get('/api/cortex/instructions', ...)` is exercised by the tools under test
  *  (`myco_cortex`); every other verb/endpoint is a harmless no-op ack.
- *  `digestHeaders` collects just the headers of each `/api/digest` call,
+ *  `digestHeaders` collects just the headers of each instructions call,
  *  in order — the same shape `tests/mcp/http.test.ts`'s `mockClient`
  *  captures. */
 function mockDaemonClient(digestHeaders: http.IncomingHttpHeaders[] = []): DaemonClient {
   return {
     get: (async (endpoint: string, options?: { headers?: Record<string, string> }) => {
-      if (endpoint === '/api/digest') {
+      if (endpoint === '/api/cortex/instructions') {
         digestHeaders.push((options?.headers ?? {}) as http.IncomingHttpHeaders);
-        return {
-          ok: true,
-          data: {
-            tiers: [
-              { tier: 5000, content: 'digest-5000', generated_at: 1 },
-              { tier: 1500, content: 'digest-1500', generated_at: 1 },
-            ],
-          },
-        };
+        return { ok: true, data: { content: '# Start here', agent_id: 'user', generated_at: 1 } };
       }
       return { ok: true, data: {} };
     }) as DaemonClient['get'],
@@ -184,12 +176,12 @@ describe('myco tool CLI', () => {
 
   it('calls a tool with inline JSON input', async () => {
     await startLocalDaemon();
-    await run(['call', 'myco_cortex', '--json', '--input', '{"op":"digest","tier":5000}'], tmpDir);
+    await run(['call', 'myco_cortex', '--json', '--input', '{"op":"instructions"}'], tmpDir);
 
-    const output = outputJson<{ ok: boolean; tool: string; result: { tier: number } }>();
+    const output = outputJson<{ ok: boolean; tool: string; result: { content: string } }>();
     expect(output.ok).toBe(true);
     expect(output.tool).toBe('myco_cortex');
-    expect(output.result.tier).toBe(5000);
+    expect(output.result.content).toContain('# Start here');
   });
 
   it('forwards explicit environment request context to daemon-backed tools', async () => {
@@ -217,7 +209,7 @@ describe('myco tool CLI', () => {
     vi.stubEnv(REQUEST_CONTEXT_ENV.sessionId, 'sess-a');
     await startLocalDaemon();
 
-    await run(['call', 'myco_cortex', '--json', '--input', '{"op":"digest","tier":5000}'], tmpDir);
+    await run(['call', 'myco_cortex', '--json', '--input', '{"op":"instructions"}'], tmpDir);
 
     const output = outputJson<{ ok: boolean }>();
     expect(output.ok).toBe(true);
@@ -231,23 +223,23 @@ describe('myco tool CLI', () => {
   it('calls a tool with @file input', async () => {
     await startLocalDaemon();
     const inputPath = path.join(tmpDir, 'payload.json');
-    fs.writeFileSync(inputPath, '{"op":"digest","tier":1500}', 'utf-8');
+    fs.writeFileSync(inputPath, '{"op":"instructions"}', 'utf-8');
 
     await run(['call', 'myco_cortex', '--json', '--input', `@${inputPath}`], tmpDir);
 
-    const output = outputJson<{ ok: boolean; result: { tier: number } }>();
+    const output = outputJson<{ ok: boolean; result: { content: string } }>();
     expect(output.ok).toBe(true);
-    expect(output.result.tier).toBe(1500);
+    expect(output.result.content).toContain('# Start here');
   });
 
   it('calls a tool when options appear before the tool name', async () => {
     await startLocalDaemon();
-    await run(['call', '--json', '--input', '{"op":"digest","tier":5000}', 'myco_cortex'], tmpDir);
+    await run(['call', '--json', '--input', '{"op":"instructions"}', 'myco_cortex'], tmpDir);
 
-    const output = outputJson<{ ok: boolean; tool: string; result: { tier: number } }>();
+    const output = outputJson<{ ok: boolean; tool: string; result: { content: string } }>();
     expect(output.ok).toBe(true);
     expect(output.tool).toBe('myco_cortex');
-    expect(output.result.tier).toBe(5000);
+    expect(output.result.content).toContain('# Start here');
   });
 
   it('flushes large JSON tool output before returning', async () => {
@@ -319,13 +311,13 @@ describe('myco tool CLI', () => {
   it('treats --input null as no arguments (parity with the dispatcher normalizeInput)', async () => {
     // The in-process dispatcher's normalizeInput has always mapped null → {}.
     // The daemon round-trip must preserve that: `--input null` succeeds
-    // exactly like an omitted --input (myco_cortex defaults op → digest).
+    // exactly like an omitted --input (myco_cortex defaults op → instructions).
     await startLocalDaemon();
     await run(['call', 'myco_cortex', '--json', '--input', 'null'], tmpDir);
 
-    const output = outputJson<{ ok: boolean; tool: string; result: { tier: number } }>();
+    const output = outputJson<{ ok: boolean; tool: string; result: { content: string } }>();
     expect(output.ok).toBe(true);
-    expect(output.result.tier).toBe(5000);
+    expect(output.result.content).toContain('# Start here');
   });
 
   it('returns JSON error envelope for invalid JSON', async () => {

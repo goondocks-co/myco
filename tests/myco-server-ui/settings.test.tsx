@@ -80,12 +80,15 @@ describe('Deployment Settings', () => {
   });
 
   it('saves a toggle on change and a text leaf on blur, each to its own leaf', async () => {
-    const { sent } = server(base({ '/api/settings/cortex.digest.inject_on_session_start': () => Response.json({ applied: true }), '/api/settings/agent.provider.model': () => Response.json({ applied: true }) }));
+    const { sent } = server(base({ '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: true }), '/api/settings/agent.provider.model': () => Response.json({ applied: true }) }));
     mount('/settings');
     await tab('Cortex');
-    fireEvent.click(await screen.findByRole('switch', { name: 'Digest at session start' }));
+    // A setting the Deployment no longer reads is shown and not offered: an
+    // enabled switch that changes nothing is worse than a disabled one.
+    expect(await screen.findByRole('switch', { name: 'Digest at session start' })).toBeDisabled();
+    fireEvent.click(await screen.findByRole('switch', { name: 'Spores on every prompt' }));
     await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.digest.inject_on_session_start', body: { value: false } });
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.spores.inject_on_prompt_submit', body: { value: true } });
     await tab('Agent');
     const model = await screen.findByLabelText('Model');
     fireEvent.change(model, { target: { value: 'claude-opus' } });

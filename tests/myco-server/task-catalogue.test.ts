@@ -53,15 +53,15 @@ describe('the task catalogue', () => {
 });
 
 describe('what the clock runs', () => {
-  it('runs the probe alone: the instructions schedule is declared and switched off', () => {
+  it('runs the probe alone: the digest schedule is declared and switched off', () => {
     expect(scheduledTasks().map((t) => t.task)).toEqual(['container-smoke']);
-    expect(TASK_SCHEDULE['cortex-instructions']).toEqual({ enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 });
+    expect(TASK_SCHEDULE['digest-only']).toEqual({ enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 });
   });
 
   it('makes the declared schedule live when an owner switches it on', () => {
-    const live = scheduledTasks({ 'cortex-instructions': { schedule: { enabled: true } } });
-    expect(live.map((t) => t.task).sort()).toEqual(['container-smoke', 'cortex-instructions']);
-    expect(live.find((t) => t.task === 'cortex-instructions')!.schedule).toMatchObject({ enabled: true, intervalSeconds: 86_400, maxRunsPerDay: 1, overlap: 'skip' });
+    const live = scheduledTasks({ 'digest-only': { schedule: { enabled: true } } });
+    expect(live.map((t) => t.task).sort()).toEqual(['container-smoke', 'digest-only']);
+    expect(live.find((t) => t.task === 'digest-only')!.schedule).toMatchObject({ enabled: true, intervalSeconds: 86_400, maxRunsPerDay: 1, overlap: 'skip' });
   });
 
   it('takes a switched-off override away from a task the Deployment otherwise runs', () => {

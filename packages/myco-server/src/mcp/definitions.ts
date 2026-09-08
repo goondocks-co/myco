@@ -4,14 +4,24 @@
  * The seven tools of ledger §7.3, as `packages/myco/src/tools/definitions.ts`
  * declares them, with the retired Grove pivot removed: a Deployment has no
  * Grove, and the Project a call addresses is the request's Project header or
- * the `project_id` argument. `tests/myco-server/tool-parity.test.ts` holds
+ * the `project` argument. `tests/myco-server/tool-parity.test.ts` holds
  * these equal to the member-side definitions, naming the one property whose
  * description differs.
  *
  * Served verbatim on `tools/list`; arguments are validated against
  * `inputSchema` by `validate.ts` before any handler runs.
  */
-import type { ServedTool } from '../core/tool-catalogue.js';
+import { PROJECT_PIVOT, type ServedTool } from '../core/tool-catalogue.js';
+
+/**
+ * What the tenancy argument means on the member surface.
+ *
+ * A read that names no Project reads the request's own Project header, which is
+ * the Project the member's credential is bound to. A write names its Project or
+ * is refused: a member credential reaches every Project of the Deployment, so an
+ * unnamed write would land wherever the transport happened to point.
+ */
+export const PROJECT_DESCRIPTION = "The Project this call reads or writes: a project id, or the repository's git remote. Optional on a read, which falls back to this request's own Project; required on a write. An unknown Project answers not found.";
 
 export interface JsonSchemaProperty {
   type?: string | string[];
@@ -121,9 +131,9 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           "type": "number",
           "description": "Optional created_at upper bound in epoch seconds"
         },
-        "project_id": {
+        [PROJECT_PIVOT]: {
           "type": "string",
-          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."
+          "description": PROJECT_DESCRIPTION
         }
       },
       "required": [
@@ -133,7 +143,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   },
   {
     "name": "myco_cortex",
-    "description": "Retrieve Cortex-produced project intelligence. op: \"digest\" returns the pre-computed project digest at tier 1500, 5000, or 10000. op: \"instructions\" returns the generated project instruction brief when available. op: \"canopy_map\" returns the rendered project Canopy map for the resolved request context. op: \"canopy_entry\" retrieves one Canopy file summary from the resolved request context by id (`project_id:path`) or path. op: \"notifications\" returns notifications for the request scope (use unread_only and limit to filter). op: \"maintenance_summary\" returns the per-Grove maintenance summary (db sizes, last backup/optimize, integrity status, and overdue flags). op: \"projects_activity\" returns the cross-Grove project activity feed (last activity, scheduled runs, active flag).",
+    "description": "Retrieve project intelligence. op: \"instructions\" (default) returns the project's session-start instructions and its project id. op: \"notifications\" returns notifications for the request scope (use unread_only and limit to filter). op: \"maintenance_summary\" returns the per-Grove maintenance summary (db sizes, last backup/optimize, integrity status, and overdue flags). op: \"projects_activity\" returns the cross-project activity feed (last activity, scheduled runs, active flag). op: \"digest\", op: \"canopy_map\" and op: \"canopy_entry\" are served by the local runtime only; a Deployment answers them not_served.",
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -141,7 +151,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       "openWorldHint": false
     },
     "cortex": {
-      "guidance": "Use op: \"digest\" for broad orientation, op: \"canopy_map\" as the default opener for project layout, op: \"canopy_entry\" to retrieve a Canopy result returned by search, op: \"notifications\" to read pending operator notifications, op: \"maintenance_summary\" to answer \"are any Groves overdue for backup/optimize/integrity?\", and op: \"projects_activity\" to see which projects are still active across the machine.",
+      "guidance": "Use op: \"instructions\" to read the project's standing guidance and learn its project id, op: \"notifications\" to read pending operator notifications, op: \"maintenance_summary\" to answer \"are any Groves overdue for backup/optimize/integrity?\", and op: \"projects_activity\" to see which projects are still active. Search with myco_search rather than pulling a project summary; there is no digest.",
       "priority": 10
     },
     "inputSchema": {
@@ -150,15 +160,15 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         "op": {
           "type": "string",
           "enum": [
-            "digest",
             "instructions",
+            "digest",
             "canopy_map",
             "canopy_entry",
             "notifications",
             "maintenance_summary",
             "projects_activity"
           ],
-          "description": "Operation (default: \"digest\")"
+          "description": "Operation (default: \"instructions\")"
         },
         "tier": {
           "type": "number",
@@ -171,15 +181,15 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         },
         "id": {
           "type": "string",
-          "description": "Canopy entry id for op: \"canopy_entry\" in the form project_id:path"
-        },
-        "project_id": {
-          "type": "string",
-          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."
+          "description": "Canopy entry id for op: \"canopy_entry\" in the form <project>:path"
         },
         "path": {
           "type": "string",
           "description": "Canopy file path for op: \"canopy_entry\""
+        },
+        [PROJECT_PIVOT]: {
+          "type": "string",
+          "description": PROJECT_DESCRIPTION
         },
         "unread_only": {
           "type": "boolean",
@@ -276,9 +286,9 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           "type": "boolean",
           "description": "Allow op: \"delete\" to remove a plan belonging to another machine. Enqueues a tombstone for team sync."
         },
-        "project_id": {
+        [PROJECT_PIVOT]: {
           "type": "string",
-          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."
+          "description": PROJECT_DESCRIPTION
         }
       }
     }
@@ -335,9 +345,9 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           "type": "number",
           "description": "Max results (default: 20)"
         },
-        "project_id": {
+        [PROJECT_PIVOT]: {
           "type": "string",
-          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."
+          "description": PROJECT_DESCRIPTION
         }
       }
     }
@@ -374,9 +384,9 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           "type": "number",
           "description": "Max results (default: 50)"
         },
-        "project_id": {
+        [PROJECT_PIVOT]: {
           "type": "string",
-          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."
+          "description": PROJECT_DESCRIPTION
         }
       }
     }
@@ -520,9 +530,9 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           "type": "string",
           "description": "The pull request URL for provenance_kind: \"pr\", or the commit sha for \"commit\". Give with provenance_kind."
         },
-        "project_id": {
+        [PROJECT_PIVOT]: {
           "type": "string",
-          "description": "The Project this call reads or writes, when it is not the request's own Project header. A member reads any Project of the Deployment; an unknown Project answers not found."
+          "description": PROJECT_DESCRIPTION
         }
       }
     }

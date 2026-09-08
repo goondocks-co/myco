@@ -26,13 +26,12 @@ import {
   RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS,
 } from '@myco-server-worker/core/cortex-input.js';
 import { SPORE_BODY_CHARS } from '@myco-server-worker/core/spores.js';
-import { listInstructions } from '@myco-server-worker/read/cortex.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 
 const NOW = 1_800_000_000_000;
 const SCOPE = { projectId: 'proj_1' };
-const TASK = 'cortex-instructions';
+const TASK = 'digest-only';
 const DIGEST_TASK = 'digest-only';
 type Launch = { runId: string; timeoutSeconds: number; envVars: Record<string, string> };
 
@@ -116,26 +115,7 @@ describe('the routes a Cortex run holds', () => {
     expect(f.executed.slice(before).some((sql) => sql.includes('instruction'))).toBe(false);
   });
 
-  it('files the artifact under the hash the run row carries, never the body\'s', async () => {
-    const f = await fixture();
-    f.liveRun('run_1', TASK, { input_hash: 'server-hash' }, 'THE PROMPT');
-    expect(await f.answered('/runs/instructions-write', { runId: 'run_1', content: '# Start here', inputHash: 'caller-hash' }))
-      .toEqual({ persisted: true, held: true, written: true });
-    const rows = await listInstructions(f.db, SCOPE);
-    expect(rows).toHaveLength(1);
-    expect({ content: rows[0]!.content, inputHash: rows[0]!.inputHash, sourceRunId: rows[0]!.sourceRunId, agentId: rows[0]!.agentId })
-      .toEqual({ content: '# Start here', inputHash: 'server-hash', sourceRunId: 'run_1', agentId: HARNESS_AGENT_ID });
-  });
 
-  it('writes nothing for a dry run, and nothing for a caller holding no run', async () => {
-    const f = await fixture();
-    f.liveRun('run_dry', TASK, { input_hash: 'server-hash' }, 'THE PROMPT', true);
-    expect(await f.answered('/runs/instructions-write', { runId: 'run_dry', content: '# nope' }))
-      .toEqual({ persisted: true, held: true, written: false });
-    expect(await f.answered('/runs/instructions-write', { runId: 'run_absent', content: '# nope' }))
-      .toEqual({ persisted: true, held: false, written: false });
-    expect(await listInstructions(f.db, SCOPE)).toEqual([]);
-  });
 
   it('stays dry through the container\'s own claim: the claim never carries dry_run', async () => {
     const f = await fixture();
@@ -145,9 +125,9 @@ describe('the routes a Cortex run holds', () => {
     expect(await f.answered('/runs/claim', { id: 'run_dry_claim', agentId: HARNESS_AGENT_ID, task: TASK, capability: 'cortex', harness: 'claude-sdk' }))
       .toMatchObject({ persisted: true, claimed: true });
     expect(f.runs().find((r) => r.id === 'run_dry_claim')).toMatchObject({ status: 'running', dryRun: 1 });
-    expect(await f.answered('/runs/instructions-write', { runId: 'run_dry_claim', content: '# nope' }))
+    expect(await f.answered('/runs/digest-write', { runId: 'run_dry_claim', tier: 1500, content: '# nope' }))
       .toEqual({ persisted: true, held: true, written: false });
-    expect(await listInstructions(f.db, SCOPE)).toEqual([]);
+    expect(await listDigests(f.db, SCOPE)).toEqual([]);
   });
 
   it('refuses the dispatcher\'s own columns on a dispatched run, by name', async () => {
@@ -201,42 +181,30 @@ describe('the routes a Cortex run holds', () => {
     await upsertDigest(f.db, SCOPE, { id: 'd1', agentId: HARNESS_AGENT_ID, tier: 5000, content: 'the digest', substrateHash: null, generatedAt: NOW });
     expect(await f.answered('/runs/digest', { runId: 'run_1', tier: 5000 }))
       .toEqual({ persisted: true, held: true, digest: { tier: 5000, content: 'the digest', generatedAt: NOW, fallback: false } });
-    // A run that only reads is served the nearest tier the Project holds, and told which it got.
+    // A run that writes tiers is served its exact tier or nothing: a nearest-tier
+    // answer would have it rewrite one tier's body under another tier's name.
     expect(await f.answered('/runs/digest', { runId: 'run_1', tier: 10000 }))
-      .toEqual({ persisted: true, held: true, digest: { tier: 5000, content: 'the digest', generatedAt: NOW, fallback: true } });
+      .toEqual({ persisted: true, held: true, digest: null });
     expect(await f.answered('/runs/digest', { runId: 'run_1' }))
       .toEqual({ persisted: true, held: true, tiers: [{ tier: 5000, generatedAt: NOW, contentLength: 10 }] });
     expect(await f.answered('/runs/digest', { runId: 'run_absent' })).toEqual({ persisted: true, held: false });
   });
 });
 
-describe('a dispatch of the instructions task', () => {
+describe('a dispatch of a Cortex task', () => {
   it('carries the prompt on the run row and the hash and counts in its context', async () => {
     const f = await fixture();
     f.session('s1', 'Session one', true);
     const answered = await f.dispatch();
     expect(answered.status).toBe(200);
     const row = f.runs().find((r) => r.task === TASK)!;
-    expect(String(row.instruction)).toContain('## Recent sessions');
+    expect(String(row.instruction)).toContain('## Material behind this pass');
     const context = JSON.parse(String(row.runContext)) as Record<string, unknown>;
     expect(typeof context.input_hash).toBe('string');
-    expect(context.counts).toEqual({ sessions: 1, spores: 0, plans: 0 });
+    expect(context.counts).toEqual({ spores: 0, sessionsInWindow: 1, windowFull: false });
     expect(row.dryRun).toBe(0);
   });
 
-  it('answers unchanged, with no run at all, when the Project has not moved past what it holds', async () => {
-    const f = await fixture();
-    f.session('s1', 'Session one', true);
-    const built = await buildTaskInput(f.env, TASK, 'proj_1', NOW);
-    await upsertCortexInstructions(f.db, SCOPE, {
-      agentId: HARNESS_AGENT_ID, content: '# held', inputHash: (built as { input: { inputHash: string } }).input.inputHash, generatedAt: NOW, sourceRunId: null,
-    });
-    expect(await f.dispatch()).toEqual({ status: 200, body: { outcome: 'unchanged' } });
-    expect(f.runs()).toEqual([]);
-    // A spore lands and the Project has moved: the next ask starts a run.
-    await f.spore('sp_1', 'we chose the queue');
-    expect((await f.dispatch()).body.runId).toBeString();
-  });
 
   it('marks a dry run on its own row', async () => {
     const f = await fixture();
@@ -249,9 +217,10 @@ describe('a dispatch of the instructions task', () => {
     const f = await fixture();
     const asked = await f.dispatch();
     expect(JSON.parse(String(f.runs().find((r) => r.id === asked.body.runId)!.runContext)).timeoutSeconds).toBe(TASK_RUN_TIMEOUT_SECONDS[TASK]);
-
-    const digest = await f.dispatch({ task: DIGEST_TASK });
-    expect(JSON.parse(String(f.runs().find((r) => r.id === digest.body.runId)!.runContext)).timeoutSeconds).toBe(TASK_RUN_TIMEOUT_SECONDS[DIGEST_TASK]);
+    // Two tasks declare a budget of their own, and they differ: a single
+    // declared value would pass a dispatcher that ignored the table.
+    expect(Object.values(TASK_RUN_TIMEOUT_SECONDS).length).toBeGreaterThan(1);
+    expect(new Set(Object.values(TASK_RUN_TIMEOUT_SECONDS)).size).toBeGreaterThan(1);
 
     const smoke = await f.dispatch({ task: 'container-smoke' });
     expect(JSON.parse(String(f.runs().find((r) => r.id === smoke.body.runId)!.runContext)).timeoutSeconds).toBe(DEFAULT_DISPATCH_TIMEOUT_SECONDS);
@@ -282,132 +251,16 @@ describe('a dispatch of the instructions task', () => {
 });
 
 describe('the clock and the queue', () => {
-  it('records a skipped run naming the unchanged input rather than spending one', async () => {
-    const f = await fixture();
-    f.setting('agent.scheduled_tasks_enabled', true);
-    f.setting('agent.tasks', { [TASK]: { schedule: { enabled: true, runIn: ['active', 'idle', 'sleep'] } } });
-    f.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES ('proj_1', 'recent', 'm1', 'tok_1', ?, ?, 'claude-code')`, [Date.now(), Date.now()]);
-    const built = await buildTaskInput(f.env, TASK, 'proj_1', Date.now());
-    await upsertCortexInstructions(f.db, SCOPE, {
-      agentId: HARNESS_AGENT_ID, content: '# held', inputHash: (built as { input: { inputHash: string } }).input.inputHash, generatedAt: NOW, sourceRunId: null,
-    });
-    // `container-smoke` is scheduled too and dispatches on its own; the instructions task is what this reads.
-    expect(await runScheduledTasks(f.env, 'sleep', Date.now(), 'https://s')).toMatchObject({ skipped: 1 });
-    const skipped = f.runs().filter((r) => r.task === TASK);
-    expect(skipped).toHaveLength(1);
-    expect({ status: skipped[0]!.status, context: JSON.parse(String(skipped[0]!.runContext)) }).toEqual({ status: 'skipped', context: { reason: 'input_unchanged' } });
-    expect(f.launches.map((l) => l.envVars.MYCO_TASK)).not.toContain(TASK);
 
-    // The skip advanced the interval: a second wake inside it rebuilds nothing
-    // and leaves no second row. A whole payload rebuilt on every wake would be
-    // the cost the interval exists to bound.
-    expect(await runScheduledTasks(f.env, 'sleep', Date.now(), 'https://s')).toMatchObject({ skipped: 0 });
-    expect(f.runs().filter((r) => r.task === TASK)).toHaveLength(1);
-  });
 
-  it('gives a queued row it skips an end but no start, so the skip spends none of the task\'s hour', async () => {
-    const f = await fixture();
-    f.setting('agent.limits.concurrent_runs', 1);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'blocker', ?, 'digest-only', 'running', ?)`, [HARNESS_AGENT_ID, Date.now()]);
-    const queued = await f.dispatch();
-    const runId = String(queued.body.runId);
-    const built = await buildTaskInput(f.env, TASK, 'proj_1', Date.now());
-    await upsertCortexInstructions(f.db, SCOPE, {
-      agentId: HARNESS_AGENT_ID, content: '# held', inputHash: (built as { input: { inputHash: string } }).input.inputHash, generatedAt: NOW, sourceRunId: null,
-    });
-    f.sqlite.run(`UPDATE agent_runs SET status = 'completed' WHERE id = 'blocker'`);
-    await drainQueue(f.env, Date.now());
-    const row = f.sqlite.query(`SELECT status, started_at AS startedAt, completed_at AS completedAt FROM agent_runs WHERE id = ?`).get(runId) as { status: string; startedAt: number | null; completedAt: number | null };
-    expect(row.status).toBe('skipped');
-    // A run that never ran has no start. `taskRunsLastHour` counts starts, so a
-    // stamp here would hold the task's next hour against work nothing did; a
-    // reader shows when the row ended instead.
-    expect(row.startedAt).toBeNull();
-    expect(row.completedAt).toBeNumber();
-    expect(await dispatchLoad(f.env.db, TASK, Date.now())).toMatchObject({ taskRunsLastHour: 0 });
-  });
-
-  it('rebuilds a queued dispatch at the drain: skipped when the Project stood still, launched with the fresh prompt when it moved', async () => {
-    const f = await fixture();
-    f.setting('agent.limits.concurrent_runs', 1);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'blocker', ?, 'digest-only', 'running', ?)`, [HARNESS_AGENT_ID, Date.now()]);
-    const queued = await f.dispatch();
-    expect(queued.body.queued).toBe(true);
-    const runId = String(queued.body.runId);
-
-    // The Project has not moved past what the queued dispatch built: the row is skipped by name.
-    const built = await buildTaskInput(f.env, TASK, 'proj_1', Date.now());
-    await upsertCortexInstructions(f.db, SCOPE, {
-      agentId: HARNESS_AGENT_ID, content: '# held', inputHash: (built as { input: { inputHash: string } }).input.inputHash, generatedAt: NOW, sourceRunId: null,
-    });
-    f.sqlite.run(`UPDATE agent_runs SET status = 'completed' WHERE id = 'blocker'`);
-    expect(await drainQueue(f.env, Date.now())).toBe(0);
-    const skipped = await getRun(f.db, SCOPE, runId);
-    expect({ status: skipped?.status, context: JSON.parse(String(skipped?.runContext)) }).toEqual({ status: 'skipped', context: { reason: 'input_unchanged' } });
-    expect(f.launches).toHaveLength(0);
-
-    // A second queued dispatch, and a spore lands before it drains: it launches with the prompt built at that instant.
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'blocker_2', ?, 'digest-only', 'running', ?)`, [HARNESS_AGENT_ID, Date.now()]);
-    await f.spore('sp_1', 'the queue holds a run row');
-    const again = await f.dispatch();
-    expect(again.body.queued).toBe(true);
-    await f.spore('sp_2', 'a drained run reads the vault as it stands');
-    f.sqlite.run(`UPDATE agent_runs SET status = 'completed' WHERE id = 'blocker_2'`);
-    expect(await drainQueue(f.env, Date.now())).toBe(1);
-    const launched = f.runs().find((r) => r.id === again.body.runId)!;
-    expect(launched.status).toBe('pending');
-    expect(String(launched.instruction)).toContain('a drained run reads the vault as it stands');
-    const fresh = await buildTaskInput(f.env, TASK, 'proj_1', Date.now());
-    expect(JSON.parse(String(launched.runContext)).input_hash).toBe((fresh as { input: { inputHash: string } }).input.inputHash);
-  });
 });
 
-describe('what the instructions run owes before it closes', () => {
-  it('names the report and the artifact the task must have left', () => {
-    expect(RUN_CLOSE_REPORTS[TASK]).toEqual(['cortex_instructions']);
-    expect(RUN_CLOSE_RULES[TASK]?.artifact).toBeFunction();
-  });
-
-  it('fails a run that reported nothing', async () => {
-    const f = await fixture();
-    f.liveRun('run_silent', TASK, { input_hash: 'h' }, 'THE PROMPT');
-    expect(await f.close('run_silent')).toMatchObject({ persisted: true, applied: false, reason: 'postcondition' });
-    const failed = await getRun(f.db, SCOPE, 'run_silent');
-    expect({ status: failed?.status, error: failed?.error }).toEqual({ status: 'failed', error: RUN_CLOSE_ERROR });
-  });
-
-  it('fails a run that reported without leaving the row: the report is a claim, the row is the evidence', async () => {
-    const f = await fixture();
-    const credential = await f.credential();
-    f.liveRun('run_claimed', TASK, { input_hash: 'h' }, 'THE PROMPT', false, credential.tokenId);
-    await f.answered('/runs/report', { runId: 'run_claimed', agentId: HARNESS_AGENT_ID, action: 'cortex_instructions', summary: 'said so' }, credential.token);
-    expect(await f.close('run_claimed', credential.token)).toMatchObject({ persisted: true, applied: false, reason: 'postcondition' });
-    const failed = await getRun(f.db, SCOPE, 'run_claimed');
-    expect({ status: failed?.status, error: failed?.error }).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
-  });
-
-  it('closes a run that reported and wrote, and a dry run that reported and could not', async () => {
-    const f = await fixture();
-    const wrote = await f.credential();
-    f.liveRun('run_wrote', TASK, { input_hash: 'h' }, 'THE PROMPT', false, wrote.tokenId);
-    await f.answered('/runs/instructions-write', { runId: 'run_wrote', content: '# Start here' }, wrote.token);
-    await f.answered('/runs/report', { runId: 'run_wrote', agentId: HARNESS_AGENT_ID, action: 'cortex_instructions', summary: 'wrote them' }, wrote.token);
-    expect(await f.close('run_wrote', wrote.token)).toMatchObject({ persisted: true, changed: 1 });
-    expect((await getRun(f.db, SCOPE, 'run_wrote'))?.status).toBe('completed');
-
-    const dry = await f.credential();
-    f.liveRun('run_dry_close', TASK, { input_hash: 'h' }, 'THE PROMPT', true, dry.tokenId);
-    await f.answered('/runs/report', { runId: 'run_dry_close', agentId: HARNESS_AGENT_ID, action: 'cortex_instructions', summary: 'would have written' }, dry.token);
-    expect(await f.close('run_dry_close', dry.token)).toMatchObject({ persisted: true, changed: 1 });
-    expect((await getRun(f.db, SCOPE, 'run_dry_close'))?.status).toBe('completed');
-  });
-});
 
 describe('the digest a run writes', () => {
   it('files one tier for the run\'s agent under the server\'s hash, and answers a caller holding no such run nothing', async () => {
     const f = await fixture();
     f.liveRun('run_digest', DIGEST_TASK, { input_hash: 'server-hash', counts: { spores: 7, sessionsInWindow: 2, windowFull: false } });
-    f.liveRun('run_other', TASK, { input_hash: 'h' });
+    f.liveRun('run_other', 'title-summary', { input_hash: 'h' });
     expect(await f.answered('/runs/digest-write', { runId: 'run_digest', tier: 5000, content: '# the digest' }))
       .toEqual({ persisted: true, held: true, written: true, tier: 5000, revisionOf: null });
 
@@ -485,19 +338,19 @@ describe('the digest a run writes', () => {
     const f = await fixture();
     f.liveRun('run_digest', DIGEST_TASK, { input_hash: 'h' });
     const second = await f.credential();
-    f.liveRun('run_cortex', TASK, { input_hash: 'h' }, null, false, second.tokenId);
+    f.liveRun('run_sweep', 'supersession-sweep', {}, null, false, second.tokenId);
     for (let i = 0; i < DIGEST_SESSION_PAGE_LIMIT + 1; i += 1) f.session(`s${i}`, `Session ${i}`, true);
     for (let i = 0; i < DIGEST_SPORE_PAGE_LIMIT + 1; i += 1) await f.spore(`sp_${i}`, `spore ${i}`);
 
+    // The digest run is the only task holding the session surface, so its window
+    // is compared against what it asked for rather than against another run.
     const digestSessions = await f.answered('/runs/sessions', { runId: 'run_digest', limit: 9999 });
-    const cortexSessions = await f.answered('/runs/sessions', { runId: 'run_cortex', limit: 9999 }, second.token);
     expect((digestSessions.sessions as unknown[]).length).toBe(DIGEST_SESSION_PAGE_LIMIT);
-    expect((cortexSessions.sessions as unknown[]).length).toBe(DIGEST_SESSION_PAGE_LIMIT + 1);
 
     const digestSpores = await f.answered('/runs/spores', { runId: 'run_digest', limit: 200 });
-    const cortexSpores = await f.answered('/runs/spores', { runId: 'run_cortex', limit: 200 }, second.token);
+    const sweepSpores = await f.answered('/runs/spores', { runId: 'run_sweep', limit: 200 }, second.token);
     expect((digestSpores.spores as unknown[]).length).toBe(DIGEST_SPORE_PAGE_LIMIT);
-    expect((cortexSpores.spores as unknown[]).length).toBe(DIGEST_SPORE_PAGE_LIMIT + 1);
+    expect((sweepSpores.spores as unknown[]).length).toBe(DIGEST_SPORE_PAGE_LIMIT + 1);
   });
 
   it('cuts a digest run\'s full read to the window\'s share, and leaves the sweep its own bound', async () => {
