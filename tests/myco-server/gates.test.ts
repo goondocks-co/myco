@@ -499,7 +499,7 @@ describe('gates', () => {
     // up by credential, and the foreign key on a run's dispatching credential is
     // checked by credential alone. Both have to lead with what they are read by.
     // Pending search work is ordered across the Deployment by its last attempt.
-    const byAccessPath = /idx_blob_reservations_credential|idx_agent_runs_credential|idx_external_grants_hash|idx_events_token_only|idx_search_blob_pending/;
+    const byAccessPath = /idx_blob_reservations_credential|idx_agent_runs_credential|idx_external_grants_hash|idx_external_grants_expiry|idx_events_token_only|idx_search_blob_pending/;
     for (const s of SCHEMA_DDL.filter((x) => /CREATE (UNIQUE )?INDEX .* ON \w+/.test(x) && !deploymentScoped.test(x) && !byAccessPath.test(x))) {
       expect(s).toMatch(/\(project_id/);
     }
