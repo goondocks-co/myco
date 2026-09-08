@@ -16,6 +16,7 @@ import { releaseRun } from './release.js';
 import { reconcileSearchIndex } from './search-index.js';
 import { dispatchEmbeddingWork } from './embedding/jobs.js';
 import { reclaimEnrollmentAuthorities } from '../auth/enrollment.js';
+import { parseTranscripts } from '../ingest/parse.js';
 
 /** The retention window when the leaf is unset, and the bounds the leaf itself declares. */
 export const RUN_RETENTION_DAYS_DEFAULT = 30;
@@ -117,6 +118,76 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
 export async function inviteExpiry(env: ServerEnv, now: number): Promise<number> {
   const { reclaimed } = await reclaimEnrollmentAuthorities(env.db, now, JOB_BATCH);
   return reclaimed;
+
+// #1147 — transcript-first ingest
+
+/** The widest retention window a Deployment may set, in days. */
+export const TRANSCRIPT_RETENTION_MAX_DAYS = 3650;
+
+/** What a Deployment's transcript window says, or null for indefinite. A value present and unreadable is refused rather than defaulted: a window that silently reverts prunes on a rule nobody wrote, and the operator never learns their setting did nothing. */
+export function transcriptRetentionDays(raw: string | undefined): number | null | 'unreadable' {
+  if (raw === undefined) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return 'unreadable'; }
+  if (typeof parsed !== 'number' || !Number.isInteger(parsed) || parsed < 0 || parsed > TRANSCRIPT_RETENTION_MAX_DAYS) return 'unreadable';
+  return parsed === 0 ? null : parsed;
+}
+
+/**
+ * No raw transcript segment outlives the Deployment's window, and a blob no
+ * surviving row references goes with it. Derived rows are never pruned, and
+ * neither is the transcript row: what the segments held is already projected,
+ * and the record that they existed outlives the bytes.
+ *
+ * A segment ahead of the parse cursor is kept whatever its age. Pruning bytes
+ * no pass has read yet would delete the only copy of rows that were never
+ * derived.
+ */
+export async function transcriptRetention(env: ServerEnv, now: number): Promise<number> {
+  const window = transcriptRetentionDays((await leafValues(env.db, ['retention.transcripts'])).get('retention.transcripts'));
+  if (window === 'unreadable') {
+    emit({ kind: 'transcript_retention_refused', reason: 'refused' });
+    return 0;
+  }
+  if (window === null) return 0;
+
+  const cutoff = now - window * DAY_MS;
+  const { results: doomed } = await env.db
+    .prepare(`SELECT s.project_id, s.transcript_id, s.base_offset, s.blob_key
+                FROM transcript_segments s
+                JOIN transcripts t ON t.project_id = s.project_id AND t.transcript_id = s.transcript_id
+               WHERE s.created_at < ? AND t.parsed_offset >= s.base_offset + s.length
+               ORDER BY s.created_at LIMIT ?`)
+    .bind(cutoff, JOB_BATCH)
+    .all<{ project_id: string; transcript_id: string; base_offset: number; blob_key: string }>();
+  if (doomed.length === 0) return 0;
+
+  await env.db.batch(doomed.map((d) => env.db
+    .prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id = ? AND base_offset = ?`)
+    .bind(d.project_id, d.transcript_id, d.base_offset)));
+
+  // A blob is content-addressed and shared, so it goes only once nothing holds
+  // it: an unconditional delete would take a surviving prompt's body with a
+  // segment's.
+  let freed = 0;
+  for (const key of new Set(doomed.map((d) => d.blob_key))) {
+    const project = doomed.find((d) => d.blob_key === key)!.project_id;
+    const held = await env.db
+      .prepare(`SELECT 1 AS present FROM transcript_segments WHERE project_id = ? AND blob_key = ?
+                 UNION SELECT 1 FROM prompt_batches WHERE project_id = ? AND blob_key = ?
+                 UNION SELECT 1 FROM responses WHERE project_id = ? AND blob_key = ?
+                 UNION SELECT 1 FROM plans WHERE project_id = ? AND blob_key = ?
+                 UNION SELECT 1 FROM attachments WHERE project_id = ? AND blob_key = ?`)
+      .bind(project, key, project, key, project, key, project, key, project, key)
+      .first<{ present: number }>();
+    if (held !== null) continue;
+    await env.blobs.delete(`${project}/${key}`);
+    await env.db.prepare(`DELETE FROM blobs WHERE project_id = ? AND key = ?`).bind(project, key).run();
+    freed += 1;
+  }
+  emit({ kind: 'transcript_retention_pruned', segments: doomed.length, blobs: freed });
+  return doomed.length;
+
 }
 
 /**
@@ -143,4 +214,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   // #1158 join UX
   'invite-expiry': inviteExpiry,
   'grant-expiry': grantExpiry,
+  // #1147 — transcript-first ingest
+  'transcript-parse': (env, now) => parseTranscripts(env, now),
+  'transcript-retention': transcriptRetention,
 };

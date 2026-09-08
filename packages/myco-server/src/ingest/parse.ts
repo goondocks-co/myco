@@ -1,0 +1,263 @@
+/**
+ * Reading a transcript the Deployment holds, and deriving its rows.
+ *
+ * The member ships transcript bytes and the Deployment stores them opaquely.
+ * This is where they become prompts, responses, tool calls and plans — the same
+ * rows a hook event produces, through the same projections, so a row has one
+ * shape whatever produced it.
+ *
+ * **The pass is bounded by database calls, not by bytes.** A free-tier Worker
+ * invocation may make 50 subrequests, D1 and blob reads both count against it,
+ * and a Durable Object relaxes CPU without relaxing that. Deriving each event
+ * through its own batch would spend one call per event and exhaust the budget
+ * on a single turn, so a pass collects up to `EVENTS_PER_BATCH` writes and
+ * lands them in ONE batch, and stops once it has spent `CALLS_PER_PASS`. The
+ * tick that runs it also runs the other jobs, which share the same budget.
+ *
+ * **A pass consumes only complete lines**, and the cursor advances to the byte
+ * past the last one (`segments.ts`). Nothing is carried between passes but that
+ * integer, so a pass that dies costs the work and none of the correctness.
+ *
+ * **The cursor never passes an event that did not land.** A derived event that
+ * comes back unpersisted stops the transcript and stamps the failure. Advancing
+ * regardless is the one defect that would lose rows silently and in bulk, which
+ * is exactly what a transcript-first design cannot afford.
+ */
+import type { RelationalStore, ServerEnv } from '../core/adapters.js';
+import { emit, type Classifier } from '../telemetry.js';
+import { uuidv5 } from '../hash.js';
+import { planEventWrite, type EventWrite, type IngestResult } from './events.js';
+import { parserFor } from './parsers/registry.js';
+import type { DerivedEvent } from './parsers/index.js';
+import { segmentsToRead, splitCompleteLines } from './segments.js';
+import { SERVER_PROTOCOL } from '../constants.js';
+
+/** Derived events collapsed into one database call. */
+export const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 20;
+/** Database and blob calls one pass may spend, well inside a free-tier invocation's 50 shared with the other jobs. */
+export const TRANSCRIPT_PARSE_CALLS_PER_PASS = 12;
+/** Bytes decoded before deriving, so a pass bounds its memory as well as its calls. */
+export const TRANSCRIPT_PARSE_BYTES_PER_READ = 524_288;
+
+/** The parse's own version. A transcript records the version that read it, so a Deployment can report what its rows were derived by. */
+export const PARSER_VERSION = 1;
+
+/** What a derived event says produced it. The one field that separates a parsed row from a hook-shipped one, and what the parity gate partitions on. */
+export const TRANSCRIPT_PRODUCER = { adapter: 'transcript-parse', version: String(SERVER_PROTOCOL) } as const;
+
+/** The transcript a pass works on. */
+interface ParseTarget {
+  projectId: string;
+  transcriptId: string;
+  sessionId: string;
+  machineId: string;
+  tokenId: string;
+  agent: string | null;
+  size: number;
+  parsedOffset: number;
+  fidelity: string | null;
+}
+
+/** Why a transcript's parse stopped. Each is a stable classifier a dashboard and an operator read; none is a caller's text. */
+export type ParseFailure = Extract<Classifier, 'parse'> | 'blob_absent';
+
+/** The next transcript with unread bytes and no failure holding it, oldest receipt first. */
+async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget | null> {
+  const row = await db
+    .prepare(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity
+                FROM transcripts
+               WHERE parsed_offset < size AND parse_error IS NULL
+                 AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = transcripts.project_id AND t.session_id = transcripts.session_id)
+               ORDER BY last_received_at, transcript_id LIMIT 1`)
+    .first<Record<string, unknown>>();
+  if (row === null) return null;
+  void now;
+  return {
+    projectId: row.project_id as string,
+    transcriptId: row.transcript_id as string,
+    sessionId: row.session_id as string,
+    machineId: row.machine_id as string,
+    tokenId: row.token_id as string,
+    agent: (row.agent as string | null) ?? null,
+    size: row.size as number,
+    parsedOffset: (row.parsed_offset as number | null) ?? 0,
+    fidelity: (row.fidelity as string | null) ?? null,
+  };
+}
+
+/** Stop this transcript where it stands and say why. Its rows to this point are kept; later passes skip it until the failure is cleared. */
+async function stop(db: RelationalStore, target: ParseTarget, failure: ParseFailure, now: number): Promise<void> {
+  await db
+    .prepare(`UPDATE transcripts SET parse_error = ?, parse_failed_at = ? WHERE project_id = ? AND transcript_id = ?`)
+    .bind(failure, now, target.projectId, target.transcriptId)
+    .run();
+  emit({ kind: 'transcript_parse_failed', projectId: target.projectId, transcriptId: target.transcriptId, reason: failure });
+}
+
+/** The bytes of one segment, or null when the store no longer holds them. */
+async function segmentBytes(env: Pick<ServerEnv, 'blobs'>, projectId: string, blobKey: string): Promise<Uint8Array | null> {
+  const held = await env.blobs.get(`${projectId}/${blobKey}`);
+  if (held === null) return null;
+  return new Uint8Array(await new Response(held.body).arrayBuffer());
+}
+
+/** The envelope a derived event travels in: a deterministic id over the byte that produced it, so a repeated pass re-derives the same row and the raw insert absorbs it. */
+async function envelopeFor(target: ParseTarget, event: DerivedEvent): Promise<Record<string, unknown>> {
+  return {
+    eventId: await uuidv5('transcript-event', target.transcriptId, String(event.offset), event.kind),
+    sessionId: target.sessionId,
+    kind: event.kind,
+    createdAt: event.createdAt,
+    channel: 'cli',
+    producer: TRANSCRIPT_PRODUCER,
+    payload: event.payload,
+  };
+}
+
+/** A derived event landed, or it did not. A duplicate counts as landed: the row is already there. */
+const landed = (result: IngestResult): boolean => result.persisted === true;
+
+export interface PassReport {
+  /** Events that landed this pass. */
+  derived: number;
+  /** Database and blob calls spent. */
+  calls: number;
+  /** The byte the cursor now stands at, or null when the pass did nothing. */
+  nextOffset: number | null;
+  failure: ParseFailure | null;
+}
+
+/**
+ * One transcript, one pass.
+ *
+ * Reads the segments covering the cursor up to the read bound, derives what the
+ * complete lines in them hold, lands the events in batches, and advances the
+ * cursor to the byte past the last complete line — but only over events that
+ * landed.
+ */
+export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: ParseTarget, now: number): Promise<PassReport> {
+  const parser = parserFor(target.agent);
+  if (parser === null) {
+    // Nothing here reads this agent's format. The bytes are kept and the cursor
+    // is moved to the end, so the transcript stops being offered to every pass.
+    await env.db.prepare(`UPDATE transcripts SET parsed_offset = size, parsed_at = ?, parser_version = ? WHERE project_id = ? AND transcript_id = ?`)
+      .bind(now, PARSER_VERSION, target.projectId, target.transcriptId).run();
+    return { derived: 0, calls: 2, nextOffset: target.size, failure: null };
+  }
+
+  let calls = 1;
+  const { results: segments } = await env.db
+    .prepare(`SELECT base_offset, length, blob_key FROM transcript_segments
+               WHERE project_id = ? AND transcript_id = ? AND base_offset + length > ?
+               ORDER BY base_offset`)
+    .bind(target.projectId, target.transcriptId, target.parsedOffset)
+    .all<{ base_offset: number; length: number; blob_key: string }>();
+  calls += 1;
+
+  const taken = segmentsToRead(segments.map((s) => ({ baseOffset: s.base_offset, length: s.length, blobKey: s.blob_key })), target.parsedOffset, TRANSCRIPT_PARSE_BYTES_PER_READ);
+  if (taken.length === 0) return { derived: 0, calls, nextOffset: null, failure: null };
+
+  const chunks: Uint8Array[] = [];
+  for (const segment of taken) {
+    const bytes = await segmentBytes(env, target.projectId, segment.blobKey);
+    calls += 1;
+    if (bytes === null) {
+      await stop(env.db, target, 'blob_absent', now);
+      return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'blob_absent' };
+    }
+    chunks.push(bytes);
+  }
+
+  const joined = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const chunk of chunks) { joined.set(chunk, at); at += chunk.length; }
+
+  // The read starts at the first taken segment's own offset; the cursor may sit
+  // inside it, so the bytes already parsed are dropped before splitting.
+  const readFrom = taken[0].baseOffset;
+  const skip = target.parsedOffset - readFrom;
+  const window = joined.subarray(skip > 0 ? skip : 0);
+  const split = splitCompleteLines(window, target.parsedOffset);
+
+  if (split.malformed > 0) {
+    await stop(env.db, target, 'parse', now);
+    return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'parse' };
+  }
+  if (split.lines.length === 0) {
+    // No complete line in the window. A transcript whose tail is one unfinished
+    // line waits for the segment that closes it rather than failing.
+    return { derived: 0, calls, nextOffset: null, failure: null };
+  }
+
+  const events = await parser.parse({ lines: split.lines, sessionId: target.sessionId, now });
+  const ctx = { projectId: target.projectId, machineId: target.machineId, tokenId: target.tokenId, bodyBytes: 0, now, writeOrigin: 'server' as const };
+
+  let derived = 0;
+  let cursor = split.nextOffset;
+  for (let i = 0; i < events.length; i += TRANSCRIPT_PARSE_EVENTS_PER_BATCH) {
+    if (calls >= TRANSCRIPT_PARSE_CALLS_PER_PASS) {
+      // Out of budget mid-transcript: the cursor stops at the last event that
+      // landed, and the next pass re-derives from there.
+      cursor = events[i]?.offset ?? cursor;
+      break;
+    }
+    const group = events.slice(i, i + TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
+    const writes: EventWrite[] = [];
+    for (const event of group) {
+      const planned = await planEventWrite(env.db, ctx, await envelopeFor(target, event));
+      if (!planned.ok) {
+        await stop(env.db, target, 'parse', now);
+        return { derived, calls: calls + 1, nextOffset: null, failure: 'parse' };
+      }
+      writes.push(planned.write);
+    }
+    const results = await env.db.batch(writes.flatMap((w) => w.statements));
+    calls += 1;
+
+    let offset = 0;
+    for (const [n, write] of writes.entries()) {
+      const slice = results.slice(offset, offset + write.statements.length);
+      offset += write.statements.length;
+      if (landed(write.interpret(slice))) { derived += 1; continue; }
+      // The cursor stops at the byte of the event that did not land, never past it.
+      await stop(env.db, target, 'parse', now);
+      return { derived, calls: calls + 1, nextOffset: group[n].offset, failure: 'parse' };
+    }
+  }
+
+  await env.db
+    .prepare(`UPDATE transcripts SET parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?, fidelity = COALESCE(fidelity, ?)
+               WHERE project_id = ? AND transcript_id = ?`)
+    .bind(cursor, now, PARSER_VERSION, parser.fidelity, target.projectId, target.transcriptId)
+    .run();
+  calls += 1;
+
+  emit({ kind: 'transcript_parsed', projectId: target.projectId, transcriptId: target.transcriptId, derived, offset: cursor });
+  return { derived, calls, nextOffset: cursor, failure: null };
+}
+
+/** Whether any transcript has bytes no pass has read. What keeps a Deployment awake while a backlog stands. */
+export async function pendingTranscriptBytes(db: RelationalStore): Promise<number> {
+  const row = await db
+    .prepare(`SELECT COUNT(*) AS n FROM transcripts WHERE parsed_offset < size AND parse_error IS NULL`)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/** The job: passes over the transcripts that need one, until the call budget is spent. */
+export async function parseTranscripts(env: ServerEnv, now: number): Promise<number> {
+  let spent = 0;
+  let derived = 0;
+  while (spent < TRANSCRIPT_PARSE_CALLS_PER_PASS) {
+    const target = await nextTarget(env.db, now);
+    spent += 1;
+    if (target === null) return derived;
+    const report = await parseOnce(env, target, now);
+    spent += report.calls;
+    derived += report.derived;
+    // A pass that moved nothing and failed nothing has no more to give this
+    // tick; continuing would re-read the same bytes.
+    if (report.nextOffset === null && report.failure === null) return derived;
+  }
+  return derived;
+}

@@ -6,10 +6,11 @@ import { badRequest, notFound, ok, resolveProjectScope, sessionInScope } from '.
 import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listContextInjections, listPlans, listPrompts, listResponses, listToolCalls } from '../read/children.js';
 import { listTurns, parseOrigins, promptInSession, turnDetail } from '../read/turns.js';
-import { getTranscript, listSegments } from '../read/transcript.js';
+import { listSegments, listTranscripts } from '../read/transcript.js';
 import { titleSession } from '../core/titling.js';
 import { changePlanStatus } from '../core/plans.js';
 import { PLAN_STATUS_MESSAGE, planInSession, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
+import { tombstoneSession } from '../core/tombstones.js';
 
 /** Session child collections, each served by the same scoped and paginated handler. */
 const CHILDREN = {
@@ -22,6 +23,9 @@ const CHILDREN = {
 } as const;
 
 export const CHILD_SEGMENTS = Object.keys(CHILDREN);
+
+/** The longest reason a deletion records; the note is an operator's own words, not a structured field. */
+export const MAX_TOMBSTONE_REASON_CHARS = 512;
 
 /**
  * The session id a path segment names. Ingest admits any non-empty string within
@@ -168,13 +172,49 @@ export async function handleProjectActivity(env: ServerEnv, ctx: OwnerContext): 
   return ok({ items, stats });
 }
 
-/** A session's transcript record and its segments. The bytes live in the blob store and are fetched per segment through the blob route. */
+/**
+ * A session's transcripts and their segments. The bytes live in the blob store
+ * and are fetched per segment through the blob route.
+ *
+ * A session holds more than one transcript as soon as a subagent sibling
+ * arrives beside the primary, so this answers an array. `transcript` remains
+ * beside it, naming the primary, for a reader that wants the session's own.
+ */
 export async function handleTranscript(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  const transcript = await getTranscript(env.db, scope, sessionId);
-  if (transcript === null) return notFound();
-  return ok({ transcript, segments: await listSegments(env.db, scope, transcript.transcriptId) });
+  const transcripts = await listTranscripts(env.db, scope, sessionId);
+  if (transcripts.length === 0) return notFound();
+  const withSegments = [];
+  for (const transcript of transcripts) {
+    withSegments.push({ ...transcript, segments: await listSegments(env.db, scope, transcript.transcriptId) });
+  }
+  const primary = withSegments.find((t) => t.role !== 'subagent') ?? withSegments[0];
+  return ok({ transcript: primary, transcripts: withSegments, segments: primary.segments });
+}
+
+/**
+ * Deletes a session: the tombstone is recorded, every row derived from it is
+ * removed, and blobs nothing else references go with them. 404 unless the
+ * Project holds the session.
+ *
+ * The tombstone outlives the rows deliberately. It is what a re-import reads in
+ * order to refuse, and what tells a deleted session from one that never
+ * arrived. Repeating the call is a no-op.
+ */
+export async function handleTombstoneSession(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  let reason: string | undefined;
+  try {
+    const body: unknown = await ctx.request.json();
+    const named = typeof body === 'object' && body !== null ? (body as { reason?: unknown }).reason : undefined;
+    if (typeof named === 'string' && named.trim() !== '') reason = named.trim().slice(0, MAX_TOMBSTONE_REASON_CHARS);
+  } catch { /* a reason is optional */ }
+  const outcome = await tombstoneSession(env, scope, sessionId, ctx.member.id, ctx.now, reason);
+  return outcome.applied ? ok(outcome) : notFound();
 }

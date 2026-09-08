@@ -187,6 +187,8 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
 
 /** The kind whose projected arrival schedules a title for its session, past the answer. */
 const SESSION_END_KIND = 'session.end';
+/** The kind whose projected arrival leaves the Deployment bytes to read. */
+const TRANSCRIPT_SEGMENT_KIND = 'transcript.segment';
 
 export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   let parsed: unknown;
@@ -204,6 +206,13 @@ export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<R
       } catch {
         emit({ kind: 'search_wake_failed', projectId: ctx.projectId });
       }
+    });
+  }
+  // Segment bytes are unread until a pass reads them; the clock is nudged so
+  // the rows appear on the next wake rather than at the next idle cadence.
+  if (result.persisted && result.projected === true && envelope?.kind === TRANSCRIPT_SEGMENT_KIND) {
+    env.afterResponse(async () => {
+      try { await env.wake?.(); } catch { emit({ kind: 'transcript_wake_failed', projectId: ctx.projectId }); }
     });
   }
   const endedSession = envelope?.kind === SESSION_END_KIND && typeof envelope.sessionId === 'string' ? envelope.sessionId : null;
