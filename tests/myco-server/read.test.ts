@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { Database } from 'bun:sqlite';
+import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { clampLimit, decodeCursor, encodeCursor, page, DEFAULT_PAGE, MAX_PAGE } from '@myco-server-worker/read/scope.js';
 
@@ -401,7 +402,7 @@ describe('D1 adapter', () => {
 
 describe('schema v4', () => {
   it('adds a recency index on sessions and stamps the build version', () => {
-    expect(SERVER_SCHEMA_VERSION).toBe(33);
+    expect(SERVER_SCHEMA_VERSION).toBe(34);
     const v4 = SCHEMA_STEPS.find((s) => s.version === 4);
     expect(v4?.statements.some((s) => s.includes('idx_sessions_recent'))).toBe(true);
   });
@@ -417,11 +418,108 @@ describe('schema v4', () => {
   });
 });
 
+/** A database at the build's schema, for reading a plan off it. */
+function planDb(drop: readonly string[] = []): Database {
+  const sqlite = new Database(':memory:');
+  for (const statement of SCHEMA_DDL) sqlite.exec(statement);
+  for (const index of drop) sqlite.exec(`DROP INDEX ${index}`);
+  return sqlite;
+}
+
+/**
+ * How a statement reaches a project's sessions: the `sessions` index it seeks
+ * on, whether it scanned the table instead, and whether the planner sorted what
+ * that step produced.
+ *
+ * The plan is a tree, so the sort is attributed rather than searched for: a
+ * sort of these rows sits beside the step that produced them. In a statement
+ * whose sessions arm is one branch of a union, another branch always carries a
+ * sort of its own, and a plan-wide search for one reports every such statement
+ * as sorted.
+ */
+function sessionPlan(sqlite: Database, sql: string): { index: string | null; scanned: string | null; sorted: boolean } {
+  const rows = sqlite.query(`EXPLAIN QUERY PLAN ${sql}`).all() as { id: number; parent: number; detail: string }[];
+  const search = rows.find((r) => /^SEARCH \w+ USING (?:COVERING )?INDEX idx_sessions_\w+/.test(r.detail)) ?? null;
+  return {
+    index: search === null ? null : /INDEX (idx_sessions_\w+)/.exec(search.detail)![1],
+    scanned: rows.map((r) => /^SCAN (s|sessions)\b/.exec(r.detail)?.[1]).find((x) => x !== undefined) ?? null,
+    sorted: search !== null && rows.some((r) => r.parent === search.parent && r.detail.includes('TEMP B-TREE')),
+  };
+}
+
+/**
+ * The session list as PR #1195 issues it, first page and keyset page.
+ *
+ * The statement is a literal: the read that issues it has not landed yet, and
+ * this step exists so the index is in place when it arrives. It is copied from
+ * that branch's `read/sessions.ts`, and the ordering expression — the whole of
+ * what this index answers — is the one `read/activity.ts` already orders by
+ * here, so the test below holds the same plan against a statement the module
+ * itself executes.
+ */
+const OCCURRED_AT = 'COALESCE(s.started_at, s.first_received_at)';
+const A4_SESSION_LIST = (keyset: boolean): string =>
+  `SELECT s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
+     s.agent, s.branch, s.started_at, s.ended_at, s.origin_path, s.parent_session_id, s.parent_reason,
+     s.title, s.summary, s.titled_at, (SELECT substr(pb.text, 1, 160) FROM prompt_batches pb
+       WHERE pb.project_id = s.project_id AND pb.session_id = s.session_id AND pb.origin = 'user' AND pb.text IS NOT NULL
+       ORDER BY pb.created_at, pb.prompt_id LIMIT 1) AS first_prompt,
+     c.member_id, c.runtime_label, c.runtime_kind, m.label AS member_label
+   FROM sessions s
+     LEFT JOIN member_credentials c ON c.id = s.created_by_token_id
+     LEFT JOIN members m ON m.id = c.member_id
+   WHERE s.project_id = ? AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = s.project_id AND t.session_id = s.session_id)${
+     keyset ? ` AND (${OCCURRED_AT} < ? OR (${OCCURRED_AT} = ? AND s.session_id < ?))` : ''}
+   ORDER BY ${OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`;
+
+describe('schema v34', () => {
+  it('carries the occurred-at index in place of the receipt index', () => {
+    const v34 = SCHEMA_STEPS.find((s) => s.version === 34);
+    expect(v34?.statements.some((s) => s.includes('CREATE INDEX IF NOT EXISTS idx_sessions_occurred'))).toBe(true);
+    expect(v34?.statements).toContain('DROP INDEX IF EXISTS idx_sessions_recent');
+    const sqlite = planDb();
+    expect((sqlite.query(`SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sessions' ORDER BY name`).all() as { name: string }[]).map((r) => r.name))
+      .toEqual(['idx_sessions_occurred', 'idx_sessions_titled', 'sqlite_autoindex_sessions_1']);
+  });
+
+  it('serves a session list ordered by when the session happened from one index, first page and keyset page alike, with no sort step', () => {
+    const served = planDb();
+    for (const keyset of [false, true]) {
+      expect({ keyset, ...sessionPlan(served, A4_SESSION_LIST(keyset)) })
+        .toEqual({ keyset, index: 'idx_sessions_occurred', scanned: null, sorted: false });
+    }
+    // The assertion above is load-bearing. Without the index the planner reaches
+    // the project's sessions by another path and sorts every one of them: the
+    // 0.026 ms and the 4.222 ms this step's measurement separates at 50k sessions.
+    const bare = planDb(['idx_sessions_occurred']);
+    for (const keyset of [false, true]) {
+      expect({ keyset, sorted: sessionPlan(bare, A4_SESSION_LIST(keyset)).sorted }).toEqual({ keyset, sorted: true });
+    }
+  });
+
+  it('serves the activity feed\'s sessions arm from the same index, and reaches no project\'s sessions by a scan', async () => {
+    const { db, sqlite, executed } = sqliteEnv();
+    seedSessions(sqlite);
+    await activityFeed(db, { projectId: 'proj_1' });
+    await listSessions(db, { projectId: 'proj_1' });
+    await listSessions(db, { projectId: 'proj_1' }, { cursor: encodeCursor(2, 's2') });
+    const overSessions = [...new Set(executed)].filter((sql) => /\bFROM sessions s\b/.test(sql));
+    expect(overSessions.length).toBeGreaterThanOrEqual(3);
+    // Every read of a project's sessions reaches them by an index — on this
+    // branch, and once the occurred-at list lands.
+    const served = planDb();
+    for (const sql of overSessions) expect({ sql, scanned: sessionPlan(served, sql).scanned }).toEqual({ sql, scanned: null });
+    const feed = overSessions.find((sql) => sql.includes("'session' AS type"))!;
+    expect(sessionPlan(served, feed)).toEqual({ index: 'idx_sessions_occurred', scanned: null, sorted: false });
+    expect(sessionPlan(planDb(['idx_sessions_occurred']), feed).sorted).toBe(true);
+  });
+});
+
 describe('read/meta', () => {
   it('reports the schema version the database carries', async () => {
     const { db } = sqliteEnv();
     const { schemaVersion } = await import('@myco-server-worker/read/meta.js');
-    expect(await schemaVersion(db)).toBe(33);
+    expect(await schemaVersion(db)).toBe(34);
   });
 });
 

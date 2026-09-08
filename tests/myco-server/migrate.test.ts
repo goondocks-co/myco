@@ -41,7 +41,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0024_v24.sql': 'f6cc2bd6c8c8acda977565b7b01a666842a78deedf452859bc1935b0b35be9fa',
   '0025_v25.sql': '130505475de378ec88140ca998a60a197a891a1772927b3a5ade1dc449a77e78',
   '0026_v26.sql': 'aa6245f705061b2a4ecb006e464dbd0356e8f99fa0a91ea56a7f8aeb2423ba10',  '0027_v27.sql': '34fff0ea1db7f5a27507cbe52ca214c5f0990889971760cac4fc0c9ba1be7ca0',
-  '0028_v28.sql': 'd6d08116335be071d2c210311931954109907594650588863bf05a4309877336',  '0029_v29.sql': 'c0ae2712efb51f36fe46ae65e8fc4b6e0429a7cd858822b3304d2278e31683d5',  '0030_v30.sql': '2f4e045992f7b1ab1ba214d90650abb1ef88a6593ffa97252f34cc826fb8142e',  '0031_v31.sql': '341942d604a2826d39f01338c25f2077190357e6b2ecdad87ce49c3c951d0d19',  '0032_v32.sql': 'd7a11dd14977af3b2087e5241cb7e619e2bcf08900e23b76ef14016c36cc3e66',  '0033_v33.sql': '761f86e4c25ebe6e121c08b5fe91c085dfce5b3712adede4a85f74490f0f10e3',
+  '0028_v28.sql': 'd6d08116335be071d2c210311931954109907594650588863bf05a4309877336',  '0029_v29.sql': 'c0ae2712efb51f36fe46ae65e8fc4b6e0429a7cd858822b3304d2278e31683d5',  '0030_v30.sql': '2f4e045992f7b1ab1ba214d90650abb1ef88a6593ffa97252f34cc826fb8142e',  '0031_v31.sql': '341942d604a2826d39f01338c25f2077190357e6b2ecdad87ce49c3c951d0d19',  '0032_v32.sql': 'd7a11dd14977af3b2087e5241cb7e619e2bcf08900e23b76ef14016c36cc3e66',  '0033_v33.sql': '761f86e4c25ebe6e121c08b5fe91c085dfce5b3712adede4a85f74490f0f10e3',  '0034_v34.sql': '81799fcf00e093a022b2c1bc078e786dc81385f576a706f655d46fbe14db849e',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -62,6 +62,14 @@ function declaredColumns(steps: readonly SchemaStep[]): Map<string, Map<string, 
     out.set(name, cols);
   }
   return out;
+}
+
+/** Every index a prefix of the steps leaves standing, by the table it is on. An index a step drops must have been created by an earlier one, so a name absent here is a drop of nothing. */
+function declaredIndexes(steps: readonly SchemaStep[]): Map<string, string> {
+  const sqlite = fresh();
+  for (const step of steps) sqlite.exec(renderMigrationFile(step));
+  const rows = sqlite.query(`SELECT name, tbl_name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'`).all() as { name: string; tbl_name: string }[];
+  return new Map(rows.map((r) => [r.name, r.tbl_name]));
 }
 
 /** Applies one step the way `wrangler d1 migrations apply` does: statement by statement, stopping at the first failure. `Database.exec` on a whole file runs past a failing statement, so a file-at-once apply cannot stand in for the production applier. */
@@ -189,17 +197,30 @@ describe('versioned schema steps', () => {
       }
       // A step may DROP only a table it created in that same step — the guard-table
       // idiom, where a CHECK-bearing scratch table aborts the step on a precondition
-      // and is cleaned up. Anything else dropped after step 2 is contraction.
+      // and is cleaned up — or an index whose access path the same step replaces.
+      // An index carries no data, so retiring one loses nothing a later step cannot
+      // rebuild; retiring the LAST ordered path over a table does cost a read its
+      // plan, so the step that drops one states the path that takes its place.
+      // Anything else dropped after step 2 is contraction.
       const createdHere = new Set(
         SCHEMA_STEPS[n].statements
           .map((s) => /^CREATE TABLE (?:IF NOT EXISTS )?(\w+)/i.exec(s)?.[1])
           .filter((t): t is string => t !== undefined),
       );
+      const indexesBefore = (): Map<string, string> => declaredIndexes(SCHEMA_STEPS.slice(0, n));
       for (const s of SCHEMA_STEPS[n].statements) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
           expect({ step: n + 1, dropped, selfCreated: createdHere.has(dropped) })
             .toEqual({ step: n + 1, dropped, selfCreated: true });
+          continue;
+        }
+        const droppedIndex = /^DROP INDEX (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
+        if (droppedIndex !== undefined) {
+          const table = indexesBefore().get(droppedIndex) ?? null;
+          const replaced = table !== null && SCHEMA_STEPS[n].statements.some((x) =>
+            new RegExp(`^CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?\\w+ ON ${table}\\b`, 'i').test(x));
+          expect({ step: n + 1, droppedIndex, table, replaced }).toEqual({ step: n + 1, droppedIndex, table, replaced: true });
           continue;
         }
         expect(s).not.toMatch(/\b(DROP|RENAME)\b/i);
