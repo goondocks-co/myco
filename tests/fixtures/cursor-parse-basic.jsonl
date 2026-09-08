@@ -1,0 +1,2 @@
+{"type": "user", "message": {"content": "why is the daemon restarting"}, "timestamp": "2026-09-01T10:00:01Z"}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "The lease expired."}]}, "timestamp": "2026-09-01T10:00:02Z"}

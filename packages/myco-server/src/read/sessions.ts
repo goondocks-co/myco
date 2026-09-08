@@ -1,5 +1,6 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { inListChunks, keyset, page, type Page, type ReadScope } from './scope.js';
+import { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 
 export interface ProjectRow {
   projectId: string;
@@ -94,6 +95,15 @@ const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.fi
 const SESSION_FROM = `FROM sessions s
      LEFT JOIN member_credentials c ON c.id = s.created_by_token_id
      LEFT JOIN members m ON m.id = c.member_id`;
+/**
+ * A deleted session is absent from every read.
+ *
+ * Four reads below issue their own SELECT against `sessions` rather than going
+ * through `SESSION_FROM`, so the predicate is named once here and applied at
+ * each of them. A suppression that covered three of the five would be a leak
+ * rather than a rule.
+ */
+const LIVE_SESSION = notTombstonedSql('s');
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const text = (value: unknown): string | null => (value as string | null) ?? null;
@@ -183,7 +193,25 @@ export interface SessionFilters {
   sessionId?: string;
   /** A text the session's title, first prompt, agent, branch or id contains, matched case-insensitively. */
   q?: string;
+  /**
+   * Which sessions this read admits by the fidelity of the transcripts behind
+   * them. `full` admits only sessions every transcript of which the parser
+   * could read completely; `any` admits all.
+   *
+   * `listSessions` defaults to `full` and `listSessionSummaries` to `any`, and
+   * the difference is deliberate. Everything that assembles extraction material
+   * reads the former; a person or an agent browsing history reads the latter.
+   * The default fails closed on the expensive side: a session hidden from a
+   * page is an absence someone can see, while knowledge extracted from a
+   * transcript known to be incomplete reads exactly like knowledge that is not.
+   */
+  fidelity?: 'full' | 'any';
 }
+
+/** A session no transcript of which the parser read at reduced fidelity. Every transcript counts, primary and subagent sibling alike, so one degraded sibling disqualifies the session. */
+const FULL_FIDELITY = `NOT EXISTS (SELECT 1 FROM transcripts t
+     WHERE t.project_id = s.project_id AND t.session_id = s.session_id
+       AND t.fidelity IS NOT NULL AND t.fidelity <> 'full')`;
 
 /** A LIKE pattern matching `text` anywhere, with the pattern's own metacharacters escaped. */
 export function containsPattern(text: string): string {
@@ -193,7 +221,8 @@ export function containsPattern(text: string): string {
 export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters = {}): Promise<Page<SessionRow>> {
   const k = keyset(opts, { order: 's.first_received_at', id: 's.session_id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
-  const conditions = ['s.project_id = ?'];
+  const conditions = ['s.project_id = ?', LIVE_SESSION];
+  if ((opts.fidelity ?? 'full') === 'full') conditions.push(FULL_FIDELITY);
   const params: unknown[] = [scope.projectId];
   if (opts.branch !== undefined) { conditions.push('s.branch = ?'); params.push(opts.branch); }
   if (opts.since !== undefined) { conditions.push('s.started_at >= ?'); params.push(opts.since); }
@@ -217,7 +246,7 @@ export async function listSessions(db: RelationalStore, scope: ReadScope, opts: 
 /** One session inside the scope, or null — including when the session exists under another project. */
 export async function getSession(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<SessionRow | null> {
   const row = await db
-    .prepare(`SELECT ${SESSION_COLUMNS} ${SESSION_FROM} WHERE s.project_id = ? AND s.session_id = ?`)
+    .prepare(`SELECT ${SESSION_COLUMNS} ${SESSION_FROM} WHERE s.project_id = ? AND s.session_id = ? AND ${LIVE_SESSION}`)
     .bind(scope.projectId, sessionId)
     .first<Record<string, unknown>>();
   return row === null ? null : toSession(row);
@@ -233,6 +262,10 @@ export async function sessionCounts(db: RelationalStore, scope: ReadScope, sessi
     ['attachments', 'attachments'],
   ] as const;
   const counts = {} as Record<string, number>;
+  // A deleted session holds nothing, whether or not every row has gone yet:
+  // one check ahead of the five counts rather than a predicate repeated in each.
+  const deleted = await db.prepare(`SELECT 1 AS present FROM session_tombstones WHERE project_id = ? AND session_id = ?`).bind(scope.projectId, sessionId).first<{ present: number }>();
+  if (deleted !== null) return { prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 };
   for (const [key, table] of tables) {
     const row = await db
       .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ? AND session_id = ?`)
@@ -312,7 +345,9 @@ async function promptInstants(db: RelationalStore, scope: ReadScope, sessionIds:
 
 /** The session list with its rail facts: the counts of every child table and, unless the caller has no use for it, the activity buckets, over the page's ids only. The dashboard and the MCP tool both read the list through this. */
 export async function listSessionSummaries(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters, nowMs: number, facts: { activity?: boolean } = {}): Promise<Page<SessionSummaryRow>> {
-  const listed = await listSessions(db, scope, opts);
+  // A person and an agent browsing history see every session, labelled by what
+  // its transcript could carry; the caller may still narrow.
+  const listed = await listSessions(db, scope, { fidelity: 'any', ...opts });
   const ids = listed.rows.map((r) => r.sessionId);
   const counts = await sessionCountsFor(db, scope, ids);
   const instants = facts.activity === false ? [] : await promptInstants(db, scope, ids);
@@ -331,7 +366,7 @@ export async function projectStats(db: RelationalStore, scope: ReadScope, nowMs:
   const sessions = await db
     .prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END) AS open,
                      SUM(CASE WHEN first_received_at >= ? THEN 1 ELSE 0 END) AS recent, MAX(last_received_at) AS last
-                FROM sessions WHERE project_id = ?`)
+                FROM sessions s WHERE s.project_id = ? AND ${LIVE_SESSION}`)
     .bind(nowMs - WEEK_MS, scope.projectId)
     .first<Record<string, unknown>>();
   const countOf = async (table: string): Promise<number> => {
@@ -359,8 +394,8 @@ export async function projectExists(db: RelationalStore, projectId: string): Pro
 /** True when the session exists inside the scope. `sessions` is keyed `(project_id, session_id)`, so containment is the only safe question to ask of a session id. */
 export async function sessionInScope(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<boolean> {
   const row = await db
-    .prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ?`)
-    .bind(scope.projectId, sessionId)
+    .prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ? AND ${NOT_TOMBSTONED_PARAMS}`)
+    .bind(scope.projectId, sessionId, scope.projectId, sessionId)
     .first<{ present: number }>();
   return row !== null;
 }
@@ -374,8 +409,8 @@ export async function sessionInScope(db: RelationalStore, scope: ReadScope, sess
  */
 export async function sessionHeldByMachine(db: RelationalStore, scope: ReadScope, sessionId: string, machineId: string): Promise<boolean> {
   const row = await db
-    .prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ? AND machine_id = ?`)
-    .bind(scope.projectId, sessionId, machineId)
+    .prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ? AND machine_id = ? AND ${NOT_TOMBSTONED_PARAMS}`)
+    .bind(scope.projectId, sessionId, machineId, scope.projectId, sessionId)
     .first<{ present: number }>();
   return row !== null;
 }
@@ -383,8 +418,8 @@ export async function sessionHeldByMachine(db: RelationalStore, scope: ReadScope
 /** True when the Project holds this session, whichever machine captured it: what a run's dispatch-named session is checked against before a write names it. */
 export async function projectHoldsSession(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<boolean> {
   const row = await db
-    .prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ?`)
-    .bind(scope.projectId, sessionId)
+    .prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ? AND ${NOT_TOMBSTONED_PARAMS}`)
+    .bind(scope.projectId, sessionId, scope.projectId, sessionId)
     .first<{ present: number }>();
   return row !== null;
 }

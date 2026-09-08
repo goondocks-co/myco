@@ -51,6 +51,17 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'sleep',
     converges: 'no spent, revoked or expired enrollment authority outlives the retention window; a live invitation is untouched whatever its age',
   },
+  // #1147 — transcript-first ingest
+  {
+    name: 'transcript-parse',
+    runsThrough: 'idle',
+    converges: 'every byte of every held transcript has been read into the rows it contains, or the transcript names the failure that stopped it; a transcript nothing can parse is read to its end and offered no further',
+  },
+  {
+    name: 'transcript-retention',
+    runsThrough: 'idle',
+    converges: 'no raw transcript segment behind the parse cursor outlives the Deployment window, and no blob any row still references is removed while no blob nothing references is kept; a segment inside the window or ahead of the cursor, and every derived row, is never pruned',
+  },
 ];
 
 /** A job declared for a state, awaiting the child that gives it work. Nothing runs it; naming the owner keeps the table honest. */

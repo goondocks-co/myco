@@ -32,6 +32,8 @@ export const MEMBER_CODES = [
   'enrollment_no_project',
   'project_archived',
   'run_scope', 'no_run', 'project_mismatch',
+  // #1147 — transcript-first ingest
+  'session_tombstoned', 'transcript_replaced',
   'unavailable',
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];

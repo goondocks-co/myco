@@ -11,6 +11,7 @@ import { SubtabPill } from '../ui/subtab-pill';
 import { Surface } from '../ui/surface';
 import {
   blobUrl, memberName, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, runtimeName, TITLING_OUTCOME_TEXT, TITLING_WATCH_MS, useSession, useSessionChildren, useTitleSession, useTranscript, useTurns,
+  type TranscriptRecord,
   type AttachmentRow, type ContextInjectionRow, type PlanRow, type SessionRow, type TurnRow,
 } from '../../hooks/use-sessions';
 import { useQueryClient } from '@tanstack/react-query';
@@ -393,30 +394,56 @@ function Fact({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-/** The transcript's record and its segments, each a link; the bytes are never fetched here — a transcript runs to megabytes. */
+/** What a session's record can tell you, in the reader's terms rather than the parser's. */
+function readState(t: TranscriptRecord): string {
+  if (t.parseError !== null) return 'Could not be read in full';
+  if (t.parsedOffset < t.size) return 'Still being read';
+  if (t.fidelity !== null && t.fidelity !== 'full') return 'Read; this agent records no tool results';
+  return 'Read';
+}
+
+/**
+ * The transcripts a session holds and their segments, each a link; the bytes
+ * are never fetched here — a transcript runs to megabytes.
+ *
+ * A session holds one transcript of its own and one more per subagent, so the
+ * answer is a list. A payload carrying no list is read as nothing captured
+ * rather than rendered: a page that says so is recoverable, and one that maps
+ * over an absent array takes the whole route down.
+ */
 function Transcript({ projectId, sessionId }: { projectId: string; sessionId: string }) {
   const transcript = useTranscript(projectId, sessionId);
+  const held = Array.isArray(transcript.data?.transcripts) ? transcript.data.transcripts : [];
   return (
     <PageLoading isLoading={transcript.isPending} error={transcript.error}>
-      {transcript.data === null ? (
+      {transcript.isPending ? null : held.length === 0 ? (
         <p className="font-sans text-sm text-on-surface-variant">No transcript captured.</p>
-      ) : transcript.data && (
-        <Panel title="Transcript" eyebrow={`${formatBytes(transcript.data.transcript.size)} · ${formatCount(transcript.data.transcript.segmentCount, 'segment')}`}>
-          <dl className="grid gap-x-6 gap-y-1 font-sans text-sm sm:grid-cols-2">
-            <Fact label="Agent" value={transcript.data.transcript.agent} />
-            <Fact label="Path" value={transcript.data.transcript.originPath} />
-            <Fact label="First received" value={formatDateTime(transcript.data.transcript.firstReceivedAt)} />
-            <Fact label="Last received" value={formatDateTime(transcript.data.transcript.lastReceivedAt)} />
-          </dl>
-          <ul className="mt-3 flex flex-col gap-1" aria-label="Transcript segments">
-            {transcript.data.segments.map((s) => (
-              <li key={s.baseOffset} className="flex items-center gap-3 font-mono text-xs">
-                <a href={blobUrl(projectId, s.blobKey)} target="_blank" rel="noreferrer" className={inlineLink}>bytes {s.baseOffset.toLocaleString()}–{(s.baseOffset + s.length).toLocaleString()}</a>
-                <span className="text-on-surface-variant">{formatBytes(s.length)} · {formatRelative(s.createdAt)}</span>
-              </li>
-            ))}
-          </ul>
-        </Panel>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {held.map((t) => (
+            <Panel
+              key={t.transcriptId}
+              title={t.role === 'subagent' ? 'Subagent transcript' : 'Transcript'}
+              eyebrow={`${formatBytes(t.size)} · ${formatCount(t.segmentCount, 'segment')}`}
+            >
+              <dl className="grid gap-x-6 gap-y-1 font-sans text-sm sm:grid-cols-2">
+                <Fact label="Agent" value={t.agent} />
+                <Fact label="Path" value={t.originPath} />
+                <Fact label="State" value={readState(t)} />
+                <Fact label="First received" value={formatDateTime(t.firstReceivedAt)} />
+                <Fact label="Last received" value={formatDateTime(t.lastReceivedAt)} />
+              </dl>
+              <ul className="mt-3 flex flex-col gap-1" aria-label="Transcript segments">
+                {(t.segments ?? []).map((s) => (
+                  <li key={s.baseOffset} className="flex items-center gap-3 font-mono text-xs">
+                    <a href={blobUrl(projectId, s.blobKey)} target="_blank" rel="noreferrer" className={inlineLink}>bytes {s.baseOffset.toLocaleString()}–{(s.baseOffset + s.length).toLocaleString()}</a>
+                    <span className="text-on-surface-variant">{formatBytes(s.length)} · {formatRelative(s.createdAt)}</span>
+                  </li>
+                ))}
+              </ul>
+            </Panel>
+          ))}
+        </div>
       )}
     </PageLoading>
   );

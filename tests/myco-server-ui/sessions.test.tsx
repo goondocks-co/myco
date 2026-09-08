@@ -279,13 +279,25 @@ describe('Session detail', () => {
       { attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW },
       { attachmentId: 'a2', promptId: null, blobKey: KEY_SVG, mediaType: 'image/svg+xml', byteSize: 99, description: 'a diagram', createdAt: NOW, orderedAt: NOW },
     ]),
-    '/api/projects/x/sessions/s1/transcript': () => Response.json({
-      transcript: { transcriptId: 'tx1', sessionId: 's1', machineId: 'mac-1', agent: 'claude-code', originPath: '/repo', size: 7_340_032, segmentCount: 2, firstReceivedAt: NOW - 3000, lastReceivedAt: NOW },
-      segments: [{ baseOffset: 0, length: 4_000_000, blobKey: KEY_SEG, createdAt: NOW - 3000 }, { baseOffset: 4_000_000, length: 3_340_032, blobKey: KEY_SEG, createdAt: NOW }],
-    }),
+    '/api/projects/x/sessions/s1/transcript': () => Response.json(transcriptPayload()),
     [BLOB(KEY_TEXT)]: () => new Response('{"a":1}', { headers: { 'content-type': 'text/plain; charset=utf-8' } }),
     ...over,
   });
+
+  /** What the route answers: every transcript the session holds, each carrying its own segments. */
+  const transcriptPayload = () => {
+    const segments = [
+      { baseOffset: 0, length: 4_000_000, blobKey: KEY_SEG, createdAt: NOW - 3000 },
+      { baseOffset: 4_000_000, length: 3_340_032, blobKey: KEY_SEG, createdAt: NOW },
+    ];
+    const primary = {
+      transcriptId: 'tx1', sessionId: 's1', machineId: 'mac-1', agent: 'claude-code', originPath: '/repo',
+      size: 7_340_032, segmentCount: 2, firstReceivedAt: NOW - 3000, lastReceivedAt: NOW,
+      role: 'primary', parsedOffset: 7_340_032, parsedAt: NOW, fidelity: 'full', parseError: null, parseFailedAt: null,
+      segments,
+    };
+    return { transcript: primary, transcripts: [primary], segments };
+  };
 
   it('renders the turns a person typed, collapsed but the last, and reads a turn\'s body — and its stored text — only when it opens', async () => {
     const { requested } = server(detailRoutes());
@@ -596,6 +608,32 @@ describe('Session detail', () => {
     const links = screen.getAllByRole('link', { name: /^bytes / });
     expect(links.map((a) => a.getAttribute('href'))).toEqual([BLOB(KEY_SEG), BLOB(KEY_SEG)]);
     expect(requested).not.toContain(BLOB(KEY_SEG));
+  });
+
+  it('says nothing was captured rather than taking the route down when the answer carries no list', async () => {
+    // The shape the route answered before a session could hold more than one
+    // transcript. Rendering it as an empty page is recoverable; mapping over the
+    // absent list is a blank screen for the whole session.
+    server(detailRoutes({
+      '/api/projects/x/sessions/s1/transcript': () => Response.json({
+        transcript: { transcriptId: 'tx1', sessionId: 's1', size: 1, segmentCount: 0 },
+        segments: [],
+      }),
+    }));
+    mount('/p/x/sessions/s1');
+    fireEvent.click(await screen.findByRole('tab', { name: 'Transcript' }));
+    expect(await screen.findByText('No transcript captured.')).toBeTruthy();
+  });
+
+  it('names a subagent transcript apart from the session\'s own', async () => {
+    const payload = transcriptPayload();
+    const sibling = { ...payload.transcript, transcriptId: 'tx2', role: 'subagent', segments: [] };
+    server(detailRoutes({
+      '/api/projects/x/sessions/s1/transcript': () => Response.json({ ...payload, transcripts: [payload.transcript, sibling] }),
+    }));
+    mount('/p/x/sessions/s1');
+    fireEvent.click(await screen.findByRole('tab', { name: 'Transcript' }));
+    expect(await screen.findByText('Subagent transcript')).toBeTruthy();
   });
 
   it('answers a session the server does not hold with not found, never forbidden', async () => {

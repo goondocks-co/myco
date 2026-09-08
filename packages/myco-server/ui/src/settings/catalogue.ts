@@ -155,6 +155,10 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     note: 'How long this server keeps what it records about itself.',
     leaves: [
       { leaf: 'notifications.retention_days', label: 'Keep notifications for', kind: 'number', min: 0, max: 365, unit: 'days' },
+      // #1147 — 0 keeps transcripts indefinitely. A setting cannot be cleared once
+      // written, so 0 is how a server returns to keeping everything; raising this
+      // minimum would strand any server that had ever set a window.
+      { leaf: 'retention.transcripts', label: 'Keep raw transcripts for', kind: 'number', min: 0, max: 3650, unit: 'days', note: 'Set to 0 to keep them indefinitely. Sessions, prompts, replies and plans are kept whatever this says.' },
       { leaf: 'release_provenance.reconcile_interval_minutes', label: 'Reconcile release state every', kind: 'number', min: 1, max: 1440, unit: 'minutes' },
     ],
   },

@@ -3,6 +3,7 @@ import type { CaptureEnvelope } from './envelope.js';
 import { blobFields, promptReferenceFields, type KindSpec, type Payload } from './kinds.js';
 import { emit, refusal, type Refusal } from '../telemetry.js';
 import { PROJECT_ARCHIVED } from './projects.js';
+import { NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 
 /** The identity of the write in flight: project, token, machine, the server clock, and the nonce that names this request's raw row. */
 export interface WriteContext {
@@ -118,10 +119,19 @@ export const projectLive = (ctx: WriteContext): SharedCheck => ({
   refusal: (row) => (row !== undefined && row.archived_at !== null ? refusal(PROJECT_ARCHIVED, 'project_archived') : null),
 });
 
-/** The checks every kind shares, derived from the catalogue and the kind's declared identities in the one order they are admitted, read, and refused: the session's machine, then every continued row the kind names, then every referenced blob present, then every referenced prompt absent or owned by this machine. */
+/** A deleted session takes no further writes. The check is here rather than in a handler so it covers EVERY kind by construction: capture continues on a machine after a person deletes the session, and a sweep that only removed rows would be repopulated behind itself. */
+export const SESSION_TOMBSTONED: Refusal = refusal('session is deleted', 'session_tombstoned');
+const notTombstoned = (ctx: WriteContext, sessionId: string): SharedCheck => ({
+  admission: { sql: NOT_TOMBSTONED_PARAMS, params: [ctx.projectId, sessionId] },
+  read: { sql: `SELECT 1 AS tombstoned FROM session_tombstones WHERE project_id = ? AND session_id = ?`, params: [ctx.projectId, sessionId] },
+  refusal: (row) => (row === undefined ? null : SESSION_TOMBSTONED),
+});
+
+/** The checks every kind shares, derived from the catalogue and the kind's declared identities in the one order they are admitted, read, and refused: the session carries no tombstone, then the session's machine, then every continued row the kind names, then every referenced blob present, then every referenced prompt absent or owned by this machine. */
 export function sharedChecks(spec: KindSpec, ctx: WriteContext, e: CaptureEnvelope, p: Payload, identities: Identity[]): SharedCheck[] {
   const named = (fields: string[]) => fields.filter((field) => typeof p[field] === 'string').map((field) => p[field] as string);
   return [
+    notTombstoned(ctx, e.sessionId),
     owned(ctx, { table: 'sessions', keyColumn: 'session_id', key: e.sessionId, owner: 'row' }),
     ...identities.map((identity) => owned(ctx, identity)),
     ...named(blobFields(spec)).map((key) => present(ctx, key)),
@@ -296,6 +306,9 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
     // An event that names no status leaves the row's alone: a file written again does not reopen a completed plan.
     `status = CASE WHEN ${newer} AND ? = 1 THEN excluded.status ELSE plans.status END`,
     `prompt_id = CASE WHEN ${newer} THEN COALESCE(excluded.prompt_id, plans.prompt_id) ELSE plans.prompt_id END`,
+    // The channel a version arrived through, kept when an event names none: a
+    // row whose source is known does not become unknown again.
+    `source = CASE WHEN ${newer} THEN COALESCE(excluded.source, plans.source) ELSE plans.source END`,
     `updated_by = CASE WHEN ${moves} THEN NULL ELSE plans.updated_by END`,
     `created_at = MIN(plans.created_at, excluded.created_at)`,
   ];
@@ -310,12 +323,12 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
       db.prepare(`SELECT content_hash, origin_path, updated_at FROM plans WHERE project_id = ? AND plan_key = ?`).bind(ctx.projectId, planKey),
     ],
     projections: [
-      db.prepare(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, origin_path, prompt_id, updated_by, created_at, updated_at, token_id, received_at)
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?
+      db.prepare(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, origin_path, source, prompt_id, updated_by, created_at, updated_at, token_id, received_at)
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?
            WHERE ${RAW_ROW_GATE}
           ON CONFLICT (project_id, plan_key) DO UPDATE SET
             ${set.join(',\n            ')}`)
-        .bind(ctx.projectId, planKey, e.sessionId, e.eventId, ctx.machineId, opt(p.title), opt(p.content), opt(p.blob), contentHash, opt(p.status) ?? 'active', originPath, opt(p.promptId),
+        .bind(ctx.projectId, planKey, e.sessionId, e.eventId, ctx.machineId, opt(p.title), opt(p.content), opt(p.blob), contentHash, opt(p.status) ?? 'active', originPath, opt(p.source), opt(p.promptId),
               e.createdAt, e.createdAt, ctx.tokenId, ctx.now, ...rawGateParams(ctx, e), ...setParams),
       // Tags follow every event at least as new as the row, identical content included: a tags-only save lands.
       db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id = ? AND ${current} AND ${RAW_ROW_GATE}`)
@@ -360,8 +373,22 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
   const baseOffset = p.baseOffset as number;
   const length = p.length as number;
   const blob = p.blob as string;
+  const headHash = opt(p.headHash) as string | null;
   const size = baseOffset + length;
   const held = 'COALESCE((SELECT size FROM transcripts WHERE project_id = ? AND transcript_id = ?), 0)';
+  // A transcript truncated and rewritten in place keeps its path and its inode,
+  // so the id alone cannot tell the new file from the old one. A head digest
+  // that disagrees with the one held names a different file under a name
+  // already taken, and is refused terminally rather than appended to.
+  //
+  // Blind spot: a rewrite that leaves the first bytes intact matches, so a file
+  // edited in the middle under a live pointer passes this check. The digest
+  // catches truncation and replacement, which is what a rotation looks like;
+  // it is not an integrity check over the whole file.
+  //
+  // Inert until a member sends the field: absent `headHash` admits everything,
+  // which is today's behaviour on every member.
+  const headMatches = `NOT EXISTS (SELECT 1 FROM transcripts WHERE project_id = ? AND transcript_id = ? AND head_hash IS NOT NULL AND ? IS NOT NULL AND head_hash <> ?)`;
   const segmentWritten = 'EXISTS (SELECT 1 FROM transcript_segments WHERE project_id = ? AND transcript_id = ? AND base_offset = ? AND event_id = ?)';
   const owned = (rows: ReadRows): { size: number; segment_count: number } | null => {
     const transcript = rows[0]?.[0] as { size: number; segment_count: number; machine_id: string } | undefined;
@@ -372,27 +399,32 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
     admission: [
       { sql: `EXISTS (SELECT 1 FROM blobs WHERE project_id = ? AND key = ? AND size = ?)`, params: [ctx.projectId, blob, length] },
       { sql: `${held} = ?`, params: [ctx.projectId, transcriptId, baseOffset] },
+      { sql: headMatches, params: [ctx.projectId, transcriptId, headHash, headHash] },
     ],
     projections: [
       db.prepare(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${RAW_ROW_GATE}
           ON CONFLICT (project_id, transcript_id, base_offset) DO NOTHING`)
         .bind(ctx.projectId, transcriptId, baseOffset, length, blob, e.eventId, e.createdAt, ctx.now, ctx.tokenId, ...rawGateParams(ctx, e)),
-      db.prepare(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, origin_path, size, segment_count, first_received_at, last_received_at, token_id)
-          SELECT ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ? WHERE ${RAW_ROW_GATE} AND ${segmentWritten}
-          ON CONFLICT (project_id, transcript_id) DO UPDATE SET size = excluded.size, segment_count = transcripts.segment_count + 1, last_received_at = excluded.last_received_at`)
-        .bind(ctx.projectId, transcriptId, e.sessionId, ctx.machineId, opt(p.agent), opt(p.originPath), size, ctx.now, ctx.now, ctx.tokenId,
+      db.prepare(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, origin_path, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id)
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ? WHERE ${RAW_ROW_GATE} AND ${segmentWritten}
+          ON CONFLICT (project_id, transcript_id) DO UPDATE SET size = excluded.size, segment_count = transcripts.segment_count + 1,
+            last_received_at = excluded.last_received_at, head_hash = COALESCE(transcripts.head_hash, excluded.head_hash)`)
+        .bind(ctx.projectId, transcriptId, e.sessionId, ctx.machineId, opt(p.agent), opt(p.originPath), opt(p.role) ?? 'primary', headHash, size, ctx.now, ctx.now, ctx.tokenId,
               ...rawGateParams(ctx, e), ctx.projectId, transcriptId, baseOffset, e.eventId),
     ],
     reads: [
-      db.prepare(`SELECT size, segment_count, machine_id FROM transcripts WHERE project_id = ? AND transcript_id = ?`).bind(ctx.projectId, transcriptId),
+      db.prepare(`SELECT size, segment_count, machine_id, head_hash FROM transcripts WHERE project_id = ? AND transcript_id = ?`).bind(ctx.projectId, transcriptId),
       db.prepare(`SELECT blob_key, length FROM transcript_segments WHERE project_id = ? AND transcript_id = ? AND base_offset = ?`).bind(ctx.projectId, transcriptId, baseOffset),
       db.prepare(`SELECT size FROM blobs WHERE project_id = ? AND key = ?`).bind(ctx.projectId, blob),
     ],
     refusal: (rows) => {
-      const transcript = rows[0]?.[0] as { size: number } | undefined;
+      const transcript = rows[0]?.[0] as { size: number; head_hash: string | null } | undefined;
       const blobRow = rows[2]?.[0] as { size: number } | undefined;
       if (blobRow !== undefined && blobRow.size !== length) return refusal('blob size does not match length', 'blob_length_mismatch');
+      if (transcript?.head_hash != null && headHash !== null && transcript.head_hash !== headHash) {
+        return refusal('transcript was replaced under the same identity', 'transcript_replaced');
+      }
       const heldSize = transcript?.size ?? 0;
       if (baseOffset > heldSize) return refusal('transcript offset gap', 'offset_gap');
       return refusal('transcript offset overlap', 'offset_overlap');

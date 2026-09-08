@@ -114,19 +114,35 @@ export interface AttachmentRow {
   orderedAt: number;
 }
 
+export interface TranscriptSegment { baseOffset: number; length: number; blobKey: string; createdAt: number }
+
+export interface TranscriptRecord {
+  transcriptId: string;
+  sessionId: string;
+  machineId: string;
+  agent: string | null;
+  originPath: string | null;
+  size: number;
+  segmentCount: number;
+  firstReceivedAt: number;
+  lastReceivedAt: number;
+  /** The session's own transcript, or a subagent's beside it. */
+  role: string;
+  /** How far the server has read it, and what its format could carry. */
+  parsedOffset: number;
+  parsedAt: number | null;
+  fidelity: string | null;
+  parseError: string | null;
+  parseFailedAt: number | null;
+  segments: TranscriptSegment[];
+}
+
 export interface TranscriptResponse {
-  transcript: {
-    transcriptId: string;
-    sessionId: string;
-    machineId: string;
-    agent: string | null;
-    originPath: string | null;
-    size: number;
-    segmentCount: number;
-    firstReceivedAt: number;
-    lastReceivedAt: number;
-  };
-  segments: { baseOffset: number; length: number; blobKey: string; createdAt: number }[];
+  /** The session's own transcript. */
+  transcript: TranscriptRecord;
+  /** Every transcript the session holds, the primary first; a subagent adds one beside it. */
+  transcripts: TranscriptRecord[];
+  segments: TranscriptSegment[];
 }
 
 export interface FeedItem {

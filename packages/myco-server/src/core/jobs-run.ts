@@ -16,6 +16,8 @@ import { releaseRun } from './release.js';
 import { reconcileSearchIndex } from './search-index.js';
 import { dispatchEmbeddingWork } from './embedding/jobs.js';
 import { reclaimEnrollmentAuthorities } from '../auth/enrollment.js';
+import { parseTranscripts } from '../ingest/parse.js';
+import { transcriptRetention } from '../ingest/retention.js';
 
 /** The retention window when the leaf is unset, and the bounds the leaf itself declares. */
 export const RUN_RETENTION_DAYS_DEFAULT = 30;
@@ -143,4 +145,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   // #1158 join UX
   'invite-expiry': inviteExpiry,
   'grant-expiry': grantExpiry,
+  // #1147 — transcript-first ingest
+  'transcript-parse': (env, now) => parseTranscripts(env, now),
+  'transcript-retention': transcriptRetention,
 };
