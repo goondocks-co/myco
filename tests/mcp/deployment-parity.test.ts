@@ -134,7 +134,7 @@ describe('the member tool surface over a real Deployment', () => {
 });
 
 describe('the external read-only surface over a real Deployment', () => {
-  it('serves an independently hosted agent the six read-only tools over its grant key alone, refuses a write and myco_agent as tools that do not exist, and refuses the key the moment it is rotated', async () => {
+  it('serves an independently hosted agent its six tools over its grant key alone, records a spore as the grant, refuses a write off that surface and myco_agent as tools that do not exist, and refuses the key the moment it is rotated', async () => {
     const { url, databasePath } = await deployment();
     const sqlite = new Database(databasePath);
     const db = sqliteRelationalStore(sqlite);
@@ -152,7 +152,12 @@ describe('the external read-only surface over a real Deployment', () => {
       expect(tools.tools.map((t) => t.name).sort()).toEqual([...EXTERNAL_TOOLS].sort());
       const plans = await bot.callTool({ name: 'myco_plans', arguments: { op: 'list' } });
       expect((plans.structuredContent as { result: unknown[] }).result).toEqual([]);
-      await expect(bot.callTool({ name: 'myco_spores', arguments: { op: 'save', type: 'gotcha', content: 'x' } })).rejects.toThrow(/Unknown tool: myco_spores/);
+      const saved = await bot.callTool({ name: 'myco_spores', arguments: { op: 'save', type: 'gotcha', content: 'the reviewer found it', provenance_kind: 'pr', provenance_ref: 'https://github.com/goondocks/myco/pull/1149' } });
+      const sporeId = (saved.structuredContent as { result: { id: string } }).result.id;
+      expect(sqlite.query(`SELECT agent_id, author, session_id, provenance_kind FROM spores WHERE id = ?`).get(sporeId))
+        .toEqual({ agent_id: grant.id, author: grant.id, session_id: null, provenance_kind: 'pr' });
+      await expect(bot.callTool({ name: 'myco_spores', arguments: { op: 'consolidate' } })).rejects.toThrow(/Unknown tool: myco_spores/);
+      await expect(bot.callTool({ name: 'myco_plans', arguments: { op: 'save', content: '# p' } })).rejects.toThrow(/Unknown tool: myco_plans/);
       await expect(bot.callTool({ name: 'myco_agent', arguments: { op: 'runs' } })).rejects.toThrow(/Unknown tool: myco_agent/);
       await expect(bot.callTool({ name: 'myco_plans', arguments: { op: 'list', project_id: 'proj_2' } })).rejects.toThrow(/Unknown tool: myco_plans/);
 

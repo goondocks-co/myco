@@ -519,12 +519,17 @@ describe('POST /mcp over an External Agent grant', () => {
     console.log = (line: unknown) => { lines.push(String(line)); };
     try {
       await callAs(grant.key, 'myco_<script>', {});
+      await callAs(grant.key, 'myco_spores', { op: 'consolidate' });
       await callAs(grant.key, 'myco_spores', { op: 'save', content: 'x', type: 'gotcha' });
     } finally {
       console.log = original;
     }
     const tools = lines.map((l) => JSON.parse(l)).filter((e) => e.kind === 'mcp_tool').map((e) => ({ tool: e.tool, status: e.status, grantId: e.grantId }));
-    expect(tools).toEqual([{ tool: 'unknown', status: 'unknown_tool', grantId: grant.id }, { tool: 'myco_spores', status: 'unknown_tool', grantId: grant.id }]);
+    expect(tools).toEqual([
+      { tool: 'unknown', status: 'unknown_tool', grantId: grant.id },
+      { tool: 'myco_spores', status: 'unknown_tool', grantId: grant.id },
+      { tool: 'myco_spores', status: 'ok', grantId: grant.id },
+    ]);
     expect(() => memberOf(grantToolContext(serverEnv, { projectId: 'proj_1', grantId: grant.id, body: '', now: 0 }), 'myco_plans')).toThrow('Unknown tool: myco_plans');
   });
 });
