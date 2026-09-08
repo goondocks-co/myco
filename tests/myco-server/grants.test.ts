@@ -8,7 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import {
   authenticateGrant, expireGrants, GRANT_AGENT_FALLBACK_NAME, GRANT_AGENT_SOURCE, GRANT_EXPIRY_ACTOR,
-  GRANT_KEY_PATTERN, GRANT_TOUCH_INTERVAL_MS, GRANT_TTL_DAYS_DEFAULT, GRANT_TTL_DAYS_MAX,
+  grantAgent, GRANT_KEY_PATTERN, GRANT_TOUCH_INTERVAL_MS, GRANT_TTL_DAYS_DEFAULT, GRANT_TTL_DAYS_MAX,
   issueExternalGrant, rotateExternalGrant, touchGrant,
 } from '@myco-server-worker/auth/grants.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
@@ -155,6 +155,20 @@ describe('external grants', () => {
     expect(agentOf(e, lapsed.id)).not.toBeNull();
   });
 
+  it('sweeps a grant carrying no expiry at the instant it is found, so nothing authentication refuses is left listed as live', async () => {
+    const e = sqliteEnv();
+    const orphan = await issueExternalGrant(e.db, { projectId: 'proj_1' }, 'no window', 'mem_machine_1', NOW);
+    e.sqlite.query(`UPDATE external_grants SET expires_at = NULL WHERE id = ?`).run(orphan.id);
+    expect(await authenticateGrant(e.db, await sha256Hex(orphan.key), NOW)).toBeNull();
+
+    const at = NOW + 5 * DAY_MS;
+    expect(await expireGrants(e.db, at, 500)).toBe(1);
+    expect(e.sqlite.query(`SELECT revoked_at, revoked_by FROM external_grants WHERE id = ?`).get(orphan.id))
+      .toEqual({ revoked_at: at, revoked_by: GRANT_EXPIRY_ACTOR });
+    expect(await expireGrants(e.db, at + 1_000, 500)).toBe(0);
+    expect(agentOf(e, orphan.id)).not.toBeNull();
+  });
+
   it('bounds one pass of the expiry job and takes the rest on the next', async () => {
     const e = sqliteEnv();
     for (let i = 0; i < 3; i += 1) await issueExternalGrant(e.db, { projectId: 'proj_1' }, `bot-${i}`, 'mem_machine_1', NOW, 1);
@@ -187,10 +201,7 @@ describe('external grants', () => {
   it('mints the agent row again without failing, so a re-run of the mint is a no-op rather than a conflict', async () => {
     const e = sqliteEnv();
     const grant = await issueExternalGrant(e.db, { projectId: 'proj_1' }, 'bot', 'mem_machine_1', NOW);
-    await e.db.prepare(`INSERT INTO agents (id, name, source, enabled, created_at, updated_at)
-                        SELECT id, COALESCE(label, ?), ?, 1, ?, ? FROM external_grants WHERE id = ?
-                        ON CONFLICT (id) DO NOTHING`)
-      .bind(GRANT_AGENT_FALLBACK_NAME, GRANT_AGENT_SOURCE, NOW, NOW, grant.id).run();
+    await grantAgent(e.db, grant.id, NOW).run();
     expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM agents WHERE id = ?`).get(grant.id)).toEqual({ c: 1 });
     expect(agentOf(e, grant.id)).toMatchObject({ name: 'bot' });
   });

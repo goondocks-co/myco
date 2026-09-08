@@ -87,7 +87,7 @@ const freshId = (): string => `${GRANT_ID_PREFIX}${toBase64Url(crypto.getRandomV
  * the grant row is absent — which is how a rotation that matched no live
  * predecessor leaves no agent row behind.
  */
-const grantAgent = (db: RelationalStore, grantId: string, nowMs: number) =>
+export const grantAgent = (db: RelationalStore, grantId: string, nowMs: number) =>
   db.prepare(`INSERT INTO agents (id, name, source, enabled, created_at, updated_at)
               SELECT id, COALESCE(label, ?), ?, 1, ?, ? FROM external_grants WHERE id = ?
               ON CONFLICT (id) DO NOTHING`)
