@@ -68,6 +68,10 @@ const json = (column?: string): FieldSpec => ({ bound: { type: 'json', maxBytes:
 
 export const PROMPT_ORIGINS = ['user', 'system', 'agent_dispatch', 'hook_injected', 'unknown'] as const;
 export const PLAN_STATUSES = ['active', 'in_progress', 'completed', 'abandoned'] as const;
+/** The channel a plan version arrived through. A row written before the column, or by a member that names none, reads NULL — which means "inferred from the key shape", the honest value rather than a guessed default. */
+export const PLAN_SOURCES = ['path', 'tag', 'save'] as const;
+/** What a transcript is: the session's own, or a subagent sibling beside it. */
+export const TRANSCRIPT_ROLES = ['primary', 'subagent'] as const;
 
 const toolCallFields: Record<string, FieldSpec> = {
   toolCallId: id('key', 'tool_call_id', true),
@@ -138,6 +142,7 @@ export const KINDS: readonly KindSpec[] = [
       content: str(262_144, 'content'),
       blob: blob('blob_key'),
       status: { bound: { type: 'enum', values: PLAN_STATUSES }, column: 'status' },
+      source: { bound: { type: 'enum', values: PLAN_SOURCES }, column: 'source' },
       originPath: str(1024, 'origin_path'),
       tags: { bound: { type: 'stringArray', maxItems: 32, maxItem: 64 } },
     },
@@ -164,6 +169,9 @@ export const KINDS: readonly KindSpec[] = [
       blob: blob('blob_key', true),
       originPath: str(1024, 'origin_path'),
       agent: str(64, 'agent'),
+      role: { bound: { type: 'enum', values: TRANSCRIPT_ROLES }, column: 'role' },
+      /** The digest of the transcript's first bytes. A plain bounded string, not a `blobKey`: a blob-bounded field is admitted only when a blob under that key is present in the project, and this names a digest of the file rather than an object in the store. */
+      headHash: str(64, 'head_hash'),
     },
     projection: 'transcript_segments',
   },

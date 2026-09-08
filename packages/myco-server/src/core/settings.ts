@@ -83,6 +83,8 @@ export const DEPLOYMENT_LEAVES: readonly string[] = [
   'maintenance.auto_optimize_interval_hours',
   'notifications.retention_days',
   'release_provenance.reconcile_interval_minutes',
+  // #1147 — transcript-first ingest
+  'retention.transcripts',
   'skills.confidence_threshold',
   'skills.usage_stale_days',
 ];

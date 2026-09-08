@@ -21,6 +21,9 @@ export function heldBytes(ctx: QuotaContext, except: string | null = null): Frag
   };
 }
 
+/** An admission that always holds, in the fragment shape every other admission takes. What a write the Deployment makes for itself is admitted by: it spends no quota and names no credential to be live. */
+export const ALWAYS: Fragment = { sql: '1 = 1', params: [] };
+
 /** A token that is still live, as SQL over one bound id: the one predicate the quota admission, the successor insert, and the refresh batch place on the token they act for. */
 export const TOKEN_LIVE = 'EXISTS (SELECT 1 FROM member_credentials WHERE id = ? AND revoked_at IS NULL)';
 

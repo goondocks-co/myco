@@ -2,12 +2,12 @@ import type { RelationalStore, PreparedStatement, ServerEnv } from '../core/adap
 import type { RouteContext } from '../context.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { emit, refusal, StorageContractError, type Classifier, type Refusal } from '../telemetry.js';
-import { parseEnvelope, type CaptureEnvelope } from './envelope.js';
+import { parseEnvelope, type CaptureEnvelope, type Refused } from './envelope.js';
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
 import { titleSession } from '../core/titling.js';
 import { pendingSearchBlobs } from '../core/search-index.js';
 import { planKind, projectLive, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
-import { withinQuota } from './quota.js';
+import { ALWAYS, withinQuota } from './quota.js';
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
 export interface TranscriptExtra {
@@ -20,7 +20,19 @@ export type IngestResult =
   | ({ persisted: true; projected: false; code: Classifier; reason: string } & TranscriptExtra)
   | ({ persisted: false; code: Classifier; reason: string } & TranscriptExtra);
 
-export type IngestContext = Pick<RouteContext, 'projectId' | 'machineId' | 'tokenId' | 'bodyBytes' | 'now'>;
+/**
+ * Who is writing.
+ *
+ * `member` is a credentialed caller: the write is charged to its quota and
+ * admitted only while its credential is live. `server` is the Deployment
+ * writing from bytes it has already accepted and already charged — a transcript
+ * it parsed — so it is charged nothing and its admission does not consult a
+ * credential's liveness. A member's credential rotates; the events derived from
+ * the bytes that credential shipped must not stop landing when it does.
+ */
+export type WriteOrigin = 'member' | 'server';
+
+export type IngestContext = Pick<RouteContext, 'projectId' | 'machineId' | 'tokenId' | 'bodyBytes' | 'now'> & { writeOrigin?: WriteOrigin };
 
 /** A terminal refusal of the caller's own request: 200 `{persisted:false, code, reason}` plus one `ingest_refused` event carrying the refusal's classifier only. */
 export function refused(ctx: Pick<IngestContext, 'projectId' | 'tokenId'>, { reason, classifier }: Refusal): IngestResult {
@@ -56,20 +68,44 @@ const OVER_QUOTA: Refusal = refusal(QUOTA_REASON, 'quota');
 
 /** Stores one event in a single transaction. The raw insert carries every admission precondition — the quota (`withinQuota`: the one counter plus the token's live blob reservations, so event traffic never takes the room an upload in flight holds), the shared checks derived from the catalogue and the kind's declared identities (session identity, the continued rows the kind names, referenced blobs present, referenced prompts owned by this machine — in that order) and the kind's own — so a refused event leaves no row and no charge; the quota charge, the session receipt, and the kind's projections apply only to the raw row this request wrote, named by a per-request nonce; same-batch reads decide the response. A stored event is read through its session's machine, so a duplicate or a conflict is answered only to the machine that wrote it and another machine's event id is refused like any other unstored one. */
 export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body: unknown): Promise<IngestResult> {
+  const planned = await planEventWrite(db, ctx, body);
+  if (!planned.ok) return refused(ctx, planned);
+  const results = await db.batch(planned.write.statements);
+  return planned.write.interpret(results);
+}
+
+/** The statements one event needs and how to read their answers, without executing them. Callers with one event run their own batch; a caller with many concatenates the statements of each into ONE batch and interprets each write's own slice — the difference between one database call per event and one per pass. */
+export interface EventWrite {
+  statements: PreparedStatement[];
+  interpret(results: BatchResult[]): IngestResult;
+}
+
+export type PlannedWrite = { ok: true; write: EventWrite } | Refused;
+
+/** What `db.batch` answers per statement; the shape the interpreter reads. */
+type BatchResult = { results: unknown[]; meta: { changes: number } };
+
+export async function planEventWrite(db: RelationalStore, ctx: IngestContext, body: unknown): Promise<PlannedWrite> {
   const parsed = parseEnvelope(body, ctx.now);
-  if (!parsed.ok) return refused(ctx, parsed);
+  if (!parsed.ok) return parsed;
   const e = parsed.value;
   const spec = kindSpec(e.kind);
-  if (!spec) return refused(ctx, refusal(`unknown kind ${e.kind}`, 'unknown_kind'));
+  if (!spec) return { ok: false, ...refusal(`unknown kind ${e.kind}`, 'unknown_kind') };
   const payload = parsePayload(spec, e.payload, ctx.now);
-  if (!payload.ok) return refused(ctx, payload);
+  if (!payload.ok) return payload;
   const p = payload.value;
 
   const write: WriteContext = { projectId: ctx.projectId, tokenId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now, nonce: crypto.randomUUID() };
   const digest = await envelopeHash(e);
   const contentHash = await contentHashOf(spec, p);
   const plan: KindPlan = planKind(spec, { db, ctx: write, e, p, contentHash });
-  const quotaAdmission = withinQuota(write, ctx.bodyBytes);
+  // A server-origin write is charged nothing and consults no credential's
+  // liveness: the bytes it derives from were accepted and charged when the
+  // member shipped them, and that member's credential rotates on its own
+  // schedule. `ALWAYS` keeps the admission's shape so the raw insert and the
+  // same-batch read stay one expression.
+  const charged = (ctx.writeOrigin ?? 'member') === 'member';
+  const quotaAdmission = charged ? withinQuota(write, ctx.bodyBytes) : ALWAYS;
   const checks = [projectLive(write), ...sharedChecks(spec, write, e, p, plan.identities)];
   const admission: Fragment[] = [quotaAdmission, ...checks.map((c) => c.admission), ...plan.admission];
 
@@ -83,20 +119,37 @@ export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body:
           e.producer.adapter, e.producer.version, spilledKey(spec, p), e.payloadBytes.byteLength, write.nonce,
           ...admission.flatMap((a) => a.params));
 
-  const quota = db
-    .prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`)
-    .bind(ctx.bodyBytes, ctx.tokenId);
+  const quota = charged
+    ? db.prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(ctx.bodyBytes, ctx.tokenId)
+    : db.prepare(`SELECT 1 AS uncharged`);
 
-  const receipt = db
-    .prepare(`INSERT INTO sessions
-        (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-      SELECT ?, ?, ?, ?, ?, ?
-       WHERE EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)
-      ON CONFLICT (project_id, session_id) DO UPDATE SET last_received_at = excluded.last_received_at`)
-    .bind(ctx.projectId, e.sessionId, ctx.machineId, ctx.tokenId, ctx.now, ctx.now, ctx.projectId, e.eventId, write.nonce);
+  // A receipt records when a MEMBER last made contact. The Deployment reading
+  // its own stored bytes is not contact: a parse advancing the stamp would date
+  // a month-old backfilled session to now, and would hold the Deployment awake
+  // on its own housekeeping. A server write still opens a session row that is
+  // absent, so a derived event is never refused for want of one.
+  const receipt = charged
+    ? db
+      .prepare(`INSERT INTO sessions
+          (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+        SELECT ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)
+        ON CONFLICT (project_id, session_id) DO UPDATE SET last_received_at = excluded.last_received_at`)
+      .bind(ctx.projectId, e.sessionId, ctx.machineId, ctx.tokenId, ctx.now, ctx.now, ctx.projectId, e.eventId, write.nonce)
+    : db
+      .prepare(`INSERT INTO sessions
+          (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+        SELECT ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)
+        ON CONFLICT (project_id, session_id) DO NOTHING`)
+      .bind(ctx.projectId, e.sessionId, ctx.machineId, ctx.tokenId, e.createdAt, e.createdAt, ctx.projectId, e.eventId, write.nonce);
 
+  // The nonce, not a change count, decides whether THIS write stored the row.
+  // A batch carrying several events reports its counts per driver rather than
+  // per statement, and the nonce is written by the insert itself: reading it
+  // back asks the store what happened instead of asking the driver.
   const stored = db
-    .prepare(`SELECT ev.envelope_hash FROM events ev
+    .prepare(`SELECT ev.envelope_hash, ev.ingest_nonce FROM events ev
         JOIN sessions s ON s.project_id = ev.project_id AND s.session_id = ev.session_id
        WHERE ev.project_id = ? AND ev.event_id = ? AND s.machine_id IS ?`)
     .bind(ctx.projectId, e.eventId, ctx.machineId);
@@ -105,20 +158,21 @@ export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body:
   const shared = checks.map((c) => db.prepare(c.read.sql).bind(...c.read.params));
   const priors = plan.priors ?? [];
   const statements: PreparedStatement[] = [raw, quota, receipt, ...priors, ...plan.projections, stored, admitted, ...shared, ...plan.reads];
-  const results = await db.batch(statements);
+
+  const interpret = (results: BatchResult[]): IngestResult => {
   if (results.length !== statements.length) throw new StorageContractError(`batch answered ${results.length} results for ${statements.length} statements`);
 
   const base = 3 + priors.length;
   const priorRows: ReadRows = results.slice(3, base).map((r) => r.results as Record<string, unknown>[]);
   const projectionResults = results.slice(base, base + plan.projections.length);
-  const storedRow = results[base + plan.projections.length].results[0] as { envelope_hash?: string } | undefined;
+  const storedRow = results[base + plan.projections.length].results[0] as { envelope_hash?: string; ingest_nonce?: string } | undefined;
   const withinQuotaRow = results[base + 1 + plan.projections.length].results[0] as { within_quota: number } | undefined;
   const allReads: ReadRows = results.slice(base + 2 + plan.projections.length).map((r) => r.results as Record<string, unknown>[]);
   const sharedRows = allReads.slice(0, checks.length);
   const reads = allReads.slice(checks.length);
   const extra = plan.extra ? plan.extra(reads) : {};
 
-  if (results[0].meta.changes === 1) {
+  if (storedRow?.ingest_nonce === write.nonce) {
     if (plan.projections.length > 0 && projectionResults.every((r) => r.meta.changes === 0)) {
       const reason = plan.conflict ? plan.conflict(reads) : 'projection did not apply';
       emit({ kind: 'projection_conflict', projectId: ctx.projectId, tokenId: ctx.tokenId, eventKind: e.kind });
@@ -143,10 +197,15 @@ export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body:
   if (withinQuotaRow?.within_quota !== 1) return { ...refused(ctx, OVER_QUOTA), ...extra };
   const sharedRefusal = checks.map((c, i) => c.refusal(sharedRows[i]?.[0])).find((r) => r !== null) ?? null;
   return { ...refused(ctx, sharedRefusal ?? plan.refusal(reads)), ...extra };
+  };
+
+  return { ok: true, write: { statements, interpret } };
 }
 
 /** The kind whose projected arrival schedules a title for its session, past the answer. */
 const SESSION_END_KIND = 'session.end';
+/** The kind whose projected arrival leaves the Deployment bytes to read. */
+const TRANSCRIPT_SEGMENT_KIND = 'transcript.segment';
 
 export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   let parsed: unknown;
@@ -164,6 +223,13 @@ export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<R
       } catch {
         emit({ kind: 'search_wake_failed', projectId: ctx.projectId });
       }
+    });
+  }
+  // Segment bytes are unread until a pass reads them; the clock is nudged so
+  // the rows appear on the next wake rather than at the next idle cadence.
+  if (result.persisted && result.projected === true && envelope?.kind === TRANSCRIPT_SEGMENT_KIND) {
+    env.afterResponse(async () => {
+      try { await env.wake?.(); } catch { emit({ kind: 'transcript_wake_failed', projectId: ctx.projectId }); }
     });
   }
   const endedSession = envelope?.kind === SESSION_END_KIND && typeof envelope.sessionId === 'string' ? envelope.sessionId : null;

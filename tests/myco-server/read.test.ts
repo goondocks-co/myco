@@ -440,7 +440,7 @@ describe('read/blobs', () => {
 describe('read/transcript', () => {
   it('reads a session transcript and its segments in offset order', async () => {
     const { db, sqlite } = sqliteEnv();
-    const { getTranscript, listSegments } = await import('@myco-server-worker/read/transcript.js');
+    const { listSegments, listTranscripts } = await import('@myco-server-worker/read/transcript.js');
     const cols = sqlite.query(`SELECT name FROM pragma_table_info('transcripts')`).all() as { name: string }[];
     const segCols = sqlite.query(`SELECT name FROM pragma_table_info('transcript_segments')`).all() as { name: string }[];
     // Bind only what the tables declare, so this test tracks the schema rather than a snapshot of it.
@@ -451,7 +451,7 @@ describe('read/transcript', () => {
       : name === 'transcript_id' ? `'tr1'`
       : `'x'`;
     sqlite.run(`INSERT INTO transcripts (${cols.map((c) => c.name).join(',')}) VALUES (${cols.map((c) => value(c.name)).join(',')})`);
-    const t = await getTranscript(db, { projectId: 'proj_1' }, 's1');
+    const [t] = await listTranscripts(db, { projectId: 'proj_1' }, 's1');
     expect(t?.transcriptId).toBe('tr1');
     sqlite.run(`INSERT INTO transcript_segments (${segCols.map((c) => c.name).join(',')}) VALUES (${segCols.map((c) => value(c.name)).join(',')})`);
     expect((await listSegments(db, { projectId: 'proj_1' }, 'tr1')).length).toBe(1);
