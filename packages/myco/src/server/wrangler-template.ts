@@ -74,6 +74,13 @@ crons = [ "*/15 * * * *" ]
 name = "CLOCK"
 class_name = "DeploymentClock"
 
+# The retired harness class. Its creating entry stays: the list is an ordered
+# ledger applied from the instance's recorded tag, so a delete of a class the
+# history never created is refused, and a fresh instance would never start.
+[[migrations]]
+tag = "v1-harness"
+new_sqlite_classes = [ "HarnessContainer" ]
+
 [[migrations]]
 tag = "v2-clock"
 new_sqlite_classes = [ "DeploymentClock" ]

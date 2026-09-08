@@ -8,7 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { WRANGLER_TEMPLATE } from '@myco/server/wrangler-template.js';
-import { DeployConfigIncomplete, FREE_TIER_SURFACES, parityWranglerConfig, renderDeployConfig } from '@myco/server/deploy-config.js';
+import { DeployConfigIncomplete, FREE_TIER_SURFACES, migrationLedger, parityWranglerConfig, renderDeployConfig, undeletableClasses } from '@myco/server/deploy-config.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 
 const SHIPPED = fileURLToPath(new URL('../../packages/myco-server/wrangler.toml', import.meta.url));
@@ -124,20 +124,31 @@ describe('parityWranglerConfig', () => {
     }
   });
 
-  it('drops the retired class a local boot cannot resolve, which the committed file names, and keeps the clock', () => {
-    // A local boot resolves every class a migration names against the code it
-    // runs, and this Worker exports the clock alone.
+  it('carries the whole class-lifecycle ledger, so a local boot applies what a deploy applies', () => {
+    // The ledger rode into parity stripped once, which is how a delete of a
+    // class the history never created reached main: the suite booted a config
+    // the deploy never uses.
     expect(WRANGLER_TEMPLATE).toContain('class_name = "DeploymentClock"');
     expect(WRANGLER_TEMPLATE).toContain('deleted_classes = [ "HarnessContainer" ]');
     const config = parityWranglerConfig();
-    for (const dropped of ['HarnessContainer', 'deleted_classes']) {
-      expect(config).not.toContain(dropped);
-    }
+    expect(migrationLedger(config)).toEqual(migrationLedger(WRANGLER_TEMPLATE));
     for (const kept of ['[[durable_objects.bindings]]', 'name = "CLOCK"', 'class_name = "DeploymentClock"', '[[migrations]]', 'tag = "v2-clock"', '[triggers]']) {
       expect(config).toContain(kept);
     }
-    // One binding table and one migration table survive: the clock's.
+    // One binding table survives — the clock's; the class it retired has none.
     expect(config.match(/^\[\[durable_objects\.bindings\]\]$/gm)).toHaveLength(1);
-    expect(config.match(/^\[\[migrations\]\]$/gm)).toHaveLength(1);
+  });
+
+  it('GATE: deletes no class the ledger never created, on either the committed base or a rendered deploy', () => {
+    // Applied in order from the instance's own recorded tag: a delete naming a
+    // class the history never created is refused, and the instance never
+    // starts — a fresh local boot and a Deployment created after the class was
+    // retired fail the same way. Retiring means appending a delete, never
+    // removing the entry that created it.
+    expect(undeletableClasses(WRANGLER_TEMPLATE)).toEqual([]);
+    expect(undeletableClasses(parityWranglerConfig())).toEqual([]);
+    expect(undeletableClasses(renderDeployConfig(record({ databaseId: 'd1-uuid' })))).toEqual([]);
+    // The shape it exists to refuse.
+    expect(undeletableClasses('[[migrations]]\ntag = "v9"\ndeleted_classes = [ "Gone" ]')).toEqual(['Gone']);
   });
 });
