@@ -523,7 +523,7 @@ Disposition here is about the **data class**, and separately about **migration**
 | `backups` | KEEP | Core, W, C | Blk | One row per backup artifact — object key, size, row counts, schema version, producer and pin — written by the backup job and read by restore; the artifact itself lands in R2 on W and on the volume on C | #1079 |
 | `blob_reservations` | KEEP | Core | Blk | Transient upload state: the key, size and expiry an ingest holds against a credential's byte quota until the bytes land or the reservation lapses | #898 |
 | `blobs` | KEEP | Core, W, C | Blk | Every stored blob's key, size, media type and writing credential; the bytes sit in R2 on W and on the volume on C | #898 |
-| `deployment_secrets` | KEEP | Core | Blk | One row per named Deployment credential, holding ciphertext, IV and wrapping-key version only, written by the settings surface with its actor | #961 |
+| `deployment_secrets` | KEEP | Core | Blk | One row per named Deployment credential, holding ciphertext, IV and wrapping-key version only, written by the settings surface with its actor | #965 |
 | `deployment_settings` | KEEP | Core | Blk | One row per Deployment config leaf (§7.8), each carrying the member and instant of its last write | #965 |
 | `embedding_cursors` | KEEP | Core | Blk | One row per Project marking where the embedding reconciliation resumes, and the model, counts and cursor of its hubness pass | #1126 |
 | `embedding_hubness_work` | KEEP | Core | Blk | A Project's in-flight hubness statistics — target model, cursor, and the running count, mean and sum of squared deviations a finished pass folds into the receipts | #1126 |
@@ -544,7 +544,7 @@ Disposition here is about the **data class**, and separately about **migration**
 | `schema_meta` | KEEP | Core | Blk | Deployment-scoped facts keyed by name: the applied schema version and the lineage id every backup artifact header carries | #897 |
 | `search_blob_chunks` | KEEP | Core | Blk | The indexed text of a spilled body in resumable chunks, keyed by (blob key, offset) and cascaded away with its queue row | #1125 |
 | `search_blob_queue` | KEEP | Core | Blk | One row per blob awaiting text indexing with the next offset, completion flag and last attempt a pass resumes from; a deleted blob takes its row with it | #1125 |
-| `step_up_authorities` | KEEP | Core | Blk | Hashed single-use authorities scoped by purpose; dormant, and no path writes or reads them | #907 |
+| `step_up_authorities` | KEEP | Core | Blk | Hashed single-use authorities scoped by purpose; dormant, and no path writes or reads them | #965 |
 | `tags` | KEEP | Core | Blk | Tags on a Project's entities keyed by (entity kind, entity id, tag); plan tags are what the projections write today | #898 |
 | `tool_calls` | KEEP | Core | Blk | One tool call per row projected from its event — tool and Myco op, input, output preview, success, duration and files affected | #898 |
 | `transcript_segments` | KEEP | Core | Blk | The byte ranges of a transcript, each naming the blob holding its bytes and the event that shipped it | #898 |

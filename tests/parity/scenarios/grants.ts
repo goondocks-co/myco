@@ -65,7 +65,7 @@ export const grants: ParityScenario = {
 
     // Revoked: no answer for the key, every row it wrote keeps its attribution.
     const revoked = await ownerPost(`/api/projects/${target.projectId}/grants/${id}/revoke`);
-    expect(revoked.status).toBe(200);
+    expect([revoked.status, ((await revoked.json()) as { revoked: boolean }).revoked]).toEqual([200, true]);
     expect((await asGrant(key, 'tools/list')).status).toBe(401);
     expect((await target.sql(`SELECT author FROM spores WHERE id = ${lit(spore.id)}`))[0]).toEqual({ author: id });
   },

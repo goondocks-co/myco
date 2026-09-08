@@ -31,10 +31,10 @@ export function normalizeInput(args: unknown): ToolInput {
 }
 
 export function validateInput(definition: ToolDefinition, input: ToolInput): void {
-  const declared = definition.inputSchema.properties;
-  const undeclared = Object.keys(input).find((key) => !(key in declared));
+  const declared = new Set(Object.keys(definition.inputSchema.properties));
+  const undeclared = Object.keys(input).find((key) => !declared.has(key));
   if (undeclared !== undefined) {
-    throw new ToolError('invalid_input', `Unknown argument '${undeclared}' for tool ${definition.name}: declared arguments are ${Object.keys(declared).join(', ')}`);
+    throw new ToolError('invalid_input', `Unknown argument '${undeclared}' for tool ${definition.name}: declared arguments are ${[...declared].join(', ')}`);
   }
   for (const key of definition.inputSchema.required ?? []) {
     if (input[key] === undefined || input[key] === null) {
@@ -42,7 +42,7 @@ export function validateInput(definition: ToolDefinition, input: ToolInput): voi
     }
   }
   for (const [key, value] of Object.entries(input)) {
-    const property = definition.inputSchema.properties[key];
+    const property = declared.has(key) ? definition.inputSchema.properties[key] : undefined;
     if (!property || value === undefined) continue;
     validateProperty(definition.name, key, value, property);
   }

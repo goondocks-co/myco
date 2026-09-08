@@ -84,15 +84,15 @@ const HISTORY = new RegExp([
   // INSTRUMENTAL sense ("a check used to tell X from Y" = employed to), which
   // is present-tense description and must stay unflagged.
   /\bused to (be|also|have|carry|require|live|run|do|mean|exist|sit|take|need|derive|reserve|record|accept|stop|provision)\b/,
-  // "the old code/path/…" names a former implementation; "the old file" or
-  // "the old offset" is a runtime object the code still handles today.
-  /\b(was removed|were removed|has been removed|the old (code|path|implementation|behaviou?r|version|way|shape|name|spelling|scheme|layout|format)|overlay-era|pre-Funnel)\b/,
+  // "the old <anything>" narrates a former implementation, except the runtime
+  // objects a comparison names today: the old file, offset, one, version of.
+  /\b(was removed|were removed|has been removed|the old (?!file\b|offset\b|one\b|version of\b)[a-z]+|overlay-era|pre-Funnel)\b/,
 ].map((r) => r.source).join('|'), 'i');
 
 /** Promises future state from a place nothing checks. */
-// "until that lands" / "until the rewrite lands" promises work; "until the write
-// lands" or "until it lands" (a run, a row) is the code describing runtime order.
-const DEFERRAL = /(unavailable on this build|until (that|enrollment|the (rebuilt|new|next|later|designation|sweep|rewrite|migration|feature|change|fix|release|cutover)\b.{0,30}) (lands|ships)\b|will land\b|lands with the (rebuilt|new|designation)|is being (rebuilt|rewritten)|is not rebuilt|not yet an enforced|temporarily unavailable|not yet implemented|not implemented yet|coming soon|stubbed for|placeholder until|arrives in a (later|future) release|pending the new)/i;
+// "until <that|the anything> lands" promises work, except the runtime subjects
+// a handler waits on today: the write, read, run, row or offset landing.
+const DEFERRAL = /(unavailable on this build|until (that|enrollment|the (?!write |read |run |row |offset )\S+.{0,30}) (lands|ships)\b|will land\b|lands with the (rebuilt|new|designation)|is being (rebuilt|rewritten)|is not rebuilt|not yet an enforced|temporarily unavailable|not yet implemented|not implemented yet|coming soon|stubbed for|placeholder until|arrives in a (later|future) release|pending the new)/i;
 
 /**
  * Files still carrying narration, to be emptied by the repo-wide sweep.

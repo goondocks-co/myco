@@ -126,8 +126,8 @@ export async function callTool(ctx: ToolContext, name: string, args: unknown): P
   const op = opOf(name, input);
   if (ctx.principal.kind === 'grant' && !isExternalCall(name, op)) throw unknownTool(name);
   if (ctx.principal.kind === 'run' && !isRunCall(ctx.principal.allow, name, op)) throw unknownTool(name);
-  if (isWriteOp(name, op) && bound === null && namedProject(input) === undefined) throw missingProject(name);
   validateInput(definition, input);
+  if (isWriteOp(name, op) && bound === null && namedProject(input) === undefined) throw missingProject(name);
   const entry = entryFor(name, op);
   if (entry === undefined) throw new ToolError('invalid_input', `Unknown op '${op}' for tool ${name}`);
   if ('notServed' in entry) {

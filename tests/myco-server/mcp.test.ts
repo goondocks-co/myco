@@ -16,6 +16,7 @@ import { upsertDigest } from '@myco-server-worker/core/digests.js';
 import { insertSkillRecord } from '@myco-server-worker/core/skills.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
+import { validateInput } from '@myco-server-worker/mcp/validate.js';
 import { NO_INSTRUCTIONS_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { FIRST_MODERN_REVISION, SERVED_PROTOCOL_VERSIONS, SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_MAX_BYTES } from '@myco-server-worker/mcp/server.js';
@@ -833,6 +834,23 @@ describe('POST /mcp refuses an argument the schema does not declare', () => {
       expectRefusedByName(d.name, answered);
       expect(answered.error.message).toContain(Object.keys(d.inputSchema.properties).join(', '));
     }
+  });
+
+  it('for a key that is a name on Object.prototype, which a prototype-walking check would admit', async () => {
+    const { t1, call } = await setup();
+    for (const key of ['constructor', 'toString', 'hasOwnProperty']) {
+      const answered = await call(t1.token, 'myco_plans', JSON.parse(`{"op":"list","${key}":"x"}`));
+      expect({ key, code: answered.error?.data?.code, names: String(answered.error?.message).includes(`'${key}'`) }).toEqual({ key, code: 'invalid_input', names: true });
+    }
+    // The protocol transport's own parse turns an own `__proto__` key into a prototype before the validator sees it; the validator refuses it when handed the parsed body directly.
+    const definition = TOOL_DEFINITIONS.find((d) => d.name === 'myco_plans')!;
+    expect(() => validateInput(definition, JSON.parse('{"op":"list","__proto__":"x"}'))).toThrow("Unknown argument '__proto__'");
+  });
+
+  it('for a member write that mis-spells the tenancy key, naming the mis-spelling rather than the missing one', async () => {
+    const { t1, call } = await setup();
+    const answered = await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', project_id: FIXTURE_PROJECT });
+    expect({ code: answered.error?.data?.code, names: String(answered.error?.message).includes("'project_id'") }).toEqual({ code: 'invalid_input', names: true });
   });
 
   it('for a member spelling the tenancy key the retired way, so a read cannot silently land on the header Project', async () => {

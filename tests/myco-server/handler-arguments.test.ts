@@ -5,13 +5,14 @@
  * handler reads without declaring is one no caller can ever pass: the handler's
  * branch is dead and the feature it implements is unreachable. This holds the
  * two halves together by reading the source of every handler the registry
- * serves — `input.<key>`, `input['<key>']` and `input[<CONSTANT>]` — plus the
- * reads inside each `context.ts` helper the handler calls, and asserts every
- * key is a declared property of that tool.
+ * serves and asserting every key it reads off `input` is a declared property of
+ * its tool.
  *
- * Static source scan, so a key read through a computed loop (`for (const key of
- * [...])`) is out of its reach; those keys reach the validator at runtime, where
- * an undeclared one is refused, and `mcp.test.ts` holds that refusal.
+ * Reads are found by the spellings the handlers use — `input.<key>`,
+ * `input['<key>']`, `input[<CONSTANT>]`, and `input[<loopVar>]` over an
+ * adjacent `[...] as const` list — and through every `context.ts` helper the
+ * handler calls, transitively. A spelling this scan cannot resolve fails the
+ * gate rather than passing it, so a read never slips through unread.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -27,25 +28,54 @@ const read = (rel: string): string => fs.readFileSync(path.join(MCP_DIR, rel), '
 /** Named constants a handler may index `input` with, resolved to the key they spell. */
 const CONSTANTS: Readonly<Record<string, string>> = { PROJECT_PIVOT };
 
-/** Every key `source` reads off an `input` object, by the three spellings the handlers use. */
-function inputReads(source: string): string[] {
+/** The keys `source` reads off an `input` object; an index this scan cannot resolve is a failure, never a pass. */
+function inputReads(source: string, where: string): string[] {
   const keys = new Set<string>();
   for (const m of source.matchAll(/\binput\.([A-Za-z_]\w*)/g)) keys.add(m[1]);
   for (const m of source.matchAll(/\binput\['([^']+)'\]/g)) keys.add(m[1]);
-  for (const m of source.matchAll(/\binput\[([A-Z_][A-Z0-9_]*)\]/g)) {
+  const loops = new Map<string, string[]>();
+  for (const m of source.matchAll(/for \(const (\w+) of \[([^\]]*)\] as const\)/g)) {
+    loops.set(m[1], [...m[2].matchAll(/'([^']+)'/g)].map((k) => k[1]));
+  }
+  for (const m of source.matchAll(/\binput\[([A-Za-z_]\w*)\]/g)) {
     const spelled = CONSTANTS[m[1]];
-    if (spelled === undefined) throw new Error(`input[${m[1]}] indexes with a constant this gate does not resolve; add it to CONSTANTS`);
-    keys.add(spelled);
+    const looped = loops.get(m[1]);
+    if (spelled !== undefined) keys.add(spelled);
+    else if (looped !== undefined) for (const key of looped) keys.add(key);
+    else throw new Error(`${where}: input[${m[1]}] is indexed by a name this gate does not resolve; add it to CONSTANTS or read it through an adjacent [...] as const loop`);
   }
   return [...keys].sort();
 }
 
-/** The body of one top-level function in `context.ts`, from its declaration to the next unindented brace. */
-function helperBody(contextSource: string, name: string): string {
-  const start = contextSource.search(new RegExp(`^export (?:async )?function ${name}\\(`, 'm'));
-  if (start < 0) throw new Error(`context.ts declares no exported function ${name}`);
-  const end = contextSource.indexOf('\n}', start);
-  return contextSource.slice(start, end);
+/** Every exported function of `context.ts` with its body, each slice checked to close exactly the brace it opened. */
+function contextHelpers(contextSource: string): Map<string, string> {
+  const helpers = new Map<string, string>();
+  for (const m of contextSource.matchAll(/^export (?:async )?function ([A-Za-z]+)\(/gm)) {
+    const start = m.index!;
+    const end = contextSource.indexOf('\n}', start);
+    const body = contextSource.slice(start, end + 2);
+    const opened = (body.match(/\{/g) ?? []).length;
+    const closed = (body.match(/\}/g) ?? []).length;
+    if (opened !== closed) throw new Error(`context.ts ${m[1]}: the body slice opens ${opened} braces and closes ${closed}; the gate cannot read it`);
+    helpers.set(m[1], body);
+  }
+  return helpers;
+}
+
+/** The keys a handler reads through the `context.ts` helpers it calls, following helpers that call helpers until no new one appears. */
+function helperReads(source: string, helpers: Map<string, string>): string[] {
+  const called = new Set<string>();
+  let frontier = [source];
+  while (frontier.length > 0) {
+    const next: string[] = [];
+    for (const text of frontier) {
+      for (const name of helpers.keys()) {
+        if (!called.has(name) && new RegExp(`\\b${name}\\(`).test(text)) { called.add(name); next.push(helpers.get(name)!); }
+      }
+    }
+    frontier = next;
+  }
+  return [...called].flatMap((name) => inputReads(helpers.get(name)!, `context.ts ${name}`));
 }
 
 /** Handler function name → the module under `mcp/tools/` that `registry.ts` imports it from. */
@@ -58,30 +88,27 @@ function handlerModules(): Map<string, string> {
 }
 
 describe('handler arguments', () => {
+  it('serves a handler for every defined tool, and no tool the definitions do not carry', () => {
+    expect(new Set(Object.keys(TOOL_REGISTRY))).toEqual(new Set(TOOL_DEFINITIONS.map((d) => d.name)));
+  });
+
   it('reads only keys the tool\'s schema declares, so every branch a handler carries is one a caller can reach', () => {
     const modules = handlerModules();
-    expect(modules.size).toBeGreaterThan(0);
-    const contextSource = read('context.ts');
-    const helpers = [...contextSource.matchAll(/^export (?:async )?function ([A-Za-z]+)\(/gm)].map((m) => m[1]);
+    const helpers = contextHelpers(read('context.ts'));
+    expect(helpers.size).toBeGreaterThan(0);
     const declared = new Map(TOOL_DEFINITIONS.map((d) => [d.name, new Set(Object.keys(d.inputSchema.properties))]));
 
-    const checked: string[] = [];
     for (const [tool, entry] of Object.entries(TOOL_REGISTRY)) {
       const handlers = new Set(Object.values(entry.ops).flatMap((op) => ('handler' in op ? [op.handler.name] : [])));
+      expect({ tool, handlers: handlers.size > 0 }).toEqual({ tool, handlers: true });
       for (const handler of handlers) {
         const module = modules.get(handler);
         expect({ tool, handler, imported: module !== undefined }).toEqual({ tool, handler, imported: true });
         const source = read(module!);
-        const reads = new Set(inputReads(source));
-        for (const helper of helpers) {
-          if (new RegExp(`\\b${helper}\\(`).test(source)) for (const key of inputReads(helperBody(contextSource, helper))) reads.add(key);
-        }
+        const reads = new Set([...inputReads(source, module!), ...helperReads(source, helpers)]);
         const undeclared = [...reads].filter((key) => !declared.get(tool)!.has(key)).sort();
         expect({ tool, handler, undeclared }).toEqual({ tool, handler, undeclared: [] });
-        checked.push(`${tool}:${handler}`);
       }
     }
-    expect(checked.length).toBe(new Set(checked).size);
-    expect(checked.length).toBeGreaterThanOrEqual(TOOL_DEFINITIONS.length);
   });
 });

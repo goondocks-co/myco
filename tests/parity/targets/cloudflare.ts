@@ -129,7 +129,7 @@ export async function bootCloudflare(): Promise<ParityTarget> {
       projectId: PROJECT_ID,
       ownerHeaders: () => ({ cookie, 'cf-connecting-ip': '1.2.3.4' }),
       memberHeaders: (extra = {}) => memberHeadersFor(token, PROJECT_ID, extra),
-      grantHeaders: (key) => grantHeadersFor(key),
+      grantHeaders: (key) => ({ ...grantHeadersFor(key), 'cf-connecting-ip': '1.2.3.4' }),
       sql: async (command) => {
         const out = await d1(command);
         const parsed = JSON.parse(out) as Array<{ results: Record<string, unknown>[] }>;

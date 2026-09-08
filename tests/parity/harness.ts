@@ -51,9 +51,9 @@ export function memberHeadersFor(token: string, projectId: string, extra: Record
   };
 }
 
-/** The grant request headers both targets accept; the source header is load-bearing only on Cloudflare, where the pipeline admits a source identity before it reads the credential. */
+/** The grant request headers: the key alone; a target that needs a source identity adds it the way it does for the owner. */
 export function grantHeadersFor(key: string): Record<string, string> {
-  return { authorization: `Bearer ${key}`, 'cf-connecting-ip': '1.2.3.4' };
+  return { authorization: `Bearer ${key}` };
 }
 
 /** A write's answer as the server persisted it. Ingest answers a refusal as a 200 with `persisted: false`, so the status alone proves nothing; a scenario's writes go through this. */
