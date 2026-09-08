@@ -594,7 +594,7 @@ Capabilities that are not a single registry token but must still carry a disposi
 | Offline capture | KEEP | M | Blk | The write-ahead spool stays, drained on the next hook with backoff; the hook prunes drained files past a fixed age (plan §2.2, §7) | #1155 |
 | Plugin distribution | REPLACE | M | Blk | One generated bundle directory carrying every client's manifest over one skills tree, listed by a marketplace manifest at the repository root; nine hand-written skills under enforced listing and length caps, each with a trigger-eval case. No plugin carries a hook or a binary (**landed in #1156**; plan §2.7) | C2 |
 
-**Planned additions.** Five capabilities land with their code and take rows then:
+**Planned additions.** Each capability below lands with its code and takes a row then. The list is the count; a number stated beside it is a second copy of its length, and two lanes each striking their own entry leave the number describing neither.
 
 - **Bounded import and backfill** (**#1148**) — automatic on join, newest 50 sessions per harness within 30 days, content-hash dedupe, machine-scoped keys, imports not born active, tombstone gate; a repeatable command widens the window. Imported Cursor sessions carry a fidelity flag and are excluded from extraction, their JSONL having no tool results (plan §2.2).
 - **Run-scoped MCP credential** (**#1145**) — a third principal kind with `heldRun` per request, a per-run tool allowlist from the task definition enforced at the MCP chokepoint, and run attribution on writes. Today a run token is an ordinary member token (plan §2.5).
