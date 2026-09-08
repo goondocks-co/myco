@@ -56,11 +56,11 @@ export const claudeCodeParser: TranscriptParser = {
   planTags: ['ultraplan'],
   continuation: { parentSessionIdPath: 'session_id', markerPaths: ['isCompactSummary'] },
 
-  async parse({ lines: all, sessionId, now }: ParserInput): Promise<DerivedEvent[]> {
+  async parse({ lines: all, sessionId, now, openPromptId }: ParserInput): Promise<DerivedEvent[]> {
     const lines = ownedLines(all, sessionId, claudeCodeParser.continuation);
     const events: DerivedEvent[] = [];
     const pending = new Map<string, PendingCall>();
-    let promptId: string | undefined;
+    let promptId: string | undefined = openPromptId;
     let reply: { text: string[]; offset: number; createdAt: number; promptId?: string } | null = null;
     let planPosition = 0;
 

@@ -55,10 +55,10 @@ export const codexParser: TranscriptParser = {
   fidelity: 'full',
   planTags: ['proposed_plan'],
 
-  async parse({ lines, sessionId, now }: ParserInput): Promise<DerivedEvent[]> {
+  async parse({ lines, sessionId, now, openPromptId }: ParserInput): Promise<DerivedEvent[]> {
     const events: DerivedEvent[] = [];
     const pending = new Map<string, PendingCall>();
-    let promptId: string | undefined;
+    let promptId: string | undefined = openPromptId;
     let reply: { text: string[]; offset: number; createdAt: number; promptId?: string } | null = null;
     let planPosition = 0;
 

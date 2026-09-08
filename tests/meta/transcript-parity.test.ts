@@ -240,6 +240,8 @@ describe('transcript parity under a compaction continuation', () => {
     const texts = (project: string) => (sqlite.query(`SELECT text FROM prompt_batches WHERE project_id = ? ORDER BY text`).all(project) as { text: string }[]).map((r) => r.text);
     // Both paths see the same prompts of the continued run, and neither
     // re-derives the predecessor's.
+    // Neither arm may be empty, or the equality above would hold vacuously.
+    expect(texts(MEMBER_PROJECT).length).toBeGreaterThan(0);
     expect(texts(PARSE_PROJECT)).toEqual(texts(MEMBER_PROJECT));
     expect(new Set(texts(MEMBER_PROJECT)).size).toBe(texts(MEMBER_PROJECT).length);
   });

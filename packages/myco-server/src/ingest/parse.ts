@@ -31,6 +31,7 @@ import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import type { DerivedEvent } from './parsers/index.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
+import { latestPromptId } from '../read/sessions.js';
 import { SERVER_PROTOCOL } from '../constants.js';
 
 /** Derived events collapsed into one database call. */
@@ -54,12 +55,17 @@ export const TRANSCRIPT_PARSE_SEGMENTS_PER_READ = 8;
 export const PARSER_VERSION = 1;
 
 /**
- * Unreadable lines a pass tolerates before it stops the transcript.
+ * Unreadable lines ONE WINDOW tolerates before the transcript is stopped.
+ *
+ * Per window rather than per file, and deliberately: a file scattered with the
+ * occasional bad line stays readable however long it runs, while a run of them
+ * close together says the bytes are no longer this format and stops it. A
+ * per-file count would let a long transcript accumulate its way to a halt for
+ * damage it had already read past.
  *
  * A line that is not JSON is a defect, but one of them is not a reason to
  * abandon every row the rest of the file still holds — losing thousands of rows
- * to one corrupt line is the larger data loss. Past the threshold the file is
- * no longer a transcript this parser understands, and stopping is right.
+ * to one corrupt line is the larger data loss.
  */
 export const TRANSCRIPT_PARSE_MALFORMED_LIMIT = 8;
 
@@ -172,11 +178,20 @@ async function envelopeFor(target: ParseTarget, event: DerivedEvent): Promise<Re
   };
 }
 
-/** A derived event landed, or it did not. A duplicate counts as landed: the row is already there. */
-const landed = (result: IngestResult): boolean => result.persisted === true;
+/**
+ * Whether the row this event names is now in the store.
+ *
+ * A duplicate counts, and so does an id conflict. Both mean the row is already
+ * there: a derived event's id IS its row identity (`rowIdentity`), so two
+ * different rows cannot share one, and a conflict can only be this same row
+ * derived again — by a pass that saw a wider window and attributed it to the
+ * turn it belongs to. The earlier derivation is the better one and stands.
+ *
+ * Every other refusal is a genuine failure and stops the transcript where it
+ * stands, which is what keeps the cursor from passing a row that never landed.
+ */
+const landed = (result: IngestResult): boolean => result.persisted === true || result.code === 'event_id_conflict';
 
-/** Whether this event opens a turn, and so is a place a pass may stop: everything after it carries its prompt. */
-const opensTurn = (event: DerivedEvent): boolean => event.kind === 'prompt';
 
 export interface PassReport {
   /** Events that landed this pass. */
@@ -255,23 +270,26 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     return { derived: 0, calls, nextOffset: null, failure: null };
   }
 
-  const events = await parser.parse({ lines: split.lines, sessionId: target.sessionId, now });
+  // The turn open where this window begins: only a resumed pass has one, and
+  // only the store still holds it. With it, an event derived here is identical
+  // to the same event derived in one uninterrupted read, so a pass may stop
+  // anywhere rather than only where a turn begins.
+  const openPromptId = target.parsedOffset === 0
+    ? undefined
+    : (await latestPromptId(env.db, { projectId: target.projectId }, target.sessionId)) ?? undefined;
+  if (target.parsedOffset > 0) calls += 1;
+  const events = await parser.parse({ lines: split.lines, sessionId: target.sessionId, now, openPromptId });
   const ctx = { projectId: target.projectId, machineId: target.machineId, tokenId: target.tokenId, bodyBytes: 0, now, writeOrigin: 'server' as const };
 
   let derived = 0;
   let cursor = split.nextOffset;
   for (let i = 0; i < events.length; i += TRANSCRIPT_PARSE_EVENTS_PER_BATCH) {
     // The first group always runs, whatever the reads already cost, and the
-    // budget only ends a pass ON A TURN BOUNDARY.
-    //
-    // A turn's events carry the prompt that opened it, and a window beginning
-    // mid-turn does not contain that prompt — so the next pass would derive the
-    // SAME rows with a different payload, and each would be refused as a
-    // conflict against the row this pass already wrote. Stopping only where a
-    // prompt begins makes a re-derivation byte-identical to the first, which is
-    // what the deterministic ids depend on. It also guarantees progress: the
-    // boundary is always past where this pass started.
-    if (i > 0 && calls >= TRANSCRIPT_PARSE_CALLS_PER_PASS && opensTurn(events[i]) && events[i].offset > target.parsedOffset) {
+    // budget ends a pass anywhere the cursor can actually move. A resumed pass
+    // is handed the turn open at its start, so an event derived after a break
+    // is identical to the same event derived without one; only the cursor
+    // needs to advance, or the transcript would be re-read forever.
+    if (i > 0 && calls >= TRANSCRIPT_PARSE_CALLS_PER_PASS && events[i].offset > target.parsedOffset) {
       cursor = events[i].offset;
       break;
     }

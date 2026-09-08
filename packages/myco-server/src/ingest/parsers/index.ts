@@ -41,6 +41,16 @@ export interface ParserInput {
   sessionId: string;
   /** The instant a line with no readable timestamp is dated to, and the ceiling every line time is clamped to. */
   now: number;
+  /**
+   * The turn open where this window begins, when it began before it.
+   *
+   * A window starting mid-turn does not contain the prompt that turn carries,
+   * and events derived without it would differ from the same events derived
+   * with it — the same rows, refused against what an earlier pass already
+   * wrote. Carrying the open prompt in makes a resumed derivation identical to
+   * an uninterrupted one, which is what lets a pass stop anywhere.
+   */
+  openPromptId?: string;
 }
 
 /** A kind and a payload the catalogue admits, named by the byte offset that produced it. */

@@ -25,4 +25,21 @@ describe('parser facts against the agent manifests', () => {
       expect({ agent, tags: [...parser.planTags].sort() }).toEqual({ agent, tags: declared });
     }
   });
+
+  /**
+   * The server reproduces the member's ownership rule rather than importing it,
+   * so the declaration it reproduces has to be the manifest's. A parser that
+   * named a different field would attribute a continued transcript's turns to
+   * the wrong session, and a parser that declared none for an agent that
+   * continues would derive its predecessor's prompts into the successor.
+   */
+  it('stitches a continued transcript on exactly the field its agent declares', () => {
+    for (const [agent, parser] of Object.entries(PARSERS)) {
+      const declared = HOOK_CONFIG[agent]?.sessionContinuation;
+      expect({ agent, path: parser.continuation?.parentSessionIdPath ?? null })
+        .toEqual({ agent, path: declared?.parentSessionIdPath ?? null });
+      const markers = [...(declared?.markers ?? [])].map((m) => m.recordFlagPath).filter((p): p is string => typeof p === 'string').sort();
+      expect({ agent, markers: [...(parser.continuation?.markerPaths ?? [])].sort() }).toEqual({ agent, markers });
+    }
+  });
 });

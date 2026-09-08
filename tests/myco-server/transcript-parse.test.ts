@@ -19,7 +19,7 @@ import {
   parseOnce, parseTranscripts, pendingTranscriptBytes,
   TRANSCRIPT_PARSE_CALLS_PER_PASS, TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT,
 } from '@myco-server-worker/ingest/parse.js';
-import { transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
+import { freeOrphanedBlobs, transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
 import { listTranscripts } from '@myco-server-worker/read/transcript.js';
 import { listSessions, listSessionSummaries } from '@myco-server-worker/read/sessions.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
@@ -42,11 +42,14 @@ const line = (o: Record<string, unknown>): string => `${JSON.stringify(o)}\n`;
 
 /** A transcript body with `turns` prompt-and-reply pairs, each also making a tool call. */
 function body(turns: number): string {
+  // Distinct instants per line, as a real transcript carries: the rows a turn
+  // produces are ordered by them.
+  const at = (n: number) => new Date(Date.parse('2026-09-01T10:00:00Z') + n * 1000).toISOString();
   let out = '';
   for (let i = 0; i < turns; i += 1) {
-    out += line({ type: 'user', promptId: `${uuid(i + 1)}`, message: { content: `prompt ${i}` }, timestamp: '2026-09-01T10:00:00Z' });
-    out += line({ type: 'assistant', message: { content: [{ type: 'text', text: `reply ${i}` }, { type: 'tool_use', id: `t${i}`, name: 'Read', input: { i } }] }, timestamp: '2026-09-01T10:00:01Z' });
-    out += line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'ok' }] }, timestamp: '2026-09-01T10:00:02Z' });
+    out += line({ type: 'user', promptId: `${uuid(i + 1)}`, message: { content: `prompt ${i}` }, timestamp: at(i * 3) });
+    out += line({ type: 'assistant', message: { content: [{ type: 'text', text: `reply ${i}` }, { type: 'tool_use', id: `t${i}`, name: 'Read', input: { i } }] }, timestamp: at(i * 3 + 1) });
+    out += line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'ok' }] }, timestamp: at(i * 3 + 2) });
   }
   return out;
 }
@@ -128,6 +131,38 @@ describe('parsing a held transcript', () => {
     expect(report.derived).toBeGreaterThan(TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
   });
 
+  /** One prompt and many tool calls: an agentic turn with no second prompt to stop at. */
+  function singleTurn(calls: number): string {
+    let out = line({ type: 'user', promptId: uuid(1), message: { content: 'do a lot' }, timestamp: '2026-09-01T10:00:00Z' });
+    for (let i = 0; i < calls; i += 1) {
+      out += line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `s${i}`, name: 'Read', input: { i } }] }, timestamp: '2026-09-01T10:00:01Z' });
+      out += line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `s${i}`, content: 'ok' }] }, timestamp: '2026-09-01T10:00:02Z' });
+    }
+    return out;
+  }
+
+  it('holds the call bound on a window with no prompt to stop at, which a turn-only boundary could not', async () => {
+    const { sqlite, env } = await rig(singleTurn(600));
+    const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
+    const report = await parseOnce(env as never, {
+      projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null,
+    }, NOW);
+    expect(report.calls).toBeLessThanOrEqual(TRANSCRIPT_PARSE_CALLS_PER_PASS + 2);
+  });
+
+  it('finishes a single agentic turn across passes, attributing every call to the one prompt', async () => {
+    const { sqlite, env } = await rig(singleTurn(600));
+    await drain(env, sqlite, 400);
+    expect(target(sqlite).parse_error).toBeNull();
+    expect(target(sqlite).parsed_offset).toBe(target(sqlite).size);
+    expect(count(sqlite, 'tool_calls')).toBe(600);
+    // The prompt opening the turn is carried across every pass, so no call is
+    // orphaned by the boundary a budget happened to fall on.
+    const orphans = sqlite.query(`SELECT COUNT(*) c FROM tool_calls WHERE prompt_id IS NULL`).get() as { c: number };
+    expect(orphans.c).toBe(0);
+  });
+
   it('reaches the same rows whether the bytes arrived as one segment or as many', async () => {
     const text = body(6);
     const whole = await rig(text);
@@ -160,23 +195,26 @@ describe('parsing a held transcript', () => {
   });
 
   it('stops the cursor where an event failed to land rather than advancing past it', async () => {
-    const { sqlite, env, tokenId } = await rig(body(2));
-    // An event id already taken by a different payload: the derived event is
-    // refused as a conflict and does not land. The cursor must not move past it.
-    const first = (sqlite.query(`SELECT transcript_id, session_id FROM transcripts`).get() as { transcript_id: string; session_id: string });
-    const parser = await import('@myco-server-worker/ingest/parsers/registry.js');
-    const segs = new TextEncoder().encode(body(2));
-    const { splitCompleteLines } = await import('@myco-server-worker/ingest/segments.js');
-    const events = await parser.PARSERS['claude-code'].parse({ lines: splitCompleteLines(segs, 0).lines, sessionId: first.session_id, now: NOW });
-    const { uuidv5 } = await import('@myco-server-worker/hash.js');
-    const taken = await uuidv5('transcript-event', first.transcript_id, events[0].kind, String(events[0].payload.promptId));
-    sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, producer_adapter, producer_version, payload_bytes, ingest_nonce)
-                VALUES (?, ?, ?, ?, 'prompt', 'cli', '{}', 'other-hash', ?, ?, 'x', '1', 2, 'other-nonce')`,
-               PROJECT, taken, first.session_id, tokenId, NOW, NOW);
-
+    const { sqlite, env } = await rig(body(2));
+    // An archived Project refuses every write, so no derived event lands. The
+    // cursor stays where it stood and the transcript records the failure.
+    sqlite.run(`UPDATE projects SET archived_at = ? WHERE project_id = ?`, NOW, PROJECT);
     await drain(env, sqlite);
     expect(target(sqlite).parse_error).toBe('parse');
     expect(target(sqlite).parsed_offset).toBe(0);
+    expect(count(sqlite, 'prompt_batches')).toBe(0);
+  });
+
+  it('treats a row it already derived as landed, so a wider earlier window does not stop the transcript', async () => {
+    const { sqlite, env } = await rig(body(2));
+    await drain(env, sqlite);
+    const rows = count(sqlite, 'prompt_batches') + count(sqlite, 'tool_calls');
+    // Re-reading from zero re-derives every row under the same identity; each
+    // is already stored, and none of that is a failure.
+    sqlite.run(`UPDATE transcripts SET parsed_offset = 0`);
+    await drain(env, sqlite);
+    expect(target(sqlite).parse_error).toBeNull();
+    expect(count(sqlite, 'prompt_batches') + count(sqlite, 'tool_calls')).toBe(rows);
   });
 
   it('resumes across passes when one transcript holds more events than a pass may land', async () => {
@@ -401,6 +439,64 @@ describe('transcript retention', () => {
     sqlite.run(`UPDATE transcript_segments SET created_at = ?`, NOW - 5 * 86_400_000);
     expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
     expect(count(sqlite, 'transcript_segments')).toBeGreaterThan(0);
+  });
+
+  it('never deletes a segment whose blob it has not accounted for, so nothing is left unreachable', async () => {
+    // Many small segments, each its own blob: more than one pass can free.
+    const { sqlite, serverEnv, env } = await rig(body(20), 96);
+    await drain(env, sqlite);
+    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, NOW);
+    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, NOW - 5 * 86_400_000);
+    const before = count(sqlite, 'transcript_segments');
+
+    await transcriptRetention(serverEnv, NOW);
+    // A segment gone is a blob accounted for: what remains in `blobs` is either
+    // still referenced or still has its segment.
+    const stranded = sqlite.query(`SELECT COUNT(*) c FROM blobs b
+      WHERE NOT EXISTS (SELECT 1 FROM transcript_segments WHERE project_id = b.project_id AND blob_key = b.key)
+        AND NOT EXISTS (SELECT 1 FROM prompt_batches WHERE project_id = b.project_id AND blob_key = b.key)
+        AND NOT EXISTS (SELECT 1 FROM responses WHERE project_id = b.project_id AND blob_key = b.key)
+        AND NOT EXISTS (SELECT 1 FROM plans WHERE project_id = b.project_id AND blob_key = b.key)
+        AND NOT EXISTS (SELECT 1 FROM attachments WHERE project_id = b.project_id AND blob_key = b.key)`).get() as { c: number };
+    expect(stranded.c).toBe(0);
+    expect(count(sqlite, 'transcript_segments')).toBeLessThan(before);
+  });
+
+  it('drains a large backlog across ticks rather than in one', async () => {
+    const { sqlite, serverEnv, env } = await rig(body(20), 96);
+    await drain(env, sqlite);
+    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, NOW);
+    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, NOW - 5 * 86_400_000);
+    let ticks = 0;
+    while (count(sqlite, 'transcript_segments') > 0 && ticks < 200) { await transcriptRetention(serverEnv, NOW); ticks += 1; }
+    expect(ticks).toBeGreaterThan(1);
+    expect(count(sqlite, 'transcript_segments')).toBe(0);
+    expect(count(sqlite, 'blobs')).toBe(0);
+  });
+
+  it('collects a blob a deletion left behind, which nothing else can reach', async () => {
+    const { sqlite, serverEnv } = await rig(body(1));
+    // A blob no row names: what a deletion leaves once its page fills.
+    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, PROJECT, 'f'.repeat(64), NOW);
+    expect(await freeOrphanedBlobs(serverEnv)).toBe(1);
+    expect((sqlite.query(`SELECT COUNT(*) c FROM blobs WHERE key = ?`).get('f'.repeat(64)) as { c: number }).c).toBe(0);
+  });
+
+  it('collects orphans whether or not a retention window is set', async () => {
+    const { sqlite, serverEnv } = await rig(body(1));
+    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, PROJECT, 'e'.repeat(64), NOW);
+    // No window: raw segments are kept forever, and bytes nothing references
+    // are still not kept.
+    expect(await transcriptRetention(serverEnv, NOW)).toBe(1);
+    expect(count(sqlite, 'transcript_segments')).toBeGreaterThan(0);
+  });
+
+  it('leaves a blob a surviving row still names', async () => {
+    const { sqlite, serverEnv, env } = await rig(body(1));
+    await drain(env, sqlite);
+    const before = count(sqlite, 'blobs');
+    expect(await freeOrphanedBlobs(serverEnv)).toBe(0);
+    expect(count(sqlite, 'blobs')).toBe(before);
   });
 
   it('is idempotent: a second run finds nothing left to prune', async () => {

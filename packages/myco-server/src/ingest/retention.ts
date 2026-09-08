@@ -17,19 +17,6 @@ import { emit } from '../telemetry.js';
 
 const DAY_MS = 86_400_000;
 
-/**
- * Store and blob calls one sweep may spend, in the same units the parse pass
- * counts (`ingest/parse.ts`).
- *
- * Freeing a blob is three calls — the reference check, the object delete, the
- * row delete — so a sweep that took a large page and freed each key in turn
- * would spend thousands in one invocation against a cap of fifty. The window
- * does not move between ticks, so what this sweep leaves the next one takes.
- */
-export const TRANSCRIPT_RETENTION_CALLS_PER_PASS = 12;
-/** Segments removed in one statement. The deletes are one call whatever the page holds; the blobs behind them are not. */
-export const TRANSCRIPT_RETENTION_SEGMENTS_PER_PASS = 100;
-
 
 /** The widest retention window a Deployment may set, in days. */
 export const TRANSCRIPT_RETENTION_MAX_DAYS = 3650;
@@ -44,80 +31,118 @@ export function transcriptRetentionDays(raw: string | undefined): number | null 
 }
 
 /**
+ * How many blobs one sweep frees, and so how many segments it removes.
+ *
+ * A segment row is the only route back to the blob it names, so a sweep that
+ * deleted more segments than it could free blobs for would strand the rest with
+ * nothing left pointing at them. The page is therefore sized by the blobs, not
+ * the rows: what this pass does not take, the next selects again unchanged.
+ */
+export const TRANSCRIPT_RETENTION_BLOBS_PER_PASS = 8;
+/** Candidate rows read before the page is cut to the blobs above; several segments may name one blob. */
+const CANDIDATE_SEGMENTS = 256;
+
+/**
  * No raw transcript segment outlives the Deployment's window, and a blob no
  * surviving row references goes with it. Derived rows are never pruned, and
  * neither is the transcript row: what the segments held is already projected,
  * and the record that they existed outlives the bytes.
  *
  * A segment ahead of the parse cursor is kept whatever its age. Pruning bytes
- * no pass has read yet would delete the only copy of rows that were never
- * derived.
+ * no pass has read would delete the only copy of rows that were never derived.
+ *
+ * Complete by construction: every segment this pass deletes has had the blob it
+ * names considered in the same pass, so nothing is left unreferenced and
+ * unreachable.
  */
 export async function transcriptRetention(env: ServerEnv, now: number): Promise<number> {
+  // Orphans first, and regardless of the window. A deleted session frees a
+  // bounded page of blobs and the rows naming the rest are already gone, so
+  // this is the only route back to them — and whether a Deployment keeps its
+  // raw segments for thirty days or forever says nothing about bytes nothing
+  // references at all.
+  const orphans = await freeOrphanedBlobs(env);
+
   const window = transcriptRetentionDays((await leafValues(env.db, ['retention.transcripts'])).get('retention.transcripts'));
   if (window === 'unreadable') {
     emit({ kind: 'transcript_retention_refused', reason: 'refused' });
-    return 0;
+    return orphans;
   }
-  if (window === null) return 0;
+  if (window === null) return orphans;
 
   const cutoff = now - window * DAY_MS;
-  let calls = 1;
-  const { results: doomed } = await env.db
+  const { results: candidates } = await env.db
     .prepare(`SELECT s.project_id, s.transcript_id, s.base_offset, s.blob_key
                 FROM transcript_segments s
                 JOIN transcripts t ON t.project_id = s.project_id AND t.transcript_id = s.transcript_id
                WHERE s.created_at < ? AND t.parsed_offset >= s.base_offset + s.length
                ORDER BY s.created_at LIMIT ?`)
-    .bind(cutoff, TRANSCRIPT_RETENTION_SEGMENTS_PER_PASS)
+    .bind(cutoff, CANDIDATE_SEGMENTS)
     .all<{ project_id: string; transcript_id: string; base_offset: number; blob_key: string }>();
-  calls += 1;
-  if (doomed.length === 0) return 0;
+  if (candidates.length === 0) return 0;
 
-  // Every segment of the page in one call: the rows are what the window names,
-  // and leaving some behind would re-select them next tick for no gain.
+  // Cut the page to the blobs this pass can account for, then take every
+  // segment naming one of them: the rows and the objects go together.
+  const admitted = new Map<string, string>();
+  for (const c of candidates) {
+    if (!admitted.has(c.blob_key) && admitted.size >= TRANSCRIPT_RETENTION_BLOBS_PER_PASS) continue;
+    admitted.set(c.blob_key, c.project_id);
+  }
+  const doomed = candidates.filter((c) => admitted.has(c.blob_key));
+
   await env.db.batch(doomed.map((d) => env.db
     .prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id = ? AND base_offset = ?`)
     .bind(d.project_id, d.transcript_id, d.base_offset)));
-  calls += 1;
 
-  emit({ kind: 'transcript_retention_pruned', segments: doomed.length, blobs: await freeBlobs(env, doomed, calls) });
-  return doomed.length;
+  emit({ kind: 'transcript_retention_pruned', segments: doomed.length, blobs: await freeBlobs(env, admitted) });
+  return doomed.length + orphans;
 }
 
 /**
- * Remove the blobs the swept segments named, as far as the budget reaches.
+ * Blobs no row anywhere references, removed a bounded page at a time.
  *
- * A blob is content-addressed and shared, so it goes only once nothing holds
- * it: an unconditional delete would take a surviving prompt's body with a
- * segment's. What the budget does not reach stays referenced by nothing and is
- * taken by a later tick — the same page re-selects nothing, so the sweep below
- * finds these keys again through the segments still naming them or, once those
- * are gone, through the orphan pass.
+ * A session's deletion frees what it can and leaves the rest, and the rows that
+ * named those blobs are gone with it — so nothing but this walks them. Bounded
+ * and repeated rather than exhaustive: the next tick selects what this one left.
  */
-async function freeBlobs(
-  env: Pick<ServerEnv, 'db' | 'blobs'>, doomed: readonly { project_id: string; blob_key: string }[], spent: number,
-): Promise<number> {
-  let calls = spent;
-  let freed = 0;
-  const keys = new Map<string, string>();
-  for (const d of doomed) if (!keys.has(d.blob_key)) keys.set(d.blob_key, d.project_id);
-  for (const [key, project] of keys) {
-    if (calls + 3 > TRANSCRIPT_RETENTION_CALLS_PER_PASS) break;
-    const held = await env.db
-      .prepare(`SELECT 1 AS present FROM transcript_segments WHERE project_id = ? AND blob_key = ?
-                 UNION SELECT 1 FROM prompt_batches WHERE project_id = ? AND blob_key = ?
-                 UNION SELECT 1 FROM responses WHERE project_id = ? AND blob_key = ?
-                 UNION SELECT 1 FROM plans WHERE project_id = ? AND blob_key = ?
-                 UNION SELECT 1 FROM attachments WHERE project_id = ? AND blob_key = ?`)
-      .bind(project, key, project, key, project, key, project, key, project, key)
-      .first<{ present: number }>();
-    calls += 1;
-    if (held !== null) continue;
-    await env.blobs.delete(`${project}/${key}`);
-    await env.db.prepare(`DELETE FROM blobs WHERE project_id = ? AND key = ?`).bind(project, key).run();
-    calls += 2;
-    freed += 1;
-  }
-  return freed;
+export async function freeOrphanedBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>): Promise<number> {
+  const holders = ['transcript_segments', 'prompt_batches', 'responses', 'plans', 'attachments'];
+  const unreferenced = holders.map((table) => `NOT EXISTS (SELECT 1 FROM ${table} WHERE project_id = b.project_id AND blob_key = b.key)`).join(' AND ');
+  const { results } = await env.db
+    .prepare(`SELECT project_id, key FROM blobs b WHERE ${unreferenced} LIMIT ?`)
+    .bind(TRANSCRIPT_RETENTION_BLOBS_PER_PASS)
+    .all<{ project_id: string; key: string }>();
+  if (results.length === 0) return 0;
+  for (const row of results) await env.blobs.delete(`${row.project_id}/${row.key}`);
+  await env.db.batch(results.map((row) => env.db
+    .prepare(`DELETE FROM blobs WHERE project_id = ? AND key = ?`).bind(row.project_id, row.key)));
+  emit({ kind: 'orphaned_blobs_freed', blobs: results.length });
+  return results.length;
+}
+
+/**
+ * Remove the blobs the swept segments named, once nothing else holds them.
+ *
+ * A blob is content-addressed and shared, so an unconditional delete would take
+ * a surviving prompt's body with a segment's. The reference check covers every
+ * admitted key in one statement rather than one apiece, which is what lets a
+ * whole page be accounted for inside the call budget.
+ */
+async function freeBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>, admitted: ReadonlyMap<string, string>): Promise<number> {
+  const keys = [...admitted.keys()];
+  if (keys.length === 0) return 0;
+  const holders = ['transcript_segments', 'prompt_batches', 'responses', 'plans', 'attachments'];
+  const placeholders = keys.map(() => '?').join(', ');
+  const { results: held } = await env.db
+    .prepare(holders.map((table) => `SELECT DISTINCT blob_key AS k FROM ${table} WHERE blob_key IN (${placeholders})`).join(' UNION '))
+    .bind(...holders.flatMap(() => keys))
+    .all<{ k: string }>();
+
+  const stillHeld = new Set(held.map((r) => r.k));
+  const orphaned = keys.filter((k) => !stillHeld.has(k));
+  if (orphaned.length === 0) return 0;
+  for (const key of orphaned) await env.blobs.delete(`${admitted.get(key)!}/${key}`);
+  await env.db.batch(orphaned.map((key) => env.db
+    .prepare(`DELETE FROM blobs WHERE project_id = ? AND key = ?`).bind(admitted.get(key)!, key)));
+  return orphaned.length;
 }

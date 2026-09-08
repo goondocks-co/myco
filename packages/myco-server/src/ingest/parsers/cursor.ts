@@ -22,9 +22,9 @@ export const cursorParser: TranscriptParser = {
   fidelity: 'no_tool_results',
   planTags: [],
 
-  async parse({ lines, sessionId, now }: ParserInput): Promise<DerivedEvent[]> {
+  async parse({ lines, sessionId, now, openPromptId }: ParserInput): Promise<DerivedEvent[]> {
     const events: DerivedEvent[] = [];
-    let promptId: string | undefined;
+    let promptId: string | undefined = openPromptId;
     let reply: { text: string[]; offset: number; createdAt: number; promptId?: string } | null = null;
 
     const flushReply = async (): Promise<void> => {

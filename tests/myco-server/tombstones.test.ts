@@ -12,7 +12,8 @@
 import { describe, expect, it } from 'bun:test';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { isTombstoned, tombstoneSession } from '@myco-server-worker/core/tombstones.js';
+import { isTombstoned, TOMBSTONE_BLOBS_PER_CALL, tombstoneSession } from '@myco-server-worker/core/tombstones.js';
+import { freeOrphanedBlobs } from '@myco-server-worker/ingest/retention.js';
 import {
   getSession, listSessions, listSessionSummaries, projectHoldsSession, projectStats,
   sessionCounts, sessionHeldByMachine, sessionInScope,
@@ -81,6 +82,38 @@ describe('tombstoning a session', () => {
     const second = await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW + 1);
     expect(second.removed).toBe(0);
     expect(count(sqlite, 'session_tombstones')).toBe(1);
+  });
+});
+
+describe('the blobs a deletion leaves', () => {
+  it('reports what it deferred rather than swallowing it, so nothing is silently orphaned', async () => {
+    const { sqlite, env, send } = await rig();
+    await populate(send);
+    // More attachments than one call frees, each its own blob.
+    for (let i = 0; i < TOMBSTONE_BLOBS_PER_CALL + 4; i += 1) {
+      const key = String(i).padStart(64, 'a');
+      sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'image/png', 't', ?)`, SCOPE.projectId, key, NOW);
+      sqlite.run(`INSERT INTO attachments (project_id, attachment_id, session_id, event_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
+                  VALUES (?, ?, ?, 'e', ?, 'image/png', 1, ?, 't', ?)`, SCOPE.projectId, `att-${i}`, SESSION, key, NOW, NOW);
+    }
+    const outcome = await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
+    expect(outcome.blobsFreed).toBe(TOMBSTONE_BLOBS_PER_CALL);
+    expect(outcome.blobsLeft).toBeGreaterThan(0);
+  });
+
+  it('leaves the remainder where the orphan sweep can reach it', async () => {
+    const { sqlite, env, send } = await rig();
+    await populate(send);
+    for (let i = 0; i < TOMBSTONE_BLOBS_PER_CALL + 4; i += 1) {
+      const key = String(i).padStart(64, 'b');
+      sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'image/png', 't', ?)`, SCOPE.projectId, key, NOW);
+      sqlite.run(`INSERT INTO attachments (project_id, attachment_id, session_id, event_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
+                  VALUES (?, ?, ?, 'e', ?, 'image/png', 1, ?, 't', ?)`, SCOPE.projectId, `att-${i}`, SESSION, key, NOW, NOW);
+    }
+    await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
+    let ticks = 0;
+    while ((await freeOrphanedBlobs(env)) > 0 && ticks < 50) ticks += 1;
+    expect(count(sqlite, 'blobs')).toBe(0);
   });
 });
 

@@ -96,26 +96,26 @@ async function unreferenced(db: RelationalStore, projectId: string, keys: readon
 }
 
 /**
- * How many blobs one deletion frees before leaving the rest to the sweep.
+ * How many blobs one deletion frees before leaving the rest for a later call.
  *
- * Freeing a blob is two calls, and a session holding thousands of attachments
- * would spend thousands here — past what one invocation may make on a hosted
- * runtime. The bound matters more here than in a scheduled sweep: the rows are
- * already gone by this point, so a request that dies mid-loop leaves blobs no
- * row names, and only a bounded loop makes the request that removed them
- * finish at all.
+ * A session holding thousands of attachments would spend thousands of calls
+ * here, past what one invocation may make on a hosted runtime. The remainder is
+ * not stranded: the rows naming those blobs are gone, so the retention job's
+ * orphan sweep collects them, and `blobsLeft` reports what this call deferred
+ * rather than swallowing it.
  */
 export const TOMBSTONE_BLOBS_PER_CALL = 16;
 
-/** Remove a blob's row and its stored bytes, as far as the bound reaches. A store that no longer holds the object is the state this converges on, so a repeat is a no-op and what is left over is taken by the retention sweep. */
+/** Remove a blob's row and its stored bytes, as far as the bound reaches. A store that no longer holds the object is the state this converges on, so a repeat is a no-op. */
 async function dropBlobs(db: RelationalStore, blobs: BlobStore, projectId: string, keys: readonly string[]): Promise<number> {
   const taken = keys.slice(0, TOMBSTONE_BLOBS_PER_CALL);
-  for (const key of taken) {
-    await blobs.delete(`${projectId}/${key}`);
-    await db.prepare(`DELETE FROM blobs WHERE project_id = ? AND key = ?`).bind(projectId, key).run();
+  for (const key of taken) await blobs.delete(`${projectId}/${key}`);
+  if (taken.length > 0) {
+    await db.batch(taken.map((key) => db.prepare(`DELETE FROM blobs WHERE project_id = ? AND key = ?`).bind(projectId, key)));
   }
   return taken.length;
 }
+
 
 /**
  * Suppress a session: record the tombstone, drop every derived row, and free

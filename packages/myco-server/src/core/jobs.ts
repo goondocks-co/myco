@@ -60,7 +60,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'transcript-retention',
     runsThrough: 'idle',
-    converges: 'no raw transcript segment behind the parse cursor outlives the Deployment window, and a blob no surviving row references goes with it; a segment inside the window or ahead of the cursor, and every derived row, is never pruned',
+    converges: 'no raw transcript segment behind the parse cursor outlives the Deployment window, and no blob any row still references is removed while no blob nothing references is kept; a segment inside the window or ahead of the cursor, and every derived row, is never pruned',
   },
 ];
 
