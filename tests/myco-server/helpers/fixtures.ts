@@ -152,7 +152,9 @@ export function withHarness(
   const launch = options.launch ?? (async (spec: LaunchSpec) => { sink.push(spec); });
   // A thunk, not a deployment: `sqliteEnv` re-maps on every access so a test can
   // swap a binding mid-test and see the failure it injects. Taking a value here
-  // would flatten that at construction, silently, at every call site.
+  // would flatten that at construction, silently, at every call site. No
+  // tsconfig covers this directory, so passing one fails when the fixture runs
+  // rather than when it is compiled.
   return new Proxy({} as ServerEnv, {
     get: (_t, key) => (key === 'harnessLaunch' ? launch : resolve()[key as keyof ServerEnv]),
     has: (_t, key) => key === 'harnessLaunch' || key in resolve(),

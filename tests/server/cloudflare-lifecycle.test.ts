@@ -9,6 +9,7 @@ import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  cloudflareDeploymentStatus,
   createCloudflareDeployment,
   rollbackCloudflareDeployment,
   destroyCloudflareDeployment,
@@ -102,25 +103,44 @@ describe('create', () => {
     expect({ db: record.databaseId, store: record.storeId }).toEqual({ db: DB_ID, store: STORE });
   });
 
-  it('GATE: every command runs in a directory this binary owns, never the one the operator stands in', async () => {
+  it('GATE: every verb runs every command in a directory this binary owns, never the one the operator stands in', async () => {
     // Wrangler walks UP from its working directory looking for a config, so a
     // command run from wherever the operator happens to be can pick up a
-    // checkout's wrangler.toml — the second config source staging removes.
+    // checkout's wrangler.toml — the second config source staging removes. Each
+    // verb is driven, because a verb that skips `bareCommand` is exactly the
+    // way this comes back.
     const { home, dir, options } = setup();
-    await createCloudflareDeployment({ ...options, runner: runner() });
     const root = stagingRoot(home);
-    expect(calls.length).toBeGreaterThan(0);
-    // Read off what each command was actually handed, not off intent: the two
-    // directories this binary owns, and nothing else.
-    const owned = [dir, root];
-    for (const call of calls) {
-      expect({ args: call.args.join(' '), owned: owned.includes(call.cwd ?? '') }).toEqual({ args: call.args.join(' '), owned: true });
-    }
-    expect(calls.some((c) => c.cwd === process.cwd())).toBe(false);
-    // Every command reading a config reads the staged one.
-    for (const call of calls.filter((c) => c.args.includes('-c'))) {
-      expect({ args: call.args.join(' '), cwd: call.cwd }).toEqual({ args: call.args.join(' '), cwd: dir });
-    }
+
+    /** Every command recorded since the last check ran where the binary put it. */
+    const ranWhereOwned = (verb: string): void => {
+      expect({ verb, ran: calls.length > 0 }).toEqual({ verb, ran: true });
+      for (const call of calls) {
+        const where = call.cwd ?? '';
+        expect({ verb, args: call.args.join(' '), owned: where === dir || where === root, cwd: where === process.cwd() ? 'the operator\'s' : 'owned' })
+          .toEqual({ verb, args: call.args.join(' '), owned: true, cwd: 'owned' });
+      }
+      // Every command reading a config reads the staged one.
+      for (const call of calls.filter((c) => c.args.includes('-c'))) {
+        expect({ verb, args: call.args.join(' '), cwd: call.cwd }).toEqual({ verb, args: call.args.join(' '), cwd: dir });
+      }
+      calls = [];
+    };
+
+    await createCloudflareDeployment({ ...options, runner: runner() });
+    ranWhereOwned('create');
+
+    await updateCloudflareDeployment({ ...options, runner: runner() });
+    ranWhereOwned('update');
+
+    await cloudflareDeploymentStatus({ ...options, runner: runner() });
+    ranWhereOwned('status');
+
+    await rollbackCloudflareDeployment({ ...options, runner: runner(), versionId: 'a'.repeat(8) });
+    ranWhereOwned('rollback');
+
+    await destroyCloudflareDeployment({ ...options, runner: runner() });
+    ranWhereOwned('destroy');
   });
 
   it('puts the Deployment on the domain the operator named, in the record and in the config it deploys', async () => {
