@@ -163,6 +163,7 @@ describe('native plugin transcripts', () => {
         const built = new Function('sessionId', 'AGENT', 'directory', 'nowIso',
           `return { ${fields.replace(/\bsessionId,/, 'sessionId,').replace(/\bagent: AGENT,/, 'agent: AGENT,')} };`,
         )('s', agent, '/repo', () => 'now') as Record<string, unknown>;
+        expect({ agent, claimed: mod.holdsSessionClaim('/repo', agent, 's') }).toEqual({ agent, claimed: true });
         mod.appendTranscriptLine('/repo', agent, 's', built);
         file = mod.transcriptPathFor('/repo', agent, 's');
       } else {
@@ -233,6 +234,11 @@ describe('one instance speaks for a session', () => {
     const env = sandboxEnv();
     const first = snippetModule(env);
     const second = snippetModule(env);
+    // Asserted before the file is read: a claim that could not be taken would
+    // otherwise surface as a missing transcript, which reads like the write
+    // path failing rather than the claim.
+    expect({ first: first.holdsSessionClaim('/repo', 'opencode', 'ses_1'), second: second.holdsSessionClaim('/repo', 'opencode', 'ses_1') })
+      .toEqual({ first: true, second: false });
     for (const mod of [first, second]) {
       mod.appendTranscriptLine('/repo', 'opencode', 'ses_1', { type: 'prompt', text: 'x' });
       mod.appendTranscriptLine('/repo', 'opencode', 'ses_1', { type: 'response', text: 'y' });
@@ -252,6 +258,7 @@ describe('one instance speaks for a session', () => {
     fs.writeFileSync(claim, '2147483646');
 
     const resumed = snippetModule(env);
+    expect(resumed.holdsSessionClaim('/repo', 'opencode', 'ses_2')).toBe(true);
     resumed.appendTranscriptLine('/repo', 'opencode', 'ses_2', { type: 'prompt', text: 'z' });
     const written = fs.readFileSync(first.transcriptPathFor('/repo', 'opencode', 'ses_2'), 'utf-8')
       .split('\n').filter(Boolean).length;
