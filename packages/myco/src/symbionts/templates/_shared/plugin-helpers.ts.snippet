@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Shared plugin helpers — single source of truth for buffer/POST + batch kinds.
+// Shared plugin helpers — the whole of a native plugin's contact with Myco.
 //
 // This block is maintained in
 //   src/symbionts/templates/_shared/plugin-helpers.ts.snippet
@@ -8,24 +8,21 @@
 // `// <myco:shared-helpers>` markers so they stay valid TypeScript for
 // Vitest imports; a unit test enforces the inline copy matches the snippet.
 //
-// Contract: the snippet assumes the containing file has already defined
-//   - `postJson(directory: string, path: string, body): Promise<{ok, data?}>`
-//   - `resolveMycoHome(directory?: string): string` — the project's Myco home
-//     (`~/.myco`, or a dev home when a trusted `runtime.home` pin redirects it)
-//   - imports for `readFileSync`, `appendFileSync`, `mkdirSync`, `join`
-//   - no other imports from the outer file
-// and exposes
-//   - `BATCH_KIND` constants + `BatchKind` type
-//   - `readProjectAndGroveIds(directory)` — regex-extracts identity from project.toml
-//   - `resolveBufferDir(directory)` — Grove-scoped buffer dir, null on miss
-//   - `bufferEvent(dir, sessionId, event)` — best-effort JSONL append
-//   - `isIgnoredResponse(data)` — true when daemon returned an "ignored" drop
-//   - `shouldBufferPluginFallback(result, eventType)` — the buffer decision
+// A plugin makes NO network call. It writes transcript lines and it runs the
+// Myco binary's hook verbs. The binary owns credential resolution, the
+// write-ahead spool, the offline latch, blob spill, the server-held offset and
+// every refusal code; a second implementation of those inside a harness
+// runtime would be a second member, and the wire contract only has one.
+//
+// Contract: the containing file has already defined imports for
+//   `readFileSync`, `appendFileSync`, `mkdirSync`, `statSync`, `accessSync`,
+//   `constants as fsConstants`, `join`, `dirname`, `resolve`, `homedir`,
+//   `execFile`/`execFileSync`
+// and nothing else from the outer file.
 //
 // Export discipline: opencode's legacy-plugin loader throws on any module
 // export that isn't a function, killing the whole plugin at load. Only
 // FUNCTION exports may be added to this snippet (or to the plugin files).
-//   - `postEventWithBuffer(dir, sessionId, event)` — live POST with buffer fallback
 //
 // DO NOT edit this block inside a plugin file directly — edit the snippet
 // and run the installer (or rerun the template-sync test to update the
@@ -33,159 +30,200 @@
 // installs/updates.
 // ---------------------------------------------------------------------------
 
-/**
- * Discriminated vocabulary for `prompt_batches.kind`. Mirrors
- * `BATCH_KIND` in src/db/queries/batches.ts — plugins can't import daemon
- * code, so the constants are inlined here and kept in sync via the shared
- * snippet + its sync test.
- */
-const BATCH_KIND = {
-  INITIAL: "initial",
-  STEERING: "steering",
-  INTERRUPT: "interrupt",
-} as const;
-type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
+/** Version of the transcript line format. A parser meeting an unknown value fails the segment. */
+const MYCO_TRANSCRIPT_FORMAT = 1;
+
+/** Ceiling on a hook subprocess, so a stalled binary never blocks the harness. */
+const MYCO_HOOK_TIMEOUT_MS = 5000;
 
 /**
- * Read project + Grove identity from `<directory>/.myco/project.toml`.
+ * Where the binary reads this install's credential, substituted at install
+ * time exactly as a hook command's `--credential` flag is.
  *
- * Returns `null` when the file is missing or the required fields can't be
- * found. Plugins run with a zero-runtime-dep constraint (the file may load
- * in a teammate's clone that has no Myco installed), so this uses regex
- * extraction rather than a TOML parser dependency.
+ * Declared, never inferred from the environment: a plugin that guessed would
+ * let an unrelated variable redirect capture to another Deployment. `registry`
+ * is the installed default; a sandbox image renders `env`, which is the only
+ * source that admits a loopback `http://` Deployment.
  */
-function readProjectAndGroveIds(directory: string): { projectId: string; groveId: string } | null {
+const MYCO_CREDENTIAL_SOURCE = "{{mycoCredentialSource}}";
+
+const RUNTIME_PIN_INSECURE_MODE_MASK = 0o022;
+
+/**
+ * Read a `runtime.home` or `runtime.command` pin only when it passes the same
+ * trust check the CLI shim uses: a group/other-writable or foreign-owned pin is
+ * refused, so a hostile local user cannot redirect capture to a runtime they
+ * control. Returns the trimmed value or null.
+ */
+function readTrustedPin(filePath: string): string | null {
   try {
-    const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
-    // Section-anchored: `(?:(?!\n\[)[\s\S])*?` matches any char that is
-    // NOT followed by a newline + `[` (next TOML section header). Without
-    // this anchor the non-greedy `[\s\S]*?` would happily cross into
-    // [grove] and return the wrong section's id if [project] lacks one.
-    // /code-review finding C6.
-    const projectMatch = raw.match(/\[project\](?:(?!\n\[)[\s\S])*?\bid\s*=\s*"([^"]+)"/);
-    const groveMatch = raw.match(/\[grove\](?:(?!\n\[)[\s\S])*?\bid\s*=\s*"([^"]+)"/);
-    if (!projectMatch || !groveMatch) return null;
-    return { projectId: projectMatch[1]!, groveId: groveMatch[1]! };
+    if (process.platform !== "win32") {
+      const stat = statSync(filePath);
+      const myUid = typeof process.getuid === "function" ? process.getuid() : null;
+      if (myUid !== null && stat.uid !== myUid) return null;
+      if ((stat.mode & 0o777) & RUNTIME_PIN_INSECURE_MODE_MASK) return null;
+    }
+    const raw = readFileSync(filePath, "utf-8").trim();
+    return raw || null;
   } catch {
     return null;
   }
 }
 
-/**
- * Resolve where to write a buffer file when the daemon is unreachable.
- *
- * Post-global-install (plan 38cff0752c919ffd §2), buffers live at
- * `~/.myco/groves/<groveId>/projects/<projectId>/buffer/`. The daemon's
- * reconciler scans only Grove-scoped buffer dirs at startup, so writes
- * to any other location would be orphaned.
- *
- * Returns the Grove-scoped path when project.toml carries the Grove +
- * project identity. Returns `null` when project.toml is missing —
- * brand-new projects the daemon has never seen have no resolvable
- * identity, and matching the daemon-side tenet in `buffer-location.ts`
- * we DROP the event rather than write to a non-canonical location. The
- * daemon will provision project.toml on its first received event, so
- * subsequent buffer fallbacks resolve correctly.
- */
-function resolveBufferDir(directory: string): string | null {
-  const ids = readProjectAndGroveIds(directory);
-  if (!ids) return null;
-  return join(resolveMycoHome(directory), "groves", ids.groveId, "projects", ids.projectId, "buffer");
+function expandTilde(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/")) return join(homedir(), value.slice(2));
+  return value;
 }
 
 /**
- * Append an event to the Grove-scoped buffer dir for replay by the
- * daemon's startup reconciler. On-disk shape intentionally matches
- * `src/capture/buffer.ts`'s EventBuffer — the plugin can't import it because
- * of the zero-runtime-dep constraint, so the protocol is the contract.
+ * The `runtime.home` pin for a project: a project pin found by walking up from
+ * `directory`, then the machine pin. Returns an absolute path or null.
  */
-function bufferEvent(
-  directory: string,
-  sessionId: string,
-  event: Record<string, unknown>,
-): void {
+function readRuntimeHomePin(directory: string): string | null {
+  let dir = resolve(directory);
+  while (true) {
+    const pin = readTrustedPin(join(dir, ".myco", "runtime.home"));
+    if (pin) return expandTilde(pin);
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  const machine = readTrustedPin(join(homedir(), ".myco", "runtime.home"));
+  return machine ? expandTilde(machine) : null;
+}
+
+/**
+ * This project's Myco home. A trusted `runtime.home` pin wins so a dogfood
+ * project pinned to `~/.myco-dev` writes and reads there; then `MYCO_HOME`;
+ * then `~/.myco`. Identity is the home, never a path this file guesses.
+ */
+function resolveMycoHome(directory?: string): string {
+  if (directory) {
+    const pinned = readRuntimeHomePin(directory);
+    if (pinned) return pinned;
+  }
+  const configured = process.env.MYCO_HOME?.trim();
+  if (!configured) return join(homedir(), ".myco");
+  return expandTilde(configured);
+}
+
+/**
+ * Managed-binary layout; mirrors scripts/managed-paths.mjs, which a plugin
+ * cannot import. Agreement is gated by tests/symbionts/pi-binary-resolution.test.ts.
+ */
+function managedBinaryPath(mycoHome: string): string {
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
+    return join(localAppData, "Myco", "bin", "myco.exe");
+  }
+  return join(mycoHome, "bin", "myco");
+}
+
+/** A file that exists and (on POSIX) is executable; mode-0644 binaries fail. */
+function isRunnableBinary(candidate: string): boolean {
   try {
-    const bufferDir = resolveBufferDir(directory);
-    if (!bufferDir) return;  // Brand-new project, daemon never seen — drop the event rather than write to a non-canonical path.
-    mkdirSync(bufferDir, { recursive: true });
-    const filePath = join(bufferDir, `${sessionId}.jsonl`);
-    // Strip session_id from the entry — it's encoded in the filename
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { session_id: _sid, ...payload } = event;
-    const line = JSON.stringify({
-      ...payload,
-      timestamp: payload.timestamp ?? new Date().toISOString(),
-    });
-    appendFileSync(filePath, line + "\n");
+    const stat = statSync(candidate);
+    if (!stat.isFile()) return false;
+    if (process.platform !== "win32") accessSync(candidate, fsConstants.X_OK);
+    return true;
   } catch {
-    // Best-effort — never crash the host agent.
+    return false;
   }
 }
 
-/** True when the daemon returned 200 but signalled it dropped the event. */
-function isIgnoredResponse(data: unknown): boolean {
-  if (data === null || typeof data !== "object") return false;
-  const ignored = (data as { ignored?: unknown }).ignored;
-  return typeof ignored === "string" && ignored.length > 0;
-}
-
 /**
- * The plugin-side buffer-fallback decision over the daemon's `/events`
- * response contract. Mirrors `shouldBufferFallback` in
- * packages/myco/src/hooks/send-event.ts row for row:
- *
- *   - `!ok` (transport failure, timeout, non-2xx)        → BUFFER.
- *   - `ok` + `ignored` (any shape)                       → never buffer. A
- *     daemon's ignore is deliberate (capture rule, dedup, tombstone, gate
- *     rejection) — ignored ≠ lost, and buffering it re-creates the noise
- *     the gated-resurrection path exists to refuse.
- *   - `ok` + `persisted: true`                           → nothing.
- *   - `ok` + `persisted: false` + `buffered: true`       → nothing — the
- *     daemon-side append is the durable copy; re-buffering here is the
- *     double-buffer trap.
- *   - `ok` + `persisted: false` + `buffered` not true    → BUFFER. The one
- *     honest-fallback case: no persist AND no daemon-side copy.
- *   - `ok` with NO `persisted` field, `stop`             → BUFFER. The stop
- *     pipeline is queued by design and never reports a persist outcome
- *     (plugins buffer-before-POST on stop, so this row is mirror parity).
- *   - `ok` with NO `persisted` field, anything else      → nothing. A plain
- *     ok means the daemon processed the event.
+ * The Myco binary, in the contract order: project-scope `runtime.command` pin
+ * by upward walk, then the machine pin, then the runnable managed binary, then
+ * the bare name. Every step uses one home — the directory-aware
+ * `resolveMycoHome(directory)` — so a pinned project's fallbacks come from its
+ * own home. The bare name is the last resort: a GUI-launched agent's PATH need
+ * not contain it.
  */
-export function shouldBufferPluginFallback(
-  result: { ok: boolean; data?: unknown },
-  eventType: string | undefined,
-): boolean {
-  if (!result.ok) return true;
-  const data = result.data;
-  if (isIgnoredResponse(data)) return false;
-  const persisted = data !== null && typeof data === "object"
-    ? (data as { persisted?: unknown }).persisted
-    : undefined;
-  if (typeof persisted === "boolean") {
-    if (persisted) return false;
-    return (data as { buffered?: unknown }).buffered !== true;
+function resolveMycoBinary(directory: string): string {
+  let dir = resolve(directory);
+  while (true) {
+    const pin = readTrustedPin(join(dir, ".myco", "runtime.command"));
+    if (pin) return pin;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
-  return eventType === "stop";
+  const home = resolveMycoHome(directory);
+  const machinePin = readTrustedPin(join(home, "runtime.command"));
+  if (machinePin) return machinePin;
+  const managed = managedBinaryPath(home);
+  if (isRunnableBinary(managed)) return managed;
+  return process.platform === "win32" ? "myco.exe" : "myco";
 }
 
 /**
- * POST a capture event to the daemon, buffering to disk when the response
- * leaves no durable copy daemon-side (`shouldBufferPluginFallback`).
- *
- * A deliberate `ignored` is never buffered — a daemon that says "ignored"
- * did so deliberately (capture rule, dedup, tombstone), and buffering the
- * event re-creates the noise the gated-resurrection path exists to refuse.
+ * Where this agent's plugin-written transcript lives. Must agree with the
+ * agent's manifest `transcriptDiscovery` root, which declares the same
+ * directory as `@memberHome/member/transcripts/<agent>`; a gate resolves both
+ * and compares them.
  */
-async function postEventWithBuffer(
+function transcriptPathFor(directory: string, agent: string, sessionId: string): string {
+  return join(resolveMycoHome(directory), "member", "transcripts", agent, `${sessionId}.jsonl`);
+}
+
+/**
+ * Append one record to the transcript.
+ *
+ * The `session` record must be written first and stay small: project
+ * attribution reads the working directory from a bounded head of the file
+ * (64 KiB, then its first 40 lines) and takes the first line where the
+ * declared dot-path hits. A large or late first record makes every transcript
+ * for this agent unattributable, and nothing announces it.
+ */
+function appendTranscriptLine(
   directory: string,
+  agent: string,
   sessionId: string,
-  event: Record<string, unknown>,
-): Promise<unknown> {
-  const result = await postJson(directory, "/events", event);
-  const eventType = typeof event.type === "string" ? event.type : undefined;
-  if (shouldBufferPluginFallback(result, eventType)) {
-    bufferEvent(directory, sessionId, event);
-    return undefined;
+  record: Record<string, unknown>,
+): void {
+  const filePath = transcriptPathFor(directory, agent, sessionId);
+  try {
+    mkdirSync(dirname(filePath), { recursive: true });
+    appendFileSync(filePath, `${JSON.stringify({ v: MYCO_TRANSCRIPT_FORMAT, ...record })}\n`, "utf-8");
+  } catch {
+    // A transcript that cannot be written loses capture for this turn. It must
+    // never take the harness down with it.
   }
-  return result.data;
+}
+
+/**
+ * Run one Myco hook verb, handing it `payload` on stdin.
+ *
+ * Returns the hook's parsed response, or null when Myco is not installed, the
+ * binary fails, or the output is not the expected shape. Never throws and
+ * never rejects: a capture path that breaks the host is worse than one that
+ * captures nothing, and a plugin-only install legitimately has no binary.
+ */
+function runMycoHook(
+  directory: string,
+  agent: string,
+  verb: string,
+  payload: Record<string, unknown>,
+): { additionalContext?: string; promptId?: string } | null {
+  try {
+    const stdout = execFileSync(
+      resolveMycoBinary(directory),
+      ["hook", verb, "--symbiont", agent, "--credential", MYCO_CREDENTIAL_SOURCE],
+      {
+        cwd: directory,
+        input: JSON.stringify(payload),
+        timeout: MYCO_HOOK_TIMEOUT_MS,
+        maxBuffer: 4 * 1024 * 1024,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "ignore"],
+      },
+    );
+    const trimmed = typeof stdout === "string" ? stdout.trim() : "";
+    if (!trimmed) return {};
+    if (!trimmed.startsWith("{")) return { additionalContext: trimmed };
+    return JSON.parse(trimmed) as { additionalContext?: string; promptId?: string };
+  } catch {
+    return null;
+  }
 }

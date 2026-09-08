@@ -1,0 +1,6 @@
+{"type": "session", "id": "019ec8e4-3dec-70b1-9c31-6ecc115623b0", "cwd": "/Users/fixture/repo", "version": "0.9.0", "timestamp": "2026-09-08T12:00:00.000Z"}
+{"type": "model_change", "id": "m1", "parentId": null, "provider": "anthropic", "modelId": "claude-opus-5", "timestamp": "2026-09-08T12:00:00.500Z"}
+{"type": "message", "role": "user", "content": "summarise the retry change", "timestamp": "2026-09-08T12:00:01.000Z"}
+{"type": "custom_message", "customType": "myco-prompt-context", "content": "Session:: x", "timestamp": "2026-09-08T12:00:01.500Z"}
+{"type": "tool_result", "toolName": "read", "input": {"path": "src/fetch.ts"}, "output": "export async function get(url) { ... }", "isError": false, "timestamp": "2026-09-08T12:00:02.000Z"}
+{"type": "message", "role": "assistant", "content": [{"type": "text", "text": "The change adds a bounded retry."}], "timestamp": "2026-09-08T12:00:03.000Z"}

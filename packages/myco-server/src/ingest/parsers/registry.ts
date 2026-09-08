@@ -8,14 +8,20 @@
  * Deployment through the member's own events; nothing is silently dropped.
  */
 import { claudeCodeParser } from './claude-code.js';
+import { clineParser } from './cline.js';
 import { codexParser } from './codex.js';
 import { cursorParser } from './cursor.js';
+import { opencodeParser } from './opencode.js';
+import { piParser } from './pi.js';
 import type { TranscriptParser } from './index.js';
 
 export const PARSERS: Readonly<Record<string, TranscriptParser>> = {
   [claudeCodeParser.agent]: claudeCodeParser,
+  [clineParser.agent]: clineParser,
   [codexParser.agent]: codexParser,
   [cursorParser.agent]: cursorParser,
+  [opencodeParser.agent]: opencodeParser,
+  [piParser.agent]: piParser,
 };
 
 /** The parser for an agent, or null when the server reads none for it. */

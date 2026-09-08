@@ -210,6 +210,19 @@ const TranscriptDiscoverySchema = z.object({
    * coverage, rather than assuming they belong to the project being audited.
    */
   transcriptCwdPath: z.string().optional(),
+  /**
+   * Who prunes this store.
+   *
+   * `harness` — the agent writes and ages its own transcripts, and Myco only
+   * reads them. `member` — Myco's plugin writes the transcript and Myco's
+   * retention pass deletes it, so the importable history reaches back only as
+   * far as the member's window rather than the agent's.
+   *
+   * Read as a safety boundary: nothing in the member may delete a store
+   * declared `harness`, because those bytes are the user's own history and
+   * losing them is not recoverable.
+   */
+  retention: z.enum(['harness', 'member']).default('harness'),
 });
 
 export type TranscriptDiscovery = z.infer<typeof TranscriptDiscoverySchema>;
@@ -583,6 +596,22 @@ const CapabilitiesSchema = z.object({
    */
   toolTransport: z.enum(['mcp', 'cli']).default('mcp'),
   /**
+   * Which side writes this symbiont's turn rows.
+   *
+   *  - 'hook' (default): the prompt-submit hook ships the `prompt` event and
+   *    the tool, response and subagent hooks ship rows keyed to the id it
+   *    minted.
+   *  - 'transcript': the transcript is the only writer. The hook still mints
+   *    the prompt id, returns it for the runtime to stamp on its transcript
+   *    lines, and injects — but ships no `prompt`, so one prompt is one row.
+   *
+   * Declaring 'hook' where the transcript is also parsed writes each turn
+   * twice: the hook's id is minted per invocation and the parse derives its
+   * own, so the two never meet on the raw insert and only the projection key
+   * hides the second write.
+   */
+  turnRowSource: z.enum(['hook', 'transcript']).default('hook'),
+  /**
    * Declarations of tool calls that Canopy should treat as file reads. The
    * PreToolUse resolver consults this list to decide whether to inject context
    * for a given tool call and where the path lives. See `CanopyReadToolSchema`.
@@ -605,6 +634,7 @@ const CapabilitiesSchema = z.object({
   sessionStartInjection: false,
   subagentStartInjection: false,
   toolTransport: 'mcp' as const,
+  turnRowSource: 'hook' as const,
   canopyReadTools: [],
   pathBearingTools: [],
 }));

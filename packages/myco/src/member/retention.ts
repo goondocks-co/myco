@@ -17,12 +17,20 @@
  * could still commit a record naming them, and never the bytes a quarantined
  * spool references, which move into quarantine with it and are pruned with
  * it.
+ *
+ * Plugin-written transcripts age here too. They are the member's own store —
+ * written by a native plugin for an agent whose runtime keeps no append-only
+ * transcript of its own — so nothing else would ever delete them. A store any
+ * manifest declares `retention: harness` is the agent's, holds the user's own
+ * history, and is never touched by this pass.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { BUFFER_QUARANTINE_DIRNAME, pruneQuarantinedBuffers, quarantineBufferFile } from '../capture/buffer.js';
 import { longestDeclaredHookTimeoutMs } from './budget.js';
-import { MEMBER_DIR_MODE, MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS } from './constants.js';
+import { MEMBER_DIR_MODE, MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS, MEMBER_TRANSCRIPT_RETENTION_MS } from './constants.js';
+import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
+import { expandRoot } from '../symbionts/transcript-discovery.js';
 import { readSessionState, removeSessionState } from './session-state.js';
 import { BLOBS_DIRNAME, type MemberSpool } from './spool.js';
 
@@ -31,6 +39,56 @@ export interface RetentionResult {
   pruned: number;
   /** Staged blob files deleted because no live spool record references them. */
   releasedBlobs: number;
+  /** Plugin-written transcripts deleted because they aged past the member window. */
+  prunedTranscripts: number;
+}
+
+/**
+ * The transcript roots the member owns, from the manifests that declare it.
+ *
+ * A store is pruned here only when its manifest says `retention: member` —
+ * the agent whose plugin wrote it. Every other store belongs to its harness
+ * and holds the user's own history, which this pass must never delete; the
+ * declaration is what makes that a checkable boundary rather than a property
+ * of where the loop happens to look.
+ */
+export function memberOwnedTranscriptRoots(env: NodeJS.ProcessEnv = process.env): string[] {
+  const roots: string[] = [];
+  for (const manifest of BUNDLED_MANIFESTS) {
+    const discovery = manifest.capture?.transcriptDiscovery;
+    if (!discovery || discovery.retention !== 'member') continue;
+    for (const root of discovery.roots) roots.push(expandRoot(root, env));
+  }
+  return roots;
+}
+
+/**
+ * Delete plugin-written transcripts past the member's window.
+ *
+ * Age is the file's mtime: these files are append-only for the life of a
+ * session, so a still-running session keeps bumping it and cannot be pruned
+ * out from under itself.
+ */
+export function prunePluginTranscripts(now: number = Date.now(), env: NodeJS.ProcessEnv = process.env): number {
+  let pruned = 0;
+  for (const root of memberOwnedTranscriptRoots(env)) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue; // no transcripts written for this agent yet
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+      const file = path.join(root, entry.name);
+      try {
+        if (now - fs.statSync(file).mtimeMs < MEMBER_TRANSCRIPT_RETENTION_MS) continue;
+        fs.unlinkSync(file);
+        pruned += 1;
+      } catch { /* already gone, or not ours to remove */ }
+    }
+  }
+  return pruned;
 }
 
 /** When the server last acknowledged one of this session's records; 0 when it never has. */
@@ -156,7 +214,7 @@ function pruneQuarantinedStagedBlobs(spool: MemberSpool): number {
 
 /** Quarantine every session spool unacknowledged past the cap, prune quarantined files past the prune cap, and release staged bytes nothing references. */
 export function applySpoolRetention(spool: MemberSpool, now: number = Date.now()): RetentionResult {
-  const result: RetentionResult = { quarantined: [], pruned: 0, releasedBlobs: 0 };
+  const result: RetentionResult = { quarantined: [], pruned: 0, releasedBlobs: 0, prunedTranscripts: 0 };
   for (const sessionId of spool.sessionIds()) {
     if (spool.depth(sessionId) === 0) continue;
     if (now - unacknowledgedSince(spool, sessionId) < MEMBER_SPOOL_QUARANTINE_MS) continue;
@@ -172,5 +230,6 @@ export function applySpoolRetention(spool: MemberSpool, now: number = Date.now()
   // After the prune, whatever no quarantined spool still names goes with it.
   pruneQuarantinedStagedBlobs(spool);
   result.releasedBlobs = sweepStagedBlobs(spool, spool.sessionIds(), now);
+  result.prunedTranscripts = prunePluginTranscripts(now);
   return result;
 }

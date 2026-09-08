@@ -101,6 +101,9 @@ const KNOWN_MCP_SERVERS_KEYS = ['mcpServers', 'servers', 'mcp'] as const;
  */
 const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 
+/** Where a plugin template names the credential source the binary is to read. */
+const CREDENTIAL_SOURCE_PLACEHOLDER = '{{mycoCredentialSource}}';
+
 /** `hooksFormat` value selecting verbatim plugin-file install over JSON merge. */
 const HOOKS_FORMAT_PLUGIN_FILE = 'plugin-file';
 
@@ -1839,6 +1842,18 @@ export class SymbiontInstaller {
   }
 
   /**
+   * Name the credential source in a plugin template.
+   *
+   * A plugin runs the binary's hook verbs, and the binary reads no source the
+   * command did not declare. `renderMemberHooks` writes the flag for a
+   * config-file symbiont; this writes it for a plugin-file one, so both kinds
+   * of install declare where their credential comes from.
+   */
+  private substituteCredentialSource(content: string, source: CredentialSource = 'registry'): string {
+    return content.split(CREDENTIAL_SOURCE_PLACEHOLDER).join(source);
+  }
+
+  /**
    * Walk a JSON hooks template and substitute install-time placeholders.
    *
    * Two placeholders today:
@@ -1914,7 +1929,7 @@ export class SymbiontInstaller {
       const substituted = this.resolveHookTemplatePlaceholders(parsed);
       resolved = JSON.stringify(substituted, null, 2) + '\n';
     } else {
-      resolved = this.substituteMycoLauncher(withHelpers);
+      resolved = this.substituteCredentialSource(this.substituteMycoLauncher(withHelpers));
     }
 
     return this.writeManagedFile(

@@ -121,6 +121,15 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 export const MEMBER_SPOOL_QUARANTINE_MS = 30 * MS_PER_DAY;
 /** A quarantined spool file older than this is pruned. */
 export const MEMBER_SPOOL_QUARANTINE_PRUNE_MS = 60 * MS_PER_DAY;
+/**
+ * A plugin-written transcript older than this is deleted.
+ *
+ * These are the only transcripts the member owns: a harness writes and ages
+ * its own, and a store a manifest declares `retention: harness` is never
+ * touched here. The window bounds how far back an import can reach for the
+ * agents whose store Myco writes.
+ */
+export const MEMBER_TRANSCRIPT_RETENTION_MS = 30 * MS_PER_DAY;
 /** Ceiling on the per-project refusal diagnostic log. */
 export const REFUSED_LOG_MAX_BYTES = 1024 * 1024;
 

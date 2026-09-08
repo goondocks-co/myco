@@ -21,8 +21,11 @@ const FIXTURES = path.join(REPO_ROOT, 'tests', 'fixtures');
 /** One named fixture per registered parser; a parser with no entry fails the coverage gate below. */
 const FIXTURE_FOR: Record<string, string> = {
   'claude-code': 'claude-parse-basic.jsonl',
+  cline: 'cline-parse-basic.jsonl',
   codex: 'codex-parse-basic.jsonl',
   cursor: 'cursor-parse-basic.jsonl',
+  opencode: 'opencode-parse-basic.jsonl',
+  pi: 'pi-parse-basic.jsonl',
 };
 
 const SESSION = 's1';

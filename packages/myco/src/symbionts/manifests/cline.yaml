@@ -14,6 +14,16 @@ hookFields:
   toolInput: tool_input
   toolOutput: tool_output
 capture:
+  # Cline rewrites two whole-file JSON documents per session in place, so no
+  # byte offset survives a turn. The plugin writes an append-only transcript
+  # from the events it sees in process, and Myco's retention pass ages it.
+  transcriptDiscovery:
+    roots:
+      - "@memberHome/member/transcripts/cline"
+    patterns:
+      - "{sessionId}.jsonl"
+    transcriptCwdPath: "cwd"
+    retention: member
   rules:
     # Cline CLI stores the model-facing user message as a `<user_input
     # mode="...">` envelope, while its session metadata retains the clean
@@ -36,6 +46,13 @@ capture:
         close: '</user_input>'
       reason: strip Cline plan user_input envelope
 registration:
+  hookResponse:
+    # The plugin reads the hook's stdout directly, so the response is JSON and
+    # carries the minted prompt id back for stamping on transcript lines.
+    format: json
+    fieldNames:
+      additionalContext: additionalContext
+      promptId: promptId
   # Cline SDK plugins are TypeScript modules discovered from .cline/plugins/
   hooksTarget: .cline/plugins/myco.ts
   globalHooksTarget: ~/.cline/plugins/myco.ts
@@ -50,8 +67,13 @@ registration:
   globalSkillsTarget: ~/.cline/skills
   # No instructionsFile: Cline reads AGENTS.md natively through its shared
   # project-instruction search paths.
+
 capabilities:
   sessionStartInjection: true
+  # The transcript is the only writer of this symbiont's turn rows: the
+  # prompt-submit hook mints the prompt id, returns it for the plugin to stamp
+  # on its transcript lines, and injects, but ships no `prompt` event.
+  turnRowSource: transcript
   preToolUseInjection: false
   subagentStartInjection: false
   pathBearingTools:

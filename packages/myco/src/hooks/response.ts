@@ -22,6 +22,15 @@ export interface HookResponse {
   userMessage?: string;
   followupMessage?: string;
   systemMessage?: string;
+  /**
+   * The prompt id this hook minted, returned so a runtime that writes its own
+   * transcript stamps the same id on the lines of this turn. One prompt is
+   * then one row whichever side the server reads it from.
+   *
+   * Carried only by symbionts whose hook response format names it, so no
+   * existing single-block format changes shape.
+   */
+  promptId?: string;
 }
 
 type SemanticField = keyof HookResponse;

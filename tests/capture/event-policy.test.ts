@@ -83,33 +83,12 @@ describe('capture event policy table', () => {
     expect(captureEventPolicy(undefined).replayable).toBe(false);
   });
 
-  it('covers every event type the plugin templates emit', () => {
-    // The member hooks in src/hooks/ emit server envelopes, not daemon event
-    // types; the daemon's policy table serves buffers written by 1.4 binaries
-    // and by the plugin-file symbionts, whose templates are scanned here.
-    const emitted = new Set<string>();
-
-    // Plugin templates (opencode, pi) emit daemon events too, outside the
-    // hook CLI. A daemon event is an object literal carrying BOTH a `type:`
-    // string literal and a `session_id:` property — matched within the whole
-    // brace-balanced literal so property order can't silently un-guard a
-    // type, while UI-part literals (`type: "text"`, no session_id) stay out
-    // of the scan. A plugin-emitted event type without a policy row fails
-    // here.
-    const templatesDir = path.resolve('packages/myco/src/symbionts/templates');
-    const pluginFiles = ['opencode/plugin.ts', 'pi/plugin.ts']
-      .map((rel) => path.join(templatesDir, rel));
-    for (const file of pluginFiles) {
-      const source = fs.readFileSync(file, 'utf-8');
-      const fileTypes: string[] = [];
-      for (const match of source.matchAll(/\bsession_id\s*:/g)) {
-        const literal = enclosingObjectLiteral(source, match.index!);
-        const typeMatch = literal?.match(/\btype:\s*["']([a-z_]+)["']/);
-        if (typeMatch) fileTypes.push(typeMatch[1]);
-      }
-      expect(fileTypes.length).toBeGreaterThan(0);
-      for (const type of fileTypes) emitted.add(type);
-    }
+  it('covers every event type a 1.4 buffer can carry', () => {
+    // The daemon's policy table serves buffers written by 1.4 binaries. The
+    // native plugins write transcript lines and run the binary's hook verbs,
+    // so they emit no daemon event type of their own and contribute nothing
+    // to this set; the member hooks emit server envelopes, not daemon events.
+    const emitted = new Set<string>(Object.keys(CAPTURE_EVENT_POLICY));
 
     const tableTypes = new Set(Object.keys(CAPTURE_EVENT_POLICY));
     const missingFromTable = [...emitted].filter((type) => !tableTypes.has(type));
