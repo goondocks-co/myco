@@ -430,6 +430,7 @@ The port is `ServerEnv.wake` — "wake me soon", called by requested work — wi
 | Job | Disposition | Surface | Blk | Replacement / reason | Owner |
 |---|---|---|---|---|---|
 | `embedding-reconcile` | REPLACE | Core, W, C | Blk | A tick job against Vectorize / SQLite vectors | #1124 |
+| `invite-expiry` | KEEP | Core | Blk | A tick job reclaiming spent, revoked and expired invitations past the retention window; a live invitation is never touched (plan §2.7) | #1158 |
 | `session-maintenance` | REPLACE | Core | Blk | A tick job: server-side session lifecycle | A3 |
 | `log-retention` | REPLACE | Core | Blk | A tick job over server logs; the member keeps its own log files (**M**) | E1 |
 | `agent-run-retention` | REPLACE | Core | Blk | A tick job; the lifecycle owner for run rows (plan §7) | B3 |

@@ -239,8 +239,6 @@ export function createServer(deps: ServerDeps) {
       const bounded = await boundedRequest(request, bodyBound);
       if (bounded === null) return refuseOversized(bodyBound);
       try {
-        // A join leaves no session and no run, so the clock the tick reads sees it only here.
-        await stampRequest(env.db, now);
         return await matched.route.handler(env, bounded, now);
       } catch (err) {
         emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });

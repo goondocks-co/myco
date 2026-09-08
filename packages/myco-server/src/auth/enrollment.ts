@@ -21,7 +21,7 @@ import { toBase64Url } from '../base64.js';
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
 import { MEMBER_REVOKED_BY, memberLive, memberRevokedByParams } from '../db/liveness.js';
-import { asMemberRole, type MemberRole } from './roles.js';
+import { asMemberRole, MEMBER_ROLES_SQL, type MemberRole } from './roles.js';
 
 /** Bytes of entropy in an enrollment key. 32 = 256 bits. */
 export const ENROLLMENT_KEY_BYTES = 32;
@@ -130,6 +130,7 @@ export async function spendEnrollmentAuthority(
   const spend = await db
     .prepare(`UPDATE enrollment_authorities SET used_at = ?, used_by_runtime = ?
                WHERE key_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+                 AND role IN (${MEMBER_ROLES_SQL})
                  ${projectBound}
                  AND (member_id IS NULL OR ${memberLive('enrollment_authorities.member_id')})
                  AND (created_by_member IS NULL OR ${memberLive('enrollment_authorities.created_by_member')})`)
@@ -144,17 +145,16 @@ export async function spendEnrollmentAuthority(
     .bind(keyHash)
     .first<{ id: string; used_at: number | null; revoked_at: number | null; expires_at: number; member_id: string | null; role: string; project_id: string | null; voided: number }>();
 
-  if (spend.meta.changes === 1) {
-    const role = asMemberRole(row!.role);
-    // A stored role outside the grammar admits nobody: an unreadable grant is not a grant.
-    if (role === null) return { ok: false, reason: 'revoked' };
-    return { ok: true, id: row!.id, memberId: row!.member_id, role, projectId: row!.project_id };
-  }
+  // The role grammar is a guard on the UPDATE above, so a row carrying an unreadable
+  // role is refused with the invitation still unspent rather than after spending it.
+  if (spend.meta.changes === 1) return { ok: true, id: row!.id, memberId: row!.member_id, role: asMemberRole(row!.role)!, projectId: row!.project_id };
   if (row === null) return { ok: false, reason: 'unknown' };
   if (row.revoked_at !== null || Number(row.voided) === 1) return { ok: false, reason: 'revoked' };
   if (row.used_at !== null) return { ok: false, reason: 'already_used' };
-  if (row.expires_at > nowMs && opts.forProject === true && row.project_id === null) return { ok: false, reason: 'no_project' };
-  return { ok: false, reason: 'expired' };
+  if (row.expires_at <= nowMs) return { ok: false, reason: 'expired' };
+  if (opts.forProject === true && row.project_id === null) return { ok: false, reason: 'no_project' };
+  // Live, unspent, and bound as asked: the only remaining guard is a role outside the grammar.
+  return { ok: false, reason: 'revoked' };
 }
 
 /** Revokes an unused key, naming who. `revoked` is false when no unused row matched the id. */

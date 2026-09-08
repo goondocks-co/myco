@@ -23,6 +23,9 @@ export function asMemberRole(value: unknown): MemberRole | null {
   return typeof value === 'string' && (MEMBER_ROLES as readonly string[]).includes(value) ? (value as MemberRole) : null;
 }
 
+/** The roles as a SQL list, so a statement that guards on the grammar and this module cannot drift apart. */
+export const MEMBER_ROLES_SQL = MEMBER_ROLES.map((r) => `'${r}'`).join(', ');
+
 /** Whether this role administers membership: minting and revoking invitations, revoking members, revoking any member's credential. */
 export const isAdmin = (role: MemberRole): boolean => role === 'admin';
 

@@ -42,7 +42,6 @@ export const MINUTE_MS = 60_000;
 export const HSTS_MAX_AGE_SECONDS = 31_536_000;
 export const TOKEN_ID_PREFIX = 'mt_';
 
-/** The prefix of a server-named member id, minted when a join enrolls a new person. */
 /**
  * The path an invite link carries. The dashboard builds `<origin>/join#<key>`
  * from it and `myco login` reads the same shape; the key rides in the fragment,
@@ -50,6 +49,7 @@ export const TOKEN_ID_PREFIX = 'mt_';
  */
 export const JOIN_PATH = '/join';
 
+/** The prefix of a server-named member id, minted when a join enrolls a new person. */
 export const MEMBER_ID_PREFIX = 'mem_';
 /** The one grammar of a member id: the prefix and up to 64 identity characters — long enough for the ids the v5 backfill named after machines. */
 export const MEMBER_ID_SEGMENT = `${MEMBER_ID_PREFIX}[A-Za-z0-9._-]{1,64}`;

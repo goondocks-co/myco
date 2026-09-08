@@ -53,6 +53,12 @@ export async function listMembers(db: RelationalStore, nowMs: number): Promise<M
   }));
 }
 
+/** The role a member holds, or null when the Deployment holds no such member. */
+export async function memberRole(db: RelationalStore, memberId: string): Promise<MemberRole | null> {
+  const row = await db.prepare(`SELECT role FROM members WHERE id = ?`).bind(memberId).first<{ role: string }>();
+  return row === null ? null : asMemberRole(row.role);
+}
+
 export type MemberState = 'absent' | 'live' | 'revoked';
 
 export async function memberState(db: RelationalStore, memberId: string): Promise<MemberState> {

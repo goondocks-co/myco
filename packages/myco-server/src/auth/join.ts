@@ -4,6 +4,8 @@ import { MEMBER_ID_PREFIX } from '../constants.js';
 import { emit, type Classifier } from '../telemetry.js';
 import { claimMachineIdentity, ensureMember, spendEnrollmentAuthority, type EnrollmentRefusal } from './enrollment.js';
 import { issueMemberToken } from './tokens.js';
+import { memberRole } from './members-admin.js';
+import { stampRequest } from '../core/activity.js';
 
 /** The identity grammar a join may record: machine id, runtime label and runtime kind all answer to it. */
 const IDENTITY = /^[A-Za-z0-9._-]{1,64}$/;
@@ -86,8 +88,17 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
     return refuse(classifier, `enrollment key ${spend.reason.replace('_', ' ')}`);
   }
 
+  // A join leaves no session and no run, so the clock the tick reads sees it only
+  // here — and only once a key is actually spent: an unauthenticated guesser posting
+  // keys must not be able to hold a Deployment awake at the operator's expense.
+  await stampRequest(env.db, now);
+
   const memberId = spend.memberId ?? `${MEMBER_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(MEMBER_ID_BYTES)))}`;
   await ensureMember(env.db, memberId, now, spend.role);
+  // The role the CREDENTIAL carries is the member's, not the invitation's. A member
+  // already recorded keeps the role it holds, so an invitation naming another one
+  // adds a runtime without changing what that person may do.
+  const role = await memberRole(env.db, memberId) ?? spend.role;
 
   // A machine identity belongs to one member. Every ownership predicate the ingest
   // path applies keys on it, so a joiner free to present any identity it liked could
@@ -107,6 +118,6 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
   emit({ kind: 'member_joined', memberId, tokenId: issued.tokenId, machineId, enrollmentId: spend.id });
   return Response.json({
     joined: true, memberId, token: issued.token, tokenId: issued.tokenId, expiresAt: issued.expiresAt,
-    role: spend.role, projectId: spend.projectId,
+    role, projectId: spend.projectId,
   });
 }

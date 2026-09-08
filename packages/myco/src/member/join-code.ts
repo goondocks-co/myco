@@ -23,10 +23,15 @@ import { getMachineId } from '../machine-id.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { ENROLLMENT_KEY_PATTERN, ENV_JOIN_CODE, JOIN_PATH } from './constants.js';
 import { isHttpsUrl, isLoopbackHttpUrl } from './credential.js';
-import { acquireRegistryLock, readDeploymentMembership, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from './registry.js';
+import { acquireRegistryLock, readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from './registry.js';
+import { clippedRequestBudget, remainingMs, type HookBudget } from './budget.js';
 
-/** How long a hook waits for the one holding the registry lock to finish redeeming the code. */
-const JOIN_WAIT_MS = 10_000;
+/**
+ * The longest a hook waits for the one holding the registry lock, when nothing
+ * bounds it more tightly. A hook that carries a budget is clipped to that
+ * instead: a wait outliving the harness timeout is a wait nothing ever reads.
+ */
+const JOIN_WAIT_CAP_MS = 10_000;
 /** How often it looks while it waits. */
 const JOIN_POLL_MS = 100;
 
@@ -85,6 +90,9 @@ export const JOIN_CODE_REFUSALS: Record<JoinCodeRefusal, string> = {
   key_grammar: 'that link does not carry an invitation key',
 };
 
+/** Whether this runtime carries a join code at all. The one read an ordinary run makes: no code, no filesystem work, no exchange. */
+export const joinCodePresent = (env: NodeJS.ProcessEnv = process.env): boolean => Boolean(env[ENV_JOIN_CODE]?.trim());
+
 export type ExchangeResult =
   | { ok: true; answer: JoinAnswer }
   | { ok: false; code: string; reason: string };
@@ -100,7 +108,7 @@ export type ExchangeResult =
  */
 export async function exchangeJoinCode(
   code: JoinCode,
-  opts: { fetch?: typeof fetch; machineId?: string; runtimeKind?: string; forProject?: boolean } = {},
+  opts: { fetch?: typeof fetch; machineId?: string; runtimeKind?: string; forProject?: boolean; timeoutMs?: number } = {},
 ): Promise<ExchangeResult> {
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   let response: Response;
@@ -108,6 +116,9 @@ export async function exchangeJoinCode(
     response = await fetchImpl(`${code.serverUrl}/members/join`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
+      // A hook is killed at its harness timeout. An exchange without a deadline of its
+      // own outlives the process that started it, and the key it spent is unrecorded.
+      signal: opts.timeoutMs === undefined ? undefined : AbortSignal.timeout(opts.timeoutMs),
       body: JSON.stringify({
         key: code.key,
         machineId: opts.machineId ?? getMachineId(),
@@ -166,15 +177,18 @@ export function recordJoinAnswer(
  * The lock is held ACROSS the exchange, the way the refresh path holds it across
  * its dial. A join code is single-use: two hooks exchanging it at once would
  * leave one of them holding a refusal and no credential. Here the second waits
- * for the first, then finds the membership and captures on it, so both land.
+ * for the first, then finds what it wrote and captures on that. Both land.
  *
- * A wait that times out captures nothing and says so once. It does not fall
- * through to its own exchange — that is the race this exists to prevent.
+ * Everything here is spent from the hook's own budget. The exchange carries a
+ * deadline and the wait is clipped to what the hook has left, so neither
+ * outlives the process the harness is about to kill — a wait that outlives its
+ * hook is a wait whose answer nobody reads.
  */
 export async function ensureJoinedFromCode(
   opts: {
     env?: NodeJS.ProcessEnv; mycoHome?: string; root?: string; fetch?: typeof fetch;
-    now?: () => number; machineId?: string; waitMs?: number; sleep?: (ms: number) => Promise<void>;
+    now?: () => number; machineId?: string; budget?: HookBudget;
+    waitMs?: number; sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<void> {
   const raw = (opts.env ?? process.env)[ENV_JOIN_CODE]?.trim();
@@ -185,18 +199,19 @@ export async function ensureJoinedFromCode(
     return;
   }
   const mycoHome = opts.mycoHome ?? resolveMycoHome();
-  if (readDeploymentMembership(parsed.serverUrl, mycoHome) !== null) return;
+  if (joined(parsed.serverUrl, mycoHome, opts.root)) return;
 
   const lock = acquireRegistryLock(mycoHome);
   if (!lock.acquired) {
-    await awaitMembership(parsed.serverUrl, mycoHome, opts);
+    await awaitJoin(parsed.serverUrl, mycoHome, opts);
     return;
   }
   try {
     // Re-read inside the lock: a hook that held it before this one may already have joined.
-    if (readDeploymentMembership(parsed.serverUrl, mycoHome) !== null) return;
+    if (joined(parsed.serverUrl, mycoHome, opts.root)) return;
     const exchange = await exchangeJoinCode(parsed, {
       fetch: opts.fetch, machineId: opts.machineId, runtimeKind: 'sandbox', forProject: true,
+      timeoutMs: opts.budget === undefined ? undefined : clippedRequestBudget(opts.budget).requestTimeoutMs,
     });
     if (!exchange.ok) {
       stderr(`join code refused (${exchange.code}) — ${exchange.reason}; no capture`);
@@ -211,21 +226,37 @@ export async function ensureJoinedFromCode(
 }
 
 /**
- * Wait for the hook holding the lock to publish a membership, up to `waitMs`.
+ * Whether this machine already holds what a hook at `root` needs.
+ *
+ * A project binding is what `resolveCredential` reads, and `writeRegistryEntry`
+ * writes the membership and the binding as two separate renames — so a reader
+ * that stops at the membership can return between them and find no binding. When
+ * a root is known this asks for the binding; the membership alone answers only
+ * where there is no project to bind.
+ */
+function joined(serverUrl: string, mycoHome: string, root: string | undefined): boolean {
+  if (root !== undefined) return readRegistryEntry(root, mycoHome) !== null;
+  return readDeploymentMembership(serverUrl, mycoHome) !== null;
+}
+
+/**
+ * Wait for the hook holding the lock to finish, up to the hook's own budget.
  *
  * The deadline reads the wall clock, never the caller's injected one. An
  * injected clock stamps records and can stand still; a wait measured on a clock
  * that stands still never ends.
  */
-async function awaitMembership(
+async function awaitJoin(
   serverUrl: string, mycoHome: string,
-  opts: { waitMs?: number; sleep?: (ms: number) => Promise<void> },
+  opts: { root?: string; waitMs?: number; budget?: HookBudget; sleep?: (ms: number) => Promise<void> },
 ): Promise<void> {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
-  const deadline = Date.now() + (opts.waitMs ?? JOIN_WAIT_MS);
+  const budgeted = opts.budget === undefined ? JOIN_WAIT_CAP_MS : Math.max(0, remainingMs(opts.budget));
+  const window = Math.min(opts.waitMs ?? JOIN_WAIT_CAP_MS, budgeted);
+  const deadline = Date.now() + window;
   while (Date.now() < deadline) {
     await sleep(JOIN_POLL_MS);
-    if (readDeploymentMembership(serverUrl, mycoHome) !== null) return;
+    if (joined(serverUrl, mycoHome, opts.root)) return;
   }
   stderr('another hook is still redeeming the join code; no capture this time');
 }

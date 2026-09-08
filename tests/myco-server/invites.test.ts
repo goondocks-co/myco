@@ -17,7 +17,7 @@ import { lastActivityAt } from '@myco-server-worker/core/activity.js';
 import { inviteExpiry } from '@myco-server-worker/core/jobs-run.js';
 import { SERVER_JOBS, jobRunsAt } from '@myco-server-worker/core/jobs.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { OWNER_ENV, asOwnerPost, ownerCookie, MEMBER_SUB, seedMemberRoleAccount } from './helpers/owner.js';
+import { OWNER_ENV, asOwnerPost, ownerCookie, MEMBER_SUB, PRINCIPAL, seedMemberRoleAccount } from './helpers/owner.js';
 
 /** The worker stamps its own clock, so every fixture instant is anchored to the real one. */
 const NOW = Date.now();
@@ -65,7 +65,7 @@ describe('what an invitation grants', () => {
     expect((await json(await r.join({ key: key.key, machineId: 'machine_x' }))).role).toBe('member');
   });
 
-  it('adds a runtime at the role its member already holds, so joining again never changes one', async () => {
+  it('adds a runtime at the role its member already holds, and ANSWERS that role rather than the invitation\'s', async () => {
     const r = rig();
     const first = await json(await r.join({ key: (await issueEnrollmentAuthority(r.e.db, NOW, { role: 'admin' })).key, machineId: 'machine_1a' }));
     const second = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member', memberId: first.memberId as string });
@@ -73,6 +73,24 @@ describe('what an invitation grants', () => {
 
     expect(again.memberId).toBe(first.memberId);
     expect(r.e.sqlite.query(`SELECT role FROM members WHERE id = ?`).get(first.memberId as string)).toEqual({ role: 'admin' });
+    // The credential belongs to a member who is an admin. Answering the invitation's
+    // role would have `myco login` print a role its holder does not have.
+    expect(again.role).toBe('admin');
+  });
+
+  it('refuses an invitation whose stored role is outside the grammar, and leaves it UNSPENT', async () => {
+    const r = rig();
+    const bent = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member' });
+    r.e.sqlite.query(`UPDATE enrollment_authorities SET role = 'owner' WHERE id = ?`).run(bent.id);
+
+    const refused = await json(await r.join({ key: bent.key, machineId: 'machine_bent' }));
+    expect({ joined: refused.joined, code: refused.code }).toEqual({ joined: false, code: 'enrollment_revoked' });
+    expect(r.e.sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get()).toEqual({ c: 0 });
+
+    // Unspent: repairing the row makes the same invitation work, rather than costing a fresh mint.
+    expect(r.e.sqlite.query(`SELECT used_at FROM enrollment_authorities WHERE id = ?`).get(bent.id)).toEqual({ used_at: null });
+    r.e.sqlite.query(`UPDATE enrollment_authorities SET role = 'member' WHERE id = ?`).run(bent.id);
+    expect((await json(await r.join({ key: bent.key, machineId: 'machine_bent' }))).role).toBe('member');
   });
 });
 
@@ -115,13 +133,29 @@ describe('who administers membership', () => {
     ['revoke a member', '/api/members/mem_machine_2/revoke', undefined],
   ];
 
-  it('refuses every administrative act to a member, by name, and admits each to an admin', async () => {
+  it('refuses every administrative act to a member, by name, and carries each out for an admin', async () => {
+    // What each act looks like when it succeeds, so the admin half asserts an outcome
+    // rather than the absence of one refusal.
+    const ADMITTED: Record<string, { status: number; body: (b: Record<string, unknown>) => unknown }> = {
+      'mint an invitation': { status: 201, body: (b) => ({ role: b.role, projectId: b.projectId }) },
+      'revoke an invitation': { status: 200, body: (b) => ({ revoked: b.revoked, revokedBy: b.revokedBy }) },
+      'revoke a member': { status: 200, body: (b) => ({ revoked: b.revoked, revokedBy: b.revokedBy }) },
+    };
+    const EXPECTED: Record<string, unknown> = {
+      'mint an invitation': { role: 'member', projectId: null },
+      // No invitation carries that id, so an admin is admitted and told nothing matched.
+      'revoke an invitation': { revoked: false, revokedBy: PRINCIPAL.id },
+      'revoke a member': { revoked: true, revokedBy: PRINCIPAL.id },
+    };
     for (const [what, path, body] of ADMIN_ONLY) {
       const r = rig();
       const refused = await r.call(await r.asMember(path, body));
       expect({ what, status: refused.status, body: await json(refused) })
         .toEqual({ what, status: 403, body: { error: 'not_admin', reason: 'this action is for an admin' } });
-      expect((await r.call(await asOwnerPost(path, body))).status).not.toBe(403);
+
+      const admitted = await r.call(await asOwnerPost(path, body));
+      expect({ what, status: admitted.status, body: ADMITTED[what].body(await json(admitted)) })
+        .toEqual({ what, status: ADMITTED[what].status, body: EXPECTED[what] });
     }
   });
 
@@ -226,9 +260,11 @@ describe('a join reaches the clock the tick reads', () => {
     expect(Math.abs(seen! - NOW)).toBeLessThan(60_000);
   });
 
-  it('counts even when it is refused: a guesser keeps the Deployment awake enough to reclaim what it spends', async () => {
+  it('does NOT count when the join is refused: an unauthenticated guesser cannot hold a Deployment awake at the operator\'s expense', async () => {
     const r = rig();
-    expect((await json(await r.join({ key: 'n'.repeat(43), machineId: 'machine_guess' }))).joined).toBe(false);
-    expect(await lastActivityAt(r.e.db)).not.toBe(null);
+    for (const body of [{ key: 'n'.repeat(43), machineId: 'machine_guess' }, { key: 'x', machineId: 'machine_guess' }, { machineId: 'machine_guess' }]) {
+      expect((await json(await r.join(body))).joined).toBe(false);
+    }
+    expect(await lastActivityAt(r.e.db)).toBe(null);
   });
 });
