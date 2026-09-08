@@ -933,10 +933,9 @@ describe('gates', () => {
     const keys = [...block![1].matchAll(/^\s*(\w+):/gm)].map((m) => m[1]).sort();
     expect(keys.length).toBeGreaterThan(0);
     const toml = readFileSync(join(WORKER, 'wrangler.toml'), 'utf8');
-    // HARNESS and CLOCK are optional in Env — the harness is absent in local dev
-    // and the parity harness, and a test env binds no clock — so they sit outside
+    // CLOCK is optional in Env — a test env binds no clock — so it sits outside
     // the required-binding equality, like SECRET_WRAP_KEY.
-    const bound = [...toml.matchAll(/^(?:binding|name) = "(\w+)"$/gm)].map((m) => m[1]).filter((name) => name !== 'myco-server' && name !== 'HARNESS' && name !== 'CLOCK').sort();
+    const bound = [...toml.matchAll(/^(?:binding|name) = "(\w+)"$/gm)].map((m) => m[1]).filter((name) => name !== 'myco-server' && name !== 'CLOCK').sort();
     expect(bound).toEqual(keys);
     expect(/^migrations_dir = "([^"]*)"$/m.exec(toml)?.[1]).toBe(MIGRATIONS_DIR);
   });

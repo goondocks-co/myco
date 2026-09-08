@@ -27,11 +27,12 @@ export const DEPLOY_CONFIG_NAME = 'wrangler.deploy.toml';
 /** Where the entry point sits inside the staged directory, alone. */
 export const WORKER_ENTRY = path.join('worker', 'worker.js');
 
-/** Where the dashboard is served from; the `[assets]` table names it. */
-const ASSETS_DIR = path.join('ui', 'dist');
-
-/** Where `wrangler d1 migrations apply` reads; the `migrations_dir` key names it. */
-const MIGRATIONS_DIR = 'migrations';
+/** A configuration key's value, read from the config a deploy will actually use. */
+function declared(config: string, key: string): string {
+  const value = new RegExp(`^${key} = "([^"]+)"$`, 'm').exec(config)?.[1];
+  if (value === undefined) throw new Error(`the deploy config declares no ${key}; cloudflare-stage and the configuration have drifted`);
+  return value;
+}
 
 export interface StagedDeploy {
   /** The directory every wrangler invocation runs in. */
@@ -42,9 +43,14 @@ export interface StagedDeploy {
   migrations: number;
 }
 
+/** This target's own subtree on this machine: the binary's, holding no wrangler configuration. */
+export function stagingRoot(mycoHome?: string): string {
+  return path.dirname(deploymentRecordPath(mycoHome));
+}
+
 /** The staging directory for this machine, beside the deployment record. */
 export function stagingDir(mycoHome?: string): string {
-  return path.join(path.dirname(deploymentRecordPath(mycoHome)), 'deploy');
+  return path.join(stagingRoot(mycoHome), 'deploy');
 }
 
 function writeFileUnder(root: string, relative: string, bytes: Uint8Array | string): void {
@@ -71,12 +77,17 @@ export function stageCloudflareDeploy(record: DeploymentRecord, mycoHome?: strin
 
   writeFileUnder(dir, WORKER_ENTRY, Buffer.from(BUNDLED_WORKER, 'base64'));
 
+  // Both directories are read out of the config a deploy will use, so the
+  // dashboard and the migrations always land where wrangler is told to look.
+  const assetsDir = declared(config, 'directory');
+  const migrationsDir = declared(config, 'migrations_dir');
+
   for (const [name, encoded] of Object.entries(BUNDLED_SERVER_UI)) {
-    writeFileUnder(dir, path.join(ASSETS_DIR, name), Buffer.from(encoded, 'base64'));
+    writeFileUnder(dir, path.join(assetsDir, name), Buffer.from(encoded, 'base64'));
   }
 
   const migrations = renderMigrationFiles();
-  for (const file of migrations) writeFileUnder(dir, path.join(MIGRATIONS_DIR, file.name), file.sql);
+  for (const file of migrations) writeFileUnder(dir, path.join(migrationsDir, file.name), file.sql);
 
   writeFileSync(path.join(dir, DEPLOY_CONFIG_NAME), config, { mode: 0o600 });
 

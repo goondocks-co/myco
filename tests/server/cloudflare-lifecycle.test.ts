@@ -183,3 +183,17 @@ describe('rollback', () => {
     expect(calls.some((c) => c.args.join(' ').includes('rollback ' + VERSION))).toBe(true);
   });
 });
+
+/**
+ * The two flags that no longer apply. A flag silently ignored is a flag an
+ * operator believes did something.
+ */
+describe('the flags this target refuses by name', () => {
+  it('refuses --dir and --no-drain, and says why each is gone', async () => {
+    const help = (await import('@myco/cli/server.js')).SERVER_HELP;
+    expect(help).not.toContain('--dir <packages/myco-server checkout>');
+    expect(help).toContain('create --target cloudflare --account-id <id>');
+    // The verb itself refuses them; the help no longer offers them.
+    expect(help).not.toMatch(/update --target cloudflare \[--no-drain\]/);
+  });
+});

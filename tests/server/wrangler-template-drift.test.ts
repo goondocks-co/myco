@@ -34,9 +34,19 @@ describe('wrangler template', () => {
     // entry so the platform is told the namespace is gone, once.
     expect(WRANGLER_TEMPLATE).not.toContain('[[containers]]');
     expect(WRANGLER_TEMPLATE).not.toContain('name = "HARNESS"');
-    for (const table of FREE_TIER_SURFACES) expect(WRANGLER_TEMPLATE).toContain(table);
-    const declared = [...WRANGLER_TEMPLATE.matchAll(/^\[\[?([a-z_.]+)\]?\]$/gm)].map((m) => m[1]!);
-    expect(declared.filter((table) => !FREE_TIER_SURFACES.some((known) => known.includes(table)))).toEqual([]);
+    // The rendered config is what deploys, so it is what is checked: the
+    // template alone misses the vector bindings and the store block the
+    // renderer appends.
+    const rendered = renderDeployConfig(record({ databaseId: 'd1-uuid', storeId: 'store-1', url: 'https://myco.example.com' }));
+    const headers = (text: string) => [...text.matchAll(/^(\[\[?[a-z0-9_.]+\]?\])$/gm)].map((m) => m[1]!);
+    // Nothing ships that is not on the list, in the committed base or in what
+    // a deploy actually reads.
+    expect(headers(WRANGLER_TEMPLATE).filter((table) => !FREE_TIER_SURFACES.includes(table as never))).toEqual([]);
+    expect(headers(rendered).filter((table) => !FREE_TIER_SURFACES.includes(table as never))).toEqual([]);
+    // And nothing is on the list that no longer ships, so a retired surface
+    // cannot sit here granting silent permission to a future one.
+    const shipped = new Set([...headers(WRANGLER_TEMPLATE), ...headers(rendered)]);
+    expect(FREE_TIER_SURFACES.filter((table) => !shipped.has(table))).toEqual([]);
     expect(WRANGLER_TEMPLATE).toContain('deleted_classes = [ "HarnessContainer" ]');
     expect(WRANGLER_TEMPLATE.match(/deleted_classes/g)).toHaveLength(1);
   });

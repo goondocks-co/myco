@@ -28,7 +28,7 @@ import {
   type CloudflareOptions,
   type DeploymentRecord,
 } from './cloudflare.js';
-import { stageCloudflareDeploy } from './cloudflare-stage.js';
+import { stageCloudflareDeploy, stagingRoot } from './cloudflare-stage.js';
 import { VECTOR_INDEX_NAME } from './vector-config.js';
 
 export { DEPLOY_CONFIG_NAME } from './cloudflare-stage.js';
@@ -54,6 +54,18 @@ function staged(record: DeploymentRecord, options: LifecycleOptions): Cloudflare
   return { ...options, configDir: stage.dir, configFile: stage.configFile };
 }
 
+/**
+ * Where a command that names its own resource runs.
+ *
+ * Wrangler walks UP from its working directory looking for a configuration, so
+ * running these from wherever the operator happens to stand can pick up a
+ * checkout's `wrangler.toml` — the second config source this target no longer
+ * has. This directory is the binary's own and holds no configuration.
+ */
+function bareCommand(options: LifecycleOptions): CloudflareOptions {
+  return { ...options, configDir: stagingRoot(options.mycoHome) };
+}
+
 export interface CreateResult {
   record: DeploymentRecord;
   createdResources: string[];
@@ -68,10 +80,7 @@ export interface CreateResult {
 export async function createCloudflareDeployment(options: LifecycleOptions & { url?: string }): Promise<CreateResult> {
   const existing = readDeploymentRecord(options.mycoHome);
   const createdResources: string[] = [];
-  // Every resource is ensured through a config that does not exist yet, so the
-  // committed one in the caller's cwd is not reachable either: these commands
-  // name their resource and need no config at all.
-  const bare = { ...options, configDir: process.cwd() };
+  const bare = bareCommand(options);
   if ((await ensureVectorIndex(bare)).created) createdResources.push(`vectorize ${VECTOR_INDEX_NAME}`);
 
   const database = existing?.databaseId !== undefined
@@ -136,7 +145,7 @@ export async function createCloudflareDeployment(options: LifecycleOptions & { u
 export async function updateCloudflareDeployment(options: LifecycleOptions): Promise<{ versionId: string | null }> {
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; `myco server create --target cloudflare` provisions one');
-  await ensureVectorIndex({ ...options, configDir: process.cwd() });
+  await ensureVectorIndex(bareCommand(options));
 
   const withConfig = staged(record, options);
   await applyMigrations({ ...withConfig, databaseName: record.databaseName });
@@ -160,7 +169,7 @@ export async function rollbackCloudflareDeployment(options: LifecycleOptions & {
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; nothing to roll back');
   const target = options.versionId ?? record.versionId ?? '';
   if (target === '') throw new Error('no version to roll back to: pass --version <id> (`wrangler deployments list` names them)');
-  await rollbackWorker({ ...options, configDir: process.cwd(), workerName: record.workerName, versionId: target, message: options.message ?? 'myco server rollback' });
+  await rollbackWorker({ ...bareCommand(options), workerName: record.workerName, versionId: target, message: options.message ?? 'myco server rollback' });
   writeDeploymentRecord({ ...record, versionId: target, deployedAt: new Date().toISOString() }, options.mycoHome);
   return { versionId: target };
 }
@@ -174,7 +183,7 @@ export interface CloudflareDeploymentStatus {
 export async function cloudflareDeploymentStatus(options: LifecycleOptions): Promise<CloudflareDeploymentStatus | null> {
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) return null;
-  const status = await cloudflareStatus({ ...options, configDir: process.cwd(), workerName: record.workerName });
+  const status = await cloudflareStatus({ ...bareCommand(options), workerName: record.workerName });
   return { record, deployed: status.deployed, versionId: status.versionId };
 }
 
@@ -186,6 +195,6 @@ export async function cloudflareDeploymentStatus(options: LifecycleOptions): Pro
 export async function destroyCloudflareDeployment(options: LifecycleOptions): Promise<{ kept: string[] }> {
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; nothing to destroy');
-  await deleteWorker({ ...options, configDir: process.cwd(), workerName: record.workerName });
+  await deleteWorker({ ...bareCommand(options), workerName: record.workerName });
   return { kept: [`d1 ${record.databaseName}`, `r2 ${record.bucketName}`, `vectorize ${VECTOR_INDEX_NAME}`, 'secrets store', 'the deployment record'] };
 }

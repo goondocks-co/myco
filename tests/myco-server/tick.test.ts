@@ -151,7 +151,7 @@ describe('agent-run-retention', () => {
 });
 
 describe('run-stale-sweep', () => {
-  it('fails a live run past its bound plus the margin by name, releases what it held, and leaves a run inside its bound', async () => {
+  it('fails a live run past its bound plus the margin by name, revokes its credential, and leaves a run inside its bound', async () => {
     const f = fixture();
     const credential = seedCredential(f.sqlite, { id: 'mt_run', memberId: 'mem_harness', machineId: 'harness' });
     const bound = JSON.stringify({ session_id: 's', timeoutSeconds: 300 });

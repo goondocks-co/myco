@@ -22,6 +22,7 @@ const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
 const WORKER_DIR = path.join(REPO_ROOT, 'packages', 'myco-server');
 const OUTPUT_PATH = path.join(REPO_ROOT, 'packages', 'myco', 'src', 'worker-bundle.generated.ts');
 const EXPORT_NAME = 'BUNDLED_WORKER';
+const VERSION_EXPORT_NAME = 'BUNDLED_WORKER_WRANGLER';
 
 /** A dangling source-map reference: the map is not carried, so the comment names a file no deploy ships. */
 const SOURCE_MAP_COMMENT = /\n\/\/# sourceMappingURL=[^\n]*\n?$/;
@@ -105,12 +106,16 @@ export function bundleConfig(toml: string): string {
 }
 
 /** Build the bundle and answer its bytes, with the dangling map reference removed. */
-export function buildWorkerBundle(): string {
+export function assertWranglerPinned(): string {
   const pinned = pinnedWranglerVersion();
   const installed = installedWranglerVersion();
   if (installed !== pinned) {
     throw new Error(`wrangler ${installed} is installed but package-lock.json pins ${pinned}; run npm ci before generating the Worker bundle`);
   }
+  return pinned;
+}
+
+export function buildWorkerBundle(): string {
   const out = mkdtempSync(path.join(tmpdir(), 'myco-worker-bundle-'));
   const config = path.join(WORKER_DIR, BUNDLE_CONFIG_NAME);
   try {
@@ -130,13 +135,16 @@ export function buildWorkerBundle(): string {
 }
 
 /** Write the module. Answers the bundle's byte length. */
-export function emitWorkerBundle(outputPath: string = OUTPUT_PATH): number {
+export function emitWorkerBundle(outputPath: string = OUTPUT_PATH, wranglerVersion?: string): number {
+  const version = wranglerVersion ?? assertWranglerPinned();
   const bundle = buildWorkerBundle();
   if (bundle.trim() === '') throw new Error('the Worker bundle is empty; a deploy from it would serve nothing');
   writeFileSync(outputPath, [
     '// GENERATED FILE — do not edit.',
     '// Written by packages/myco/scripts/gen-worker-bundle.ts from the Cloudflare Worker',
     '// source, so provisioning can deploy without a repository checkout.',
+    '',
+    `export const ${VERSION_EXPORT_NAME}: string = ${JSON.stringify(version)};`,
     '',
     `export const ${EXPORT_NAME}: string = ${JSON.stringify(Buffer.from(bundle, 'utf-8').toString('base64'))};`,
     '',
@@ -145,8 +153,11 @@ export function emitWorkerBundle(outputPath: string = OUTPUT_PATH): number {
 }
 
 function main(): void {
+  // Before the staleness check: a bundler bump has to fail on the next command,
+  // not on the next command that happens to rebuild.
+  const version = assertWranglerPinned();
   if (!bundleIsStale()) return;
-  const bytes = emitWorkerBundle();
+  const bytes = emitWorkerBundle(OUTPUT_PATH, version);
   process.stdout.write(`worker-bundle.generated.ts (${bytes} bytes of Worker)\n`);
 }
 

@@ -13,7 +13,7 @@ import { WRANGLER_TEMPLATE } from './wrangler-template.js';
 import { VECTOR_BINDINGS } from './vector-config.js';
 
 /**
- * Every configuration table the committed Worker configuration declares.
+ * Every configuration table a rendered deploy config may declare.
  *
  * Each is a surface the free plan serves. Containers are a paid surface, and a
  * table added without a decision moves every operator onto a plan they did not
@@ -29,6 +29,10 @@ export const FREE_TIER_SURFACES = [
   '[triggers]',
   '[[durable_objects.bindings]]',
   '[[migrations]]',
+  '[[secrets_store_secrets]]',
+  '[ai]',
+  '[[vectorize]]',
+  '[vars]',
 ] as const;
 
 const DATABASE_ID_PLACEHOLDER = '<YOUR_D1_DATABASE_ID>';

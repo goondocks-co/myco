@@ -145,14 +145,21 @@ export type LaunchSpec = { runId: string; timeoutSeconds: number; envVars: Recor
  * runtime; `sink` collects each spec a launch receives.
  */
 export function withHarness(
-  env: ServerEnv,
+  env: ServerEnv | (() => ServerEnv),
   options: { sink?: LaunchSpec[]; launch?: (spec: LaunchSpec) => Promise<void> } = {},
 ): ServerEnv {
   const sink = options.sink ?? [];
-  return {
-    ...env,
-    harnessLaunch: options.launch ?? (async (spec: LaunchSpec) => { sink.push(spec); }),
-  };
+  const launch = options.launch ?? (async (spec: LaunchSpec) => { sink.push(spec); });
+  // Taken as a thunk and answered through a getter, so a deployment that
+  // re-maps per access keeps doing so: a test that swaps a binding to inject a
+  // storage failure still sees it, as it would in production.
+  const resolve = typeof env === 'function' ? env : () => env;
+  return new Proxy({} as ServerEnv, {
+    get: (_t, key) => (key === 'harnessLaunch' ? launch : resolve()[key as keyof ServerEnv]),
+    has: (_t, key) => key === 'harnessLaunch' || key in resolve(),
+    ownKeys: () => [...new Set([...Reflect.ownKeys(resolve()), 'harnessLaunch'])],
+    getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true }),
+  });
 }
 
 /** Records every piece of work handed to the deferral and settles it on request, so a test observes what a request scheduled past its answer. */

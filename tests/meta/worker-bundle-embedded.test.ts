@@ -17,16 +17,18 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bundleConfig, bundleIsStale, pinnedWranglerVersion } from '../../packages/myco/scripts/gen-worker-bundle.js';
-import { BUNDLED_WORKER } from '@myco/worker-bundle.generated.js';
+import { BUNDLED_WORKER, BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /**
- * The bundle is around 1.1 MB. The ceiling is not a budget — it is the tripwire
- * for a bundler that started inlining something it used to leave out, which
- * would otherwise show up as a deploy that quietly exceeds a platform limit.
+ * Set from the measured bundle (1,135,736 bytes) with room for ordinary growth.
+ * The ceiling is a tripwire, not a budget: a bundler that starts carrying files
+ * it used to leave out shows up here rather than as a deploy that quietly
+ * exceeds a platform limit. The staged-directory sweep that carried 31 extra
+ * modules cost 65 KiB, so the headroom is deliberately under that.
  */
-const SIZE_CEILING_BYTES = 3_000_000;
+const SIZE_CEILING_BYTES = 1_200_000;
 
 const decoded = (): string => Buffer.from(BUNDLED_WORKER, 'base64').toString('utf-8');
 
@@ -54,11 +56,11 @@ describe('the Worker a compiled binary carries', () => {
     expect(Buffer.byteLength(decoded(), 'utf-8')).toBeLessThan(SIZE_CEILING_BYTES);
   });
 
-  it('GATE: is built by the wrangler the lockfile pins, named where a bump fails by name', () => {
-    const pinned = pinnedWranglerVersion();
-    expect(pinned).toMatch(/^\d+\.\d+\.\d+$/);
-    const lock = JSON.parse(readFileSync(path.join(REPO_ROOT, 'package-lock.json'), 'utf-8')) as { packages: Record<string, { version?: string }> };
-    expect(lock.packages['packages/myco-server/node_modules/wrangler']?.version).toBe(pinned);
+  it('GATE: was built by the wrangler the lockfile pins, so a bump fails by name', () => {
+    // The module records the bundler that actually produced it, which is the
+    // only fact worth comparing: reading the lockfile twice compares nothing.
+    expect(BUNDLED_WORKER_WRANGLER).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(BUNDLED_WORKER_WRANGLER).toBe(pinnedWranglerVersion());
   });
 
   it('builds against the configuration minus its assets table, which a source-only tree cannot satisfy', () => {
