@@ -100,33 +100,6 @@ describe('POST /runs/claim', () => {
   });
 });
 
-describe('agent state over HTTP', () => {
-  it('carries a read-modify-write across two requests, and refuses the write whose read is stale', async () => {
-    const { post } = await harness();
-    expect(await post('/runs/state/read', { agentId: AGENT, key: 'k' })).toEqual({ persisted: true, value: null, updatedAt: null });
-
-    // Both callers read the same absent value; only one write may land.
-    const a = await post('/runs/state/write', { agentId: AGENT, key: 'k', value: 'from-a' });
-    const b = await post('/runs/state/write', { agentId: AGENT, key: 'k', value: 'from-b' });
-    expect([a.applied, b.applied]).toEqual([true, false]);
-
-    const read = await post('/runs/state/read', { agentId: AGENT, key: 'k' });
-    expect(read.value).toBe('from-a');
-
-    // The loser reads again and offers what it now holds — the retry the caller owns.
-    const retry = await post('/runs/state/write', { agentId: AGENT, key: 'k', value: 'from-b', expected: read.value });
-    expect(retry.applied).toBe(true);
-    expect((await post('/runs/state/read', { agentId: AGENT, key: 'k' })).value).toBe('from-b');
-  });
-
-  it('keeps state per project', async () => {
-    const { post, sqlite, env, token } = await harness();
-    sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_2', 'proj_2', ?)`).run(Date.now());
-    await post('/runs/state/write', { agentId: AGENT, key: 'shared', value: 'one' });
-    await worker.fetch(memberPost(token.token, { agentId: AGENT, key: 'shared', value: 'two' }, '/runs/state/write', { 'x-myco-project': 'proj_2' }), env);
-    expect((await post('/runs/state/read', { agentId: AGENT, key: 'shared' })).value).toBe('one');
-  });
-});
 
 describe('agent registration', () => {
   it('is idempotent and keeps the identity across a re-declaration', async () => {

@@ -25,14 +25,15 @@
  * thrown error as an `isError` result, which drops the code the clients key on.
  */
 import { ProtocolError, Server, SUPPORTED_PROTOCOL_VERSIONS, type Tool } from '@modelcontextprotocol/server';
-import { isServedTool, isWriteOp, PROJECT_PIVOT, type ServedTool } from '../core/tool-catalogue.js';
+import { isServedTool, isWriteOp, NO_OP, PROJECT_PIVOT, type AnyTool } from '../core/tool-catalogue.js';
 import { emit } from '../telemetry.js';
 import { normalizeRemote, projectForRemote } from '../core/remotes.js';
 import { boundProject, namedProject, principalFields, type ToolContext } from './context.js';
 import { TOOL_DEFINITIONS, definitionOf, type ToolDefinition } from './definitions.js';
 import { externalDefinitions, isExternalCall } from './external.js';
-import { entryFor, opOf } from './registry.js';
-import { isRunCall, runDefinitions } from './run-surface.js';
+import { entryFor, opOf, TOOL_REGISTRY, type RegistryEntry } from './registry.js';
+import { isRunCall, runDefinitions, RUN_TOOL_REGISTRY } from './run-surface.js';
+import { runDefinitionOf } from './run-definitions.js';
 import { normalizeInput, ToolError, unknownTool, validateInput, type ToolInput } from './validate.js';
 
 export const SERVER_NAME = 'myco';
@@ -56,6 +57,40 @@ export const SERVER_INSTRUCTIONS = [
   '`myco_cortex` op "instructions" returns this project\'s standing guidance and its project id.',
 ].join('\n');
 
+/**
+ * What a run's credential is told at `initialize`.
+ *
+ * A run is bound to its own Project and its surface is its task's declared
+ * tools, so the member string's tenancy rule and its plan and Cortex guidance
+ * are all false here. `tools/list` is the whole of what this run may call.
+ */
+export const RUN_INSTRUCTIONS = [
+  'Myco is this project\'s memory. You are one run, working in one project.',
+  '',
+  'Your tools are exactly what `tools/list` answers; there are no others, and the project argument is optional because you may name only your own.',
+  '',
+  'Survey by previews and read a body in full only where you mean to act on it: full reads are counted against this run\'s budget.',
+  '',
+  'Close by filing `myco_run` op "report" with what this pass did. A pass that found nothing to do reports that.',
+].join('\n');
+
+/**
+ * What an External Agent grant is told at `initialize`.
+ *
+ * A grant is bound to one Project, holds no Myco session, and reaches reads
+ * plus two spore writes; the member string's plan write and its unnamed-write
+ * refusal do not apply to it.
+ */
+export const GRANT_INSTRUCTIONS = [
+  'Myco is this project\'s memory: sessions that happened, spores (durable observations), and plans.',
+  '',
+  'This access key is bound to one project. The `project` argument is optional, and may name only that project.',
+  '',
+  'Reach for it when you need why rather than what: a prior decision, a gotcha, how a subsystem came to be this way. Search with `myco_search`, then fetch a hit in full by its id.',
+  '',
+  'Record what you found with `myco_spores` op "save". You hold no Myco session, so cite the pull request or commit that produced the finding instead.',
+].join('\n');
+
 /** The ceiling on what rides every handshake. */
 export const SERVER_INSTRUCTIONS_MAX_BYTES = 2048;
 /** The JSON-RPC error code every tool failure answers with; `data.code` carries the name. */
@@ -74,7 +109,7 @@ export const FIRST_MODERN_REVISION = '2026-07-28';
 export const SERVED_PROTOCOL_VERSIONS: readonly string[] = SUPPORTED_PROTOCOL_VERSIONS.filter((v) => v < FIRST_MODERN_REVISION);
 
 /** Every result answers its JSON. */
-export function serializeResult(_tool: ServedTool, result: unknown): string {
+export function serializeResult(_tool: AnyTool, result: unknown): string {
   return JSON.stringify(result);
 }
 
@@ -107,35 +142,99 @@ async function namesBoundProject(ctx: ToolContext, named: unknown, bound: string
   return remote !== null && (await projectForRemote(ctx.env.db, remote)) === bound;
 }
 
+/**
+ * What one principal may see and call, decided once.
+ *
+ * The principal is read here and nowhere else on this path: `tools/list`, the
+ * surface check, op resolution and dispatch all read this value, so a second
+ * opinion about who is calling cannot be added to a handler. `definitionOf`
+ * answering undefined is the whole of "you may not call this" — a name that is
+ * not a tool and a tool off this surface are the same refusal.
+ */
+export interface Surface {
+  instructions: string;
+  definitions: readonly ToolDefinition[];
+  definitionOf(name: string): ToolDefinition | undefined;
+  opOf(name: string, input: ToolInput): string;
+  allows(name: string, op: string): boolean;
+  entryFor(name: string, op: string): RegistryEntry | undefined;
+}
+
+const servedOnly = (name: string): ToolDefinition | undefined => definitionOf(name);
+
+/** The surface this principal calls through. */
+export function surfaceFor(ctx: ToolContext): Surface {
+  const p = ctx.principal;
+  if (p.kind === 'grant') {
+    return {
+      instructions: GRANT_INSTRUCTIONS,
+      definitions: externalDefinitions(),
+      definitionOf: servedOnly,
+      opOf,
+      allows: (name, op) => isServedTool(name) && isExternalCall(name, op),
+      entryFor,
+    };
+  }
+  if (p.kind === 'run') {
+    return {
+      instructions: RUN_INSTRUCTIONS,
+      definitions: runDefinitions(p.allow),
+      definitionOf: (name) => definitionOf(name) ?? runDefinitionOf(name),
+      opOf: (name, input) => runOpOf(name, input),
+      allows: (name, op) => isRunCall(p.allow, name as AnyTool, op),
+      entryFor: runEntryFor,
+    };
+  }
+  return {
+    instructions: SERVER_INSTRUCTIONS,
+    definitions: TOOL_DEFINITIONS,
+    definitionOf: servedOnly,
+    opOf,
+    allows: () => true,
+    entryFor,
+  };
+}
+
+/** The op a run's call resolves to, over whichever registry keys the tool. */
+function runOpOf(name: string, input: ToolInput): string {
+  const run = RUN_TOOL_REGISTRY[name];
+  if (run === undefined) return isServedTool(name) ? opOf(name, input) : NO_OP;
+  return typeof input.op === 'string' ? input.op : run.defaultOp;
+}
+
+/** The entry for a run's call, over whichever registry keys the tool. */
+function runEntryFor(name: string, op: string): RegistryEntry | undefined {
+  const run = RUN_TOOL_REGISTRY[name];
+  if (run !== undefined) return run.ops[op];
+  return isServedTool(name) ? entryFor(name, op) : undefined;
+}
+
 /** The definitions this principal is served. */
 export function definitionsFor(ctx: ToolContext): readonly ToolDefinition[] {
-  const p = ctx.principal;
-  if (p.kind === 'grant') return externalDefinitions();
-  if (p.kind === 'run') return runDefinitions(p.allow);
-  return TOOL_DEFINITIONS;
+  return surfaceFor(ctx).definitions;
 }
 
 /** Run one tool call for this context: the principal's surface, validation, op resolution, the handler. Every failure leaves as a `ToolError`. */
-export async function callTool(ctx: ToolContext, name: string, args: unknown): Promise<{ tool: ServedTool; op: string; result: unknown }> {
-  if (!isServedTool(name)) throw unknownTool(name);
-  const definition = definitionOf(name)!;
+export async function callTool(ctx: ToolContext, name: string, args: unknown): Promise<{ tool: AnyTool; op: string; result: unknown }> {
+  const surface = surfaceFor(ctx);
+  const definition = surface.definitionOf(name);
+  if (definition === undefined) throw unknownTool(name);
   const input = normalizeInput(args);
   const bound = boundProject(ctx);
   const named = input[PROJECT_PIVOT];
   if (bound !== null && named !== undefined && named !== bound && !(await namesBoundProject(ctx, named, bound))) throw unknownTool(name);
-  const op = opOf(name, input);
-  if (ctx.principal.kind === 'grant' && !isExternalCall(name, op)) throw unknownTool(name);
-  if (ctx.principal.kind === 'run' && !isRunCall(ctx.principal.allow, name, op)) throw unknownTool(name);
+  const op = surface.opOf(name, input);
+  if (!surface.allows(name, op)) throw unknownTool(name);
   validateInput(definition, input);
-  if (isWriteOp(name, op) && bound === null && namedProject(input) === undefined) throw missingProject(name);
-  const entry = entryFor(name, op);
+  if (isWriteOp(name as AnyTool, op) && bound === null && namedProject(input) === undefined) throw missingProject(name);
+  const entry = surface.entryFor(name, op);
   if (entry === undefined) throw new ToolError('invalid_input', `Unknown op '${op}' for tool ${name}`);
   if ('notServed' in entry) {
     throw new ToolError('not_served', entry.notServed === 'never'
       ? `${name} op '${op}' is not offered by a Deployment`
       : `${name} op '${op}' is not yet served by this Deployment (${entry.notServed})`);
   }
-  return { tool: name, op, result: await entry.handler(input, ctx) };
+  return { tool: name as AnyTool, op, result: await entry.handler(input, ctx) };
 }
 
 /**
@@ -146,7 +245,7 @@ export async function callTool(ctx: ToolContext, name: string, args: unknown): P
 export function createProtocolServer(ctx: ToolContext, version: string, onFailure: (err: unknown) => void): Server {
   const server = new Server(
     { name: SERVER_NAME, version },
-    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS, supportedProtocolVersions: [...SERVED_PROTOCOL_VERSIONS] },
+    { capabilities: { tools: {} }, instructions: surfaceFor(ctx).instructions, supportedProtocolVersions: [...SERVED_PROTOCOL_VERSIONS] },
   );
 
   server.setRequestHandler('tools/list', () => ({ tools: definitionsFor(ctx).map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema as unknown as Tool['inputSchema'], annotations: d.annotations })) }));
@@ -160,7 +259,7 @@ export function createProtocolServer(ctx: ToolContext, version: string, onFailur
     } catch (err) {
       if (!(err instanceof ToolError)) onFailure(err);
       const failure = err instanceof ToolError ? err : new ToolError('tool_call_failed', 'the Deployment could not complete the call');
-      emit({ kind: 'mcp_tool', tool: isServedTool(name) ? name : 'unknown', status: failure.code, ...principalFields(ctx) });
+      emit({ kind: 'mcp_tool', tool: surfaceFor(ctx).definitionOf(name) === undefined ? 'unknown' : name, status: failure.code, ...principalFields(ctx) });
       throw toolError(failure);
     }
   });
