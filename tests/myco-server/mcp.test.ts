@@ -18,6 +18,7 @@ import { uuidv5 } from '@myco-server-worker/hash.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { validateInput } from '@myco-server-worker/mcp/validate.js';
 import { NO_INSTRUCTIONS_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
+import { NO_STATUS_MESSAGE } from '@myco-server-worker/mcp/tools/skills.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { FIRST_MODERN_REVISION, SERVED_PROTOCOL_VERSIONS, SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_MAX_BYTES } from '@myco-server-worker/mcp/server.js';
 import { issueExternalGrant, revokeExternalGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
@@ -334,6 +335,9 @@ describe('POST /mcp', () => {
     const got = (await call(t1.token, 'myco_skills', { op: 'get', id: first.name })).result;
     expect({ name: got.name, content: got.content }).toEqual({ name: first.name, content: first.content });
     expect((await call(t1.token, 'myco_skills', { op: 'get', id: 'nope' })).result).toEqual({ ok: false, error: 'Skill not found' });
+    // A filter the catalogue cannot honour is refused, not ignored: answering
+    // the whole catalogue would look like a filter that matched everything.
+    expect((await call(t1.token, 'myco_skills', { op: 'list', status: 'active' })).result).toEqual({ ok: false, error: NO_STATUS_MESSAGE });
     expect((await call(t1.token, 'myco_agent')).result).toEqual({ ok: true, op: 'runs', data: { runs: [], cursor: null } });
     expect((await call(t1.token, 'myco_agent', { op: 'run', id: 'nope' })).result).toEqual({ ok: false, op: 'run', error: 'run not found' });
     sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('evolver', 'evolver', 'built-in', 1, 0)`).run();
