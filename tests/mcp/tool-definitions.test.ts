@@ -199,7 +199,6 @@ describe('handler forwards every documented schema property', () => {
 describe('cross-surface tool-name drift', () => {
   const TOOL_NAME_PATTERNS = {
     'server.tool': /server\.tool\(\s*["']([^"']+)["']/g,
-    registerTool: /registerTool\(\{\s*name:\s*["']([^"']+)["']/g,
   } as const;
 
   function extractToolNames(relPath: string, pattern: keyof typeof TOOL_NAME_PATTERNS): string[] {
@@ -207,26 +206,12 @@ describe('cross-surface tool-name drift', () => {
     return [...source.matchAll(TOOL_NAME_PATTERNS[pattern])].map((m) => m[1]);
   }
 
-  it('Pi symbiont registers exactly the canonical tool set', () => {
-    // The MCP surface is intentionally limited to read/editorial tools
-    // for symbionts. There are no operator tools (no restart/update/
-    // maintenance) — those are CLI + UI surfaces for users, not MCP.
-    // See `docs/architecture/actors-and-boundaries.md`.
-    const names = extractToolNames('packages/myco/src/symbionts/templates/pi/plugin.ts', 'registerTool');
-    expect(names.length).toBeGreaterThan(0);
-    const expected = new Set(TOOL_DEFINITIONS.map((t) => t.name));
-    expect(new Set(names)).toEqual(expected);
-  });
-
-  it('Pi myco_search describes retained search types and omits the retired language filter', () => {
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../packages/myco/src/symbionts/templates/pi/plugin.ts'),
-      'utf-8',
-    );
-    expect(source).not.toContain('language?: string');
-    expect(source).not.toContain('language: Type.Optional(Type.String');
-    expect(source).toContain('Optional type filter: session, plan, spore, skill, prompt, response, or all');
-  });
+  /**
+   * Pi registers its tools from `myco tool list` at session start rather than
+   * declaring them, so the template holds no name and no schema to drift from
+   * the catalogue. The gate that a name never appears there lives beside the
+   * rest of the plugin contract, in tests/symbionts/plugin-transcript.test.ts.
+   */
 
   it('Team worker exposes a subset of canonical local tools', () => {
     const names = extractToolNames('packages/myco-team/worker/src/mcp/server.ts', 'server.tool');

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { resolveMycoHome } from '../paths/home.js';
 import { BUNDLED_MANIFESTS } from './manifests.generated.js';
 import type { TranscriptDiscovery } from './manifest-schema.js';
 
@@ -16,9 +17,7 @@ import type { TranscriptDiscovery } from './manifest-schema.js';
 const SESSION_ID_TOKEN = '{sessionId}';
 
 /**
- * This agent's declared layout, or undefined when it declares none — which
- * for a plugin-reported agent (pi, opencode, cline) is correct rather than a
- * gap: their plugin posts complete events and leaves no transcript to mine.
+ * This agent's declared layout, or undefined when it declares none.
  *
  * Reads the build-time manifest bundle, the same source
  * `systemEnvelopePrefixes` uses, so adapter behavior and audit tooling agree
@@ -33,8 +32,34 @@ export function findTranscriptFor(agent: string, sessionId: string): string | nu
   return resolveTranscriptPath(manifestTranscriptDiscovery(agent), sessionId);
 }
 
-/** Expand `~` and `$VAR` / `${VAR}` forms against the current environment. */
+/**
+ * Prefix naming the member's state root. A root that begins with it resolves
+ * through `resolveMycoHome`, never through a literal `${MYCO_HOME}`, which
+ * expands to itself when the variable is unset.
+ *
+ * The resolver reads the environment. A plugin that writes under a project's
+ * `runtime.home` pin therefore passes the home it resolved to the binary it
+ * runs, so the process doing the discovery and the process that wrote the
+ * transcript name one directory.
+ */
+const MEMBER_HOME_PREFIX = '@memberHome';
+
+/**
+ * Expand `@memberHome`, `~` and `$VAR` / `${VAR}` forms.
+ *
+ * `@memberHome` resolves through the member's own home resolver so discovery
+ * and the runtime that writes the transcript name one directory.
+ */
 export function expandRoot(root: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (root === MEMBER_HOME_PREFIX || root.startsWith(`${MEMBER_HOME_PREFIX}/`)) {
+    const home = resolveMycoHome({ env, homeDir: env.HOME && env.HOME.length > 0 ? env.HOME : undefined });
+    const rest = root.slice(MEMBER_HOME_PREFIX.length).replace(/^\//, '');
+    return rest === '' ? home : path.join(home, rest);
+  }
+  return expandShellRoot(root, env);
+}
+
+function expandShellRoot(root: string, env: NodeJS.ProcessEnv): string {
   const withEnv = root.replace(/\$\{?([A-Z_][A-Z0-9_]*)\}?/gi, (whole, name: string) => env[name] ?? whole);
   // `~` must expand against THIS env, not a process-start-cached homedir, so
   // a caller (a test, a sandboxed subprocess) can scope discovery to a

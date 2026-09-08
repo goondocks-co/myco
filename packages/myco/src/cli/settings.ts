@@ -61,10 +61,17 @@ export function run(args: readonly string[], deps: SettingsCliDeps = {}): void {
   }
   const installer = new SymbiontInstaller(manifest, deps.cwd ?? process.cwd(), resolvePackageRoot(), false, undefined, null, 'member-project');
   const hooks = installer.renderMemberHooks('env');
-  if (hooks === null) {
+  if (hooks !== null) {
+    out(JSON.stringify({ hooks }, null, 2));
+    return;
+  }
+  // A plugin-file symbiont has no hook block; its plugin carries the same
+  // declaration, so a sandbox writes the file rather than a settings entry.
+  const plugin = installer.renderMemberPlugin('env');
+  if (plugin === null) {
     err(`myco settings: ${manifest.displayName} cannot report to a server from a sandbox`);
     process.exitCode = 2;
     return;
   }
-  out(JSON.stringify({ hooks }, null, 2));
+  out(plugin);
 }

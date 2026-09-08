@@ -2927,6 +2927,43 @@ describe('opencode (plugin-file hooks)', () => {
       );
     }
 
+    /**
+     * A placeholder nothing substitutes must stop the install.
+     *
+     * A plugin rendered with `--credential {{…}}` still installs, still loads,
+     * and spawns a binary that refuses the flag — which the plugin reports the
+     * same way it reports an absent binary. The install looks clean and
+     * captures nothing, so the refusal has to happen while writing.
+     */
+    it('refuses to install a plugin whose placeholder nothing substituted', () => {
+      writeSharedSnippet('const SOURCE = "{{mycoCredentialSourceZ}}";\n');
+      writePluginWithMarkers('// replaced at install time');
+
+      const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+      expect(() => installer.install()).toThrow(/mycoCredentialSourceZ/);
+    });
+
+    it('substitutes the credential source a plugin declares', () => {
+      writeSharedSnippet('const SOURCE = "{{mycoCredentialSource}}";\n');
+      writePluginWithMarkers('// replaced at install time');
+
+      const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+      installer.install();
+      const installed = fs.readFileSync(path.join(projectRoot, '.opencode/plugins/myco.ts'), 'utf-8');
+      expect(installed).toContain('const SOURCE = "registry";');
+      expect(installed).not.toContain('{{');
+    });
+
+    it('renders the same plugin naming the env source for a sandbox', () => {
+      writeSharedSnippet('const SOURCE = "{{mycoCredentialSource}}";\n');
+      writePluginWithMarkers('// replaced at install time');
+
+      const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+      const rendered = installer.renderMemberPlugin('env');
+      expect(rendered).toContain('const SOURCE = "env";');
+      expect(rendered).not.toContain('{{');
+    });
+
     it('replaces the marker block with the canonical snippet content', () => {
       writeSharedSnippet('const BATCH_KIND = { STEERING: "steering" } as const;\n');
       writePluginWithMarkers('// stale inlined copy — to be overwritten');

@@ -29,15 +29,30 @@ describe('manifest transcript discovery', () => {
     expect(missing).toEqual([]);
   });
 
-  it('declares no discovery for plugin-reported symbionts, which have no transcript to mine', () => {
-    // pi, opencode and cline post complete events from an in-agent plugin;
-    // a NULL transcript_path for them is correct, not a capture defect.
-    const spurious = manifests
-      .filter((m) => !minesTranscripts(m.name))
+  it('declares who prunes every store it discovers, so nothing deletes a harness\'s own history by default', () => {
+    // The default is `harness`: a store Myco did not write is the user's own
+    // history and the member never deletes it. Only an agent whose plugin
+    // writes the transcript declares `member`, and that declaration is what
+    // the pruner's safety gate reads.
+    const undeclared = manifests
       .filter((m) => m.capture?.transcriptDiscovery)
+      .filter((m) => m.capture?.transcriptDiscovery?.retention === undefined)
       .map((m) => m.name);
 
-    expect(spurious).toEqual([]);
+    expect(undeclared).toEqual([]);
+  });
+
+  it('declares a member-written store only where the agent keeps no append-only transcript of its own', () => {
+    // opencode fans a session out across one JSON file per message and per
+    // part; cline rewrites two whole documents in place. Neither carries a
+    // byte offset a delta could be shipped against, so their plugin writes a
+    // transcript and the member ages it. Every other agent's store is its own.
+    const memberWritten = manifests
+      .filter((m) => m.capture?.transcriptDiscovery?.retention === 'member')
+      .map((m) => m.name)
+      .sort();
+
+    expect(memberWritten).toEqual(['cline', 'opencode']);
   });
 
   it('constrains the session id wherever a wildcard shares its path segment', () => {
@@ -65,6 +80,10 @@ describe('manifest transcript discovery', () => {
     const unanchored: string[] = [];
     for (const manifest of manifests) {
       for (const root of manifest.capture?.transcriptDiscovery?.roots ?? []) {
+        // `@memberHome` resolves through the member's own home resolver, which
+        // is the one anchor an environment spelling cannot express: the home is
+        // a `runtime.home` pin first and `$MYCO_HOME` only after.
+        if (root.startsWith('@memberHome')) continue;
         if (!root.startsWith('~') && !root.startsWith('/') && !root.startsWith('$')) {
           unanchored.push(`${manifest.name}: ${root}`);
         }

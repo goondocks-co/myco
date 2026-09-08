@@ -11,7 +11,27 @@ hookFields:
 capture:
   planDirs:
     - .pi/plans/
+  # Pi writes an append-only JSONL per session, so the transcript ships as
+  # byte deltas like any other harness and the store stays Pi's own.
+  transcriptDiscovery:
+    roots:
+      - ~/.pi/agent/sessions
+    patterns:
+      # `<project slug>/<ISO timestamp>_<session uuid>.jsonl`
+      - "*/*_{sessionId}.jsonl"
+    # The timestamp and the uuid are both dash-delimited, so no greediness rule
+    # recovers the boundary between them; the id's shape is what resolves it.
+    sessionIdPattern: "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    transcriptCwdPath: "cwd"
+    retention: harness
 registration:
+  hookResponse:
+    # The plugin reads the hook's stdout directly, so the response is JSON and
+    # carries the minted prompt id back for stamping on transcript lines.
+    format: json
+    fieldNames:
+      additionalContext: additionalContext
+      promptId: promptId
   # Pi uses an extension file, not JSON hook entries
   hooksTarget: .pi/extensions/myco/index.ts
   # Pi's user-global agent extensions live under ~/.pi/agent/extensions/
@@ -27,7 +47,12 @@ registration:
   retiredGlobalSkillsTargets:
     - ~/.pi/agent/skills
   # No instructionsFile — pi reads AGENTS.md natively via context files
+
 capabilities:
+  # The transcript is the only writer of this symbiont's turn rows: the
+  # prompt-submit hook mints the prompt id, returns it for the plugin to stamp
+  # on its transcript lines, and injects, but ships no `prompt` event.
+  turnRowSource: transcript
   # Tool transport: neither `mcp` nor the session-start `cli` directive. Pi's
   # Myco tools are registered natively in the extension via pi.registerTool()
   # and dispatched in-process to the Myco CLI (`myco tool call`) with the

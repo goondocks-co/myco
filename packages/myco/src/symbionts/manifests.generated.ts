@@ -42,7 +42,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ],
         "patterns": [
           "brain/{sessionId}/.system_generated/logs/transcript_full.jsonl"
-        ]
+        ],
+        "retention": "harness"
       }
     },
     "registration": {
@@ -74,6 +75,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "toolTransport": "cli",
+      "turnRowSource": "hook",
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -376,7 +378,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "patterns": [
           "*/{sessionId}.jsonl"
         ],
-        "transcriptCwdPath": "cwd"
+        "transcriptCwdPath": "cwd",
+        "retention": "harness"
       },
       "sessionContinuation": {
         "parentSessionIdPath": "session_id",
@@ -414,6 +417,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "toolTransport": "mcp",
+      "turnRowSource": "hook",
       "canopyReadTools": [
         {
           "tool": "Read",
@@ -513,7 +517,17 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           },
           "trim": true
         }
-      ]
+      ],
+      "transcriptDiscovery": {
+        "roots": [
+          "@memberHome/member/transcripts/cline"
+        ],
+        "patterns": [
+          "{sessionId}.jsonl"
+        ],
+        "transcriptCwdPath": "cwd",
+        "retention": "member"
+      }
     },
     "registration": {
       "hooksTarget": ".cline/plugins/myco.ts",
@@ -528,6 +542,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ],
       "globalSkillsTarget": "~/.cline/skills",
       "hooksFormat": "plugin-file",
+      "hookResponse": {
+        "format": "json",
+        "fieldNames": {
+          "additionalContext": "additionalContext",
+          "promptId": "promptId"
+        }
+      },
       "mcpTarget": ".cline/mcp.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
@@ -539,6 +560,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "toolTransport": "mcp",
+      "turnRowSource": "transcript",
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -806,7 +828,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "*/*/*/rollout-*-{sessionId}.jsonl"
         ],
         "sessionIdPattern": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-        "transcriptCwdPath": "payload.cwd"
+        "transcriptCwdPath": "payload.cwd",
+        "retention": "harness"
       },
       "subagentParentPath": "source.subagent.thread_spawn.parent_thread_id",
       "subagentThreadIdPath": "id",
@@ -838,6 +861,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "toolTransport": "cli",
+      "turnRowSource": "hook",
       "canopyReadTools": [
         {
           "tool": "Bash",
@@ -928,7 +952,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ],
         "patterns": [
           "{sessionId}/events.jsonl"
-        ]
+        ],
+        "retention": "harness"
       }
     },
     "registration": {
@@ -963,6 +988,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "toolTransport": "mcp",
+      "turnRowSource": "hook",
       "canopyReadTools": [
         {
           "tool": "read_file",
@@ -1231,7 +1257,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "patterns": [
           "*/agent-transcripts/{sessionId}.txt",
           "*/agent-transcripts/{sessionId}/{sessionId}.jsonl"
-        ]
+        ],
+        "retention": "harness"
       }
     },
     "registration": {
@@ -1275,6 +1302,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "toolTransport": "cli",
+      "turnRowSource": "hook",
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -1364,7 +1392,17 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ".opencode/plans/"
       ],
       "planTags": [],
-      "rules": []
+      "rules": [],
+      "transcriptDiscovery": {
+        "roots": [
+          "@memberHome/member/transcripts/opencode"
+        ],
+        "patterns": [
+          "{sessionId}.jsonl"
+        ],
+        "transcriptCwdPath": "cwd",
+        "retention": "member"
+      }
     },
     "registration": {
       "hooksTarget": ".opencode/plugins/myco.ts",
@@ -1379,6 +1417,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/.config/opencode/skills"
       ],
       "hooksFormat": "plugin-file",
+      "hookResponse": {
+        "format": "json",
+        "fieldNames": {
+          "additionalContext": "additionalContext",
+          "promptId": "promptId"
+        }
+      },
       "pluginPackageTarget": ".opencode/package.json",
       "mcpTarget": "opencode.json",
       "mcpFormat": "json",
@@ -1392,6 +1437,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "toolTransport": "mcp",
+      "turnRowSource": "transcript",
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -1468,7 +1514,18 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ".pi/plans/"
       ],
       "planTags": [],
-      "rules": []
+      "rules": [],
+      "transcriptDiscovery": {
+        "roots": [
+          "~/.pi/agent/sessions"
+        ],
+        "patterns": [
+          "*/*_{sessionId}.jsonl"
+        ],
+        "sessionIdPattern": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        "transcriptCwdPath": "cwd",
+        "retention": "harness"
+      }
     },
     "registration": {
       "hooksTarget": ".pi/extensions/myco/index.ts",
@@ -1479,6 +1536,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/.pi/agent/skills"
       ],
       "hooksFormat": "plugin-file",
+      "hookResponse": {
+        "format": "json",
+        "fieldNames": {
+          "additionalContext": "additionalContext",
+          "promptId": "promptId"
+        }
+      },
       "pluginPackageTarget": ".pi/extensions/myco/package.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
@@ -1490,6 +1554,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "toolTransport": "mcp",
+      "turnRowSource": "transcript",
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -1567,7 +1632,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ],
         "patterns": [
           "{sessionId}.jsonl"
-        ]
+        ],
+        "retention": "harness"
       }
     },
     "registration": {
@@ -1595,6 +1661,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": false,
       "subagentStartInjection": false,
       "toolTransport": "cli",
+      "turnRowSource": "hook",
       "canopyReadTools": [],
       "pathBearingTools": [
         {

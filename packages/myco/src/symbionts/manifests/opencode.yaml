@@ -13,7 +13,25 @@ capture:
   planDirs:
     # opencode Plan mode permits edits only to .opencode/plans/*.md — captured by plan-capture.ts
     - .opencode/plans/
+  # opencode stores a session as one JSON file per message and per part, which
+  # carries no byte offset to ship a delta against. The plugin writes an
+  # append-only transcript from the events it sees in process, and Myco's
+  # retention pass ages it.
+  transcriptDiscovery:
+    roots:
+      - "@memberHome/member/transcripts/opencode"
+    patterns:
+      - "{sessionId}.jsonl"
+    transcriptCwdPath: "cwd"
+    retention: member
 registration:
+  hookResponse:
+    # The plugin reads the hook's stdout directly, so the response is JSON and
+    # carries the minted prompt id back for stamping on transcript lines.
+    format: json
+    fieldNames:
+      additionalContext: additionalContext
+      promptId: promptId
   # Hooks are delivered as a verbatim TS plugin file, not a JSON merge
   hooksTarget: .opencode/plugins/myco.ts
   # User-global opencode plugin lives under ~/.config/opencode/plugins/
@@ -31,8 +49,13 @@ registration:
   retiredGlobalSkillsTargets:
     - ~/.config/opencode/skills
   # No instructionsFile — opencode reads AGENTS.md natively
+
 capabilities:
   sessionStartInjection: true
+  # The transcript is the only writer of this symbiont's turn rows: the
+  # prompt-submit hook mints the prompt id, returns it for the plugin to stamp
+  # on its transcript lines, and injects, but ships no `prompt` event.
+  turnRowSource: transcript
   preToolUseInjection: false
   # Plugin child-session injection is a separate runtime path; don't mark
   # generic subagent-start support until parentID semantics are proven.

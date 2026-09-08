@@ -2,6 +2,7 @@ import { runMemberHook, type HookMainOptions } from '../member/capture.js';
 import { toolUseEvent, type OutboundEvent } from '../member/envelope.js';
 import { planFileCapture, planRootFor, planWritePath } from '../member/plan-files.js';
 import { readSessionState } from '../member/session-state.js';
+import { transcriptWritesTurnRows } from './turn-rows.js';
 
 export async function main(opts: HookMainOptions = {}) {
   await runMemberHook('post-tool-use', opts, (run) => {
@@ -12,7 +13,10 @@ export async function main(opts: HookMainOptions = {}) {
       return { events: [] };
     }
     const state = readSessionState(spool.dir, sessionId);
-    const events: OutboundEvent[] = [toolUseEvent(ctx, input, { promptId: state.promptId })];
+    // The transcript already holds this call for a symbiont that keeps one.
+    const events: OutboundEvent[] = transcriptWritesTurnRows(agent)
+      ? []
+      : [toolUseEvent(ctx, input, { promptId: state.promptId })];
     // A write into a plan directory is the plan itself: read now, keyed by its path, named after the prompt that wrote it.
     const root = planRootFor(credential.root, typeof input.raw.cwd === 'string' ? input.raw.cwd : undefined);
     const planPath = planWritePath(agent, input.toolName, input.toolInput, root);

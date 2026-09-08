@@ -1,8 +1,13 @@
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 
-export const SESSION_START_SIGNALS = ['hook session-start', '"/context"', '"/context/resume"'] as const;
-const PROMPT_SUBMIT_SIGNALS = ['hook user-prompt-submit', '"/context/prompt"'] as const;
+/**
+ * How a template registers a session, in either of the two shapes a symbiont
+ * uses: a hook command written into a config file, or a native plugin naming
+ * the verb it runs through the binary.
+ */
+export const SESSION_START_SIGNALS = ['hook session-start', '"session-start"'] as const;
+const PROMPT_SUBMIT_SIGNALS = ['hook user-prompt-submit', '"user-prompt-submit"'] as const;
 
 export interface SymbiontInjectionSupport {
   supportsSessionStartInjection: boolean;

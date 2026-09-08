@@ -22,7 +22,26 @@ export interface HookResponse {
   userMessage?: string;
   followupMessage?: string;
   systemMessage?: string;
+  /**
+   * The prompt id this hook minted, returned so a runtime that writes its own
+   * transcript stamps the same id on the lines of this turn. One prompt is
+   * then one row whichever side the server reads it from.
+   *
+   * Carried only by symbionts whose hook response format names it, so no
+   * existing single-block format changes shape.
+   */
+  promptId?: string;
 }
+
+/**
+ * Every field a manifest may map to a wire name, as a value rather than a
+ * type: a `hookResponse.fieldNames` key is checked against this list, so a
+ * typo maps nothing and is caught rather than silently emitting no field.
+ */
+export const SEMANTIC_FIELDS = [
+  'additionalContext', 'additionalSteps', 'continue', 'stopReason',
+  'userMessage', 'followupMessage', 'systemMessage', 'promptId',
+] as const satisfies readonly (keyof HookResponse)[];
 
 type SemanticField = keyof HookResponse;
 

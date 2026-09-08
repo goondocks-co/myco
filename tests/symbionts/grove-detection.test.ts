@@ -49,30 +49,6 @@ slug = "work"
 mode = "local"
 `;
 
-describe('symbiont projectUsesGrove (pi + opencode)', () => {
-  for (const name of ['pi', 'opencode'] as const) {
-    describe(`${name} plugin`, () => {
-      it('uses the portable detector scoped to the [grove] block', () => {
-        const source = pluginSource(name);
-        expect(source).toContain('function projectUsesGrove');
-        const fnMatch = source.match(/function projectUsesGrove[\s\S]*?\n\}/);
-        expect(fnMatch).not.toBeNull();
-        expect(fnMatch![0]).toContain('/\\[grove\\][^\\[]*\\bid\\s*=/');
-      });
-
-      it('no longer keys on binding_id', () => {
-        const source = pluginSource(name);
-        // The detector body must not still be looking for `binding_id`.
-        // Match the projectUsesGrove function body specifically so unrelated
-        // mentions of `binding_id` elsewhere in the file don't false-positive.
-        const fnMatch = source.match(/function projectUsesGrove[\s\S]*?\n\}/);
-        expect(fnMatch).not.toBeNull();
-        expect(fnMatch![0]).not.toMatch(/binding_id/);
-      });
-    });
-  }
-});
-
 describe('portable Grove manifest detector', () => {
   it('returns true for the portable [grove] { id } shape', () => {
     expect(detectsGrove(PORTABLE_MANIFEST)).toBe(true);

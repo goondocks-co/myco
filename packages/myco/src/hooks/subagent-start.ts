@@ -3,6 +3,7 @@ import { subagentStartEvent } from '../member/envelope.js';
 import { servedOnce } from '../member/recall.js';
 import { readSessionState } from '../member/session-state.js';
 import { HOOK_CONFIG } from './hook-config.generated.js';
+import { transcriptWritesTurnRows } from './turn-rows.js';
 import type { HookResponse } from './response.js';
 
 const SESSION_RECALL_PATH = '/context/session';
@@ -33,7 +34,9 @@ export async function main(opts: HookMainOptions = {}) {
     // nothing: the call would spend the hook's budget on a block nobody reads.
     const takesInjection = HOOK_CONFIG[run.agent]?.capabilities.subagentStartInjection === true;
     return {
-      events: [subagentStartEvent(run.ctx, run.input, { parentPromptId })],
+      // The transcript carries the child's own turns for a symbiont that keeps
+      // one; the start row would be a second write keyed to a minted parent.
+      events: transcriptWritesTurnRows(run.agent) ? [] : [subagentStartEvent(run.ctx, run.input, { parentPromptId })],
       context: takesInjection
         ? recall(run.sessionId, name(run.input.raw.agent_id), name(run.input.raw.agent_type))
         : undefined,

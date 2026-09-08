@@ -1,189 +1,84 @@
-// Managed by Myco. Regenerated on `myco update`. Edit src/symbionts/templates/opencode/plugin.ts in the Myco repo instead.
-// myco:plugin-marker:opencode
-//
-// Myco Codebase Intelligence Plugin for OpenCode.
-//
-// This plugin runs inside opencode's Bun runtime and communicates with the local
-// Myco daemon over HTTP — no subprocess spawns, no hook CLI, no stdin piping.
-//
-//   Capture: POST /sessions/register, /sessions/unregister, /events, /events/stop
-//   Context: GET  /api/digest
-//   Inject:  client.session.prompt({ noReply: true, parts: [{ synthetic: true }] })
-//
-// See https://opencode.ai/docs/plugins/
-//
-// Degraded-mode safety: this plugin is installed globally (it lives at
-// ~/.config/opencode/plugins/myco.ts) and therefore loads for every opencode
-// session on the machine — including in non-git folders or when the Myco
-// daemon is down. To stay invisible in those cases, the plugin has NO external
-// runtime imports — only node:fs and node:path, which are always available in
-// Bun's runtime. Every path that would contact the Myco daemon gracefully no-ops
-// when the daemon endpoint is absent or unreachable, so the plugin becomes
-// invisible rather than throwing. Do NOT add runtime imports from
-// @opencode-ai/plugin or any other package — that would break this guarantee.
-
-import { readFileSync, appendFileSync, mkdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+/**
+ * Myco plugin for opencode.
+ *
+ * opencode stores a session as one JSON file per message and per part, so
+ * there is no append-only byte stream to ship a delta against. This plugin
+ * writes one instead: every in-process event becomes a line in
+ * `<MYCO_HOME>/member/transcripts/opencode/<sessionId>.jsonl`, and the Myco
+ * binary ships that transcript exactly as it ships Claude Code's or Codex's.
+ *
+ * The plugin makes no network call. It writes lines and it runs `myco hook
+ * <verb>`; the binary owns the credential, the write-ahead spool, the
+ * server-held offset and every refusal. With no binary installed the plugin is
+ * inert and the harness is unaffected.
+ *
+ * Zero runtime dependencies: the opencode plugin API is duck-typed rather than
+ * imported so the file loads in a clone with nothing installed.
+ */
+// myco:plugin-marker — Myco owns this file; `myco remove` deletes it while it carries this line.
 import { execFileSync } from "node:child_process";
+import { accessSync, appendFileSync, closeSync, constants as fsConstants, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 
+// <myco:shared-helpers>
 // ---------------------------------------------------------------------------
-// Constants
+// Shared plugin helpers — the whole of a native plugin's contact with Myco.
+//
+// This block is maintained in
+//   src/symbionts/templates/_shared/plugin-helpers.ts.snippet
+// and injected into each plugin file at install time by SymbiontInstaller.
+// The plugin files on disk also carry an inline copy between the
+// `// <myco:shared-helpers>` markers so they stay valid TypeScript for
+// Vitest imports; a unit test enforces the inline copy matches the snippet.
+//
+// A plugin makes NO network call. It writes transcript lines and it runs the
+// Myco binary's hook verbs. The binary owns credential resolution, the
+// write-ahead spool, the offline latch, blob spill, the server-held offset and
+// every refusal code; a second implementation of those inside a harness
+// runtime would be a second member, and the wire contract only has one.
+//
+// Contract: the containing file has already defined imports for
+//   `readFileSync`, `appendFileSync`, `mkdirSync`, `statSync`, `accessSync`,
+//   `openSync`, `closeSync`, `writeSync`, `unlinkSync`,
+//   `constants as fsConstants`, `join`, `dirname`, `resolve`, `homedir`,
+//   `execFileSync`
+// and nothing else from the outer file.
+//
+// Export discipline: opencode's legacy-plugin loader throws on any module
+// export that isn't a function, killing the whole plugin at load. Only
+// FUNCTION exports may be added to this snippet (or to the plugin files).
+//
+// DO NOT edit this block inside a plugin file directly — edit the snippet
+// and run the installer (or rerun the template-sync test to update the
+// inlined copy). Changes here apply to every plugin the next time it
+// installs/updates.
 // ---------------------------------------------------------------------------
 
-/**
- * Keep in sync with `TOOL_OUTPUT_PREVIEW_CHARS` in src/constants.ts (currently 200).
- * The plugin file is standalone and cannot import from Myco — this value is copied
- * so every symbiont records tool_output previews at the same length.
- */
-const TOOL_OUTPUT_PREVIEW_CHARS = 200;
+/** Version of the transcript line format. A parser meeting an unknown value fails the segment. */
+const MYCO_TRANSCRIPT_FORMAT = 1;
 
-/** Timeout for daemon HTTP calls — must be short so we never block opencode. */
-const MYCO_FETCH_TIMEOUT_MS = 3000;
-
-/** Tail window read from opencode when building the end-of-turn assistant summary. */
-const SESSION_IDLE_TAIL_LIMIT = 12;
+/** Ceiling on a hook subprocess, so a stalled binary never blocks the harness. */
+const MYCO_HOOK_TIMEOUT_MS = 5000;
 
 /**
- * Widened retry window when the initial tail returns no assistant text.
- * Happens when the last 12 events are all tool calls, or compaction just
- * rewrote history. A NULL response_summary is worse than spending one
- * extra round-trip to recover a real one.
- */
-const SESSION_IDLE_TAIL_LIMIT_RETRY = 60;
-
-/** Max size of resume context injection to keep resumed sessions lean. */
-const RESUME_CONTEXT_MAX_CHARS = 4000;
-
-const MYCO_AUTH_HEADER = "x-myco-auth";
-
-const REQUEST_CONTEXT_HEADERS = {
-  projectRoot: "x-myco-project-root",
-  projectId: "x-myco-project-id",
-  sessionId: "x-myco-session-id",
-} as const;
-
-/** Heading prefix for compaction context — makes Myco's contribution recognizable in the compacted summary. */
-const COMPACTION_HEADING = "## Myco — Project Context (preserved across compaction)\n\n";
-
-/**
- * Marker set on the `metadata` field of every synthetic TextPartInput this
- * plugin injects via `client.session.prompt({ noReply: true, ... })`. The
- * `chat.message` handler checks for this marker and skips matching messages
- * so the injection doesn't re-enter as if it were a new user prompt.
+ * Where the binary reads this install's credential, substituted at install
+ * time exactly as a hook command's `--credential` flag is.
  *
- * Why not the `synthetic` flag? opencode's own prompt.ts uses `synthetic: true`
- * for ~20 distinct internal purposes (plan-mode prompts, build-switch
- * transitions, subagent task summaries, shell-impl wrappers). Filtering on
- * the synthetic flag rejects legitimate user messages whenever opencode has
- * appended one of its own synthetic parts — which caused real user prompts
- * to silently drop in live testing.
+ * Declared, never inferred from the environment: a plugin that guessed would
+ * let an unrelated variable redirect capture to another Deployment. `registry`
+ * is the installed default; a sandbox image renders `env`, which is the only
+ * source that admits a loopback `http://` Deployment.
  */
-const MYCO_METADATA_MARKER = "myco";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type MessagePart = { type?: string; text?: string };
-type SessionMessage = { info?: { role?: string }; parts?: MessagePart[] };
-
-// ---------------------------------------------------------------------------
-// Small helpers
-// ---------------------------------------------------------------------------
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function pickString(
-  record: Record<string, unknown>,
-  keys: readonly string[],
-): string | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.length > 0) return value;
-  }
-  return undefined;
-}
-
-export function normalizeToolInput(toolInput: unknown): unknown {
-  if (!isRecord(toolInput)) return toolInput;
-
-  const filePath = pickString(toolInput, ["file_path", "filePath", "path"]);
-  const workdir = pickString(toolInput, ["workdir", "cwd"]);
-  const command = pickString(toolInput, ["command", "cmd"]);
-
-  return {
-    ...toolInput,
-    ...(filePath ? { file_path: filePath } : {}),
-    ...(workdir ? { workdir } : {}),
-    ...(command ? { command } : {}),
-  };
-}
-
-export function collectAssistantSummaryFromMessages(messages: SessionMessage[]): string {
-  const summaryParts: string[] = [];
-  let foundAssistantBlock = false;
-
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (message?.info?.role !== "assistant") {
-      if (foundAssistantBlock) break;
-      continue;
-    }
-
-    foundAssistantBlock = true;
-    const text = (message.parts ?? [])
-      .filter((part) => part.type === "text" && part.text)
-      .map((part) => part.text as string)
-      .join("\n")
-      .trim();
-    if (text) summaryParts.unshift(text);
-  }
-
-  return summaryParts.join("\n").trim();
-}
-
-// ---------------------------------------------------------------------------
-// Daemon HTTP transport — all communication with the local Myco daemon.
-// Every function is best-effort: failures are swallowed so the plugin cannot
-// interfere with opencode when Myco is absent or the daemon is unreachable.
-// ---------------------------------------------------------------------------
-
-/**
- * Port cache for the Myco daemon state file. Read once on first access; refreshed on
- * the next call that follows a failed HTTP request (handles daemon restarts
- * mid-session). `undefined` = never loaded, `null` = loaded but absent.
- */
-let cachedDaemonPort: { statePath: string; port: number | null } | undefined = undefined;
-
-/**
- * Active opencode sessions tracked by this plugin instance. Populated on
- * `session.created` and drained on `session.deleted` / `server.instance.disposed`.
- *
- * Opencode has no `session.end` event — when the TUI exits normally (Ctrl+C,
- * close terminal), the session stays "active" from the daemon's perspective
- * until the session-maintenance job sweeps it (1-hour threshold). To close
- * sessions cleanly on TUI exit, we track them locally and call unregister
- * for each one when `server.instance.disposed` fires.
- */
-const activeOpencodeSessions = new Set<string>();
-
-/** Resume injections are process-local and should run at most once per session. */
-const resumeInjectedSessions = new Set<string>();
-
-/** Parent batch of the current turn, or null between turns. Non-null => a turn is in progress. */
-let currentParentBatchId: number | null = null;
+const MYCO_CREDENTIAL_SOURCE = "{{mycoCredentialSource}}";
 
 const RUNTIME_PIN_INSECURE_MODE_MASK = 0o022;
 
 /**
- * Read a `runtime.home` pin only when it passes the same G7 trust check the
- * CLI shim uses (`checkRuntimeCommandTrust` in bin/runtime-redirect.cjs): a
- * group/other-writable or foreign-owned pin is refused so a hostile local user
- * can't redirect capture to a daemon they control. Returns the trimmed value
- * (an absolute home path) or null.
+ * Read a `runtime.home` or `runtime.command` pin only when it passes the same
+ * trust check the CLI shim uses: a group/other-writable or foreign-owned pin is
+ * refused, so a hostile local user cannot redirect capture to a runtime they
+ * control. Returns the trimmed value or null.
  */
 function readTrustedPin(filePath: string): string | null {
   try {
@@ -200,25 +95,6 @@ function readTrustedPin(filePath: string): string | null {
   }
 }
 
-/**
- * Resolve the `runtime.home` pin for a project: walk up from `directory` for a
- * project pin (`<dir>/.myco/runtime.home`), then the machine pin
- * (`~/.myco/runtime.home`). Mirrors the layered resolution in
- * bin/runtime-redirect.cjs. Returns the absolute home path or null.
- */
-function readRuntimeHomePin(directory: string): string | null {
-  let dir = resolve(directory);
-  while (true) {
-    const pin = readTrustedPin(join(dir, ".myco", "runtime.home"));
-    if (pin) return expandTilde(pin);
-    const parent = join(dir, "..");
-    if (resolve(parent) === dir) break;
-    dir = resolve(parent);
-  }
-  const machine = readTrustedPin(join(homedir(), ".myco", "runtime.home"));
-  return machine ? expandTilde(machine) : null;
-}
-
 function expandTilde(value: string): string {
   if (value === "~") return homedir();
   if (value.startsWith("~/")) return join(homedir(), value.slice(2));
@@ -226,10 +102,26 @@ function expandTilde(value: string): string {
 }
 
 /**
- * Resolve this project's Myco home — the daemon it routes to. A trusted
- * `runtime.home` pin wins so a dogfood project pinned to `~/.myco-dev` reads
- * `~/.myco-dev/service/daemon.json` instead of the prod `~/.myco`. Falls back
- * to `MYCO_HOME`, then the machine `~/.myco`.
+ * The `runtime.home` pin for a project: a project pin found by walking up from
+ * `directory`, then the machine pin. Returns an absolute path or null.
+ */
+function readRuntimeHomePin(directory: string): string | null {
+  let dir = resolve(directory);
+  while (true) {
+    const pin = readTrustedPin(join(dir, ".myco", "runtime.home"));
+    if (pin) return expandTilde(pin);
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  const machine = readTrustedPin(join(homedir(), ".myco", "runtime.home"));
+  return machine ? expandTilde(machine) : null;
+}
+
+/**
+ * This project's Myco home. A trusted `runtime.home` pin wins so a dogfood
+ * project pinned to `~/.myco-dev` writes and reads there; then `MYCO_HOME`;
+ * then `~/.myco`. Identity is the home, never a path this file guesses.
  */
 function resolveMycoHome(directory?: string): string {
   if (directory) {
@@ -241,943 +133,549 @@ function resolveMycoHome(directory?: string): string {
   return expandTilde(configured);
 }
 
-function projectUsesGrove(directory: string): boolean {
+/**
+ * Managed-binary layout; mirrors scripts/managed-paths.mjs, which a plugin
+ * cannot import. Agreement is gated by tests/symbionts/pi-binary-resolution.test.ts.
+ */
+function managedBinaryPath(mycoHome: string): string {
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
+    return join(localAppData, "Myco", "bin", "myco.exe");
+  }
+  return join(mycoHome, "bin", "myco");
+}
+
+/** A file that exists and (on POSIX) is executable; mode-0644 binaries fail. */
+function isRunnableBinary(candidate: string): boolean {
   try {
-    const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
-    return /\[grove\][^\[]*\bid\s*=/.test(raw);
+    const stat = statSync(candidate);
+    if (!stat.isFile()) return false;
+    if (process.platform !== "win32") accessSync(candidate, fsConstants.X_OK);
+    return true;
   } catch {
     return false;
   }
 }
 
-function readTomlString(raw: string, section: string, key: string): string | null {
-  let currentSection: string | null = null;
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    const header = /^\[([^\]]+)\]$/.exec(trimmed);
-    if (header) {
-      currentSection = header[1];
-      continue;
+/**
+ * The Myco binary, in the contract order: project-scope `runtime.command` pin
+ * by upward walk, then the machine pin, then the runnable managed binary, then
+ * the bare name. Every step uses one home — the directory-aware
+ * `resolveMycoHome(directory)` — so a pinned project's fallbacks come from its
+ * own home. The bare name is the last resort: a GUI-launched agent's PATH need
+ * not contain it.
+ */
+function resolveMycoBinary(directory: string): string {
+  let dir = resolve(directory);
+  while (true) {
+    const pin = readTrustedPin(join(dir, ".myco", "runtime.command"));
+    if (pin) return pin;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  const home = resolveMycoHome(directory);
+  const machinePin = readTrustedPin(join(home, "runtime.command"));
+  if (machinePin) return machinePin;
+  const managed = managedBinaryPath(home);
+  if (isRunnableBinary(managed)) return managed;
+  return process.platform === "win32" ? "myco.exe" : "myco";
+}
+
+/**
+ * Where this agent's plugin-written transcript lives. Must agree with the
+ * agent's manifest `transcriptDiscovery` root, which declares the same
+ * directory as `@memberHome/member/transcripts/<agent>`; a gate resolves both
+ * and compares them.
+ */
+function transcriptPathFor(directory: string, agent: string, sessionId: string): string {
+  return join(resolveMycoHome(directory), "member", "transcripts", agent, `${sessionId}.jsonl`);
+}
+
+/**
+ * How long a claim may go untouched before another instance may take the
+ * session.
+ *
+ * The number is not what makes a takeover safe — a session idle longer than
+ * this is an ordinary gap, and one will be taken over from a holder that is
+ * still alive. What makes it safe is that every acting instance re-reads the
+ * claim before it writes or spawns, so the displaced holder stops at its next
+ * action and exactly one instance goes on speaking for the session.
+ */
+const CLAIM_STALE_MS = 15 * 60 * 1000;
+
+/** How often a holder rewrites its claim while it is writing. */
+const CLAIM_TOUCH_MS = 30 * 1000;
+
+/**
+ * Where a session's writer records that it holds the session.
+ *
+ * Beside the transcripts rather than among them: a lock is not a transcript
+ * and must not be discovered, parsed or aged as one.
+ */
+function claimPathFor(directory: string, agent: string, sessionId: string): string {
+  return join(resolveMycoHome(directory), "member", "claims", `${agent}-${sessionId}.lock`);
+}
+
+/**
+ * Whether this instance is the one that speaks for this session.
+ *
+ * A project-local plugin and a global one can both load for one session, and
+ * both are legitimately Myco's. Two participants would mint two prompt ids,
+ * append two lines per turn under one transcript identity and inject two
+ * context blocks — the doubling this design removes, arriving by install
+ * topology instead. One instance holds the session; the others stay silent.
+ *
+ * The claim names a writer that is STILL WRITING, which is neither a file that
+ * exists nor a pid that answers:
+ *
+ *   - Claiming by the transcript's existence hands every resumed session to
+ *     nobody, since the runtime that reopens `--session`/`--resume` finds a
+ *     file it did not create.
+ *   - Claiming by a pid alone hands a session to nobody whenever that pid is
+ *     recycled onto an unrelated live process, which on Linux takes hours on a
+ *     busy machine, and the session then captures nothing for its whole life.
+ *     A pid also cannot separate two plugin instances loaded into one harness
+ *     process, which is the commonest pair of all.
+ *
+ * So the holder rewrites its claim as it writes, and a claim left untouched
+ * past `CLAIM_STALE_MS` is taken over whatever pid it names. A holder verifies
+ * it still owns the claim before each append, so a takeover that guessed wrong
+ * costs one writer rather than producing two.
+ */
+const claimedSessions = new Map<string, boolean>();
+const claimTouchedAt = new Map<string, number>();
+
+/**
+ * This module instance's identity.
+ *
+ * Not the pid: a project-local plugin and a global one load into ONE harness
+ * process and share it, so a pid cannot tell the two apart — which is the very
+ * pair a claim exists to arbitrate. Minted per load, so each instance is
+ * distinguishable wherever it runs.
+ */
+const MYCO_INSTANCE_ID = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+/** The instance a claim names and when it last said so, or null when the claim is absent or unreadable. */
+function claimHolder(claimPath: string): { instance: string; at: number } | null {
+  try {
+    const [instance, at] = readFileSync(claimPath, "utf-8").trim().split(/\s+/);
+    if (!instance) return null;
+    return { instance, at: Number.parseInt(at ?? "0", 10) || 0 };
+  } catch {
+    return null;
+  }
+}
+
+function writeClaim(claimPath: string): void {
+  try {
+    const handle = openSync(claimPath, "w");
+    writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()}`);
+    closeSync(handle);
+  } catch {
+    // A claim that cannot be rewritten ages out and the session is taken over.
+  }
+}
+
+function takeClaim(claimPath: string): boolean {
+  try {
+    const handle = openSync(claimPath, "wx");
+    writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()}`);
+    closeSync(handle);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function holdsSessionClaim(directory: string, agent: string, sessionId: string): boolean {
+  const key = `${agent}-${sessionId}`;
+  const held = claimedSessions.get(key);
+  if (held !== undefined) return held;
+  const claimPath = claimPathFor(directory, agent, sessionId);
+  let claimed = false;
+  try {
+    mkdirSync(dirname(claimPath), { recursive: true, mode: 0o700 });
+    claimed = takeClaim(claimPath);
+    if (!claimed) {
+      const holder = claimHolder(claimPath);
+      // Stale beyond any gap a writing instance leaves, or naming nothing
+      // readable: the session is free whatever pid is recorded.
+      if (holder === null || Date.now() - holder.at > CLAIM_STALE_MS) {
+        try { unlinkSync(claimPath); } catch { /* another instance took it first */ }
+        claimed = takeClaim(claimPath);
+      }
     }
-    if (currentSection !== section) continue;
-    const match = /^([A-Za-z0-9_-]+)\s*=\s*["']([^"']*)["']/.exec(trimmed);
-    if (match?.[1] === key) return match[2];
-  }
-  return null;
-}
-
-function buildRequestContextHeaders(directory: string): Record<string, string> {
-  try {
-    const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
-    const projectId = readTomlString(raw, "project", "id");
-    if (!projectId) return {};
-    return {
-      [REQUEST_CONTEXT_HEADERS.projectRoot]: resolve(directory),
-      [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
-      ...(process.env.MYCO_SESSION_ID ? { [REQUEST_CONTEXT_HEADERS.sessionId]: process.env.MYCO_SESSION_ID } : {}),
-    };
   } catch {
-    return {};
+    claimed = false;
   }
-}
-
-function withRequestContextHeaders(directory: string, init?: RequestInit): RequestInit {
-  const headers = new Headers(init?.headers);
-  const ctxHeaders = buildRequestContextHeaders(directory);
-  let hasContextSwitchingHeader = false;
-  for (const [key, value] of Object.entries(ctxHeaders)) {
-    if (!headers.has(key)) headers.set(key, value);
-    if (key === REQUEST_CONTEXT_HEADERS.projectId) hasContextSwitchingHeader = true;
-  }
-  // The daemon rejects any request that carries context-switching headers
-  // (x-myco-project-id, etc.) without the daemon-issued bearer token —
-  // see packages/myco/src/grove/request-context.ts. Read the token from
-  // daemon.json (same file we read the port from) and attach it.
-  if (hasContextSwitchingHeader && !headers.has(MYCO_AUTH_HEADER)) {
-    const token = readDaemonAuthTokenFromDisk(resolveDaemonStatePath(directory));
-    if (token) headers.set(MYCO_AUTH_HEADER, token);
-  }
-  return { ...init, headers };
-}
-
-function resolveDaemonStatePath(directory: string): string {
-  if (!projectUsesGrove(directory)) {
-    return join(directory, ".myco", "daemon.json");
-  }
-  // One daemon per home: the HOME is the discriminator, the daemon always
-  // lives under `service/`. A dogfood project pinned to a dev home via the
-  // `runtime.home` pin reads that home's daemon — without this it would talk
-  // to the prod daemon, which refuses cross-Grove access.
-  return join(resolveMycoHome(directory), "service", "daemon.json");
-}
-
-/** Read the Myco daemon port from project-local or global daemon state. */
-function readDaemonPortFromDisk(statePath: string): number | null {
-  try {
-    const raw = readFileSync(statePath, "utf-8");
-    const info = JSON.parse(raw) as { port?: number };
-    return typeof info.port === "number" ? info.port : null;
-  } catch {
-    return null;
-  }
-}
-
-function readDaemonAuthTokenFromDisk(statePath: string): string | null {
-  try {
-    const raw = readFileSync(statePath, "utf-8");
-    const info = JSON.parse(raw) as { auth_token?: string };
-    return typeof info.auth_token === "string" && info.auth_token.length > 0
-      ? info.auth_token
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Get the cached daemon port, loading from disk on first access. */
-function getDaemonPort(directory: string): number | null {
-  const statePath = resolveDaemonStatePath(directory);
-  if (!cachedDaemonPort || cachedDaemonPort.statePath !== statePath) {
-    cachedDaemonPort = { statePath, port: readDaemonPortFromDisk(statePath) };
-  }
-  return cachedDaemonPort.port;
-}
-
-/** Force-refresh the daemon port from disk — used after a fetch failure in case the daemon restarted. */
-function refreshDaemonPort(directory: string): number | null {
-  const statePath = resolveDaemonStatePath(directory);
-  cachedDaemonPort = { statePath, port: readDaemonPortFromDisk(statePath) };
-  return cachedDaemonPort.port;
-}
-
-/** Fetch with a short timeout. Returns the Response on success, null on failure. */
-async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), MYCO_FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, { ...init, signal: controller.signal });
-    return res.ok ? res : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+  claimedSessions.set(key, claimed);
+  if (claimed) claimTouchedAt.set(key, Date.now());
+  return claimed;
 }
 
 /**
- * Fetch from a daemon endpoint with a single retry after refreshing the port.
- * The retry handles the case where the daemon restarted on a different port
- * mid-session; the cache hot-path avoids a sync disk read on every HTTP call.
- */
-async function fetchFromDaemon(
-  directory: string,
-  path: string,
-  init?: RequestInit,
-): Promise<Response | null> {
-  const port = getDaemonPort(directory);
-  if (!port) return null;
-  const requestInit = withRequestContextHeaders(directory, init);
-
-  const first = await fetchWithTimeout(`http://localhost:${port}${path}`, requestInit);
-  if (first) return first;
-
-  // Retry once with a refreshed port — the daemon may have restarted.
-  const freshPort = refreshDaemonPort(directory);
-  if (!freshPort || freshPort === port) return null;
-  return fetchWithTimeout(`http://localhost:${freshPort}${path}`, requestInit);
-}
-
-/**
- * POST JSON to a daemon endpoint.
- * Returns `{ ok, data }` — `ok` is true when the HTTP call succeeded, `data`
- * is the parsed response body (may be absent if the body was empty or not JSON).
- */
-async function postJson(
-  directory: string,
-  path: string,
-  body: Record<string, unknown>,
-): Promise<{ ok: boolean; data?: unknown }> {
-  const res = await fetchFromDaemon(directory, path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res) return { ok: false };
-  try {
-    return { ok: true, data: await res.json() };
-  } catch {
-    return { ok: true };
-  }
-}
-
-// <myco:shared-helpers>
-// ---------------------------------------------------------------------------
-// Shared plugin helpers — single source of truth for buffer/POST + batch kinds.
-//
-// This block is maintained in
-//   src/symbionts/templates/_shared/plugin-helpers.ts.snippet
-// and injected into each plugin file at install time by SymbiontInstaller.
-// The plugin files on disk also carry an inline copy between the
-// `// <myco:shared-helpers>` markers so they stay valid TypeScript for
-// Vitest imports; a unit test enforces the inline copy matches the snippet.
-//
-// Contract: the snippet assumes the containing file has already defined
-//   - `postJson(directory: string, path: string, body): Promise<{ok, data?}>`
-//   - `resolveMycoHome(directory?: string): string` — the project's Myco home
-//     (`~/.myco`, or a dev home when a trusted `runtime.home` pin redirects it)
-//   - imports for `readFileSync`, `appendFileSync`, `mkdirSync`, `join`
-//   - no other imports from the outer file
-// and exposes
-//   - `BATCH_KIND` constants + `BatchKind` type
-//   - `readProjectAndGroveIds(directory)` — regex-extracts identity from project.toml
-//   - `resolveBufferDir(directory)` — Grove-scoped buffer dir, null on miss
-//   - `bufferEvent(dir, sessionId, event)` — best-effort JSONL append
-//   - `isIgnoredResponse(data)` — true when daemon returned an "ignored" drop
-//   - `shouldBufferPluginFallback(result, eventType)` — the buffer decision
-//
-// Export discipline: opencode's legacy-plugin loader throws on any module
-// export that isn't a function, killing the whole plugin at load. Only
-// FUNCTION exports may be added to this snippet (or to the plugin files).
-//   - `postEventWithBuffer(dir, sessionId, event)` — live POST with buffer fallback
-//
-// DO NOT edit this block inside a plugin file directly — edit the snippet
-// and run the installer (or rerun the template-sync test to update the
-// inlined copy). Changes here apply to every plugin the next time it
-// installs/updates.
-// ---------------------------------------------------------------------------
-
-/**
- * Discriminated vocabulary for `prompt_batches.kind`. Mirrors
- * `BATCH_KIND` in src/db/queries/batches.ts — plugins can't import daemon
- * code, so the constants are inlined here and kept in sync via the shared
- * snippet + its sync test.
- */
-const BATCH_KIND = {
-  INITIAL: "initial",
-  STEERING: "steering",
-  INTERRUPT: "interrupt",
-} as const;
-type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
-
-/**
- * Read project + Grove identity from `<directory>/.myco/project.toml`.
+ * Whether this instance still holds the session, rewriting its claim as it
+ * goes. A holder whose claim now names another process stops: the other
+ * instance took a session this one appeared to have abandoned, and two writers
+ * under one transcript identity is the outcome being avoided.
  *
- * Returns `null` when the file is missing or the required fields can't be
- * found. Plugins run with a zero-runtime-dep constraint (the file may load
- * in a teammate's clone that has no Myco installed), so this uses regex
- * extraction rather than a TOML parser dependency.
+ * The claim is READ on every call and rewritten only on a cadence. Reading is
+ * a few bytes; deferring it to the same cadence would let a displaced instance
+ * go on writing and injecting for the rest of the interval, which is the
+ * window this exists to close.
  */
-function readProjectAndGroveIds(directory: string): { projectId: string; groveId: string } | null {
+function keepsSessionClaim(directory: string, agent: string, sessionId: string): boolean {
+  if (!holdsSessionClaim(directory, agent, sessionId)) return false;
+  const key = `${agent}-${sessionId}`;
+  const claimPath = claimPathFor(directory, agent, sessionId);
+  const holder = claimHolder(claimPath);
+  if (holder !== null && holder.instance !== MYCO_INSTANCE_ID) {
+    claimedSessions.set(key, false);
+    noteOnce(key, `another instance took session ${sessionId}; this one stops writing`);
+    return false;
+  }
+  const touched = claimTouchedAt.get(key) ?? 0;
+  if (Date.now() - touched >= CLAIM_TOUCH_MS) {
+    writeClaim(claimPath);
+    claimTouchedAt.set(key, Date.now());
+  }
+  return true;
+}
+
+/**
+ * One line on stderr per session per subject.
+ *
+ * Capture that stops has to say so somewhere a person can find it. Repeating
+ * it per record would bury the harness's own output, so each subject speaks
+ * once for the session it concerns.
+ */
+const noted = new Set<string>();
+
+function noteOnce(key: string, message: string): void {
+  if (noted.has(key)) return;
+  noted.add(key);
   try {
-    const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
-    // Section-anchored: `(?:(?!\n\[)[\s\S])*?` matches any char that is
-    // NOT followed by a newline + `[` (next TOML section header). Without
-    // this anchor the non-greedy `[\s\S]*?` would happily cross into
-    // [grove] and return the wrong section's id if [project] lacks one.
-    // /code-review finding C6.
-    const projectMatch = raw.match(/\[project\](?:(?!\n\[)[\s\S])*?\bid\s*=\s*"([^"]+)"/);
-    const groveMatch = raw.match(/\[grove\](?:(?!\n\[)[\s\S])*?\bid\s*=\s*"([^"]+)"/);
-    if (!projectMatch || !groveMatch) return null;
-    return { projectId: projectMatch[1]!, groveId: groveMatch[1]! };
+    process.stderr.write(`[myco] ${message}\n`);
   } catch {
-    return null;
+    // A harness that closed stderr is not a reason to fail capture.
   }
 }
 
 /**
- * Resolve where to write a buffer file when the daemon is unreachable.
+ * Append one record to the transcript.
  *
- * Post-global-install (plan 38cff0752c919ffd §2), buffers live at
- * `~/.myco/groves/<groveId>/projects/<projectId>/buffer/`. The daemon's
- * reconciler scans only Grove-scoped buffer dirs at startup, so writes
- * to any other location would be orphaned.
- *
- * Returns the Grove-scoped path when project.toml carries the Grove +
- * project identity. Returns `null` when project.toml is missing —
- * brand-new projects the daemon has never seen have no resolvable
- * identity, and matching the daemon-side tenet in `buffer-location.ts`
- * we DROP the event rather than write to a non-canonical location. The
- * daemon will provision project.toml on its first received event, so
- * subsequent buffer fallbacks resolve correctly.
+ * The `session` record must be written first and stay small: project
+ * attribution reads the working directory from a bounded head of the file
+ * (64 KiB, then its first 40 lines) and takes the first line where the
+ * declared dot-path hits. A large or late first record makes every transcript
+ * for this agent unattributable, and nothing announces it.
  */
-function resolveBufferDir(directory: string): string | null {
-  const ids = readProjectAndGroveIds(directory);
-  if (!ids) return null;
-  return join(resolveMycoHome(directory), "groves", ids.groveId, "projects", ids.projectId, "buffer");
-}
-
-/**
- * Append an event to the Grove-scoped buffer dir for replay by the
- * daemon's startup reconciler. On-disk shape intentionally matches
- * `src/capture/buffer.ts`'s EventBuffer — the plugin can't import it because
- * of the zero-runtime-dep constraint, so the protocol is the contract.
- */
-function bufferEvent(
+function appendTranscriptLine(
   directory: string,
+  agent: string,
   sessionId: string,
-  event: Record<string, unknown>,
+  record: Record<string, unknown>,
 ): void {
+  if (!keepsSessionClaim(directory, agent, sessionId)) return;
+  const filePath = transcriptPathFor(directory, agent, sessionId);
   try {
-    const bufferDir = resolveBufferDir(directory);
-    if (!bufferDir) return;  // Brand-new project, daemon never seen — drop the event rather than write to a non-canonical path.
-    mkdirSync(bufferDir, { recursive: true });
-    const filePath = join(bufferDir, `${sessionId}.jsonl`);
-    // Strip session_id from the entry — it's encoded in the filename
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { session_id: _sid, ...payload } = event;
-    const line = JSON.stringify({
-      ...payload,
-      timestamp: payload.timestamp ?? new Date().toISOString(),
-    });
-    appendFileSync(filePath, line + "\n");
-  } catch {
-    // Best-effort — never crash the host agent.
+    mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
+    appendFileSync(filePath, `${JSON.stringify({ v: MYCO_TRANSCRIPT_FORMAT, ...record })}\n`, "utf-8");
+  } catch (error) {
+    // Capture for this session is lost. It must never take the harness down
+    // with it, and it must not be lost quietly.
+    noteOnce(`write-${agent}-${sessionId}`, `cannot write ${filePath}: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
   }
 }
 
-/** True when the daemon returned 200 but signalled it dropped the event. */
-function isIgnoredResponse(data: unknown): boolean {
-  if (data === null || typeof data !== "object") return false;
-  const ignored = (data as { ignored?: unknown }).ignored;
-  return typeof ignored === "string" && ignored.length > 0;
-}
-
 /**
- * The plugin-side buffer-fallback decision over the daemon's `/events`
- * response contract. Mirrors `shouldBufferFallback` in
- * packages/myco/src/hooks/send-event.ts row for row:
+ * Run one Myco hook verb, handing it `payload` on stdin.
  *
- *   - `!ok` (transport failure, timeout, non-2xx)        → BUFFER.
- *   - `ok` + `ignored` (any shape)                       → never buffer. A
- *     daemon's ignore is deliberate (capture rule, dedup, tombstone, gate
- *     rejection) — ignored ≠ lost, and buffering it re-creates the noise
- *     the gated-resurrection path exists to refuse.
- *   - `ok` + `persisted: true`                           → nothing.
- *   - `ok` + `persisted: false` + `buffered: true`       → nothing — the
- *     daemon-side append is the durable copy; re-buffering here is the
- *     double-buffer trap.
- *   - `ok` + `persisted: false` + `buffered` not true    → BUFFER. The one
- *     honest-fallback case: no persist AND no daemon-side copy.
- *   - `ok` with NO `persisted` field, `stop`             → BUFFER. The stop
- *     pipeline is queued by design and never reports a persist outcome
- *     (plugins buffer-before-POST on stop, so this row is mirror parity).
- *   - `ok` with NO `persisted` field, anything else      → nothing. A plain
- *     ok means the daemon processed the event.
- */
-export function shouldBufferPluginFallback(
-  result: { ok: boolean; data?: unknown },
-  eventType: string | undefined,
-): boolean {
-  if (!result.ok) return true;
-  const data = result.data;
-  if (isIgnoredResponse(data)) return false;
-  const persisted = data !== null && typeof data === "object"
-    ? (data as { persisted?: unknown }).persisted
-    : undefined;
-  if (typeof persisted === "boolean") {
-    if (persisted) return false;
-    return (data as { buffered?: unknown }).buffered !== true;
-  }
-  return eventType === "stop";
-}
-
-/**
- * POST a capture event to the daemon, buffering to disk when the response
- * leaves no durable copy daemon-side (`shouldBufferPluginFallback`).
+ * The resolved home travels to the binary as `MYCO_HOME`. A spawned binary
+ * resolves its own home from the environment and never walks the project's
+ * `runtime.home` pin, so a pinned project would otherwise write its transcript
+ * to the pinned home while the hook's spool, registry and retention used the
+ * default one. One side resolves the home and tells the other. This mirrors
+ * the same injection the installer makes for an MCP server entry, and for the
+ * same reason.
  *
- * A deliberate `ignored` is never buffered — a daemon that says "ignored"
- * did so deliberately (capture rule, dedup, tombstone), and buffering the
- * event re-creates the noise the gated-resurrection path exists to refuse.
+ * Returns the hook's parsed response, or null when Myco is not installed, the
+ * binary fails, or the output is not the expected shape. Never throws and
+ * never rejects: a capture path that breaks the host is worse than one that
+ * captures nothing, and a plugin-only install legitimately has no binary.
  */
-async function postEventWithBuffer(
+function runMycoHook(
   directory: string,
+  agent: string,
   sessionId: string,
-  event: Record<string, unknown>,
-): Promise<unknown> {
-  const result = await postJson(directory, "/events", event);
-  const eventType = typeof event.type === "string" ? event.type : undefined;
-  if (shouldBufferPluginFallback(result, eventType)) {
-    bufferEvent(directory, sessionId, event);
-    return undefined;
+  verb: string,
+  payload: Record<string, unknown>,
+): { additionalContext?: string; promptId?: string } | null {
+  // The instance that does not speak for this session runs nothing: a second
+  // participant would spawn a second hook per turn, mint an id nothing uses
+  // and place a second context block in front of the model.
+  //
+  // Re-checked rather than remembered, exactly as the write path is. An
+  // instance displaced while idle would otherwise keep injecting from a memo
+  // taken before it lost the session — and an agent whose transcript it never
+  // writes, like Pi, would reach that state on every session, since a claim
+  // taken once and never touched goes stale on its own.
+  if (!keepsSessionClaim(directory, agent, sessionId)) return null;
+  try {
+    const stdout = execFileSync(
+      resolveMycoBinary(directory),
+      ["hook", verb, "--symbiont", agent, "--credential", MYCO_CREDENTIAL_SOURCE],
+      {
+        cwd: directory,
+        env: { ...process.env, MYCO_HOME: resolveMycoHome(directory) },
+        input: JSON.stringify(payload),
+        timeout: MYCO_HOOK_TIMEOUT_MS,
+        maxBuffer: 4 * 1024 * 1024,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "ignore"],
+      },
+    );
+    const trimmed = typeof stdout === "string" ? stdout.trim() : "";
+    if (!trimmed) return {};
+    if (!trimmed.startsWith("{")) return { additionalContext: trimmed };
+    return JSON.parse(trimmed) as { additionalContext?: string; promptId?: string };
+  } catch (error) {
+    noteOnce(`hook-${agent}-${sessionId}`, `${agent} session ${sessionId}: could not run \`myco hook ${verb}\`: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
+    return null;
   }
-  return result.data;
 }
 // </myco:shared-helpers>
 
+const AGENT = "opencode";
+
 /**
- * Cheap best-effort branch detection so opencode session registrations carry
- * the same branch hint hook-based symbionts already supply. Failures (no Git,
- * stale repo, timeout) return undefined — the daemon handles authoritative
- * provenance capture asynchronously regardless.
+ * Marks a part this plugin injected. opencode replays injected parts through
+ * `chat.message`, so without the marker our own context would be captured as
+ * the user's next prompt.
  */
-function detectGitBranch(directory: string): string | undefined {
-  try {
-    const out = execFileSync("git", ["-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], {
-      encoding: "utf-8",
-      timeout: 1000,
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-    return out && out !== "HEAD" ? out : undefined;
-  } catch {
-    return undefined;
-  }
+const MYCO_METADATA_MARKER = "myco";
+
+/** Heading placed above injected context so the model sees a labelled block. */
+const CONTEXT_HEADING = "## Myco - Project Context\n\n";
+
+/** The prompt id the binary minted for the turn in flight, per session. */
+const promptIds = new Map<string, string>();
+/** Sessions whose start line has been written, so a replayed event writes one session record. */
+const started = new Set<string>();
+
+function nowIso(): string {
+  return new Date().toISOString();
 }
 
-/** Register an opencode session with the daemon. */
-async function mycoRegisterSession(
-  directory: string,
-  sessionId: string,
-  parentSessionId: string | undefined,
-): Promise<void> {
-  await postJson(directory, "/sessions/register", {
-    session_id: sessionId,
-    agent: "opencode",
-    parent_session_id: parentSessionId,
-    branch: detectGitBranch(directory),
-    started_at: new Date().toISOString(),
-  });
-}
-
-/** Unregister an opencode session. */
-async function mycoUnregisterSession(directory: string, sessionId: string): Promise<void> {
-  await postJson(directory, "/sessions/unregister", { session_id: sessionId });
-}
-
-/** Post a user prompt event. Images, if any, are shipped as an array of
- * `{ data: base64, mediaType }` objects — the daemon's event dispatcher persists
- * them as attachments keyed to the newly-opened prompt batch.
- *
- * Opencode has no on-disk transcript for Myco to mine, so images attached by
- * the user in the TUI must travel with the prompt event itself. Other symbionts
- * (claude-code, cursor) extract images from their JSONL transcripts at stop time.
- */
-async function mycoPostUserPrompt(
-  directory: string,
-  sessionId: string,
-  prompt: string,
-  images: Array<{ data: string; mediaType: string }>,
-): Promise<{ batchId?: string }> {
-  const kind: BatchKind = currentParentBatchId !== null ? BATCH_KIND.STEERING : BATCH_KIND.INITIAL;
-  const parentPromptBatchId = kind === BATCH_KIND.INITIAL ? null : currentParentBatchId;
-
-  const result = await postEventWithBuffer(directory, sessionId, {
-    type: "user_prompt",
-    session_id: sessionId,
-    agent: "opencode",
-    prompt,
-    kind,
-    parent_prompt_batch_id: parentPromptBatchId,
-    ...(images.length > 0 ? { images } : {}),
-  });
-
-  const batchId = (result as { batchId?: string } | undefined)?.batchId;
-  if (kind === BATCH_KIND.INITIAL && batchId != null) {
-    currentParentBatchId = batchId;
-  }
-  return { batchId };
-}
-
-/** Post a tool use event. Falls back to the local buffer on failure. */
-async function mycoPostToolUse(
-  directory: string,
-  sessionId: string,
-  toolName: string,
-  toolInput: unknown,
-  toolOutput: string,
-): Promise<void> {
-  await postEventWithBuffer(directory, sessionId, {
-    type: "tool_use",
-    session_id: sessionId,
-    agent: "opencode",
-    tool_name: toolName,
-    tool_input: toolInput,
-    output_preview: toolOutput,
-  });
+function textOfParts(parts: Array<{ type?: string; text?: string; synthetic?: boolean; metadata?: Record<string, unknown> }>): string {
+  return parts
+    .filter((p) => p?.type === "text" && typeof p.text === "string")
+    .filter((p) => p.synthetic !== true)
+    .filter((p) => p.metadata?.[MYCO_METADATA_MARKER] !== true)
+    .map((p) => p.text as string)
+    .join("\n")
+    .trim();
 }
 
 /**
- * Fetch the last assistant text from an opencode session for use as the
- * response summary on the next Stop.
- *
- * Starts with a small tail window (SESSION_IDLE_TAIL_LIMIT) because most
- * idle events have recent assistant text within a dozen messages. When that
- * window contains no assistant text — the turn ended with a tool call,
- * compaction just rewrote history, etc. — retries once with a wider window
- * rather than giving up and persisting a NULL response_summary.
+ * Open a session: write the `session` record first — attribution reads the
+ * working directory from the head of the file — then register and inject.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function fetchResponseSummary(client: any, directory: string, sessionId: string): Promise<string> {
-  const fetchAt = async (limit: number): Promise<string> => {
+function openSession(directory: string, sessionId: string): string | undefined {
+  if (started.has(sessionId)) return undefined;
+  started.add(sessionId);
+  appendTranscriptLine(directory, AGENT, sessionId, {
+    type: "session",
+    sessionId,
+    agent: AGENT,
+    cwd: directory,
+    at: nowIso(),
+  });
+  const answer = runMycoHook(directory, AGENT, sessionId, "session-start", {
+    session_id: sessionId,
+    transcript_path: transcriptPathFor(directory, AGENT, sessionId),
+    cwd: directory,
+  });
+  return answer?.additionalContext;
+}
+
+export const MycoPlugin = async ({
+  client,
+  directory,
+  worktree,
+}: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  client: any;
+  directory: string;
+  worktree?: string;
+}) => {
+  const root = worktree ?? directory;
+
+  /** Place a block in the session out of band, used at session start and resume. */
+  const injectSynthetic = async (sessionId: string, text: string): Promise<void> => {
     try {
-      const result = await client.session.messages({
+      await client.session.prompt({
         path: { id: sessionId },
-        query: { directory, limit },
+        body: {
+          parts: [{ type: "text", text, synthetic: true, metadata: { [MYCO_METADATA_MARKER]: true } }],
+          noReply: true,
+        },
       });
-      const messages = ((result as { data?: SessionMessage[] } | undefined)?.data ?? []) as SessionMessage[];
-      return collectAssistantSummaryFromMessages(messages);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[myco] Failed to fetch messages for summary:", err);
-      return "";
+    } catch {
+      // Injection is best effort; a session that refuses it still captures.
     }
   };
 
-  let summary = await fetchAt(SESSION_IDLE_TAIL_LIMIT);
-  if (!summary) summary = await fetchAt(SESSION_IDLE_TAIL_LIMIT_RETRY);
-  return summary;
-}
-
-/**
- * Post a stop event, synchronously buffering to disk before the async POST.
- *
- * Covers two failure modes:
- *   1. Daemon unreachable — the buffered entry is replayed at the daemon's
- *      next startup reconcile.
- *   2. Bun process exits before the POST settles — `server.instance.disposed`
- *      fires on TUI close, and the runtime can tear down before awaited
- *      fetches complete. The synchronous buffer write survives regardless.
- *
- * Duplicate work is harmless: the reconciler's setResponseSummary is
- * idempotent, so even if both the live POST and the buffered replay land,
- * the summary is written exactly once.
- */
-async function mycoPostStop(
-  directory: string,
-  sessionId: string,
-  lastAssistantMessage: string | undefined,
-): Promise<void> {
-  const payload = {
-    type: "stop" as const,
-    session_id: sessionId,
-    agent: "opencode",
-    last_assistant_message: lastAssistantMessage,
-  };
-  bufferEvent(directory, sessionId, payload);
-  await postJson(directory, "/events/stop", payload);
-}
-
-/**
- * Fetch the session-start context for a new opencode session. Hits the daemon's
- * config-aware `POST /context` endpoint, which selects the digest tier the user
- * has configured (`config.cortex.digest.tier`, default 5000) and returns the
- * full session context (digest + branch + session ID lines).
- *
- * This is the same endpoint Claude Code's session-start hook uses, so opencode
- * sessions receive the same context the user has configured for every other agent.
- */
-async function fetchMycoSessionContext(
-  directory: string,
-  sessionId: string,
-): Promise<string | null> {
-  const result = await postJson(directory, "/context", { session_id: sessionId });
-  if (!result.ok) return null;
-  const data = result.data as { text?: string } | undefined;
-  const text = data?.text?.trim() ?? "";
-  return text.length > 0 ? text : null;
-}
-
-/** Fetch a small resume recap for a resumed opencode session. */
-async function fetchMycoResumeContext(
-  directory: string,
-  sessionId: string,
-  parentSessionId: string,
-): Promise<string | null> {
-  const result = await postJson(directory, "/context/resume", {
-    session_id: sessionId,
-    parent_session_id: parentSessionId,
-  });
-  if (!result.ok) return null;
-  const data = result.data as { text?: string } | undefined;
-  const text = data?.text?.trim() ?? "";
-  if (!text || text.length > RESUME_CONTEXT_MAX_CHARS) return null;
-  return text;
-}
-
-/** Post a compaction telemetry event. */
-async function mycoPostCompact(
-  directory: string,
-  sessionId: string,
-  trigger: string | undefined,
-): Promise<void> {
-  await postEventWithBuffer(directory, sessionId, {
-    type: "pre_compact",
-    session_id: sessionId,
-    agent: "opencode",
-    ...(trigger ? { trigger } : {}),
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Opencode session injection — push synthetic context into session history.
-// ---------------------------------------------------------------------------
-
-/**
- * Inject text into an opencode session as a synthetic (plugin-authored) user turn
- * without triggering an AI response. The text part carries:
- *   - `synthetic: true` so opencode's TUI hides it from the chat log
- *   - `metadata.myco: true` so our own `chat.message` handler can distinguish
- *     this re-entry from a real user message (see MYCO_METADATA_MARKER)
- * Errors are swallowed — injection is best-effort.
- */
-async function injectSyntheticContext(
-  client: unknown,
-  sessionId: string,
-  text: string,
-): Promise<void> {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const c = client as any;
-    await c.session.prompt({
-      path: { id: sessionId },
-      body: {
-        parts: [
-          {
-            type: "text",
-            text,
-            synthetic: true,
-            metadata: { [MYCO_METADATA_MARKER]: true },
-          },
-        ],
-        noReply: true,
-      },
-    });
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error("[myco] Failed to inject synthetic context:", error);
-  }
-}
-
-/** Flatten todo items into a newline-separated summary. */
-function formatTodos(
-  todos: Array<{ id?: string; content?: string; status?: string }>,
-): string {
-  if (!todos || todos.length === 0) return "";
-  return todos
-    .map((t) => `[${t.status || "pending"}] ${t.content || ""}`)
-    .join("\n");
-}
-
-/** Truncate tool output for storage. */
-function summarizeToolOutput(output: unknown): string {
-  if (typeof output !== "string") return "";
-  return output.length > TOOL_OUTPUT_PREVIEW_CHARS
-    ? output.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) + "..."
-    : output;
-}
-
-// ---------------------------------------------------------------------------
-// Plugin entry
-// ---------------------------------------------------------------------------
-
-/**
- * Opencode plugin entry. The function signature matches opencode's Plugin type
- * via duck typing — we deliberately do NOT import the Plugin type from
- * @opencode-ai/plugin so this file has zero external runtime dependencies.
- * That guarantee lets teammates who clone a project that uses Myco still run
- * opencode cleanly even when they don't have Myco installed locally.
- *
- * @param {{ client: any, directory: string, worktree: string }} ctx
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const MycoPlugin = async ({ client, directory, worktree }: { client: any; directory: string; worktree: string }) => {
-
-  // Best-effort init log. Wrapped in try-catch so a future SDK shape change in
-  // opencode (e.g. client.app.log moving) cannot prevent the plugin from
-  // registering its handlers.
-  try {
-    await client.app.log({
-      service: "myco",
-      level: "info",
-      message: "Myco plugin initialized",
-      extra: { directory, worktree },
-    });
-  } catch {
-    // Swallow — init log is diagnostic only.
-  }
-
   return {
-    /**
-     * Generic event handler: session lifecycle, todos.
-     */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     event: async ({ event }: { event: any }) => {
-      if (event.type === "session.created") {
-        const info = event.properties?.info ?? {};
-        const sessionId: string | undefined = info.id;
+      const type = event?.type;
+
+      if (type === "session.created") {
+        const sessionId = event?.properties?.info?.id;
         if (!sessionId) return;
-
-        activeOpencodeSessions.add(sessionId);
-
-        const parentSessionId = info.parentID || undefined;
-
-        // Diagnostic: log the full session.created payload when a parent is
-        // present so we can tell sub-agent spawns apart from user-initiated
-        // forks. Sub-agents pollute the session list as phantom user sessions;
-        // filtering them needs a structural signal we don't have yet. Capture
-        // live payloads from both paths (skill invocation vs. TUI fork) and
-        // compare. Drop this block once the signal is known.
-        if (parentSessionId) {
-          try {
-            await client.app.log({
-              service: "myco",
-              level: "info",
-              message: "session.created with parentID",
-              extra: {
-                session_id: sessionId,
-                parent_session_id: parentSessionId,
-                info: JSON.stringify(info),
-              },
-            });
-          } catch {
-            // Diagnostic only — never block registration.
-          }
-        }
-        const contextPromise = parentSessionId
-          ? (resumeInjectedSessions.has(sessionId)
-            ? Promise.resolve(null)
-            : fetchMycoResumeContext(directory, sessionId, parentSessionId))
-          : fetchMycoSessionContext(directory, sessionId);
-
-        // Run registration and context fetch concurrently — they don't depend
-        // on each other, and parallelizing saves one round-trip of latency.
-        const [, sessionContext] = await Promise.all([
-          mycoRegisterSession(directory, sessionId, parentSessionId),
-          contextPromise,
-        ]);
-
-        if (sessionContext) {
-          await injectSyntheticContext(client, sessionId, sessionContext);
-          if (parentSessionId) resumeInjectedSessions.add(sessionId);
-        }
+        const context = openSession(root, sessionId);
+        if (context) await injectSynthetic(sessionId, `${CONTEXT_HEADING}${context}`);
         return;
       }
 
-      if (event.type === "session.deleted") {
-        const info = event.properties?.info ?? {};
-        if (info.id) {
-          activeOpencodeSessions.delete(info.id);
-          resumeInjectedSessions.delete(info.id);
-          await mycoUnregisterSession(directory, info.id);
-        }
-        return;
-      }
-
-      if (event.type === "server.instance.disposed") {
-        // Opencode TUI is shutting down. Flush all tracked sessions so the
-        // daemon can mark them completed immediately rather than waiting for
-        // the stale-session maintenance sweep (1-hour threshold).
-        //
-        // Two things happen per session: (1) a Stop so the latest batch gets
-        // a response_summary from whatever assistant text exists, and
-        // (2) Unregister so the session row closes. Stop runs first — if it
-        // lands, processStopEvent closes batches correctly; if it misses
-        // (daemon down), the buffer fallback replays on next startup.
-        //
-        // The Bun process is about to exit, so we can't rely on awaited
-        // fetches completing. Promise.all gives both calls their best shot
-        // at landing before teardown.
-        if (activeOpencodeSessions.size === 0) return;
-        const toClose = Array.from(activeOpencodeSessions);
-        activeOpencodeSessions.clear();
-        for (const id of toClose) resumeInjectedSessions.delete(id);
-        await Promise.all(
-          toClose.flatMap((id) => [
-            (async () => {
-              const summary = await fetchResponseSummary(client, directory, id);
-              await mycoPostStop(directory, id, summary || undefined);
-            })(),
-            mycoUnregisterSession(directory, id),
-          ]),
-        );
-        return;
-      }
-
-      if (event.type === "session.idle") {
-        const sessionId = event.properties?.sessionID;
+      if (type === "session.idle") {
+        const sessionId = event?.properties?.sessionID;
         if (!sessionId) return;
-
-        const responseSummary = await fetchResponseSummary(client, directory, sessionId);
-        await mycoPostStop(directory, sessionId, responseSummary || undefined);
-        currentParentBatchId = null;
+        promptIds.delete(sessionId);
+        runMycoHook(root, AGENT, sessionId, "stop", {
+          session_id: sessionId,
+          transcript_path: transcriptPathFor(root, AGENT, sessionId),
+          cwd: root,
+        });
         return;
       }
 
-      if (event.type === "todo.updated") {
-        const sessionId = event.properties?.sessionID;
+      if (type === "session.deleted" || type === "server.instance.disposed") {
+        const sessionId = event?.properties?.info?.id ?? event?.properties?.sessionID;
         if (!sessionId) return;
-        const todos = event.properties?.todos ?? [];
-        await mycoPostToolUse(
-          directory,
-          sessionId,
-          "TodoUpdate",
-          { todos, count: todos.length },
-          formatTodos(todos),
-        );
-      }
-    },
-
-    /**
-     * Chat message: capture the user prompt + any image attachments, then
-     * append per-prompt spore/cortex context (POST /context/prompt) to the
-     * CURRENT turn by pushing a synthetic text part onto `output.parts`.
-     *
-     * Delivery is an in-place `output.parts.push` — never a reassignment
-     * (opencode's pipeline keeps the original array binding and validates/
-     * saves it before the model call) and never a re-entrant
-     * `client.session.prompt` / injectSyntheticContext call: a previous
-     * iteration injected spores via session.prompt({ noReply: true }) inside
-     * this handler, but opencode re-fires chat.message for the synthetic turn
-     * and the first real user message landed during the re-entrancy window.
-     *
-     * Re-entrancy guard: parts carrying `metadata.myco === true` are our own
-     * injections (session-start digest, per-prompt context) coming back
-     * around — they are excluded from the prompt text, and a message with NO
-     * non-myco user text is skipped entirely. A mixed message (real user text
-     * alongside a myco part) IS captured. Opencode itself sets
-     * `synthetic: true` for many internal purposes (plan-mode prompts,
-     * build-switch transitions, subagent task summaries), so the `synthetic`
-     * flag alone is NOT reliable as a re-entrancy signal — it would silently
-     * drop any user prompt that opencode touched for one of those internal
-     * reasons.
-     */
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    "chat.message": async (input: any, output: any) => {
-      const sessionId = input?.sessionID;
-      if (!sessionId) return;
-
-      // Part shapes we care about: text (for the prompt string) and file
-      // (for image attachments encoded as data URLs — FilePart.url is
-      // `data:<mime>;base64,<data>` per
-      // packages/app/src/components/prompt-input/attachments.ts in opencode).
-      const allParts = (output?.parts ?? []) as Array<{
-        id?: string;
-        messageID?: string;
-        sessionID?: string;
-        type?: string;
-        text?: string;
-        mime?: string;
-        url?: string;
-        synthetic?: boolean;
-        metadata?: { [key: string]: unknown };
-      }>;
-
-      // Prompt text = user's real text only. opencode emits `synthetic: true`
-      // text parts for internal scaffolding when the message contains file
-      // mentions, plan-mode switches, subagent tasks, and similar — see
-      // packages/opencode/src/session/prompt.ts. Those parts include full
-      // file contents, tool-call scaffolding, plan instructions, etc. Joining
-      // them into prompt_text would bloat every captured user prompt with
-      // system-level content that the user never typed. Parts carrying the
-      // Myco metadata marker are our own injections re-firing through
-      // chat.message and are likewise excluded; when NO non-myco user text
-      // remains (pure-myco synthetic message), the early return below skips
-      // capture and context fetch entirely.
-      const userTextParts = allParts.filter(
-        (p) =>
-          p.type === "text" &&
-          p.text &&
-          p.synthetic !== true &&
-          p.metadata?.[MYCO_METADATA_MARKER] !== true,
-      );
-      const prompt = userTextParts.map((p) => p.text as string).join("\n");
-      if (!prompt) return;
-
-      // Extract any image attachments from FilePart data URLs. Non-image file
-      // parts (code snippets, documents) are ignored here — only images travel
-      // to Myco as binary attachments via the existing attachment pipeline.
-      const images: Array<{ data: string; mediaType: string }> = [];
-      for (const part of allParts) {
-        if (
-          part.type !== "file" ||
-          !part.mime?.startsWith("image/") ||
-          typeof part.url !== "string" ||
-          !part.url.startsWith("data:")
-        ) {
-          continue;
-        }
-        const commaIdx = part.url.indexOf(",");
-        if (commaIdx <= 0) continue;
-        const base64 = part.url.slice(commaIdx + 1);
-        if (base64) images.push({ data: base64, mediaType: part.mime });
-      }
-
-      await mycoPostUserPrompt(directory, sessionId, prompt, images);
-
-      // Per-prompt spore/cortex context. Sequential after capture on
-      // purpose: the daemon attaches the injection record to the batch the
-      // /events POST above just created. postJson swallows network failures
-      // ({ ok: false }), so a down daemon degrades to no injection.
-      const ctx = await postJson(directory, "/context/prompt", {
-        prompt,
-        session_id: sessionId,
-      });
-      const ctxData = ctx.ok ? (ctx.data as { text?: string } | undefined) : undefined;
-      const ctxText = ctxData?.text?.trim() ?? "";
-      if (ctxText) {
-        // Mirror the identity fields (messageID/sessionID) of a real user
-        // text part — opencode zod-validates parts before save (log-only on
-        // failure, but a storable shape keeps the context durable in the
-        // message). Part ids follow opencode's `prt_<entropy>` convention;
-        // the plugin has no id helper, so derive the prefix from the
-        // mirrored part and append a unique suffix.
-        const template = userTextParts[0];
-        const idPrefix =
-          typeof template?.id === "string" && template.id.includes("_")
-            ? template.id.slice(0, template.id.indexOf("_") + 1)
-            : "prt_";
-        const ctxId = `${idPrefix}myco${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-        output.parts.push({
-          id: ctxId,
-          ...(template?.messageID !== undefined ? { messageID: template.messageID } : {}),
-          ...(template?.sessionID !== undefined ? { sessionID: template.sessionID } : {}),
-          type: "text",
-          text: ctxText,
-          synthetic: true,
-          metadata: { [MYCO_METADATA_MARKER]: true },
+        started.delete(sessionId);
+        promptIds.delete(sessionId);
+        runMycoHook(root, AGENT, sessionId, "session-end", {
+          session_id: sessionId,
+          transcript_path: transcriptPathFor(root, AGENT, sessionId),
+          cwd: root,
         });
       }
     },
 
     /**
-     * Post-tool execution: ship tool usage to Myco.
-     *
-     * We forward `input.args` as `tool_input` — NOT `output.metadata` — because
-     * `args` carries the tool invocation arguments (including `filePath` for
-     * write/edit/patch tools), which Myco's plan-capture matcher needs to detect
-     * writes to .opencode/plans/*.md.
+     * A turn's user message: register the session if this is the first thing
+     * seen, mint the prompt id through the hook, write the prompt line, and
+     * push the served context onto this message's parts.
      */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    "chat.message": async (_input: any, output: any) => {
+      const sessionId = output?.message?.sessionID ?? output?.parts?.[0]?.sessionID;
+      if (!sessionId) return;
+
+      const parts = (output?.parts ?? []) as Array<{
+        id?: string;
+        messageID?: string;
+        sessionID?: string;
+        type?: string;
+        text?: string;
+        synthetic?: boolean;
+        metadata?: Record<string, unknown>;
+      }>;
+
+      if (output?.message?.role === "assistant") {
+        const text = textOfParts(parts);
+        if (text) {
+          appendTranscriptLine(root, AGENT, sessionId, {
+            type: "response",
+            sessionId,
+            promptId: promptIds.get(sessionId),
+            text,
+            at: nowIso(),
+          });
+        }
+        return;
+      }
+
+      const text = textOfParts(parts);
+      if (!text) return;
+
+      const startContext = openSession(root, sessionId);
+      if (startContext) await injectSynthetic(sessionId, `${CONTEXT_HEADING}${startContext}`);
+
+      const answer = runMycoHook(root, AGENT, sessionId, "user-prompt-submit", {
+        session_id: sessionId,
+        transcript_path: transcriptPathFor(root, AGENT, sessionId),
+        prompt: text,
+        cwd: root,
+      });
+      // A hook that did not answer leaves this turn with no id. Keeping the
+      // previous turn's would file this turn's tool and response lines under
+      // the prompt before it.
+      const promptId = answer?.promptId;
+      if (promptId) promptIds.set(sessionId, promptId);
+      else promptIds.delete(sessionId);
+
+      appendTranscriptLine(root, AGENT, sessionId, {
+        type: "prompt",
+        sessionId,
+        promptId,
+        text,
+        origin: "human",
+        at: nowIso(),
+      });
+
+      const context = answer?.additionalContext;
+      if (!context) return;
+      // Mirror the user part's identity so opencode renders the block in place
+      // rather than as a message of its own.
+      const template = parts.find((p) => p?.type === "text");
+      const idPrefix =
+        typeof template?.id === "string" && template.id.includes("_")
+          ? template.id.slice(0, template.id.indexOf("_") + 1)
+          : "prt_";
+      output.parts.push({
+        id: `${idPrefix}myco${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`,
+        ...(template?.messageID !== undefined ? { messageID: template.messageID } : {}),
+        ...(template?.sessionID !== undefined ? { sessionID: template.sessionID } : {}),
+        type: "text",
+        text: `${CONTEXT_HEADING}${context}`,
+        synthetic: true,
+        metadata: { [MYCO_METADATA_MARKER]: true },
+      });
+    },
+
+    /** A finished tool call becomes a transcript line; no subprocess runs here. */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     "tool.execute.after": async (input: any, output: any) => {
       const sessionId = input?.sessionID;
       if (!sessionId) return;
-
-      const toolName = input?.tool ?? "unknown";
-      const toolInput = normalizeToolInput(input?.args ?? output?.metadata ?? {});
-      const toolOutput = summarizeToolOutput(output?.output);
-
-      await mycoPostToolUse(directory, sessionId, toolName, toolInput, toolOutput);
+      appendTranscriptLine(root, AGENT, sessionId, {
+        type: "tool",
+        sessionId,
+        promptId: promptIds.get(sessionId),
+        name: input?.tool,
+        input: input?.args,
+        output: typeof output?.output === "string" ? output.output : undefined,
+        failed: output?.error !== undefined,
+        at: nowIso(),
+      });
     },
 
-    /**
-     * Compaction hook: fires BEFORE opencode generates a continuation summary
-     * during session compaction. Pushing the session context into output.context
-     * ensures Myco's project knowledge survives compaction rather than being
-     * dropped. The fetched context respects the user's configured digest tier.
-     *
-     * See https://opencode.ai/docs/plugins/#compaction-hooks
-     */
+    /** Compaction drops the earlier turns, so the served block is placed again. */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     "experimental.session.compacting": async (input: any, output: any) => {
       const sessionId = input?.sessionID;
       if (!sessionId) return;
-
-      await mycoPostCompact(directory, sessionId, typeof input?.trigger === "string" ? input.trigger : undefined);
-
-      const sessionContext = await fetchMycoSessionContext(directory, sessionId);
-      if (!sessionContext) return;
-
-      if (Array.isArray(output?.context)) {
-        output.context.push(COMPACTION_HEADING + sessionContext);
+      const answer = runMycoHook(root, AGENT, sessionId, "post-compact", {
+        session_id: sessionId,
+        transcript_path: transcriptPathFor(root, AGENT, sessionId),
+        cwd: root,
+      });
+      if (answer?.additionalContext && Array.isArray(output?.context)) {
+        output.context.push(`${CONTEXT_HEADING}${answer.additionalContext}`);
       }
     },
   };
