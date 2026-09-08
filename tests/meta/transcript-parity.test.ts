@@ -58,13 +58,14 @@ const EXCLUDED: Readonly<Record<string, string>> = {
   received_at: 'the instant the Deployment stored it',
   token_id: 'the credential the write arrived on',
   created_at: 'wall-clock ordering across two sources is hook-exclusive',
-  updated_at: 'follows created_at',
+  updated_at: 'follows created_at, which is wall-clock ordering across two sources',
   project_id: 'the two arms are ingested into separate Projects so one store can hold both',
   machine_id: 'a receipt fact of the writing machine',
   session_id: 'equal by construction; asserted separately',
   content_hash: 'derived from the compared content',
   prompt_id: 'compared through the prompt row it names',
   parent_prompt_id: 'compared through the prompt row it names',
+  prompt_kind: 'the shape that matched a prompt; the member transcript path records none, and the parse gains it',
 };
 
 /** Every column the catalogue maps a field to, for the kinds both arms produce. */
@@ -77,7 +78,7 @@ function comparableColumns(kind: string): string[] {
 
 const transcriptText = [
   { type: 'user', promptId: '11111111-1111-4111-8111-111111111111', message: { content: 'add the retention window' }, uuid: 'u1', timestamp: '2026-09-01T10:00:01Z', sessionId: SESSION },
-  { type: 'assistant', message: { content: [{ type: 'text', text: 'Working.\n\n<plan>\n# Retention\n- [ ] leaf\n</plan>' }, { type: 'tool_use', id: 'toolu_a', name: 'Read', input: { file_path: '/repo/x.ts' } }] }, uuid: 'a1', timestamp: '2026-09-01T10:00:02Z', sessionId: SESSION },
+  { type: 'assistant', message: { content: [{ type: 'text', text: 'Working.\n\n<ultraplan>\n# Retention\n- [ ] leaf\n</ultraplan>' }, { type: 'tool_use', id: 'toolu_a', name: 'Read', input: { file_path: '/repo/x.ts' } }] }, uuid: 'a1', timestamp: '2026-09-01T10:00:02Z', sessionId: SESSION },
   { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_a', content: 'ok' }] }, uuid: 'r1', timestamp: '2026-09-01T10:00:03Z', sessionId: SESSION },
   { type: 'attachment', attachment: { type: 'queued_command', prompt: 'and run the tests' }, uuid: '22222222-2222-4222-8222-222222222222', timestamp: '2026-09-01T10:00:04Z', sessionId: SESSION },
   { type: 'assistant', message: { content: [{ type: 'text', text: 'Tests pass.' }] }, uuid: 'a2', timestamp: '2026-09-01T10:00:05Z', sessionId: SESSION },
@@ -199,6 +200,15 @@ describe('transcript parity', () => {
     expect(calls(PARSE_PROJECT)).toBe(1);
     const row = sqlite.query(`SELECT tool_name, output_preview, success FROM tool_calls WHERE project_id = ?`).get(PARSE_PROJECT) as Record<string, unknown>;
     expect(row).toMatchObject({ tool_name: 'Read', output_preview: 'ok', success: 1 });
+  });
+
+  it('records which shape matched a prompt, which the member transcript path leaves null', async () => {
+    const { sqlite, env, tokenId } = await rig();
+    await memberArm(env, tokenId, onDisk(transcriptText));
+    await parseArm(sqlite, env as never, tokenId, transcriptText);
+    const kinds = (project: string) => (sqlite.query(`SELECT prompt_kind FROM prompt_batches WHERE project_id = ? ORDER BY text`).all(project) as { prompt_kind: string | null }[]).map((r) => r.prompt_kind);
+    expect(kinds(PARSE_PROJECT)).toEqual(['user_prompt', 'queued_command']);
+    expect(kinds(MEMBER_PROJECT)).toEqual([null, null]);
   });
 
   it('names every exclusion with the reason it cannot match, so the list is a decision rather than a leftover', () => {

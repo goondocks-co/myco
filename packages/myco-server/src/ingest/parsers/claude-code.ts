@@ -23,27 +23,12 @@
  */
 import { uuidv5 } from '../../hash.js';
 import {
-  blocksOf, isBlock, lineTime, planKeyForTag, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
+  blocksOf, isBlock, lineTime, plansInText, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParserInput, type TranscriptParser,
 } from './index.js';
 
-/** The assistant text wrappers a plan is carried in; the member scans the same tags. */
-export const PLAN_TAGS = ['plan', 'myco-plan'] as const;
-
-/** A plan-tag envelope's body, non-greedy so consecutive envelopes stay separate. */
-export const planEnvelope = (tag: string): RegExp => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'g');
-
 /** The longest tool name the catalogue admits. */
 const TOOL_NAME_CHARS = 64;
-
-/** The first Markdown heading of a body, for a plan the transcript gives no title. */
-export function firstHeading(content: string): string | undefined {
-  for (const line of content.split('\n')) {
-    const m = /^#{1,6}\s+(.+?)\s*$/.exec(line);
-    if (m) return m[1].slice(0, 256);
-  }
-  return undefined;
-}
 
 /** A tool call's row id. The member mints a random one per hook (`envelope.ts:229`), so this derivation is the parse's own; the parity gate compares the two by content and excludes the id by name. */
 const toolCallIdFor = (sessionId: string, toolUseId: string): Promise<string> => uuidv5('tool-call', sessionId, toolUseId);
@@ -68,6 +53,7 @@ const namesPrompt = (v: Record<string, unknown>): boolean =>
 export const claudeCodeParser: TranscriptParser = {
   agent: 'claude-code',
   fidelity: 'full',
+  planTags: ['ultraplan'],
 
   async parse({ lines, sessionId, now }: ParserInput): Promise<DerivedEvent[]> {
     const events: DerivedEvent[] = [];
@@ -99,7 +85,7 @@ export const claudeCodeParser: TranscriptParser = {
         await flushReply();
         const text = textOf(message?.content);
         if (text.trim() !== '') {
-          promptId = await promptIdFor(sessionId, str(value.promptId)!);
+          promptId = await promptIdFor(sessionId, 'user_prompt', str(value.promptId)!);
           events.push({ kind: 'prompt', payload: { promptId, text, origin: 'user', promptKind: 'user_prompt' }, createdAt, offset });
         }
         continue;
@@ -110,7 +96,7 @@ export const claudeCodeParser: TranscriptParser = {
         const text = textOf(value.attachment.prompt);
         const key = str(value.uuid);
         if (text.trim() !== '' && key !== undefined) {
-          promptId = await promptIdFor(sessionId, key);
+          promptId = await promptIdFor(sessionId, 'queued_command', key);
           events.push({ kind: 'prompt', payload: { promptId, text, origin: 'user', promptKind: 'queued_command' }, createdAt, offset });
         }
         continue;
@@ -150,30 +136,9 @@ export const claudeCodeParser: TranscriptParser = {
         if (block.type === 'text' && typeof block.text === 'string') {
           if (reply === null) reply = { text: [], offset, createdAt, promptId };
           reply.text.push(block.text);
-          for (const tag of PLAN_TAGS) {
-            const re = planEnvelope(tag);
-            let match: RegExpExecArray | null;
-            while ((match = re.exec(block.text)) !== null) {
-              const content = match[1].trim();
-              if (content === '') continue;
-              events.push({
-                kind: 'plan',
-                payload: {
-                  planKey: await planKeyForTag(sessionId, tag, planPosition),
-                  promptId,
-                  title: firstHeading(content),
-                  content,
-                  status: 'active',
-                  originPath: `transcript:${tag}`,
-                  tags: [tag],
-                  source: 'tag',
-                },
-                createdAt,
-                offset,
-              });
-              planPosition += 1;
-            }
-          }
+          const plans = await plansInText(block.text, claudeCodeParser.planTags, sessionId, { promptId, offset, createdAt }, planPosition);
+          events.push(...plans.events);
+          planPosition = plans.next;
           continue;
         }
         if (block.type === 'tool_use') {

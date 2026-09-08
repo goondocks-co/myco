@@ -38,6 +38,8 @@ export const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 20;
 export const TRANSCRIPT_PARSE_CALLS_PER_PASS = 12;
 /** Bytes decoded before deriving, so a pass bounds its memory as well as its calls. */
 export const TRANSCRIPT_PARSE_BYTES_PER_READ = 524_288;
+/** Segments read in one pass. Bytes alone do not bound the READS: a transcript shipped in many small segments sits inside the byte budget while costing one read each. */
+export const TRANSCRIPT_PARSE_SEGMENTS_PER_READ = 8;
 
 /** The parse's own version. A transcript records the version that read it, so a Deployment can report what its rows were derived by. */
 export const PARSER_VERSION = 1;
@@ -86,12 +88,12 @@ async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget
 }
 
 /** Stop this transcript where it stands and say why. Its rows to this point are kept; later passes skip it until the failure is cleared. */
-async function stop(db: RelationalStore, target: ParseTarget, failure: ParseFailure, now: number): Promise<void> {
+async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseFailure, now: number): Promise<void> {
   await db
     .prepare(`UPDATE transcripts SET parse_error = ?, parse_failed_at = ? WHERE project_id = ? AND transcript_id = ?`)
-    .bind(failure, now, target.projectId, target.transcriptId)
+    .bind(classifier, now, target.projectId, target.transcriptId)
     .run();
-  emit({ kind: 'transcript_parse_failed', projectId: target.projectId, transcriptId: target.transcriptId, reason: failure });
+  emit({ kind: 'transcript_parse_failed', projectId: target.projectId, transcriptId: target.transcriptId, reason: classifier });
 }
 
 /** The bytes of one segment, or null when the store no longer holds them. */
@@ -154,7 +156,10 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     .all<{ base_offset: number; length: number; blob_key: string }>();
   calls += 1;
 
-  const taken = segmentsToRead(segments.map((s) => ({ baseOffset: s.base_offset, length: s.length, blobKey: s.blob_key })), target.parsedOffset, TRANSCRIPT_PARSE_BYTES_PER_READ);
+  const taken = segmentsToRead(
+    segments.map((s) => ({ baseOffset: s.base_offset, length: s.length, blobKey: s.blob_key })),
+    target.parsedOffset, TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ,
+  );
   if (taken.length === 0) return { derived: 0, calls, nextOffset: null, failure: null };
 
   const chunks: Uint8Array[] = [];
@@ -195,9 +200,12 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   let derived = 0;
   let cursor = split.nextOffset;
   for (let i = 0; i < events.length; i += TRANSCRIPT_PARSE_EVENTS_PER_BATCH) {
-    if (calls >= TRANSCRIPT_PARSE_CALLS_PER_PASS) {
-      // Out of budget mid-transcript: the cursor stops at the last event that
-      // landed, and the next pass re-derives from there.
+    // The first group always runs, whatever the reads already cost. Landing at
+    // least one group per pass is what moves the cursor; a pass that spent its
+    // whole budget fetching bytes and landed none would stall the transcript.
+    if (i > 0 && calls >= TRANSCRIPT_PARSE_CALLS_PER_PASS) {
+      // Out of budget mid-transcript: the cursor stops at the first event this
+      // pass did not land, and the next pass derives from there.
       cursor = events[i]?.offset ?? cursor;
       break;
     }

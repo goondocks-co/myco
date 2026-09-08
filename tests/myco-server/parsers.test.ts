@@ -116,8 +116,10 @@ describe('claude-code parser', () => {
 
   it('derives a prompt id the member derives too, so one prompt is one row on either path', async () => {
     const prompts = only(await parseFixture('claude-code'), 'prompt');
-    expect(prompts[0].payload.promptId).toBe(await uuidv5('queued-prompt', SESSION, '11111111-1111-4111-8111-111111111111'));
-    expect(prompts[1].payload.promptId).toBe(await uuidv5('queued-prompt', SESSION, '22222222-2222-4222-8222-222222222222'));
+    // The member scopes a dedupe identity by the shape that matched it, so the
+    // parse must too or the two paths write one prompt as two rows.
+    expect(prompts[0].payload.promptId).toBe(await uuidv5('queued-prompt', SESSION, 'user_prompt|11111111-1111-4111-8111-111111111111'));
+    expect(prompts[1].payload.promptId).toBe(await uuidv5('queued-prompt', SESSION, 'queued_command|22222222-2222-4222-8222-222222222222'));
   });
 
   it('pairs a tool call with the result that names it, keeping input and output on one row', async () => {
@@ -145,12 +147,12 @@ describe('claude-code parser', () => {
 
   it('lifts a plan out of its tag envelope with the member key, a title and its channel', async () => {
     const [plan] = only(await parseFixture('claude-code'), 'plan');
-    expect(plan.payload.planKey).toBe(await uuidv5('plan-tag', SESSION, 'plan', '0'));
+    expect(plan.payload.planKey).toBe(await uuidv5('plan-tag', SESSION, 'ultraplan', '0'));
     expect(plan.payload.title).toBe('Retention');
     expect(plan.payload.content).toBe('# Retention\n- [ ] add the leaf\n- [x] measure');
     expect(plan.payload.source).toBe('tag');
-    expect(plan.payload.originPath).toBe('transcript:plan');
-    expect(plan.payload.tags).toEqual(['plan']);
+    expect(plan.payload.originPath).toBe('transcript:ultraplan');
+    expect(plan.payload.tags).toEqual(['ultraplan']);
   });
 
   it('joins a turn\'s assistant text into one response rather than one per record', async () => {

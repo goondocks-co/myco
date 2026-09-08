@@ -131,8 +131,12 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
       ON CONFLICT (project_id, session_id) DO UPDATE SET last_received_at = excluded.last_received_at`)
     .bind(ctx.projectId, e.sessionId, ctx.machineId, ctx.tokenId, ctx.now, ctx.now, ctx.projectId, e.eventId, write.nonce);
 
+  // The nonce, not a change count, decides whether THIS write stored the row.
+  // A batch carrying several events reports its counts per driver rather than
+  // per statement, and the nonce is written by the insert itself: reading it
+  // back asks the store what happened instead of asking the driver.
   const stored = db
-    .prepare(`SELECT ev.envelope_hash FROM events ev
+    .prepare(`SELECT ev.envelope_hash, ev.ingest_nonce FROM events ev
         JOIN sessions s ON s.project_id = ev.project_id AND s.session_id = ev.session_id
        WHERE ev.project_id = ? AND ev.event_id = ? AND s.machine_id IS ?`)
     .bind(ctx.projectId, e.eventId, ctx.machineId);
@@ -148,14 +152,14 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const base = 3 + priors.length;
   const priorRows: ReadRows = results.slice(3, base).map((r) => r.results as Record<string, unknown>[]);
   const projectionResults = results.slice(base, base + plan.projections.length);
-  const storedRow = results[base + plan.projections.length].results[0] as { envelope_hash?: string } | undefined;
+  const storedRow = results[base + plan.projections.length].results[0] as { envelope_hash?: string; ingest_nonce?: string } | undefined;
   const withinQuotaRow = results[base + 1 + plan.projections.length].results[0] as { within_quota: number } | undefined;
   const allReads: ReadRows = results.slice(base + 2 + plan.projections.length).map((r) => r.results as Record<string, unknown>[]);
   const sharedRows = allReads.slice(0, checks.length);
   const reads = allReads.slice(checks.length);
   const extra = plan.extra ? plan.extra(reads) : {};
 
-  if (results[0].meta.changes === 1) {
+  if (storedRow?.ingest_nonce === write.nonce) {
     if (plan.projections.length > 0 && projectionResults.every((r) => r.meta.changes === 0)) {
       const reason = plan.conflict ? plan.conflict(reads) : 'projection did not apply';
       emit({ kind: 'projection_conflict', projectId: ctx.projectId, tokenId: ctx.tokenId, eventKind: e.kind });

@@ -12,7 +12,7 @@
  */
 import { uuidv5 } from '../../hash.js';
 import {
-  blocksOf, isBlock, lineTime, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  blocksOf, isBlock, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParserInput, type TranscriptParser,
 } from './index.js';
 
@@ -53,12 +53,14 @@ function argumentsOf(raw: unknown): unknown {
 export const codexParser: TranscriptParser = {
   agent: 'codex',
   fidelity: 'full',
+  planTags: ['proposed_plan'],
 
   async parse({ lines, sessionId, now }: ParserInput): Promise<DerivedEvent[]> {
     const events: DerivedEvent[] = [];
     const pending = new Map<string, PendingCall>();
     let promptId: string | undefined;
     let reply: { text: string[]; offset: number; createdAt: number; promptId?: string } | null = null;
+    let planPosition = 0;
 
     const flushReply = async (): Promise<void> => {
       if (reply === null) return;
@@ -91,6 +93,9 @@ export const codexParser: TranscriptParser = {
         }
         if (reply === null) reply = { text: [], offset, createdAt, promptId };
         reply.text.push(text);
+        const plans = await plansInText(text, codexParser.planTags, sessionId, { promptId, offset, createdAt }, planPosition);
+        events.push(...plans.events);
+        planPosition = plans.next;
         continue;
       }
 

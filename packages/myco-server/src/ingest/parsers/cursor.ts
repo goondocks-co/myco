@@ -20,6 +20,7 @@ const responseIdAt = (sessionId: string, offset: number): Promise<string> => uui
 export const cursorParser: TranscriptParser = {
   agent: 'cursor',
   fidelity: 'no_tool_results',
+  planTags: [],
 
   async parse({ lines, sessionId, now }: ParserInput): Promise<DerivedEvent[]> {
     const events: DerivedEvent[] = [];

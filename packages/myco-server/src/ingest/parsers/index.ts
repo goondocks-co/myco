@@ -54,12 +54,31 @@ export interface DerivedEvent {
 export interface TranscriptParser {
   agent: string;
   fidelity: Fidelity;
+  /**
+   * The assistant-text wrappers a plan arrives in for this agent.
+   *
+   * Declared per agent rather than guessed, and held equal to the agent's own
+   * manifest by a gate in `tests/meta/`: the member scans exactly these tags, so
+   * a server list that drifted would derive plans the member never sends, or
+   * miss the ones it does.
+   */
+  planTags: readonly string[];
   /** Async to the extent the id derivations are: a parser reads no store and touches no clock. */
   parse(input: ParserInput): Promise<DerivedEvent[]>;
 }
 
-/** A prompt id a member also derives for a transcript record that declares a dedupe key. */
-export const promptIdFor = (sessionId: string, dedupeKey: string): Promise<string> => uuidv5('queued-prompt', sessionId, dedupeKey);
+/**
+ * A prompt id a member also derives for a transcript record that declares a
+ * dedupe key.
+ *
+ * The key is `<shape>|<value>`, not the bare value: the member's walker scopes
+ * a dedupe identity by the shape that matched it (`capture/prompt-kind.ts`
+ * `toKey`), so two shapes reading the same field cannot collide. A parser that
+ * passed the bare value would derive a different id for the same prompt and the
+ * two paths would each write their own row.
+ */
+export const promptIdFor = (sessionId: string, shape: string, value: string): Promise<string> =>
+  uuidv5('queued-prompt', sessionId, `${shape}|${value}`);
 /** A plan key a member also derives for a plan-tag envelope at a position in the session. Parts and their order are the member's (`planKeyForTag`, `packages/myco/src/member/envelope.ts:99`). */
 export const planKeyForTag = (sessionId: string, tag: string, position: number): Promise<string> => uuidv5('plan-tag', sessionId, tag, String(position));
 /** An attachment id a member also derives, keyed by the content rather than the position, so a replay names the same row. */
@@ -91,3 +110,55 @@ export const str = (v: unknown): string | undefined => (typeof v === 'string' &&
 
 /** How much of a tool's output is kept inline; the catalogue's own bound on `output`. */
 export const TOOL_OUTPUT_PREVIEW_CHARS = 4096;
+
+/** A plan-tag envelope's body, non-greedy so consecutive envelopes stay separate; the optional newline either side is the member's own shape (`packages/myco/src/plans/tag-envelopes.ts`). */
+export const planEnvelope = (tag: string): RegExp => new RegExp(`<${tag}>\\n?([\\s\\S]*?)\\n?</${tag}>`, 'g');
+
+/** The first Markdown heading of a body, for a plan the transcript gives no title. */
+export function firstHeading(content: string): string | undefined {
+  for (const line of content.split('\n')) {
+    const m = /^#{1,6}\s+(.+?)\s*$/.exec(line);
+    if (m) return m[1].slice(0, 256);
+  }
+  return undefined;
+}
+
+/**
+ * The plans an assistant reply carries, one per tag envelope.
+ *
+ * Shared by every parser: the tags differ per agent and the envelope shape does
+ * not, and the key each plan takes is the member's own derivation over the tag
+ * and the plan's position in the session — so a plan the hook shipped and the
+ * same plan parsed out of the transcript are one row.
+ */
+export async function plansInText(
+  text: string, tags: readonly string[], sessionId: string, at: { promptId?: string; offset: number; createdAt: number }, from: number,
+): Promise<{ events: DerivedEvent[]; next: number }> {
+  const events: DerivedEvent[] = [];
+  let position = from;
+  for (const tag of tags) {
+    const re = planEnvelope(tag);
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(text)) !== null) {
+      const content = match[1].trim();
+      if (content === '') continue;
+      events.push({
+        kind: 'plan',
+        payload: {
+          planKey: await planKeyForTag(sessionId, tag, position),
+          promptId: at.promptId,
+          title: firstHeading(content),
+          content,
+          status: 'active',
+          originPath: `transcript:${tag}`,
+          tags: [tag],
+          source: 'tag',
+        },
+        createdAt: at.createdAt,
+        offset: at.offset,
+      });
+      position += 1;
+    }
+  }
+  return { events, next: position };
+}

@@ -22,18 +22,28 @@ import type { BlobStore, RelationalStore, ServerEnv } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 import { emit } from '../telemetry.js';
 
-/** The tables a session's derived rows live in, deepest first so a reader mid-delete never sees a parent without its children. */
+/** The tables a session's derived rows live in, each carrying `session_id` itself. */
 export const DERIVED_TABLES = [
-  'transcript_segments', 'transcripts', 'attachments', 'plans', 'responses', 'tool_calls', 'prompt_batches', 'events',
+  'transcripts', 'attachments', 'plans', 'responses', 'tool_calls', 'prompt_batches', 'events',
 ] as const;
 
-/** The columns that reference a blob, by the table holding them. Every one is read before the delete and re-checked after it. */
-const BLOB_REFERENCES: readonly { table: string; column: string }[] = [
-  { table: 'prompt_batches', column: 'blob_key' },
-  { table: 'responses', column: 'blob_key' },
-  { table: 'plans', column: 'blob_key' },
-  { table: 'attachments', column: 'blob_key' },
-  { table: 'transcript_segments', column: 'blob_key' },
+/**
+ * A segment belongs to a session through its transcript, not directly.
+ *
+ * `transcript_segments` is keyed `(project_id, transcript_id, base_offset)` and
+ * carries no `session_id`, so it is reached by naming the transcripts the
+ * session held — and it must be swept BEFORE `transcripts`, whose rows are the
+ * only route to it.
+ */
+const SEGMENTS_OF_SESSION = `SELECT transcript_id FROM transcripts WHERE project_id = ? AND session_id = ?`;
+
+/** Where a blob key may be referenced, and how each table names the session holding it. */
+const BLOB_REFERENCES: readonly { table: string; where: string }[] = [
+  { table: 'prompt_batches', where: 'session_id = ?' },
+  { table: 'responses', where: 'session_id = ?' },
+  { table: 'plans', where: 'session_id = ?' },
+  { table: 'attachments', where: 'session_id = ?' },
+  { table: 'transcript_segments', where: `transcript_id IN (${SEGMENTS_OF_SESSION})` },
 ];
 
 /** SQL naming a session that carries no tombstone. `alias` is the `sessions` alias in the query it joins. */
@@ -61,9 +71,10 @@ async function sessionPresent(db: RelationalStore, projectId: string, sessionId:
 /** Every blob key the session's rows name, before any of them are removed. */
 async function blobKeysOf(db: RelationalStore, projectId: string, sessionId: string): Promise<string[]> {
   const union = BLOB_REFERENCES
-    .map(({ table, column }) => `SELECT ${column} AS k FROM ${table} WHERE project_id = ? AND session_id = ? AND ${column} IS NOT NULL`)
+    .map(({ table, where }) => `SELECT blob_key AS k FROM ${table} WHERE project_id = ? AND ${where} AND blob_key IS NOT NULL`)
     .join(' UNION ');
-  const params = BLOB_REFERENCES.flatMap(() => [projectId, sessionId]);
+  const params = BLOB_REFERENCES.flatMap(({ table }) =>
+    table === 'transcript_segments' ? [projectId, projectId, sessionId] : [projectId, sessionId]);
   const { results } = await db.prepare(union).bind(...params).all<{ k: string }>();
   return [...new Set(results.map((r) => r.k))];
 }
@@ -72,7 +83,7 @@ async function blobKeysOf(db: RelationalStore, projectId: string, sessionId: str
 async function unreferenced(db: RelationalStore, projectId: string, keys: readonly string[]): Promise<string[]> {
   if (keys.length === 0) return [];
   const held = BLOB_REFERENCES
-    .map(({ table, column }) => `EXISTS (SELECT 1 FROM ${table} WHERE project_id = ? AND ${column} = b.k)`)
+    .map(({ table }) => `EXISTS (SELECT 1 FROM ${table} WHERE project_id = ? AND blob_key = b.k)`)
     .join(' OR ');
   const values = keys.map(() => `SELECT ? AS k`).join(' UNION ALL ');
   const { results } = await db
@@ -115,6 +126,8 @@ export async function tombstoneSession(
       .prepare(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by)
         VALUES (?, ?, ?, ?, ?) ON CONFLICT (project_id, session_id) DO NOTHING`)
       .bind(projectId, sessionId, reason ?? null, nowMs, by),
+    // Segments first: `transcripts` is the only route to them.
+    env.db.prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id IN (${SEGMENTS_OF_SESSION})`).bind(projectId, projectId, sessionId),
     ...DERIVED_TABLES.map((table) => env.db.prepare(`DELETE FROM ${table} WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId)),
     env.db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id NOT IN (SELECT plan_key FROM plans WHERE project_id = ?)`).bind(projectId, projectId),
   ];

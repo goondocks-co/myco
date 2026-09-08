@@ -19,7 +19,7 @@ import {
   parseOnce, parseTranscripts, pendingTranscriptBytes,
   TRANSCRIPT_PARSE_CALLS_PER_PASS, TRANSCRIPT_PARSE_EVENTS_PER_BATCH,
 } from '@myco-server-worker/ingest/parse.js';
-import { transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/core/jobs-run.js';
+import { transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
 import { listTranscripts } from '@myco-server-worker/read/transcript.js';
 import { sqliteEnv, count, uuid } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -121,18 +121,33 @@ describe('parsing a held transcript', () => {
     expect(report.derived).toBeGreaterThan(TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
   });
 
-  it('reaches the same rows in many small passes as in one, so resuming loses and repeats nothing', async () => {
+  it('reaches the same rows whether the bytes arrived as one segment or as many', async () => {
     const text = body(6);
     const whole = await rig(text);
     await drain(whole.env, whole.sqlite);
 
+    // 64-byte segments cut records apart at arbitrary bytes; a record spanning
+    // several of them must still derive exactly once.
     const split = await rig(text, 64);
-    const passes = await drain(split.env, split.sqlite);
+    await drain(split.env, split.sqlite);
 
-    expect(passes).toBeGreaterThan(1);
+    // Many small segments cost one read each; a pass that spent its whole
+    // budget fetching them and landed nothing would never move the cursor.
+    expect(count(split.sqlite, 'transcript_segments')).toBeGreaterThan(10);
+    expect(target(split.sqlite).parsed_offset).toBe(target(split.sqlite).size);
     for (const table of ['prompt_batches', 'responses', 'tool_calls']) {
       expect({ table, split: count(split.sqlite, table) }).toEqual({ table, split: count(whole.sqlite, table) });
     }
+  });
+
+  it('resumes across passes when one transcript holds more events than a pass may land', async () => {
+    const { sqlite, env } = await rig(body(300));
+    const passes = await drain(env, sqlite);
+    expect(passes).toBeGreaterThan(1);
+    expect(target(sqlite).parsed_offset).toBe(target(sqlite).size);
+    expect(count(sqlite, 'prompt_batches')).toBe(300);
+    expect(count(sqlite, 'responses')).toBe(300);
+    expect(count(sqlite, 'tool_calls')).toBe(300);
   });
 
   it('is idempotent: re-running a completed parse from zero changes no row', async () => {

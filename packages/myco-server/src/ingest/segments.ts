@@ -71,13 +71,15 @@ export const byteLength = (text: string): number => encoder.encode(text).length;
  * The stored segments covering `[from, from + budget)`, in offset order.
  *
  * A segment is admitted whole or not at all: it is the unit the bytes were
- * stored in, and half of one is not addressable. The budget is therefore a
+ * stored in, and half of one is not addressable. The byte budget is therefore a
  * floor on what is read rather than a ceiling — the first segment is always
  * taken, so a transcript whose first unread segment exceeds the budget still
- * makes progress instead of stalling forever.
+ * makes progress instead of stalling forever. `maxSegments` bounds the reads
+ * themselves, which the byte budget alone does not: many small segments sit
+ * inside it while costing one read each.
  */
 export function segmentsToRead<T extends { baseOffset: number; length: number }>(
-  segments: readonly T[], from: number, budget: number,
+  segments: readonly T[], from: number, budget: number, maxSegments = Number.MAX_SAFE_INTEGER,
 ): T[] {
   const ordered = [...segments].filter((s) => s.baseOffset + s.length > from).sort((a, b) => a.baseOffset - b.baseOffset);
   const taken: T[] = [];
@@ -88,7 +90,9 @@ export function segmentsToRead<T extends { baseOffset: number; length: number }>
     if (taken.length > 0 && segment.baseOffset > end) break;
     taken.push(segment);
     end = segment.baseOffset + segment.length;
-    if (end - from >= budget) break;
+    // Bytes bound the memory a pass holds; the COUNT bounds the reads it makes.
+    // Many small segments sit inside the byte bound while costing one read each.
+    if (end - from >= budget || taken.length >= maxSegments) break;
   }
   return taken;
 }
