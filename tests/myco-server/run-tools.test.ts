@@ -172,7 +172,10 @@ describe('the surface decision stays in one place', () => {
     const before = source.slice(0, source.indexOf('export function surfaceFor'));
     const after = source.slice(source.indexOf('/** The op a run\'s call resolves to'));
     for (const [where, text] of [['before surfaceFor', before], ['after surfaceFor', after]] as const) {
-      expect({ where, reads: /principal\.kind\s*===/.test(text) }).toEqual({ where, reads: false });
+      // `.kind ===` rather than `principal.kind ===`: `surfaceFor` binds the
+      // principal to a local first, so pinning the longer spelling would let
+      // the same idiom through anywhere else in the file.
+      expect({ where, reads: /\.kind\s*===/.test(text) }).toEqual({ where, reads: false });
     }
   });
 

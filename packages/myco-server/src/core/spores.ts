@@ -44,8 +44,6 @@ export const SPORE_FULL_READ_BUDGET = 12;
 /** The largest body one full read carries, so a single spore cannot flood a model's context; a body longer than this arrives cut, and the answer says so. */
 export const SPORE_BODY_CHARS = SPORE_PREVIEW_CHARS * 40;
 
-
-
 /** A pull request or a commit a write cites in place of a session. A kind without a ref is unrepresentable. */
 export interface SporeProvenance {
   kind: 'pr' | 'commit';
