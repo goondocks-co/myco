@@ -402,16 +402,25 @@ function readState(t: TranscriptRecord): string {
   return 'Read';
 }
 
-/** The transcripts a session holds and their segments, each a link; the bytes are never fetched here — a transcript runs to megabytes. */
+/**
+ * The transcripts a session holds and their segments, each a link; the bytes
+ * are never fetched here — a transcript runs to megabytes.
+ *
+ * A session holds one transcript of its own and one more per subagent, so the
+ * answer is a list. A payload carrying no list is read as nothing captured
+ * rather than rendered: a page that says so is recoverable, and one that maps
+ * over an absent array takes the whole route down.
+ */
 function Transcript({ projectId, sessionId }: { projectId: string; sessionId: string }) {
   const transcript = useTranscript(projectId, sessionId);
+  const held = Array.isArray(transcript.data?.transcripts) ? transcript.data.transcripts : [];
   return (
     <PageLoading isLoading={transcript.isPending} error={transcript.error}>
-      {transcript.data === null ? (
+      {transcript.isPending ? null : held.length === 0 ? (
         <p className="font-sans text-sm text-on-surface-variant">No transcript captured.</p>
-      ) : transcript.data && (
+      ) : (
         <div className="flex flex-col gap-4">
-          {transcript.data.transcripts.map((t) => (
+          {held.map((t) => (
             <Panel
               key={t.transcriptId}
               title={t.role === 'subagent' ? 'Subagent transcript' : 'Transcript'}
@@ -425,7 +434,7 @@ function Transcript({ projectId, sessionId }: { projectId: string; sessionId: st
                 <Fact label="Last received" value={formatDateTime(t.lastReceivedAt)} />
               </dl>
               <ul className="mt-3 flex flex-col gap-1" aria-label="Transcript segments">
-                {t.segments.map((s) => (
+                {(t.segments ?? []).map((s) => (
                   <li key={s.baseOffset} className="flex items-center gap-3 font-mono text-xs">
                     <a href={blobUrl(projectId, s.blobKey)} target="_blank" rel="noreferrer" className={inlineLink}>bytes {s.baseOffset.toLocaleString()}–{(s.baseOffset + s.length).toLocaleString()}</a>
                     <span className="text-on-surface-variant">{formatBytes(s.length)} · {formatRelative(s.createdAt)}</span>
