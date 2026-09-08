@@ -352,16 +352,25 @@ describe('one instance speaks for a session', () => {
     expect(hookLines).toHaveLength(1);
     expect(hookLines[0]).toContain('opencode');
     expect(hookLines[0]).toContain('ses_note');
+    // The verb too: two sessions failing on different hooks must not be
+    // indistinguishable from one session failing twice.
+    expect(hookLines[0]).toContain('session-start');
 
-    // A transcript directory that cannot be created is a write failure.
+    // A write failure the claim does not mask: the claim is takeable and the
+    // transcript directory is not, which is what a per-agent permission or a
+    // file in the way looks like. Blocking the whole home instead would fail
+    // the claim first and this line would never be reached — the earlier
+    // version of this test asserted a count that zero satisfied, and zero was
+    // what it got.
     const blocked = sandboxEnv();
-    fs.mkdirSync(path.dirname(blocked.MYCO_HOME!), { recursive: true });
-    fs.writeFileSync(blocked.MYCO_HOME!, 'not a directory');
+    fs.mkdirSync(path.join(blocked.MYCO_HOME!, 'member'), { recursive: true });
+    fs.writeFileSync(path.join(blocked.MYCO_HOME!, 'member', 'transcripts'), 'not a directory');
     const notedWrite: string[] = [];
     const blockedMod = snippetModule(blocked, [], notedWrite);
+    expect(blockedMod.holdsSessionClaim('/repo', 'opencode', 'ses_blocked')).toBe(true);
     blockedMod.appendTranscriptLine('/repo', 'opencode', 'ses_blocked', { type: 'prompt' });
     blockedMod.appendTranscriptLine('/repo', 'opencode', 'ses_blocked', { type: 'response' });
-    expect(notedWrite.filter((l) => l.includes('not captured')).length).toBeLessThanOrEqual(1);
+    expect(notedWrite.filter((l) => l.includes('not captured'))).toHaveLength(1);
   });
 
   it('runs no hook from an instance that does not hold the session, so nothing injects twice', () => {
