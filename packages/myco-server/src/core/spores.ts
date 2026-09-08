@@ -50,6 +50,12 @@ export const SPORE_READ_TASKS: readonly string[] = ['supersession-sweep', 'corte
 /** The tasks whose runs also record and resolve spores. A run that only reads never reaches the two writes. */
 export const SPORE_TOOL_TASKS: readonly string[] = ['supersession-sweep'];
 
+/** A pull request or a commit a write cites in place of a session. A kind without a ref is unrepresentable. */
+export interface SporeProvenance {
+  kind: 'pr' | 'commit';
+  ref: string;
+}
+
 export interface SporeInsert {
   id: string;
   agentId: string;
@@ -66,6 +72,8 @@ export interface SporeInsert {
   properties: string | null;
   /** The principal instance that wrote it: a member id, a run id; null on rows written before the column existed. */
   author: string | null;
+  /** What the write cites when it names no session; absent on a write that names one. */
+  provenance?: SporeProvenance | null;
   createdAt: number;
 }
 
@@ -84,6 +92,8 @@ export interface SporeRow {
   contentHash: string | null;
   properties: string | null;
   author: string | null;
+  provenanceKind: string | null;
+  provenanceRef: string | null;
   createdAt: number;
   updatedAt: number | null;
   embedded: number;
@@ -105,6 +115,7 @@ export interface ListSporesOptions {
 const COLUMNS = `id, agent_id AS agentId, session_id AS sessionId, prompt_id AS promptId,
   observation_type AS observationType, status, content, context, importance,
   file_path AS filePath, tags, content_hash AS contentHash, properties, author,
+  provenance_kind AS provenanceKind, provenance_ref AS provenanceRef,
   created_at AS createdAt, updated_at AS updatedAt, embedded`;
 
 /**
@@ -117,12 +128,13 @@ const COLUMNS = `id, agent_id AS agentId, session_id AS sessionId, prompt_id AS 
 export async function insertSpore(db: RelationalStore, scope: ReadScope, row: SporeInsert): Promise<SporeRow | null> {
   return db.prepare(`INSERT INTO spores
       (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, context,
-       importance, file_path, tags, content_hash, properties, author, created_at, embedded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+       importance, file_path, tags, content_hash, properties, author, provenance_kind, provenance_ref, created_at, embedded)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
       RETURNING ${COLUMNS}`)
     .bind(scope.projectId, row.id, row.agentId, row.sessionId, row.promptId, row.observationType,
       row.status ?? 'active', row.content, row.context, row.importance ?? 5, row.filePath,
-      row.tags, row.contentHash, row.properties, row.author, row.createdAt)
+      row.tags, row.contentHash, row.properties, row.author,
+      row.provenance?.kind ?? null, row.provenance?.ref ?? null, row.createdAt)
     .first<SporeRow>();
 }
 
@@ -196,6 +208,8 @@ export interface ResolutionEventInsert {
   sessionId: string | null;
   /** The principal instance that resolved it, as `SporeInsert.author`. */
   author: string | null;
+  /** As `SporeInsert.provenance`. */
+  provenance?: SporeProvenance | null;
   createdAt: number;
 }
 
@@ -216,11 +230,12 @@ export async function resolveSpore(
     db.prepare(`UPDATE spores SET status = ?, updated_at = ? WHERE project_id = ? AND id = ? RETURNING id`)
       .bind(status, now, scope.projectId, event.sporeId),
     db.prepare(`INSERT INTO resolution_events
-        (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, author, created_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, author, provenance_kind, provenance_ref, created_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM spores WHERE project_id = ? AND id = ?)`)
       .bind(scope.projectId, event.id, event.agentId, event.sporeId, event.action,
-        event.newSporeId, event.reason, event.sessionId, event.author, event.createdAt,
+        event.newSporeId, event.reason, event.sessionId, event.author,
+        event.provenance?.kind ?? null, event.provenance?.ref ?? null, event.createdAt,
         scope.projectId, event.sporeId),
   ]);
   return moved.results.length === 1;
@@ -283,20 +298,22 @@ export async function consolidateSpores(
 ): Promise<{ wisdom: SporeRow | null; consolidated: number }> {
   const insert = db.prepare(`INSERT INTO spores
       (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, context,
-       importance, file_path, tags, content_hash, properties, author, created_at, embedded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+       importance, file_path, tags, content_hash, properties, author, provenance_kind, provenance_ref, created_at, embedded)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
       RETURNING ${COLUMNS}`)
     .bind(scope.projectId, wisdom.id, wisdom.agentId, wisdom.sessionId, wisdom.promptId, wisdom.observationType,
       wisdom.status ?? 'active', wisdom.content, wisdom.context, wisdom.importance ?? 5, wisdom.filePath,
-      wisdom.tags, wisdom.contentHash, wisdom.properties, wisdom.author, wisdom.createdAt);
+      wisdom.tags, wisdom.contentHash, wisdom.properties, wisdom.author,
+      wisdom.provenance?.kind ?? null, wisdom.provenance?.ref ?? null, wisdom.createdAt);
   const moves = sources.flatMap((sporeId) => [
     db.prepare(`UPDATE spores SET status = 'consolidated', updated_at = ? WHERE project_id = ? AND id = ? AND status = 'active' RETURNING id`)
       .bind(now, scope.projectId, sporeId),
     db.prepare(`INSERT INTO resolution_events
-        (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, author, created_at)
-        SELECT ?, ?, ?, ?, 'consolidate', ?, ?, ?, ?, ?
+        (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, author, provenance_kind, provenance_ref, created_at)
+        SELECT ?, ?, ?, ?, 'consolidate', ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM spores WHERE project_id = ? AND id = ? AND status = 'consolidated' AND updated_at = ?)`)
-      .bind(scope.projectId, crypto.randomUUID(), event.agentId, sporeId, wisdom.id, event.reason, event.sessionId, event.author, event.createdAt,
+      .bind(scope.projectId, crypto.randomUUID(), event.agentId, sporeId, wisdom.id, event.reason, event.sessionId, event.author,
+        event.provenance?.kind ?? null, event.provenance?.ref ?? null, event.createdAt,
         scope.projectId, sporeId, now),
   ]);
   const results = await db.batch([insert, ...moves]);

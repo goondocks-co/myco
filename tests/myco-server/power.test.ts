@@ -112,8 +112,10 @@ describe('what runs at each depth', () => {
     expect(jobRunsAt('embedding-reconcile', 'idle')).toBe(true);
   });
 
-  it('still runs query-only housekeeping while sleeping', () => {
-    expect(jobsDueAt('sleep').map((j) => j.name)).toEqual(['agent-run-retention', 'run-stale-sweep']);
+  it('still runs query-only housekeeping while sleeping: every job declared to run through sleep, and no other', () => {
+    const due = jobsDueAt('sleep').map((j) => j.name);
+    expect(due).toEqual(SERVER_JOBS.filter((j) => j.runsThrough === 'sleep').map((j) => j.name));
+    expect(due).toEqual(expect.arrayContaining(['agent-run-retention', 'run-stale-sweep']));
   });
 
   it('gives every job the tick runs an implementation, and names no deferred job twice', () => {
@@ -129,6 +131,6 @@ describe('what runs at each depth', () => {
 
   it('states what every job converges toward, so its idempotence is checkable', () => {
     expect(SERVER_JOBS.filter((j) => j.converges.trim().length === 0)).toEqual([]);
-    expect(SERVER_JOBS).toHaveLength(4);
+    expect(SERVER_JOBS.map((j) => j.name).sort()).toEqual(Object.keys(JOB_IMPLEMENTATIONS).sort());
   });
 });
