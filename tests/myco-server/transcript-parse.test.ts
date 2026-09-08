@@ -164,6 +164,37 @@ describe('parsing a held transcript', () => {
     expect(orphans.c).toBe(0);
   });
 
+  it('carries the turn across a window that ended on its READ bound, not only on the call budget', async () => {
+    // Small segments, so a pass ends on the window's own bound rather than on
+    // the call budget. The member slices at 8 MiB and a pass takes the first
+    // segment whole, so in production every slice boundary falling mid-turn
+    // takes this path — and the default 1 MiB rig never does.
+    const { sqlite, env } = await rig(singleTurn(30), 96);
+    await drain(env, sqlite, 400);
+    expect(target(sqlite).parse_error).toBeNull();
+    expect(target(sqlite).parsed_offset).toBe(target(sqlite).size);
+    expect(count(sqlite, 'tool_calls')).toBe(30);
+    const orphans = sqlite.query(`SELECT COUNT(*) c FROM tool_calls WHERE prompt_id IS NULL`).get() as { c: number };
+    expect(orphans.c).toBe(0);
+  });
+
+  it('closes the turn only at the end of the file, and holds it open before that', async () => {
+    const { sqlite, env } = await rig(singleTurn(30), 96);
+    const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
+    await parseOnce(env as never, {
+      projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null,
+    }, NOW);
+    const mid = sqlite.query(`SELECT parsed_offset, size, open_prompt_id FROM transcripts`).get() as { parsed_offset: number; size: number; open_prompt_id: string | null };
+    expect(mid.parsed_offset).toBeLessThan(mid.size);
+    expect(mid.open_prompt_id).not.toBeNull();
+
+    await drain(env, sqlite, 400);
+    const done = sqlite.query(`SELECT parsed_offset, size, open_prompt_id FROM transcripts`).get() as { parsed_offset: number; size: number; open_prompt_id: string | null };
+    expect(done.parsed_offset).toBe(done.size);
+    expect(done.open_prompt_id).toBeNull();
+  });
+
   it('reaches the same rows whether the bytes arrived as one segment or as many', async () => {
     const text = body(6);
     const whole = await rig(text);

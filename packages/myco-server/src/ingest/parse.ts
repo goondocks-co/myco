@@ -312,9 +312,13 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
 
   let derived = 0;
   let cursor = split.nextOffset;
-  // A pass that reads to the end of the file closes the turn: nothing follows
-  // to attribute, and a stale carry would be handed to whatever arrives next.
-  let openPrompt: string | null = null;
+  // The turn open at the cursor, carried in and moved by every event landed.
+  // A pass ends for either of two reasons — the call budget, or the window's
+  // own bound — and BOTH can fall mid-turn: the member slices at 8 MiB and a
+  // pass takes the first segment whole, so an ordinary boundary lands inside a
+  // turn under either bound. Tracking it here rather than at the break is what
+  // makes the two ends behave alike.
+  let lastTurn: string | null = target.openPromptId;
   for (let i = 0; i < events.length; i += TRANSCRIPT_PARSE_EVENTS_PER_BATCH) {
     // The first group always runs, whatever the reads already cost, and the
     // budget ends a pass anywhere the cursor can actually move. A resumed pass
@@ -323,7 +327,6 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     // needs to advance, or the transcript would be re-read forever.
     if (i > 0 && calls >= TRANSCRIPT_PARSE_CALLS_PER_PASS && events[i].offset > target.parsedOffset) {
       cursor = events[i].offset;
-      openPrompt = turnOf(events[i]);
       break;
     }
     const group = events.slice(i, i + TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
@@ -343,7 +346,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     for (const [n, write] of writes.entries()) {
       const slice = results.slice(offset, offset + write.statements.length);
       offset += write.statements.length;
-      if (landed(write.interpret(slice), target, group[n])) { derived += 1; continue; }
+      if (landed(write.interpret(slice), target, group[n])) {
+        derived += 1;
+        lastTurn = turnOf(group[n]) ?? lastTurn;
+        continue;
+      }
       // The cursor stops at the byte of the event that did not land, never past it.
       await stop(env.db, target, 'parse', now);
       return { derived, calls: calls + 1, nextOffset: group[n].offset, failure: 'parse' };
@@ -357,6 +364,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     await stop(env.db, target, 'parse', now);
     return { derived, calls: calls + 1, nextOffset: null, failure: 'parse' };
   }
+
+  // Reaching the end of the file closes the turn: nothing follows to attribute,
+  // and a stale carry would be handed to whatever arrives next. Short of it the
+  // turn stands, whichever bound ended the pass.
+  const openPrompt = cursor < target.size ? lastTurn : null;
 
   await env.db
     .prepare(`UPDATE transcripts SET parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?, fidelity = COALESCE(fidelity, ?), open_prompt_id = ?

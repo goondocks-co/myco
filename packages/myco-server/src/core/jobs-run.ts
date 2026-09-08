@@ -120,6 +120,7 @@ export async function inviteExpiry(env: ServerEnv, now: number): Promise<number>
   const { reclaimed } = await reclaimEnrollmentAuthorities(env.db, now, JOB_BATCH);
   return reclaimed;
 }
+
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'embedding-reconcile': dispatchEmbeddingWork,

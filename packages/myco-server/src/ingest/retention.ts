@@ -10,6 +10,10 @@
  * whatever its age, so bytes no pass has read are never the only copy of rows
  * that were never derived. And a blob is content-addressed and shared, so it
  * leaves the store only once nothing references it.
+ *
+ * One orphan this does not reach: a blob uploaded whose event is then refused
+ * belongs to no row and follows no deletion, so nothing signals it. That gap
+ * predates this module and needs a sweep walking the store rather than the rows.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import { leafValues } from '../core/settings.js';
@@ -124,10 +128,11 @@ export async function transcriptRetention(env: ServerEnv, now: number): Promise<
  * Whether a deletion has happened that could have left a blob behind.
  *
  * A tombstone is the only writer that removes rows naming a blob while leaving
- * the blob, so its own record is the signal. Reading it is one indexed lookup
- * against a table with one row per deleted session; the sweep it guards is a
- * scan of every blob in the Deployment against five reference checks. Paying
- * the first on every tick to skip the second is the whole point.
+ * the blob, so its own record is the signal. Reading it walks a table holding
+ * one row per deleted session — small on every Deployment, and unindexed on
+ * `created_at`, so this is a scan of that table rather than a seek. The sweep it
+ * guards is a scan of every blob in the Deployment against five reference
+ * checks. Paying the first on every tick to skip the second is the whole point.
  *
  * A sweep runs for every tombstone newer than the window it last swept, and
  * `TOMBSTONE_SWEEP_GRACE_MS` keeps it running for a while afterwards so a
