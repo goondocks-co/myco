@@ -1130,15 +1130,17 @@ const V25_STATEMENTS: readonly string[] = [
  * v26: a role on every member and on every invite, and an invite that names
  * its Project.
  *
- * `members.role` is `admin` or `member`, held to those values by
- * `auth/roles.ts` rather than a CHECK; every row before this step is an
- * admin, which is what flat membership meant. `enrollment_authorities.role`
- * is the role a redeemed invite confers, minted explicitly. `project_id` is
+ * `members.role` is `admin` or `member`, held by a CHECK; every row before
+ * this step is an admin, which is what flat membership meant.
+ * `enrollment_authorities.role` is the role a redeemed invite confers, minted
+ * explicitly and held to the same two values by `auth/roles.ts` (the
+ * migration grammar probe inserts placeholder text into every column of a
+ * table with a `project_id`, so that table carries no role CHECK). `project_id` is
  * the Project a sandbox's join code is bound to, null for a person's invite.
  * The index on `expires_at` serves the invite-expiry job's scan (#1158).
  */
 const V26_STATEMENTS: readonly string[] = [
-  `ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'`,
+  `ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'member'))`,
   `ALTER TABLE enrollment_authorities ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'`,
   `ALTER TABLE enrollment_authorities ADD COLUMN project_id TEXT CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id)`,
   `CREATE INDEX IF NOT EXISTS idx_enrollment_authorities_finished ON enrollment_authorities (expires_at)`,
