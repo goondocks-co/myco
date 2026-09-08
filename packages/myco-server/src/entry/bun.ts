@@ -13,9 +13,9 @@ import type { Database } from 'bun:sqlite';
 import { createServer } from '../pipeline.js';
 import { assertSchemaCurrent, openDatabase } from '../platform/bun/database.js';
 import { sweepPartialObjects } from '../platform/bun/blobs.js';
-import { serverEnvFromBunConfig, type BunServerConfig } from '../platform/bun/env.js';
+import { serverEnvFromBunConfig, type BunServerConfig, type BunServerEnv } from '../platform/bun/env.js';
 import { startBunWake } from '../platform/bun/wake.js';
-import { withStaticAssets } from '../platform/bun/static.js';
+import { withStaticAssets, withStaticMap, type StaticAssets } from '../platform/bun/static.js';
 import { socketSourceOf, trustedProxySourceOf, type AddressableServer, type TrustedProxyConfig } from '../platform/bun/source.js';
 import {
   LOOPBACK_V4,
@@ -62,6 +62,12 @@ export interface BunServerOptions extends Omit<BunServerConfig, 'sqlite'>, Trust
   bind?: 'loopback' | 'all';
   /** Directory holding the dashboard's static build. Absent, the deployment serves no dashboard and answers every unowned path as the server does. */
   uiDir?: string;
+  /**
+   * The dashboard's static build as bytes the deployment already holds, for one
+   * that carries the shell rather than mounting it. Takes precedence over
+   * `uiDir`; a deployment supplies one or neither.
+   */
+  uiAssets?: StaticAssets;
   /** Whether the process runs the wake loop. A test or a parity target that drives the tick by route passes false. */
   wakeLoop?: boolean;
   /** The origin for a listener whose port is chosen at bind, resolved once the socket is bound; a test double for `origin`. */
@@ -70,6 +76,8 @@ export interface BunServerOptions extends Omit<BunServerConfig, 'sqlite'>, Trust
 
 export interface BunHandler {
   fetch(request: Request): Promise<Response>;
+  /** The assembled environment this handler answers against, for a caller that acts on the Deployment beside serving it. */
+  env: BunServerEnv;
   /** Binds the listening server, which is what can report a socket address. */
   bind(server: AddressableServer): void;
   /** Waits for work deferred past an answer, then closes the store. */
@@ -78,7 +86,7 @@ export interface BunHandler {
 
 /** The request handler for a self-hosted deployment, without binding a socket, so a test drives it exactly as the hosted entry point is driven. */
 export async function createBunHandler(options: BunServerOptions): Promise<BunHandler> {
-  const sqlite: Database = openDatabase(options.databasePath);
+  const sqlite: Database = openDatabase(options.databasePath, options.native);
   try {
     await assertSchemaCurrent(sqlite);
   } catch (err) {
@@ -93,13 +101,15 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
   const server = createServer({ now: () => Date.now(), sourceOf, fetchImpl: fetch });
   const core = (request: Request) => server.handleRequest(request, env);
   return {
-    fetch: options.uiDir === undefined ? core : withStaticAssets(options.uiDir, core),
+    env,
+    fetch: options.uiAssets !== undefined ? withStaticMap(options.uiAssets, core)
+      : options.uiDir === undefined ? core : withStaticAssets(options.uiDir, core),
     bind: (listening: AddressableServer) => { bound = listening; if (options.originOf !== undefined && typeof listening.port === 'number') env.origin = options.originOf(listening.port); },
     close: async () => { loop?.stop(); await env.settle(); sqlite.close(); },
   };
 }
 
-export async function serve(options: BunServerOptions): Promise<{ port: number; stop(): Promise<void> }> {
+export async function serve(options: BunServerOptions): Promise<{ port: number; stop(): Promise<void>; env: BunServerEnv }> {
   const handler = await createBunHandler(options);
   const loopbackOnly = (options.transport ?? 'loopback') === 'loopback';
 
@@ -159,6 +169,7 @@ export async function serve(options: BunServerOptions): Promise<{ port: number; 
   handler.bind(servers[0]!);
   return {
     port: servingPort,
+    env: handler.env,
     /**
      * Drain, then close.
      *

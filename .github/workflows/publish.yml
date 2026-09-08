@@ -201,6 +201,11 @@ jobs:
       # `npm ci --ignore-scripts` above does not install the ui/ workspace).
       - run: npm run build:ui -w @goondocks/myco
 
+      # The Deployment dashboard is embedded by the same codegen step, from its
+      # own package's build. Codegen refuses an absent build rather than
+      # emitting an empty map, so this runs first.
+      - run: npm run build:ui -w @goondocks/myco-server
+
       - run: npm run codegen -w @goondocks/myco
 
       - name: Compile myco binary
