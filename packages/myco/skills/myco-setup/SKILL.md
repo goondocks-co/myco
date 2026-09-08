@@ -53,7 +53,7 @@ irm https://myco.sh/install.ps1 | iex
 **Two installs cannot succeed, and both fail for a reason no retry changes:**
 
 - **Windows on ARM.** The installer refuses and exits. There is no supported build; a different machine or an x64 host is the only path. Do not suggest workarounds.
-- **A destination path containing a space.** Hooks are spawned as a direct argument vector for several agents, so a binary path with whitespace in it breaks them. The installer refuses rather than writing hooks that would fail later. The fix is a destination with no spaces: the defaults, `~/.myco/bin` and `%LOCALAPPDATA%\Myco\bin`, already satisfy this, so this only appears when a custom install directory or a pinned runtime path was chosen.
+- **A destination path containing a space.** Hooks are spawned as a direct argument vector for several agents, so a binary path with whitespace in it breaks them. The installer refuses rather than writing hooks that would fail later. The fix is a path with no spaces: the defaults, `~/.myco/bin` and `%LOCALAPPDATA%\Myco\bin`, already satisfy this, so it only appears when a custom install directory or a pinned runtime path was chosen.
 
 ## 3. Connect to a deployment
 

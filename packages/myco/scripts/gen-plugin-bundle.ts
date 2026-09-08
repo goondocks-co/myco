@@ -48,6 +48,7 @@ import {
   PLUGIN_KEYWORDS,
   PLUGIN_LICENSE,
   PLUGIN_NAME,
+  ACCESS_KEY_COSTS,
 } from '../src/plugins/spec.js';
 
 const LABEL = 'gen-plugin-bundle';
@@ -112,106 +113,200 @@ function readSkills(): Skill[] {
   });
 }
 
-// --- per-client emitters -----------------------------------------------------
-// Each answers the files one client reads. The payload is shared; only the
-// filename, the schema and the way the two configuration values are asked for
-// differ.
+// --- clients -----------------------------------------------------------------
+// One row per client: the dialect it substitutes configuration values in, the
+// file it reads its MCP entry from, and the manifest it reads. The payload is
+// shared; a client differs only in these three. Holding them together in one
+// row is what stops a manifest declaring a value in one dialect while the file
+// it points at references another — the drift a per-client hand-written bundle
+// invites, and which a set-union gate over all files cannot see.
 
-/** The MCP endpoint, spelled with one client's own placeholder syntax. */
-const endpoint = (urlRef: string): string => `${urlRef}${MCP_PATH}`;
-const bearer = (keyRef: string): string => `Bearer ${keyRef}`;
+/** How one client spells a reference to a configuration value. */
+export type Dialect = (key: PluginConfigKey) => string;
 
-/** Agent Plugins 1.0: the portable manifest Codex, Cursor, VS Code Copilot and Antigravity all accept. */
-const agentPluginsManifest = (): Record<string, unknown> => ({
-  $schema: AGENT_PLUGINS_SCHEMA,
-  name: PLUGIN_NAME,
-  version: version(),
-  description: PLUGIN_DESCRIPTION,
-  author: { name: PLUGIN_AUTHOR },
-  homepage: PLUGIN_HOMEPAGE,
-  license: PLUGIN_LICENSE,
-  keywords: [...PLUGIN_KEYWORDS],
-  skills: './skills/',
-  experimental: { evals: './evals/' },
+export interface Client {
+  readonly id: string;
+  /** Where this client reads its MCP entry. */
+  readonly mcpPath: string;
+  readonly dialect: Dialect;
+  readonly mcp: (ref: Dialect) => Record<string, unknown>;
+  /** Its own manifest, where it wants one beyond the portable `plugin.json`. */
+  readonly manifestPath?: string;
+  readonly manifest?: (ref: Dialect) => Record<string, unknown>;
+}
+
+const endpoint = (ref: string): string => `${ref}${MCP_PATH}`;
+const bearer = (ref: string): string => `Bearer ${ref}`;
+
+/** Agent Plugins 1.0 and VS Code Copilot: values declared as `inputs` beside the entry. */
+const portableDialect: Dialect = (key) => `\${input:${key.id}}`;
+/** Claude Code: values declared as `userConfig` in its manifest. */
+const claudeDialect: Dialect = (key) => `\${user_config.${key.id}}`;
+/** Cursor and Antigravity: an upper-case name, declared as a plugin variable or set in the environment. */
+const upperDialect: Dialect = (key) => `\${${key.id.toUpperCase()}}`;
+
+const httpEntry = (ref: Dialect): Record<string, unknown> => ({
+  type: 'http',
+  url: endpoint(ref(DEPLOYMENT_URL_KEY)),
+  headers: { Authorization: bearer(ref(ACCESS_KEY_KEY)) },
 });
 
-/** The portable MCP entry. VS Code reads its `inputs` from this same file. */
-const agentPluginsMcp = (): Record<string, unknown> => ({
-  inputs: PLUGIN_CONFIG_KEYS.map((key) => ({
-    id: key.id,
-    type: 'promptString',
-    description: key.description,
-    password: key.secret,
-  })),
-  servers: {
-    [MCP_SERVER_NAME]: {
-      type: 'http',
-      url: endpoint(`\${input:${DEPLOYMENT_URL_KEY.id}}`),
-      headers: { Authorization: bearer(`\${input:${ACCESS_KEY_KEY.id}}`) },
-    },
+export const CLIENTS: readonly Client[] = [
+  {
+    id: 'agent-plugins',
+    mcpPath: 'mcp.json',
+    dialect: portableDialect,
+    mcp: (ref) => ({
+      inputs: PLUGIN_CONFIG_KEYS.map((key) => ({
+        id: key.id,
+        type: 'promptString',
+        description: key.description,
+        password: key.secret,
+      })),
+      servers: { [MCP_SERVER_NAME]: httpEntry(ref) },
+    }),
+    manifestPath: 'plugin.json',
+    manifest: () => ({
+      $schema: AGENT_PLUGINS_SCHEMA,
+      name: PLUGIN_NAME,
+      version: version(),
+      description: PLUGIN_DESCRIPTION,
+      author: { name: PLUGIN_AUTHOR },
+      homepage: PLUGIN_HOMEPAGE,
+      license: PLUGIN_LICENSE,
+      keywords: [...PLUGIN_KEYWORDS],
+      skills: './skills/',
+      experimental: { evals: './evals/' },
+    }),
   },
-});
-
-/** Claude Code: its own manifest directory, `userConfig`, and a dot-prefixed MCP file. */
-const claudeCodeManifest = (): Record<string, unknown> => ({
-  name: PLUGIN_NAME,
-  version: version(),
-  description: PLUGIN_DESCRIPTION,
-  author: { name: PLUGIN_AUTHOR },
-  homepage: PLUGIN_HOMEPAGE,
-  license: PLUGIN_LICENSE,
-  keywords: [...PLUGIN_KEYWORDS],
-  userConfig: Object.fromEntries(
-    PLUGIN_CONFIG_KEYS.map((key) => [
-      key.id,
-      { type: 'string', description: key.description, required: true, ...(key.secret ? { secret: true } : {}) },
-    ]),
-  ),
-});
-
-const claudeCodeMcp = (): Record<string, unknown> => ({
-  mcpServers: {
-    [MCP_SERVER_NAME]: {
-      type: 'http',
-      url: endpoint(`\${user_config.${DEPLOYMENT_URL_KEY.id}}`),
-      headers: { Authorization: bearer(`\${user_config.${ACCESS_KEY_KEY.id}}`) },
-    },
+  {
+    id: 'claude-code',
+    mcpPath: '.mcp.json',
+    dialect: claudeDialect,
+    mcp: (ref) => ({ mcpServers: { [MCP_SERVER_NAME]: httpEntry(ref) } }),
+    manifestPath: '.claude-plugin/plugin.json',
+    manifest: () => ({
+      name: PLUGIN_NAME,
+      version: version(),
+      description: PLUGIN_DESCRIPTION,
+      author: { name: PLUGIN_AUTHOR },
+      homepage: PLUGIN_HOMEPAGE,
+      license: PLUGIN_LICENSE,
+      keywords: [...PLUGIN_KEYWORDS],
+      // `title` is required on every entry, and a masked value is `sensitive`,
+      // not `secret` — both established by running `claude plugin validate`,
+      // which is the only authority for this manifest's schema.
+      userConfig: Object.fromEntries(
+        PLUGIN_CONFIG_KEYS.map((key) => [
+          key.id,
+          {
+            type: 'string',
+            title: key.label,
+            description: key.description,
+            required: true,
+            ...(key.secret ? { sensitive: true } : {}),
+          },
+        ]),
+      ),
+    }),
   },
-});
-
-/** Cursor: its own manifest directory and `variables`, referenced as `${VAR}`. */
-const cursorManifest = (): Record<string, unknown> => ({
-  name: PLUGIN_NAME,
-  version: version(),
-  description: PLUGIN_DESCRIPTION,
-  skills: './skills/',
-  mcpServers: './mcp.json',
-  variables: PLUGIN_CONFIG_KEYS.map((key) => ({
-    name: key.id.toUpperCase(),
-    description: key.description,
-    ...(key.secret ? { secret: true } : {}),
-  })),
-});
-
-/** Codex: its own manifest directory with path pointers into the shared payload. */
-const codexManifest = (): Record<string, unknown> => ({
-  name: PLUGIN_NAME,
-  version: version(),
-  description: PLUGIN_DESCRIPTION,
-  author: { name: PLUGIN_AUTHOR },
-  homepage: PLUGIN_HOMEPAGE,
-  license: PLUGIN_LICENSE,
-  keywords: [...PLUGIN_KEYWORDS],
-  skills: './skills/',
-  mcpServers: './mcp.json',
-});
-
-/** Antigravity: a remote server names its endpoint `serverUrl`, not `url`. */
-const antigravityMcp = (): Record<string, unknown> => ({
-  mcpServers: {
-    [MCP_SERVER_NAME]: { serverUrl: endpoint(`\${${DEPLOYMENT_URL_KEY.id.toUpperCase()}}`) },
+  {
+    id: 'cursor',
+    // Its own file: Cursor substitutes its declared `variables`, which the
+    // portable entry's placeholders are not, so pointing it at `mcp.json` would
+    // leave the literal text in the URL it dials.
+    mcpPath: '.cursor-plugin/mcp.json',
+    dialect: upperDialect,
+    mcp: (ref) => ({ mcpServers: { [MCP_SERVER_NAME]: httpEntry(ref) } }),
+    manifestPath: '.cursor-plugin/plugin.json',
+    manifest: (ref) => ({
+      name: PLUGIN_NAME,
+      version: version(),
+      description: PLUGIN_DESCRIPTION,
+      skills: './skills/',
+      mcpServers: './.cursor-plugin/mcp.json',
+      variables: PLUGIN_CONFIG_KEYS.map((key) => ({
+        name: ref(key).slice(2, -1),
+        description: key.description,
+        ...(key.secret ? { secret: true } : {}),
+      })),
+    }),
   },
-});
+  {
+    id: 'antigravity',
+    // A remote server names its endpoint `serverUrl` here, and the key rides the
+    // same Authorization header every other client sends.
+    mcpPath: 'mcp_config.json',
+    dialect: upperDialect,
+    mcp: (ref) => ({
+      mcpServers: {
+        [MCP_SERVER_NAME]: {
+          serverUrl: endpoint(ref(DEPLOYMENT_URL_KEY)),
+          headers: { Authorization: bearer(ref(ACCESS_KEY_KEY)) },
+        },
+      },
+    }),
+  },
+  {
+    id: 'codex',
+    // Reads the portable entry; its manifest adds the path pointers Codex wants
+    // and declares no value of its own.
+    mcpPath: 'mcp.json',
+    dialect: portableDialect,
+    mcp: (ref) => ({
+      inputs: PLUGIN_CONFIG_KEYS.map((key) => ({ id: key.id, type: 'promptString', description: key.description, password: key.secret })),
+      servers: { [MCP_SERVER_NAME]: httpEntry(ref) },
+    }),
+    manifestPath: '.codex-plugin/plugin.json',
+    manifest: () => ({
+      name: PLUGIN_NAME,
+      version: version(),
+      description: PLUGIN_DESCRIPTION,
+      author: { name: PLUGIN_AUTHOR },
+      homepage: PLUGIN_HOMEPAGE,
+      license: PLUGIN_LICENSE,
+      keywords: [...PLUGIN_KEYWORDS],
+      skills: './skills/',
+      mcpServers: './mcp.json',
+    }),
+  },
+];
+
+/**
+ * The bundle's own README: what the plugin is, what it does not carry, and what
+ * the access key costs. The costs come from the spec, so the document and the
+ * gate that holds it cannot say different things.
+ */
+function readme(): string {
+  return `# Myco
+
+${PLUGIN_DESCRIPTION}
+
+## What this plugin carries
+
+Skills, and one MCP entry pointing at your Myco deployment. That is the whole of it.
+
+It carries **no binary and no hooks**. A hook command is the absolute path of the \`myco\` binary on your own machine, resolved when that binary is installed, so a downloadable bundle has neither the binary nor the path it will live at. Sessions are therefore not captured by the plugin alone.
+
+Installing the binary as well adds session capture, plan capture, import and the worker. The **myco-setup** skill in this bundle walks through it.
+
+## Configuring it
+
+Your client asks for two values the first time it loads the plugin:
+
+${PLUGIN_CONFIG_KEYS.map((key) => `- **${key.label}** — ${key.description}`).join('\n')}
+
+## What the access key costs
+
+${ACCESS_KEY_COSTS.map((cost) => `- ${cost}`).join('\n')}
+
+Installing the binary replaces the key with a credential of your own, which is the other reason to finish setup.
+
+## License
+
+${PLUGIN_LICENSE}. ${PLUGIN_HOMEPAGE}
+`;
+}
 
 /** The marketplace manifest, at the repository root where every client that reads a git repo looks. */
 const marketplace = (): Record<string, unknown> => ({
@@ -232,12 +327,7 @@ const marketplace = (): Record<string, unknown> => ({
 
 /** The catalogue the Deployment answers `myco_skills` from, and the member binary re-exports. */
 function catalogue(skills: readonly Skill[]): string {
-  const entries = skills.map((s) => ({
-    name: s.name,
-    description: s.description,
-    when_to_use: s.whenToUse,
-    content: s.markdown,
-  }));
+  const entries = skills.map((s) => ({ name: s.name, description: s.description, when_to_use: s.whenToUse }));
   const files = Object.fromEntries(skills.map((s) => [s.name, Object.fromEntries([...s.files].sort(([a], [b]) => (a < b ? -1 : 1)))]));
   return `/*
  * AUTO-GENERATED by packages/myco/scripts/gen-plugin-bundle.ts — DO NOT EDIT.
@@ -256,10 +346,13 @@ export interface ShippedSkill {
   readonly content: string;
 }
 
-export const SHIPPED_SKILLS: readonly ShippedSkill[] = ${JSON.stringify(entries, null, 2)};
-
 /** Every file of every shipped skill, keyed by skill name then by path within the skill. */
 export const SHIPPED_SKILL_FILES: Readonly<Record<string, Readonly<Record<string, string>>>> = ${JSON.stringify(files, null, 2)};
+
+/** The listing text per skill. A body is read from the file map, so each SKILL.md is stored once. */
+const LISTINGS: ReadonlyArray<Omit<ShippedSkill, 'content'>> = ${JSON.stringify(entries, null, 2)};
+
+export const SHIPPED_SKILLS: readonly ShippedSkill[] = LISTINGS.map((listing) => ({ ...listing, content: SHIPPED_SKILL_FILES[listing.name]['SKILL.md'] }));
 `;
 }
 
@@ -277,13 +370,13 @@ export { SHIPPED_SKILL_FILES as BUNDLED_SKILLS } from '@goondocks/myco-shared/sk
 
 function bundleFiles(skills: readonly Skill[]): Map<string, string> {
   const out = new Map<string, string>();
-  out.set('plugin.json', json(agentPluginsManifest()));
-  out.set('mcp.json', json(agentPluginsMcp()));
-  out.set('.claude-plugin/plugin.json', json(claudeCodeManifest()));
-  out.set('.mcp.json', json(claudeCodeMcp()));
-  out.set('.cursor-plugin/plugin.json', json(cursorManifest()));
-  out.set('.codex-plugin/plugin.json', json(codexManifest()));
-  out.set('mcp_config.json', json(antigravityMcp()));
+  for (const client of CLIENTS) {
+    out.set(client.mcpPath, json(client.mcp(client.dialect)));
+    if (client.manifestPath !== undefined && client.manifest !== undefined) {
+      out.set(client.manifestPath, json(client.manifest(client.dialect)));
+    }
+  }
+  out.set('README.md', readme());
   for (const skill of skills) {
     for (const [rel, content] of skill.files) out.set(`skills/${skill.name}/${rel}`, content);
   }
@@ -339,4 +432,4 @@ function main(): void {
   process.stdout.write(`[${LABEL}] wrote ${files.size} files (${skills.length} skills)\n`);
 }
 
-main();
+if (process.argv[1] !== undefined && import.meta.url.endsWith(path.basename(process.argv[1]))) main();

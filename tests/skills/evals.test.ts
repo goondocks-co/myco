@@ -84,11 +84,18 @@ describe('shipped skill trigger evals', () => {
     it(`${skill}: the trigger prompt asks in vocabulary the listing shows`, () => {
       // A case that fires on words the model never sees in the listing is
       // measuring the model's guesswork, not the skill's description.
+      //
+      // The skill's OWN NAME is excluded from the shared set. Every listing
+      // contains it, so counting it would satisfy this for any prompt that
+      // mentioned Myco at all — a near-vacuous pass, which is worse here than
+      // no case, because the whole point is that the description carries the
+      // trigger.
       const prompt = fs.readFileSync(caseFile(skill, 'trigger'), 'utf-8');
       const body = /\nprompt: \|\n([\s\S]*?)\ngraders:/.exec(prompt)?.[1] ?? '';
       const listing = listingText(skill);
-      const shared = words(body).filter((w) => listing.includes(w));
-      expect(shared.length).toBeGreaterThan(0);
+      const ownName = new Set(skill.split('-'));
+      const shared = words(body).filter((w) => !ownName.has(w) && listing.includes(w));
+      expect({ skill, shared: shared.length > 0 }).toEqual({ skill, shared: true });
     });
   }
 });

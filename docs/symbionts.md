@@ -58,7 +58,7 @@ Cortex project briefings run at session start; Canopy context appears before sup
 |-----------|-----------------|
 | Hooks | `~/.cursor/hooks.json` |
 | MCP | `~/.cursor/mcp.json` |
-| Skills | `~/.cursor/skills/` → Myco's skill store |
+| Skills | `~/.agents/skills/` → Myco's skill store |
 | Plans | `~/.cursor/plans/` (also project-local) |
 
 Cursor supports session capture and context routing from the project directory Cursor reports for the current workspace.
@@ -69,22 +69,22 @@ Cursor supports session capture and context routing from the project directory C
 |-----------|-----------------|
 | Hooks | `~/.codex/hooks.json` |
 | MCP | `~/.codex/config.toml` |
-| Skills | `~/.codex/skills/` → Myco's skill store |
+| Skills | `~/.agents/skills/` → Myco's skill store |
 | Settings | `~/.codex/config.toml` |
 
 Codex's `config.toml` is shared with the user — Myco upserts only its own keys. The `[features].hooks` key (and any other pre-existing user keys) is preserved across `myco remove` cycles.
 
 ### Cline
 
-Cline connects through its SDK plugin surface and standard MCP configuration.
+A plugin-based symbiont. Cline loads a TypeScript plugin from `.cline/plugins/`, and Myco uses it for capture, tools and context.
+
+Cline keeps its conversation in two JSON documents it rewrites as the session grows, which cannot be shipped incrementally. Myco's plugin therefore records the session as it happens and hands that record to Myco, so your Cline work is searchable alongside every other agent's.
 
 | Component | Global location |
 |-----------|-----------------|
 | Plugin | `~/.cline/plugins/myco.ts` |
 | MCP | `~/.cline/data/settings/cline_mcp_settings.json` (also mirrored to `~/.cline/mcp.json`) |
 | Skills | `~/.cline/skills/` → Myco's skill store |
-
-Cline supports session capture, MCP tools, and Myco skills from Cline CLI sessions that run inside git projects.
 
 ### GitHub Copilot
 
@@ -95,7 +95,7 @@ One symbiont, two MCP targets. The `copilot` binary is the terminal CLI; the sam
 | Hooks | `~/.copilot/hooks/myco-hooks.json` |
 | MCP (CLI) | `~/.copilot/mcp-config.json` (key: `mcpServers`) |
 | MCP (VS Code) | `~/Library/Application Support/Code/User/mcp.json` (key: `servers`) |
-| Skills | `~/.copilot/skills/` → Myco's skill store |
+| Skills | `~/.agents/skills/` → Myco's skill store |
 | Settings | `.vscode/settings.json` |
 | Instructions | `.github/copilot-instructions.md` |
 
@@ -110,7 +110,7 @@ The successor to Gemini IDE. Full CLI + IDE + app coverage shipped as a plugin b
 | Plugin manifest | `~/.gemini/config/plugins/myco/plugin.json` |
 | Hooks | `~/.gemini/config/plugins/myco/hooks.json` |
 | MCP | `~/.gemini/config/plugins/myco/mcp_config.json` |
-| Skills | `~/.gemini/antigravity/skills/` |
+| Skills | `~/.agents/skills/` |
 
 Antigravity supports prompt capture, context routing, and session reconciliation across CLI, IDE, and app surfaces.
 
@@ -122,26 +122,30 @@ Antigravity reuses the `~/.gemini/` user-home directory it inherited from Gemini
 |-----------|-----------------|
 | Hooks | `~/.codeium/windsurf/hooks.json` |
 | MCP | `~/.codeium/windsurf/mcp_config.json` |
-| Skills | `~/.codeium/windsurf/skills/` → Myco's skill store |
+| Skills | `~/.agents/skills/` → Myco's skill store |
 | Plans | `~/.windsurf/plans/` |
 
 Devin Desktop — the editor formerly known as Windsurf — supports hook capture and skill discovery through Cascade's current agent surfaces. Its config still lives under the legacy `~/.codeium/windsurf/` and `~/.windsurf/` paths shown above.
 
 ### OpenCode
 
-The first plugin-based symbiont. OpenCode has no JSON hook file — hooks ship as a TypeScript plugin loaded by opencode's Bun runtime at startup.
+The first plugin-based symbiont. OpenCode has no JSON hook file — Myco ships a TypeScript plugin loaded by opencode's Bun runtime at startup.
+
+OpenCode stores each message and each part of a session as its own file, which cannot be shipped incrementally. Myco's plugin records the session as it happens and hands that record to Myco, so your OpenCode work is searchable alongside every other agent's.
 
 | Component | Global location |
 |-----------|-----------------|
 | Plugin | `~/.config/opencode/plugins/myco.ts` |
-| MCP | `~/.config/opencode/opencode.json` (key: `mcp`, local command transport) |
+| MCP | `~/.config/opencode/opencode.json` (key: `mcp`, local stdio launcher) |
 | Skills | `~/.agents/skills/` → Myco's skill store |
 
 **Plan mode note:** OpenCode's Plan mode only allows `edit` on existing files under `.opencode/plans/*.md`. To author a new plan in Plan mode, create the file first in Build mode (`touch .opencode/plans/my-plan.md`) before switching to Plan mode.
 
 ### Pi
 
-A plugin-based symbiont like OpenCode. Pi has no JSON hook file and no native MCP, so Myco connects through a TypeScript extension loaded by Pi's runtime at startup.
+A plugin-based symbiont like OpenCode. Pi has no JSON hook file and no MCP, so Myco connects through a TypeScript extension loaded by Pi's runtime at startup, and registers Myco's tools directly with Pi.
+
+Pi keeps its own session record, so Myco reads it and never alters or removes it.
 
 | Component | Global location |
 |-----------|-----------------|

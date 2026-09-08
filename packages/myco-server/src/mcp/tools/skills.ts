@@ -14,12 +14,19 @@ import type { ToolInput } from '../validate.js';
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
 
+/** The refusal a `status` filter meets: the Deployment serves files, and a file has no status. */
+export const NO_STATUS_MESSAGE = 'This deployment serves the skills that ship with Myco, which have no status; drop the status filter.';
+
 /** What a listing carries: enough to choose a skill, never its body. */
 const summary = ({ name, description, when_to_use }: ShippedSkill) => ({ name, description, when_to_use });
 
 export async function handleSkills(input: ToolInput, ctx: ToolContext): Promise<unknown> {
   const scope = await scopeOf(ctx, input);
   if (scope === null) return failure('Project not found');
+  // A shipped skill has no status. Accepting the filter and answering the whole
+  // catalogue would look like a filter that matched everything, which is the
+  // silent no-op an argument the handler does not honour always becomes.
+  if (input.status !== undefined) return failure(NO_STATUS_MESSAGE);
   if ((input.op ?? 'list') === 'get') {
     const id = str(input.id);
     if (id === undefined) return failure('id is required for op: get');

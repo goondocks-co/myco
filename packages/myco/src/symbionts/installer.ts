@@ -228,13 +228,13 @@ export function resolveManagedBinaryPath(
  * (cursor / windsurf / pi). Failing loudly at install time beats silent
  * capture failure after the agent's next launch.
  */
+/** What a user is told when the managed binary sits at a path containing whitespace, and what to do about it. */
+export const WHITESPACE_PATH_REFUSAL =
+  'contains whitespace, which breaks direct-argv hook spawn for cursor / windsurf / pi. Move Myco out of a path with spaces.';
+
 function assertSafeBinaryPathForUnquoted(binaryPath: string): void {
   if (!/\s/.test(binaryPath)) return;
-  throw new Error(
-    `Refusing to install symbiont hooks: binary path "${binaryPath}" ` +
-    `contains whitespace, which breaks direct-argv hook spawn for cursor / windsurf / pi. ` +
-    `Move Myco out of a path with spaces.`,
-  );
+  throw new Error(`Refusing to install symbiont hooks: binary path "${binaryPath}" ${WHITESPACE_PATH_REFUSAL}`);
 }
 
 /**

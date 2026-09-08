@@ -34,7 +34,7 @@
 export interface PluginConfigKey {
   /** Identifier the manifests key on. */
   readonly id: string;
-  /** Label a client shows. */
+  /** Label a client shows. Claude Code requires it on every `userConfig` entry. */
   readonly label: string;
   /** One sentence telling the person what to paste. */
   readonly description: string;
@@ -85,3 +85,18 @@ export const MCP_PATH = '/mcp';
 
 /** The Agent Plugins 1.0 manifest schema every portable client validates against. */
 export const AGENT_PLUGINS_SCHEMA = 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json';
+
+/**
+ * What the access key costs the person installing the plugin. Each is a
+ * property of the credential the Deployment admits without a machine identity,
+ * not a choice the plugin makes, and each is something a user meets later and
+ * cannot diagnose: a second repository that answers nothing, a key that stops
+ * working three months on, a dashboard they may not be able to reach. They are
+ * held here so the README that states them and the gate that checks it read the
+ * same words.
+ */
+export const ACCESS_KEY_COSTS: readonly string[] = [
+  'It reaches one project. Working across several means one key, and one plugin configuration, per project.',
+  'It expires. Ninety days by default, and up to a year if your administrator sets a longer window. When it lapses the tools stop answering and a new key has to be pasted in.',
+  'Only a deployment administrator can mint one. It comes from the deployment dashboard; the plugin cannot request its own.',
+];

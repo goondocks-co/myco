@@ -1,7 +1,8 @@
 {
   "mcpServers": {
     "myco": {
-      "serverUrl": "${DEPLOYMENT_URL}/mcp",
+      "type": "http",
+      "url": "${DEPLOYMENT_URL}/mcp",
       "headers": {
         "Authorization": "Bearer ${ACCESS_KEY}"
       }

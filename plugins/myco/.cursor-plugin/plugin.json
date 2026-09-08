@@ -3,7 +3,7 @@
   "version": "0.0.0-dev",
   "description": "Your project's memory: the sessions that happened, the durable observations drawn from them, and the plans. Skills and tools for reading why the code is the way it is, and for recording what you learn.",
   "skills": "./skills/",
-  "mcpServers": "./mcp.json",
+  "mcpServers": "./.cursor-plugin/mcp.json",
   "variables": [
     {
       "name": "DEPLOYMENT_URL",

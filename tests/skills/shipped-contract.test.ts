@@ -22,8 +22,17 @@ import {
   SHIPPED_SKILL_MAX_LINES,
 } from '@myco/skills/names.js';
 import { scanForContamination } from '@myco/agent/tools/skill-contamination.js';
+import { WHITESPACE_PATH_REFUSAL } from '@myco/symbionts/installer.js';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
+
+/**
+ * The sentence the Windows installer prints when it refuses an ARM machine.
+ * The installer is PowerShell and exports nothing, so the string is pinned here
+ * and asserted against the script; a rewording fails this rather than leaving
+ * the skill advising on a refusal that no longer reads that way.
+ */
+const WINDOWS_ARM_REFUSAL = 'Myco does not support Windows on ARM (ARM64) at this time.';
 const SKILLS_ROOT = path.join(REPO_ROOT, 'packages/myco', SHIPPED_SKILLS_DIR);
 
 /** The same "a directory is a skill iff it holds a SKILL.md" predicate the codegen and the installer use. */
@@ -153,13 +162,20 @@ describe('the setup skill against the code it drives', () => {
   });
 
   it('names refusals that still exist at their source', () => {
-    const installer = fs.readFileSync(path.join(REPO_ROOT, 'packages/myco/src/symbionts/installer.ts'), 'utf-8');
-    const ps1 = fs.readFileSync(path.join(REPO_ROOT, 'docs/install.ps1'), 'utf-8');
-    // The skill tells a user what to do about each of these. If the refusal goes
+    // The skill tells a user what to do about each of these. If a refusal goes
     // away, the advice becomes a description of a problem they cannot have.
-    expect(installer).toContain('contains whitespace');
-    expect(ps1).toContain('ARM64');
+    //
+    // Each assertion takes a DISTINCTIVE phrase from the refusal's own constant.
+    // An earlier version asserted `toContain('arm')`, which the word "harm"
+    // satisfies — a substring short enough to occur by accident proves the file
+    // is prose, not that it covers the refusal.
+    const ps1 = fs.readFileSync(path.join(REPO_ROOT, 'docs/install.ps1'), 'utf-8');
+    expect(ps1).toContain(WINDOWS_ARM_REFUSAL);
+
+    const whitespaceAdvice = WHITESPACE_PATH_REFUSAL.slice(WHITESPACE_PATH_REFUSAL.indexOf('Move Myco'));
+    expect(whitespaceAdvice.length).toBeGreaterThan(20);
+    expect(markdown).toContain('path with no spaces');
     expect(markdown).toContain('whitespace');
-    expect(markdown.toLowerCase()).toContain('arm');
+    expect(markdown).toContain('Windows on ARM');
   });
 });

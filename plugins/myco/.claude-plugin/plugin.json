@@ -17,14 +17,16 @@
   "userConfig": {
     "deployment_url": {
       "type": "string",
+      "title": "Deployment URL",
       "description": "The base URL of your team's Myco deployment, for example https://myco.example.com",
       "required": true
     },
     "access_key": {
       "type": "string",
+      "title": "Access key",
       "description": "A project access key from your deployment dashboard. It reaches one project and expires.",
       "required": true,
-      "secret": true
+      "sensitive": true
     }
   }
 }
