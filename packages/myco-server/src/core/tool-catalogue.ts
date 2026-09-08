@@ -33,10 +33,10 @@ export const NO_OP = '*';
  * The tenancy key every tool declares: a project id or a git remote.
  *
  * One spelling, here, for the definitions, the scope resolver and the
- * chokepoint's write check. `validate.ts` skips an argument the schema does not
- * declare and `server.ts declaredOnly` drops it before a handler runs, so a
- * site that spells the key by hand is admitted and ignored rather than refused.
- * The member side spells it once too (`packages/myco/src/tools/pivot.ts`), and
+ * chokepoint's write check. `validate.ts` refuses an argument the schema does
+ * not declare by name, so a site that spells the key by hand is refused rather
+ * than admitted and ignored. The member side spells it once too
+ * (`packages/myco/src/tools/pivot.ts`), and
  * `tests/myco-server/tool-parity.test.ts` holds the two equal.
  */
 export const PROJECT_PIVOT = 'project';

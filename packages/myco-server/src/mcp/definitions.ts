@@ -576,6 +576,10 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         "limit": {
           "type": "number",
           "description": "Max results for op: \"runs\" (default: 50)"
+        },
+        [PROJECT_PIVOT]: {
+          "type": "string",
+          "description": PROJECT_DESCRIPTION
         }
       }
     }

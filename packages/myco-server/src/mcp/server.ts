@@ -49,7 +49,7 @@ export const SERVER_NAME = 'myco';
 export const SERVER_INSTRUCTIONS = [
   'Myco is this project\'s memory: sessions that happened, spores (durable observations), and plans.',
   '',
-  'Tenancy: every tool takes `project` — a project id, or the repository\'s git remote. A read without it uses the project this credential is bound to. A write without it is refused.',
+  'Tenancy: every tool takes `project` — a project id, or the repository\'s git remote. A read without it uses the project this credential is bound to. A write without it is refused. An argument a tool\'s schema does not declare is refused by name.',
   '',
   'Reach for it when you need why rather than what: a prior decision, a gotcha, how a subsystem came to be this way. Search with `myco_search`, then fetch a hit in full by its id with `myco_spores`, `myco_plans` or `myco_sessions`. Record a durable finding with `myco_spores` op "save"; keep plans current with `myco_plans` op "save".',
   '',
@@ -107,10 +107,6 @@ async function namesBoundProject(ctx: ToolContext, named: unknown, bound: string
   return remote !== null && (await projectForRemote(ctx.env.db, remote)) === bound;
 }
 
-/** The arguments the definition declares; an undeclared key never reaches a handler, so no tool answers to an argument its schema does not name. */
-const declaredOnly = (definition: { inputSchema: { properties: Record<string, unknown> } }, input: ToolInput): ToolInput =>
-  Object.fromEntries(Object.entries(input).filter(([key]) => key in definition.inputSchema.properties));
-
 /** The definitions this principal is served. */
 export function definitionsFor(ctx: ToolContext): readonly ToolDefinition[] {
   const p = ctx.principal;
@@ -123,16 +119,15 @@ export function definitionsFor(ctx: ToolContext): readonly ToolDefinition[] {
 export async function callTool(ctx: ToolContext, name: string, args: unknown): Promise<{ tool: ServedTool; op: string; result: unknown }> {
   if (!isServedTool(name)) throw unknownTool(name);
   const definition = definitionOf(name)!;
-  const raw = normalizeInput(args);
+  const input = normalizeInput(args);
   const bound = boundProject(ctx);
-  const named = raw[PROJECT_PIVOT];
+  const named = input[PROJECT_PIVOT];
   if (bound !== null && named !== undefined && named !== bound && !(await namesBoundProject(ctx, named, bound))) throw unknownTool(name);
-  const input = declaredOnly(definition, raw);
   const op = opOf(name, input);
   if (ctx.principal.kind === 'grant' && !isExternalCall(name, op)) throw unknownTool(name);
   if (ctx.principal.kind === 'run' && !isRunCall(ctx.principal.allow, name, op)) throw unknownTool(name);
-  if (isWriteOp(name, op) && bound === null && namedProject(input) === undefined) throw missingProject(name);
   validateInput(definition, input);
+  if (isWriteOp(name, op) && bound === null && namedProject(input) === undefined) throw missingProject(name);
   const entry = entryFor(name, op);
   if (entry === undefined) throw new ToolError('invalid_input', `Unknown op '${op}' for tool ${name}`);
   if ('notServed' in entry) {

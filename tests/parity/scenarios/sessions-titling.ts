@@ -61,11 +61,11 @@ export const sessionsTitling: ParityScenario = {
     const mcp = await fetch(`${target.url}/mcp`, {
       method: 'POST',
       headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_sessions', arguments: { session: s1 } } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_sessions', arguments: { op: 'get', id: s1 } } }),
     });
     expect(mcp.status).toBe(200);
-    const mcpRows = ((await mcp.json()) as { result: { structuredContent: { result: Array<{ id: string; title: string | null }> } } }).result.structuredContent.result;
-    expect(mcpRows.find((row) => row.id === s1)?.title).toBeNull();
+    const mcpRow = ((await mcp.json()) as { result: { structuredContent: { result: { id: string; title: string | null } } } }).result.structuredContent.result;
+    expect([mcpRow.id, mcpRow.title]).toEqual([s1, null]);
 
     // a second end of the session changes nothing: one attempt per session
     const stamped = (await sessionRow(s1)) as { titled_at: number };

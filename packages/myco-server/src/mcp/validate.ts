@@ -1,9 +1,11 @@
 /**
  * Argument validation for a tool call, against the definition's `inputSchema`.
  *
- * The same checks the member-side dispatcher applies (`packages/myco/src/tools/index.ts`
- * `validateInput`): required keys present and non-null, enum membership, JSON
- * type, and array items. A definition's schema is plain JSON Schema data, so
+ * Required keys present and non-null, every key declared by the schema, enum
+ * membership, JSON type, and array items. A key the schema does not declare is
+ * refused by name: a handler answers only to arguments its definition names, so
+ * a mis-spelled key is a refusal the caller can act on rather than a call that
+ * silently runs without it. A definition's schema is plain JSON Schema data, so
  * nothing is compiled per request.
  */
 import type { JsonSchemaProperty, ToolDefinition } from './definitions.js';
@@ -29,13 +31,18 @@ export function normalizeInput(args: unknown): ToolInput {
 }
 
 export function validateInput(definition: ToolDefinition, input: ToolInput): void {
+  const declared = new Set(Object.keys(definition.inputSchema.properties));
+  const undeclared = Object.keys(input).find((key) => !declared.has(key));
+  if (undeclared !== undefined) {
+    throw new ToolError('invalid_input', `Unknown argument '${undeclared}' for tool ${definition.name}: declared arguments are ${[...declared].join(', ')}`);
+  }
   for (const key of definition.inputSchema.required ?? []) {
     if (input[key] === undefined || input[key] === null) {
       throw new ToolError('invalid_input', `Missing required argument '${key}' for tool ${definition.name}`);
     }
   }
   for (const [key, value] of Object.entries(input)) {
-    const property = definition.inputSchema.properties[key];
+    const property = declared.has(key) ? definition.inputSchema.properties[key] : undefined;
     if (!property || value === undefined) continue;
     validateProperty(definition.name, key, value, property);
   }

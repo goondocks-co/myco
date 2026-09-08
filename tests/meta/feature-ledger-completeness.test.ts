@@ -18,7 +18,8 @@
  *   - MCP tools      — `TOOL_* = 'myco_*'` in `packages/myco/src/tools/definitions.ts`
  *   - Agent tasks    — YAML filenames under `src/agent/definitions/tasks/`
  *   - Scheduled jobs — `POWER_JOB_NAMES` values in `src/constants/power-jobs.ts`
- *   - Data classes   — `CREATE TABLE` names under `packages/myco/src/db/`
+ *   - Data classes   — `CREATE TABLE` names under every `packages/<pkg>/src/db/`, the
+ *                      member's vault schema and the Deployment's
  *   - Config leaves  — every leaf the `MycoConfigSchema` DECLARES (§7.8)
  *
  * The SURFACE half matters most. A row with a disposition but no surface is how a
@@ -147,19 +148,44 @@ function scheduledJobs(): string[] {
  */
 const MIGRATION_CHAIN = 'migrations.ts';
 
+/** One spelling of a table name for both the CREATE and the DROP scan, so the two sets are drawn from the same tokens. */
+const TABLE_NAME = '([a-z_][a-z0-9_]*)';
+
+/**
+ * Every schema directory in the monorepo: `packages/<pkg>/src/db/` wherever it
+ * exists. A package that gains a schema is scanned with no edit here.
+ */
+function schemaDirs(): string[] {
+  const packages = path.join(REPO_ROOT, 'packages');
+  return fs.readdirSync(packages, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(packages, entry.name, 'src', 'db'))
+    .filter((dir) => fs.existsSync(dir))
+    .sort();
+}
+
+/**
+ * The tables the live schemas create and keep. A table a schema file also DROPs
+ * is scaffolding of a migration step — a grammar probe created and dropped inside
+ * one step — and is no data class; the exclusion reads the DROP statement, never
+ * a name pattern.
+ */
 function dataClasses(): string[] {
-  const found = new Set<string>();
+  const created = new Set<string>();
+  const dropped = new Set<string>();
   const walk = (dir: string): void => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
       else if (entry.name.endsWith('.ts') && entry.name !== MIGRATION_CHAIN) {
-        for (const m of read(full).matchAll(/CREATE TABLE (?:IF NOT EXISTS )?([a-z_]+)/g)) found.add(m[1]);
+        const src = read(full);
+        for (const m of src.matchAll(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${TABLE_NAME}`, 'g'))) created.add(m[1]);
+        for (const m of src.matchAll(new RegExp(`DROP TABLE (?:IF EXISTS )?${TABLE_NAME}`, 'g'))) dropped.add(m[1]);
       }
     }
   };
-  walk(path.join(SRC_ROOT, 'db'));
-  return [...found].sort();
+  for (const dir of schemaDirs()) walk(dir);
+  return [...created].filter((t) => !dropped.has(t)).sort();
 }
 
 // ---------------------------------------------------------------------------
