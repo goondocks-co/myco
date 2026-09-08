@@ -121,6 +121,21 @@ export async function inviteExpiry(env: ServerEnv, now: number): Promise<number>
   return reclaimed;
 }
 
+/**
+ * Every External Agent grant past its expiry is ended in the record.
+ *
+ * A lapsed grant already authenticates as nothing — `authenticateGrant` reads
+ * the column on every call — so this converges what an owner reads rather than
+ * what a bearer reaches. Nothing is deleted: a spore written over the grant
+ * names it as author, and both the grant row and its agent row stay for that
+ * name to point at.
+ */
+export async function grantExpiry(env: ServerEnv, now: number): Promise<number> {
+  const changed = await expireGrants(env.db, now, JOB_BATCH);
+  if (changed > 0) emit({ kind: 'grants_expired', changed });
+  return changed;
+}
+
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'embedding-reconcile': dispatchEmbeddingWork,
