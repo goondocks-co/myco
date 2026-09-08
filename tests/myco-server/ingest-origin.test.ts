@@ -82,6 +82,34 @@ describe('write origin', () => {
     expect(count(sqlite, 'events')).toBe(0);
   });
 
+  it('does not move a session\'s last receipt: reading stored bytes is not contact from a member', async () => {
+    const { sqlite, db, tokenId } = await rig();
+    const old = NOW - 30 * 86_400_000;
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+                VALUES (?, 'old', 'machine_1', ?, ?, ?)`, PROJECT, tokenId, old, old);
+    await ingestEvent(db, ctxFor(tokenId, 'server'), envelope({ eventId: uuid(20), sessionId: 'old', kind: 'prompt', payload: { promptId: uuid(21), text: 'derived', origin: 'user' } }));
+    const row = sqlite.query(`SELECT last_received_at FROM sessions WHERE session_id = 'old'`).get() as { last_received_at: number };
+    expect(row.last_received_at).toBe(old);
+    expect(count(sqlite, 'prompt_batches')).toBe(1);
+  });
+
+  it('a member write still moves it, which is what the power depth reads', async () => {
+    const { sqlite, db, tokenId } = await rig();
+    const old = NOW - 30 * 86_400_000;
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+                VALUES (?, 'old', 'machine_1', ?, ?, ?)`, PROJECT, tokenId, old, old);
+    await ingestEvent(db, ctxFor(tokenId), envelope({ eventId: uuid(22), sessionId: 'old', kind: 'prompt', payload: { promptId: uuid(23), text: 'shipped', origin: 'user' } }));
+    const row = sqlite.query(`SELECT last_received_at FROM sessions WHERE session_id = 'old'`).get() as { last_received_at: number };
+    expect(row.last_received_at).toBe(NOW);
+  });
+
+  it('opens a session row a server write names but nothing has opened yet', async () => {
+    const { sqlite, db, tokenId } = await rig();
+    await ingestEvent(db, ctxFor(tokenId, 'server'), envelope({ eventId: uuid(24), sessionId: 'fresh', kind: 'prompt', payload: { promptId: uuid(25), text: 'derived', origin: 'user' } }));
+    expect(count(sqlite, 'sessions')).toBe(1);
+    expect(count(sqlite, 'prompt_batches')).toBe(1);
+  });
+
   it('holds every other admission for a server write: an archived Project still refuses it', async () => {
     const { sqlite, db, tokenId } = await rig();
     sqlite.run(`UPDATE projects SET archived_at = ? WHERE project_id = ?`, NOW, PROJECT);

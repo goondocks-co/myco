@@ -193,7 +193,25 @@ export interface SessionFilters {
   sessionId?: string;
   /** A text the session's title, first prompt, agent, branch or id contains, matched case-insensitively. */
   q?: string;
+  /**
+   * Which sessions this read admits by the fidelity of the transcripts behind
+   * them. `full` admits only sessions every transcript of which the parser
+   * could read completely; `any` admits all.
+   *
+   * `listSessions` defaults to `full` and `listSessionSummaries` to `any`, and
+   * the difference is deliberate. Everything that assembles extraction material
+   * reads the former; a person or an agent browsing history reads the latter.
+   * The default fails closed on the expensive side: a session hidden from a
+   * page is an absence someone can see, while knowledge extracted from a
+   * transcript known to be incomplete reads exactly like knowledge that is not.
+   */
+  fidelity?: 'full' | 'any';
 }
+
+/** A session no transcript of which the parser read at reduced fidelity. Every transcript counts, primary and subagent sibling alike, so one degraded sibling disqualifies the session. */
+const FULL_FIDELITY = `NOT EXISTS (SELECT 1 FROM transcripts t
+     WHERE t.project_id = s.project_id AND t.session_id = s.session_id
+       AND t.fidelity IS NOT NULL AND t.fidelity <> 'full')`;
 
 /** A LIKE pattern matching `text` anywhere, with the pattern's own metacharacters escaped. */
 export function containsPattern(text: string): string {
@@ -204,6 +222,7 @@ export async function listSessions(db: RelationalStore, scope: ReadScope, opts: 
   const k = keyset(opts, { order: 's.first_received_at', id: 's.session_id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
   const conditions = ['s.project_id = ?', LIVE_SESSION];
+  if ((opts.fidelity ?? 'full') === 'full') conditions.push(FULL_FIDELITY);
   const params: unknown[] = [scope.projectId];
   if (opts.branch !== undefined) { conditions.push('s.branch = ?'); params.push(opts.branch); }
   if (opts.since !== undefined) { conditions.push('s.started_at >= ?'); params.push(opts.since); }
@@ -326,7 +345,9 @@ async function promptInstants(db: RelationalStore, scope: ReadScope, sessionIds:
 
 /** The session list with its rail facts: the counts of every child table and, unless the caller has no use for it, the activity buckets, over the page's ids only. The dashboard and the MCP tool both read the list through this. */
 export async function listSessionSummaries(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters, nowMs: number, facts: { activity?: boolean } = {}): Promise<Page<SessionSummaryRow>> {
-  const listed = await listSessions(db, scope, opts);
+  // A person and an agent browsing history see every session, labelled by what
+  // its transcript could carry; the caller may still narrow.
+  const listed = await listSessions(db, scope, { fidelity: 'any', ...opts });
   const ids = listed.rows.map((r) => r.sessionId);
   const counts = await sessionCountsFor(db, scope, ids);
   const instants = facts.activity === false ? [] : await promptInstants(db, scope, ids);

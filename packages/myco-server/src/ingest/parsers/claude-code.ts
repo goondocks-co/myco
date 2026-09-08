@@ -23,7 +23,7 @@
  */
 import { uuidv5 } from '../../hash.js';
 import {
-  blocksOf, isBlock, lineTime, plansInText, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
+  blocksOf, isBlock, lineTime, ownedLines, plansInText, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParserInput, type TranscriptParser,
 } from './index.js';
 
@@ -54,8 +54,10 @@ export const claudeCodeParser: TranscriptParser = {
   agent: 'claude-code',
   fidelity: 'full',
   planTags: ['ultraplan'],
+  continuation: { parentSessionIdPath: 'session_id', markerPaths: ['isCompactSummary'] },
 
-  async parse({ lines, sessionId, now }: ParserInput): Promise<DerivedEvent[]> {
+  async parse({ lines: all, sessionId, now }: ParserInput): Promise<DerivedEvent[]> {
+    const lines = ownedLines(all, sessionId, claudeCodeParser.continuation);
     const events: DerivedEvent[] = [];
     const pending = new Map<string, PendingCall>();
     let promptId: string | undefined;

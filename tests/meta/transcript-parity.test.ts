@@ -238,9 +238,9 @@ describe('transcript parity under a compaction continuation', () => {
     await memberArm(env, tokenId, onDisk(continued));
     await parseArm(sqlite, env as never, tokenId, continued);
     const texts = (project: string) => (sqlite.query(`SELECT text FROM prompt_batches WHERE project_id = ? ORDER BY text`).all(project) as { text: string }[]).map((r) => r.text);
-    // Both paths see the same prompts of the continued run; neither re-derives
-    // the predecessor's.
-    expect(texts(PARSE_PROJECT).length).toBeGreaterThanOrEqual(0);
+    // Both paths see the same prompts of the continued run, and neither
+    // re-derives the predecessor's.
+    expect(texts(PARSE_PROJECT)).toEqual(texts(MEMBER_PROJECT));
     expect(new Set(texts(MEMBER_PROJECT)).size).toBe(texts(MEMBER_PROJECT).length);
   });
 });

@@ -17,12 +17,18 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
   parseOnce, parseTranscripts, pendingTranscriptBytes,
-  TRANSCRIPT_PARSE_CALLS_PER_PASS, TRANSCRIPT_PARSE_EVENTS_PER_BATCH,
+  TRANSCRIPT_PARSE_CALLS_PER_PASS, TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT,
 } from '@myco-server-worker/ingest/parse.js';
 import { transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
 import { listTranscripts } from '@myco-server-worker/read/transcript.js';
+import { listSessions, listSessionSummaries } from '@myco-server-worker/read/sessions.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { sqliteEnv, count, uuid } from './helpers/fixtures.js';
+
+const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 
@@ -141,6 +147,38 @@ describe('parsing a held transcript', () => {
     }
   });
 
+  it('lands every tool call of one assistant message, which one id per byte offset could not', async () => {
+    const parallel = fs.readFileSync(path.join(FIXTURES, 'claude-parse-parallel.jsonl'), 'utf8');
+    const { sqlite, env } = await rig(parallel);
+    await drain(env, sqlite);
+    expect(target(sqlite).parse_error).toBeNull();
+    expect(target(sqlite).parsed_offset).toBe(target(sqlite).size);
+    expect(count(sqlite, 'tool_calls')).toBe(2);
+    expect(count(sqlite, 'plans')).toBe(2);
+    const names = (sqlite.query(`SELECT input FROM tool_calls ORDER BY input`).all() as { input: string }[]).map((r) => r.input);
+    expect(names).toEqual(['{"file_path":"/repo/a.ts"}', '{"file_path":"/repo/b.ts"}']);
+  });
+
+  it('stops the cursor where an event failed to land rather than advancing past it', async () => {
+    const { sqlite, env, tokenId } = await rig(body(2));
+    // An event id already taken by a different payload: the derived event is
+    // refused as a conflict and does not land. The cursor must not move past it.
+    const first = (sqlite.query(`SELECT transcript_id, session_id FROM transcripts`).get() as { transcript_id: string; session_id: string });
+    const parser = await import('@myco-server-worker/ingest/parsers/registry.js');
+    const segs = new TextEncoder().encode(body(2));
+    const { splitCompleteLines } = await import('@myco-server-worker/ingest/segments.js');
+    const events = await parser.PARSERS['claude-code'].parse({ lines: splitCompleteLines(segs, 0).lines, sessionId: first.session_id, now: NOW });
+    const { uuidv5 } = await import('@myco-server-worker/hash.js');
+    const taken = await uuidv5('transcript-event', first.transcript_id, events[0].kind, String(events[0].payload.promptId));
+    sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, producer_adapter, producer_version, payload_bytes, ingest_nonce)
+                VALUES (?, ?, ?, ?, 'prompt', 'cli', '{}', 'other-hash', ?, ?, 'x', '1', 2, 'other-nonce')`,
+               PROJECT, taken, first.session_id, tokenId, NOW, NOW);
+
+    await drain(env, sqlite);
+    expect(target(sqlite).parse_error).toBe('parse');
+    expect(target(sqlite).parsed_offset).toBe(0);
+  });
+
   it('resumes across passes when one transcript holds more events than a pass may land', async () => {
     const { sqlite, env } = await rig(body(300));
     const passes = await drain(env, sqlite);
@@ -149,6 +187,20 @@ describe('parsing a held transcript', () => {
     expect(count(sqlite, 'prompt_batches')).toBe(300);
     expect(count(sqlite, 'responses')).toBe(300);
     expect(count(sqlite, 'tool_calls')).toBe(300);
+  });
+
+  it('re-derives a resumed turn identically, so no row is refused as a conflict against itself', async () => {
+    // A pass that stopped mid-turn would begin the next one without the prompt
+    // that turn carries, deriving the same rows with a different payload; each
+    // would then be refused against the row already written and the transcript
+    // would stop. Every event of a resumed transcript must land.
+    const { sqlite, env } = await rig(body(300));
+    await drain(env, sqlite);
+    expect(target(sqlite).parse_error).toBeNull();
+    const orphans = sqlite.query(`SELECT COUNT(*) c FROM tool_calls WHERE prompt_id IS NULL`).get() as { c: number };
+    expect(orphans.c).toBe(0);
+    const responses = sqlite.query(`SELECT COUNT(*) c FROM responses WHERE prompt_id IS NULL`).get() as { c: number };
+    expect(responses.c).toBe(0);
   });
 
   it('is idempotent: re-running a completed parse from zero changes no row', async () => {
@@ -160,11 +212,35 @@ describe('parsing a held transcript', () => {
     expect(count(sqlite, 'prompt_batches') + count(sqlite, 'responses') + count(sqlite, 'tool_calls')).toBe(before);
   });
 
-  it('stops the transcript and names the failure when a line is not JSON, keeping the rows it already derived', async () => {
-    const { sqlite, env } = await rig(body(1) + 'not json at all\n' + body(1));
+  it('skips an unreadable line rather than abandoning every row the rest of the file holds', async () => {
+    // The junk sits between two turns, so the rows either side of it prove the
+    // pass carried on rather than stopping at the bad line.
+    const two = body(2).split('\n');
+    const withJunk = [...two.slice(0, 3), 'not json at all', ...two.slice(3)].join('\n');
+    const { sqlite, env } = await rig(withJunk);
+    await drain(env, sqlite);
+    expect(target(sqlite).parse_error).toBeNull();
+    expect(target(sqlite).parsed_offset).toBe(target(sqlite).size);
+    expect(count(sqlite, 'prompt_batches')).toBe(2);
+  });
+
+  it('stops the transcript once unreadable lines pass the threshold: past it the file is not this format', async () => {
+    const junk = Array.from({ length: TRANSCRIPT_PARSE_MALFORMED_LIMIT + 1 }, () => 'not json at all\n').join('');
+    const { sqlite, env } = await rig(body(1) + junk);
     await drain(env, sqlite);
     expect(target(sqlite).parse_error).toBe('parse');
-    expect(count(sqlite, 'prompt_batches')).toBeGreaterThanOrEqual(0);
+  });
+
+  it('offers a stopped transcript again once the parser moves, so no line silences a file forever', async () => {
+    const junk = Array.from({ length: TRANSCRIPT_PARSE_MALFORMED_LIMIT + 1 }, () => 'not json\n').join('');
+    const { sqlite, serverEnv } = await rig(body(1) + junk);
+    await parseTranscripts(serverEnv, NOW);
+    expect(target(sqlite).parse_error).toBe('parse');
+    // A failure is recorded against the parser that hit it; a later parser is
+    // offered the transcript again rather than inheriting its silence.
+    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(0);
+    sqlite.run(`UPDATE transcripts SET parser_version = parser_version - 1`);
+    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(1);
   });
 
   it('stops when the store no longer holds a segment, rather than reading past the hole', async () => {
@@ -230,6 +306,54 @@ describe('both jobs on a Deployment holding no transcripts', () => {
     const { serverEnv } = await awake();
     const report = await runTick(serverEnv, NOW);
     expect(report.heldBy).not.toBe('transcript:pending');
+  });
+});
+
+describe('fidelity decides what extraction may read', () => {
+  /** A session whose transcript the parser read at reduced fidelity. */
+  async function degraded() {
+    const { sqlite, env } = await rig(body(1), 1 << 20, { agent: 'cursor' });
+    await drain(env, sqlite);
+    return { sqlite, env };
+  }
+
+  it('stamps the fidelity the format supports rather than the file', async () => {
+    const { sqlite } = await degraded();
+    expect(target(sqlite).fidelity).toBe('no_tool_results');
+  });
+
+  it('omits the session from listSessions with NO filter argument, which is what extraction reads', async () => {
+    const { sqlite, env } = await degraded();
+    void sqlite;
+    expect((await listSessions(env.db as never, { projectId: PROJECT })).rows).toEqual([]);
+  });
+
+  it('shows the session to a person or an agent browsing history, labelled', async () => {
+    const { env } = await degraded();
+    const page = await listSessionSummaries(env.db as never, { projectId: PROJECT }, {}, NOW);
+    expect(page.rows.map((r) => r.sessionId)).toEqual([SESSION]);
+  });
+
+  it('admits a full-fidelity session to both reads', async () => {
+    const { sqlite, env } = await rig(body(1));
+    await drain(env, sqlite);
+    expect((await listSessions(env.db as never, { projectId: PROJECT })).rows).toHaveLength(1);
+    expect((await listSessionSummaries(env.db as never, { projectId: PROJECT }, {}, NOW)).rows).toHaveLength(1);
+  });
+
+  it('lets either caller override the default in either direction', async () => {
+    const { env } = await degraded();
+    expect((await listSessions(env.db as never, { projectId: PROJECT }, { fidelity: 'any' })).rows).toHaveLength(1);
+    expect((await listSessionSummaries(env.db as never, { projectId: PROJECT }, { fidelity: 'full' }, NOW)).rows).toEqual([]);
+  });
+
+  it('disqualifies a session whose PRIMARY transcript is full but whose subagent sibling is not', async () => {
+    const { sqlite, env, tokenId } = await rig(body(1));
+    await drain(env, sqlite);
+    sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, role, fidelity, size, segment_count, parsed_offset, first_received_at, last_received_at, token_id)
+                VALUES (?, 'tx_sibling', ?, ?, 'cursor', 'subagent', 'no_tool_results', 0, 0, 0, ?, ?, ?)`,
+               PROJECT, SESSION, MACHINE, NOW, NOW, tokenId);
+    expect((await listSessions(env.db as never, { projectId: PROJECT })).rows).toEqual([]);
   });
 });
 

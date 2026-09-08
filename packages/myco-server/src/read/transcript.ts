@@ -69,15 +69,6 @@ export async function listTranscripts(db: RelationalStore, scope: ReadScope, ses
   return results.map(toTranscript);
 }
 
-/** One transcript by its id, or null. */
-export async function getTranscriptById(db: RelationalStore, scope: ReadScope, transcriptId: string): Promise<TranscriptRow | null> {
-  const row = await db
-    .prepare(`SELECT ${TRANSCRIPT_COLUMNS} FROM transcripts WHERE project_id = ? AND transcript_id = ?`)
-    .bind(scope.projectId, transcriptId)
-    .first<Record<string, unknown>>();
-  return row === null ? null : toTranscript(row);
-}
-
 /** A transcript's segments in offset order. */
 export async function listSegments(db: RelationalStore, scope: ReadScope, transcriptId: string): Promise<SegmentRow[]> {
   const { results } = await db

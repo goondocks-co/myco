@@ -380,6 +380,14 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
   // so the id alone cannot tell the new file from the old one. A head digest
   // that disagrees with the one held names a different file under a name
   // already taken, and is refused terminally rather than appended to.
+  //
+  // Blind spot: a rewrite that leaves the first bytes intact matches, so a file
+  // edited in the middle under a live pointer passes this check. The digest
+  // catches truncation and replacement, which is what a rotation looks like;
+  // it is not an integrity check over the whole file.
+  //
+  // Inert until a member sends the field: absent `headHash` admits everything,
+  // which is today's behaviour on every member.
   const headMatches = `NOT EXISTS (SELECT 1 FROM transcripts WHERE project_id = ? AND transcript_id = ? AND head_hash IS NOT NULL AND ? IS NOT NULL AND head_hash <> ?)`;
   const segmentWritten = 'EXISTS (SELECT 1 FROM transcript_segments WHERE project_id = ? AND transcript_id = ? AND base_offset = ? AND event_id = ?)';
   const owned = (rows: ReadRows): { size: number; segment_count: number } | null => {

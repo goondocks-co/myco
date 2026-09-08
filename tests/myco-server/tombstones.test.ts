@@ -70,7 +70,7 @@ describe('tombstoning a session', () => {
 
   it('answers not-applied for a session the Project never held, rather than inventing a tombstone', async () => {
     const { sqlite, env } = await rig();
-    expect(await tombstoneSession(env, SCOPE, 'never-here', 'mem_machine_1', NOW)).toEqual({ applied: false, removed: 0, blobsFreed: 0 });
+    expect(await tombstoneSession(env, SCOPE, 'never-here', 'mem_machine_1', NOW)).toEqual({ applied: false, removed: 0, blobsFreed: 0, blobsLeft: 0 });
     expect(count(sqlite, 'session_tombstones')).toBe(0);
   });
 

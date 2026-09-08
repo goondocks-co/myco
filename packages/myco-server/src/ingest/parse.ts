@@ -27,6 +27,7 @@ import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import { emit, type Classifier } from '../telemetry.js';
 import { uuidv5 } from '../hash.js';
 import { planEventWrite, type EventWrite, type IngestResult } from './events.js';
+import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import type { DerivedEvent } from './parsers/index.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
@@ -41,11 +42,40 @@ export const TRANSCRIPT_PARSE_BYTES_PER_READ = 524_288;
 /** Segments read in one pass. Bytes alone do not bound the READS: a transcript shipped in many small segments sits inside the byte budget while costing one read each. */
 export const TRANSCRIPT_PARSE_SEGMENTS_PER_READ = 8;
 
-/** The parse's own version. A transcript records the version that read it, so a Deployment can report what its rows were derived by. */
+/**
+ * The parse's own version.
+ *
+ * A transcript records the version that read it, and a transcript stopped by a
+ * failure is offered again once this moves. The transcript format is
+ * version-unstable by its vendors' own documentation, so a break is expected to
+ * be answered by a deploy — and a failure nothing can clear would mean one bad
+ * line silences a transcript permanently, which no later fix could undo.
+ */
 export const PARSER_VERSION = 1;
+
+/**
+ * Unreadable lines a pass tolerates before it stops the transcript.
+ *
+ * A line that is not JSON is a defect, but one of them is not a reason to
+ * abandon every row the rest of the file still holds — losing thousands of rows
+ * to one corrupt line is the larger data loss. Past the threshold the file is
+ * no longer a transcript this parser understands, and stopping is right.
+ */
+export const TRANSCRIPT_PARSE_MALFORMED_LIMIT = 8;
 
 /** What a derived event says produced it. The one field that separates a parsed row from a hook-shipped one, and what the parity gate partitions on. */
 export const TRANSCRIPT_PRODUCER = { adapter: 'transcript-parse', version: String(SERVER_PROTOCOL) } as const;
+
+/**
+ * Which transcripts still owe a pass: bytes unread, and either no failure or a
+ * failure recorded against an older parser.
+ *
+ * `nextTarget` and `pendingTranscriptBytes` share it. Counting work the
+ * selection would not take keeps a Deployment awake for nothing; counting less
+ * than it takes leaves a transcript a newer parser has reopened unread until
+ * something else wakes the tick.
+ */
+export const PENDING_TRANSCRIPTS = `parsed_offset < size AND (parse_error IS NULL OR parser_version < ?)`;
 
 /** The transcript a pass works on. */
 interface ParseTarget {
@@ -68,12 +98,12 @@ async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget
   const row = await db
     .prepare(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity
                 FROM transcripts
-               WHERE parsed_offset < size AND parse_error IS NULL
+               WHERE ${PENDING_TRANSCRIPTS}
                  AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = transcripts.project_id AND t.session_id = transcripts.session_id)
                ORDER BY last_received_at, transcript_id LIMIT 1`)
+    .bind(PARSER_VERSION)
     .first<Record<string, unknown>>();
   if (row === null) return null;
-  void now;
   return {
     projectId: row.project_id as string,
     transcriptId: row.transcript_id as string,
@@ -90,8 +120,8 @@ async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget
 /** Stop this transcript where it stands and say why. Its rows to this point are kept; later passes skip it until the failure is cleared. */
 async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseFailure, now: number): Promise<void> {
   await db
-    .prepare(`UPDATE transcripts SET parse_error = ?, parse_failed_at = ? WHERE project_id = ? AND transcript_id = ?`)
-    .bind(classifier, now, target.projectId, target.transcriptId)
+    .prepare(`UPDATE transcripts SET parse_error = ?, parse_failed_at = ?, parser_version = ? WHERE project_id = ? AND transcript_id = ?`)
+    .bind(classifier, now, PARSER_VERSION, target.projectId, target.transcriptId)
     .run();
   emit({ kind: 'transcript_parse_failed', projectId: target.projectId, transcriptId: target.transcriptId, reason: classifier });
 }
@@ -103,10 +133,36 @@ async function segmentBytes(env: Pick<ServerEnv, 'blobs'>, projectId: string, bl
   return new Uint8Array(await new Response(held.body).arrayBuffer());
 }
 
-/** The envelope a derived event travels in: a deterministic id over the byte that produced it, so a repeated pass re-derives the same row and the raw insert absorbs it. */
+/**
+ * What names a derived event: the row identity its payload carries.
+ *
+ * The catalogue already marks that field — the one id whose role is `key` — so
+ * this reads the registry rather than a list kept in step by hand.
+ *
+ * The byte offset cannot serve. One assistant line routinely carries several
+ * `tool_use` blocks, and one text block several plan envelopes, so every event
+ * from that line shares its offset: keying on `(offset, kind)` gave two of them
+ * one id, and the second is refused as an id conflict, does not land, and
+ * stops the transcript permanently. Parallel tool calls are ordinary
+ * behaviour, so that is the common case rather than a corner.
+ */
+function rowIdentity(event: DerivedEvent): string {
+  const spec = kindSpec(event.kind);
+  if (spec === null) return `@${event.offset}`;
+  const ids = idFields(spec);
+  // A `key` role names the row outright. `prompt` is the exception the
+  // catalogue models differently: its id carries the `prompt` role, marking
+  // what other kinds reference, and is still the row's own name — so a required
+  // id field stands in where no `key` is declared.
+  const field = (ids.find(([, role]) => role === 'key') ?? ids.find(([name]) => spec.fields[name]?.required === true))?.[0];
+  const value = field === undefined ? undefined : event.payload[field];
+  return typeof value === 'string' ? value : `@${event.offset}`;
+}
+
+/** The envelope a derived event travels in: a deterministic id over the row it names, so a repeated pass re-derives the same row and the raw insert absorbs it. */
 async function envelopeFor(target: ParseTarget, event: DerivedEvent): Promise<Record<string, unknown>> {
   return {
-    eventId: await uuidv5('transcript-event', target.transcriptId, String(event.offset), event.kind),
+    eventId: await uuidv5('transcript-event', target.transcriptId, event.kind, rowIdentity(event)),
     sessionId: target.sessionId,
     kind: event.kind,
     createdAt: event.createdAt,
@@ -119,10 +175,13 @@ async function envelopeFor(target: ParseTarget, event: DerivedEvent): Promise<Re
 /** A derived event landed, or it did not. A duplicate counts as landed: the row is already there. */
 const landed = (result: IngestResult): boolean => result.persisted === true;
 
+/** Whether this event opens a turn, and so is a place a pass may stop: everything after it carries its prompt. */
+const opensTurn = (event: DerivedEvent): boolean => event.kind === 'prompt';
+
 export interface PassReport {
   /** Events that landed this pass. */
   derived: number;
-  /** Store and blob calls spent. */
+  /** Store and blob calls this pass spent, excluding the caller's own selection of it. */
   calls: number;
   /** The byte the cursor now stands at, or null when the pass did nothing. */
   nextOffset: number | null;
@@ -144,10 +203,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     // is moved to the end, so the transcript stops being offered to every pass.
     await env.db.prepare(`UPDATE transcripts SET parsed_offset = size, parsed_at = ?, parser_version = ? WHERE project_id = ? AND transcript_id = ?`)
       .bind(now, PARSER_VERSION, target.projectId, target.transcriptId).run();
-    return { derived: 0, calls: 2, nextOffset: target.size, failure: null };
+    return { derived: 0, calls: 1, nextOffset: target.size, failure: null };
   }
 
-  let calls = 1;
+  // `calls` counts what THIS pass spends; the caller adds its own selection.
+  let calls = 0;
   const { results: segments } = await env.db
     .prepare(`SELECT base_offset, length, blob_key FROM transcript_segments
                WHERE project_id = ? AND transcript_id = ? AND base_offset + length > ?
@@ -184,10 +244,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const window = joined.subarray(skip > 0 ? skip : 0);
   const split = splitCompleteLines(window, target.parsedOffset);
 
-  if (split.malformed > 0) {
+  if (split.malformed > TRANSCRIPT_PARSE_MALFORMED_LIMIT) {
     await stop(env.db, target, 'parse', now);
     return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'parse' };
   }
+  if (split.malformed > 0) emit({ kind: 'transcript_lines_unreadable', projectId: target.projectId, transcriptId: target.transcriptId, lines: split.malformed });
   if (split.lines.length === 0) {
     // No complete line in the window. A transcript whose tail is one unfinished
     // line waits for the segment that closes it rather than failing.
@@ -200,13 +261,18 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   let derived = 0;
   let cursor = split.nextOffset;
   for (let i = 0; i < events.length; i += TRANSCRIPT_PARSE_EVENTS_PER_BATCH) {
-    // The first group always runs, whatever the reads already cost. Landing at
-    // least one group per pass is what moves the cursor; a pass that spent its
-    // whole budget fetching bytes and landed none would stall the transcript.
-    if (i > 0 && calls >= TRANSCRIPT_PARSE_CALLS_PER_PASS) {
-      // Out of budget mid-transcript: the cursor stops at the first event this
-      // pass did not land, and the next pass derives from there.
-      cursor = events[i]?.offset ?? cursor;
+    // The first group always runs, whatever the reads already cost, and the
+    // budget only ends a pass ON A TURN BOUNDARY.
+    //
+    // A turn's events carry the prompt that opened it, and a window beginning
+    // mid-turn does not contain that prompt — so the next pass would derive the
+    // SAME rows with a different payload, and each would be refused as a
+    // conflict against the row this pass already wrote. Stopping only where a
+    // prompt begins makes a re-derivation byte-identical to the first, which is
+    // what the deterministic ids depend on. It also guarantees progress: the
+    // boundary is always past where this pass started.
+    if (i > 0 && calls >= TRANSCRIPT_PARSE_CALLS_PER_PASS && opensTurn(events[i]) && events[i].offset > target.parsedOffset) {
+      cursor = events[i].offset;
       break;
     }
     const group = events.slice(i, i + TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
@@ -233,6 +299,14 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     }
   }
 
+  // Every path above either advances the cursor or returns. A cursor that did
+  // not move would leave the transcript pending and every wake re-deriving the
+  // same events, so it stops the transcript rather than spinning on it.
+  if (cursor <= target.parsedOffset) {
+    await stop(env.db, target, 'parse', now);
+    return { derived, calls: calls + 1, nextOffset: null, failure: 'parse' };
+  }
+
   await env.db
     .prepare(`UPDATE transcripts SET parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?, fidelity = COALESCE(fidelity, ?)
                WHERE project_id = ? AND transcript_id = ?`)
@@ -244,10 +318,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   return { derived, calls, nextOffset: cursor, failure: null };
 }
 
-/** Whether any transcript has bytes no pass has read. What keeps a Deployment awake while a backlog stands. */
+/** How many transcripts still owe a pass. What keeps a Deployment awake while a backlog stands. */
 export async function pendingTranscriptBytes(db: RelationalStore): Promise<number> {
   const row = await db
-    .prepare(`SELECT COUNT(*) AS n FROM transcripts WHERE parsed_offset < size AND parse_error IS NULL`)
+    .prepare(`SELECT COUNT(*) AS n FROM transcripts WHERE ${PENDING_TRANSCRIPTS}`)
+    .bind(PARSER_VERSION)
     .first<{ n: number }>();
   return row?.n ?? 0;
 }

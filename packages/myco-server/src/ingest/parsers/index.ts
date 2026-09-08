@@ -51,9 +51,27 @@ export interface DerivedEvent {
   offset: number;
 }
 
+/**
+ * How an agent carries one conversation forward under a new session id.
+ *
+ * Claude Code does it on a compaction rollover and on a fork: it rewrites the
+ * current id on every line and leaves the predecessor's only on the records
+ * written before the switch. Those earlier records are the PREDECESSOR's turns,
+ * and deriving them into the continued session would attribute one session's
+ * work to another.
+ */
+export interface Continuation {
+  /** Where a record names the session it belonged to. */
+  parentSessionIdPath: string;
+  /** Flags marking a record that belongs to this session wherever it sits. */
+  markerPaths: readonly string[];
+}
+
 export interface TranscriptParser {
   agent: string;
   fidelity: Fidelity;
+  /** Declared by an agent that continues a conversation under a new id; absent for one that does not. */
+  continuation?: Continuation;
   /**
    * The assistant-text wrappers a plan arrives in for this agent.
    *
@@ -107,6 +125,36 @@ export function textOf(content: unknown): string {
 export const isBlock = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 export const blocksOf = (content: unknown): Record<string, unknown>[] => (Array.isArray(content) ? content.filter(isBlock) : []);
 export const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined);
+
+/** The value at a dotted path, or undefined. */
+export function atPath(value: Record<string, unknown>, path: string): unknown {
+  let held: unknown = value;
+  for (const segment of path.split('.')) {
+    if (held === null || typeof held !== 'object') return undefined;
+    held = (held as Record<string, unknown>)[segment];
+  }
+  return held;
+}
+
+/**
+ * The lines that are THIS session's own turns: everything after the last record
+ * naming a predecessor, plus every marker record wherever it sits.
+ *
+ * Byte for byte the member's rule (`capture/session-continuation.ts`
+ * `eventsOwnedBySession`). The two paths must agree on which session a turn
+ * belongs to, or a continued transcript derives its predecessor's prompts into
+ * the wrong session.
+ */
+export function ownedLines(lines: readonly ParsedLine[], sessionId: string, continuation: Continuation | undefined): ParsedLine[] {
+  if (continuation === undefined) return [...lines];
+  let boundary = -1;
+  lines.forEach((line, index) => {
+    const named = atPath(line.value, continuation.parentSessionIdPath);
+    if (typeof named === 'string' && named !== '' && named !== sessionId) boundary = index;
+  });
+  if (boundary < 0) return [...lines];
+  return lines.filter((line, index) => index > boundary || continuation.markerPaths.some((path) => atPath(line.value, path) === true));
+}
 
 /** How much of a tool's output is kept inline; the catalogue's own bound on `output`. */
 export const TOOL_OUTPUT_PREVIEW_CHARS = 4096;

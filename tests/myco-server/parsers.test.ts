@@ -172,6 +172,27 @@ describe('claude-code parser', () => {
     expect(unfinished?.payload.errorMessage).toBe('tool call has no result in the transcript');
   });
 
+  it('gives every tool call of one assistant message its own row identity', async () => {
+    const events = await PARSERS['claude-code'].parse({ lines: linesOf('claude-parse-parallel.jsonl'), sessionId: SESSION, now: NOW });
+    const calls = only(events, 'tool.use');
+    expect(calls).toHaveLength(2);
+    expect(calls.map((c) => c.payload.toolCallId)).toEqual([
+      await uuidv5('tool-call', SESSION, 'toolu_a'),
+      await uuidv5('tool-call', SESSION, 'toolu_b'),
+    ]);
+    // They share the line that produced them, which is why the byte offset
+    // cannot name them apart.
+    expect(new Set(calls.map((c) => c.offset)).size).toBe(1);
+  });
+
+  it('gives every plan envelope of one text block its own key', async () => {
+    const plans = only(await PARSERS['claude-code'].parse({ lines: linesOf('claude-parse-parallel.jsonl'), sessionId: SESSION, now: NOW }), 'plan');
+    expect(plans).toHaveLength(2);
+    expect(plans.map((p) => p.payload.title)).toEqual(['First', 'Second']);
+    expect(new Set(plans.map((p) => p.payload.planKey)).size).toBe(2);
+    expect(new Set(plans.map((p) => p.offset)).size).toBe(1);
+  });
+
   it('parses a subagent sibling as an ordinary transcript of the same session', async () => {
     const events = await PARSERS['claude-code'].parse({ lines: linesOf('claude-parse-subagent.jsonl'), sessionId: SESSION, now: NOW });
     expect(kinds(events)).toEqual(['prompt', 'tool.use', 'response']);

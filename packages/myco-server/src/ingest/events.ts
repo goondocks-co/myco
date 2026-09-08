@@ -123,13 +123,26 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
     ? db.prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(ctx.bodyBytes, ctx.tokenId)
     : db.prepare(`SELECT 1 AS uncharged`);
 
-  const receipt = db
-    .prepare(`INSERT INTO sessions
-        (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-      SELECT ?, ?, ?, ?, ?, ?
-       WHERE EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)
-      ON CONFLICT (project_id, session_id) DO UPDATE SET last_received_at = excluded.last_received_at`)
-    .bind(ctx.projectId, e.sessionId, ctx.machineId, ctx.tokenId, ctx.now, ctx.now, ctx.projectId, e.eventId, write.nonce);
+  // A receipt records when a MEMBER last made contact. The Deployment reading
+  // its own stored bytes is not contact: a parse advancing the stamp would date
+  // a month-old backfilled session to now, and would hold the Deployment awake
+  // on its own housekeeping. A server write still opens a session row that is
+  // absent, so a derived event is never refused for want of one.
+  const receipt = charged
+    ? db
+      .prepare(`INSERT INTO sessions
+          (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+        SELECT ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)
+        ON CONFLICT (project_id, session_id) DO UPDATE SET last_received_at = excluded.last_received_at`)
+      .bind(ctx.projectId, e.sessionId, ctx.machineId, ctx.tokenId, ctx.now, ctx.now, ctx.projectId, e.eventId, write.nonce)
+    : db
+      .prepare(`INSERT INTO sessions
+          (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+        SELECT ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)
+        ON CONFLICT (project_id, session_id) DO NOTHING`)
+      .bind(ctx.projectId, e.sessionId, ctx.machineId, ctx.tokenId, e.createdAt, e.createdAt, ctx.projectId, e.eventId, write.nonce);
 
   // The nonce, not a change count, decides whether THIS write stored the row.
   // A batch carrying several events reports its counts per driver rather than

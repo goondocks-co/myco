@@ -60,6 +60,8 @@ export interface TombstoneOutcome {
   removed: number;
   /** Blobs no surviving row referenced, removed from the store. */
   blobsFreed: number;
+  /** Blobs this call left for a later sweep, its bound reached. */
+  blobsLeft: number;
 }
 
 /** True when the Project holds this session at all, tombstoned or not: what separates "already deleted" from "never here". */
@@ -93,13 +95,26 @@ async function unreferenced(db: RelationalStore, projectId: string, keys: readon
   return results.map((r) => r.k);
 }
 
-/** Remove a blob's row and its stored bytes. A store that no longer holds the object is the state this converges on, so a repeat is a no-op. */
+/**
+ * How many blobs one deletion frees before leaving the rest to the sweep.
+ *
+ * Freeing a blob is two calls, and a session holding thousands of attachments
+ * would spend thousands here — past what one invocation may make on a hosted
+ * runtime. The bound matters more here than in a scheduled sweep: the rows are
+ * already gone by this point, so a request that dies mid-loop leaves blobs no
+ * row names, and only a bounded loop makes the request that removed them
+ * finish at all.
+ */
+export const TOMBSTONE_BLOBS_PER_CALL = 16;
+
+/** Remove a blob's row and its stored bytes, as far as the bound reaches. A store that no longer holds the object is the state this converges on, so a repeat is a no-op and what is left over is taken by the retention sweep. */
 async function dropBlobs(db: RelationalStore, blobs: BlobStore, projectId: string, keys: readonly string[]): Promise<number> {
-  for (const key of keys) {
+  const taken = keys.slice(0, TOMBSTONE_BLOBS_PER_CALL);
+  for (const key of taken) {
     await blobs.delete(`${projectId}/${key}`);
     await db.prepare(`DELETE FROM blobs WHERE project_id = ? AND key = ?`).bind(projectId, key).run();
   }
-  return keys.length;
+  return taken.length;
 }
 
 /**
@@ -117,7 +132,7 @@ export async function tombstoneSession(
   env: Pick<ServerEnv, 'db' | 'blobs'>, scope: ReadScope, sessionId: string, by: string, nowMs: number, reason?: string,
 ): Promise<TombstoneOutcome> {
   const { projectId } = scope;
-  if (!(await sessionPresent(env.db, projectId, sessionId))) return { applied: false, removed: 0, blobsFreed: 0 };
+  if (!(await sessionPresent(env.db, projectId, sessionId))) return { applied: false, removed: 0, blobsFreed: 0, blobsLeft: 0 };
 
   const keys = await blobKeysOf(env.db, projectId, sessionId);
 
@@ -134,9 +149,10 @@ export async function tombstoneSession(
   const results = await env.db.batch(statements);
   const removed = results.slice(1).reduce((n, r) => n + r.meta.changes, 0);
 
-  const blobsFreed = await dropBlobs(env.db, env.blobs, projectId, await unreferenced(env.db, projectId, keys));
-  emit({ kind: 'session_tombstoned', projectId, sessionId, removed, blobsFreed });
-  return { applied: true, removed, blobsFreed };
+  const orphaned = await unreferenced(env.db, projectId, keys);
+  const blobsFreed = await dropBlobs(env.db, env.blobs, projectId, orphaned);
+  emit({ kind: 'session_tombstoned', projectId, sessionId, removed, blobsFreed, blobsLeft: orphaned.length - blobsFreed });
+  return { applied: true, removed, blobsFreed, blobsLeft: orphaned.length - blobsFreed };
 }
 
 /** Whether this session carries a tombstone. */
