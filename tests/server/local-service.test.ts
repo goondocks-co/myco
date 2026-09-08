@@ -7,7 +7,7 @@
  * when the unit omits it.
  */
 import { describe, expect, it } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,12 +46,10 @@ describe('the per-user service unit', () => {
       const paths = servicePaths(spec, platform);
       expect(paths.outLog).toBe(join(HOME, '.myco', 'logs', 'server.log'));
       expect(paths.errLog).toBe(join(HOME, '.myco', 'logs', 'server.error.log'));
-      // Windows Task Scheduler has no output redirection of its own; the other
-      // two name the files in the unit.
-      if (platform !== 'win32') {
-        expect(rendered(platform)).toContain(paths.outLog);
-        expect(rendered(platform)).toContain(paths.errLog);
-      }
+      // Every platform names both files in the unit. Task Scheduler redirects
+      // nothing of its own, so its action carries the append operators.
+      expect(rendered(platform)).toContain(paths.outLog);
+      expect(rendered(platform)).toContain(paths.errLog);
     });
 
     it(`comes back when it exits on ${platform}`, () => {
@@ -68,11 +66,14 @@ describe('the per-user service unit', () => {
     expect(rendered('darwin')).toContain('NetworkState');
   });
 
-  it('declares a PATH, so the worker can find the harnesses a login shell would', () => {
-    const spec = defaultSpec(BINARY, HOME);
-    expect(spec.pathEnv).toContain(join(HOME, '.local', 'bin'));
-    expect(rendered('darwin')).toContain(spec.pathEnv);
-    expect(rendered('linux')).toContain(`Environment=PATH=${spec.pathEnv}`);
+  it('declares a PATH on every platform, so a run can find the harnesses a login shell would', () => {
+    for (const platform of PLATFORMS) {
+      const spec = defaultSpec(BINARY, HOME, platform);
+      expect({ platform, hasLocalBin: spec.pathEnv.includes(join(HOME, '.local', 'bin')) })
+        .toEqual({ platform, hasLocalBin: true });
+      expect(renderUnit(spec, servicePaths(spec, platform), platform)).toContain(spec.pathEnv);
+    }
+    expect(rendered('linux')).toContain(`Environment=PATH=${defaultSpec(BINARY, HOME).pathEnv}`);
   });
 
   it('names the same service on every platform it records one under', () => {
@@ -126,23 +127,61 @@ describe('the binary path a unit can name', () => {
  * that shells out to one, a unit that runs the binary through one — and neither
  * failure shows up until someone installs on a machine that has neither.
  */
+/**
+ * A source reduced to what the process actually executes: help templates and
+ * comments blanked, line positions kept so a hit still names its line.
+ *
+ * Help text is what a reader is shown and comments are what a reader is told;
+ * neither is a command, and both legitimately name the tools this asserts are
+ * never run.
+ */
+function executableText(source: string): string {
+  const blank = (match: string): string => match.replace(/[^\n]/g, ' ');
+  return source
+    .replace(/export const [A-Z_]*HELP[A-Z_]* = `[\s\S]*?`;/g, blank)
+    .replace(/\/\*[\s\S]*?\*\//g, blank)
+    .replace(/\/\/[^\n]*/g, blank);
+}
+
 describe('what a Deployment on this machine never reaches for', () => {
-  const SOURCES = [
-    'packages/myco/src/server/local.ts',
-    'packages/myco/src/server/local-run.ts',
-    'packages/myco/src/server/service.ts',
-  ];
+  /**
+   * Every source the laptop path reaches, walked from its own entry points
+   * rather than listed by hand: a hand-list goes stale the moment a verb gains
+   * a helper.
+   *
+   * `cli/server.ts` is scanned too, since that is where the verbs live, but it
+   * is not walked — it also dispatches the Compose and Cloudflare targets,
+   * which legitimately run a container runtime and `wrangler`.
+   */
+  const SOURCES = ((): string[] => {
+    const root = join(REPO_ROOT, 'packages', 'myco', 'src');
+    const seen = new Set<string>();
+    const walk = (rel: string): void => {
+      if (seen.has(rel)) return;
+      seen.add(rel);
+      for (const m of readFileSync(join(root, rel), 'utf8').matchAll(/from '(\.[^']+)\.js'/g)) {
+        const next = join(rel, '..', `${m[1]!}.ts`).replace(/\\/g, '/');
+        if (existsSync(join(root, next))) walk(next);
+      }
+    };
+    for (const entry of ['server/local.ts', 'server/local-run.ts', 'server/service.ts']) walk(entry);
+    // Generated asset modules are base64 payloads, not code; scanning them
+    // matches any substring by chance and executes nothing.
+    return ['cli/server.ts', ...seen].filter((rel) => !rel.endsWith('.generated.ts'));
+  })();
 
   it('names neither a container runtime nor a Node runtime as a command it runs', () => {
     const offenders: string[] = [];
     for (const rel of SOURCES) {
-      const source = readFileSync(join(REPO_ROOT, rel), 'utf8');
-      source.split('\n').forEach((line, i) => {
-        const code = line.replace(/\/\/.*$/, '');
+      // `myco server` serves three targets from one file, and the Compose
+      // target's help legitimately names `docker compose`. Help text is what a
+      // reader is shown, never what the process runs, so it is not scanned.
+      const source = executableText(readFileSync(join(REPO_ROOT, 'packages', 'myco', 'src', rel), 'utf8'));
+      source.split('\n').forEach((code, i) => {
         // A quoted argv head or shelled command. `node:fs` and `bun:sqlite` are
         // builtin module specifiers of the runtime already running, so the
         // colon form is not a command and is not matched.
-        if (/['"`](docker|node|npm|npx|bun)(?![:\w-])/.test(code)) offenders.push(`${rel}:${i + 1}  ${line.trim()}`);
+        if (/['"`](docker|node|npm|npx|bun)(?![:\w-])/.test(code)) offenders.push(`${rel}:${i + 1}  ${code.trim()}`);
       });
     }
     expect(offenders).toEqual([]);

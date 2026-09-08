@@ -15,17 +15,21 @@ The first command makes the server's directory, generates the keys it protects y
 
 Your server lives at `http://127.0.0.1:8787` and listens only on your own machine. Nothing outside your laptop can reach it until you choose to expose it.
 
+`myco server status` tells you whether the service is set to run and whether the server is actually answering, which are different things: a server that starts and immediately fails still counts as installed.
+
 ```bash
 myco server status --target local     # address, whether it is running, where its data lives
 myco server run --target local        # run it in this terminal instead, to watch it work
 ```
 
-Its data sits in `~/.myco/server/local/`. Its output goes to `~/.myco/logs/server.log`.
+Its data sits in `~/.myco/server/local/`, and its output goes to `~/.myco/logs/server.log` on every platform.
 
 Pick a different port with `--port` if 8787 is taken. To stop it starting at login, run `myco server uninstall --target local`; your data is kept. `myco server destroy --target local --data --yes` removes the server and everything in it.
 
+Both of those act on the service. A server you started yourself with `myco server run` keeps running in its own terminal until you stop it there.
+
 > **Adding people, including yourself**
-> Invites and sign-in arrive with the join work in #1158. Until then a server created this way has no members yet, so treat this page as the way to get one running rather than the way to start capturing.
+> Sign-in and invites are not ready yet, so a server created this way has no members. Treat this page as the way to get one running, not yet the way to start capturing.
 
 ## On a virtual machine
 
@@ -37,7 +41,15 @@ Copy the binary across, then run the same two commands. The server starts at boo
 
 **A plain VPS** works the same way. A basic droplet or equivalent is about the same price. Copy the binary, run the two commands, and put a reverse proxy in front of it for HTTPS.
 
-When something else terminates HTTPS in front of your server, tell the server which header carries the caller's real address by setting `sourceFrom` and `trustedHeader` in `~/.myco/server/local/server.json`. The server refuses to start rather than trusting an address a caller could have written itself.
+On Linux, a user service stops when you log out unless the machine is told to keep it running:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+Without that, a server on a VM you connect to over SSH stops the moment you disconnect.
+
+When something else terminates HTTPS in front of your server, tell it which header carries the caller's real address. `myco server status` shows the settings file to edit. The server refuses to start rather than trusting an address a caller could have written itself.
 
 ## Reaching it from cloud agents
 
@@ -59,8 +71,14 @@ Either way your server stays where it is and keeps its data locally. Only the ad
 myco server update --target local
 ```
 
-Running an older server against newer storage is refused rather than half-applied, so an interrupted update leaves your data intact.
+It stops the server, brings its storage up to date, and starts it again. Running an older server against newer storage is refused rather than half-applied, so an interrupted update leaves your data intact.
 
 ## Backing it up
 
 Everything the server holds is in one directory. Stop it, copy `~/.myco/server/local/`, and start it again. Restoring is the same in reverse.
+
+## What is proven, and what is not
+
+A server started this way is verified end to end in the test suite: it comes up on a fresh directory, accepts a session, and serves its dashboard, all through the artifacts the binary carries rather than anything installed on the machine.
+
+Two things are not yet verified by an automated test. The released binary has not been run end to end as a compiled artifact, only built and exercised from source. And the path from a running server to a first piece of captured knowledge depends on work that has not landed, so this page stops at a running server.

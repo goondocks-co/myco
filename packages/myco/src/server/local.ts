@@ -32,9 +32,7 @@ export interface LocalDeploymentRecord {
   trustedHeader?: string;
   /** How many proxies sit in front, required to be at least 1 when `sourceFrom` is `proxy`. */
   trustedHops?: number;
-  /** Whether the process runs a worker of its own. */
-  worker: boolean;
-  /** How many runtimes the worker may run at once. */
+  /** How many runtimes an attached worker may run at once. */
   fleet?: number;
 }
 
@@ -52,7 +50,6 @@ export const DEFAULT_LOCAL_PORT = 8787;
 export const DEFAULT_LOCAL_RECORD: LocalDeploymentRecord = {
   port: DEFAULT_LOCAL_PORT,
   sourceFrom: 'socket',
-  worker: true,
 };
 
 export class LocalDeploymentAbsent extends Error {}
@@ -103,8 +100,10 @@ export function writeLocalRecord(record: LocalDeploymentRecord, paths = resolveL
  * settings a start reads are settings that can serve.
  */
 export function assertRecordServable(record: LocalDeploymentRecord): void {
-  if (!Number.isInteger(record.port) || record.port < 0 || record.port > 65_535) {
-    throw new Error(`port must be a whole number from 0 to 65535, and is ${JSON.stringify(record.port)}`);
+  // Port 0 asks the kernel to choose, which leaves the address a member was
+  // told to reach unrelated to the one bound.
+  if (!Number.isInteger(record.port) || record.port < 1 || record.port > 65_535) {
+    throw new Error(`port must be a whole number from 1 to 65535, and is ${JSON.stringify(record.port)}`);
   }
   if (record.sourceFrom !== 'socket' && record.sourceFrom !== 'proxy') {
     throw new Error(`sourceFrom must be 'socket' or 'proxy', and is ${JSON.stringify(record.sourceFrom)}`);

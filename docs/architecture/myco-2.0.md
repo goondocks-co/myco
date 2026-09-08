@@ -95,7 +95,7 @@ The Cloudflare Worker and the self-hosted binary implement **one common server c
 | Vector store | Vectorize | Local SQLite vector adapter |
 | Wake / schedule | `DeploymentClock` Durable Object alarm + cron floor | In-process scheduler |
 | Secret wrapping key | Secrets Store binding | Env or file (`secrets.env` idiom) |
-| Harness | Workers attach from wherever harnesses are logged in; no container required | Workers attach the same way; the laptop server process includes one by default, through the `harnessLaunch` seam the start path already binds (**B1**) |
+| Harness | Workers attach from wherever harnesses are logged in; no container required | Workers attach the same way. The start path binds a `harnessLaunch` seam and no worker fills it yet, so a laptop Deployment today answers every dispatch that no runtime is available; the in-process worker lands with **B1** |
 | Durable storage | Platform-managed | Local volume beside the binary |
 | Native storage artifacts | Platform-managed | Carried in the binary: an extension-enabled SQLite library and the `vec0` extension, registered before the first connection. A host lookup remains for a checkout and a container image |
 | Lifecycle | `myco server create\|update\|rollback\|destroy --target cloudflare` | `myco server create\|run\|install\|uninstall\|status\|update\|destroy --target local`, with a per-user service (launchd, systemd `--user`, Task Scheduler) running `myco server run` at login |
@@ -322,6 +322,8 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 | `detach` | DROP | — | Blk | Team Host project routing retired | #925 |
 | `host` | DROP | — | Blk | Team Host serving retired; a Deployment is the server | #925 |
 | `init` | DROP | — | Blk | Already a no-op stub — registration is automatic on first hook | #925 |
+
+**Not yet proven for the self-hosted binary.** Two claims in §3.3's C column are held by tests that run against source rather than against a released artifact: the compiled binary is built in CI but never executed there, and the carried SQLite library is exercised only where the build has staged it (CI stages it; a fresh checkout does not, and the gate fails rather than skips when `CI` is set). Both close with the release gate in §8, not with the child that added them.
 
 **Planned additions.** Laptop mode's first member arrives with **#1158**: a Deployment created by `myco server create --target local` holds no member until an invite can be minted, and the start path exposes its `ServerEnv` for the first-start bootstrap that mints one. Three verbs land with their code and take rows then: `myco worker` (worker mode — long-poll claim, lease with heartbeat, harness detection; the laptop server process runs one in-process, plan §2.5, **#1151**); `myco login <url>` (exchanges an invite for a member credential, while a sandbox exchanges its join code instead, plan §2.7, **#1158**); `myco import` (the repeatable backfill behind the join-time pass — newest 50 sessions per harness within 30 days, content-hash dedupe, tombstone gate, plan §2.2, **#1148**).
 

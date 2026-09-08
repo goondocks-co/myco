@@ -22,6 +22,12 @@ export interface UiBundle {
   exportName: string;
   /** How the module describes where its bytes came from. */
   origin: string;
+  /**
+   * Build outputs that are directives to a hosting platform rather than page
+   * assets. A binary serving its own dashboard has no edge to read them, so
+   * embedding them ships bytes that answer requests as an unknown media type.
+   */
+  exclude?: readonly string[];
 }
 
 export const MEMBER_UI: UiBundle = {
@@ -40,6 +46,7 @@ export const SERVER_UI: UiBundle = {
   outputPath: path.resolve(PACKAGE_ROOT, 'src/server-ui-assets.generated.ts'),
   exportName: 'BUNDLED_SERVER_UI',
   origin: 'packages/myco-server/ui/dist/',
+  exclude: ['_headers'],
 };
 
 /**
@@ -141,8 +148,11 @@ function readUiAssetMap(bundle: UiBundle): Record<string, string> {
         `Embedding it would ship dead weight in every compiled binary, so this build refuses.`,
     );
   }
+  const excluded = new Set(bundle.exclude ?? []);
   return Object.fromEntries(
-    files.map((rel) => [rel, fs.readFileSync(path.join(bundle.uiDir, rel)).toString('base64')]),
+    files
+      .filter((rel) => !excluded.has(rel))
+      .map((rel) => [rel, fs.readFileSync(path.join(bundle.uiDir, rel)).toString('base64')]),
   );
 }
 

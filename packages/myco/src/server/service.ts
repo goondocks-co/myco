@@ -90,11 +90,13 @@ export function assertInstalledBinary(binaryPath: string): void {
 
 const DEFAULT_PATH_ENV = '/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin';
 
-export function defaultSpec(binaryPath: string, home = homedir()): ServiceSpec {
+export function defaultSpec(binaryPath: string, home = homedir(), platform = process.platform): ServiceSpec {
+  const separator = platform === 'win32' ? ';' : ':';
+  const inherited = platform === 'win32' ? '%PATH%' : DEFAULT_PATH_ENV;
   return {
     binaryPath,
     home,
-    pathEnv: [path.join(home, '.local', 'bin'), path.dirname(binaryPath), DEFAULT_PATH_ENV].join(':'),
+    pathEnv: [path.join(home, '.local', 'bin'), path.dirname(binaryPath), inherited].join(separator),
   };
 }
 
@@ -176,9 +178,18 @@ WantedBy=default.target
 `;
 }
 
-/** Task Scheduler: at logon, restart on failure, output redirected by the command itself. */
+/**
+ * Task Scheduler: at logon, restart on failure, both streams appended to the
+ * same files the other platforms write.
+ *
+ * Task Scheduler redirects nothing of its own, so the action runs through the
+ * command processor, which is what supplies the append operators. The binary
+ * path carries no whitespace (`assertUnquotablePath`), so the inner command
+ * needs no quoting that `cmd /c` would then have to unwrap.
+ */
 export function renderWindowsTask(spec: ServiceSpec, paths: ServicePaths): string {
   assertUnquotablePath(spec.binaryPath);
+  const action = `set "PATH=${spec.pathEnv}" && ${spec.binaryPath} server run >> ${paths.outLog} 2>> ${paths.errLog}`;
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -200,8 +211,8 @@ export function renderWindowsTask(spec: ServiceSpec, paths: ServicePaths): strin
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>${xmlEscape(spec.binaryPath)}</Command>
-      <Arguments>server run</Arguments>
+      <Command>cmd.exe</Command>
+      <Arguments>/c "${xmlEscape(action)}"</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -259,6 +270,26 @@ export function installService(spec: ServiceSpec, platform = process.platform): 
     if (result.error !== undefined && command !== 'launchctl') {
       return { unitFile: paths.unitFile, loaded: false, detail: `${command} could not be run: ${result.error.message}` };
     }
+  }
+  const verify = statusOfService(paths, platform);
+  return { unitFile: paths.unitFile, loaded: verify.loaded, ...(verify.detail === undefined ? {} : { detail: verify.detail }) };
+}
+
+/** Stop the running service without removing its unit, for an operator acting on the volume underneath it. */
+export function stopService(spec: ServiceSpec, platform = process.platform): void {
+  const paths = servicePaths(spec, platform);
+  if (!existsSync(paths.unitFile)) return;
+  for (const [command, ...args] of lifecycleCommands(paths, platform).unload) {
+    spawnSync(command!, args, { stdio: 'ignore' });
+  }
+}
+
+/** Start a service whose unit is already written. */
+export function startService(spec: ServiceSpec, platform = process.platform): ServiceOutcome {
+  const paths = servicePaths(spec, platform);
+  if (!existsSync(paths.unitFile)) return { unitFile: paths.unitFile, loaded: false, detail: 'no service unit is installed' };
+  for (const [command, ...args] of lifecycleCommands(paths, platform).load) {
+    spawnSync(command!, args, { stdio: 'ignore' });
   }
   const verify = statusOfService(paths, platform);
   return { unitFile: paths.unitFile, loaded: verify.loaded, ...(verify.detail === undefined ? {} : { detail: verify.detail }) };

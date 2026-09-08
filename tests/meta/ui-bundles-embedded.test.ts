@@ -10,8 +10,12 @@
  * Committed artifacts, so this reads what a release would carry rather than
  * what a local build happens to have produced.
  */
-import { describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import { emitBundle, type UiBundle } from '@myco/../scripts/gen-ui-assets.js';
 import { BUNDLED_UI } from '@myco/ui-assets.generated.js';
 import { BUNDLED_SERVER_UI } from '@myco/server-ui-assets.generated.js';
 
@@ -38,4 +42,50 @@ describe('the dashboards a compiled binary carries', () => {
       }
     });
   }
+});
+
+/**
+ * The generator refuses an absent build.
+ *
+ * An empty map compiles and links, so the failure it used to produce was a
+ * binary serving a blank page with every build step green. The refusal is what
+ * makes that a failed build, and this is what keeps the refusal.
+ */
+describe('the generator that embeds a dashboard', () => {
+  const roots: string[] = [];
+  afterAll(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
+  const scratch = (): string => {
+    const root = mkdtempSync(join(tmpdir(), 'myco-genui-'));
+    roots.push(root);
+    return root;
+  };
+
+  const bundleAt = (root: string): UiBundle => ({
+    name: 'test dashboard',
+    uiDir: join(root, 'dist'),
+    publicDir: join(root, 'public'),
+    outputPath: join(root, 'out.generated.ts'),
+    exportName: 'BUNDLED_TEST_UI',
+    origin: 'dist/',
+  });
+
+  it('refuses an absent build instead of writing an empty map', () => {
+    const bundle = bundleAt(scratch());
+    expect(() => emitBundle(bundle)).toThrow(/absent/);
+  });
+
+  it('writes the files a present build holds, under their relative keys', () => {
+    const root = scratch();
+    const bundle = bundleAt(root);
+    mkdirSync(bundle.uiDir, { recursive: true });
+    mkdirSync(join(bundle.uiDir, 'assets'), { recursive: true });
+    writeFileSync(join(bundle.uiDir, 'index.html'), '<!doctype html><script src="/assets/app-1.js"></script>');
+    writeFileSync(join(bundle.uiDir, 'assets', 'app-1.js'), 'export const a = 1;');
+
+    expect(emitBundle(bundle)).toBe(2);
+    const written = readFileSync(bundle.outputPath, 'utf-8');
+    expect(written).toContain('BUNDLED_TEST_UI');
+    expect(written).toContain('index.html');
+    expect(written).toContain('assets/app-1.js');
+  });
 });

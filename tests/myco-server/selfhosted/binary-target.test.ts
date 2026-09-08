@@ -19,9 +19,10 @@
 import { afterAll, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { createBunHandler } from '@myco-server-worker/entry/bun.js';
 import { configureSqliteLibrary, resolveSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
@@ -54,6 +55,24 @@ function vec0Path(): string {
   const suffix = process.platform === 'darwin' ? 'dylib' : process.platform === 'win32' ? 'dll' : 'so';
   const manifest = require_.resolve(`sqlite-vec-${target}/package.json`);
   return join(manifest, '..', `vec0.${suffix}`);
+}
+
+/**
+ * The SQLite library a released binary embeds, when this checkout has it staged.
+ *
+ * `packages/myco/vendor-src/` is a build artifact and is absent from a fresh
+ * worktree, so the assertion that uses it stands down where it is not there
+ * rather than passing vacuously somewhere it could not have run.
+ */
+function carriedLibrary(): string | null {
+  const target = process.platform === 'darwin'
+    ? (process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64')
+    : process.platform === 'win32'
+      ? 'windows-x64'
+      : (process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64');
+  const name = process.platform === 'darwin' ? 'libsqlite3.dylib' : process.platform === 'win32' ? 'libsqlite3.dll' : 'libsqlite3.so';
+  const staged = join(fileURLToPath(new URL('../../../', import.meta.url)), 'packages', 'myco', 'vendor-src', 'libsqlite3', target, name);
+  return existsSync(staged) ? staged : null;
 }
 
 /** A migrated volume carrying one project and one member, plus the paths a deployment serves it from. */
@@ -97,6 +116,30 @@ describe('the deployment a compiled binary runs', () => {
 
     expect(ranked.map((r) => r.id)).toEqual([near, far]);
     expect(ranked[0]!.score).toBeCloseTo(1, 5);
+    sqlite.close();
+  });
+
+  it('opens a database through the SQLite library it is handed, and loads the extension into it', async () => {
+    // The headline claim of the binary target: a deployment carrying its own
+    // library serves on a machine holding none. Asserted by actually opening
+    // through a carried library and loading the extension into that
+    // connection, rather than by trusting the resolver's answer.
+    const carried = carriedLibrary();
+    // CI stages this artifact before the suite runs, so an absent one there is
+    // a broken pipeline rather than a checkout without build output — and a
+    // silently skipped assertion is how this claim would go unproven.
+    if (carried === null) {
+      expect({ ci: process.env.CI ?? '', staged: false }).toEqual({ ci: '', staged: false });
+      return;
+    }
+
+    configureSqliteLibrary({ library: carried, vec0: null });
+    const sqlite = new Database(':memory:');
+    const store = sqliteVectorStore(sqlite, vec0Path());
+    const scope = { projectId: 'proj_1', modelKey: 'm' };
+    const id = await vectorId(scope, 'spore', 'rec_carried', 'r1');
+    await store.upsert(scope, [{ id, values: [1, 0, 0], metadata: metadata('rec_carried') }]);
+    expect((await store.query(scope, { values: [1, 0, 0], topK: 1 })).map((r) => r.id)).toEqual([id]);
     sqlite.close();
   });
 

@@ -265,14 +265,36 @@ export function assertSourceIdentity(
   }
 }
 
+/** The names a caller that supplies options directly would fix a source-identity value under. */
+const OPTION_NAMES: SourceNames = { sourceFrom: 'sourceFrom', header: 'trustedHeader', hops: 'trustedHops' };
+
 /**
- * Bring a validated deployment up: bind the launch to the port the socket
- * resolves to, serve, and drain on the orchestrator's signal.
+ * Where a deployment reads its caller's address from, decided rather than left
+ * open.
+ *
+ * A deployment that names neither a socket source nor a trusted header
+ * establishes no identity, and the core answers 503 to every request while
+ * `/health` stays 200 — a server that looks up and serves nothing. A deployment
+ * that names a header is behind a proxy and keeps reading it; one that names
+ * nothing at all is reached directly, which is the only remaining shape.
+ */
+export function resolvedSourceFrom(options: { sourceFrom?: 'socket' | 'proxy'; header?: string }): 'socket' | 'proxy' {
+  if (options.sourceFrom !== undefined) return options.sourceFrom;
+  return (options.header ?? '') === '' ? 'socket' : 'proxy';
+}
+
+/**
+ * Bring a deployment up: validate its options, bind the launch to the
+ * port the socket resolves to, serve, and drain on the orchestrator's signal.
  *
  * Every value is decided by the caller. This is the one start path, and the two
- * front doors differ only in where they read their values from.
+ * front doors differ only in where they read their values from — so the
+ * refusals live here, where both meet them, rather than in one caller.
  */
 export async function startDeployment(options: DeploymentOptions): Promise<StartedDeployment> {
+  const sourceFrom = resolvedSourceFrom(options);
+  assertSourceIdentity({ ...options, sourceFrom }, OPTION_NAMES);
+
   // The requested port is not the bound one where the kernel chooses it, and a
   // runtime told the wrong address posts its ending nowhere. The origin is read
   // at each launch, from the socket, and a launch before the socket is bound is
@@ -289,7 +311,7 @@ export async function startDeployment(options: DeploymentOptions): Promise<Start
     port: options.port ?? DEFAULT_PORT,
     transport: options.transport ?? 'loopback',
     bind: options.bind ?? 'loopback',
-    sourceFrom: options.sourceFrom,
+    sourceFrom,
     header: options.header,
     trustedHops: options.trustedHops ?? 1,
     uiDir: options.uiDir,
