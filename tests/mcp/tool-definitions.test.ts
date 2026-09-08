@@ -199,7 +199,6 @@ describe('handler forwards every documented schema property', () => {
 describe('cross-surface tool-name drift', () => {
   const TOOL_NAME_PATTERNS = {
     'server.tool': /server\.tool\(\s*["']([^"']+)["']/g,
-    registerTool: /registerTool\(\{\s*name:\s*["']([^"']+)["']/g,
   } as const;
 
   function extractToolNames(relPath: string, pattern: keyof typeof TOOL_NAME_PATTERNS): string[] {

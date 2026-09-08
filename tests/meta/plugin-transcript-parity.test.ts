@@ -29,7 +29,7 @@ import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
 import { deriveTranscriptCapture } from '@myco/member/transcript.js';
 import { emptySessionState } from '@myco/member/session-state.js';
-import { runHook } from '../member/helpers/hooks.js';
+import { runHook, type HookName } from '../member/helpers/hooks.js';
 import type { Database } from 'bun:sqlite';
 
 const MACHINE = 'mach_1';
@@ -129,7 +129,7 @@ describe('the hook path itself, end to end', () => {
    * The contrast is the gate: a capability that stopped being read would show
    * up as the two agents behaving alike, which no single-agent assertion sees.
    */
-  const runFor = async (symbiont: string): Promise<{ stdout: string; posted: string[] }> => {
+  const runFor = async (symbiont: string, verb: HookName = 'user-prompt-submit'): Promise<{ stdout: string; posted: string[] }> => {
     const held = { ...process.env };
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hookarm-'));
     Object.assign(process.env, {
@@ -151,8 +151,13 @@ describe('the hook path itself, end to end', () => {
       const transcript = path.join(home, 'transcript.jsonl');
       fs.writeFileSync(transcript, '');
       const { stdout } = await runHook(
-        'user-prompt-submit',
-        { session_id: SESSION, prompt: 'add a retry', transcript_path: transcript, cwd: home },
+        verb,
+        {
+          session_id: SESSION, prompt: 'add a retry', transcript_path: transcript, cwd: home,
+          // What each turn-row hook needs to have something to write.
+          tool_name: 'Read', tool_input: { file_path: 'a.ts' }, tool_response: 'ok',
+          last_assistant_message: 'done', agent_id: 'sub_1', agent_type: 'general',
+        },
         { fetch: fetchImpl, symbiont, credential: 'env' },
       );
       return { stdout, posted };
@@ -171,6 +176,29 @@ describe('the hook path itself, end to end', () => {
   it('writes the prompt for an agent whose hooks still carry its turn rows', async () => {
     const { posted } = await runFor('claude-code');
     expect(posted).toContain('prompt');
+  });
+
+  /**
+   * Every hook that writes a turn row, not just the prompt one. The gate is
+   * the whole set: `stop`, `post-tool-use` and `subagent-start` each key a row
+   * to the id the prompt hook minted, so one of them left ungated puts the
+   * turn back on two writers with only the conflict signal to show for it.
+   */
+  it('posts nothing from any turn-row hook for a transcript-carrying agent', async () => {
+    for (const verb of ['user-prompt-submit', 'stop', 'post-tool-use', 'subagent-start'] as const) {
+      const { posted } = await runFor('opencode', verb);
+      expect({ verb, posted }).toEqual({ verb, posted: [] });
+    }
+  });
+
+  it('posts a row from those same hooks for an agent whose hooks still carry them', async () => {
+    // The contrast: without it, a capability that stopped being read anywhere
+    // would look identical to one being read everywhere.
+    const seen: string[] = [];
+    for (const verb of ['user-prompt-submit', 'stop', 'post-tool-use'] as const) {
+      seen.push(...(await runFor('claude-code', verb)).posted);
+    }
+    expect(seen.length).toBeGreaterThan(2);
   });
 });
 

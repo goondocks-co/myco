@@ -498,7 +498,7 @@ const RegistrationSchema = z.object({
   settingsFormat: z.enum(['json', 'toml']).default('json'),
   /** Instruction file that stubs out to AGENTS.md. Only for agents that don't read AGENTS.md natively. */
   instructionsFile: z.string().optional(),
-});
+}).strict();
 
 /**
  * Declarative description of a tool call that performs a file read, used by

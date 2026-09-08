@@ -29,6 +29,7 @@ import path from 'node:path';
 import { BUFFER_QUARANTINE_DIRNAME, pruneQuarantinedBuffers, quarantineBufferFile } from '../capture/buffer.js';
 import { longestDeclaredHookTimeoutMs } from './budget.js';
 import { MEMBER_DIR_MODE, MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS, MEMBER_TRANSCRIPT_RETENTION_MS } from './constants.js';
+import { resolveMycoHome } from '../paths/home.js';
 import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
 import { expandRoot } from '../symbionts/transcript-discovery.js';
 import { readSessionState, removeSessionState } from './session-state.js';
@@ -71,6 +72,19 @@ export function memberOwnedTranscriptRoots(env: NodeJS.ProcessEnv = process.env)
  */
 export function prunePluginTranscripts(now: number = Date.now(), env: NodeJS.ProcessEnv = process.env): number {
   let pruned = 0;
+  // A claim names the instance that speaks for a session. It outlives nothing:
+  // once past the window no runtime holds it and no transcript needs it.
+  const claims = path.join(resolveMycoHome({ env }), 'member', 'claims');
+  try {
+    for (const entry of fs.readdirSync(claims, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.lock')) continue;
+      const file = path.join(claims, entry.name);
+      try {
+        if (now - fs.statSync(file).mtimeMs < MEMBER_TRANSCRIPT_RETENTION_MS) continue;
+        fs.unlinkSync(file);
+      } catch { /* already gone */ }
+    }
+  } catch { /* no claims taken on this machine */ }
   for (const root of memberOwnedTranscriptRoots(env)) {
     let entries: fs.Dirent[];
     try {

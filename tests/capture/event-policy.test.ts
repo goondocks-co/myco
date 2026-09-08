@@ -1,6 +1,4 @@
 import { describe, expect, it } from 'bun:test';
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   CAPTURE_EVENT_POLICY,
   REPLAYABLE_EVENT_TYPES,

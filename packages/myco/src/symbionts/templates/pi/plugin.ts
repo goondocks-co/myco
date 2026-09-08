@@ -16,7 +16,7 @@
  */
 // myco:plugin-marker — Myco owns this file; `myco remove` deletes it while it carries this line.
 import { execFileSync } from "node:child_process";
-import { accessSync, appendFileSync, closeSync, constants as fsConstants, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
+import { accessSync, appendFileSync, closeSync, constants as fsConstants, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
@@ -40,8 +40,9 @@ import { Type } from "@sinclair/typebox";
 //
 // Contract: the containing file has already defined imports for
 //   `readFileSync`, `appendFileSync`, `mkdirSync`, `statSync`, `accessSync`,
-//   `openSync`, `closeSync`, `constants as fsConstants`, `join`, `dirname`,
-//   `resolve`, `homedir`, `execFileSync`
+//   `openSync`, `closeSync`, `writeSync`, `unlinkSync`,
+//   `constants as fsConstants`, `join`, `dirname`, `resolve`, `homedir`,
+//   `execFileSync`
 // and nothing else from the outer file.
 //
 // Export discipline: opencode's legacy-plugin loader throws on any module
@@ -192,33 +193,75 @@ function transcriptPathFor(directory: string, agent: string, sessionId: string):
 }
 
 /**
- * Claim this session's transcript for this module instance.
+ * Where a session's writer records that it holds the session.
+ *
+ * Beside the transcripts rather than among them: a lock is not a transcript
+ * and must not be discovered, parsed or aged as one.
+ */
+function claimPathFor(directory: string, agent: string, sessionId: string): string {
+  return join(resolveMycoHome(directory), "member", "claims", `${agent}-${sessionId}.lock`);
+}
+
+/**
+ * Whether this instance is the one that speaks for this session.
  *
  * A project-local plugin and a global one can both load for one session, and
- * both are legitimately Myco's. Two writers would mint two prompt ids and
- * append two lines per turn under one transcript identity, which the server
- * reads as real content — the doubling this design exists to remove, arriving
- * by install topology instead.
+ * both are legitimately Myco's. Two participants would mint two prompt ids,
+ * append two lines per turn under one transcript identity and inject two
+ * context blocks — the doubling this design removes, arriving by install
+ * topology instead. One instance holds the session; the others stay silent.
  *
- * The claim is the file: the first writer creates it exclusively and records
- * the claim, and a second instance finding a file it did not create stays
- * silent for that session. `wx` is atomic on every platform Myco installs on,
- * so the race resolves without a lock file to clean up.
+ * The claim names a LIVE writer, not a file that exists. Claiming by the
+ * transcript's existence would hand every resumed session to nobody: the
+ * runtime that reopens `--session`/`--resume` finds a file it did not create
+ * and would fall silent for the whole session. So the holder records its pid
+ * in a sidecar taken with `wx`, and an instance finding a pid that is gone
+ * takes the session over.
+ *
+ * Decided once per session per process: a claim that changed hands mid-session
+ * would interleave two writers into one transcript.
  */
 const claimedSessions = new Map<string, boolean>();
 
-function holdsTranscriptClaim(directory: string, agent: string, sessionId: string): boolean {
+function livePid(raw: string): boolean {
+  const pid = Number.parseInt(raw.trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means a live process this user may not signal; only ESRCH is gone.
+    return (error as { code?: string })?.code === "EPERM";
+  }
+}
+
+function takeClaim(claimPath: string): boolean {
+  try {
+    const handle = openSync(claimPath, "wx");
+    writeSync(handle, String(process.pid));
+    closeSync(handle);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function holdsSessionClaim(directory: string, agent: string, sessionId: string): boolean {
   const held = claimedSessions.get(sessionId);
   if (held !== undefined) return held;
-  const filePath = transcriptPathFor(directory, agent, sessionId);
-  let claimed: boolean;
+  const claimPath = claimPathFor(directory, agent, sessionId);
+  let claimed = false;
   try {
-    mkdirSync(dirname(filePath), { recursive: true });
-    closeSync(openSync(filePath, "wx"));
-    claimed = true;
+    mkdirSync(dirname(claimPath), { recursive: true });
+    claimed = takeClaim(claimPath);
+    if (!claimed && !livePid(readFileSync(claimPath, "utf-8"))) {
+      // The holder is gone: a resumed session, or one whose runtime was killed.
+      unlinkSync(claimPath);
+      claimed = takeClaim(claimPath);
+    }
   } catch {
-    // Either another instance created it, or the directory is unwritable; both
-    // mean this instance does not write.
+    // An unreadable or unwritable claim directory means this instance does not
+    // speak for the session; capture is degraded rather than duplicated.
     claimed = false;
   }
   claimedSessions.set(sessionId, claimed);
@@ -240,9 +283,10 @@ function appendTranscriptLine(
   sessionId: string,
   record: Record<string, unknown>,
 ): void {
-  if (!holdsTranscriptClaim(directory, agent, sessionId)) return;
+  if (!holdsSessionClaim(directory, agent, sessionId)) return;
   const filePath = transcriptPathFor(directory, agent, sessionId);
   try {
+    mkdirSync(dirname(filePath), { recursive: true });
     appendFileSync(filePath, `${JSON.stringify({ v: MYCO_TRANSCRIPT_FORMAT, ...record })}\n`, "utf-8");
   } catch {
     // A transcript that cannot be written loses capture for this turn. It must
@@ -269,9 +313,14 @@ function appendTranscriptLine(
 function runMycoHook(
   directory: string,
   agent: string,
+  sessionId: string,
   verb: string,
   payload: Record<string, unknown>,
 ): { additionalContext?: string; promptId?: string } | null {
+  // The instance that does not speak for this session runs nothing: a second
+  // participant would spawn a second hook per turn, mint an id nothing uses
+  // and place a second context block in front of the model.
+  if (!holdsSessionClaim(directory, agent, sessionId)) return null;
   try {
     const stdout = execFileSync(
       resolveMycoBinary(directory),
@@ -414,7 +463,7 @@ export default function (pi: any) {
     const transcriptPath = ctx?.sessionFile;
     if (!transcriptPath) return;
     const sessionId = deriveSessionId(transcriptPath);
-    const answer = runMycoHook(directory, AGENT, "session-start", {
+    const answer = runMycoHook(directory, AGENT, sessionId, "session-start", {
       session_id: sessionId,
       transcript_path: transcriptPath,
       cwd: directory,
@@ -436,7 +485,7 @@ export default function (pi: any) {
     const transcriptPath = ctx?.sessionFile;
     const text = ctx?.message?.content;
     if (!transcriptPath || typeof text !== "string" || !text.trim()) return undefined;
-    const answer = runMycoHook(directory, AGENT, "user-prompt-submit", {
+    const answer = runMycoHook(directory, AGENT, deriveSessionId(transcriptPath), "user-prompt-submit", {
       session_id: deriveSessionId(transcriptPath),
       transcript_path: transcriptPath,
       prompt: text,
@@ -450,7 +499,7 @@ export default function (pi: any) {
   pi.on("agent_end", async (ctx: { sessionFile?: string }) => {
     const transcriptPath = ctx?.sessionFile;
     if (!transcriptPath) return;
-    runMycoHook(directory, AGENT, "stop", {
+    runMycoHook(directory, AGENT, deriveSessionId(transcriptPath), "stop", {
       session_id: deriveSessionId(transcriptPath),
       transcript_path: transcriptPath,
       cwd: directory,
@@ -460,7 +509,7 @@ export default function (pi: any) {
   pi.on("session_shutdown", async (ctx: { sessionFile?: string }) => {
     const transcriptPath = ctx?.sessionFile;
     if (!transcriptPath) return;
-    runMycoHook(directory, AGENT, "session-end", {
+    runMycoHook(directory, AGENT, deriveSessionId(transcriptPath), "session-end", {
       session_id: deriveSessionId(transcriptPath),
       transcript_path: transcriptPath,
       cwd: directory,
@@ -470,7 +519,7 @@ export default function (pi: any) {
   pi.on("session_before_compact", async (ctx: { sessionFile?: string }) => {
     const transcriptPath = ctx?.sessionFile;
     if (!transcriptPath) return;
-    const answer = runMycoHook(directory, AGENT, "post-compact", {
+    const answer = runMycoHook(directory, AGENT, deriveSessionId(transcriptPath), "post-compact", {
       session_id: deriveSessionId(transcriptPath),
       transcript_path: transcriptPath,
       cwd: directory,

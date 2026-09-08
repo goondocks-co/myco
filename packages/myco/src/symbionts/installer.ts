@@ -1854,6 +1854,23 @@ export class SymbiontInstaller {
   }
 
   /**
+   * Refuse a rendered template that still carries an install-time placeholder.
+   *
+   * Checking for the one placeholder this method just substituted can never
+   * fire. A template that drifts to a name nothing substitutes renders a
+   * plugin that runs `--credential {{…}}`, and the hook runner reports a
+   * failed spawn as an absent binary — so the install looks clean and captures
+   * nothing.
+   */
+  private refuseUnsubstituted(rendered: string, what: string): string {
+    const left = /\{\{[A-Za-z0-9_.-]+\}\}/.exec(rendered);
+    if (left !== null) {
+      throw new Error(`Refusing to emit ${what} for symbiont ${this.manifest.name}: ${left[0]} was not substituted`);
+    }
+    return rendered;
+  }
+
+  /**
    * Walk a JSON hooks template and substitute install-time placeholders.
    *
    * Two placeholders today:
@@ -1913,10 +1930,7 @@ export class SymbiontInstaller {
       this.substituteMycoLauncher(this.injectSharedPluginHelpers(templateContent)),
       source,
     );
-    if (rendered.includes(CREDENTIAL_SOURCE_PLACEHOLDER)) {
-      throw new Error(`Refusing to emit a plugin for ${this.manifest.name}: the credential source was not substituted`);
-    }
-    return rendered;
+    return this.refuseUnsubstituted(rendered, 'a plugin');
   }
 
   private installPluginHookFile(): boolean {
@@ -1955,7 +1969,10 @@ export class SymbiontInstaller {
       const substituted = this.resolveHookTemplatePlaceholders(parsed);
       resolved = JSON.stringify(substituted, null, 2) + '\n';
     } else {
-      resolved = this.substituteCredentialSource(this.substituteMycoLauncher(withHelpers));
+      resolved = this.refuseUnsubstituted(
+        this.substituteCredentialSource(this.substituteMycoLauncher(withHelpers)),
+        'a plugin file',
+      );
     }
 
     return this.writeManagedFile(

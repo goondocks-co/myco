@@ -118,14 +118,13 @@ describe('native plugin transcripts', () => {
    * would make every transcript for these agents unattributable, and nothing
    * would announce it.
    */
-  it('resolves every declared cwd path out of a real transcript head', async () => {
+  it('resolves every declared cwd path out of the bytes each agent really writes', async () => {
     // Attribution opens the file and reads a bounded head — 64 KiB, then its
     // first 40 lines — taking the first line where the declared dot path hits.
-    // This runs that read against real bytes for each agent: the fixture the
-    // parser is proven on for Pi, and a transcript the shipped plugin writes
-    // for the two whose plugin writes one. A `session` record that stopped
-    // being first would make every transcript for that agent unattributable
-    // with nothing to show for it.
+    // The bytes here are not composed by this test: for the two agents whose
+    // plugin writes a transcript, the shipped plugin's own session record is
+    // produced by running its template; for Pi they are the fixture its parser
+    // is proven on. Renaming the record's `cwd` key fires this.
     const HEAD_BYTES = 64 * 1024;
     const MAX_HEADER_LINES = 40;
     const readCwd = (file: string, dotPath: string): unknown => {
@@ -147,18 +146,27 @@ describe('native plugin transcripts', () => {
       return undefined;
     };
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cwd-'));
     for (const agent of NATIVE_PLUGIN_AGENTS) {
       const discovery = manifestTranscriptDiscovery(agent)!;
       const dotPath = discovery.transcriptCwdPath;
       expect({ agent, declared: dotPath !== undefined }).toEqual({ agent, declared: true });
 
-      const file = path.join(dir, `${agent}.jsonl`);
+      let file: string;
       if (discovery.retention === 'member') {
-        // The bytes the shipped plugin writes for its first record.
-        fs.writeFileSync(file, `${JSON.stringify({ v: 1, type: 'session', sessionId: 's', agent, cwd: '/repo', at: 'now' })}\n`);
+        // Run the shipped plugin's session-open path and read what it wrote.
+        const env = sandboxEnv();
+        const mod = snippetModule(env);
+        const source = fs.readFileSync(path.join(TEMPLATES, agent, 'plugin.ts'), 'utf-8');
+        const record = source.slice(source.indexOf('type: "session"'));
+        const fields = record.slice(0, record.indexOf('});'));
+        // The record the template composes, evaluated rather than restated.
+        const built = new Function('sessionId', 'AGENT', 'directory', 'nowIso',
+          `return { ${fields.replace(/\bsessionId,/, 'sessionId,').replace(/\bagent: AGENT,/, 'agent: AGENT,')} };`,
+        )('s', agent, '/repo', () => 'now') as Record<string, unknown>;
+        mod.appendTranscriptLine('/repo', agent, 's', built);
+        file = mod.transcriptPathFor('/repo', agent, 's');
       } else {
-        fs.copyFileSync(path.resolve(import.meta.dirname ?? __dirname, '../fixtures/pi-parse-basic.jsonl'), file);
+        file = path.resolve(import.meta.dirname ?? __dirname, '../fixtures/pi-parse-basic.jsonl');
       }
       expect({ agent, cwd: readCwd(file, dotPath!) }).toEqual({ agent, cwd: expect.any(String) });
     }
@@ -185,5 +193,96 @@ describe('pi tool registration', () => {
     // Names come from the member's own catalogue, never spelled here.
     const named = TOOL_DEFINITIONS.map((tool) => tool.name).filter((name) => source.includes(name));
     expect(named).toEqual([]);
+  });
+});
+
+/**
+ * The shipped snippet's own functions, transpiled and run.
+ *
+ * Every gate below drives real plugin code rather than a restatement of it:
+ * a rename or a changed rule inside the snippet moves what these observe.
+ */
+function snippetModule(env: NodeJS.ProcessEnv, spawns: { env?: NodeJS.ProcessEnv; args: string[] }[] = []) {
+  const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8');
+  const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet.split('{{mycoCredentialSource}}').join('registry'));
+  return new Function(
+    'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'accessSync', 'openSync', 'closeSync',
+    'writeSync', 'unlinkSync', 'fsConstants', 'join', 'dirname', 'resolve', 'homedir', 'execFileSync', 'process',
+    `${js}; return { transcriptPathFor, appendTranscriptLine, holdsSessionClaim, runMycoHook };`,
+  )(
+    fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.accessSync, fs.openSync, fs.closeSync,
+    fs.writeSync, fs.unlinkSync, fs.constants, path.join, path.dirname, path.resolve, () => env.HOME,
+    (_bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => { spawns.push({ env: opts?.env, args }); return '{}'; },
+    { ...process, env, platform: process.platform },
+  ) as {
+    transcriptPathFor: (d: string, a: string, s: string) => string;
+    appendTranscriptLine: (d: string, a: string, s: string, r: Record<string, unknown>) => void;
+    holdsSessionClaim: (d: string, a: string, s: string) => boolean;
+    runMycoHook: (d: string, a: string, s: string, v: string, p: Record<string, unknown>) => unknown;
+  };
+}
+
+/** A member home of its own, so one gate's claims and transcripts never reach another's. */
+function sandboxEnv(): NodeJS.ProcessEnv {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-gate-'));
+  return { HOME: home, MYCO_HOME: path.join(home, '.myco') } as NodeJS.ProcessEnv;
+}
+
+describe('one instance speaks for a session', () => {
+  it('lets only the first live instance write, so two installs do not double every turn', () => {
+    const env = sandboxEnv();
+    const first = snippetModule(env);
+    const second = snippetModule(env);
+    for (const mod of [first, second]) {
+      mod.appendTranscriptLine('/repo', 'opencode', 'ses_1', { type: 'prompt', text: 'x' });
+      mod.appendTranscriptLine('/repo', 'opencode', 'ses_1', { type: 'response', text: 'y' });
+    }
+    const written = fs.readFileSync(first.transcriptPathFor('/repo', 'opencode', 'ses_1'), 'utf-8')
+      .split('\n').filter(Boolean).length;
+    expect(written).toBe(2);
+  });
+
+  it('lets a resumed session write, because the claim names a live writer and not a file', () => {
+    const env = sandboxEnv();
+    const first = snippetModule(env);
+    first.appendTranscriptLine('/repo', 'opencode', 'ses_2', { type: 'prompt', text: 'x' });
+
+    // The runtime that held the session is gone; its claim names a dead pid.
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_2.lock');
+    fs.writeFileSync(claim, '2147483646');
+
+    const resumed = snippetModule(env);
+    resumed.appendTranscriptLine('/repo', 'opencode', 'ses_2', { type: 'prompt', text: 'z' });
+    const written = fs.readFileSync(first.transcriptPathFor('/repo', 'opencode', 'ses_2'), 'utf-8')
+      .split('\n').filter(Boolean).length;
+    expect(written).toBe(2);
+  });
+
+  it('runs no hook from an instance that does not hold the session, so nothing injects twice', () => {
+    const env = sandboxEnv();
+    const firstSpawns: { args: string[] }[] = [];
+    const secondSpawns: { args: string[] }[] = [];
+    const first = snippetModule(env, firstSpawns);
+    const second = snippetModule(env, secondSpawns);
+    first.runMycoHook('/repo', 'opencode', 'ses_3', 'user-prompt-submit', {});
+    second.runMycoHook('/repo', 'opencode', 'ses_3', 'user-prompt-submit', {});
+    expect({ first: firstSpawns.length, second: secondSpawns.length }).toEqual({ first: 1, second: 0 });
+  });
+
+  it('tells the binary which home it resolved, so a pinned project keeps one', () => {
+    // The spawned binary reads its home from the environment and walks no pin,
+    // so the side that walked the pin has to name the home it chose.
+    const env = sandboxEnv();
+    const spawns: { env?: NodeJS.ProcessEnv; args: string[] }[] = [];
+    const mod = snippetModule(env, spawns);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-pinned-'));
+    const pinnedHome = path.join(dir, 'dev-home');
+    fs.mkdirSync(path.join(dir, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.myco', 'runtime.home'), pinnedHome);
+    fs.chmodSync(path.join(dir, '.myco', 'runtime.home'), 0o644);
+
+    mod.runMycoHook(dir, 'opencode', 'ses_4', 'session-start', {});
+    expect(spawns).toHaveLength(1);
+    expect(spawns[0].env?.MYCO_HOME).toBe(pinnedHome);
   });
 });
