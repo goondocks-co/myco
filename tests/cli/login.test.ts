@@ -113,7 +113,16 @@ describe('myco login', () => {
     const rig = unjoinedRig();
     expect(await run([], deps(rig))).toBe(false);
     expect(err.join('\n')).toContain('Usage: myco login');
-    // The verb reports the outcome and leaves the process alone; `cli.ts` sets the status.
-    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('reports every refusal without touching the process exit status, which is the dispatcher\'s', async () => {
+    const rig = unjoinedRig();
+    // Compared against what it was, never against a literal: the exit status is a
+    // global this file shares with every other file in its test process.
+    const before = process.exitCode;
+    for (const args of [[], ['nonsense'], ['https://s/join#short']]) {
+      expect({ args, ok: await run(args, deps(rig)) }).toEqual({ args, ok: false });
+      expect({ args, exitCode: process.exitCode }).toEqual({ args, exitCode: before });
+    }
   });
 });
