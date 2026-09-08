@@ -1,0 +1,24 @@
+{
+  "name": "goondocks",
+  "owner": {
+    "name": "Goondocks",
+    "url": "https://myco.sh"
+  },
+  "plugins": [
+    {
+      "name": "myco",
+      "source": "./plugins/myco",
+      "description": "Your project's memory: the sessions that happened, the durable observations drawn from them, and the plans. Skills and tools for reading why the code is the way it is, and for recording what you learn.",
+      "version": "0.0.0-dev",
+      "license": "Apache-2.0",
+      "homepage": "https://myco.sh",
+      "keywords": [
+        "myco",
+        "memory",
+        "context",
+        "sessions",
+        "spores"
+      ]
+    }
+  ]
+}

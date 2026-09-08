@@ -1,5 +1,5 @@
 // Shared helpers for the source-tree → TypeScript bundle codegen scripts
-// (gen-templates.mjs, gen-skills.mjs). Both embed a directory tree into a
+// (gen-templates.mjs, gen-plugin-bundle.ts). Both embed a directory tree into a
 // generated .ts file as JSON string literals; only the per-entry serialization
 // differs (flat `Record<relPath, content>` vs nested
 // `Record<skillName, Record<relPath, content>>`). Everything else — tree walk,

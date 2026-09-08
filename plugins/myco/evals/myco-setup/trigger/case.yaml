@@ -1,0 +1,11 @@
+# Should invoke the `myco-setup` skill.
+name: myco-setup-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Myco tools answer but none of my sessions are being recorded. Set it up properly.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-setup
+    with_only: true

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "myco": {
+      "type": "http",
+      "url": "${DEPLOYMENT_URL}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ACCESS_KEY}"
+      }
+    }
+  }
+}

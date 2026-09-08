@@ -1,0 +1,11 @@
+# Should invoke the `myco` skill.
+name: myco-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Why was this approach chosen here rather than the obvious alternative? Check whether a prior session already decided it.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco
+    with_only: true

@@ -24,6 +24,7 @@
       "@goondocks/myco-shared/recall": ["./packages/myco-shared/src/recall.ts"],
       "@goondocks/myco-shared/repository": ["./packages/myco-shared/src/repository.ts"],
       "@goondocks/myco-shared/canopy": ["./packages/myco-shared/src/canopy.ts"],
+      "@goondocks/myco-shared/skills": ["./packages/myco-shared/src/skills.generated.ts"],
       "@goondocks/myco-shared/skill-candidates": ["./packages/myco-shared/src/skill-candidates.ts"],
       "react": ["./node_modules/react"],
       "react-dom": ["./node_modules/react-dom"],

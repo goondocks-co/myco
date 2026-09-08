@@ -63,6 +63,10 @@ Already have Node? `npm install -g @goondocks/myco` also works — it's a thin b
 
 Provider configuration is optional at install time. Capture and full-text search work immediately; spores, digests, semantic search, Canopy summaries, and skill lifecycle features become active after you configure intelligence and embedding providers in the dashboard.
 
+### Plugin only
+
+If your team already runs a Myco deployment and you only want to read from it, install the Myco plugin from your agent's plugin marketplace instead. It carries the skills and the Myco tools and needs no binary: paste your deployment's URL and an access key when the plugin asks, and the tools answer. Sessions are not captured until you install the binary as well, and the `/myco-setup` skill walks through that when you want it.
+
 See [Quickstart](docs/quickstart.md) for setup details and platform notes, and [Self-hosting](docs/self-hosting.md) to run your own server on a laptop or a virtual machine.
 
 ## Upgrade
