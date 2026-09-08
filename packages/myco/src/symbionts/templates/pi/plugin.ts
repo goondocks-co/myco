@@ -192,6 +192,12 @@ function transcriptPathFor(directory: string, agent: string, sessionId: string):
   return join(resolveMycoHome(directory), "member", "transcripts", agent, `${sessionId}.jsonl`);
 }
 
+/** How long a claim may go untouched before another instance may take the session. */
+const CLAIM_STALE_MS = 15 * 60 * 1000;
+
+/** How often a holder rewrites its claim while it is writing. */
+const CLAIM_TOUCH_MS = 30 * 1000;
+
 /**
  * Where a session's writer records that it holds the session.
  *
@@ -211,34 +217,50 @@ function claimPathFor(directory: string, agent: string, sessionId: string): stri
  * context blocks — the doubling this design removes, arriving by install
  * topology instead. One instance holds the session; the others stay silent.
  *
- * The claim names a LIVE writer, not a file that exists. Claiming by the
- * transcript's existence would hand every resumed session to nobody: the
- * runtime that reopens `--session`/`--resume` finds a file it did not create
- * and would fall silent for the whole session. So the holder records its pid
- * in a sidecar taken with `wx`, and an instance finding a pid that is gone
- * takes the session over.
+ * The claim names a writer that is STILL WRITING, which is neither a file that
+ * exists nor a pid that answers:
  *
- * Decided once per session per process: a claim that changed hands mid-session
- * would interleave two writers into one transcript.
+ *   - Claiming by the transcript's existence hands every resumed session to
+ *     nobody, since the runtime that reopens `--session`/`--resume` finds a
+ *     file it did not create.
+ *   - Claiming by a pid alone hands a session to nobody whenever that pid is
+ *     recycled onto an unrelated live process, which on Linux takes hours on a
+ *     busy machine, and the session then captures nothing for its whole life.
+ *
+ * So the holder rewrites its claim as it writes, and a claim left untouched
+ * past `CLAIM_STALE_MS` is taken over whatever pid it names. A holder verifies
+ * it still owns the claim before each append, so a takeover that guessed wrong
+ * costs one writer rather than producing two.
  */
 const claimedSessions = new Map<string, boolean>();
+const claimTouchedAt = new Map<string, number>();
 
-function livePid(raw: string): boolean {
-  const pid = Number.parseInt(raw.trim(), 10);
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+/** The pid a claim names, or null when the claim is absent or unreadable. */
+function claimHolder(claimPath: string): { pid: number; at: number } | null {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM means a live process this user may not signal; only ESRCH is gone.
-    return (error as { code?: string })?.code === "EPERM";
+    const [pid, at] = readFileSync(claimPath, "utf-8").trim().split(/\s+/);
+    const parsed = Number.parseInt(pid, 10);
+    if (!Number.isInteger(parsed) || parsed <= 0) return null;
+    return { pid: parsed, at: Number.parseInt(at ?? "0", 10) || 0 };
+  } catch {
+    return null;
+  }
+}
+
+function writeClaim(claimPath: string): void {
+  try {
+    const handle = openSync(claimPath, "w");
+    writeSync(handle, `${process.pid} ${Date.now()}`);
+    closeSync(handle);
+  } catch {
+    // A claim that cannot be rewritten ages out and the session is taken over.
   }
 }
 
 function takeClaim(claimPath: string): boolean {
   try {
     const handle = openSync(claimPath, "wx");
-    writeSync(handle, String(process.pid));
+    writeSync(handle, `${process.pid} ${Date.now()}`);
     closeSync(handle);
     return true;
   } catch {
@@ -247,25 +269,72 @@ function takeClaim(claimPath: string): boolean {
 }
 
 function holdsSessionClaim(directory: string, agent: string, sessionId: string): boolean {
-  const held = claimedSessions.get(sessionId);
+  const key = `${agent}-${sessionId}`;
+  const held = claimedSessions.get(key);
   if (held !== undefined) return held;
   const claimPath = claimPathFor(directory, agent, sessionId);
   let claimed = false;
   try {
-    mkdirSync(dirname(claimPath), { recursive: true });
+    mkdirSync(dirname(claimPath), { recursive: true, mode: 0o700 });
     claimed = takeClaim(claimPath);
-    if (!claimed && !livePid(readFileSync(claimPath, "utf-8"))) {
-      // The holder is gone: a resumed session, or one whose runtime was killed.
-      unlinkSync(claimPath);
-      claimed = takeClaim(claimPath);
+    if (!claimed) {
+      const holder = claimHolder(claimPath);
+      // Stale beyond any gap a writing instance leaves, or naming nothing
+      // readable: the session is free whatever pid is recorded.
+      if (holder === null || Date.now() - holder.at > CLAIM_STALE_MS) {
+        try { unlinkSync(claimPath); } catch { /* another instance took it first */ }
+        claimed = takeClaim(claimPath);
+      }
     }
   } catch {
-    // An unreadable or unwritable claim directory means this instance does not
-    // speak for the session; capture is degraded rather than duplicated.
     claimed = false;
   }
-  claimedSessions.set(sessionId, claimed);
+  claimedSessions.set(key, claimed);
+  if (claimed) claimTouchedAt.set(key, Date.now());
   return claimed;
+}
+
+/**
+ * Whether this instance still holds the session, rewriting its claim as it
+ * goes. A holder whose claim now names another process stops writing: the
+ * other instance took a session this one appeared to have abandoned, and two
+ * writers under one transcript identity is the outcome being avoided.
+ */
+function keepsSessionClaim(directory: string, agent: string, sessionId: string): boolean {
+  if (!holdsSessionClaim(directory, agent, sessionId)) return false;
+  const key = `${agent}-${sessionId}`;
+  const claimPath = claimPathFor(directory, agent, sessionId);
+  const holder = claimHolder(claimPath);
+  if (holder !== null && holder.pid !== process.pid) {
+    claimedSessions.set(key, false);
+    noteOnce(key, `another instance took session ${sessionId}; this one stops writing`);
+    return false;
+  }
+  const touched = claimTouchedAt.get(key) ?? 0;
+  if (Date.now() - touched >= CLAIM_TOUCH_MS) {
+    writeClaim(claimPath);
+    claimTouchedAt.set(key, Date.now());
+  }
+  return true;
+}
+
+/**
+ * One line on stderr per session per subject.
+ *
+ * Capture that stops has to say so somewhere a person can find it. Repeating
+ * it per record would bury the harness's own output, so each subject speaks
+ * once for the session it concerns.
+ */
+const noted = new Set<string>();
+
+function noteOnce(key: string, message: string): void {
+  if (noted.has(key)) return;
+  noted.add(key);
+  try {
+    process.stderr.write(`[myco] ${message}\n`);
+  } catch {
+    // A harness that closed stderr is not a reason to fail capture.
+  }
 }
 
 /**
@@ -283,14 +352,15 @@ function appendTranscriptLine(
   sessionId: string,
   record: Record<string, unknown>,
 ): void {
-  if (!holdsSessionClaim(directory, agent, sessionId)) return;
+  if (!keepsSessionClaim(directory, agent, sessionId)) return;
   const filePath = transcriptPathFor(directory, agent, sessionId);
   try {
-    mkdirSync(dirname(filePath), { recursive: true });
+    mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
     appendFileSync(filePath, `${JSON.stringify({ v: MYCO_TRANSCRIPT_FORMAT, ...record })}\n`, "utf-8");
-  } catch {
-    // A transcript that cannot be written loses capture for this turn. It must
-    // never take the harness down with it.
+  } catch (error) {
+    // Capture for this session is lost. It must never take the harness down
+    // with it, and it must not be lost quietly.
+    noteOnce(`write-${agent}-${sessionId}`, `cannot write ${filePath}: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
   }
 }
 
@@ -339,7 +409,8 @@ function runMycoHook(
     if (!trimmed) return {};
     if (!trimmed.startsWith("{")) return { additionalContext: trimmed };
     return JSON.parse(trimmed) as { additionalContext?: string; promptId?: string };
-  } catch {
+  } catch (error) {
+    noteOnce(`hook-${agent}-${sessionId}`, `could not run \`myco hook\`: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
     return null;
   }
 }

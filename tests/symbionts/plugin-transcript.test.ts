@@ -220,6 +220,7 @@ function snippetModule(env: NodeJS.ProcessEnv, spawns: { env?: NodeJS.ProcessEnv
     appendTranscriptLine: (d: string, a: string, s: string, r: Record<string, unknown>) => void;
     holdsSessionClaim: (d: string, a: string, s: string) => boolean;
     runMycoHook: (d: string, a: string, s: string, v: string, p: Record<string, unknown>) => unknown;
+    CLAIM_STALE_MS: number;
   };
 }
 
@@ -263,6 +264,50 @@ describe('one instance speaks for a session', () => {
     const written = fs.readFileSync(first.transcriptPathFor('/repo', 'opencode', 'ses_2'), 'utf-8')
       .split('\n').filter(Boolean).length;
     expect(written).toBe(2);
+  });
+
+  it('takes over a session whose claim went stale, whatever pid it names', () => {
+    // A pid recycled onto an unrelated live process would otherwise hold a
+    // session nobody is writing, and that session would capture nothing for
+    // its whole life. The claim records when it was last written, so liveness
+    // is "still writing" rather than "a pid answers".
+    const env = sandboxEnv();
+    const mod = snippetModule(env);
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_stale.lock');
+    fs.mkdirSync(path.dirname(claim), { recursive: true });
+    // This process is live and is not the holder: exactly the recycled-pid case.
+    fs.writeFileSync(claim, `${process.pid} ${Date.now() - mod.CLAIM_STALE_MS - 1000}`);
+
+    expect(mod.holdsSessionClaim('/repo', 'opencode', 'ses_stale')).toBe(true);
+    mod.appendTranscriptLine('/repo', 'opencode', 'ses_stale', { type: 'prompt', text: 'x' });
+    expect(fs.readFileSync(mod.transcriptPathFor('/repo', 'opencode', 'ses_stale'), 'utf-8').split('\n').filter(Boolean)).toHaveLength(1);
+  });
+
+  it('leaves a freshly touched claim alone, so a live writer is never displaced', () => {
+    const env = sandboxEnv();
+    const mod = snippetModule(env);
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_fresh.lock');
+    fs.mkdirSync(path.dirname(claim), { recursive: true });
+    fs.writeFileSync(claim, `${process.pid} ${Date.now()}`);
+
+    expect(mod.holdsSessionClaim('/repo', 'opencode', 'ses_fresh')).toBe(false);
+    mod.appendTranscriptLine('/repo', 'opencode', 'ses_fresh', { type: 'prompt', text: 'x' });
+    expect(fs.existsSync(mod.transcriptPathFor('/repo', 'opencode', 'ses_fresh'))).toBe(false);
+  });
+
+  it('stops writing when another instance has taken the session', () => {
+    // The other half of a takeover: the instance that lost the session must
+    // not keep appending beside the one that took it.
+    const env = sandboxEnv();
+    const first = snippetModule(env);
+    expect(first.holdsSessionClaim('/repo', 'opencode', 'ses_lost')).toBe(true);
+    first.appendTranscriptLine('/repo', 'opencode', 'ses_lost', { type: 'prompt', text: 'one' });
+
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_lost.lock');
+    fs.writeFileSync(claim, `${process.pid + 1} ${Date.now()}`);
+
+    first.appendTranscriptLine('/repo', 'opencode', 'ses_lost', { type: 'prompt', text: 'two' });
+    expect(fs.readFileSync(first.transcriptPathFor('/repo', 'opencode', 'ses_lost'), 'utf-8').split('\n').filter(Boolean)).toHaveLength(1);
   });
 
   it('runs no hook from an instance that does not hold the session, so nothing injects twice', () => {
