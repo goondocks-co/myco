@@ -17,7 +17,7 @@
  * dashboard and the server drift while both compile.
  */
 import { describe, expect, it } from 'bun:test';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -81,6 +81,20 @@ describe('a dashboard reaches only what its build carries', () => {
     const dockerfile = readFileSync(join(ROOT, DOCKERFILE), 'utf8');
     for (const carried of CARRIED_BY_NAME) {
       expect({ carried, copied: dockerfile.includes(`COPY ${carried} `) }).toEqual({ carried, copied: true });
+    }
+  });
+
+  it('builds every subpath the shared package exports, so a consumer resolving through the map finds one', () => {
+    // The build's entry points are the exports map itself. A subpath exported
+    // without an output resolves from source everywhere the tests look and
+    // fails only where a consumer resolves through the map.
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'packages/myco-shared/package.json'), 'utf8')) as { exports: Record<string, { import?: string }> };
+    const build = readFileSync(join(ROOT, 'packages/myco-shared/scripts/build.mjs'), 'utf8');
+    expect(build).toContain('pkg.exports');
+    for (const entry of Object.values(pkg.exports)) {
+      if (typeof entry.import !== 'string') continue;
+      const source = entry.import.replace(/^\.\/dist\//, 'packages/myco-shared/src/').replace(/\.js$/, '.ts');
+      expect({ source, exists: existsSync(join(ROOT, source)) }).toEqual({ source, exists: true });
     }
   });
 
