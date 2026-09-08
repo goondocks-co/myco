@@ -319,7 +319,7 @@ describe('token refresh', () => {
   it('refuses an expired or a revoked token on the refresh route like any other: 401 without a row written', async () => {
     const r = await rig();
     const revoked = await issueMemberToken(r.e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, T0);
-    await revokeCredentialAsMember(r.e.db, 'mem_machine_1', revoked.tokenId, T0 + 1);
+    await revokeCredentialAsMember(r.e.db, { id: 'mem_machine_1', label: 'machine_1', role: 'admin' }, revoked.tokenId, T0 + 1);
     r.clock.now = WINDOW_OPENS;
     expect((await r.refresh(revoked.token)).status).toBe(401);
     r.clock.now = r.root.expiresAt;

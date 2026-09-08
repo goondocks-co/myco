@@ -46,7 +46,7 @@ function fixture() {
 
 /** A dispatched run of a task, recorded the way the dispatcher records one. */
 async function dispatched(f: ReturnType<typeof fixture>, id: string, task: string, context: Record<string, unknown>, at = NOW): Promise<void> {
-  await ensureMember(f.db, HARNESS_MEMBER_ID, at, 'harness runtime');
+  await ensureMember(f.db, HARNESS_MEMBER_ID, at, 'member', 'harness runtime');
   const minted = await issueMemberToken(f.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, at);
   await recordDispatch(f.db, SCOPE, {
     id, agentId: 'myco-agent', task, provider: 'openai-compatible', model: 'm',
@@ -171,7 +171,7 @@ describe('the run that stands in for a replaced one', () => {
 describe('what a runtime may add to a run it did not dispatch', () => {
   async function runtime() {
     const f = fixture();
-    await ensureMember(f.db, HARNESS_MEMBER_ID, NOW, 'harness runtime');
+    await ensureMember(f.db, HARNESS_MEMBER_ID, NOW, 'member', 'harness runtime');
     const minted = await issueMemberToken(f.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, Date.now());
     await recordDispatch(f.db, SCOPE, {
       id: 'run_live', agentId: 'myco-agent', task: 'container-smoke', provider: 'openai-compatible', model: 'm',

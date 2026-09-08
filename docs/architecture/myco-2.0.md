@@ -214,7 +214,7 @@ Actors follow [`actors-and-boundaries.md`](actors-and-boundaries.md): the **Myco
 | **Install** | Plugin alone → skills + MCP tools; the installer adds binary + hooks + capture + worker (**M**) | — | — | — | — |
 | **Setup** | The setup skill — install, log in or join, enable hooks, verify with `doctor` (**M** → **Core**) | — | — | `myco server create` (**W**/**C**) | — |
 | **Server operation** | — | — | — | `myco server update\|inspect\|rotate\|backup\|adopt\|restore\|remove\|github-app` (**W**/**C**; `github-app` registers the dashboard's sign-in app on GitHub from a manifest and installs its credentials) | — |
-| **Enrollment** | Invite link or `myco login <url>` → Member Credential; a sandbox exchanges its join code (**Core**) | — | — | Issues invites and join codes (**Core**, **UI**) | Receives a project-scoped grant: read plus spore create/supersede attributed to the grant (**Core**) |
+| **Enrollment** | Invite link or `myco login <url>` → Member Credential at the role the invitation grants; a sandbox exchanges its join code from `MYCO_JOIN_CODE` (**Core**) | — | — | An **admin** issues invites and join codes, naming the role and the Project each binds (**Core**, **UI**) | Receives a project-scoped grant: read plus spore create/supersede attributed to the grant (**Core**) |
 | **Capture** | — | Hooks write-ahead to spool, drain to Deployment (**M** → **Core**) | — | — | none |
 | **Intelligence** | Views results (**UI**) | Reads via MCP (**MCP**) | Runs outcomes on an attached worker under a run-scoped credential (**M** + **Core**) | — | Writes spores under a grant (**MCP**) |
 | **Recall** | — | Session-start `instructions.template` and prompt-submit injection (**Core**) | — | — | Project-scoped MCP under a grant (**MCP**) |
@@ -285,6 +285,7 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 | Command | Disposition | Surface | Blk | Replacement / reason | Owner |
 |---|---|---|---|---|---|
 | `member` | KEEP | M | Blk | Already the 2.0 surface; gains Deployment-aware join | #916 |
+| `login` | KEEP | M | Blk | Redeems a single-use expiring invite link for this machine's membership; a sandbox exchanges the same string from `MYCO_JOIN_CODE` instead (plan §2.7) | #1158 |
 | `server` | KEEP | C, W | Blk | The operator surface for both front doors: the self-hosted binary under `--target local` — `create`, `run`, `install`, `uninstall`, `status`, `update`, `destroy`, no container runtime and no Node on the machine that serves — and Cloudflare provisioning reduced to one verb over a prebuilt bundle (plan §2.6) | D1, D2 |
 | `settings` | KEEP | M | Blk | Sandbox entry point; #927's proof runs through it | #917 |
 | `hook` | KEEP | M | Blk | The capture entry point | #917 |
@@ -325,7 +326,7 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 
 **Not yet proven for the self-hosted binary.** Two claims in §3.3's C column are held by tests that run against source rather than against a released artifact: the compiled binary is built in CI but never executed there, and the carried SQLite library is exercised only where the build has staged it (CI stages it; a fresh checkout does not, and the gate fails rather than skips when `CI` is set). Both close with the release gate in §8, not with the child that added them.
 
-**Planned additions.** Laptop mode's first member arrives with **#1158**: a Deployment created by `myco server create --target local` holds no member until an invite can be minted, and the start path exposes its `ServerEnv` for the first-start bootstrap that mints one. Three verbs land with their code and take rows then: `myco worker` (worker mode — long-poll claim, lease with heartbeat, harness detection; the laptop server process runs one in-process, plan §2.5, **#1151**); `myco login <url>` (exchanges an invite for a member credential, while a sandbox exchanges its join code instead, plan §2.7, **#1158**); `myco import` (the repeatable backfill behind the join-time pass — newest 50 sessions per harness within 30 days, content-hash dedupe, tombstone gate, plan §2.2, **#1148**).
+**Planned additions.** Laptop mode's first member is the one join `myco login` cannot serve: a Deployment created by `myco server create --target local` holds no member until an invite can be minted, and the start path exposes its `ServerEnv` for the first-start bootstrap that mints one (**#1158**, after D1). Two verbs land with their code and take rows then: `myco worker` (worker mode — long-poll claim, lease with heartbeat, harness detection; the laptop server process runs one in-process, plan §2.5, **#1151**); `myco import` (the repeatable backfill behind the join-time pass — newest 50 sessions per harness within 30 days, content-hash dedupe, tombstone gate, plan §2.2, **#1148**).
 
 ### 7.2 Dashboard routes — `packages/myco/ui/src/App.tsx`
 
@@ -429,6 +430,7 @@ The port is `ServerEnv.wake` — "wake me soon", called by requested work — wi
 | Job | Disposition | Surface | Blk | Replacement / reason | Owner |
 |---|---|---|---|---|---|
 | `embedding-reconcile` | REPLACE | Core, W, C | Blk | A tick job against Vectorize / SQLite vectors | #1124 |
+| `invite-expiry` | KEEP | Core | Blk | A tick job reclaiming spent, revoked and expired invitations past the retention window; a live invitation is never touched (plan §2.7) | #1158 |
 | `session-maintenance` | REPLACE | Core | Blk | A tick job: server-side session lifecycle | A3 |
 | `log-retention` | REPLACE | Core | Blk | A tick job over server logs; the member keeps its own log files (**M**) | E1 |
 | `agent-run-retention` | REPLACE | Core | Blk | A tick job; the lifecycle owner for run rows (plan §7) | B3 |
@@ -451,7 +453,7 @@ The port is `ServerEnv.wake` — "wake me soon", called by requested work — wi
 | `routed-transcript-cache-gc` | DROP | — | Blk | Routed capture is a Team Host mechanism; retired with Team | #925 |
 | `routed-event-dedup-prune` | DROP | — | Blk | Routed capture is a Team Host mechanism; retired with Team | #925 |
 
-**Planned additions.** Four tick jobs land with their code and take rows then, one per lifecycle row the plan owes an owner (plan §7): transcript retention, pruning raw segments and their blobs past the Deployment's window (**#1147**); grant expiry (**#1149**); invite expiry (**#1158**); and the worker-lease sweep, which returns a lapsed lease's run to the claim queue so single-flight follows the lease and not the process (**#1151**).
+**Planned additions.** Three tick jobs land with their code and take rows then, one per lifecycle row the plan owes an owner (plan §7): transcript retention, pruning raw segments and their blobs past the Deployment's window (**#1147**); grant expiry (**#1149**); and the worker-lease sweep, which returns a lapsed lease's run to the claim queue so single-flight follows the lease and not the process (**#1151**).
 
 ### 7.6 Data classes — vault schema v76, `packages/myco/src/db/`
 
@@ -510,7 +512,7 @@ Disposition here is about the **data class**, and separately about **migration**
 | `okf_page_revisions` | DROP | DROP | — | Blk | OKF | #925 |
 | `okf_generations` | DROP | DROP | — | Blk | OKF | #925 |
 
-**Planned additions.** Two columns and one table land with their code and take rows then: `plans.source`, the channel a plan version arrived through — a watched path, a tagged message, or an explicit `myco_plans save`, which 1.4 infers from key shapes (plan §2.3, **#1147**); `spores.agent_line`, the ≈40-token trigger → guidance projection that injection and search previews render instead of the Markdown, backfilled once under a cost ceiling and re-derived on edit (plan §2.4, **#1150**); and `invites`, single-use expiring invite links issued from the dashboard and redeemed by `myco login` (plan §2.7, **#1158**).
+**Planned additions.** Four columns land with their code and take rows then: `plans.source`, the channel a plan version arrived through — a watched path, a tagged message, or an explicit `myco_plans save`, which 1.4 infers from key shapes (plan §2.3, **#1147**); `spores.agent_line`, the ≈40-token trigger → guidance projection that injection and search previews render instead of the Markdown, backfilled once under a cost ceiling and re-derived on edit (plan §2.4, **#1150**); and `enrollment_authorities.role` and `.project_id`, what an invitation grants and the Project it binds a sandbox to — the single-use expiring invitation itself already has this table, so #1158 adds the two columns rather than a second one (plan §2.7, **#1158**).
 
 ### 7.7 Operational capabilities
 
@@ -549,7 +551,7 @@ Capabilities that are not a single registry token but must still carry a disposi
 - **Session tombstone** (**#1147**) — suppresses a mis-imported session and its derived rows, and blocks re-import (plan §2.2).
 - **Run-scoped MCP credential** (**#1145**) — a third principal kind with `heldRun` per request, a per-run tool allowlist from the task definition enforced at the MCP chokepoint, and run attribution on writes. Today a run token is an ordinary member token (plan §2.5).
 - **Task execution on attached workers** (**#1151**) — long-poll claim, lease with heartbeat, lease expiry returning the run to the queue; a Deployment-preferred harness with a fallback order and a per-task override; a cloud worker's harness credential held in the Deployment's encrypted store and injected per run (plan §2.5).
-- **Invite and join** (**#1158**) — single-use expiring invite links and `myco login <url>` for humans; a join code in the environment for sandboxes and CI, exchanged at first contact for a member credential bound to the Project resolved from the repo remote. Admin and member roles only; revocation kept (plan §2.7).
+- **Invite and join** (**#1158**, landed) — single-use expiring invite links and `myco login <url>` for humans; a join code in `MYCO_JOIN_CODE` for sandboxes and CI, exchanged at first contact for a member credential. The Project is bound when the invitation is **minted**, not resolved from the repo remote at first contact: the normalized-remote leg of Project Resolution (§3.1) belongs to the `project` tool parameter of D1 tenancy, and binding at mint leaves a sandbox with nothing to guess — a code carrying no Project is refused `enrollment_no_project` and stays unspent. Admin and member roles only; revocation kept (plan §2.7).
 - **Eval suite** (**#1154**) — recorded real sessions as fixtures with a redaction gate before commit, a hand-annotated gold set of 30–50 cases, deterministic graders per PR against replayed recordings, and a weekly capped judged run required on releases (plan §2.5, §7).
 - **Grant-attributed spore writes** (**#1149**) — an author column and an agent row per grant, so an external agent's create or supersede carries the grant rather than `user`, optionally citing a PR or commit instead of a session (plan §2.6).
 

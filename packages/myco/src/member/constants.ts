@@ -29,6 +29,7 @@ export const MEMBER_CODES = [
   'unknown_kind', 'unknown_field', 'id_grammar', 'clock_skew', 'event_id_conflict', 'projection_conflict',
   'refresh_too_early', 'lineage_expired',
   'enrollment_unknown', 'enrollment_used', 'enrollment_expired', 'enrollment_revoked', 'identity_claimed',
+  'enrollment_no_project',
   'project_archived',
   'run_scope', 'no_run', 'project_mismatch',
   'unavailable',
@@ -70,6 +71,19 @@ export const isProjectId = (value: string): boolean => PROJECT_ID_PATTERN.test(v
 
 /** Shape of every member token the server mints (32 random bytes as unpadded base64url). */
 export const MEMBER_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+/**
+ * The path a join link carries, and the shape of the invitation key in its
+ * fragment. Both must match what the Deployment mints — a member that admitted a
+ * shape the server refuses would spend a person's invitation on a request no
+ * Deployment can answer — so `tests/member/protocol-pins.test.ts` holds each
+ * against the worker's own export.
+ */
+export const JOIN_PATH = '/join';
+export const ENROLLMENT_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+/** The one variable a sandbox needs: a join link, carrying the Deployment and its invitation together. */
+export const ENV_JOIN_CODE = 'MYCO_JOIN_CODE';
 /** The tail of a token's life in which the server admits a refresh (the last quarter of the 7-day TTL); the member reads it only until the server announces a `refreshAfter`. */
 export const MEMBER_TOKEN_REFRESH_WINDOW_MS = (7 * 24 * 60 * 60 * 1000) / 4;
 /** How often the `route_missing` refresh diagnostic repeats on stderr. */

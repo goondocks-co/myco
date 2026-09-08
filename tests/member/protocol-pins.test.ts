@@ -7,12 +7,15 @@ import { describe, expect, it } from 'bun:test';
 import { LINEAGE_REPLAY_GRACE_MS, MAX_BLOB_BYTES, MIN_COMPAT_MEMBER_PROTOCOL, PROTOCOL_HEADER as SERVER_PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { CLASSIFIERS, UNAVAILABLE } from '@myco-server-worker/telemetry.js';
 import { isProjectId as serverIsProjectId, PROJECT_ID as SERVER_PROJECT_ID } from '@myco-server-worker/pipeline.js';
+import { JOIN_PATH as SERVER_JOIN_PATH } from '@myco-server-worker/constants.js';
+import { ENROLLMENT_KEY_PATTERN as SERVER_ENROLLMENT_KEY_PATTERN } from '@myco-server-worker/auth/enrollment.js';
 import { ID_GRAMMAR, MAX_PAYLOAD_BYTES, PRODUCER_GRAMMAR } from '@myco-server-worker/ingest/envelope.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
 import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
 import { isProjectId as memberIsProjectId, PROJECT_ID_PATTERN as MEMBER_PROJECT_ID_PATTERN } from '@myco/member/constants.js';
 import {
+  ENROLLMENT_KEY_PATTERN, JOIN_PATH,
   MEMBER_CODES, MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES, MEMBER_PROTOCOL, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, TRANSCRIPT_SLICE_BYTES,
 } from '@myco/member/constants.js';
 import { BOUNDS, producerIdentifier } from '@myco/member/envelope.js';
@@ -52,6 +55,11 @@ describe('member ↔ worker pins', () => {
     expect(new Set(MEMBER_CODES)).toEqual(new Set([...CLASSIFIERS, UNAVAILABLE]));
     expect(MEMBER_CODES.length).toBe(CLASSIFIERS.length + 1);
     expect(CLASSIFIERS as readonly string[]).not.toContain(UNAVAILABLE);
+  });
+
+  it('an invite link the member reads is one the worker mints: same path, same key shape', () => {
+    expect(JOIN_PATH).toBe(SERVER_JOIN_PATH);
+    expect(ENROLLMENT_KEY_PATTERN.source).toBe(SERVER_ENROLLMENT_KEY_PATTERN.source);
   });
 
   it('the action classes name worker classifiers', () => {

@@ -20,7 +20,7 @@ async function rig() {
   const t2 = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now);
   const anonymous = await issueMemberToken(e.db, { memberId: 'mem_anon', machineId: null }, now);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [now]);
-  await ensureMember(e.db, HARNESS_MEMBER_ID, now, 'harness runtime');
+  await ensureMember(e.db, HARNESS_MEMBER_ID, now, 'member', 'harness runtime');
   const harness = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, now);
   /** A `running` row in proj_1 dispatched under the harness credential. */
   const running = async () => {
@@ -50,8 +50,8 @@ async function rig() {
     return { a, b, ka, kb };
   };
   /** A join presenting `key`, from a machine of its own so no join can collide with another. */
-  const join = (key: string, machineId = 'machine_join') =>
-    fetch(new Request('https://s/members/join', { method: 'POST', headers: { 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json' }, body: JSON.stringify({ key, machineId }) }));
+  const join = (key: string, machineId = 'machine_join', over: Record<string, unknown> = {}) =>
+    fetch(new Request('https://s/members/join', { method: 'POST', headers: { 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json' }, body: JSON.stringify({ key, machineId, ...over }) }));
   return { e, t1, t2, anonymous, harness, running, mcp, windowed, now, fetch, post, upload, segment, transcript, join };
 }
 type Rig = Awaited<ReturnType<typeof rig>>;
@@ -91,22 +91,26 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   no_project: (r) => r.fetch(memberPost(r.t1.token, envelope({}), '/events', { [PROJECT_HEADER]: '' })),
   enrollment_unknown: (r) => r.join('u'.repeat(43)),
   identity_claimed: async (r) => {
-    const held = await issueEnrollmentAuthority(r.e.db, r.now);
+    const held = await issueEnrollmentAuthority(r.e.db, r.now, { role: 'member' });
     expect((await json(await r.join(held.key, 'machine_held'))).joined).toBe(true);
-    const other = await issueEnrollmentAuthority(r.e.db, r.now);
+    const other = await issueEnrollmentAuthority(r.e.db, r.now, { role: 'member' });
     return r.join(other.key, 'machine_held');
   },
   enrollment_used: async (r) => {
-    const key = await issueEnrollmentAuthority(r.e.db, r.now);
+    const key = await issueEnrollmentAuthority(r.e.db, r.now, { role: 'member' });
     expect((await json(await r.join(key.key, 'machine_used'))).joined).toBe(true);
     return r.join(key.key, 'machine_used2');
   },
   enrollment_expired: async (r) => {
-    const key = await issueEnrollmentAuthority(r.e.db, r.now - ENROLLMENT_TTL_MS * 2);
+    const key = await issueEnrollmentAuthority(r.e.db, r.now - ENROLLMENT_TTL_MS * 2, { role: 'member' });
     return r.join(key.key, 'machine_expired');
   },
+  enrollment_no_project: async (r) => {
+    const key = await issueEnrollmentAuthority(r.e.db, r.now, { role: 'member' });
+    return r.join(key.key, 'machine_no_project', { forProject: true });
+  },
   enrollment_revoked: async (r) => {
-    const key = await issueEnrollmentAuthority(r.e.db, r.now);
+    const key = await issueEnrollmentAuthority(r.e.db, r.now, { role: 'member' });
     expect(await revokeEnrollmentAuthority(r.e.db, key.id, r.now, 'mem_machine_1')).toEqual({ revoked: true });
     return r.join(key.key, 'machine_revoked');
   },

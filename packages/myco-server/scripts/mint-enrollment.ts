@@ -11,6 +11,11 @@
  * The raw key is written to stderr, and only when asked for. Nothing prints it
  * to stdout, so the rendered SQL can be piped into a database client without
  * the secret travelling with it.
+ *
+ * The invitation grants `admin`. Whoever runs this holds the store directly, so
+ * it is the one mint that answers to no membership at all, and the admin a fresh
+ * Deployment starts from comes through here. Naming a project binds the key to
+ * it, which a sandbox joining on this key requires.
  */
 import { enrollmentInsert, ENROLLMENT_ID_PREFIX, ENROLLMENT_KEY_BYTES, ENROLLMENT_TTL_MS } from '../src/auth/enrollment.ts';
 import { sha256Hex } from '../src/hash.ts';
@@ -20,9 +25,10 @@ const args = process.argv.slice(2);
 const printKey = args.includes('--print-key');
 const rest = args.filter((a) => a !== '--print-key');
 const ttlMinutes = rest.length > 0 ? Number(rest[0]) : ENROLLMENT_TTL_MS / 60_000;
+const projectId = rest.length > 1 ? rest[1] : null;
 
 if (!Number.isFinite(ttlMinutes) || ttlMinutes <= 0) {
-  console.error('usage: bun scripts/mint-enrollment.ts [ttl_minutes] [--print-key]');
+  console.error('usage: bun scripts/mint-enrollment.ts [ttl_minutes] [project_id] [--print-key]');
   process.exit(2);
 }
 
@@ -34,7 +40,7 @@ const id = `${ENROLLMENT_ID_PREFIX}${b64url(crypto.getRandomValues(new Uint8Arra
 
 const now = Date.now();
 const { db, statements } = sqlCapture();
-const { statement, expiresAt } = enrollmentInsert(db, now, ttlMinutes * 60_000, null, await sha256Hex(key), id);
+const { statement, expiresAt } = enrollmentInsert(db, now, ttlMinutes * 60_000, null, await sha256Hex(key), id, 'admin', null, projectId);
 await statement.run();
 
 console.log(`-- enrollment authority ${id}; expires_at ${expiresAt} (${ttlMinutes} minutes)`);

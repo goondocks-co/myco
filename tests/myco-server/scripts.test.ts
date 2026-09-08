@@ -20,7 +20,7 @@ describe('operator scripts', () => {
     const { code, out, err } = run('mint-local.ts', ['mem_s', 'machine_s']);
     expect(code).toBe(0);
     const statements = out.split('\n').filter((l) => l && !l.startsWith('--')).join('\n').split(';').map((s) => s.trim()).filter(Boolean);
-    expect(statements[0]).toMatch(/^INSERT OR IGNORE INTO members \(id, label, created_at, revoked_at\) VALUES \('mem_s', 'mem_s', \d+, NULL\)$/);
+    expect(statements[0]).toMatch(/^INSERT OR IGNORE INTO members \(id, label, created_at, revoked_at, role\) VALUES \('mem_s', 'mem_s', \d+, NULL, 'admin'\)$/);
     expect(statements[1]).toMatch(/^INSERT INTO member_credentials/);
     expect(out).not.toMatch(/\?/);
     expect(err).not.toMatch(/MYCO_MEMBER_TOKEN=/);

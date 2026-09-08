@@ -1,12 +1,21 @@
 import { expect } from 'bun:test';
+import { SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
  * The wake on both targets: an owner asks for the tick, and the tick runs the
- * same two jobs on each — retention removes a run past the window, the sweep
- * fails a run whose runtime went away — and a second ask finds nothing more
- * to do.
+ * same jobs on each — retention removes a run past the window, the sweep fails
+ * a run whose runtime went away — and a second ask finds nothing more to do.
+ *
+ * The expected report is DERIVED from the job registry, never listed here. A
+ * hand-written list makes every new job a parity failure on both targets at
+ * once, which says nothing about parity and everything about the list.
  */
+
+/** The report a wake owes at a depth where every job runs: the registry in order, changed where a job did work and zero everywhere else. */
+const jobReport = (changed: Record<string, number> = {}) =>
+  SERVER_JOBS.map((job) => ({ name: job.name, changed: changed[job.name] ?? 0, failed: null }));
+
 export const tick: ParityScenario = {
   name: 'the wake: retention and the stale-run sweep, identical on both targets, idempotent',
   async run(target: ParityTarget) {
@@ -37,12 +46,8 @@ export const tick: ParityScenario = {
     const first = await wake();
     // The scenarios before this one left fresh receipts, and a run start is activity too: the Deployment is awake, and housekeeping runs at every depth but deep sleep.
     expect(['active', 'idle']).toContain(first.state);
-    expect(first.jobs).toEqual([
-      { name: 'agent-run-retention', changed: 2, failed: null },
-      { name: 'run-stale-sweep', changed: 1, failed: null },
-      { name: 'search-index', changed: 0, failed: null },
-      { name: 'embedding-reconcile', changed: 0, failed: null },
-    ]);
+    // Retention removes the two runs past the window; the sweep fails the stale one.
+    expect(first.jobs).toEqual(jobReport({ 'agent-run-retention': 2, 'run-stale-sweep': 1 }));
     expect(first.nextWakeMs).toBe(60_000);
     expect(await rows()).toEqual([
       { id: 'tick-live', status: 'running', error: null },
@@ -51,12 +56,8 @@ export const tick: ParityScenario = {
     expect(await target.sql(`SELECT COUNT(*) AS c FROM agent_turns WHERE run_id = 'tick-old-turned'`)).toEqual([{ c: 0 }]);
 
     const second = await wake();
-    expect(second.jobs).toEqual([
-      { name: 'agent-run-retention', changed: 0, failed: null },
-      { name: 'run-stale-sweep', changed: 0, failed: null },
-      { name: 'search-index', changed: 0, failed: null },
-      { name: 'embedding-reconcile', changed: 0, failed: null },
-    ]);
+    // Idempotent: the same wake again converges on the state it already reached.
+    expect(second.jobs).toEqual(jobReport());
     expect(await rows()).toEqual([
       { id: 'tick-live', status: 'running', error: null },
       { id: 'tick-stale', status: 'failed', error: 'the runtime went away' },
@@ -66,6 +67,6 @@ export const tick: ParityScenario = {
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id = 'tick-live'`);
     const third = await wake();
     expect(third.state).toBe('active');
-    expect(third.jobs.map((j) => j.changed)).toEqual([0, 0, 0, 0]);
+    expect(third.jobs).toEqual(jobReport());
   },
 };

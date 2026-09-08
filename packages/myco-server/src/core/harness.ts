@@ -482,7 +482,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
 export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { limits?: DispatchLimits; singleFlight?: boolean } = {}): Promise<Launched> {
   if (env.harnessLaunch === undefined) throw new Error('harness runtime unbound after preparation');
   const timeoutSeconds = spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS;
-  await ensureMember(env.db, HARNESS_MEMBER_ID, now, 'harness runtime');
+  await ensureMember(env.db, HARNESS_MEMBER_ID, now, 'member', 'harness runtime');
   await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now);
   const minted = await issueMemberToken(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, now);
 
