@@ -6,13 +6,13 @@
  * rows a hook event produces, through the same projections, so a row has one
  * shape whatever produced it.
  *
- * **The pass is bounded by database calls, not by bytes.** A free-tier Worker
- * invocation may make 50 subrequests, D1 and blob reads both count against it,
- * and a Durable Object relaxes CPU without relaxing that. Deriving each event
- * through its own batch would spend one call per event and exhaust the budget
- * on a single turn, so a pass collects up to `EVENTS_PER_BATCH` writes and
- * lands them in ONE batch, and stops once it has spent `CALLS_PER_PASS`. The
- * tick that runs it also runs the other jobs, which share the same budget.
+ * **The pass is bounded by outbound calls, not by bytes.** A hosted runtime
+ * caps the calls one invocation may make, and store reads and blob reads both
+ * count against that cap. Deriving each event through its own batch would
+ * spend one call per event and exhaust the cap on a single turn, so a pass
+ * collects up to `EVENTS_PER_BATCH` writes and lands them in ONE batch, and
+ * stops once it has spent `CALLS_PER_PASS`. The tick that runs this also runs
+ * the other jobs, which share the same budget.
  *
  * **A pass consumes only complete lines**, and the cursor advances to the byte
  * past the last one (`segments.ts`). Nothing is carried between passes but that
@@ -34,7 +34,7 @@ import { SERVER_PROTOCOL } from '../constants.js';
 
 /** Derived events collapsed into one database call. */
 export const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 20;
-/** Database and blob calls one pass may spend, well inside a free-tier invocation's 50 shared with the other jobs. */
+/** Store and blob calls one pass may spend, well inside the tightest per-invocation cap a target imposes, which the other jobs share. */
 export const TRANSCRIPT_PARSE_CALLS_PER_PASS = 12;
 /** Bytes decoded before deriving, so a pass bounds its memory as well as its calls. */
 export const TRANSCRIPT_PARSE_BYTES_PER_READ = 524_288;
@@ -120,7 +120,7 @@ const landed = (result: IngestResult): boolean => result.persisted === true;
 export interface PassReport {
   /** Events that landed this pass. */
   derived: number;
-  /** Database and blob calls spent. */
+  /** Store and blob calls spent. */
   calls: number;
   /** The byte the cursor now stands at, or null when the pass did nothing. */
   nextOffset: number | null;

@@ -4,11 +4,11 @@
  * Three properties carry this feature and each is asserted against the store
  * rather than against the parser in isolation:
  *
- *   - a pass spends a BOUNDED number of database calls, whatever the shape of
- *     the transcript. The bound is what makes the free-tier front door viable,
- *     and a byte bound would not have provided it: a turn of many small events
- *     and one of few large events cost very different numbers of calls for the
- *     same bytes.
+ *   - a pass spends a BOUNDED number of store calls, whatever the shape of the
+ *     transcript. The bound is what keeps a pass inside a hosted runtime's
+ *     per-invocation cap, and a byte bound would not have provided it: a turn
+ *     of many small events and one of few large events cost very different
+ *     numbers of calls for the same bytes.
  *   - the cursor never advances past an event that did not land. This is the
  *     one defect that would lose rows silently and in bulk.
  *   - many passes and one pass produce the same rows.
@@ -110,7 +110,7 @@ describe('parsing a held transcript', () => {
     expect(row.parsedOffset).toBe(row.size);
   });
 
-  it('spends a bounded number of database calls per pass whatever the transcript holds', async () => {
+  it('spends a bounded number of store calls per pass whatever the transcript holds', async () => {
     const { sqlite, env } = await rig(body(40));
     const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
     const report = await parseOnce(env as never, {
@@ -167,7 +167,7 @@ describe('parsing a held transcript', () => {
     expect(count(sqlite, 'prompt_batches')).toBe(0);
   });
 
-  it('skips a transcript whose session was deleted', async () => {
+  it('skips a transcript belonging to a deleted session', async () => {
     const { sqlite, env, serverEnv } = await rig(body(1));
     sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, ?, NULL, ?, 'm')`, PROJECT, SESSION, NOW);
     expect(await parseTranscripts(serverEnv, NOW)).toBe(0);

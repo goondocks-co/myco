@@ -431,6 +431,8 @@ The port is `ServerEnv.wake` — "wake me soon", called by requested work — wi
 |---|---|---|---|---|---|
 | `embedding-reconcile` | REPLACE | Core, W, C | Blk | A tick job against Vectorize / SQLite vectors | #1124 |
 | `invite-expiry` | KEEP | Core | Blk | A tick job reclaiming spent, revoked and expired invitations past the retention window; a live invitation is never touched (plan §2.7) | #1158 |
+| `transcript-parse` | KEEP | Core | Blk | New in 2.0: reads each held transcript's segments into the rows they contain, per agent, server-side. Bounded by the database calls a pass may spend rather than by bytes — a free-tier Worker invocation may make 50 subrequests, and a Durable Object relaxes CPU without relaxing that (see §7.7) | A3 |
+| `transcript-retention` | KEEP | Core | Blk | New in 2.0: prunes raw segments behind the parse cursor past the Deployment's `retention.transcripts` window and frees the blobs no surviving row references; derived rows and the transcript record are never pruned | A3 |
 | `session-maintenance` | REPLACE | Core | Blk | A tick job: server-side session lifecycle | A3 |
 | `log-retention` | REPLACE | Core | Blk | A tick job over server logs; the member keeps its own log files (**M**) | E1 |
 | `agent-run-retention` | REPLACE | Core | Blk | A tick job; the lifecycle owner for run rows (plan §7) | B3 |
@@ -454,7 +456,7 @@ The port is `ServerEnv.wake` — "wake me soon", called by requested work — wi
 | `routed-transcript-cache-gc` | DROP | — | Blk | Routed capture is a Team Host mechanism; retired with Team | #925 |
 | `routed-event-dedup-prune` | DROP | — | Blk | Routed capture is a Team Host mechanism; retired with Team | #925 |
 
-**Planned additions.** Two tick jobs land with their code and take rows then, one per lifecycle row the plan owes an owner (plan §7): transcript retention, pruning raw segments and their blobs past the Deployment's window (**#1147**); and the worker-lease sweep, which returns a lapsed lease's run to the claim queue so single-flight follows the lease and not the process (**#1151**). Grant expiry (**#1149**) and invite expiry (**#1158**) have landed and take their rows above.
+**Planned additions.** One tick job lands with its code and takes a row then, the last lifecycle row the plan owes an owner (plan §7): the worker-lease sweep, which returns a lapsed lease's run to the claim queue so single-flight follows the lease and not the process (**#1151**). Grant expiry (**#1149**) and invite expiry (**#1158**) have landed and take their rows above.
 
 ### 7.6 Data classes — vault schema v76, `packages/myco/src/db/`
 
@@ -467,7 +469,7 @@ Disposition here is about the **data class**, and separately about **migration**
 | `session_myco_tool_calls` | KEEP | MIGRATE | Core | Blk | Tool-call history | #924 |
 | `artifacts` | KEEP | MIGRATE | Core | Blk | Transcripts and responses | #924 |
 | `attachments` | KEEP | MIGRATE | Core, W, C | Blk | Blob-backed; R2 on W, volume on C. Byte-lossless comparison is a #927 gate | #924 |
-| `plans` | KEEP | MIGRATE | Core | Blk | Myco owns identity, versions, provenance and search; disk and GitHub stay canonical for content (plan §2.3) | D3 |
+| `plans` | KEEP | MIGRATE | Core | Blk | Myco owns identity, versions, provenance and search; disk and GitHub stay canonical for content (plan §2.3). Gains `source`, the channel a version arrived through — a watched path, a tagged message, or an explicit save — **landed in #1147**; NULL on a row written before it, which means "inferred from the key shape" rather than a guessed default | D3, A3 |
 | `spores` | KEEP | MIGRATE | Core | Blk | Gains an `author` column so a write names the principal instance behind it rather than `user` alone — **landed in #1145 (schema v24)** with the run id for a run's write and the member id for a member's, nullable for rows written before. An external agent's grant takes the same column and an `agents` row of its own, and gains `provenance_kind`/`provenance_ref` for the pull request or commit a write with no session cites — **landed in #1149 (schema v25)** (plan §2.6) | A1, A5 |
 | `resolution_events` | KEEP | MIGRATE | Core | Blk | Supersede/consolidate lineage; carries `author` as `spores` does (#1145, schema v24), and `provenance_kind`/`provenance_ref` with it (#1149, schema v25) | #924 |
 | `spore_injections` | KEEP | REBUILD | Core | Blk | What the prompt hook was served, per (session, prompt); 1.4 carries it on `activities` | #1044 |
@@ -494,7 +496,7 @@ Disposition here is about the **data class**, and separately about **migration**
 | `log_entries` | REPLACE | DROP | Core, M | Blk | Server logs from emitted telemetry (**Core**); local logs are files under `MYCO_HOME` (**M**). Two different things — 1.4's rows do not migrate | #922 |
 | `knowledge_git_provenance` | KEEP | MIGRATE | Core | Blk | Release provenance | #919 |
 | `knowledge_release_state` | KEEP | MIGRATE | Core | Blk | Release provenance | #919 |
-| `session_tombstones` | KEEP | MIGRATE | Core | Blk | Deletion records must survive migration, and they gate re-import: a tombstoned session is never imported again (plan §2.2) | A4 |
+| `session_tombstones` | KEEP | MIGRATE | Core | Blk | Deletion records must survive migration, and they gate re-import: a tombstoned session is never imported again (plan §2.2). The server table and the deletion verb landed in #1147; the tombstone outlives the rows it removed, which is what tells a deleted session from one that never arrived | A3, A4 |
 | `canopy_entries` | DROP | DROP | — | Blk | Per-file descriptions and entry embeddings retire with `canopy-describe` | #920 |
 | `entities` | DROP | DROP | — | Blk | Semantic graph retired 2026-04-18 | #925 |
 | `entity_mentions` | DROP | DROP | — | Blk | Semantic graph retired | #925 |
@@ -513,7 +515,7 @@ Disposition here is about the **data class**, and separately about **migration**
 | `okf_page_revisions` | DROP | DROP | — | Blk | OKF | #925 |
 | `okf_generations` | DROP | DROP | — | Blk | OKF | #925 |
 
-**Planned additions.** Four columns land with their code and take rows then: `plans.source`, the channel a plan version arrived through — a watched path, a tagged message, or an explicit `myco_plans save`, which 1.4 infers from key shapes (plan §2.3, **#1147**); `spores.agent_line`, the ≈40-token trigger → guidance projection that injection and search previews render instead of the Markdown, backfilled once under a cost ceiling and re-derived on edit (plan §2.4, **#1150**); and `enrollment_authorities.role` and `.project_id`, what an invitation grants and the Project it binds a sandbox to — the single-use expiring invitation itself already has this table, so #1158 adds the two columns rather than a second one (plan §2.7, **#1158**).
+**Planned additions.** Three columns land with their code and take rows then: `spores.agent_line`, the ≈40-token trigger → guidance projection that injection and search previews render instead of the Markdown, backfilled once under a cost ceiling and re-derived on edit (plan §2.4, **#1150**); and `enrollment_authorities.role` and `.project_id`, what an invitation grants and the Project it binds a sandbox to — the single-use expiring invitation itself already has this table, so #1158 adds the two columns rather than a second one (plan §2.7, **#1158**).
 
 ### 7.7 Operational capabilities
 
@@ -524,7 +526,9 @@ Capabilities that are not a single registry token but must still carry a disposi
 | Session, prompt, tool-call, response capture | KEEP | M, Core | Blk | Shipped; proven by the §8.4 parity run | shipped |
 | Transcript capture and segmentation | KEEP | M, Core | Blk | Shipped | shipped |
 | Attachment capture | KEEP | M, Core | Blk | Shipped | shipped |
-| Plan capture from watched plan dirs | KEEP | M, Core | Blk | Parsed server-side from the transcript stream — `Write` calls to the allowlist, tagged messages, and the hook re-reading any allowlisted path it saw edited during the turn (plan §2.3) | A3 |
+| Plan capture from watched plan dirs | KEEP | M, Core | Blk | Parsed server-side from the transcript stream — `Write` calls to the allowlist, tagged messages, and the hook re-reading any allowlisted path it saw edited during the turn (plan §2.3). The channel each version arrived through is recorded on `plans.source` rather than inferred from the key shape | A3 |
+| Server-side transcript parsing | KEEP | Core, W, C | Blk | New in 2.0: per-agent parsers turn a held transcript into prompts, responses, tool calls, attachments and plans, through the same projections a hook event lands in. A parser declares what its format can support, and a session whose transcript cannot carry tool results is excluded from extraction rather than believed (see the fidelity note below) | A3 |
+| Session deletion | KEEP | Core, UI | Blk | New in 2.0: a tombstone suppresses a session and removes every row derived from it, on both sides — reads through one predicate at every seam, writes through a check shared by every kind, so live capture cannot repopulate what a person deleted. The tombstone outlives the rows and gates re-import (plan §2.2) | A3, A4 |
 | Plan capture via `myco_plans` MCP | REPLACE | MCP, Core | Blk | MCP talks to the Deployment directly — the one §8.4 parity miss | #921 |
 | Session lineage (parent/child detection) | KEEP | Core | Blk | Columns carried; populated by the member | shipped |
 | Project admission policy (ignored/archived) | REPLACE | Core | Blk | Server-side `archived` Project state: refuses ingest with a named terminal refusal, hidden from default listings with explicit opt-in, all history and attribution preserved | #918 |
@@ -555,6 +559,15 @@ Capabilities that are not a single registry token but must still carry a disposi
 - **Invite and join** (**#1158**, landed) — single-use expiring invite links and `myco login <url>` for humans; a join code in `MYCO_JOIN_CODE` for sandboxes and CI, exchanged at first contact for a member credential. The Project is bound when the invitation is **minted**, not resolved from the repo remote at first contact: the normalized-remote leg of Project Resolution (§3.1) belongs to the `project` tool parameter of D1 tenancy, and binding at mint leaves a sandbox with nothing to guess — a code carrying no Project is refused `enrollment_no_project` and stays unspent. Admin and member roles only; revocation kept (plan §2.7).
 - **Eval suite** (**#1154**) — recorded real sessions as fixtures with a redaction gate before commit, a hand-annotated gold set of 30–50 cases, deterministic graders per PR against replayed recordings, and a weekly capped judged run required on releases (plan §2.5, §7).
 - **Grant-attributed spore writes** (**#1149**) — an author column and an agent row per grant, so an external agent's create or supersede carries the grant rather than `user`, optionally citing a PR or commit instead of a session (plan §2.6).
+
+**Where the parse runs, and why it is not a Durable Object request.** Plan §2.2 states that parsers run "inside a Durable Object request on Cloudflare (30 s CPU)". Two facts measured against the tree and against Cloudflare's published limits (2026-09-08) put the mechanism elsewhere, and the decision — parsers server-side, per agent, on both front doors — is unchanged by it.
+
+- **The CPU claim is unverified for the Free tier.** The Workers limits page gives one tier-split CPU table, 10 ms on Free and 5 min (default 30 s) on Paid; the Durable Objects page publishes a DO-specific row of 30 s that is *not* tier-split. The DO relaxations that are unambiguous are wall time, which was never the constraint.
+- **The binding constraint is subrequests, and a Durable Object does not relax it.** Free allows **50 subrequests per invocation**, D1 and blob reads both count, and each event ingested through its own batch spends one.
+
+Measured: an 8 MiB segment of a real Claude Code transcript parses in ~11 ms, which is one whole free-tier CPU budget — and that figure is `JSON.parse` alone, before deriving, hashing or writing. So the parse is a **tick job bounded by the database calls a pass may spend**, resumable over a byte cursor, landing derived events in one batch. On the Worker the tick's own timer already *is* a Durable Object alarm, so any CPU headroom that exists is inherited with no new class, binding or migration tag; on the binary the same job runs in-process. Nothing under `platform/` differs between the two, which is what §3.3 requires. A per-target parse entry was designed and dropped on these numbers.
+
+**Fidelity is a property of a format, not of a file.** Cursor's transcript carries no tool results, so no parse of one can produce them and a session captured from it is structurally incomplete. Each parser declares what its format supports, the transcript records it, and extraction excludes such sessions **by default at the read layer's own definition** rather than by an argument at each call site. The dashboard still shows them: a hidden session is an absence a person can see, while a spore extracted from a knowingly incomplete transcript reads exactly like a good one. Only one of those is discoverable after the fact.
 
 ### 7.8 Config leaves — `packages/myco/src/config/schema.ts`
 
@@ -656,6 +669,7 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `notifications.system_notifications` | KEEP | Member | M | Per-viewer OS notification preference | #915 |
 | `notifications.default_mode` | KEEP | Member | M | Per-viewer delivery preference | #915 |
 | `notifications.retention_days` | REPLACE | Deployment | Core | Prune window for Deployment-held notification records; no member owns it | #915 |
+| `retention.transcripts` | KEEP | Deployment | Core | New in 2.0: days a raw transcript segment is kept after the parse has read it, 0–3650. **0 means indefinitely**, and so does an absent value — `setLeaf` has no delete, so without an in-range off value a Deployment that once set a window could never return to keeping everything. Derived rows are never pruned by it | A3 |
 | `cortex.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent | #915 |
 | `cortex.instructions.inject_on_session_start` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/session`, once per session | #1026 |
 | `cortex.instructions.inject_on_subagent_start` | REPLACE | Deployment | Core | Applied by the Deployment on `POST /context/session`, once per subagent | #1026 |
@@ -676,7 +690,7 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `appearance.font` | KEEP | Member | M | Per-viewer dashboard typography | #918 |
 | `appearance.density` | KEEP | Member | M | Per-viewer dashboard density | #918 |
 
-**Planned additions.** Seven Deployment leaves land with their code and take rows then — the leaf registry (`core/settings.ts`) and this table are held equal in both directions, so a leaf named here before it exists would refuse every write: `instructions.template`, the static session-start instructions any member edits, ≤4 KB, Markdown only, validated on write, and the leaf that replaces the `cortex-instructions` and `cortex-prompt-builder` tasks (plan §2.4, **#1150**); `worker.harness` and `worker.harness_fallback`, the harness a worker prefers and the order it falls back through, each overridable per task (plan §2.5, **#1151**); `retention.transcripts`, the window raw segments and their blobs are kept for, default indefinite (plan §2.2, **#1147**); and `import.enabled`, `import.window_days` and `import.max_sessions_per_harness`, the bounds on the join-time backfill — 30 days and 50 sessions per harness (plan §2.2, **#1148**).
+**Planned additions.** Six Deployment leaves land with their code and take rows then — the leaf registry (`core/settings.ts`) and this table are held equal in both directions, so a leaf named here before it exists would refuse every write: `instructions.template`, the static session-start instructions any member edits, ≤4 KB, Markdown only, validated on write, and the leaf that replaces the `cortex-instructions` and `cortex-prompt-builder` tasks (plan §2.4, **#1150**); `worker.harness` and `worker.harness_fallback`, the harness a worker prefers and the order it falls back through, each overridable per task (plan §2.5, **#1151**); and `import.enabled`, `import.window_days` and `import.max_sessions_per_harness`, the bounds on the join-time backfill — 30 days and 50 sessions per harness (plan §2.2, **#1148**).
 
 **Project-tier `release_provenance.*` has no store yet, and that is a deferral rather than an oversight.** Step 6 builds `project_capabilities`, keyed on the four capability ids, and nothing else per Project — so the eight repo-specific `release_provenance` leaves are classified but not writable, and `setLeaf` refuses them. They are per-repository settings for a feature (#922 owns release provenance) whose per-Project store lands with the surface that configures it. The same rule as the two blocks below: a tier without a mechanism is recorded as such rather than assigned quietly.
 

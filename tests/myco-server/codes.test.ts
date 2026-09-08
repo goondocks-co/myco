@@ -38,8 +38,8 @@ async function rig() {
     return key;
   };
   /** A transcript segment of `tx` by machine_1. */
-  const segment = (n: number, baseOffset: number, blob: string, length: number) =>
-    post(t1.token, { eventId: uuid(900 + n), kind: 'transcript.segment', payload: { transcriptId: `tx_${'b'.repeat(32)}`, baseOffset, length, blob } });
+  const segment = (n: number, baseOffset: number, blob: string, length: number, extra: Record<string, unknown> = {}) =>
+    post(t1.token, { eventId: uuid(900 + n), kind: 'transcript.segment', payload: { transcriptId: `tx_${'b'.repeat(32)}`, baseOffset, length, blob, ...extra } });
   /** Two segments uploaded and the first one stored at offset 0. */
   const transcript = async () => {
     const a = utf8('first-line\n');
@@ -125,6 +125,18 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   projection_conflict: async (r) => {
     expect((await json(await r.post(r.t1.token, {}))).persisted).toBe(true);
     return r.post(r.t1.token, { eventId: uuid(5), createdAt: 2_000, payload: { promptId: uuid(2), text: 'rewritten', origin: 'user' } });
+  },
+  // #1147 — transcript-first ingest
+  session_tombstoned: async (r) => {
+    expect((await json(await r.post(r.t1.token, {}))).persisted).toBe(true);
+    r.e.sqlite.query(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by)
+                      SELECT project_id, session_id, NULL, ?, 'mem_machine_1' FROM sessions LIMIT 1`).run(r.now);
+    return r.post(r.t1.token, { eventId: uuid(700), payload: { promptId: uuid(701), text: 'after the delete', origin: 'user' } });
+  },
+  transcript_replaced: async (r) => {
+    const t = await r.transcript();
+    r.e.sqlite.query(`UPDATE transcripts SET head_hash = ?`).run('a'.repeat(64));
+    return r.segment(4, t.a.byteLength, t.kb, t.b.byteLength, { headHash: 'c'.repeat(64) });
   },
   run_scope: (r) => r.post(r.harness.token, {}),
   no_run: (r) => r.mcp(r.harness.token),

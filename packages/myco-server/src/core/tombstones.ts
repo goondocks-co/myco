@@ -3,7 +3,7 @@
  *
  * A tombstone is the one record that outlives the deletion. The `sessions` row
  * is kept and every projection of it is removed, so the Deployment can still
- * answer "this session existed and was deleted" — which is what a re-import
+ * answer that a session existed and is now deleted — which is what a re-import
  * needs in order to refuse, and what an operator needs in order to tell a
  * deleted session from one that never arrived.
  *
