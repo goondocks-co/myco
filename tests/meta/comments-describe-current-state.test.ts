@@ -55,14 +55,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-// The dashboard's own source is scanned too: a stale mechanism comment in
-// `ui/src` (e.g. "Inviting is DISABLED in this build") rotted unseen because
-// this gate stopped at the daemon's `src`. The UI is user-facing surface — it
-// gets the same discipline.
-const SRC_ROOTS = [
-  path.join(REPO_ROOT, 'packages', 'myco', 'src'),
-  path.join(REPO_ROOT, 'packages', 'myco', 'ui', 'src'),
-];
+/**
+ * Every package's source, derived from the tree: `packages/<pkg>/src`, its
+ * dashboard `ui/src` and its `worker/src` wherever they exist. A package added
+ * to the monorepo is scanned the moment it has a `src`, with no edit here; a
+ * stale mechanism comment in a dashboard ("Inviting is DISABLED in this build")
+ * or in the server is held to the same discipline as the member's.
+ */
+const PACKAGES_ROOT = path.join(REPO_ROOT, 'packages');
+const SRC_ROOTS = fs.readdirSync(PACKAGES_ROOT, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .flatMap((pkg) => ['src', path.join('ui', 'src'), path.join('worker', 'src')].map((sub) => path.join(PACKAGES_ROOT, pkg.name, sub)))
+  .filter((root) => fs.existsSync(root))
+  .sort();
 
 /**
  * Narrates a CHANGE TO THE CODE.
@@ -79,11 +84,15 @@ const HISTORY = new RegExp([
   // INSTRUMENTAL sense ("a check used to tell X from Y" = employed to), which
   // is present-tense description and must stay unflagged.
   /\bused to (be|also|have|carry|require|live|run|do|mean|exist|sit|take|need|derive|reserve|record|accept|stop|provision)\b/,
-  /\b(was removed|were removed|has been removed|the old |overlay-era|pre-Funnel)\b/,
+  // "the old code/path/…" names a former implementation; "the old file" or
+  // "the old offset" is a runtime object the code still handles today.
+  /\b(was removed|were removed|has been removed|the old (code|path|implementation|behaviou?r|version|way|shape|name|spelling|scheme|layout|format)|overlay-era|pre-Funnel)\b/,
 ].map((r) => r.source).join('|'), 'i');
 
 /** Promises future state from a place nothing checks. */
-const DEFERRAL = /(unavailable on this build|until (that|it|enrollment|the .{0,30}) (lands|ships)\b|will land\b|lands with the (rebuilt|new|designation)|is being (rebuilt|rewritten)|is not rebuilt|not yet an enforced|temporarily unavailable|not yet implemented|not implemented yet|coming soon|stubbed for|placeholder until|arrives in a (later|future) release|pending the new)/i;
+// "until that lands" / "until the rewrite lands" promises work; "until the write
+// lands" or "until it lands" (a run, a row) is the code describing runtime order.
+const DEFERRAL = /(unavailable on this build|until (that|enrollment|the (rebuilt|new|next|later|designation|sweep|rewrite|migration|feature|change|fix|release|cutover)\b.{0,30}) (lands|ships)\b|will land\b|lands with the (rebuilt|new|designation)|is being (rebuilt|rewritten)|is not rebuilt|not yet an enforced|temporarily unavailable|not yet implemented|not implemented yet|coming soon|stubbed for|placeholder until|arrives in a (later|future) release|pending the new)/i;
 
 /**
  * Files still carrying narration, to be emptied by the repo-wide sweep.

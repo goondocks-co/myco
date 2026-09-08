@@ -23,6 +23,8 @@ export interface ParityTarget {
    */
   ownerHeaders(): Record<string, string>;
   memberHeaders(extra?: Record<string, string>): Record<string, string>;
+  /** Headers a request over an External Agent grant carries: the key alone names the Project, so no Project or protocol header rides with it. */
+  grantHeaders(key: string): Record<string, string>;
   sql(command: string): Promise<Record<string, unknown>[]>;
   stop(): Promise<void>;
 }
@@ -47,6 +49,11 @@ export function memberHeadersFor(token: string, projectId: string, extra: Record
     'cf-connecting-ip': '1.2.3.4',
     ...extra,
   };
+}
+
+/** The grant request headers both targets accept; the source header is load-bearing only on Cloudflare, where the pipeline admits a source identity before it reads the credential. */
+export function grantHeadersFor(key: string): Record<string, string> {
+  return { authorization: `Bearer ${key}`, 'cf-connecting-ip': '1.2.3.4' };
 }
 
 /** A write's answer as the server persisted it. Ingest answers a refusal as a 200 with `persisted: false`, so the status alone proves nothing; a scenario's writes go through this. */

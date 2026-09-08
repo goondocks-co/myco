@@ -249,10 +249,12 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_plans', {})).result).toEqual([]);
   });
 
-  it('ignores an argument the tool does not declare: myco_agent cannot pivot, and an unknown key never reaches a handler', async () => {
+  it('pivots myco_agent by Project like every other tool, and refuses an argument the tool does not declare before any handler runs', async () => {
     const { call, t1 } = await setup();
-    expect((await call(t1.token, 'myco_agent', { project: 'proj_unknown' })).result).toEqual({ ok: true, op: 'runs', data: { runs: [], cursor: null } });
-    expect((await call(t1.token, 'myco_plans', { limit: 5, purge: true })).result).toEqual([]);
+    expect((await call(t1.token, 'myco_agent', { project: 'proj_unknown' })).result).toEqual({ ok: false, op: 'runs', error: 'Project not found' });
+    expect((await call(t1.token, 'myco_agent', {})).result).toEqual({ ok: true, op: 'runs', data: { runs: [], cursor: null } });
+    const refused = await call(t1.token, 'myco_plans', { limit: 5, purge: true });
+    expect({ code: refused.error?.data?.code, names: String(refused.error?.message).includes("'purge'") }).toEqual({ code: 'invalid_input', names: true });
   });
 
   it('caps a spore body, and consolidates in one write counting only the sources it moved', async () => {
@@ -814,5 +816,42 @@ describe('POST /mcp over a run credential', () => {
     const idle = await runSetup();
     const idleAnswer = await worker.fetch(new Request('https://s/spores/list', { method: 'POST', headers: memberHeaders(idle.harness.token), body: '{}' }), idle.env);
     expect(await idleAnswer.json()).toEqual({ persisted: false, code: 'run_scope', reason: RUN_SCOPE });
+  });
+});
+
+describe('POST /mcp refuses an argument the schema does not declare', () => {
+  const STRAY = 'no_such_argument';
+  const expectRefusedByName = (tool: string, answered: { status: number; error?: any }) => {
+    expect({ tool, status: answered.status, code: answered.error?.data?.code, names: String(answered.error?.message).includes(`'${STRAY}'`) })
+      .toEqual({ tool, status: 200, code: 'invalid_input', names: true });
+  };
+
+  it('for a member, on every served tool, naming the key and the declared set', async () => {
+    const { t1, call } = await setup();
+    for (const d of TOOL_DEFINITIONS) {
+      const answered = await call(t1.token, d.name, { ...(d.name === 'myco_search' ? { query: 'anything' } : {}), [STRAY]: 'x' });
+      expectRefusedByName(d.name, answered);
+      expect(answered.error.message).toContain(Object.keys(d.inputSchema.properties).join(', '));
+    }
+  });
+
+  it('for a member spelling the tenancy key the retired way, so a read cannot silently land on the header Project', async () => {
+    const { t1, call } = await setup();
+    const answered = await call(t1.token, 'myco_sessions', { op: 'list', project_id: 'proj_1' });
+    expect({ code: answered.error?.data?.code, names: String(answered.error?.message).includes("'project_id'") }).toEqual({ code: 'invalid_input', names: true });
+  });
+
+  it('for a run and for a grant, on a tool on their surface, with the same shape', async () => {
+    const run = await runSetup();
+    await run.dispatch(run.harness, 'run_1', SWEEP);
+    expectRefusedByName('myco_spores', await run.call(run.harness.token, 'myco_spores', { op: 'list', [STRAY]: 'x' }));
+    const { grant, callAs } = await grantSetup();
+    expectRefusedByName('myco_spores', await callAs(grant.key, 'myco_spores', { op: 'list', [STRAY]: 'x' }));
+  });
+
+  it('after the surface check, so a tool off the surface stays a tool that does not exist whatever its arguments', async () => {
+    const { grant, callAs } = await grantSetup();
+    const answered = await callAs(grant.key, 'myco_plans', { op: 'save', [STRAY]: 'x' });
+    expect(answered.error?.data?.code).toBe('unknown_tool');
   });
 });

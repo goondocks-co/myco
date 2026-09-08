@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parityWranglerConfig } from '@myco/server/deploy-config.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
-import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, memberHeadersFor, type ParityTarget } from '../harness.ts';
+import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, memberHeadersFor, type ParityTarget } from '../harness.ts';
 
 const SERVER_DIR = path.resolve(import.meta.dir, '..', '..', '..', 'packages', 'myco-server');
 
@@ -129,6 +129,7 @@ export async function bootCloudflare(): Promise<ParityTarget> {
       projectId: PROJECT_ID,
       ownerHeaders: () => ({ cookie, 'cf-connecting-ip': '1.2.3.4' }),
       memberHeaders: (extra = {}) => memberHeadersFor(token, PROJECT_ID, extra),
+      grantHeaders: (key) => grantHeadersFor(key),
       sql: async (command) => {
         const out = await d1(command);
         const parsed = JSON.parse(out) as Array<{ results: Record<string, unknown>[] }>;
