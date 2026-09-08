@@ -223,47 +223,84 @@ describe('the run credential a driver launches under', () => {
   });
 });
 
+/** A stub `claude` that writes a result after a delay, so a run lasts long enough to be renewed. */
+function slowHarness(ms: number): string {
+  const dir = mkdtempSync(join(tmpdir(), 'myco-stub-'));
+  writeFileSync(join(dir, 'claude'), `#!/bin/sh\nsleep ${(ms / 1000).toFixed(2)}\nprintf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn"}'\n`, { mode: 0o755 });
+  chmodSync(join(dir, 'claude'), 0o755);
+  return dir;
+}
+
 describe('the cadence a worker keeps', () => {
-  it('is the one the Deployment named, not one the worker holds', async () => {
-    const answered: Array<Record<string, unknown>> = [];
+  // A fallback far above the answered wait but well under the test's own bound,
+  // so ignoring the answer fails on elapsed time with a message rather than on
+  // a timeout with none.
+  const FALLBACK_MS = 3_000;
+  const ANSWERED_POLL_MS = 20;
+
+  it('waits what the Deployment answered, not the fallback it was constructed with', async () => {
     const asked: string[] = [];
     const stopping = new AbortController();
-    // The Deployment names a cadence far from any default, so a worker that
-    // ignores what it was told keeps a different one and fails here.
-    const HEARTBEAT = 4321;
-    const POLL = 1234;
-    let renewals = 0;
-    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    let polls = 0;
+    const fetchImpl = (async (input: string | URL | Request) => {
       const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
       asked.push(new URL(url).pathname);
       if (url.endsWith('/worker/claim')) {
-        const body = answered.length === 0
-          ? { persisted: true, claimed: false, reason: 'no_work', pollAfterMs: POLL }
-          : { persisted: true, claimed: false, reason: 'no_work', pollAfterMs: POLL };
-        answered.push(body);
-        if (answered.length >= 2) stopping.abort();
-        return new Response(JSON.stringify(body), { status: 200 });
+        polls += 1;
+        if (polls >= 3) stopping.abort();
+        return new Response(JSON.stringify({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: ANSWERED_POLL_MS }), { status: 200 });
       }
-      if (url.endsWith('/worker/lease')) { renewals += 1; return new Response(JSON.stringify({ persisted: true, held: true, expiresAt: 0 }), { status: 200 }); }
       return new Response(JSON.stringify({ persisted: true }), { status: 200 });
     }) as unknown as typeof fetch;
 
     const started = Date.now();
     await runWorker({
-      serverUrl: 'https://deployment.example',
-      token: 'tok',
+      serverUrl: 'https://deployment.example', token: 'tok',
       runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
-      only: [],
-      // A cadence the worker must take from the answer rather than from here.
-      pollIdleMs: 60_000,
-      log: () => {},
-      fetchImpl,
-      signal: stopping.signal,
+      pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl, signal: stopping.signal,
     });
-    // Two polls happened well inside the fallback the worker was constructed
-    // with, so the wait it kept came from the answer.
-    expect(asked.filter((p) => p === '/worker/claim').length).toBeGreaterThanOrEqual(2);
-    expect(Date.now() - started).toBeLessThan(30_000);
-    expect(renewals).toBe(0);
-  });
+    const elapsed = Date.now() - started;
+    expect(asked.filter((p) => p === '/worker/claim').length).toBe(3);
+    // Two waits at the answered cadence, against two at the fallback.
+    expect({ elapsed: elapsed < FALLBACK_MS, polls: 3 }).toEqual({ elapsed: true, polls: 3 });
+  }, 15_000);
+
+  it('renews at the cadence the claim answered, so a run is held while it is driven', async () => {
+    const HEARTBEAT_MS = 60;
+    const RUN_MS = 400;
+    process.env.PATH = `${slowHarness(RUN_MS)}:${process.env.PATH ?? ''}`;
+    const stopping = new AbortController();
+    let renewals = 0;
+    let ended: Record<string, unknown> | null = null;
+    let claims = 0;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
+      if (url.endsWith('/worker/claim')) {
+        claims += 1;
+        return new Response(JSON.stringify({
+          persisted: true, claimed: true, heartbeatMs: HEARTBEAT_MS,
+          run: {
+            projectId: 'proj_1', id: 'run_1', task: 'title-summary', instruction: 'do it',
+            harness: 'claude-code', runToken: 'tok_run', credentialEnv: {}, timeoutSeconds: 300,
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith('/worker/lease')) { renewals += 1; return new Response(JSON.stringify({ persisted: true, held: true, expiresAt: 0 }), { status: 200 }); }
+      if (url.endsWith('/worker/end')) { ended = JSON.parse(String(init?.body)) as Record<string, unknown>; return new Response(JSON.stringify({ persisted: true, ended: true }), { status: 200 }); }
+      return new Response(JSON.stringify({ persisted: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await runWorker({
+      serverUrl: 'https://deployment.example', token: 'tok',
+      runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
+      once: true, pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl, signal: stopping.signal,
+    });
+
+    // A run driven for RUN_MS is renewed at the answered cadence. A worker
+    // keeping a cadence of its own renews once or not at all across that span.
+    expect({ claims, renewed: renewals >= 2, ended }).toEqual({
+      claims: 1, renewed: true,
+      ended: { projectId: 'proj_1', runId: 'run_1', status: 'completed', error: null },
+    });
+  }, 15_000);
 });

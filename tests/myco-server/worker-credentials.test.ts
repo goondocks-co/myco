@@ -88,12 +88,23 @@ describe('the credential a claim hands a worker', () => {
     expect(await f.claimUnder('codex', NOW + 2)).toEqual({});
   });
 
-  it('keeps a harness the Deployment does not know out of the answer entirely', async () => {
+  it('takes a harness id it does not know and opens nothing for it, so a newer worker needs no Deployment change', async () => {
     const f = await fixture();
     await f.secrets.put('anthropic', API_KEY, 'mem_w', NOW);
-    // A worker offering an id the manifest does not carry matches no
-    // preference, so no run is claimed and no secret is opened for it.
-    const outcome = await claimNextRun(f.env, { tokenId: (await issueMemberToken(f.env.db, { memberId: 'mem_w', machineId: 'm1' }, NOW)).tokenId, machineId: 'm1', harnesses: [{ id: 'something-else', authenticated: true }], now: NOW + 1 });
-    expect(outcome).toEqual({ claimed: false, reason: 'no_work' });
+    await f.secrets.put('openai', OPENAI_KEY, 'mem_w', NOW);
+    // A Deployment naming no preference takes what the worker offers, and a
+    // worker offers only what its own manifest can drive — so an id this
+    // Deployment has no row for is a harness newer than it, not a bad ask. It
+    // runs under its own login: no provider slot is named for it and none is
+    // opened, which is what keeps an unknown id from reaching for another
+    // provider's key.
+    expect(await f.claimUnder('something-else', NOW + 1)).toEqual({});
+  });
+
+  it('records the harness it chose on the run, so what ran is read off the row rather than inferred', async () => {
+    const f = await fixture();
+    await f.secrets.put('anthropic', API_KEY, 'mem_w', NOW);
+    await f.claimUnder('codex', NOW + 1);
+    expect(f.e.sqlite.query(`SELECT harness FROM agent_runs WHERE id = 'run_codex_${NOW + 1}'`).get()).toEqual({ harness: 'codex' });
   });
 });
