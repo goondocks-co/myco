@@ -1219,12 +1219,31 @@ const V29_STATEMENTS: readonly string[] = [
       WHERE id NOT IN (SELECT id FROM agents)`,
 ];
 
+/**
+ * v30: blob references are indexed, and a transcript parse carries its open turn.
+ *
+ * Every table that names a blob carries `(project_id, blob_key)`, the read the
+ * orphan sweep and retention make for each key they consider; without it that
+ * sweep is a scan of every holder table per candidate on every tick.
+ * `transcripts.open_prompt_id` names the prompt whose turn a stopped parse
+ * pass left open, so the resumed pass attributes the rest of that turn to it
+ * and never to a prompt the session received in between (#1147).
+ */
+const V30_STATEMENTS: readonly string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_transcript_segments_blob_key ON transcript_segments (project_id, blob_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_prompt_batches_blob_key ON prompt_batches (project_id, blob_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_responses_blob_key ON responses (project_id, blob_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_plans_blob_key ON plans (project_id, blob_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_attachments_blob_key ON attachments (project_id, blob_key)`,
+  `ALTER TABLE transcripts ADD COLUMN open_prompt_id TEXT`,
+];
+
 function withStamp(version: number, statements: readonly string[]): SchemaStep {
   return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
 }
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);
