@@ -253,7 +253,11 @@ async function main(): Promise<void> {
 
   // #1158: redeeming an invite link is the FIRST thing a machine does, before it
   // has a vault, a config file or a project — so it sits above the myco.yaml gate.
-  if (cmd === 'login') { await (await import('./cli/login.js')).run(args); return; }
+  if (cmd === 'login') {
+    // The verb reports its outcome; the exit status is the dispatcher's to set.
+    if (!await (await import('./cli/login.js')).run(args)) process.exitCode = 2;
+    return;
+  }
 
   // Self-hosted Deployment lifecycle — a Compose bundle under MYCO_HOME, no
   // project vault, so it sits above the myco.yaml gate and works from any cwd.

@@ -28,12 +28,10 @@ describe('myco login', () => {
     execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
     out = [];
     err = [];
-    process.exitCode = undefined;
   });
   afterEach(() => {
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(root, { recursive: true, force: true });
-    process.exitCode = undefined;
   });
 
   const deps = (rig: ReturnType<typeof unjoinedRig>) => ({
@@ -76,7 +74,6 @@ describe('myco login', () => {
     out.length = 0;
     expect(await run([`https://s/join#${issued.key}`], deps(rig))).toBe(false);
     expect(err.join('\n')).toContain('enrollment_used');
-    expect(process.exitCode).toBe(2);
   });
 
   it('names every refusal it can make on the link alone, without reaching the Deployment', async () => {
@@ -116,6 +113,7 @@ describe('myco login', () => {
     const rig = unjoinedRig();
     expect(await run([], deps(rig))).toBe(false);
     expect(err.join('\n')).toContain('Usage: myco login');
-    expect(process.exitCode).toBe(2);
+    // The verb reports the outcome and leaves the process alone; `cli.ts` sets the status.
+    expect(process.exitCode).toBeUndefined();
   });
 });

@@ -82,14 +82,22 @@ function parseArgs(args: readonly string[]): LoginArgs {
   return parsed;
 }
 
+/**
+ * Redeem the link, and report whether it worked.
+ *
+ * The outcome is RETURNED, never written to `process.exitCode` here. A verb that
+ * stamps the process it runs in cannot be called twice in one process, and the
+ * dispatcher is the one place that knows this invocation is the process's whole
+ * purpose. `cli.ts` turns a false here into the exit status.
+ */
 export async function run(args: readonly string[], deps: LoginDeps = {}): Promise<boolean> {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
-  const fail = (line: string): boolean => { err(`myco login: ${line}`); process.exitCode = 2; return false; };
+  const fail = (line: string): boolean => { err(`myco login: ${line}`); return false; };
 
   const parsed = parseArgs(args);
   if (parsed.error) return fail(parsed.error);
-  if (!parsed.url) { err(LOGIN_HELP.trimEnd()); process.exitCode = 2; return false; }
+  if (!parsed.url) { err(LOGIN_HELP.trimEnd()); return false; }
 
   const code = parseJoinCode(parsed.url);
   if ('error' in code) return fail(JOIN_CODE_REFUSALS[code.error]);
