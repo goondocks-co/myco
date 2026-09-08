@@ -192,6 +192,8 @@ EOF
 myco tool call myco_plans --json --input @/tmp/myco-handoff-save.json
 ```
 
-If `myco` is not on PATH, invoke the installed self-contained binary directly
-(POSIX: `~/.myco/bin/myco`; Windows: `%LOCALAPPDATA%\Myco\bin\myco.exe`) or the
-binary named by a trusted `runtime.command` pin. Do not invoke a Node launcher.
+This shell path exists only where the `myco` binary is installed; if it is not
+on PATH, invoke it directly (POSIX: `~/.myco/bin/myco`; Windows:
+`%LOCALAPPDATA%\Myco\bin\myco.exe`). Where only the plugin is installed the
+tools reach the same code path without a binary. Saving the handoff is a write,
+so the call must name `project`.

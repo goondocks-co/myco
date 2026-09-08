@@ -1,0 +1,12 @@
+# Should not invoke the `myco-rules` skill.
+name: myco-rules-no-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Add a comment to this function explaining what it returns.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-rules
+      negate: true
+    with_only: true

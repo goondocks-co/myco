@@ -1,9 +1,13 @@
 ---
 name: myco-rules
 description: >-
-  Keep AGENTS.md minimal, durable, and canonical across agents. Use for
-  adding, trimming, or auditing project rules without turning the rules file
-  into a dump of dynamic context.
+  Keep AGENTS.md minimal, durable and canonical across every agent that reads
+  it. Adds, trims and audits project rules without letting the rules file decay
+  into a dump of whatever was true last week.
+when_to_use: >-
+  "add a project rule", "trim AGENTS.md", "audit our rules", or whenever a rule
+  is about to be written down and it is not obvious whether it belongs in
+  AGENTS.md or in Myco as a spore.
 allowed-tools: Read, Edit, Write, Grep, Glob
 user-invocable: true
 ---

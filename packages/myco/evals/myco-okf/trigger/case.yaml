@@ -1,0 +1,11 @@
+# Should invoke the `myco-okf` skill.
+name: myco-okf-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Generate an OKF-conformant wiki for this repository and commit it.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-okf
+    with_only: true

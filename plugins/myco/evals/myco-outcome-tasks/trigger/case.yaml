@@ -1,0 +1,11 @@
+# Should invoke the `myco-outcome-tasks` skill.
+name: myco-outcome-tasks-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Add a new outcome task that summarises stale plans, and wire up its admission gate and tools.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-outcome-tasks
+    with_only: true

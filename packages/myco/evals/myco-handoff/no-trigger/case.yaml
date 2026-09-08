@@ -1,0 +1,12 @@
+# Should not invoke the `myco-handoff` skill.
+name: myco-handoff-no-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Summarise what we changed in this file today.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-handoff
+      negate: true
+    with_only: true

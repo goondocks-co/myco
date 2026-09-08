@@ -1,15 +1,17 @@
 ---
 name: myco-handoff
 description: >-
-  Use when handing a coding session off to a new session or another symbiont —
+  Carry a session's working intention to another session or another agent.
+  PREPARE compresses why we are here, what we are doing, the gotchas, the dead
+  ends and the decisions already closed into a digest of at most 1500 tokens,
+  saved on a Myco plan. RECEIVE takes that plan id, rehydrates the context,
+  marks the referenced plans in progress, loads the suggested skills and resumes
+  the work.
+when_to_use: >-
   "hand this off", "prepare a handoff", "continue this in a new session", "pick
-  up where I left off", "pass this to another agent", or when context is heavy /
-  running low and the work will continue elsewhere, or work has drifted out of
-  scope and should restart fresh. PREPARE compresses the current session's
-  intention (why we're here, what we're doing, gotchas, dead ends, decisions)
-  into a ≤1500-token digest saved on a Myco plan. RECEIVE takes a plan ID,
-  rehydrates the context, reads and marks the referenced plans in progress, loads
-  the suggested skills, and resumes the work.
+  up where I left off", "pass this to another agent" — and unprompted when
+  context is running low and the work will continue elsewhere, or when the work
+  has drifted far enough out of scope that a fresh session should restart it.
 allowed-tools: Read, Bash, Grep, Glob
 user-invocable: true
 argument-hint: prepare [plan-id] | receive <plan-id>
@@ -60,14 +62,19 @@ block — a plan never accumulates stale handoffs):
 
 ## Tooling
 
-Drive Myco via the ambient MCP tools (`myco_plans`, `myco_sessions`,
-`myco_cortex`, `myco_search`). On a host without MCP, fall back to
-`myco tool call <tool> --json --input '{...}'` via Bash; use `--input @file.json`
-for multiline markdown. If `myco` is not on PATH, invoke the installed
-self-contained binary directly (POSIX: `~/.myco/bin/myco`; Windows:
-`%LOCALAPPDATA%\Myco\bin\myco.exe`) or the binary named by a trusted
-`runtime.command` pin. Do not invoke a Node launcher. Load suggested skills with
-the host's skill mechanism; if unavailable, read bundled skill files from
-`packages/myco/skills/<name>/SKILL.md` or `.agents/skills/<name>/SKILL.md`.
-Your current session ID is injected at session start (look for the `Session::`
-line); if you cannot find it, ask the user.
+Drive Myco through its tools — `myco_plans`, `myco_sessions`, `myco_cortex`,
+`myco_search`. Every one takes `project`: a read without it uses the project
+your credential is bound to, and a **write without it is refused**. Saving the
+handoff is a write, so name the project. `myco_cortex` with
+`op: "instructions"` answers this project's guidance and its project id.
+
+Where the `myco` binary is installed, `myco tool call <tool> --json --input
+'{...}'` reaches the same code path from a shell; use `--input @file.json` for
+multiline markdown. Where only the plugin is installed there is no binary and
+the tools above are the whole surface, which is enough for both modes.
+
+Load suggested skills with the host's own skill mechanism. `myco_skills` names
+what ships and where each body sits, but does not return one, so a host with no
+skill mechanism reads the file at the path `op: "get"` reports.
+Your session id arrives in the session-start context; if you cannot find it,
+ask rather than guessing.

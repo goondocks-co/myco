@@ -1,16 +1,15 @@
 ---
 name: myco-okf
 description: >-
-  Create or maintain an OKF-conformant project wiki — a portable,
-  git-committed markdown knowledge base that lives in the repo, not the
-  vault. Use when asked to create a wiki, build or generate a project wiki,
-  document this codebase as a wiki, maintain/update/sync the wiki with the
-  code, or when the request mentions OKF, "Open Knowledge Format", or
-  knowledge catalog. Also use when asked to turn Myco's captured
-  intelligence (Canopy map, digest, spores, sessions, skills) into
-  human-readable documentation that ships with the repo. Any symbiont can
-  run this procedure — it needs no daemon machinery beyond the ordinary
-  Myco tools.
+  Create or maintain an OKF-conformant project wiki — a portable, git-committed
+  markdown knowledge base that lives in the repository rather than in Myco.
+  Turns what Myco holds, the spores and sessions and plans, into human-readable
+  documentation that ships with the code. Any agent can run the procedure; it
+  needs nothing beyond the ordinary Myco tools.
+when_to_use: >-
+  "create a wiki", "build a project wiki", "document this codebase as a wiki",
+  "keep the wiki in sync with the code", or any request naming OKF, the Open
+  Knowledge Format, or a knowledge catalog.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
 user-invocable: true
 ---
@@ -95,15 +94,13 @@ do not delete them without saying so — the user decides.
 Before touching the source tree, gather what Myco already knows, in this
 order:
 
-1. **Canopy map** — `myco_cortex({"op":"canopy_map"})`. This is the
-   structural map of the repo: what exists, at what path, at what altitude.
-   It replaces "list every file" — use it to decide what deserves a wiki
-   page, not to read the whole tree.
-2. **Digest** — `myco_cortex({"op":"digest","tier":5000})` (go to `10000`
-   only if you have budget and the wiki needs deep historical grounding).
-   This is pre-synthesized project narrative: why things are built the way
-   they are. It is the closest thing to a first draft of your "decisions"
-   and "architecture" pages.
+1. **Repository structure** — read it from the checkout. There is no served
+   repo map: use the tree itself to decide what deserves a wiki page, and
+   spend your reading budget on the parts the wiki will actually cover.
+2. **Standing guidance** — `myco_cortex({"op":"instructions"})`. The
+   project's own guidance and its project id. There is no pre-synthesized
+   project narrative to draw on, so the "decisions" and "architecture" pages
+   are assembled from spores and sessions rather than from a digest.
 3. **Targeted search** — `myco_search({"query": "<component or topic>"})`
    for each area the Canopy map or digest surfaced as wiki-worthy. Follow
    each result's `retrieve` hint to pull the full record (`myco_spores`,

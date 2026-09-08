@@ -1,0 +1,11 @@
+# Should invoke the `myco-server-provisioning` skill.
+name: myco-server-provisioning-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Deploy our Myco deployment to Cloudflare, and make sure the D1 migrations apply in the right order.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-server-provisioning
+    with_only: true

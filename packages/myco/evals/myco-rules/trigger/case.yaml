@@ -1,0 +1,11 @@
+# Should invoke the `myco-rules` skill.
+name: myco-rules-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Add a project rule to AGENTS.md that every new configuration setting needs a ledger row.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-rules
+    with_only: true

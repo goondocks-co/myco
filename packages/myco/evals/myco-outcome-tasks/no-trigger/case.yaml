@@ -1,0 +1,12 @@
+# Should not invoke the `myco-outcome-tasks` skill.
+name: myco-outcome-tasks-no-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Rename a local variable inside the task catalogue file.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-outcome-tasks
+      negate: true
+    with_only: true

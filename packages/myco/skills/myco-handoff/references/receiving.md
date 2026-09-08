@@ -88,8 +88,9 @@ Use the handoff's `Resume queries` and `Evidence anchors` first:
 - `myco_search({"query":"<topic from the digest>"})` — related spores/plans;
   use this when no resume query was supplied but the digest names a concrete
   subsystem, issue, PR, or gotcha.
-- `myco_cortex({"op":"digest","tier":5000})` — only when the work is broad,
-  unfamiliar, or the digest/plans leave material context gaps.
+- `myco_cortex({"op":"instructions"})` — the project's standing guidance and
+  its project id. Read it when the handoff leaves material context gaps, and
+  whenever you are about to write, since a write must name the project.
 
 Skip this for a narrow, well-scoped resume.
 
@@ -112,7 +113,7 @@ myco tool call myco_plans --json --input '{"op":"save","id":"<plan-id>","status"
 ```
 
 Use `--input @file.json` for any payload containing multiline markdown or
-backticks. If `myco` is not on PATH, invoke the installed self-contained binary
-directly (POSIX: `~/.myco/bin/myco`; Windows:
-`%LOCALAPPDATA%\Myco\bin\myco.exe`) or the binary named by a trusted
-`runtime.command` pin. Do not invoke a Node launcher.
+backticks. This shell path exists only where the `myco` binary is installed; if
+it is not on PATH, invoke it directly (POSIX: `~/.myco/bin/myco`; Windows:
+`%LOCALAPPDATA%\Myco\bin\myco.exe`). Where only the plugin is installed there
+is no binary, and the tools reach the same code path without one.

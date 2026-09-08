@@ -94,12 +94,16 @@ async function searchType(db: RelationalStore, scope: ReadScope, type: SearchTyp
     FROM candidates JOIN ${s.table} d ON d.rowid = candidates.source_rowid
     WHERE ${where.join(' AND ')} GROUP BY d.rowid ORDER BY rank, created_at DESC, id LIMIT ?`).bind(...params).all<Hit>()).results;
   const best = Math.max(...rows.map((r) => Math.abs(r.rank)), Number.MIN_VALUE);
-  const tools: Partial<Record<SearchType, string>> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans', skill: 'myco_skills' };
+  // No `skill` entry: `myco_skills` answers from the shipped catalogue, so a
+  // hint naming a generated record's id would send a caller to a refusal. The
+  // rows survive until #1170 removes the table; the hint does not.
+  const tools: Partial<Record<SearchType, string>> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans' };
+  const tool = tools[type];
   return rows.filter((r) => r.id.length > 0).map((r) => ({
     id: r.id, type, title: r.title, preview: (r.preview ?? '').slice(0, SEARCH_PREVIEW_CHARS), score: Math.abs(r.rank) / best,
     ...(r.session_id === null ? {} : { session_id: r.session_id }),
     ...(r.prompt_id === null ? {} : { prompt_id: r.prompt_id }),
-    ...(tools[type] === undefined ? {} : { retrieve: { tool: tools[type], input: { op: 'get', id: r.id } } }),
+    ...(tool === undefined ? {} : { retrieve: { tool, input: { op: 'get', id: r.id } } }),
   }));
 }
 

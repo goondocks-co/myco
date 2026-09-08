@@ -1,0 +1,11 @@
+# Should invoke the `myco-settings` skill.
+name: myco-settings-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Add a deployment setting bounding how many spores one extraction run may write, with a sensible range.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-settings
+    with_only: true

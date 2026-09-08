@@ -1,0 +1,12 @@
+# Should not invoke the `myco-server-provisioning` skill.
+name: myco-server-provisioning-no-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Explain what a Cloudflare Worker is.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-server-provisioning
+      negate: true
+    with_only: true

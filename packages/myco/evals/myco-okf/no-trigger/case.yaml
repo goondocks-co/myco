@@ -1,0 +1,12 @@
+# Should not invoke the `myco-okf` skill.
+name: myco-okf-no-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Write a README section describing the install steps.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-okf
+      negate: true
+    with_only: true

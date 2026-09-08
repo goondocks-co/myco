@@ -1,0 +1,12 @@
+# Should not invoke the `myco` skill.
+name: myco-no-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  Rename the variable `outboxLease` to `lease` in this file.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco
+      negate: true
+    with_only: true

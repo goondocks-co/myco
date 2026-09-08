@@ -1,0 +1,11 @@
+# Should invoke the `myco-server-debugging` skill.
+name: myco-server-debugging-trigger
+runs: 3
+max_turns: 4
+prompt: |
+  The deployment is refusing our ingest calls with no_machine_identity. Work out why.
+graders:
+  - tool_used:
+      tool: Skill
+      input_match: myco-server-debugging
+    with_only: true
