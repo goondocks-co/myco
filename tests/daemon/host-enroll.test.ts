@@ -29,7 +29,7 @@ import { HOST_PROTOCOL_VERSION, HOST_PROXY_HEADERS_TIMEOUT_MS } from '@myco/cons
 import { mintJoinKey } from '@myco/team-host/join-keys';
 import { authenticateMemberToken, listMembers, revokeMember } from '@myco/team-host/member-tokens';
 import { realEnrollmentClient } from '@myco/host/member-overlay';
-import { teamFetch, teamTestPort } from '../helpers/team-socket.js';
+import { boundTeamPort, teamFetch } from '../helpers/team-socket.js';
 import { startFunnelEdge, type FunnelEdge } from '../helpers/funnel-edge.js';
 
 const stubAuthority = { read: () => null, write: () => {} } as unknown as DaemonStateAuthority;
@@ -58,12 +58,10 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
     process.env.MYCO_TEAM_HOME = tmp;
 
     sessionsHandlerCalls = 0;
-    teamPort = teamTestPort();
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
-      teamPort: teamPort,
       hostServe: { bearer: HOST_BEARER, hostId: HOST_ID, label: HOST_LABEL },
       lockNamespace: testPerUserLockNamespace,
     });
@@ -73,6 +71,7 @@ describeTeamTransport('Team Host enrollment endpoint (/api/host/enroll)', () => 
       return { body: { ok: true } };
     });
     await server.start(0);
+    teamPort = boundTeamPort(server);
     loopback = `http://127.0.0.1:${server.port}`;
   });
 
@@ -346,17 +345,15 @@ describeTeamTransport('enrollment over the real transport', () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-enroll-real-'));
     savedTeamHome = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_TEAM_HOME = tmp;
-    const teamPort = teamTestPort();
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
-      teamPort: teamPort,
       hostServe: { bearer: HOST_BEARER, hostId: HOST_ID, label: HOST_LABEL },
       lockNamespace: testPerUserLockNamespace,
     });
     await server.start(0);
-    edge = await startFunnelEdge({ port: teamPort });
+    edge = await startFunnelEdge({ port: boundTeamPort(server) });
   });
 
   afterEach(async () => {

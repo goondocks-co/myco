@@ -25,7 +25,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
-import { teamFetch, teamTestPort } from '../helpers/team-socket.js';
+import { boundTeamPort, teamFetch } from '../helpers/team-socket.js';
 import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
@@ -55,7 +55,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
   let savedMycoHome: string | undefined;
   let savedTeamHome: string | undefined;
   let loopback: string;
-  let teamSock: string;
+  let teamSock: number;
   let servedGrove: GroveRecord;
   let servedProjectId: string;
   let logEntries: LogEntry[];
@@ -101,8 +101,6 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     const logger = new DaemonLogger(path.join(tmp, 'logs'));
     logger.setPersistFn((entry) => logEntries.push(entry));
 
-    teamSock = teamTestPort();
-
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger,
@@ -110,7 +108,6 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
       lockNamespace: testPerUserLockNamespace,
       uiDir,
       hostServe: { bearer: HOST_BEARER, servedGroveId: servedGrove.id },
-      teamPort: teamSock,
     });
     server.registerRoute('GET', '/api/sessions', async () => {
       sessionsHandlerCalls += 1;
@@ -126,6 +123,7 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     server.onShutdownRequest(async () => () => { shutdownCalls += 1; });
 
     await server.start(0);
+    teamSock = boundTeamPort(server);
     loopback = `http://127.0.0.1:${server.port}`;
     });
 
@@ -400,8 +398,6 @@ describe('Team Host transport-boundary gate (overlay listener)', () => {
     // 502s). A port brings back the question a socket did not have — WHO can
     // reach it — so the bind address is the invariant now, and it is asserted
     // by connecting rather than by reading a field.
-    expect(server.teamPort).toBe(teamSock);
-
     // Reachable on loopback.
     const viaLoopback = await teamFetch(teamSock, '/api/health');
     expect(viaLoopback.status).not.toBe(0);
@@ -449,7 +445,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
   let savedTeamHome: string | undefined;
   let overlay: string;
   let loopback: string;
-  let teamSock: string;
+  let teamSock: number;
   let servedGrove: GroveRecord;
   let servedProjectId: string;
 
@@ -507,15 +503,12 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
     embeddingStatusCalls = 0;
     secretsFile = path.join(tmp, 'secrets.env');
 
-    teamSock = teamTestPort();
-
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
       lockNamespace: testPerUserLockNamespace,
       hostServe: { bearer: HOST_BEARER, servedGroveId: servedGrove.id },
-      teamPort: teamSock,
     });
 
     // localhost-only — THE credential-hijack moat. This handler is the only writer
@@ -576,6 +569,7 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
     server.onShutdownRequest(async () => () => { shutdownCalls += 1; });
 
     await server.start(0);
+    teamSock = boundTeamPort(server);
     loopback = `http://127.0.0.1:${server.port}`;
   });
 
@@ -755,17 +749,14 @@ describe('Team Host overlay stamp enforcement (host-side backstop)', () => {
 describe('Team Host serve disabled → no second listener', () => {
   let tmp: string;
   let server: DaemonServer;
-  let teamSock: string;
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-off-'));
-    teamSock = teamTestPort();
     server = new DaemonServer({
       vaultDir: path.join(tmp, 'vault'),
       logger: new DaemonLogger(path.join(tmp, 'logs')),
       daemonStateAuthority: stubAuthority,
       lockNamespace: testPerUserLockNamespace,
-      teamPort: teamSock,
       // no hostServe → host serving off
     });
     server.registerRoute('GET', '/api/sessions', async () => ({ body: { ok: true } }));
@@ -779,7 +770,6 @@ describe('Team Host serve disabled → no second listener', () => {
 
   test('no team listener binds and the loopback listener works', async () => {
     expect(server.teamPort).toBeNull();
-    expect(fs.existsSync(teamSock)).toBe(false);
     const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`);
     expect(res.status).toBe(200);
   });

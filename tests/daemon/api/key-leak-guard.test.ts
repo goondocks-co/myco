@@ -12,7 +12,7 @@
  * the web-page exfiltration path; this test guards the last mile.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from 'bun:test';
-import { teamFetch, teamTestPort } from '../../helpers/team-socket.js';
+import { boundTeamPort, teamFetch } from '../../helpers/team-socket.js';
 import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,8 +44,6 @@ import { createSecretsOperations, readSecrets } from '@myco/config/secrets.js';
 import { HOST_EXTERNAL_MCP_TOKEN_SECRET, HOST_PROTOCOL_HEADER, HOST_PROTOCOL_VERSION } from '@myco/constants.js';
 import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 import { issueTestMemberToken } from '../../helpers/member-token.js';
-
-let teamSock: string;
 
 const { writeSecret } = createSecretsOperations(testPerUserLockNamespace);
 
@@ -141,10 +139,7 @@ describe('cross-route API key leak guard', () => {
     logger = new DaemonLogger(path.join(tmpVault, 'logs'));
     setupTestDb();
 
-    teamSock = teamTestPort();
-
     server = new DaemonServer({
-      teamPort: teamSock,
       vaultDir: tmpVault,
       logger,
       lockNamespace: testPerUserLockNamespace,
@@ -311,6 +306,7 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
   let grove: GroveRecord;
   let projectId: string;
   let overlayServer: DaemonServer;
+  let teamSock: number;
 
   beforeAll(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-leak-guard-team-write-'));
@@ -335,9 +331,7 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
       bearer: HOST_BEARER,
       servedGroveId: grove.id,
     };
-    teamSock = teamTestPort();
     overlayServer = new DaemonServer({
-      teamPort: teamSock,
       vaultDir: path.join(tmp, 'host-anchor', '.myco'),
       logger: new DaemonLogger(path.join(tmp, 'host-logs')),
       hostServe,
@@ -373,6 +367,7 @@ describe('team-write routes over the overlay: no raw key ever leaves the host (m
     // with the rest of the team-write route class.
     registerTeamAgentTaskRoutes(overlayServer, { hostServe, mycoHome: home });
     await overlayServer.start(0);
+    teamSock = boundTeamPort(overlayServer);
   });
 
   afterAll(async () => {

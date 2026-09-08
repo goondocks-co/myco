@@ -17,7 +17,7 @@
  * Hermetic: `MYCO_HOME` / `MYCO_TEAM_HOME` are fresh tmpdirs per test.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { teamFetch, teamTestPort, portFetch } from '../helpers/team-socket.js';
+import { boundTeamPort, teamFetch, portFetch } from '../helpers/team-socket.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -101,7 +101,7 @@ function mockDaemonClient(): DaemonClient {
 
 describe('dual-homed served-grove fail-closed filter (overlay integration)', () => {
   let tmp: string;
-  let teamSock: string;
+  let teamSock: number;
   let mycoHome: string;
   let savedMycoHome: string | undefined;
   let savedTeamHome: string | undefined;
@@ -185,7 +185,6 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
    * knowledge-serving router routes chokepoint 1 protects.
    */
   async function buildHostServer(servedGroveId: string | undefined): Promise<DaemonServer> {
-    teamSock = teamTestPort();
     const hostServe: HostServeRuntime = {
       bearer: HOST_BEARER,
       servedGroveId,
@@ -199,7 +198,6 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
       daemonStateAuthority: stubAuthority,
       hostServe,
       lockNamespace: testPerUserLockNamespace,
-      teamPort: teamSock,
     });
     server.registerRoute('GET', PROBE_ROUTE, async (req) => ({
       body: { ok: true, groveId: req.requestContext?.groveId ?? null },
@@ -214,6 +212,7 @@ describe('dual-homed served-grove fail-closed filter (overlay integration)', () 
       lockNamespace: testPerUserLockNamespace,
     }));
     await server.start(0);
+    teamSock = boundTeamPort(server);
     servers.push(server);
     return server;
   }
