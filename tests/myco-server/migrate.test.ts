@@ -40,7 +40,8 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0023_v23.sql': 'f9bde4ce357f86fc912fb4c2f6be3f08c88eed5df1de080cc130a6cf65abe9d3',
   '0024_v24.sql': 'f6cc2bd6c8c8acda977565b7b01a666842a78deedf452859bc1935b0b35be9fa',
   '0025_v25.sql': '130505475de378ec88140ca998a60a197a891a1772927b3a5ade1dc449a77e78',
-  '0026_v26.sql': '8cdb977a5b2e80d0db05d1acaf492d2cfd22d2bdf955275126386742f6667ee2',
+  '0026_v26.sql': '8cdb977a5b2e80d0db05d1acaf492d2cfd22d2bdf955275126386742f6667ee2',  '0027_v27.sql': '34fff0ea1db7f5a27507cbe52ca214c5f0990889971760cac4fc0c9ba1be7ca0',
+  '0028_v28.sql': 'd6d08116335be071d2c210311931954109907594650588863bf05a4309877336',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -288,8 +289,8 @@ describe('versioned schema steps', () => {
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_events', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'attachments', 'blob_reservations', 'blobs', 'canopy_maps', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_receipts', 'embedding_versions', 'enrollment_authorities', 'external_grants',
-      'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'project_capabilities', 'project_repositories', 'projects',
-      'prompt_batches', 'resolution_events', 'responses', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'skill_candidates', 'skill_lineage', 'skill_records',
+      'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'project_capabilities', 'project_remotes', 'project_repositories', 'projects',
+      'prompt_batches', 'resolution_events', 'responses', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'session_tombstones', 'skill_candidates', 'skill_lineage', 'skill_records',
       'skill_usage', 'spore_injections', 'spores', 'tags', 'tool_calls', 'transcript_segments', 'transcripts',
     ]);
   });

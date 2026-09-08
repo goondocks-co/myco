@@ -1144,12 +1144,70 @@ const V26_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_enrollment_authorities_finished ON enrollment_authorities (expires_at)`,
 ];
 
+/**
+ * v27: the agent-line projection, plans in an injection's record, and the
+ * remote → Project leg of Project Resolution.
+ *
+ * `spores.agent_line` is the ≈40-token trigger → guidance projection injection
+ * and search previews render in place of the Markdown; null until derived, and
+ * the partial index is the derivation backlog. `spore_injections.plan_ids`
+ * records the plans served beside the spores, so a plan served once is not
+ * served again. `project_remotes` binds a normalized git remote to exactly one
+ * Project: the remote is the key, so one remote names at most one Project and
+ * two remotes never merge by accident (#1150).
+ */
+const V27_STATEMENTS: readonly string[] = [
+  `ALTER TABLE spores ADD COLUMN agent_line TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_spores_underived ON spores (project_id, created_at) WHERE agent_line IS NULL`,
+  `ALTER TABLE spore_injections ADD COLUMN plan_ids TEXT`,
+  `CREATE TABLE IF NOT EXISTS project_remotes (
+     remote        TEXT PRIMARY KEY,
+     project_id    TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     first_seen_at INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_project_remotes_project ON project_remotes (project_id)`,
+];
+
+/**
+ * v28: the server-side parse of transcripts, a plan's source, and session
+ * tombstones.
+ *
+ * A transcript's parse is a resumable job: `parsed_offset` is the byte the
+ * next pass starts from, `parser_version` the parser that produced the rows
+ * before it, `parse_error` / `parse_failed_at` the terminal fault that stops
+ * the cursor, and the partial index the backlog of transcripts with bytes
+ * still unparsed. `fidelity` is what the parser could recover for this
+ * harness; `role` separates a subagent sibling from the primary transcript;
+ * `head_hash` is the digest of the first bytes, the integrity gate a re-ship
+ * at offset 0 is judged against. `plans.source` is the channel a plan version
+ * arrived through. `session_tombstones` names a session the Deployment refuses
+ * to hold again: every write to it is refused and every read omits it (#1147).
+ */
+const V28_STATEMENTS: readonly string[] = [
+  `ALTER TABLE transcripts ADD COLUMN parsed_offset INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE transcripts ADD COLUMN parsed_at INTEGER`,
+  `ALTER TABLE transcripts ADD COLUMN parser_version INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE transcripts ADD COLUMN parse_error TEXT`,
+  `ALTER TABLE transcripts ADD COLUMN parse_failed_at INTEGER`,
+  `ALTER TABLE transcripts ADD COLUMN fidelity TEXT`,
+  `ALTER TABLE transcripts ADD COLUMN role TEXT NOT NULL DEFAULT 'primary'`,
+  `ALTER TABLE transcripts ADD COLUMN head_hash TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_transcripts_unparsed ON transcripts (project_id, last_received_at) WHERE parsed_offset < size AND parse_error IS NULL`,
+  `ALTER TABLE plans ADD COLUMN source TEXT`,
+  `CREATE TABLE IF NOT EXISTS session_tombstones (
+     project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
+     session_id TEXT NOT NULL,
+     reason     TEXT,
+     created_at INTEGER NOT NULL,
+     created_by TEXT NOT NULL,
+     PRIMARY KEY (project_id, session_id))`,
+];
+
 function withStamp(version: number, statements: readonly string[]): SchemaStep {
   return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
 }
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);
