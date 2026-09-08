@@ -33,7 +33,7 @@ async function harness() {
 const spore = (id: string, over: Record<string, unknown> = {}) => ({
   id, agentId: AGENT, sessionId: null, promptId: null, observationType: 'gotcha',
   content: `body of ${id}`, context: null, filePath: null, tags: null,
-  contentHash: null, properties: null, createdAt: NOW, ...over,
+  contentHash: null, properties: null, author: null, createdAt: NOW, ...over,
 });
 
 describe('an empty answer is not a missing one', () => {

@@ -59,7 +59,7 @@ export async function handleSaveSpore(env: ServerEnv, ctx: RouteContext): Promis
 
   const spore = await insertSpore(env.db, { projectId: ctx.projectId }, {
     id, agentId, sessionId, promptId, observationType, status, content, context,
-    importance: int(body.importance) ?? 5, filePath, tags, contentHash, properties,
+    importance: int(body.importance) ?? 5, filePath, tags, contentHash, properties, author: ctx.memberId,
     createdAt: int(body.createdAt) ?? ctx.now,
   });
   return Response.json({ persisted: true, spore });
@@ -130,7 +130,7 @@ export async function handleResolveSpore(env: ServerEnv, ctx: RouteContext): Pro
   }
 
   const resolved = await resolveSpore(env.db, { projectId: ctx.projectId }, status, {
-    id: eventId, agentId, sporeId, action, newSporeId, reason, sessionId, createdAt: ctx.now,
+    id: eventId, agentId, sporeId, action, newSporeId, reason, sessionId, author: ctx.memberId, createdAt: ctx.now,
   }, ctx.now);
   return Response.json({ persisted: true, resolved });
 }

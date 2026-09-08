@@ -89,7 +89,7 @@ async function fixture(opts: { capability?: boolean } = {}) {
     );
   const spore = (id: string, content: string) => insertSpore(e.db, SCOPE, {
     id, agentId: HARNESS_AGENT_ID, sessionId: null, promptId: null, observationType: 'decision',
-    content, context: null, filePath: null, tags: null, contentHash: null, properties: null, createdAt: NOW,
+    content, context: null, filePath: null, tags: null, contentHash: null, properties: null, author: null, createdAt: NOW,
   });
   const runs = () => e.sqlite.query(`SELECT id, task, status, instruction, dry_run AS dryRun, run_context AS runContext FROM agent_runs ORDER BY COALESCE(queued_at, started_at), id`).all() as Array<Record<string, unknown>>;
   /** Close a run as the credential that dispatched it; closing releases that credential, so each run takes its own. */

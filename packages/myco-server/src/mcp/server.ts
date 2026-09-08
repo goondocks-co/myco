@@ -2,7 +2,8 @@
  * The MCP protocol server for one request.
  *
  * `tools/list` answers the definitions as written — every served tool to a
- * member, the allowlisted ones to a grant. `tools/call` validates the
+ * member, the allowlisted ones to a grant, a run's task-declared ones to a
+ * run. `tools/call` validates the
  * arguments against the definition, resolves the op through the registry, and
  * runs the handler with the caller's context. A failure the caller can act on
  * — bad arguments, an unknown tool, an op not yet served, a storage fault — is
@@ -11,11 +12,12 @@
  * A result carries the serialized text for an agent and the raw value under
  * `structuredContent.result` for a client that wants the shape entire.
  *
- * A grant is judged before validation: a (tool, op) off the external
- * allowlist, or a `project_id` naming any Project but the grant's own, is
- * refused exactly as a tool that does not exist — a probing caller cannot
- * tell "not on this surface" from "not a tool", and the refusal names nothing
- * about any Project.
+ * A grant and a run are judged before validation: a (tool, op) off the
+ * principal's allowlist, or a `project_id` naming any Project but the
+ * principal's own, is refused exactly as a tool that does not exist — a
+ * probing caller cannot tell "not on this surface" from "not a tool", and the
+ * refusal names nothing about any Project. This is the one chokepoint: no
+ * handler judges a principal's surface for itself.
  *
  * The low-level `Server` is used deliberately: the SDK's `McpServer` answers a
  * thrown error as an `isError` result, which drops the code the clients key on.
@@ -23,10 +25,11 @@
 import { ProtocolError, Server, SUPPORTED_PROTOCOL_VERSIONS, type Tool } from '@modelcontextprotocol/server';
 import { isServedTool, type ServedTool } from '../core/tool-catalogue.js';
 import { emit } from '../telemetry.js';
-import { principalFields, type ToolContext } from './context.js';
+import { boundProject, principalFields, type ToolContext } from './context.js';
 import { TOOL_DEFINITIONS, definitionOf, type ToolDefinition } from './definitions.js';
 import { externalDefinitions, isExternalCall } from './external.js';
 import { entryFor, opOf } from './registry.js';
+import { isRunCall, runDefinitions } from './run-surface.js';
 import { normalizeInput, ToolError, unknownTool, validateInput, type ToolInput } from './validate.js';
 
 export const SERVER_NAME = 'myco';
@@ -65,20 +68,24 @@ const declaredOnly = (definition: { inputSchema: { properties: Record<string, un
 
 /** The definitions this principal is served. */
 export function definitionsFor(ctx: ToolContext): readonly ToolDefinition[] {
-  return ctx.principal.kind === 'grant' ? externalDefinitions() : TOOL_DEFINITIONS;
+  const p = ctx.principal;
+  if (p.kind === 'grant') return externalDefinitions();
+  if (p.kind === 'run') return runDefinitions(p.allow);
+  return TOOL_DEFINITIONS;
 }
 
-/** Run one tool call for this context: the grant's surface, validation, op resolution, the handler. Every failure leaves as a `ToolError`. */
+/** Run one tool call for this context: the principal's surface, validation, op resolution, the handler. Every failure leaves as a `ToolError`. */
 export async function callTool(ctx: ToolContext, name: string, args: unknown): Promise<{ tool: ServedTool; op: string; result: unknown }> {
   if (!isServedTool(name)) throw unknownTool(name);
   const definition = definitionOf(name)!;
   const raw = normalizeInput(args);
-  const external = ctx.principal.kind === 'grant';
-  if (external && raw.project_id !== undefined && raw.project_id !== ctx.projectId) throw unknownTool(name);
+  const bound = boundProject(ctx);
+  if (bound !== null && raw.project_id !== undefined && raw.project_id !== bound) throw unknownTool(name);
   const input = declaredOnly(definition, raw);
-  if (external && !isExternalCall(name, opOf(name, input))) throw unknownTool(name);
-  validateInput(definition, input);
   const op = opOf(name, input);
+  if (ctx.principal.kind === 'grant' && !isExternalCall(name, op)) throw unknownTool(name);
+  if (ctx.principal.kind === 'run' && !isRunCall(ctx.principal.allow, name, op)) throw unknownTool(name);
+  validateInput(definition, input);
   const entry = entryFor(name, op);
   if (entry === undefined) throw new ToolError('invalid_input', `Unknown op '${op}' for tool ${name}`);
   if ('notServed' in entry) {

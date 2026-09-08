@@ -31,6 +31,14 @@ describe('route table', () => {
     expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /runs/claim', 'POST /runs/admission', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/report', 'POST /runs/events', 'POST /runs/session-material', 'POST /runs/session-title', 'POST /runs/spores', 'POST /runs/spore', 'POST /runs/spore-create', 'POST /runs/spore-resolve', 'POST /runs/instruction', 'POST /runs/embedding-step', 'POST /runs/instructions-write', 'POST /runs/sessions', 'POST /runs/digest', 'POST /runs/digest-write', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /context/prompt', 'POST /context/session', 'POST /runs/repository', 'POST /runs/canopy-map', 'POST /runs/state/read', 'POST /runs/state/write', 'POST /mcp', 'POST /members/link-github']);
   });
 
+  it('admits a run credential as a member on the run-control plane alone: every /runs/ route is flagged legacy, no other route is, and /mcp is the one route that serves the run principal', () => {
+    for (const r of ROUTES) {
+      if (r.auth !== 'member') continue;
+      expect({ path: r.path, legacy: r.legacyRunRoute === true }).toEqual({ path: r.path, legacy: r.path.startsWith('/runs/') });
+      expect({ path: r.path, run: r.bodyMode === 'json' && r.run !== undefined }).toEqual({ path: r.path, run: r.path === '/mcp' });
+    }
+  });
+
   it('routes exactly the child segments the handler serves', async () => {
     const { CHILD_SEGMENTS } = await import('@myco-server-worker/api/sessions.js');
     const child = ROUTES.find((r) => r.path.endsWith('/{child}'));

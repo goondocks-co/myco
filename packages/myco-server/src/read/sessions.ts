@@ -380,6 +380,15 @@ export async function sessionHeldByMachine(db: RelationalStore, scope: ReadScope
   return row !== null;
 }
 
+/** True when the Project holds this session, whichever machine captured it: what a run's dispatch-named session is checked against before a write names it. */
+export async function projectHoldsSession(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ?`)
+    .bind(scope.projectId, sessionId)
+    .first<{ present: number }>();
+  return row !== null;
+}
+
 /** The session's latest prompt — the one a write that names the session records as its origin — or null when the session holds none. */
 export async function latestPromptId(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<string | null> {
   const row = await db

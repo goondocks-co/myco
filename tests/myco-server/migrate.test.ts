@@ -38,6 +38,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0021_v21.sql': '0f5a1b7ee7d9173270c97b954d9a978685ecc294269b6195e31dcd9bdb526c21',
   '0022_v22.sql': 'eea54343253ecc08dea82df9976bfa0aa7c9af7a7ac0239c9cff72263862313b',
   '0023_v23.sql': 'f9bde4ce357f86fc912fb4c2f6be3f08c88eed5df1de080cc130a6cf65abe9d3',
+  '0024_v24.sql': 'f6cc2bd6c8c8acda977565b7b01a666842a78deedf452859bc1935b0b35be9fa',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
