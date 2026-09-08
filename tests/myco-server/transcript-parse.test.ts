@@ -21,6 +21,7 @@ import {
 } from '@myco-server-worker/ingest/parse.js';
 import { transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
 import { listTranscripts } from '@myco-server-worker/read/transcript.js';
+import { runTick } from '@myco-server-worker/core/tick.js';
 import { sqliteEnv, count, uuid } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
@@ -195,6 +196,40 @@ describe('parsing a held transcript', () => {
     expect(await pendingTranscriptBytes(env.db as never)).toBe(1);
     await drain(env, sqlite);
     expect(await pendingTranscriptBytes(env.db as never)).toBe(0);
+  });
+});
+
+describe('both jobs on a Deployment holding no transcripts', () => {
+  /**
+   * A tick runs these jobs everywhere, including on a Deployment that has never
+   * received a transcript. Reporting anything but zero there would mean the job
+   * had found work in an empty store, and every scenario that pins a wake's
+   * report would move whenever an unrelated lane added a job.
+   */
+  /** A recent receipt, so the tick resolves to a depth that runs these jobs at all. */
+  const awake = async () => {
+    const { sqlite, serverEnv } = sqliteEnv();
+    const issued = await issueMemberToken(serverEnv.db, { memberId: 'mem_machine_1', machineId: MACHINE }, NOW);
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+                VALUES (?, 'awake', ?, ?, ?, ?)`, PROJECT, MACHINE, issued.tokenId, NOW - 60_000, NOW - 60_000);
+    return { sqlite, serverEnv };
+  };
+
+  it('reports no work and derives nothing, so a wake elsewhere reads the same as before', async () => {
+    const { sqlite, serverEnv } = await awake();
+    const report = await runTick(serverEnv, NOW);
+    const mine = report.jobs.filter((j) => j.name.startsWith('transcript-'));
+    expect(mine).toEqual([
+      { name: 'transcript-parse', changed: 0, failed: null },
+      { name: 'transcript-retention', changed: 0, failed: null },
+    ]);
+    expect(count(sqlite, 'prompt_batches')).toBe(0);
+  });
+
+  it('leaves the power state alone: no unread bytes asserts nothing about depth', async () => {
+    const { serverEnv } = await awake();
+    const report = await runTick(serverEnv, NOW);
+    expect(report.heldBy).not.toBe('transcript:pending');
   });
 });
 
