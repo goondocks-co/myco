@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite';
-import type { BlobStore, StoredObject } from '@myco-server-worker/core/adapters.js';
+import type { BlobStore, ServerEnv, StoredObject } from '@myco-server-worker/core/adapters.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
@@ -131,6 +131,27 @@ export function sqliteEnv(opts: { staleBytesWritten?: number; onSql?: (sql: stri
     env: e,
     get serverEnv() { return serverEnvFromBindings(e, deferred); },
     db, sqlite, bucket, sourceKeys: source.keys, tokenKeys: token.keys, executed, deferred,
+  };
+}
+
+/** What a dispatch hands a runtime. */
+export type LaunchSpec = { runId: string; timeoutSeconds: number; envVars: Record<string, string> };
+
+/**
+ * A deployment whose runtime records every launch it receives.
+ *
+ * No target binds a runtime into `ServerEnv` from configuration, so a test that
+ * drives the dispatcher supplies one here. A `launch` that throws is a refusing
+ * runtime; `sink` collects each spec a launch receives.
+ */
+export function withHarness(
+  env: ServerEnv,
+  options: { sink?: LaunchSpec[]; launch?: (spec: LaunchSpec) => Promise<void> } = {},
+): ServerEnv {
+  const sink = options.sink ?? [];
+  return {
+    ...env,
+    harnessLaunch: options.launch ?? (async (spec: LaunchSpec) => { sink.push(spec); }),
   };
 }
 

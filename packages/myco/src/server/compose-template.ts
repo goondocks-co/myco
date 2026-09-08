@@ -13,12 +13,10 @@
  * How long the harness is given to finish the runs it holds when the stack
  * stops.
  *
- * Mirrors `ROLLOUT_WATCH_TIMEOUT_SECONDS` in `cloudflare-lifecycle.ts`, the
- * `rollout_active_grace_period` the Worker's container table carries, and the
- * largest budget in `TASK_RUN_TIMEOUT_SECONDS`
+ * Mirrors the largest budget in `TASK_RUN_TIMEOUT_SECONDS`
  * (`packages/myco-server/src/core/task-catalogue.ts`). This package ships to
  * operator machines and imports nothing from the server, so the number is
- * copied and held equal by `tests/server/cloudflare-lifecycle.test.ts`.
+ * copied and held equal by `tests/server/compose-template-drift.test.ts`.
  *
  * On this target the grace is what spares a run inside its own budget: a verb
  * that takes the server down stops the harness on its own first, and every

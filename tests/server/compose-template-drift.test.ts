@@ -9,6 +9,7 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { COMPOSE_TEMPLATE, HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
+import { TASK_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/task-catalogue.js';
 
 const SHIPPED = fileURLToPath(new URL('../../packages/myco-server/compose.yaml', import.meta.url));
 
@@ -125,6 +126,18 @@ describe('the harness rides in the server\'s network namespace', () => {
     expect(harness()).toContain(`stop_grace_period: ${HARNESS_STOP_GRACE_SECONDS}s`);
     expect(harness()).toContain('restart: unless-stopped');
     expect(harness()).toMatch(/depends_on:\n\s+- server/);
+  });
+
+  it('GATE: the grace covers the longest task budget, so a stop kills no run inside its own bound', () => {
+    // The window is what spares a run in flight when a verb takes the stack
+    // down: shorter than the longest budget and the harness is killed carrying
+    // work that had time left. The number is copied into this package, which is
+    // why it is compared against the budgets the Deployment enforces.
+    const longest = Math.max(...Object.values(TASK_RUN_TIMEOUT_SECONDS));
+    expect(HARNESS_STOP_GRACE_SECONDS).toBe(longest);
+    for (const [task, seconds] of Object.entries(TASK_RUN_TIMEOUT_SECONDS)) {
+      expect({ task, spared: HARNESS_STOP_GRACE_SECONDS >= seconds }).toEqual({ task, spared: true });
+    }
   });
 
   it('mounts the launch token in both services, which is what authenticates the launch', () => {

@@ -5,7 +5,6 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
-import { HOLD_OVERRUN_MARGIN_MS } from '@myco-server-worker/platform/cloudflare/run-hold.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import {
   cleanSummary, cleanTitle, OWNER_TITLING_WINDOW_MS, RUN_OVERRUN_MARGIN_MS, sessionMaterial, titleSession, TITLING_RUN_TIMEOUT_SECONDS, titlingParamsOf,
@@ -13,7 +12,7 @@ import {
 import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MATERIAL_EXCERPT_CHARS } from '@myco-server-worker/constants.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { LAUNCH_REFUSED_ERROR } from '@myco-server-worker/core/harness.js';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { sqliteEnv, withHarness } from './helpers/fixtures.js';
 
 const NOW = 1_700_000_000_000;
 const ORIGIN = 'https://deployment.example';
@@ -26,11 +25,10 @@ interface Launch { runId: string; timeoutSeconds: number; envVars: Record<string
 function harness(opts: { bound?: boolean; refuse?: boolean } = {}) {
   const e = sqliteEnv();
   const launches: Launch[] = [];
-  const HARNESS = opts.bound === false ? undefined : {
-    idFromName: (name: string) => ({ name }),
-    get: () => ({ launch: async (spec: Launch) => { if (opts.refuse) throw new Error('container refused to start'); launches.push(spec); } }),
-  };
-  const env: ServerEnv = serverEnvFromBindings({ ...e.env, SECRET_WRAP_KEY: { get: async () => WRAP_KEY }, ...(HARNESS === undefined ? {} : { HARNESS }) } as never);
+  const sealed = serverEnvFromBindings({ ...e.env, SECRET_WRAP_KEY: { get: async () => WRAP_KEY } } as never);
+  const env: ServerEnv = opts.bound === false ? sealed : withHarness(sealed, {
+    launch: async (spec) => { if (opts.refuse) throw new Error('the runtime refused the launch'); launches.push(spec); },
+  });
   const setting = (leaf: string, value: unknown) =>
     e.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`, [leaf, JSON.stringify(value), NOW]);
   const session = (id: string, over: { endedAt?: number | null; agent?: string; branch?: string; project?: string } = {}) =>
@@ -195,7 +193,7 @@ describe('titleSession', () => {
     expect(h.row('s1')).toEqual(untouched);
     // The dispatch's row records the refusal, in the runtime's own words, rather than sitting pending forever.
     const failedRows = h.sqlite.query(`SELECT status, error FROM agent_runs`).all() as Array<{ status: string; error: string | null }>;
-    expect(failedRows).toEqual([{ status: 'failed', error: `${LAUNCH_REFUSED_ERROR}: container refused to start` }]);
+    expect(failedRows).toEqual([{ status: 'failed', error: `${LAUNCH_REFUSED_ERROR}: the runtime refused the launch` }]);
     // The session's own attempt is still open, and an owner may ask at once.
     expect((await h.ask('s1')).outcome).toBe('error');
     expect(h.row('s1')).toEqual(untouched);
@@ -253,9 +251,8 @@ describe('titleSession', () => {
     expect(titlingParamsOf(null)).toBeNull();
   });
 
-  it('holds the owner window to the run\'s bound plus the margin the hosted runtime holds a container past it', () => {
-    expect(RUN_OVERRUN_MARGIN_MS).toBe(HOLD_OVERRUN_MARGIN_MS);
-    expect(OWNER_TITLING_WINDOW_MS).toBe(TITLING_RUN_TIMEOUT_SECONDS * 1000 + HOLD_OVERRUN_MARGIN_MS);
+  it('holds the owner window to the run\'s bound plus the margin the dispatcher allows past it', () => {
+    expect(OWNER_TITLING_WINDOW_MS).toBe(TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_OVERRUN_MARGIN_MS);
   });
 });
 

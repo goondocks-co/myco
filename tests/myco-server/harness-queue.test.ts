@@ -13,7 +13,7 @@ import { claimRun, dispatchLoad, launchQueued, listQueuedAcrossProjects, recordD
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { seedCredential } from './helpers/d1.js';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { sqliteEnv, withHarness } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 const ORIGIN = 'https://s';
@@ -23,15 +23,13 @@ function fixture(opts: { bound?: boolean; refuse?: () => Error | undefined } = {
   const e = sqliteEnv();
   const launches: Launch[] = [];
   const wakes: number[] = [];
-  const HARNESS = opts.bound === false ? undefined : {
-    idFromName: (name: string) => ({ name }),
-    get: () => ({ launch: async (spec: Launch) => {
+  const base = opts.bound === false ? e.serverEnv : withHarness(e.serverEnv, {
+    launch: async (spec) => {
       const refusal = opts.refuse?.();
       if (refusal !== undefined) throw refusal;
       launches.push(spec);
-    } }),
-  };
-  const base = serverEnvFromBindings({ ...e.env, ...(HARNESS === undefined ? {} : { HARNESS }) } as never);
+    },
+  });
   const env: ServerEnv = { ...base, wake: async () => { wakes.push(Date.now()); } };
   const setting = (leaf: string, value: unknown) => e.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`, [leaf, JSON.stringify(value), NOW]);
   const clear = (leaf: string) => e.sqlite.run(`DELETE FROM deployment_settings WHERE leaf = ?`, [leaf]);

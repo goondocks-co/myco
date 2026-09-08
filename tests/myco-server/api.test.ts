@@ -265,7 +265,7 @@ describe('GET /api/status', () => {
     };
     expect(body.schema.matches).toBe(true);
     // A bare test env binds no harness runtime; that capability is reported absent, by the binding an operator adds.
-    expect(body.capabilities.filter((c) => !c.present).map((c) => [c.capability, c.operatorNames])).toEqual([['harness-runtime', ['HARNESS']]]);
+    expect(body.capabilities.filter((c) => !c.present).map((c) => [c.capability, c.operatorNames])).toEqual([['harness-runtime', []]]);
     expect(body.capabilities.map((c) => c.capability).sort())
       .toEqual(['blob-store', 'harness-runtime', 'rate-limiting', 'relational-store']);
   });

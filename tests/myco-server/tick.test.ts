@@ -280,7 +280,9 @@ describe('what a clock arms', () => {
   });
 
   it('refuses a manual clock beside a runtime that starts real containers', () => {
-    expect(() => serverEnvFromBindings({ ...sqliteEnv().env, CLOCK_MODE: CLOCK_MANUAL, HARNESS: {} } as never))
-      .toThrow(/CLOCK_MODE=manual is refused beside a bound HARNESS/);
+    expect(() => serverEnvFromBindings({ ...sqliteEnv().env, CLOCK_MODE: CLOCK_MANUAL } as never))
+      .toThrow(/CLOCK_MODE=manual is accepted only beside HARNESS_LAUNCH_MODE=record/);
+    expect(() => serverEnvFromBindings({ ...sqliteEnv().env, CLOCK_MODE: CLOCK_MANUAL, HARNESS_LAUNCH_MODE: 'record' } as never))
+      .not.toThrow();
   });
 });
