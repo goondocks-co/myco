@@ -30,7 +30,7 @@ it('publishes grounded maps through held routes, preserves unchanged domains, an
     await writeFile(join(root, 'AGENTS.md'), 'Use project vocabulary.');
     await writeFile(join(root, 'src/a.ts'), 'export const a = 1;');
     await writeFile(join(root, 'src/b.ts'), 'export const b = 1;');
-    await ensureMember(e.db, HARNESS_MEMBER_ID, Date.now(), 'harness runtime');
+    await ensureMember(e.db, HARNESS_MEMBER_ID, Date.now(), 'member', 'harness runtime');
     e.sqlite.run("INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('myco','Myco','built-in',1,0)");
     await projectRepositories(e.db, deploymentSecretStore(e.db, e.serverEnv.wrappingKey)).save(scope.projectId, { ...repository, revision: null }, HARNESS_MEMBER_ID, Date.now());
     const run = async (id: string, changedPaths: string[], task = 'canopy-map') => {

@@ -16,6 +16,7 @@ import type { RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
 import { emit } from '../telemetry.js';
 import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
+import { asMemberRole, type MemberRole } from './roles.js';
 
 /** Bytes of entropy in a link key. 32 = 256 bits. */
 export const IDENTITY_LINK_KEY_BYTES = 32;
@@ -37,10 +38,11 @@ export interface IssuedIdentityLinkAuthority {
   expiresAt: number;
 }
 
-/** A member as the dashboard sees it. */
+/** A member as the dashboard sees it, including the role every admin-only surface admits on. */
 export interface DashboardMember {
   id: string;
   label: string | null;
+  role: MemberRole;
 }
 
 /** Sole minter. Stores the digest against the member; returns the raw key once. */
@@ -110,10 +112,12 @@ export async function spendIdentityLinkAuthority(
   if (holder !== null && holder.id !== memberId) return { ok: false, reason: 'identity_taken' };
 
   const member = await db
-    .prepare(`SELECT id, label, github_id, revoked_at FROM members WHERE id = ?`)
+    .prepare(`SELECT id, label, github_id, revoked_at, role FROM members WHERE id = ?`)
     .bind(memberId)
-    .first<{ id: string; label: string | null; github_id: string | null; revoked_at: number | null }>();
+    .first<{ id: string; label: string | null; github_id: string | null; revoked_at: number | null; role: string }>();
   if (member === null || member.revoked_at !== null) return { ok: false, reason: 'member_revoked' };
+  const memberRole = asMemberRole(member.role);
+  if (memberRole === null) return { ok: false, reason: 'member_revoked' };
   if (member.github_id !== null && member.github_id !== githubId) return { ok: false, reason: 'member_linked' };
 
   let changes: number;
@@ -131,29 +135,33 @@ export async function spendIdentityLinkAuthority(
   if (changes !== 1) return { ok: false, reason: 'member_linked' };
 
   emit({ kind: 'identity_linked', memberId, sub: githubId });
-  return { ok: true, member: { id: member.id, label: member.label } };
+  return { ok: true, member: { id: member.id, label: member.label, role: memberRole } };
 }
 
 /** The member a live key names, for the page that asks the account holder to confirm. Spends nothing. */
 export async function previewIdentityLinkAuthority(db: RelationalStore, presentedKey: string, nowMs: number): Promise<DashboardMember | null> {
   if (!IDENTITY_LINK_KEY_PATTERN.test(presentedKey)) return null;
   const row = await db
-    .prepare(`SELECT m.id, m.label, m.revoked_at FROM identity_link_authorities a JOIN members m ON m.id = a.member_id
+    .prepare(`SELECT m.id, m.label, m.revoked_at, m.role FROM identity_link_authorities a JOIN members m ON m.id = a.member_id
                WHERE a.key_hash = ? AND a.used_at IS NULL AND a.revoked_at IS NULL AND a.expires_at > ?`)
     .bind(await sha256Hex(presentedKey), nowMs)
-    .first<{ id: string; label: string | null; revoked_at: number | null }>();
+    .first<{ id: string; label: string | null; revoked_at: number | null; role: string }>();
   if (row === null || row.revoked_at !== null) return null;
-  return { id: row.id, label: row.label };
+  const role = asMemberRole(row.role);
+  return role === null ? null : { id: row.id, label: row.label, role };
 }
 
 /** The unrevoked member this GitHub account is linked to, or null. Read on every dashboard request. */
 export async function memberByGithubId(db: RelationalStore, githubId: string): Promise<DashboardMember | null> {
   if (!GITHUB_ACCOUNT_ID.test(githubId)) return null;
   const row = await db
-    .prepare(`SELECT id, label FROM members WHERE github_id = ? AND revoked_at IS NULL`)
+    .prepare(`SELECT id, label, role FROM members WHERE github_id = ? AND revoked_at IS NULL`)
     .bind(githubId)
-    .first<{ id: string; label: string | null }>();
-  return row === null ? null : { id: row.id, label: row.label };
+    .first<{ id: string; label: string | null; role: string }>();
+  if (row === null) return null;
+  const role = asMemberRole(row.role);
+  // A role outside the grammar admits nobody: an unreadable role must not decide admission by accident.
+  return role === null ? null : { id: row.id, label: row.label, role };
 }
 
 /**

@@ -30,7 +30,7 @@ async function setup() {
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [now]);
   e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at) VALUES ('proj_1', 's1', 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?)`, [now - 10_000, now, now - 10_000, now]);
   e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's1', 'p1', 'e1', 'hello', 'user', 'h1', ?, ?, 'tok_1', ?)`, [now - 9000, now - 9000, now - 9000]);
-  await ensureMember(e.db, HARNESS_MEMBER_ID, now, 'harness runtime');
+  await ensureMember(e.db, HARNESS_MEMBER_ID, now, 'member', 'harness runtime');
   const minted = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, now);
   const clientFor = (token: string) => new ServerClient(
     { serverUrl: 'https://s', token, projectId: 'proj_1' },

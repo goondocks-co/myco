@@ -401,6 +401,37 @@ export function writeRegistryEntry(entry: RegistryEntry, opts: { mycoHome?: stri
 }
 
 /**
+ * Write the Deployment membership alone, merged the way `writeRegistryEntry`
+ * merges it, with no project binding.
+ *
+ * Joining a Deployment and binding a project to it are two acts. A person who
+ * redeems an invite has a credential and no project yet; writing a binding for
+ * them would invent a project id nobody chose. `myco member join --project`
+ * adds the binding afterwards, through the write above.
+ *
+ * This is also what creates the member directory, which every hook needs before
+ * it can read anything at all.
+ */
+export function writeDeploymentMembership(
+  membership: Omit<DeploymentMembership, 'version'>, opts: { mycoHome?: string; locked?: boolean } = {},
+): void {
+  const mycoHome = opts.mycoHome ?? resolveMycoHome();
+  const write = () => {
+    prepareRegistryDir(mycoHome);
+    const held = readDeploymentMembership(membership.serverUrl, mycoHome);
+    const fresh: DeploymentMembership = { version: REGISTRY_VERSION, ...membership };
+    const merged: DeploymentMembership = held === null ? fresh : {
+      ...held,
+      ...Object.fromEntries(Object.entries(fresh).filter(([, v]) => v !== undefined)),
+      joinedAt: held.joinedAt,
+    } as DeploymentMembership;
+    writePrivateFileAtomic(deploymentPath(membership.serverUrl, mycoHome), `${JSON.stringify(merged, null, 2)}\n`);
+  };
+  if (opts.locked) write();
+  else withRegistryLock(write, mycoHome);
+}
+
+/**
  * Delete the binding for `root`, and the Deployment membership with it when no
  * other binding still names that Deployment. Returns whether a binding existed.
  *

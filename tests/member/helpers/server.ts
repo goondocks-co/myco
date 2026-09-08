@@ -34,6 +34,29 @@ export interface MemberRig {
   otherMachine: () => Promise<{ token: string; tokenId: string }>;
 }
 
+/**
+ * A fresh worker environment holding NO credential, and a fetch into it.
+ *
+ * A sandbox arrives with nothing but a join code, so a rig that has already
+ * minted a token cannot show that the exchange is what let it capture.
+ */
+export function unjoinedRig(): {
+  env: ReturnType<typeof sqliteEnv>;
+  fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  rows: (table: string) => number;
+} {
+  const env = sqliteEnv();
+  // The edge supplies the source identity header; the member transport never sets it.
+  const fetchImpl = (input: string | URL | Request, init?: RequestInit) => {
+    const req = new Request(input, init);
+    if (req.headers.has('cf-connecting-ip')) return worker.fetch(req, env.env);
+    const headers = new Headers(req.headers);
+    headers.set('cf-connecting-ip', '1.2.3.4');
+    return worker.fetch(new Request(req, { headers }), env.env);
+  };
+  return { env, fetch: fetchImpl, rows: (table: string) => count(env.sqlite, table) };
+}
+
 /** A fresh worker environment with one member of `machine_1` in `proj_1`. */
 export async function memberRig(opts: { now?: number; projectId?: string; machineId?: string } = {}): Promise<MemberRig> {
   const env = sqliteEnv();

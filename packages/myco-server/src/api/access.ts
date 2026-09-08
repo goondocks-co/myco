@@ -4,9 +4,12 @@ import { ENROLLMENT_TTL_MS, issueEnrollmentAuthority, listInvitations, revokeEnr
 import { listMembers, memberState, revokeMember } from '../auth/members-admin.js';
 import { revokeCredentialAsMember } from '../auth/tokens.js';
 import { credentialActivity, listCredentials } from '../read/credentials.js';
+import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
 import { MEMBER_ID, MINUTE_MS } from '../constants.js';
+import { asMemberRole, forbiddenToMember, isAdmin } from '../auth/roles.js';
+import { isProjectId } from '../pipeline.js';
 import { paging } from './sessions.js';
 
 /** The longest invitation the dashboard mints, in minutes: one day. */
@@ -18,6 +21,7 @@ export async function handleMembers(env: ServerEnv, ctx: OwnerContext): Promise<
 
 /** `POST /api/members/{memberId}/revoke`: flat, attributed, and never the last linked member. */
 export async function handleRevokeMember(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  if (!isAdmin(ctx.member.role)) return forbiddenToMember();
   const result = await revokeMember(env.db, ctx.params.memberId, ctx.member.id, ctx.now);
   if (result.ok) return ok({ revoked: true, revokedBy: ctx.member.id });
   if (result.reason === 'absent') return notFound();
@@ -28,8 +32,19 @@ export async function handleInvitations(env: ServerEnv, ctx: OwnerContext): Prom
   return ok({ invitations: await listInvitations(env.db, ctx.now) });
 }
 
-/** `POST /api/enrollment {memberId?, ttlMinutes?}`: an invitation for a new member, or for another runtime of an existing one. The key is answered once. */
+/**
+ * `POST /api/enrollment {memberId?, ttlMinutes?, role?, projectId?}`: an
+ * invitation for a new member, or for another runtime of an existing one. The
+ * key is answered once.
+ *
+ * `role` defaults to `member` on this surface, which is the safe half of the
+ * grammar: an admin who wants to mint another admin says so. `projectId` binds
+ * the invitation to one Project, which a sandbox requires and a person does
+ * not — an invitation without one admits a person to the Deployment, and a
+ * sandbox presenting it is refused rather than bound to a guess.
+ */
 export async function handleMintInvitation(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  if (!isAdmin(ctx.member.role)) return forbiddenToMember();
   const body = await readJsonObject(ctx.request);
   if (body === null) return badRequest('body must be a JSON object');
   let memberId: string | null = null;
@@ -47,12 +62,23 @@ export async function handleMintInvitation(env: ServerEnv, ctx: OwnerContext): P
     }
     ttlMs = body.ttlMinutes * MINUTE_MS;
   }
-  const issued = await issueEnrollmentAuthority(env.db, ctx.now, { ttlMs, createdByMember: ctx.member.id, memberId });
+  const role = body.role === undefined ? 'member' : asMemberRole(body.role);
+  if (role === null) return badRequest('role must be admin or member');
+
+  let projectId: string | null = null;
+  if (body.projectId !== undefined) {
+    if (typeof body.projectId !== 'string' || !isProjectId(body.projectId)) return badRequest('projectId must match the project-id grammar');
+    if (!(await projectExists(env.db, body.projectId))) return notFound();
+    projectId = body.projectId;
+  }
+
+  const issued = await issueEnrollmentAuthority(env.db, ctx.now, { role, ttlMs, createdByMember: ctx.member.id, memberId, projectId });
   emit({ kind: 'invitation_issued', invitationId: issued.id, memberId, createdBy: ctx.member.id });
-  return Response.json({ key: issued.key, id: issued.id, expiresAt: issued.expiresAt }, { status: 201 });
+  return Response.json({ key: issued.key, id: issued.id, expiresAt: issued.expiresAt, role, projectId }, { status: 201 });
 }
 
 export async function handleRevokeInvitation(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  if (!isAdmin(ctx.member.role)) return forbiddenToMember();
   const result = await revokeEnrollmentAuthority(env.db, ctx.params.id, ctx.now, ctx.member.id);
   if (result.revoked) emit({ kind: 'invitation_revoked', invitationId: ctx.params.id, actor: ctx.member.id });
   return ok({ revoked: result.revoked, revokedBy: ctx.member.id });
@@ -66,7 +92,7 @@ export async function handleCredentials(env: ServerEnv, ctx: OwnerContext): Prom
 }
 
 export async function handleRevokeCredential(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  return ok(await revokeCredentialAsMember(env.db, ctx.member.id, ctx.params.id, ctx.now));
+  return ok(await revokeCredentialAsMember(env.db, ctx.member, ctx.params.id, ctx.now));
 }
 
 /** What one credential wrote, across every Project. */

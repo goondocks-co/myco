@@ -2,8 +2,10 @@ import { toBase64Url } from '../base64.js';
 import type { ServerEnv } from '../core/adapters.js';
 import { MEMBER_ID_PREFIX } from '../constants.js';
 import { emit, type Classifier } from '../telemetry.js';
-import { claimMachineIdentity, ensureMember, reclaimEnrollmentAuthorities, spendEnrollmentAuthority, type EnrollmentRefusal } from './enrollment.js';
+import { claimMachineIdentity, ensureMember, spendEnrollmentAuthority, type EnrollmentRefusal } from './enrollment.js';
 import { issueMemberToken } from './tokens.js';
+import { memberRole } from './members-admin.js';
+import { stampRequest } from '../core/activity.js';
 
 /** The identity grammar a join may record: machine id, runtime label and runtime kind all answer to it. */
 const IDENTITY = /^[A-Za-z0-9._-]{1,64}$/;
@@ -17,6 +19,7 @@ const REFUSALS: Record<EnrollmentRefusal, Classifier> = {
   already_used: 'enrollment_used',
   expired: 'enrollment_expired',
   revoked: 'enrollment_revoked',
+  no_project: 'enrollment_no_project',
 };
 
 interface JoinBody {
@@ -24,6 +27,7 @@ interface JoinBody {
   machineId?: unknown;
   runtimeLabel?: unknown;
   runtimeKind?: unknown;
+  forProject?: unknown;
 }
 
 const refuse = (code: Classifier, reason: string): Response =>
@@ -46,6 +50,13 @@ const refuse = (code: Classifier, reason: string): Response =>
  * two runtimes racing one key produce one credential and one `enrollment_used`.
  * Never two credentials.
  *
+ * `forProject: true` is a joiner declaring it can only work bound to a Project —
+ * a sandbox, which has no local configuration to fall back on. A key carrying no
+ * Project is then refused `enrollment_no_project` and stays unspent, so an
+ * operator can bind one and hand the same key over rather than mint another.
+ * The answer carries the role the key granted and the Project it bound, both
+ * fixed at the moment of minting.
+ *
  * The spend, the member, the identity claim and the credential are four separate
  * statements, NOT one transaction: a fault between them leaves the key spent with
  * no credential issued, and the spend has no inverse, so that invitation is gone
@@ -60,7 +71,7 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
   }
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return refuse('parse', 'body must be an object');
 
-  const { key, machineId, runtimeLabel, runtimeKind, ...rest } = body;
+  const { key, machineId, runtimeLabel, runtimeKind, forProject, ...rest } = body;
   const [unknownField] = Object.keys(rest);
   if (unknownField !== undefined) return refuse('unknown_field', `unknown field ${unknownField}`);
   if (typeof key !== 'string') return refuse('enrollment_unknown', 'key required');
@@ -68,22 +79,26 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
   for (const [name, value] of [['runtimeLabel', runtimeLabel], ['runtimeKind', runtimeKind]] as const) {
     if (value !== undefined && (typeof value !== 'string' || !IDENTITY.test(value))) return refuse('id_grammar', `${name} must match the machine-id grammar`);
   }
+  if (forProject !== undefined && forProject !== true) return refuse('unknown_field', 'forProject may only be true');
 
-  // The table grows only when someone joins, so this is where it is trimmed —
-  // the same opportunistic reclaim expired blob reservations get on the path that
-  // replaces them, rather than a schedule this server does not have.
-  const { reclaimed } = await reclaimEnrollmentAuthorities(env.db, now);
-  if (reclaimed > 0) emit({ kind: 'enrollment_authorities_reclaimed', reclaimed });
-
-  const spend = await spendEnrollmentAuthority(env.db, key, now, machineId);
+  const spend = await spendEnrollmentAuthority(env.db, key, now, machineId, { forProject: forProject === true });
   if (!spend.ok) {
     const classifier = REFUSALS[spend.reason];
     emit({ kind: 'join_refused', machineId, reason: classifier });
     return refuse(classifier, `enrollment key ${spend.reason.replace('_', ' ')}`);
   }
 
+  // A join leaves no session and no run, so the clock the tick reads sees it only
+  // here — and only once a key is actually spent: an unauthenticated guesser posting
+  // keys must not be able to hold a Deployment awake at the operator's expense.
+  await stampRequest(env.db, now);
+
   const memberId = spend.memberId ?? `${MEMBER_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(MEMBER_ID_BYTES)))}`;
-  await ensureMember(env.db, memberId, now);
+  await ensureMember(env.db, memberId, now, spend.role);
+  // The role the CREDENTIAL carries is the member's, not the invitation's. A member
+  // already recorded keeps the role it holds, so an invitation naming another one
+  // adds a runtime without changing what that person may do.
+  const role = await memberRole(env.db, memberId) ?? spend.role;
 
   // A machine identity belongs to one member. Every ownership predicate the ingest
   // path applies keys on it, so a joiner free to present any identity it liked could
@@ -101,5 +116,8 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
     runtimeKind: typeof runtimeKind === 'string' ? runtimeKind : null,
   });
   emit({ kind: 'member_joined', memberId, tokenId: issued.tokenId, machineId, enrollmentId: spend.id });
-  return Response.json({ joined: true, memberId, token: issued.token, tokenId: issued.tokenId, expiresAt: issued.expiresAt });
+  return Response.json({
+    joined: true, memberId, token: issued.token, tokenId: issued.tokenId, expiresAt: issued.expiresAt,
+    role, projectId: spend.projectId,
+  });
 }

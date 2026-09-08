@@ -12,7 +12,8 @@ import { readHookInput } from '../hooks/input.js';
 import type { NormalizedHookInput } from '../hooks/normalize.js';
 import { writeHookResponse, type HookResponse } from '../hooks/response.js';
 import { canStartRequest, clippedRequestBudget, resolveHookBudget, type HookBudget } from './budget.js';
-import { parseCredentialFlag, resolveCredential, type CredentialRecord, type CredentialSource } from './credential.js';
+import { parseCredentialFlag, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
+import { ensureJoinedFromCode, joinCodePresent } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
 import { refreshDue, refreshMemberCredential, refreshableRoot, rotatedCredential } from './refresh.js';
 import { applySpoolRetention } from './retention.js';
@@ -28,6 +29,8 @@ export interface HookMainOptions {
   now?: () => number;
   /** When the hook's budget clock started; defaults to this process's start. */
   startedAt?: number;
+  /** The environment a join code is read from; defaults to this process's. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** What a hook handler receives once input and credential are in hand. */
@@ -102,11 +105,24 @@ export async function runMemberHook(
 
     const argv = opts.argv ?? process.argv;
     const source = opts.credential === undefined ? parseCredentialFlag(argv) : opts.credential;
-    const credential = resolveCredential(source);
-    if (!credential) return;
 
     const now = opts.now ?? Date.now;
     const budget = resolveHookBudget(input.agent, hookName, { hookEventName: harnessEventOf(input), startedAt: opts.startedAt });
+
+    // A sandbox arrives holding a join code and nothing else; this turns it into a
+    // registry entry on disk so the resolve below finds a credential like any other
+    // run. It sits under the budget: the exchange is a network call the harness will
+    // kill this process for outrunning. The root is the one `resolveCredential`
+    // reads, so the entry it writes is the entry that resolve looks for — and it is
+    // resolved only when there is a code to redeem, which is never on an ordinary run.
+    if (joinCodePresent(opts.env)) {
+      await ensureJoinedFromCode({
+        env: opts.env, fetch: opts.fetch as typeof fetch | undefined, root: resolveMemberProjectRoot(), budget,
+      });
+    }
+    const credential = resolveCredential(source);
+    if (!credential) return;
+
     const spool = new MemberSpool(credential.projectId);
     const ctx: EnvelopeContext = { agent: input.agent, sessionId, stage: spool.stagerFor(sessionId), now };
     const client = new ServerClient(credential, opts.fetch ?? globalThis.fetch);

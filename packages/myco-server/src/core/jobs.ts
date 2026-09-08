@@ -40,6 +40,12 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   },
   { name: 'search-index', runsThrough: 'idle', converges: 'every referenced text blob has a complete full-text index' },
   { name: 'embedding-reconcile', runsThrough: 'idle', converges: 'every eligible project memory record has a current vector and settled spore hubness' },
+  // #1158 join UX
+  {
+    name: 'invite-expiry',
+    runsThrough: 'sleep',
+    converges: 'no spent, revoked or expired enrollment authority outlives the retention window; a live invitation is untouched whatever its age',
+  },
 ];
 
 /** A job declared for a state, awaiting the child that gives it work. Nothing runs it; naming the owner keeps the table honest. */

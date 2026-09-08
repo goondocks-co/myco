@@ -12,8 +12,19 @@ export async function ownerCookie(now = Date.now(), sub = LINKED_SUB): Promise<s
   return setCookie(value, 60).split(';')[0];
 }
 
-/** The member every owner-route test acts as: the one the seeded account is linked to. */
-export const PRINCIPAL = { id: 'mem_machine_1', label: 'machine_1' };
+/** The member every owner-route test acts as: the one the seeded account is linked to. Seeded rows carry the migration default, which is `admin`. */
+export const PRINCIPAL = { id: 'mem_machine_1', label: 'machine_1', role: 'admin' as const };
+
+/** A GitHub account for a member-role member, so a test can act as one and be refused what only an admin may do. */
+export const MEMBER_SUB = '770001';
+
+/** The member `MEMBER_SUB` acts as. */
+export const MEMBER_PRINCIPAL = { id: 'mem_machine_2', label: 'machine_2', role: 'member' as const };
+
+/** Link `MEMBER_SUB` to a member-role member on a migrated fixture. */
+export function seedMemberRoleAccount(sqlite: { query(sql: string): { run(...args: unknown[]): unknown } }): void {
+  sqlite.query(`UPDATE members SET github_id = ?, role = 'member' WHERE id = '${MEMBER_PRINCIPAL.id}'`).run(MEMBER_SUB);
+}
 
 /** An authenticated owner GET. */
 export const asOwner = async (path: string): Promise<Request> =>

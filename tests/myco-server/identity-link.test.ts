@@ -35,10 +35,10 @@ describe('identity link authority', () => {
   it('binds the account that spends it to the member the key names, and the member is then found by that account', async () => {
     const r = rig();
     const issued = await issueIdentityLinkAuthority(r.db, 'mem_machine_2', NOW);
-    expect(await spendIdentityLinkAuthority(r.db, issued.key, '9001', NOW)).toEqual({ ok: true, member: { id: 'mem_machine_2', label: 'machine_2' } });
+    expect(await spendIdentityLinkAuthority(r.db, issued.key, '9001', NOW)).toEqual({ ok: true, member: { id: 'mem_machine_2', label: 'machine_2', role: 'admin' } });
     expect(r.sqlite.query(`SELECT github_id FROM members WHERE id = 'mem_machine_2'`).get()).toEqual({ github_id: '9001' });
     expect(r.sqlite.query(`SELECT used_by FROM identity_link_authorities WHERE id = ?`).get(issued.id)).toEqual({ used_by: '9001' });
-    expect(await memberByGithubId(r.db, '9001')).toEqual({ id: 'mem_machine_2', label: 'machine_2' });
+    expect(await memberByGithubId(r.db, '9001')).toEqual({ id: 'mem_machine_2', label: 'machine_2', role: 'admin' });
   });
 
   it('spends once: a second presentation, an unknown key, and an expired key are all denied alike, changing nothing', async () => {
@@ -77,7 +77,7 @@ describe('identity link authority', () => {
     const issued = await issueIdentityLinkAuthority(r.db, 'mem_machine_2', NOW);
     r.sqlite.query(`UPDATE members SET revoked_at = ? WHERE id = 'mem_machine_2'`).run(NOW);
     expect(await spendIdentityLinkAuthority(r.db, issued.key, '9001', NOW)).toEqual({ ok: false, reason: 'member_revoked' });
-    expect(await memberByGithubId(r.db, '583231')).toEqual({ id: 'mem_machine_1', label: 'machine_1' });
+    expect(await memberByGithubId(r.db, '583231')).toEqual({ id: 'mem_machine_1', label: 'machine_1', role: 'admin' });
     r.sqlite.query(`UPDATE members SET revoked_at = ? WHERE id = 'mem_machine_1'`).run(NOW);
     expect(await memberByGithubId(r.db, '583231')).toBeNull();
   });

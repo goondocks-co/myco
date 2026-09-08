@@ -8,8 +8,12 @@ import { listProjects, projectExists, sessionInScope as coreSessionInScope, type
  * not read — but a chokepoint whose signature omits the caller localizes nothing:
  * adding per-project grants would change every call site, which is the whole
  * reason the chokepoint exists. It is taken now so phase 2 is one edit here.
+ *
+ * Narrowed to the id. Scope is a property of the identity, never of what that
+ * identity may administer, so a caller that holds only an id — an MCP principal,
+ * say — passes what it has instead of inventing a role to satisfy a type.
  */
-export type Principal = DashboardMember;
+export type Principal = Pick<DashboardMember, 'id'>;
 
 /** The scope a project id resolves to for this principal, or null when there is no such project it may see. A project the principal does not hold is indistinguishable from one that does not exist. */
 export async function resolveProjectScope(db: RelationalStore, _principal: Principal, projectId: string): Promise<ReadScope | null> {

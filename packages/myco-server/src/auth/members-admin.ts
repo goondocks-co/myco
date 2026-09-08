@@ -1,8 +1,13 @@
 /**
  * Members, as the dashboard administers them.
  *
- * Membership is flat: any member may revoke any other, and the record names
- * who. Revoking a member is one transaction — the member row first, carrying
+ * Membership has two roles. An admin administers membership — minting and
+ * revoking invitations, revoking members, revoking any member's credential — and
+ * a member does everything else, including reading this list: hiding the people
+ * who can revoke you from you would make the list a privilege rather than a
+ * record. Every revocation names who performed it whatever their role.
+ *
+ * Revoking a member is one transaction — the member row first, carrying
  * the one rule that holds the Deployment open, then every live credential,
  * unspent invitation and link key of that member, each conditioned on the
  * member row having changed in this very transaction. Machine claims are
@@ -14,10 +19,13 @@ import { credentialLive } from '../db/liveness.js';
 import { revokeInvitationsOfMember } from './enrollment.js';
 import { revokeLinkKeysOfMember } from './identity-link.js';
 import { revokeCredentialsOfMember } from './tokens.js';
+import { asMemberRole, type MemberRole } from './roles.js';
 
 export interface MemberRow {
   id: string;
   label: string | null;
+  /** What this member may administer. Every member reads this list; only an admin acts on it. */
+  role: MemberRole;
   /** Whether a GitHub account is connected. The account itself is never listed. */
   linked: boolean;
   createdAt: number;
@@ -28,7 +36,7 @@ export interface MemberRow {
 
 export async function listMembers(db: RelationalStore, nowMs: number): Promise<MemberRow[]> {
   const { results } = await db
-    .prepare(`SELECT m.id, m.label, m.github_id IS NOT NULL AS linked, m.created_at, m.revoked_at, m.revoked_by,
+    .prepare(`SELECT m.id, m.label, m.role, m.github_id IS NOT NULL AS linked, m.created_at, m.revoked_at, m.revoked_by,
                      (SELECT COUNT(*) FROM member_credentials c WHERE c.member_id = m.id AND ${credentialLive('c')}) AS live_credentials
                 FROM members m ORDER BY m.created_at ASC, m.id ASC`)
     .bind(nowMs)
@@ -36,12 +44,19 @@ export async function listMembers(db: RelationalStore, nowMs: number): Promise<M
   return results.map((r) => ({
     id: r.id as string,
     label: (r.label as string | null) ?? null,
+    role: asMemberRole(r.role) ?? 'member',
     linked: Number(r.linked) === 1,
     createdAt: r.created_at as number,
     revokedAt: (r.revoked_at as number | null) ?? null,
     revokedBy: (r.revoked_by as string | null) ?? null,
     liveCredentials: Number(r.live_credentials),
   }));
+}
+
+/** The role a member holds, or null when the Deployment holds no such member. */
+export async function memberRole(db: RelationalStore, memberId: string): Promise<MemberRole | null> {
+  const row = await db.prepare(`SELECT role FROM members WHERE id = ?`).bind(memberId).first<{ role: string }>();
+  return row === null ? null : asMemberRole(row.role);
 }
 
 export type MemberState = 'absent' | 'live' | 'revoked';

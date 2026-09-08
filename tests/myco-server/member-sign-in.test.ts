@@ -32,16 +32,16 @@ describe('member sign-in', () => {
     expect((await worker.fetch(await get('/api/projects', '9001'), env)).status).toBe(401);
 
     const preview = await worker.fetch(await post('/auth/link', '9001', { key }), env);
-    expect({ status: preview.status, body: await preview.json() }).toEqual({ status: 200, body: { preview: { member: { id: 'mem_machine_2', label: 'machine_2' } } } });
+    expect({ status: preview.status, body: await preview.json() }).toEqual({ status: 200, body: { preview: { member: { id: 'mem_machine_2', label: 'machine_2', role: 'admin' } } } });
     expect(e.executed.filter((sql) => /UPDATE members/.test(sql))).toEqual([]);
 
     const linked = await worker.fetch(await post('/auth/link', '9001', { key, confirm: true, memberId: 'mem_machine_3' }), env);
-    expect({ status: linked.status, body: await linked.json() }).toEqual({ status: 200, body: { linked: true, member: { id: 'mem_machine_2', label: 'machine_2' } } });
+    expect({ status: linked.status, body: await linked.json() }).toEqual({ status: 200, body: { linked: true, member: { id: 'mem_machine_2', label: 'machine_2', role: 'admin' } } });
     expect(e.sqlite.query(`SELECT id FROM members WHERE github_id = '9001'`).all()).toEqual([{ id: 'mem_machine_2' }]);
 
     expect((await worker.fetch(await get('/api/projects', '9001'), env)).status).toBe(200);
     const me = await worker.fetch(await get('/auth/me', '9001'), env);
-    expect(await me.json()).toEqual({ sub: '9001', login: 'octocat', member: { id: 'mem_machine_2', label: 'machine_2' } });
+    expect(await me.json()).toEqual({ sub: '9001', login: 'octocat', member: { id: 'mem_machine_2', label: 'machine_2', role: 'admin' } });
   });
 
   it('is flat: two linked members see the same projects', async () => {

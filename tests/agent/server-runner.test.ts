@@ -58,7 +58,7 @@ describe('runServerTask', () => {
   it('reconciles embeddings through a held run and completes without invoking an LLM harness', async () => {
     const fixture = await harness();
     const now = Date.now();
-    await ensureMember(fixture.db, HARNESS_MEMBER_ID, now, 'harness');
+    await ensureMember(fixture.db, HARNESS_MEMBER_ID, now, 'member', 'harness');
     const minted = await issueMemberToken(fixture.db, { memberId: HARNESS_MEMBER_ID, machineId: 'machine_1' }, now);
     fixture.env.AI = { run: async () => ({ data: [[1, 0]] }) };
     fixture.env.VECTORIZE = indexFixture();
@@ -151,7 +151,7 @@ describe('runServerTask', () => {
     const now = Date.now();
     fixture.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`).run(AGENT, now);
     fixture.sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`).run(now);
-    await ensureMember(fixture.db, HARNESS_MEMBER_ID, now, 'harness runtime');
+    await ensureMember(fixture.db, HARNESS_MEMBER_ID, now, 'member', 'harness runtime');
     const minted = await issueMemberToken(fixture.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, now);
     await recordDispatch(fixture.db, { projectId: 'proj_1' }, {
       id: 'run_cortex_1', agentId: AGENT, task: 'cortex-instructions', instruction: 'THE SERVER PROMPT',

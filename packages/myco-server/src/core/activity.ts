@@ -1,23 +1,30 @@
 /**
  * When the Deployment last saw activity, and the stamp an owner request leaves.
  *
- * Activity is what the power state follows: a capture receipt, a run starting,
- * a person on the dashboard. The first two already leave rows; the third is
- * stamped here, into the Deployment's own key-value row, at most once a minute.
+ * Activity is what the power state follows: a capture receipt, a run starting, a
+ * person on the dashboard, a runtime joining. The first two already leave rows;
+ * the other two are stamped here, into the Deployment's own key-value row, at
+ * most once a minute.
+ *
+ * A join has to count. It reaches storage without an authenticated member and
+ * leaves no session and no run, so a Deployment whose only traffic is joins would
+ * read as idle, fall to a depth where no job runs, and stop reclaiming the very
+ * invitations those joins are spending.
  */
 import type { RelationalStore } from './adapters.js';
 
 /** The key under which the Deployment records the last owner request it served. */
 export const LAST_REQUEST_KEY = 'last_request_at';
-/** An owner request is stamped at most this often; the stamp is a write, and one per minute is as fresh as the tick can read. */
+/** A request is stamped at most this often; the stamp is a write, and one per minute is as fresh as the tick can read. */
 export const REQUEST_STAMP_INTERVAL_MS = 60_000;
 
 /**
- * Record an owner request. One conditional write: the row is replaced only
- * when the stamp it holds is older than the interval, so a busy dashboard
- * costs one write a minute rather than one per request.
+ * Record a request that leaves no other trace — an owner request or a join. One
+ * conditional write: the row is replaced only when the stamp it holds is older
+ * than the interval, so a busy dashboard and a burst of joins each cost one
+ * write a minute rather than one per request.
  */
-export async function stampOwnerRequest(db: RelationalStore, now: number): Promise<void> {
+export async function stampRequest(db: RelationalStore, now: number): Promise<void> {
   await db.prepare(
     `INSERT OR REPLACE INTO schema_meta (key, value)
        SELECT ?, ?
@@ -25,7 +32,7 @@ export async function stampOwnerRequest(db: RelationalStore, now: number): Promi
   ).bind(LAST_REQUEST_KEY, String(now), LAST_REQUEST_KEY, now - REQUEST_STAMP_INTERVAL_MS).run();
 }
 
-/** When the Deployment last saw activity — a capture receipt, a run starting, an owner request — or null when it never has. */
+/** When the Deployment last saw activity — a capture receipt, a run starting, an owner request, a join — or null when it never has. */
 export async function lastActivityAt(db: RelationalStore): Promise<number | null> {
   const row = await db.prepare(
     `SELECT MAX(at) AS at FROM (

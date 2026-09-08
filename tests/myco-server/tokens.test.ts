@@ -8,6 +8,10 @@ import { SchemaMismatchError } from '@myco-server-worker/telemetry.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { authRow, noMemberRow } from './helpers/rows.js';
 
+/** The two principals the revoke path dispatches on. */
+const ADMIN = { id: 'mem_machine_1', label: 'machine_1', role: 'admin' as const };
+const MEMBER = { id: 'mem_machine_2', label: 'machine_2', role: 'member' as const };
+
 const fakeDb = (row: Record<string, unknown> | null) =>
   ({ prepare: () => ({ bind: () => ({ first: async () => row, run: async () => ({ results: [], meta: { changes: 1 } }) }) }) }) as any;
 
@@ -70,10 +74,15 @@ describe('member tokens', () => {
 
   it('revokes by id and only once, reporting whether a live row matched', async () => {
     const { db, calls } = recordingDb();
-    expect(await revokeCredentialAsMember(db, 'mem_machine_1', 'mt_1', 9_000)).toEqual({ revoked: true, revokedBy: 'mem_machine_1' });
+    expect(await revokeCredentialAsMember(db, ADMIN, 'mt_1', 9_000)).toEqual({ revoked: true, revokedBy: 'mem_machine_1' });
     expect(calls[0].sql).toMatch(/UPDATE member_credentials SET revoked_at = \?, revoked_by = \? WHERE id = \? AND revoked_at IS NULL/);
     expect(calls[0].params).toEqual([9_000, 'mem_machine_1', 'mt_1']);
-    expect(await revokeCredentialAsMember(recordingDb(0).db, 'mem_machine_1', 'mt_missing', 9_000)).toEqual({ revoked: false, revokedBy: 'mem_machine_1' });
+    expect(await revokeCredentialAsMember(recordingDb(0).db, ADMIN, 'mt_missing', 9_000)).toEqual({ revoked: false, revokedBy: 'mem_machine_1' });
+
+    // A member reaches only its own: the statement carries the member id as a predicate, not just as attribution.
+    const asMember = recordingDb();
+    expect(await revokeCredentialAsMember(asMember.db, MEMBER, 'mt_1', 9_000)).toEqual({ revoked: true, revokedBy: 'mem_machine_2' });
+    expect(asMember.calls[0].sql).toMatch(/WHERE id = \? AND member_id = \? AND revoked_at IS NULL/);
   });
 
   it('authenticates a live token digest and returns its bound machine, volume, lifetime, lineage, predecessor and first use', async () => {

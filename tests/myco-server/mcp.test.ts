@@ -532,7 +532,7 @@ async function runSetup() {
                 VALUES ('proj_1', 'sess_1', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [RUN_NOW - 10_000, RUN_NOW, RUN_NOW - 10_000, RUN_NOW]);
   e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
                 VALUES ('proj_1', 'sess_1', 'p_1', 'e_1', 'hello', 'user', 'h_1', ?, ?, 'tok_1', ?)`, [RUN_NOW - 5_000, RUN_NOW - 5_000, RUN_NOW - 5_000]);
-  await ensureMember(e.db, HARNESS_MEMBER_ID, Date.now(), 'harness runtime');
+  await ensureMember(e.db, HARNESS_MEMBER_ID, Date.now(), 'member', 'harness runtime');
   const harness = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, Date.now());
   const member = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
 

@@ -25,7 +25,7 @@ const NOW = 1_700_000_000_000;
 describe('enrollment authorities', () => {
   it('mints 256 bits of entropy and stores only the digest', async () => {
     const { db, sqlite } = store();
-    const issued = await issueEnrollmentAuthority(db, NOW);
+    const issued = await issueEnrollmentAuthority(db, NOW, { role: 'member' });
     expect(ENROLLMENT_KEY_PATTERN.test(issued.key)).toBe(true);
     const row = sqlite.query(`SELECT key_hash FROM enrollment_authorities WHERE id = ?`).get(issued.id) as { key_hash: string };
     expect(row.key_hash).toBe(await sha256Hex(issued.key));
@@ -36,14 +36,14 @@ describe('enrollment authorities', () => {
 
   it('spends once, and a second presentation is refused as already used', async () => {
     const { db } = store();
-    const issued = await issueEnrollmentAuthority(db, NOW);
-    expect(await spendEnrollmentAuthority(db, issued.key, NOW, 'runtime_a')).toEqual({ ok: true, id: issued.id, memberId: null });
+    const issued = await issueEnrollmentAuthority(db, NOW, { role: 'member' });
+    expect(await spendEnrollmentAuthority(db, issued.key, NOW, 'runtime_a')).toEqual({ ok: true, id: issued.id, memberId: null, role: 'member', projectId: null });
     expect(await spendEnrollmentAuthority(db, issued.key, NOW, 'runtime_b')).toEqual({ ok: false, reason: 'already_used' });
   });
 
   it('admits exactly one winner when many runtimes redeem the same key concurrently', async () => {
     const { db } = store();
-    const issued = await issueEnrollmentAuthority(db, NOW);
+    const issued = await issueEnrollmentAuthority(db, NOW, { role: 'member' });
     const results = await Promise.all(
       Array.from({ length: 16 }, (_, i) => spendEnrollmentAuthority(db, issued.key, NOW, `runtime_${i}`)),
     );
@@ -53,7 +53,7 @@ describe('enrollment authorities', () => {
 
   it('records which runtime spent it, for operator provenance', async () => {
     const { db, sqlite } = store();
-    const issued = await issueEnrollmentAuthority(db, NOW);
+    const issued = await issueEnrollmentAuthority(db, NOW, { role: 'member' });
     await spendEnrollmentAuthority(db, issued.key, NOW, 'laptop-1');
     const row = sqlite.query(`SELECT used_by_runtime, used_at FROM enrollment_authorities WHERE id = ?`).get(issued.id) as { used_by_runtime: string; used_at: number };
     expect({ runtime: row.used_by_runtime, usedAt: row.used_at }).toEqual({ runtime: 'laptop-1', usedAt: NOW });
@@ -61,7 +61,7 @@ describe('enrollment authorities', () => {
 
   it('refuses an expired key, and expiry does not mark it used', async () => {
     const { db, sqlite } = store();
-    const issued = await issueEnrollmentAuthority(db, NOW, { ttlMs: 1_000 });
+    const issued = await issueEnrollmentAuthority(db, NOW, { role: 'member', ttlMs: 1_000 });
     expect(await spendEnrollmentAuthority(db, issued.key, NOW + 2_000, 'r')).toEqual({ ok: false, reason: 'expired' });
     const row = sqlite.query(`SELECT used_at FROM enrollment_authorities WHERE id = ?`).get(issued.id) as { used_at: number | null };
     expect(row.used_at).toBeNull();
@@ -69,11 +69,11 @@ describe('enrollment authorities', () => {
 
   it('refuses a revoked key, and revoking a spent key reports no change', async () => {
     const { db } = store();
-    const a = await issueEnrollmentAuthority(db, NOW);
+    const a = await issueEnrollmentAuthority(db, NOW, { role: 'member' });
     expect(await revokeEnrollmentAuthority(db, a.id, NOW, 'mem_machine_1')).toEqual({ revoked: true });
     expect(await spendEnrollmentAuthority(db, a.key, NOW, 'r')).toEqual({ ok: false, reason: 'revoked' });
 
-    const b = await issueEnrollmentAuthority(db, NOW);
+    const b = await issueEnrollmentAuthority(db, NOW, { role: 'member' });
     await spendEnrollmentAuthority(db, b.key, NOW, 'r');
     expect(await revokeEnrollmentAuthority(db, b.id, NOW, 'mem_machine_1')).toEqual({ revoked: false });
   });
@@ -86,7 +86,7 @@ describe('enrollment authorities', () => {
 
   it('is never a credential: spending it authenticates nothing by itself', async () => {
     const { db, sqlite } = store();
-    const issued = await issueEnrollmentAuthority(db, NOW);
+    const issued = await issueEnrollmentAuthority(db, NOW, { role: 'member' });
     await spendEnrollmentAuthority(db, issued.key, NOW, 'r');
     // Spending mints no credential — the join route does that, deliberately separately.
     expect((sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get() as { c: number }).c).toBe(0);

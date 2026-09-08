@@ -14,6 +14,7 @@ import { leafValues } from './settings.js';
 import { releaseRun } from './release.js';
 import { reconcileSearchIndex } from './search-index.js';
 import { dispatchEmbeddingWork } from './embedding/jobs.js';
+import { reclaimEnrollmentAuthorities } from '../auth/enrollment.js';
 
 /** The retention window when the leaf is unset, and the bounds the leaf itself declares. */
 export const RUN_RETENTION_DAYS_DEFAULT = 30;
@@ -107,10 +108,22 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
   return changed;
 }
 
+/**
+ * Reclaims finished enrollment authorities — spent, revoked or expired — past
+ * the retention window. A live invitation is never touched whatever its age:
+ * ending one early is retention deciding to revoke, which the operator does.
+ */
+export async function inviteExpiry(env: ServerEnv, now: number): Promise<number> {
+  const { reclaimed } = await reclaimEnrollmentAuthorities(env.db, now, JOB_BATCH);
+  return reclaimed;
+}
+
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'embedding-reconcile': dispatchEmbeddingWork,
   'search-index': (env, now) => reconcileSearchIndex(env.db, env.blobs, now),
   'agent-run-retention': agentRunRetention,
   'run-stale-sweep': runStaleSweep,
+  // #1158 join UX
+  'invite-expiry': inviteExpiry,
 };

@@ -32,7 +32,7 @@ describe('membership is a boundary at authentication', () => {
 
   it('voids an invitation for a member revoked after the mint, and names it revoked', async () => {
     const e = sqliteEnv();
-    const issued = await issueEnrollmentAuthority(e.db, NOW, { memberId: 'mem_machine_2' });
+    const issued = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', memberId: 'mem_machine_2' });
     e.sqlite.query(`UPDATE members SET revoked_at = ? WHERE id = 'mem_machine_2'`).run(NOW);
     expect(await spendEnrollmentAuthority(e.db, issued.key, NOW + 1, 'runtime')).toEqual({ ok: false, reason: 'revoked' });
   });
@@ -43,9 +43,9 @@ describe('revoking a member', () => {
     const e = sqliteEnv();
     const env = { ...e.env, ...OWNER_ENV };
     const cred = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, NOW);
-    const forThem = await issueEnrollmentAuthority(e.db, NOW, { memberId: 'mem_machine_2' });
-    const byThem = await issueEnrollmentAuthority(e.db, NOW, { createdByMember: 'mem_machine_2' });
-    const byThemForOther = await issueEnrollmentAuthority(e.db, NOW, { createdByMember: 'mem_machine_2', memberId: 'mem_machine_3' });
+    const forThem = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', memberId: 'mem_machine_2' });
+    const byThem = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', createdByMember: 'mem_machine_2' });
+    const byThemForOther = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', createdByMember: 'mem_machine_2', memberId: 'mem_machine_3' });
     const link = await issueIdentityLinkAuthority(e.db, 'mem_machine_2', NOW);
     e.sqlite.query(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_2', 'mem_machine_2', ?)`).run(NOW);
 
@@ -130,7 +130,7 @@ describe('members and invitations', () => {
 
     const listed = await worker.fetch(await asOwner('/api/enrollment'), env);
     const { invitations } = await listed.json() as { invitations: { id: string; memberId: string | null; createdBy: string }[] };
-    expect(invitations).toEqual([{ id: body.id, memberId: 'mem_machine_2', createdBy: PRINCIPAL.id, createdAt: expect.any(Number), expiresAt: body.expiresAt }]);
+    expect(invitations).toEqual([{ id: body.id, memberId: 'mem_machine_2', createdBy: PRINCIPAL.id, createdAt: expect.any(Number), expiresAt: body.expiresAt, role: 'member', projectId: null }]);
 
     const revoked = await worker.fetch(await asOwnerPost(`/api/enrollment/${body.id}/revoke`), env);
     expect(await revoked.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
@@ -155,7 +155,7 @@ describe('a revoked minter', () => {
     const e = sqliteEnv();
     const env = { ...e.env, ...OWNER_ENV };
     e.sqlite.query(`UPDATE members SET github_id = '9002' WHERE id = 'mem_machine_2'`).run();
-    const minted = await issueEnrollmentAuthority(e.db, NOW, { createdByMember: 'mem_machine_2' });
+    const minted = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', createdByMember: 'mem_machine_2' });
     e.sqlite.query(`UPDATE members SET revoked_at = ? WHERE id = 'mem_machine_2'`).run(NOW);
     expect((await (await worker.fetch(await asOwner('/api/enrollment'), env)).json() as { invitations: unknown[] }).invitations).toEqual([]);
     expect(await spendEnrollmentAuthority(e.db, minted.key, NOW + 1, 'runtime')).toEqual({ ok: false, reason: 'revoked' });
