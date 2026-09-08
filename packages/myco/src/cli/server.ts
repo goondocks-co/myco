@@ -27,10 +27,42 @@ import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-con
 import { cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { existsSync } from 'node:fs';
 import { parseFlags } from './shared.js';
+import {
+  DEFAULT_LOCAL_RECORD,
+  LocalDeploymentAbsent,
+  LocalRecordUnreadable,
+  assertRecordServable,
+  ensureLocalSecrets,
+  localDeploymentPresent,
+  readLocalRecord,
+  removeLocalDeployment,
+  resolveLocalPaths,
+  writeLocalRecord,
+  type LocalDeploymentRecord,
+} from '../server/local.js';
+import { carriedNative, runLocalDeployment } from '../server/local-run.js';
+import {
+  ServicePathUnsupported,
+  ServicePlatformUnsupported,
+  defaultSpec,
+  installService,
+  servicePaths,
+  startService,
+  statusOfService,
+  stopService,
+  uninstallService,
+} from '../server/service.js';
+import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 
 export const SERVER_HELP = `Usage: myco server <command>
 
-Commands (Compose is the default target; --target cloudflare selects the Worker):
+Commands (--target local runs the Deployment from this binary; --target cloudflare selects the Worker):
+  create --target local [--port <n>]      Provision a Deployment this machine runs itself: a data
+                                          directory, generated secrets, and a migrated volume.
+  run --target local                      Serve it in the foreground. This is what the service runs.
+  install --target local                  Run it whenever you log in, restarting it if it stops.
+  uninstall --target local                Stop it and remove the service. Its data is kept.
+
   create [--port <n>] [--version <tag>] [--fleet <n>] [--origin <url>]
                                           Provision and start the Deployment. --fleet sets how many
                                           runtimes may run at once (default 4); --origin is the
@@ -78,8 +110,30 @@ Commands (Compose is the default target; --target cloudflare selects the Worker)
                                           Register the dashboard's sign-in app on GitHub (one click
                                           there) and install its credentials on the Deployment.
 
+A Deployment run from this binary needs no container runtime and no Node.
 The bundle is ordinary Compose. Everything here is also runnable with
 \`docker compose\` from the deployment directory.`;
+
+/** The verbs a Deployment this machine runs answers to; every other verb belongs to the hosted targets. */
+const LOCAL_VERBS = new Set(['create', 'run', 'install', 'uninstall', 'status', 'update', 'destroy']);
+
+/**
+ * Whether the Deployment answers on its own address.
+ *
+ * A unit the platform reports as loaded says the service was accepted, not that
+ * the process inside it is serving; a crash loop reports loaded on every
+ * platform. The address is what a member reaches, so the address is what is
+ * asked.
+ */
+async function reachable(record: { port: number; origin?: string }): Promise<boolean> {
+  const base = record.origin ?? `http://127.0.0.1:${record.port}`;
+  try {
+    const answered = await fetch(new URL('/health', base), { signal: AbortSignal.timeout(2_000) });
+    return answered.ok;
+  } catch {
+    return false;
+  }
+}
 
 /** Opens a URL in the operator's browser where one is available; failure is silent and the URL is printed anyway. */
 async function openInBrowser(url: string): Promise<void> {
@@ -107,14 +161,18 @@ export async function run(args: string[]): Promise<void> {
   const { flags } = parseFlags(rest);
 
   /** Which target a lifecycle verb acts on: named, else the one this machine holds. */
-  const target = (): 'cloudflare' | 'compose' => {
+  const target = (): 'cloudflare' | 'compose' | 'local' => {
     const named = flags.get('target');
-    if (named === 'cloudflare' || named === 'compose') return named;
-    if (named !== undefined) fail(`--target must be cloudflare or compose, and is ${JSON.stringify(named)}`);
-    const record = readDeploymentRecord();
-    const bundle = existsSync(resolveDeploymentPaths().composeFile);
-    if (record !== null && bundle) fail('this machine holds both a Cloudflare record and a Compose bundle; pass --target cloudflare or --target compose');
-    return record !== null ? 'cloudflare' : 'compose';
+    if (named === 'cloudflare' || named === 'compose' || named === 'local') return named;
+    if (named !== undefined) fail(`--target must be local, cloudflare or compose, and is ${JSON.stringify(named)}`);
+    const held: string[] = [];
+    if (readDeploymentRecord() !== null) held.push('cloudflare');
+    if (existsSync(resolveDeploymentPaths().composeFile)) held.push('compose');
+    if (localDeploymentPresent()) held.push('local');
+    // Two Deployments on one machine is a choice the operator makes per verb,
+    // never one this guesses from what happens to be on disk.
+    if (held.length > 1) fail(`this machine holds more than one Deployment (${held.join(', ')}); pass --target ${held.join(' or --target ')}`);
+    return (held[0] as 'cloudflare' | 'compose' | 'local' | undefined) ?? 'compose';
   };
 
   /** The Cloudflare lifecycle inputs a verb needs; only a deploying verb needs a checkout. */
@@ -127,7 +185,110 @@ export async function run(args: string[]): Promise<void> {
     return { accountId, configDir: dir !== undefined && dir !== '' && dir !== 'true' ? dir : process.cwd() };
   };
 
+  /** Where this machine's own Deployment lives, and what it is running under. */
+  const localSpec = () => defaultSpec(process.execPath);
+
+
   try {
+    if (LOCAL_VERBS.has(command) && target() === 'local') {
+      const paths = resolveLocalPaths();
+
+      if (command === 'create') {
+        const portFlag = flags.get('port');
+        const port = portFlag === undefined ? DEFAULT_LOCAL_RECORD.port : Number(portFlag);
+        if (portFlag !== undefined && (portFlag === 'true' || !Number.isInteger(port))) fail('--port needs a whole number.');
+        const existing = localDeploymentPresent(paths) ? readLocalRecord(paths) : DEFAULT_LOCAL_RECORD;
+        const record: LocalDeploymentRecord = { ...existing, port };
+        assertRecordServable(record);
+        writeLocalRecord(record, paths);
+        const generated = ensureLocalSecrets(paths);
+        const applied = migrateOnly(paths.databasePath, carriedNative());
+        console.log('\nDeployment ready.');
+        console.log(`  Directory:  ${paths.root}`);
+        console.log(`  Address:    http://127.0.0.1:${record.port}`);
+        console.log(`  Schema:     ${applied === 0 ? 'already current' : `${applied} step${applied === 1 ? '' : 's'} applied`}`);
+        if (generated.length > 0) console.log(`  Secrets:    generated ${generated.join(', ')}`);
+        console.log('\n`myco server install` runs it whenever you log in.');
+        return;
+      }
+
+      if (command === 'run') {
+        const started = await runLocalDeployment(paths);
+        console.log(`Deployment serving on http://127.0.0.1:${started.port}`);
+        // The process stays up until the platform signals it; `startDeployment`
+        // owns the drain.
+        await new Promise<never>(() => {});
+        return;
+      }
+
+      if (command === 'install') {
+        const outcome = installService(localSpec());
+        console.log(outcome.loaded ? 'Deployment installed and running.' : 'Service unit written, and the platform is not running it.');
+        console.log(`  Unit:       ${outcome.unitFile}`);
+        console.log(`  Logs:       ${servicePaths(localSpec()).outLog}`);
+        if (!outcome.loaded) fail(outcome.detail ?? 'the platform did not accept the service unit');
+        return;
+      }
+
+      if (command === 'uninstall') {
+        const outcome = uninstallService(localSpec());
+        console.log(outcome.removed ? 'Deployment service removed. Its data is kept.' : 'No service unit was installed.');
+        return;
+      }
+
+      if (command === 'status') {
+        if (!localDeploymentPresent(paths)) { console.log('No Deployment on this machine. `myco server create --target local` provisions one.'); return; }
+        const record = readLocalRecord(paths);
+        const service = statusOfService(servicePaths(localSpec()));
+        console.log('\nDeployment');
+        console.log(`  Directory:  ${paths.root}`);
+        console.log(`  Address:    ${record.origin ?? `http://127.0.0.1:${record.port}`}`);
+        console.log(`  Service:    ${service.loaded ? 'running at login' : service.detail ?? 'not installed'}`);
+        console.log(`  Serving:    ${(await reachable(record)) ? 'answering on its address' : 'not answering — see ~/.myco/logs/server.log'}`);
+        return;
+      }
+
+      if (command === 'update') {
+        // A running Deployment serves the schema it started against, so the
+        // service stops before the store moves and starts again on the
+        // migrated volume.
+        const spec = localSpec();
+        const running = statusOfService(servicePaths(spec)).loaded;
+        if (running) {
+          console.log('Stopping the Deployment before it migrates.');
+          stopService(spec);
+        }
+        const applied = migrateOnly(paths.databasePath, carriedNative());
+        console.log(applied === 0 ? 'Deployment already current.' : `Deployment updated; ${applied} schema step${applied === 1 ? '' : 's'} applied.`);
+        if (running) {
+          const restarted = startService(spec);
+          console.log(restarted.loaded ? 'Deployment running again.' : 'Deployment migrated, and the platform did not start it again.');
+          if (!restarted.loaded) fail(restarted.detail ?? 'the platform did not start the service again');
+        }
+        return;
+      }
+
+      if (command === 'destroy') {
+        const removeData = flags.has('data');
+        if (removeData && !flags.has('yes')) {
+          fail('--data removes the Deployment directory and everything in it. Re-run with --yes to confirm.');
+        }
+        const removed = uninstallService(localSpec());
+        if (removeData) removeLocalDeployment(paths);
+        // The service is what this stops. A Deployment someone started in a
+        // terminal with `server run` is that terminal's to end, and saying it
+        // stopped would be false.
+        console.log(removeData
+          ? 'Deployment and its data removed.'
+          : removed.removed
+            ? 'Deployment service removed. Its data is kept.'
+            : 'No service was installed. Its data is kept.');
+        return;
+      }
+
+      fail(`\`myco server ${command}\` is not a verb for a Deployment this machine runs. Try create, run, install, uninstall, status, update or destroy.`);
+    }
+
     if (command === 'create' && target() === 'cloudflare') {
       const created = await createCloudflareDeployment(cloudflareOptions({ checkout: true }));
       console.log('\nCloudflare Deployment deployed.');
@@ -339,6 +500,8 @@ export async function run(args: string[]): Promise<void> {
     if (err instanceof RestoreLeftIncomplete || err instanceof ComposeFilesUnreadable) fail(err.message);
     if (err instanceof RegistrationRefused || err instanceof WranglerAbsent) fail(err.message);
     if (err instanceof DeployConfigIncomplete) fail(err.message);
+    if (err instanceof LocalDeploymentAbsent || err instanceof LocalRecordUnreadable) fail(err.message);
+    if (err instanceof ServicePathUnsupported || err instanceof ServicePlatformUnsupported) fail(err.message);
     // A Compose failure is the operator's to read, verbatim.
     if (err instanceof CommandFailed) fail(err.message);
     fail(err instanceof Error ? err.message : String(err));

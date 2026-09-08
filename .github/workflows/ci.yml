@@ -35,10 +35,22 @@ jobs:
       - run: npm run lint
       # Build the host-target libsqlite3 so the compiled binary can embed it.
       - run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64
-      # Host-target only in CI — full cross-compile is reserved for release.
-      - run: TARGET=linux-x64 npm run build:binary -w @goondocks/myco
+      # Both dashboards before codegen: the binary embeds each one's build, and
+      # codegen refuses an absent build rather than emitting an empty map.
       - run: npm run build:ui -w @goondocks/myco
       - run: npm run build:ui -w @goondocks/myco-server
+      # Codegen runs here so its refusal of an absent dashboard build is a
+      # failed build rather than an empty asset map nobody notices.
+      - run: npm run codegen -w @goondocks/myco
+      # The Deployment dashboard is committed and regenerates byte-identically,
+      # so a change to it that skipped codegen fails here. The member dashboard
+      # does not currently regenerate byte-identically from its committed
+      # state, so holding it to the same check would fail every build for a
+      # difference no pull request introduced.
+      - name: Deployment dashboard matches its committed assets
+        run: git diff --exit-code -- packages/myco/src/server-ui-assets.generated.ts
+      # Host-target only in CI — full cross-compile is reserved for release.
+      - run: TARGET=linux-x64 npm run build:binary -w @goondocks/myco
       # Full test suite under `bun test` (Phase 5 of the bun migration).
       # `npm test` runs both the Node-env and jsdom passes via the
       # run-bun-tests.mjs driver, handling tsx UI tests in their own pass.

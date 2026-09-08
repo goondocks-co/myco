@@ -63,7 +63,7 @@ Already have Node? `npm install -g @goondocks/myco` also works — it's a thin b
 
 Provider configuration is optional at install time. Capture and full-text search work immediately; spores, digests, semantic search, Canopy summaries, and skill lifecycle features become active after you configure intelligence and embedding providers in the dashboard.
 
-See [Quickstart](docs/quickstart.md) for setup details and platform notes.
+See [Quickstart](docs/quickstart.md) for setup details and platform notes, and [Self-hosting](docs/self-hosting.md) to run your own server on a laptop or a virtual machine.
 
 ## Upgrade
 
