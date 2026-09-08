@@ -87,7 +87,12 @@ describe('a dispatch past a limit', () => {
     const second = await f.dispatch('container-smoke', NOW + 1);
     expect(second).toMatchObject({ dispatched: true, queued: true, heldBy: 'concurrent_runs', task: 'container-smoke', projectId: 'proj_1' });
     const runId = (second as { runId: string }).runId;
-    expect(f.run(runId)).toMatchObject({ status: 'queued', startedAt: null, queuedAt: NOW + 1, heldBy: 'concurrent_runs', dispatchedBy: null, runContext: null });
+    expect(f.run(runId)).toMatchObject({ status: 'queued', startedAt: null, queuedAt: NOW + 1, heldBy: 'concurrent_runs', dispatchedBy: null });
+    // A run that waits carries what the dispatch decided, written with the row.
+    // The readers of these fields — the titling material, the digest's
+    // substrate hash, the run bound, the replaced-run cap — see the same
+    // context whether the run is launched or claimed.
+    expect(JSON.parse(f.run(runId)!.runContext as string)).toEqual({ timeoutSeconds: 120 });
     expect(JSON.parse(f.run(runId)!.dispatchSpec as string)).toEqual({ serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 });
     expect(f.launches).toHaveLength(1);
     expect(f.wakes).toHaveLength(2);
@@ -157,17 +162,21 @@ describe('the drain', () => {
     expect([f.run(a.runId)?.status, f.run(b.runId)?.status]).toEqual(['pending', 'pending']);
   });
 
-  it('stops at a Deployment-wide holder and skips past a per-task one', async () => {
+  it('skips past a per-task holder, and passes over a run no front door launches', async () => {
     const f = fixture();
     f.setting('agent.limits.task_concurrent_runs', 1);
     const smoke = (await f.dispatch()) as { runId: string };
     const smokeQueued = (await f.dispatch('container-smoke', NOW + 1)) as { runId: string };
+    // A worker-served task never reaches a launch: it waits in the claim queue
+    // whatever the limits say, and the drain passes over it rather than
+    // stopping, so the runtime-served run behind it still launches.
     const digest = (await f.dispatch('digest-only', NOW + 2)) as { runId: string };
     expect(f.run(smokeQueued.runId)?.status).toBe('queued');
-    expect(f.run(digest.runId)?.status).toBe('pending');
+    expect(f.run(digest.runId)).toMatchObject({ status: 'queued', heldBy: 'worker' });
     f.complete(smoke.runId);
     expect(await drainQueue(f.env, NOW + 3)).toBe(1);
     expect(f.run(smokeQueued.runId)?.status).toBe('pending');
+    expect(f.run(digest.runId)?.status).toBe('queued');
   });
 
   it('never launches without a runtime: an unbound Deployment leaves the queue for the runtime that arrives', async () => {
@@ -197,9 +206,14 @@ describe('a titling past a limit', () => {
     const runId = asked.runId!;
     expect(f.run(runId)).toMatchObject({ status: 'queued', task: 'title-summary', heldBy: 'concurrent_runs' });
     expect((f.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = 's1'`).get() as { titled_at: number | null }).titled_at).toBe(NOW + 1);
+    // Titling runs on a worker, so lifting the limit launches nothing: the run
+    // keeps waiting in the claim queue with the parameters the ask named, and a
+    // worker carries them into the harness when it takes it.
     f.clear('agent.limits.concurrent_runs');
-    expect(await drainQueue(f.env, NOW + 2)).toBe(1);
-    expect(JSON.parse(f.launches.at(-1)!.envVars.MYCO_TASK_PARAMS!)).toEqual({ session_id: 's1', mode: 'claim', timeoutSeconds: expect.any(Number) });
+    expect(await drainQueue(f.env, NOW + 2)).toBe(0);
+    expect(f.run(runId)?.status).toBe('queued');
+    const spec = f.sqlite.query(`SELECT dispatch_spec FROM agent_runs WHERE id = ?`).get(runId) as { dispatch_spec: string };
+    expect(JSON.parse(spec.dispatch_spec).params).toEqual({ session_id: 's1', mode: 'claim' });
   });
 });
 
@@ -528,17 +542,18 @@ describe('a runtime that is not taking runs', () => {
     const rowOf = (id: string) => held.sqlite.query(`SELECT ${columns} FROM agent_runs WHERE id = ?`).get(id) as Record<string, unknown>;
     const returned = rowOf('run_returned');
     const fresh = rowOf('run_fresh');
-    // Three columns differ by design, and each is what the attempt left: the
-    // credential a child may still claim under, the instant that launch went
-    // out, and the bound that launch carries. A deploy bounds this row from the
-    // last two, so a recreate does not ship over a child that is working.
+    // Two columns differ by design, and each is what the attempt left: the
+    // credential a child may still claim under, and the instant that launch
+    // went out. A deploy bounds this row from the second and from the context
+    // both rows carry, so a recreate does not ship over a child that is working.
     expect(returned.dispatched_by).not.toBeNull();
     expect(returned.started_at).toBe(NOW);
+    expect({ started_at: fresh.started_at, dispatched_by: fresh.dispatched_by }).toEqual({ started_at: null, dispatched_by: null });
+    // The bound is on both: a run carries its context whether it is launched or claimed.
     expect(JSON.parse(returned.run_context as string)).toMatchObject({ timeoutSeconds: 120 });
-    expect({ started_at: fresh.started_at, run_context: fresh.run_context, dispatched_by: fresh.dispatched_by })
-      .toEqual({ started_at: null, run_context: null, dispatched_by: null });
+    expect(JSON.parse(fresh.run_context as string)).toMatchObject({ timeoutSeconds: 120 });
     // In everything else a returned row is a queued row.
-    expect({ ...returned, dispatched_by: null, started_at: null, run_context: null }).toEqual(fresh);
+    expect({ ...returned, dispatched_by: null, started_at: null }).toEqual({ ...fresh, dispatched_by: null, started_at: null });
 
     // A row that already holds a place in line keeps it, rather than moving to the back.
     const drained = fixture({ refuse: () => draining() });

@@ -157,14 +157,19 @@ describe('session turns', () => {
     expect(calls.rows.map((t) => t.toolCallId)).toEqual(['tc1']);
   });
 
-  it('titles a session on an owner\'s ask, answering the outcome, and finds nothing outside the scope', async () => {
+  it('titles a session on an owner\'s ask, queuing the run for a worker, and finds nothing outside the scope', async () => {
     const e = sqliteEnv();
     seed(e);
+    const asked = Date.now();
     const res = await worker.fetch(await asOwnerPost('/api/projects/proj_1/sessions/s1/title'), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
-    // No runtime is bound in the fixture: the ask is answered by name, not thrown, and nothing is stamped.
-    expect(await res.json()).toEqual({ outcome: 'harness_unavailable' });
-    expect(e.sqlite.query(`SELECT titled_at FROM sessions WHERE project_id = 'proj_1' AND session_id = 's1'`).get()).toEqual({ titled_at: null });
+    // A worker claims the run from the queue, so the ask needs no runtime bound: it answers the queued run by id and spends the session's claim.
+    const answered = await res.json() as { outcome: string; runId: string };
+    expect(answered.outcome).toBe('queued');
+    expect(e.sqlite.query(`SELECT status, task, held_by AS heldBy, dispatched_by AS dispatchedBy FROM agent_runs WHERE project_id = 'proj_1' AND id = ?`).get(answered.runId))
+      .toEqual({ status: 'queued', task: 'title-summary', heldBy: 'worker', dispatchedBy: null });
+    const stamped = e.sqlite.query(`SELECT titled_at AS titledAt FROM sessions WHERE project_id = 'proj_1' AND session_id = 's1'`).get() as { titledAt: number };
+    expect(stamped.titledAt).toBeGreaterThanOrEqual(asked);
     expect((await worker.fetch(await asOwnerPost('/api/projects/proj_2/sessions/s2/title'), { ...e.env, ...OWNER_ENV })).status).toBe(404);
     expect((await worker.fetch(await asOwnerPost('/api/projects/proj_1/sessions/absent/title'), { ...e.env, ...OWNER_ENV })).status).toBe(404);
   });

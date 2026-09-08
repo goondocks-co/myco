@@ -34,6 +34,8 @@ export const MEMBER_CODES = [
   'run_scope', 'no_run', 'project_mismatch',
   // #1147 — transcript-first ingest
   'session_tombstoned', 'transcript_replaced',
+  // #1151 — worker mode
+  'not_admin',
   'unavailable',
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];

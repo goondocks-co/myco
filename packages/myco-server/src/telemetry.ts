@@ -66,6 +66,8 @@ export const CLASSIFIERS = [
   'run_scope', 'no_run', 'project_mismatch',
   // #1147 — transcript-first ingest
   'session_tombstoned', 'transcript_replaced',
+  // #1151 — worker mode
+  'not_admin',
 ] as const;
 export type Classifier = (typeof CLASSIFIERS)[number];
 

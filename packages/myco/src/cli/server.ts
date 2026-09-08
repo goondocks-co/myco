@@ -27,6 +27,14 @@ import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-con
 import { cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { existsSync } from 'node:fs';
 import { parseFlags } from './shared.js';
+import path from 'node:path';
+import { resolveMycoHome } from '../paths/home.js';
+import { readDeploymentMembership } from '../member/registry.js';
+import { runWorker } from '../runner/loop.js';
+
+/** The cadence a worker inside the server process keeps: three missed renewals lose a lease, and an idle poll waits briefly. */
+const WORKER_HEARTBEAT_MS = 30_000;
+const WORKER_POLL_IDLE_MS = 2_000;
 import {
   DEFAULT_LOCAL_RECORD,
   LocalDeploymentAbsent,
@@ -153,6 +161,34 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+/**
+ * The worker inside the laptop server process.
+ *
+ * It attaches over the loopback address the Deployment just bound, under the
+ * membership this machine holds for it. A machine that holds none serves
+ * without a worker and says so: the Deployment still takes work, and the queue
+ * waits for a worker that can claim it.
+ */
+async function startLocalWorker(port: number): Promise<void> {
+  const serverUrl = `http://127.0.0.1:${port}`;
+  const membership = readDeploymentMembership(serverUrl);
+  if (membership === null) {
+    console.log('No membership for this Deployment on this machine; serving without a worker. Run `myco login` to attach one.');
+    return;
+  }
+  const stopping = new AbortController();
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { stopping.abort(); });
+  void runWorker({
+    serverUrl,
+    token: membership.token,
+    runRoot: path.join(resolveMycoHome(), 'worker', 'runs'),
+    heartbeatMs: WORKER_HEARTBEAT_MS,
+    pollIdleMs: WORKER_POLL_IDLE_MS,
+    log: (line) => { console.log(`worker: ${line}`); },
+    signal: stopping.signal,
+  });
+}
+
 export async function run(args: string[]): Promise<void> {
   const [command, ...rest] = args;
   if (command === undefined || command === '--help' || command === '-h') {
@@ -217,6 +253,11 @@ export async function run(args: string[]): Promise<void> {
       if (command === 'run') {
         const started = await runLocalDeployment(paths);
         console.log(`Deployment serving on http://127.0.0.1:${started.port}`);
+        // #1151: a laptop Deployment runs a worker of its own, so a default
+        // install produces spores rather than a queue nothing claims. It is an
+        // ordinary client of the HTTP surface, the same one a worker on another
+        // machine is, so both run identical code.
+        if (flags.get('no-worker') !== 'true') await startLocalWorker(started.port);
         // The process stays up until the platform signals it; `startDeployment`
         // owns the drain.
         await new Promise<never>(() => {});

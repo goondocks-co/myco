@@ -657,6 +657,21 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/canopy-map', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/canopy-map', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
       },
+      'POST /worker/claim': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/worker/claim', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/worker/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [] }) }),
+      },
+      'POST /worker/lease': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/worker/lease', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/worker/lease', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent' }) }),
+      },
+      'POST /worker/end': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/worker/end', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/worker/end', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent', status: 'failed' }) }),
+      },
       'POST /mcp': {
         shape: 'answered',
         malformed: (token) => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
@@ -1060,6 +1075,9 @@ describe('gates', () => {
       'member POST /spores/resolve',
       'member POST /spores/save',
       'member POST /tokens/refresh',
+      'member POST /worker/claim',
+      'member POST /worker/end',
+      'member POST /worker/lease',
       'owner DELETE /api/projects/{projectId}/repository',
       'owner DELETE /api/secrets/{name}',
       'owner GET /api/agents',

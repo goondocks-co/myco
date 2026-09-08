@@ -76,3 +76,16 @@ export const TOKEN_ID_BYTES = 12;
 
 /** The most a Deployment's session-start instructions may carry. A person edits this text; it is not generated. */
 export const INSTRUCTIONS_TEMPLATE_MAX_BYTES = 4096;
+
+/**
+ * The lease a worker holds on a run it claimed, and the cadence that renews it.
+ *
+ * The relation between the three is what the gate holds, not the values:
+ * a lease survives three missed heartbeats, and expires strictly before the
+ * shortest task budget plus its overrun margin, so a run's own budget and its
+ * worker's liveness never answer the same question. The poll bound sits under
+ * every platform's request ceiling.
+ */
+export const WORKER_LEASE_MS = 90_000;
+export const WORKER_HEARTBEAT_MS = 30_000;
+export const WORKER_POLL_MAX_MS = 25_000;

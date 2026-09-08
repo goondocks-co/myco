@@ -3,6 +3,7 @@ import type { OwnerContext } from '../context.js';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { schemaVersion } from '../read/meta.js';
 import { listVisibleProjects } from './scope.js';
+import { workerLiveness } from '../core/runs.js';
 import { ok } from './scope.js';
 
 /**
@@ -39,17 +40,23 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   // target: a store that is missing, misconfigured, or unreachable all read as unusable
   // here rather than only the one shape a single platform happens to produce.
   const capabilities = deploymentCapabilities(env);
+  let workers = { workersAttached: 0, runsQueued: 0 };
   let found: number | null = null;
   let projects: Awaited<ReturnType<typeof listVisibleProjects>> = [];
   try {
     found = await schemaVersion(env.db);
+    workers = await workerLiveness(env.db, ctx.now);
     projects = await listVisibleProjects(env.db, ctx.member, { includeArchived: true });
   } catch {
-    return ok({ schema: { expected: SERVER_SCHEMA_VERSION, found: null, matches: false }, capabilities, projects: [] });
+    return ok({ schema: { expected: SERVER_SCHEMA_VERSION, found: null, matches: false }, capabilities, workers, projects: [] });
   }
   return ok({
     schema: { expected: SERVER_SCHEMA_VERSION, found, matches: found === SERVER_SCHEMA_VERSION },
     capabilities,
+    // What a capability list cannot answer: whether a worker is attached right
+    // now. A Deployment can be configured to run tasks and have none, and the
+    // queue growing beside no attached worker is the shape of that.
+    workers,
     projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
   });
 }
