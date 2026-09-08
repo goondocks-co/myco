@@ -93,7 +93,9 @@ describe('the power state a tick resolves', () => {
   it('runs housekeeping at every depth but deep sleep: a Deployment in use is swept too', async () => {
     const f = fixture();
     f.seedSession('s1', NOW);
-    expect((await runTick(f.env, NOW)).jobs.map((j) => j.name)).toEqual(['agent-run-retention', 'run-stale-sweep', 'search-index', 'embedding-reconcile']);
+    const ran = (await runTick(f.env, NOW)).jobs.map((j) => j.name);
+    expect(ran).toEqual(SERVER_JOBS.map((j) => j.name));
+    expect(ran).toEqual(expect.arrayContaining(['agent-run-retention', 'run-stale-sweep', 'search-index', 'embedding-reconcile']));
   });
 
   it('runs nothing when the Deployment never saw activity: nothing to keep, and no wake to pay for', async () => {
@@ -218,8 +220,8 @@ describe('a job that throws', () => {
     const broken: ServerEnv = { ...f.env, db: { prepare: (sql: string) => (sql.includes('resumable = 0 AND') ? { bind: () => ({ run: async () => { throw new Error('D1_ERROR: nope'); }, all: async () => { throw new Error('D1_ERROR: nope'); }, first: async () => { throw new Error('D1_ERROR: nope'); } }) } : f.env.db.prepare(sql)) as never, batch: f.env.db.batch } };
     const report = await runTick(broken, NOW);
     expect(report.jobs.map((j) => j.name)).toEqual(SERVER_JOBS.filter((j) => j.runsThrough !== 'idle').map((j) => j.name));
-    expect(report.jobs[0]).toMatchObject({ name: 'agent-run-retention', failed: expect.any(String) });
-    expect(report.jobs[1]).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null });
+    expect(report.jobs.find((j) => j.name === 'agent-run-retention')).toMatchObject({ name: 'agent-run-retention', failed: expect.any(String) });
+    expect(report.jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null });
   });
 });
 

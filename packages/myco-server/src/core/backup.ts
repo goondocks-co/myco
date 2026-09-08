@@ -27,9 +27,9 @@ const RESTORE_CHUNK_ROWS = 50;
  * parents before children.
  */
 export const BACKUP_TABLES: readonly string[] = [
-  'projects', 'members', 'machine_claims', 'enrollment_authorities', 'identity_link_authorities',
+  'projects', 'project_remotes', 'members', 'machine_claims', 'enrollment_authorities', 'identity_link_authorities',
   'member_credentials', 'agents',
-  'sessions', 'events', 'blobs', 'prompt_batches', 'tool_calls', 'responses', 'plans',
+  'sessions', 'session_tombstones', 'events', 'blobs', 'prompt_batches', 'tool_calls', 'responses', 'plans',
   'attachments', 'transcripts', 'transcript_segments', 'tags',
   'agent_tasks', 'agent_runs', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections',
   'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage',
