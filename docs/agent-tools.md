@@ -33,7 +33,7 @@ Every vault-scoped tool accepts an optional `project` field — a project id or 
 |------|---------|
 | `myco_plans` | List, retrieve, save, or delete plans using `op=list|get|save|delete`. |
 | `myco_sessions` | List or retrieve session history using `op=list|get`. |
-| `myco_skills` | List, inspect, or read auto-generated skills with their full lineage. |
+| `myco_skills` | List the skills that ship with Myco and see what each one is for. |
 | `myco_spores` | List, retrieve, save, supersede, or consolidate spores using `op=list|get|save|supersede|consolidate`. |
 | `myco_agent` | Read agent run history using `op=runs|run` — token budget, cost, reasoning level, and per-run details. |
 

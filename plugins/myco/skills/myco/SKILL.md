@@ -66,7 +66,7 @@ Where only the plugin is installed there is no capture, and the tools above are 
 
 ## Skills
 
-`myco_skills` lists the skills that ship with Myco and returns any one of them in full. It is the way to see what is available without leaving the session.
+`myco_skills` lists the skills that ship with Myco and what each one is for. It is the way to see what is available without leaving the session. It does not return a body: `get` names where the body sits on this machine, and your host's own skill mechanism is what loads it.
 
 ## When a tool refuses
 

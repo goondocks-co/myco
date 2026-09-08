@@ -18,7 +18,7 @@ import { uuidv5 } from '@myco-server-worker/hash.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { validateInput } from '@myco-server-worker/mcp/validate.js';
 import { NO_INSTRUCTIONS_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
-import { NO_STATUS_MESSAGE } from '@myco-server-worker/mcp/tools/skills.js';
+import { NO_BODY_FOR_GRANT, NO_STATUS_MESSAGE, skillBodyLocation } from '@myco-server-worker/mcp/tools/skills.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { FIRST_MODERN_REVISION, SERVED_PROTOCOL_VERSIONS, SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_MAX_BYTES } from '@myco-server-worker/mcp/server.js';
 import { issueExternalGrant, revokeExternalGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
@@ -334,8 +334,9 @@ describe('POST /mcp', () => {
     const first = SHIPPED_SKILLS[0];
     const got = (await call(t1.token, 'myco_skills', { op: 'get', id: first.name })).result;
     // No body: the catalogue is bundled into the Worker script, whose size
-    // ceiling is a free-tier tripwire, and the plugin ships the body on disk.
-    expect({ name: got.name, ships: got.ships_with, body: 'content' in got }).toEqual({ name: first.name, ships: `plugin: skills/${first.name}/SKILL.md`, body: false });
+    // ceiling is a free-tier tripwire. A member holds every body under its Myco
+    // home, so it is told where rather than refused.
+    expect({ name: got.name, at: got.body_at, body: 'content' in got }).toEqual({ name: first.name, at: skillBodyLocation(first.name), body: false });
     expect((await call(t1.token, 'myco_skills', { op: 'get', id: 'nope' })).result).toEqual({ ok: false, error: 'Skill not found' });
     // A filter the catalogue cannot honour is refused, not ignored: answering
     // the whole catalogue would look like a filter that matched everything.
@@ -432,6 +433,10 @@ describe('POST /mcp over an External Agent grant', () => {
     expect((await callAs(grant.key, 'myco_plans', { op: 'list' })).result).toEqual([]);
     expect((await callAs(grant.key, 'myco_sessions', {})).result).toEqual([]);
     expect((await callAs(grant.key, 'myco_skills', { op: 'list' })).result.map((s: any) => s.name)).toEqual(SHIPPED_SKILLS.map((s) => s.name));
+    // An access key holds no copy of any body, so it is told that rather than
+    // handed a path to a file it does not have.
+    const grantGot = (await callAs(grant.key, 'myco_skills', { op: 'get', id: SHIPPED_SKILLS[0].name })).result;
+    expect({ body: grantGot.body, at: grantGot.body_at }).toEqual({ body: NO_BODY_FOR_GRANT, at: undefined });
     expect((await callAs(grant.key, 'myco_cortex', { op: 'instructions' })).result.content).toBe('the standing guidance');
     const search = await callAs(grant.key, 'myco_search', { query: 'seen' });
     expect(search.result.results).toMatchObject([{ type: 'spore', id: spores.result.spores[0].id }]);

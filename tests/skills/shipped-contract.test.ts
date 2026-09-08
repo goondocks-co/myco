@@ -27,9 +27,14 @@ import { WHITESPACE_PATH_REFUSAL } from '@myco/symbionts/installer.js';
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 /**
- * Ceiling on the generated catalogue the Deployment bundles. Listing text for
- * every shipped skill is a few kilobytes; a body is tens. The number is a
- * tripwire for the shape, not a budget to spend.
+ * Tripwire on the generated catalogue the Deployment bundles — NOT a bound, and
+ * not derived from the Worker's own ceiling.
+ *
+ * The real gate is the case below it: no skill body may reach this module. This
+ * number exists so that something growing steadily here is noticed while it is
+ * still small, rather than at the Worker size ceiling in another suite, which is
+ * where it surfaced the first time. Listing text for every shipped skill is a
+ * few kilobytes, so anything approaching this is a shape change worth reading.
  */
 const CATALOGUE_MAX_BYTES = 32_768;
 
@@ -156,11 +161,14 @@ describe('the catalogue the Deployment carries', () => {
     expect(catalogue).toContain('SHIPPED_SKILLS');
     for (const name of NAMES) {
       // The body's own heading is the cheapest witness that a body is present.
+      // A skill with no heading would skip silently, so its absence is a failure
+      // rather than a `continue`.
       const heading = /^# (.+)$/m.exec(read(name))?.[1];
-      if (heading === undefined) continue;
+      expect({ name, heading: heading !== undefined }).toEqual({ name, heading: true });
       expect({ name, bodyLeaked: catalogue.includes(`# ${heading}`) }).toEqual({ name, bodyLeaked: false });
     }
-    expect(catalogue).not.toContain('content:');
+    // The generator emits JSON, so the key is quoted; the bare form never matches.
+    expect(catalogue).not.toContain('"content"');
   });
 
   it('stays small enough that the Worker ceiling is not what notices', () => {

@@ -49,11 +49,16 @@ export async function semanticSearch(db: RelationalStore, scope: ReadScope, sema
   const retained = types.filter((t): t is VectorType => (VECTOR_TYPES as readonly string[]).includes(t));
   const branches = await Promise.all(retained.map((type) => semanticHits(db, scope, semantic, values,
     { topK: VECTOR_QUERY_LIMIT, minScore: MIN_SEARCH_SIMILARITY, filters: { ...filters, type } })));
-  const tools: Record<VectorType, string> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans', skill: 'myco_skills' };
-  return branches.flat().sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, limit).map((row) => ({
-    id: row.record_id, type: row.type, title: row.title, preview: row.text.slice(0, SEARCH_PREVIEW_CHARS), score: row.score,
-    ...(row.session_id === '' ? {} : { session_id: row.session_id }),
-    ...(row.prompt_id === null ? {} : { prompt_id: row.prompt_id }),
-    retrieve: { tool: tools[row.type], input: { op: 'get', id: row.record_id } },
-  }));
+  // No `skill` entry: `myco_skills` answers from the shipped catalogue, so a
+  // hint naming a generated record's id would send a caller to a refusal.
+  const tools: Partial<Record<VectorType, string>> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans' };
+  return branches.flat().sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, limit).map((row) => {
+    const tool = tools[row.type];
+    return {
+      id: row.record_id, type: row.type, title: row.title, preview: row.text.slice(0, SEARCH_PREVIEW_CHARS), score: row.score,
+      ...(row.session_id === '' ? {} : { session_id: row.session_id }),
+      ...(row.prompt_id === null ? {} : { prompt_id: row.prompt_id }),
+      ...(tool === undefined ? {} : { retrieve: { tool, input: { op: 'get', id: row.record_id } } }),
+    };
+  });
 }

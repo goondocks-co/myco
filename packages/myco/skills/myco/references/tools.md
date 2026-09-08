@@ -46,7 +46,9 @@ An external agent with a per-project access key reaches `list`, `get`, `save` an
 
 ## myco_skills
 
-`list` (default) and `get`. The skills that ship with Myco, and any one of them in full. Answers the same for everyone; it takes `project` for consistency but the skills are not project-specific.
+`list` (default) and `get`. Every shipped skill with the text a client lists it by, and for one skill, where its body sits on this machine.
+
+No body comes back over the tool. A machine running the Myco binary holds every body under its Myco home, and `get` names that path; an external access key holds none, and is told so rather than handed a path to a file it does not have. The answer does not vary by project, though it takes `project` like every other tool.
 
 ## myco_agent
 

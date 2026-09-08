@@ -73,7 +73,8 @@ Where the `myco` binary is installed, `myco tool call <tool> --json --input
 multiline markdown. Where only the plugin is installed there is no binary and
 the tools above are the whole surface, which is enough for both modes.
 
-Load suggested skills with the host's own skill mechanism; `myco_skills` with
-`op: "get"` returns any shipped skill in full if the host has no mechanism.
+Load suggested skills with the host's own skill mechanism. `myco_skills` names
+what ships and where each body sits, but does not return one, so a host with no
+skill mechanism reads the file at the path `op: "get"` reports.
 Your session id arrives in the session-start context; if you cannot find it,
 ask rather than guessing.
