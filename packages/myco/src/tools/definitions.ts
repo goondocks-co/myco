@@ -198,7 +198,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_SKILLS,
-    description: 'List and inspect skills. op: "list" (default) lists them; op: "get" returns one in full. A Deployment serves the skills that ship with Myco; a local 1.4 runtime serves the records it generated.',
+    description: 'List and inspect skills. op: "list" (default) lists them; op: "get" returns one with where its body ships. A Deployment serves the skills that ship with Myco; a local 1.4 runtime serves the records it generated.',
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,

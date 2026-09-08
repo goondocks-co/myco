@@ -330,10 +330,12 @@ describe('POST /mcp', () => {
     // install is in when an agent makes its first call.
     const listed = (await call(t1.token, 'myco_skills')).result;
     expect(listed.map((s: any) => s.name)).toEqual(SHIPPED_SKILLS.map((s) => s.name));
-    expect(listed.every((s: any) => s.description.length > 0 && s.content === undefined)).toBe(true);
+    expect(listed.every((s: any) => s.description.length > 0 && s.when_to_use.length > 0 && s.content === undefined)).toBe(true);
     const first = SHIPPED_SKILLS[0];
     const got = (await call(t1.token, 'myco_skills', { op: 'get', id: first.name })).result;
-    expect({ name: got.name, content: got.content }).toEqual({ name: first.name, content: first.content });
+    // No body: the catalogue is bundled into the Worker script, whose size
+    // ceiling is a free-tier tripwire, and the plugin ships the body on disk.
+    expect({ name: got.name, ships: got.ships_with, body: 'content' in got }).toEqual({ name: first.name, ships: `plugin: skills/${first.name}/SKILL.md`, body: false });
     expect((await call(t1.token, 'myco_skills', { op: 'get', id: 'nope' })).result).toEqual({ ok: false, error: 'Skill not found' });
     // A filter the catalogue cannot honour is refused, not ignored: answering
     // the whole catalogue would look like a filter that matched everything.

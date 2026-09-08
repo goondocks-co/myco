@@ -27,6 +27,13 @@ import { WHITESPACE_PATH_REFUSAL } from '@myco/symbionts/installer.js';
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 /**
+ * Ceiling on the generated catalogue the Deployment bundles. Listing text for
+ * every shipped skill is a few kilobytes; a body is tens. The number is a
+ * tripwire for the shape, not a budget to spend.
+ */
+const CATALOGUE_MAX_BYTES = 32_768;
+
+/**
  * The sentence the Windows installer prints when it refuses an ARM machine.
  * The installer is PowerShell and exports nothing, so the string is pinned here
  * and asserted against the script; a rewording fails this rather than leaving
@@ -134,6 +141,31 @@ describe('the skills that ship with Myco', () => {
     // than an error, so the skill that pushes the total over is the one nobody
     // sees go missing.
     expect(total).toBeLessThanOrEqual(SHIPPED_SKILL_LISTING_TOTAL_MAX_BYTES);
+  });
+});
+
+describe('the catalogue the Deployment carries', () => {
+  const CATALOGUE = path.join(REPO_ROOT, 'packages/myco-shared/src/skills.generated.ts');
+
+  it('carries listing text and no skill body', () => {
+    // This module is bundled into the Worker script, and the Worker has a size
+    // ceiling the free plan makes real. Nine bodies are ~57 KiB and grow with
+    // every skill added, so a body reaching here is caught by a number in
+    // another suite long after the cause. Catch it by the cause instead.
+    const catalogue = fs.readFileSync(CATALOGUE, 'utf-8');
+    expect(catalogue).toContain('SHIPPED_SKILLS');
+    for (const name of NAMES) {
+      // The body's own heading is the cheapest witness that a body is present.
+      const heading = /^# (.+)$/m.exec(read(name))?.[1];
+      if (heading === undefined) continue;
+      expect({ name, bodyLeaked: catalogue.includes(`# ${heading}`) }).toEqual({ name, bodyLeaked: false });
+    }
+    expect(catalogue).not.toContain('content:');
+  });
+
+  it('stays small enough that the Worker ceiling is not what notices', () => {
+    const bytes = fs.statSync(CATALOGUE).size;
+    expect(bytes).toBeLessThan(CATALOGUE_MAX_BYTES);
   });
 });
 
