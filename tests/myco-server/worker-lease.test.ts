@@ -21,6 +21,8 @@ const SCOPE = { projectId: 'proj_1' };
 const OFFERED = [{ id: 'claude-code', authenticated: true }];
 
 /** A Deployment holding one queued run of a worker-served task. */
+const WRAP_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+
 function fixture(task = 'title-summary') {
   const e = sqliteEnv();
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
@@ -95,7 +97,10 @@ describe('the claim queue', () => {
     expect(f.row('run_2')).toMatchObject({ status: 'queued' });
     expect(f.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = 'run_2'`).get()).toEqual({ heldBy: 'concurrent_runs' });
     expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'`).get()).toEqual({ n: 1 });
-    // Nothing is minted for a claim a limit refused.
+    // A refused claim mints and retires: the queue is peeked before anything is
+    // minted, and a mint the write then refuses is revoked at once, so exactly
+    // one credential is live and the other is a revoked row.
+    expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials WHERE member_id = ?`).get(HARNESS_MEMBER_ID)).toEqual({ n: 2 });
     expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials WHERE revoked_at IS NULL AND member_id = ?`).get(HARNESS_MEMBER_ID)).toEqual({ n: 1 });
 
     // The first ending frees the place, and the second run is taken.
@@ -132,6 +137,7 @@ describe('the claim queue', () => {
     const before = (f.e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials`).get() as { n: number }).n;
     expect(await claimNextRun(f.e.serverEnv, { tokenId: token, machineId: 'm1', harnesses: [{ id: 'claude-code', authenticated: false }], now: NOW + 1 }))
       .toEqual({ claimed: false, reason: 'no_harness' });
+    // No harness match is decided before anything is minted, so this one mints nothing at all.
     expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials`).get()).toEqual({ n: before });
     expect(f.row('run_1').status).toBe('queued');
   });

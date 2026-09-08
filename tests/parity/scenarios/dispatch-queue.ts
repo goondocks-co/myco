@@ -44,7 +44,6 @@ export const dispatchQueue: ParityScenario = {
       expect(res.status).toBe(200);
       return ((await res.json()) as { rows: Array<{ id: string; status: string; heldBy: string | null; position: number | null }> }).rows;
     };
-    const launched = (id: string) => ({ id, status: 'pending', heldBy: null, harness: 'record', credentialed: 1 });
     const waiting = (id: string, heldBy: string) => ({ id, status: 'queued', heldBy, harness: null, credentialed: 0 });
 
     // A run already running holds the limit, so the first ask waits behind it

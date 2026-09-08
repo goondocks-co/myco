@@ -6,8 +6,9 @@
  * isolation mechanism, or without a credential probe fails by name instead of
  * being quietly absent.
  *
- * The stream fixtures are the shapes verified against the real binaries: the
- * asymmetries that a reader gets wrong are what they exist to hold.
+ * What each driver does with its harness's own bytes is executed in
+ * `worker-driver-streams`; what is held here is the manifest every driver,
+ * the detector and `myco doctor` read, and the shape of the model they answer in.
  */
 import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
@@ -26,7 +27,6 @@ describe('the harness manifest', () => {
   it('gives every harness a driver, an isolation mechanism and a credential probe', () => {
     for (const harness of HARNESSES) {
       expect({ id: harness.id, driven: driverFor(harness.id) !== null }).toEqual({ id: harness.id, driven: true });
-      expect({ id: harness.id, isolation: harness.isolation.kind }).toEqual({ id: harness.id, isolation: harness.isolation.kind });
       expect(['flag', 'home', 'additive']).toContain(harness.isolation.kind);
       expect(['file', 'command', 'file-or-command']).toContain(harness.credential.kind);
       expect(harness.binary.length).toBeGreaterThan(0);
@@ -94,43 +94,7 @@ describe('the run credential', () => {
   });
 });
 
-/** A driver run against a scripted stream: what a harness writes, and what the driver answers. */
-async function eventsOf(lines: readonly string[], read: (line: Record<string, unknown>) => RunEvent | null): Promise<RunEvent[]> {
-  const out: RunEvent[] = [];
-  for (const line of lines) {
-    const parsed = JSON.parse(line) as Record<string, unknown>;
-    const event = read(parsed);
-    if (event !== null) out.push(event);
-  }
-  return out;
-}
-
-describe('the shapes a driver must read correctly', () => {
-  it('reads a success result with a null structured output as a success, by value and never by key', async () => {
-    const result = JSON.parse('{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","structured_output":null}') as Record<string, unknown>;
-    // The key is present on an ordinary success, so a reader that asks whether
-    // the key exists reads a value that is not there.
-    expect('structured_output' in result).toBe(true);
-    expect(result.structured_output).toBeNull();
-    expect(result.is_error).toBe(false);
-  });
-
-  it('reads an error item in a completed turn as an item, never as a failed run', async () => {
-    const lines = [
-      '{"type":"thread.started","thread_id":"t1"}',
-      '{"type":"item.completed","item":{"id":"i0","type":"error","message":"a tool was unavailable"}}',
-      '{"type":"item.completed","item":{"id":"i3","type":"agent_message","text":"done"}}',
-      '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}',
-    ];
-    const events = await eventsOf(lines, (line) => {
-      if (line.type === 'turn.completed') return { kind: 'ended', stop: 'end_turn', detail: null };
-      if (line.type === 'item.completed' && (line.item as Record<string, unknown>).type === 'error') return { kind: 'tool_call', name: 'item', status: 'error' };
-      return null;
-    });
-    expect(reachedEnd(events)).toBe(true);
-    expect(events.filter((e) => e.kind === 'tool_call')).toHaveLength(1);
-  });
-
+describe('the stop reasons every driver answers in', () => {
   it('holds the five stop reasons the protocol names, plus the one a driver adds for a harness that answered none', () => {
     const ended: RunEvent[] = ([ 'end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled', 'error' ] as const)
       .map((stop) => ({ kind: 'ended', stop, detail: null }));

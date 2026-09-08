@@ -17,6 +17,7 @@ import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
 import { codexDriver } from '@myco/runner/drivers/codex.js';
 import { jsonLines } from '@myco/runner/drivers/stream.js';
 import { writeRunDir } from '@myco/runner/mcp-config.js';
+import { runWorker } from '@myco/runner/loop.js';
 import { readFileSync } from 'node:fs';
 import { turnOver, type Channel } from '@myco/runner/drivers/acp.js';
 import type { RunEvent } from '@myco/runner/events.js';
@@ -219,5 +220,50 @@ describe('the run credential a driver launches under', () => {
     const handed = readFileSync(seen, 'utf8');
     expect(handed).not.toContain(CONNECTION.runToken);
     expect(handed).toContain(run.mcpConfigPath);
+  });
+});
+
+describe('the cadence a worker keeps', () => {
+  it('is the one the Deployment named, not one the worker holds', async () => {
+    const answered: Array<Record<string, unknown>> = [];
+    const asked: string[] = [];
+    const stopping = new AbortController();
+    // The Deployment names a cadence far from any default, so a worker that
+    // ignores what it was told keeps a different one and fails here.
+    const HEARTBEAT = 4321;
+    const POLL = 1234;
+    let renewals = 0;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
+      asked.push(new URL(url).pathname);
+      if (url.endsWith('/worker/claim')) {
+        const body = answered.length === 0
+          ? { persisted: true, claimed: false, reason: 'no_work', pollAfterMs: POLL }
+          : { persisted: true, claimed: false, reason: 'no_work', pollAfterMs: POLL };
+        answered.push(body);
+        if (answered.length >= 2) stopping.abort();
+        return new Response(JSON.stringify(body), { status: 200 });
+      }
+      if (url.endsWith('/worker/lease')) { renewals += 1; return new Response(JSON.stringify({ persisted: true, held: true, expiresAt: 0 }), { status: 200 }); }
+      return new Response(JSON.stringify({ persisted: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const started = Date.now();
+    await runWorker({
+      serverUrl: 'https://deployment.example',
+      token: 'tok',
+      runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
+      only: [],
+      // A cadence the worker must take from the answer rather than from here.
+      pollIdleMs: 60_000,
+      log: () => {},
+      fetchImpl,
+      signal: stopping.signal,
+    });
+    // Two polls happened well inside the fallback the worker was constructed
+    // with, so the wait it kept came from the answer.
+    expect(asked.filter((p) => p === '/worker/claim').length).toBeGreaterThanOrEqual(2);
+    expect(Date.now() - started).toBeLessThan(30_000);
+    expect(renewals).toBe(0);
   });
 });

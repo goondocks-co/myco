@@ -91,6 +91,25 @@ describe('the worker control plane', () => {
       .toEqual({ persisted: true, ended: false, reason: expect.any(String) });
   });
 
+  it('names its own cadence on every answer, so a worker keeps none of its own', async () => {
+    const r = await rig();
+    const admin = await r.member('mem_admin', 'admin');
+    const idle = await r.json(post(admin, '/worker/claim', { harnesses: [] }));
+    expect(idle.body.pollAfterMs).toEqual(expect.any(Number));
+
+    // A claimed answer carries how often to renew; an idle one carries how long
+    // to wait. Both are the Deployment's to change.
+    r.e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
+    r.e.sqlite.run(
+      `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
+       VALUES ('proj_1', 'run_c', 'myco-agent', 'title-summary', 'queued', ?, 'worker', ?, ?, 'do it')`,
+      [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
+    );
+    const claimed = await r.json(post(admin, '/worker/claim', { harnesses: [{ id: 'claude-code', authenticated: true }] }));
+    expect(claimed.body.claimed).toBe(true);
+    expect(claimed.body.heartbeatMs).toEqual(expect.any(Number));
+  });
+
   it('ignores a Project header a worker sends: the Project is the run\'s, never the caller\'s', async () => {
     const r = await rig();
     const admin = await r.member('mem_admin', 'admin');
