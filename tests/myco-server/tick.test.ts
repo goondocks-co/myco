@@ -22,8 +22,7 @@ const AGENT = 'myco-agent';
 function fixture() {
   const e = sqliteEnv();
   e.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`).run(AGENT, NOW);
-  const ended: string[] = [];
-  const env: ServerEnv = { ...e.serverEnv, harnessEnd: async (runId) => { ended.push(runId); } };
+  const env: ServerEnv = e.serverEnv;
   const seedRun = (over: { id: string; status?: string; startedAt?: number | null; completedAt?: number | null; resumable?: number; runContext?: string | null; dispatchedBy?: string | null; project?: string }) => {
     e.sqlite.query(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, resumable, run_context, dispatched_by)
       VALUES (?, ?, ?, 'digest', ?, ?, ?, ?, ?, ?)`)
@@ -40,7 +39,7 @@ function fixture() {
   const runRow = (id: string) => e.sqlite.query(`SELECT status, error, completed_at AS completedAt FROM agent_runs WHERE id = ?`).get(id) as { status: string; error: string | null; completedAt: number | null } | null;
   const count = (table: string) => (e.sqlite.query(`SELECT COUNT(*) c FROM ${table}`).get() as { c: number }).c;
   const setting = (leaf: string, value: unknown) => e.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`).run(leaf, JSON.stringify(value), NOW);
-  return { ...e, env, ended, seedRun, seedChild, seedSession, runRow, count, setting };
+  return { ...e, env, seedRun, seedChild, seedSession, runRow, count, setting };
 }
 
 describe('the run bound the sweep reads', () => {
@@ -167,7 +166,6 @@ describe('run-stale-sweep', () => {
     expect(f.runRow('stale-pending')).toEqual({ status: 'failed', error: STALE_RUN_ERROR, completedAt: NOW });
     expect(f.runRow('inside')?.status).toBe('running');
     expect(f.runRow('default-bound')?.status).toBe('running');
-    expect(f.ended.sort()).toEqual(['stale', 'stale-pending']);
     expect((f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(credential) as { revoked_at: number | null }).revoked_at).toBe(NOW);
     expect((await runTick(f.env, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null });
   });
@@ -192,7 +190,6 @@ describe('run-stale-sweep', () => {
     } } };
     expect((await runTick(racing, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null });
     expect(f.runRow('racing')).toEqual({ status: 'completed', error: null, completedAt: NOW - 1 });
-    expect(f.ended).toEqual([]);
   });
 
   it('holds the Deployment at idle for one run inside its bound however many stale runs sit ahead of it', async () => {

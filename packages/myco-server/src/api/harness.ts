@@ -70,20 +70,3 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   const { dispatched: _dispatched, ...answer } = outcome;
   return ok(answer);
 }
-
-export async function handleHarnessProbe(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  if (env.harnessProbe === undefined) {
-    return Response.json({ error: 'harness_unavailable', message: DISPATCH_REFUSAL_MESSAGE.harness_unavailable }, { status: 409 });
-  }
-  const body = await readJsonObject(ctx.request);
-  if (body === null) return badRequest('body must be a JSON object');
-  const timeoutSeconds = typeof body.timeoutSeconds === 'number' && body.timeoutSeconds > 0 && body.timeoutSeconds <= 600 ? body.timeoutSeconds : 120;
-  // One well-known runtime by default, reused: a fresh name per call would
-  // strand a warm container per probe until its idle window ends, and the
-  // fleet is finite. A NAMED runtime is probed in place — the window into a
-  // dispatched run's live state.
-  const runId = typeof body.runId === 'string' && body.runId.length > 0 && body.runId.length <= 128 ? body.runId : 'probe';
-  const answer = await env.harnessProbe(runId, timeoutSeconds);
-  emit({ kind: 'harness_probe', runId, actor: ctx.member.id });
-  return ok({ runId, timeoutSeconds, ...answer });
-}

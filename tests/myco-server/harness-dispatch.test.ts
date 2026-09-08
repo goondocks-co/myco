@@ -1,7 +1,6 @@
 /**
- * The harness routes: the probe refuses where no runtime is bound and stays
- * owner-only, and the dispatch route carries a whole run's environment to the
- * runtime it hands the run to.
+ * The harness dispatch route: what it refuses, and the whole environment a
+ * dispatch carries to the runtime it hands the run to.
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
@@ -18,17 +17,6 @@ const setup = () => {
   const e = sqliteEnv();
   return { ...e, env: { ...e.env, ...OWNER_ENV, SECRET_WRAP_KEY: { get: async () => WRAP_KEY } } };
 };
-
-describe('POST /api/harness/probe', () => {
-  it('refuses with the capability named where no runtime is bound, and refuses an anonymous caller', async () => {
-    const { env } = setup();
-    const anonymous = await worker.fetch(new Request('https://s/api/harness/probe', { method: 'POST', headers: { 'cf-connecting-ip': '1.2.3.4' } }), env);
-    expect(anonymous.status).toBe(401);
-    const refused = await worker.fetch(await asOwnerPost('/api/harness/probe', {}), env);
-    expect({ status: refused.status, body: await refused.json() }).toEqual({ status: 409, body: { error: 'harness_unavailable', message: 'this deployment has no harness runtime bound' } });
-  });
-
-});
 
 describe('POST /api/harness/dispatch', () => {
   const seedProvider = (sqlite: { query: (sql: string) => { run: (...a: unknown[]) => unknown } }, leaves: Record<string, unknown>) => {
