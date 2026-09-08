@@ -151,4 +151,24 @@ describe('parityWranglerConfig', () => {
     // The shape it exists to refuse.
     expect(undeletableClasses('[[migrations]]\ntag = "v9"\ndeleted_classes = [ "Gone" ]')).toEqual(['Gone']);
   });
+
+  it('GATE: reads a rename as both an ending and a beginning, in either form the configuration allows', () => {
+    // A class renamed and later deleted under its new name is a complete
+    // history. Reading only creates and deletes would call that a delete of
+    // something never created and refuse the next legitimate rename.
+    const renamed = (body: string) => `[[migrations]]\ntag = "v1"\nnew_sqlite_classes = [ "A" ]\n\n${body}\n[[migrations]]\ntag = "v3"\ndeleted_classes = [ "B" ]\n`;
+    const subTable = renamed('[[migrations]]\ntag = "v2"\n\n  [[migrations.renamed_classes]]\n  from = "A"\n  to = "B"\n');
+    const inline = renamed('[[migrations]]\ntag = "v2"\nrenamed_classes = [{ from = "A", to = "B" }]\n');
+
+    for (const [form, config] of [['sub-table', subTable], ['inline', inline]] as const) {
+      expect({ form, orphans: undeletableClasses(config) }).toEqual({ form, orphans: [] });
+      expect({ form, ledger: migrationLedger(config).map((e) => [e.tag, e.creates, e.deletes]) })
+        .toEqual({ form, ledger: [['v1', ['A'], []], ['v2', ['B'], ['A']], ['v3', [], ['B']]] });
+    }
+
+    // A rename still ends the old name, so deleting THAT afterwards is the
+    // refusable shape, and renaming a class the history never created is too.
+    expect(undeletableClasses(`${subTable}\n[[migrations]]\ntag = "v4"\ndeleted_classes = [ "A" ]\n`)).toEqual(['A']);
+    expect(undeletableClasses('[[migrations]]\ntag = "v1"\n\n  [[migrations.renamed_classes]]\n  from = "Ghost"\n  to = "C"\n')).toEqual(['Ghost']);
+  });
 });
