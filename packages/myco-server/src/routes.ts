@@ -45,7 +45,7 @@ import { MAX_BLOB_BYTES, MEMBER_ID_SEGMENT } from './constants.js';
 import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
 import { handleBlob } from './ingest/blobs.js';
-import { handleHarnessDispatch, handleHarnessProbe } from './api/harness.js';
+import { handleHarnessDispatch } from './api/harness.js';
 import { handleEvents } from './ingest/events.js';
 import { handleGrantMcp, handleMcp, handleRunMcp } from './mcp/http.js';
 
@@ -89,7 +89,6 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/projects/{projectId}/canopy-map', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/canopy-map$/, auth: 'owner', handler: handleProjectMap },
   { method: 'GET', path: '/api/projects/{projectId}/search', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/search$/, auth: 'owner', handler: handleProjectSearch },
   { method: 'GET', path: '/health', auth: 'public', bodyMode: 'none', handler: health },
-  { method: 'POST', path: '/api/harness/probe', auth: 'owner', handler: handleHarnessProbe },
   { method: 'POST', path: '/api/harness/dispatch', auth: 'owner', handler: handleHarnessDispatch },
   { method: 'POST', path: '/api/wake', auth: 'owner', handler: handleWake },
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },

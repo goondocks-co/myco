@@ -98,7 +98,7 @@ export const LIVE_RUN_POLL_MS = 15_000;
  * it. Mirrors `RUN_OVERRUN_MARGIN_MS` in
  * `packages/myco-server/src/core/harness.ts`; this package ships to operator
  * machines and imports nothing from the server, so the number is copied and
- * held equal by `tests/server/cloudflare-lifecycle.test.ts`.
+ * held equal by `tests/server/compose-template-drift.test.ts`.
  */
 export const RUN_OVERRUN_MARGIN_MS = 120_000;
 

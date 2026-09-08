@@ -320,7 +320,7 @@ describe('POST /runs/report and /runs/events', () => {
 });
 
 describe('POST /runs/update at a terminal status from the dispatched runtime', () => {
-  async function dispatchedRun(opts: { endRunThrows?: boolean } = {}) {
+  async function dispatchedRun() {
     const fixture = sqliteEnv();
     const now = Date.now();
     fixture.sqlite.query(`INSERT OR IGNORE INTO members (id, label, created_at, revoked_at) VALUES ('mem_harness', 'harness runtime', ?, NULL)`).run(now);
@@ -328,12 +328,7 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     fixture.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`).run(AGENT, now);
     fixture.sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`).run(now);
     const minted = await issueMemberToken(fixture.db, { memberId: 'mem_harness', machineId: 'harness' }, now);
-    const ended: string[] = [];
-    const endRun = async (name: string) => {
-      if (opts.endRunThrows) throw new Error('durable object unreachable');
-      ended.push(name);
-    };
-    const env = { ...fixture.env, ...OWNER_ENV, HARNESS: { idFromName: (name: string) => ({ name }), get: (id: { name: string }) => ({ endRun: () => endRun(id.name) }) } };
+    const env = { ...fixture.env, ...OWNER_ENV };
     const post = async (token: string, path: string, body: unknown): Promise<Record<string, unknown>> =>
       await (await worker.fetch(memberPost(token, body, path), env)).json() as Record<string, unknown>;
     const credRevokedAt = (tokenId: string): unknown => (fixture.sqlite.query(`SELECT revoked_at r FROM member_credentials WHERE id = ?`).get(tokenId) as { r: unknown }).r;
@@ -341,28 +336,28 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     const dispatch = (runId: string, credential: { tokenId: string }) =>
       recordDispatch(fixture.db, { projectId: 'proj_1' }, { id: runId, agentId: AGENT, task: 'digest', provider: null, model: null, runContext: null, dispatchedBy: credential.tokenId, startedAt: now });
     const run = (runId: string) => fixture.sqlite.query(`SELECT status, dispatched_by AS dispatchedBy FROM agent_runs WHERE id = ?`).get(runId) as { status: string; dispatchedBy: string | null } | null;
-    return { ...fixture, env, minted, ended, post, credRevokedAt, dispatch, run };
+    return { ...fixture, env, minted, post, credRevokedAt, dispatch, run };
   }
 
-  it('releases the container hold, revokes its own credential, and admits no further write on it', async () => {
-    const { env, minted, ended, post, credRevokedAt, dispatch } = await dispatchedRun();
+  it('revokes its own credential at a terminal status, and admits no further write on it', async () => {
+    const { env, minted, post, credRevokedAt, dispatch } = await dispatchedRun();
     await dispatch('run_t1', minted);
     const claim = await post(minted.token, '/runs/claim', { id: 'run_t1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(claim.claimed).toBe(true);
 
     const progress = await post(minted.token, '/runs/update', { runId: 'run_t1', update: { tokens_used: 5 } });
-    expect({ persisted: progress.persisted, changed: progress.changed, ended: ended.length, revoked: credRevokedAt(minted.tokenId) }).toEqual({ persisted: true, changed: 1, ended: 0, revoked: null });
+    expect({ persisted: progress.persisted, changed: progress.changed, revoked: credRevokedAt(minted.tokenId) }).toEqual({ persisted: true, changed: 1, revoked: null });
 
     const terminal = await post(minted.token, '/runs/update', { runId: 'run_t1', update: { status: 'completed', completed_at: Date.now() } });
-    expect({ persisted: terminal.persisted, changed: terminal.changed, ended }).toEqual({ persisted: true, changed: 1, ended: ['run_t1'] });
+    expect({ persisted: terminal.persisted, changed: terminal.changed }).toEqual({ persisted: true, changed: 1 });
     expect(typeof credRevokedAt(minted.tokenId)).toBe('number');
 
     const after = await worker.fetch(memberPost(minted.token, { runId: 'run_t1', update: { tokens_used: 6 } }, '/runs/update'), env);
     expect(after.status).toBe(401);
   });
 
-  it('still revokes the credential when the runtime release itself fails, at the skipped status too', async () => {
-    const { minted, post, credRevokedAt, dispatch } = await dispatchedRun({ endRunThrows: true });
+  it('revokes the credential at the skipped status too', async () => {
+    const { minted, post, credRevokedAt, dispatch } = await dispatchedRun();
     await dispatch('run_t2', minted);
     const claim = await post(minted.token, '/runs/claim', { id: 'run_t2', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(claim.claimed).toBe(true);
@@ -410,7 +405,7 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     // The shape a relaunch makes: an earlier attempt's runtime, or the
     // supervisor closing for it, posting onto a row that has moved on. Ending
     // that run would kill work its successor is doing.
-    const { db, minted, ended, post, credRevokedAt, dispatch, run } = await dispatchedRun();
+    const { db, minted, post, credRevokedAt, dispatch, run } = await dispatchedRun();
     const sibling = await issueMemberToken(db, { memberId: 'mem_harness', machineId: 'harness' }, Date.now());
     await dispatch('run_t3', sibling);
     const claim = await post(sibling.token, '/runs/claim', { id: 'run_t3', agentId: AGENT, task: 'digest', capability: 'cortex' });
@@ -418,7 +413,7 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
 
     const terminal = await post(minted.token, '/runs/update', { runId: 'run_t3', update: { status: 'completed', completed_at: Date.now() } });
     expect({ persisted: terminal.persisted, reason: terminal.reason }).toEqual({ persisted: false, reason: STALE_CREDENTIAL_REFUSAL });
-    expect({ status: run('run_t3')?.status, ended: ended.length }).toEqual({ status: 'running', ended: 0 });
+    expect(run('run_t3')?.status).toBe('running');
     expect({ writer: credRevokedAt(minted.tokenId), dispatcher: credRevokedAt(sibling.tokenId) }).toEqual({ writer: null, dispatcher: null });
 
     // The credential the row does name closes it.
@@ -428,29 +423,29 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
   });
 
   it('leaves any other member credential untouched at its terminal writes', async () => {
-    const { db, ended, post, credRevokedAt } = await dispatchedRun();
+    const { db, post, credRevokedAt } = await dispatchedRun();
     const member = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const claim = await post(member.token, '/runs/claim', { id: 'run_t4', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(claim.claimed).toBe(true);
     const terminal = await post(member.token, '/runs/update', { runId: 'run_t4', update: { status: 'failed', completed_at: Date.now() } });
-    expect({ persisted: terminal.persisted, changed: terminal.changed, ended }).toEqual({ persisted: true, changed: 1, ended: [] });
+    expect({ persisted: terminal.persisted, changed: terminal.changed }).toEqual({ persisted: true, changed: 1 });
     expect(credRevokedAt(member.tokenId)).toBe(null);
   });
 
-  it('releases through /runs/failed by the same rule: the classified failure is a terminal write too', async () => {
-    const { minted, ended, post, credRevokedAt, dispatch } = await dispatchedRun();
+  it('revokes through /runs/failed by the same rule: the classified failure is a terminal write too', async () => {
+    const { minted, post, credRevokedAt, dispatch } = await dispatchedRun();
     await dispatch('run_t5', minted);
     const claim = await post(minted.token, '/runs/claim', { id: 'run_t5', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(claim.claimed).toBe(true);
     const failed = await post(minted.token, '/runs/failed', { runId: 'run_t5', error: 'provider unreachable', errorClass: 'other' });
-    expect({ persisted: failed.persisted, changed: failed.changed, ended }).toEqual({ persisted: true, changed: 1, ended: ['run_t5'] });
+    expect({ persisted: failed.persisted, changed: failed.changed }).toEqual({ persisted: true, changed: 1 });
     expect(typeof credRevokedAt(minted.tokenId)).toBe('number');
   });
 
   it('holds the release until an update actually lands: a terminal status for a run outside the Project changes nothing', async () => {
-    const { minted, ended, post, credRevokedAt } = await dispatchedRun();
+    const { minted, post, credRevokedAt } = await dispatchedRun();
     const miss = await post(minted.token, '/runs/update', { runId: 'run_ghost', update: { status: 'completed' } });
-    expect({ persisted: miss.persisted, changed: miss.changed, ended: ended.length, revoked: credRevokedAt(minted.tokenId) }).toEqual({ persisted: true, changed: 0, ended: 0, revoked: null });
+    expect({ persisted: miss.persisted, changed: miss.changed, revoked: credRevokedAt(minted.tokenId) }).toEqual({ persisted: true, changed: 0, revoked: null });
   });
 });
 

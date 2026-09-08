@@ -67,9 +67,12 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Provision and start the Deployment. --fleet sets how many
                                           runtimes may run at once (default 4); --origin is the
                                           address members reach it at when a proxy fronts it.
-  create --target cloudflare --account-id <id> --dir <packages/myco-server checkout>
-                                          Provision D1/R2/secrets store, install generated secrets,
-                                          migrate, deploy, and write the deployment record.
+  create --target cloudflare --account-id <id> [--url <https://…>]
+                                          Provision D1/R2/Vectorize/secrets store, install generated
+                                          secrets, migrate, deploy, and write the deployment record.
+                                          Needs Node and a wrangler login on this machine and nothing
+                                          else: the Worker, its dashboard and its migrations all
+                                          travel in this binary. --url puts it on a domain you own.
   status                                  Report what is provisioned and running.
                                           With --target cloudflare: the record and the deployed version.
   update [--version <tag>] [--no-rollback] [--no-drain] [--no-pull]
@@ -82,11 +85,9 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           its stop grace before the server is touched. --no-pull
                                           recreates on the images this machine already holds, for a
                                           tag built here or loaded from a file.
-  update --target cloudflare [--no-drain]
-                                          Move the Worker to this checkout. Waits for the tasks the
-                                          Deployment has in flight, queued ones included, then
-                                          watches the new image reach every instance. --no-drain
-                                          ships over whatever is running; the platform drains it.
+  update --target cloudflare              Move the Worker to the version this binary carries. It
+                                          waits for nothing: a deploy replaces no runtime, so a
+                                          request in flight finishes on the version that took it.
   rollback --target cloudflare [--version <id>] [--message <text>]
                                           Return the Worker to an earlier version. Defaults to the
                                           record's last recorded one — the version a failed update
@@ -111,8 +112,9 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           there) and install its credentials on the Deployment.
 
 A Deployment run from this binary needs no container runtime and no Node.
-The bundle is ordinary Compose. Everything here is also runnable with
-\`docker compose\` from the deployment directory.`;
+The Cloudflare target needs Node and wrangler on THIS machine, and neither on
+the Deployment. The Compose bundle is ordinary Compose: everything for that
+target is also runnable with \`docker compose\` from the deployment directory.`;
 
 /** The verbs a Deployment this machine runs answers to; every other verb belongs to the hosted targets. */
 const LOCAL_VERBS = new Set(['create', 'run', 'install', 'uninstall', 'status', 'update', 'destroy']);
@@ -176,13 +178,13 @@ export async function run(args: string[]): Promise<void> {
   };
 
   /** The Cloudflare lifecycle inputs a verb needs; only a deploying verb needs a checkout. */
-  const cloudflareOptions = (needs: { checkout: boolean }) => {
+  const cloudflareOptions = () => {
     const record = readDeploymentRecord();
     const accountId = flags.get('account-id') ?? record?.accountId;
     if (accountId === undefined || accountId === '' || accountId === 'true') fail('pass --account-id <id> (npx wrangler whoami lists the accounts this login reaches).');
-    const dir = flags.get('dir');
-    if (needs.checkout && (dir === undefined || dir === '' || dir === 'true')) fail('pass --dir <path to packages/myco-server in a checkout at the version to deploy>.');
-    return { accountId, configDir: dir !== undefined && dir !== '' && dir !== 'true' ? dir : process.cwd() };
+    if (flags.has('dir')) fail('--dir is not a flag for this target: the Worker, its dashboard and its migrations all travel in this binary, so a deploy reads no checkout.');
+    if (flags.has('no-drain')) fail('--no-drain is not a flag for this target: a deploy replaces no runtime, so it waits for nothing.');
+    return { accountId };
   };
 
   /** Where this machine's own Deployment lives, and what it is running under. */
@@ -290,7 +292,9 @@ export async function run(args: string[]): Promise<void> {
     }
 
     if (command === 'create' && target() === 'cloudflare') {
-      const created = await createCloudflareDeployment(cloudflareOptions({ checkout: true }));
+      const urlFlag = flags.get('url');
+      if (urlFlag === '' || urlFlag === 'true') fail('--url needs the address members reach this Deployment at, e.g. --url https://myco.example.com');
+      const created = await createCloudflareDeployment({ ...cloudflareOptions(), ...(urlFlag === undefined ? {} : { url: urlFlag }) });
       console.log('\nCloudflare Deployment deployed.');
       if (created.createdResources.length > 0) console.log(`  Provisioned: ${created.createdResources.join(', ')}`);
       console.log(`  Version:     ${created.versionId ?? 'unknown'}`);
@@ -301,12 +305,11 @@ export async function run(args: string[]): Promise<void> {
 
     if (command === 'status' && target() === 'cloudflare') {
       if (readDeploymentRecord() === null) { console.log('No Cloudflare Deployment record. myco server create --target cloudflare provisions one.'); return; }
-      const status = (await cloudflareDeploymentStatus(cloudflareOptions({ checkout: false })))!;
+      const status = (await cloudflareDeploymentStatus(cloudflareOptions()))!;
       console.log('\nCloudflare Deployment');
       console.log(`  Worker:     ${status.record.workerName} (account ${status.record.accountId})`);
       console.log(`  Deployed:   ${status.deployed ? status.versionId ?? 'yes' : 'no'}`);
       console.log(`  Recorded:   ${status.record.versionId ?? 'never'} at ${status.record.deployedAt}`);
-      if (status.record.lastRollout !== undefined) console.log(`  Rollout:    completed ${status.record.lastRollout.completedAt}`);
       if (status.record.url !== undefined) console.log(`  URL:        ${status.record.url}`);
       return;
     }
@@ -316,7 +319,7 @@ export async function run(args: string[]): Promise<void> {
       const messageFlag = flags.get('message');
       if (versionFlag === '' || versionFlag === 'true') fail('pass --version <id> (`wrangler deployments list` names them), or omit the flag to use the record\'s last recorded version.');
       const rolled = await rollbackCloudflareDeployment({
-        ...cloudflareOptions({ checkout: false }),
+        ...cloudflareOptions(),
         versionId: versionFlag,
         message: messageFlag !== undefined && messageFlag !== '' && messageFlag !== 'true' ? messageFlag : undefined,
       });
@@ -329,7 +332,7 @@ export async function run(args: string[]): Promise<void> {
     }
 
     if (command === 'update' && target() === 'cloudflare') {
-      const updated = await updateCloudflareDeployment({ ...cloudflareOptions({ checkout: true }), drain: !flags.has('no-drain') });
+      const updated = await updateCloudflareDeployment(cloudflareOptions());
       console.log(`Cloudflare Deployment updated to version ${updated.versionId ?? 'unknown'} (migrations first, then the Worker).`);
       return;
     }
@@ -337,7 +340,7 @@ export async function run(args: string[]): Promise<void> {
     if (command === 'destroy' && target() === 'cloudflare') {
       if (flags.has('data')) fail('--data does not apply to the Worker target: the database, bucket, and secrets store are never removed by this command.');
       if (!flags.has('yes')) fail('destroy removes the Worker. The database, bucket, and secrets store are kept. Re-run with --yes to confirm.');
-      const destroyed = await destroyCloudflareDeployment(cloudflareOptions({ checkout: false }));
+      const destroyed = await destroyCloudflareDeployment(cloudflareOptions());
       console.log(`Worker removed. Kept: ${destroyed.kept.join(', ')}.`);
       return;
     }

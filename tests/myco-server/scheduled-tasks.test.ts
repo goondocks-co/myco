@@ -11,7 +11,7 @@ import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DE
 import { effectiveIntervalSeconds, PRE_CONDITIONS, resolveSchedule, scheduledTasks, TASK_ADMISSION, TASK_SCHEDULE, type TaskSchedule } from '@myco-server-worker/core/task-catalogue.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { seedCredential } from './helpers/d1.js';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { sqliteEnv, withHarness } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
@@ -21,8 +21,8 @@ const SMOKE: TaskSchedule = TASK_SCHEDULE['container-smoke']!;
 function fixture(opts: { bound?: boolean } = {}) {
   const e = sqliteEnv();
   const launches: Array<{ runId: string; envVars: Record<string, string> }> = [];
-  const HARNESS = opts.bound === false ? undefined : { idFromName: (name: string) => ({ name }), get: () => ({ launch: async (spec: { runId: string; envVars: Record<string, string> }) => { launches.push(spec); } }) };
-  const env: ServerEnv = { ...serverEnvFromBindings({ ...e.env, ...(HARNESS === undefined ? {} : { HARNESS }) } as never), wake: async () => {} };
+  const base = opts.bound === false ? e.serverEnv : withHarness(() => e.serverEnv, { launch: async (spec) => { launches.push(spec); } });
+  const env: ServerEnv = { ...base, wake: async () => {} };
   const setting = (leaf: string, value: unknown) => e.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`, [leaf, JSON.stringify(value), NOW]);
   const token = seedCredential(e.sqlite, { id: 'mt_seed' });
   const receipt = (projectId: string, at: number) => e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES (?, ?, 'machine_1', ?, ?, ?, 'claude-code')`, [projectId, `s_${projectId}_${at}`, token, at, at]);

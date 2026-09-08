@@ -51,3 +51,6 @@ docs/superpowers/handoffs/
 docs/_site/
 docs/node_modules/
 .wrangler/
+
+# Built by packages/myco/scripts/gen-worker-bundle.ts (#1160); the binary carries it, git does not.
+packages/myco/src/worker-bundle.generated.ts

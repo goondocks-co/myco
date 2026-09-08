@@ -216,16 +216,8 @@ export interface ServerEnv {
   secrets: OwnerBindings;
   /** The key Deployment-held secrets are sealed under; supplied per target, never stored. */
   wrappingKey: SecretWrappingKey;
-  /**
-   * Prove the harness runtime: start a held runtime for `runId`, exchange one
-   * request with it, and answer what it reported. Present only where a target
-   * has one; a caller refuses rather than pretending.
-   */
-  harnessProbe?: (runId: string, timeoutSeconds: number) => Promise<Record<string, unknown>>;
-  /** Launch a held harness runtime for one run, its dispatch handed as environment. Present only where a target has one; `core/harness.ts` is its one caller. */
+  /** Launch a harness runtime for one run, its dispatch handed as environment. Present only where a target has one; `core/harness.ts` is its one caller. */
   harnessLaunch?: (spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }) => Promise<void>;
-  /** Release the held harness runtime of one run, letting its container stop. Present only where a target has one. */
-  harnessEnd?: (runId: string) => Promise<void>;
   /**
    * Wake the Deployment soon. Requested work — a dispatch, a queued run — calls
    * this so the tick that sweeps and drains follows without waiting for the

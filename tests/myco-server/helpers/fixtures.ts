@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite';
-import type { BlobStore, StoredObject } from '@myco-server-worker/core/adapters.js';
+import type { BlobStore, ServerEnv, StoredObject } from '@myco-server-worker/core/adapters.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
@@ -132,6 +132,35 @@ export function sqliteEnv(opts: { staleBytesWritten?: number; onSql?: (sql: stri
     get serverEnv() { return serverEnvFromBindings(e, deferred); },
     db, sqlite, bucket, sourceKeys: source.keys, tokenKeys: token.keys, executed, deferred,
   };
+}
+
+/** What a dispatch hands a runtime. */
+export type LaunchSpec = { runId: string; timeoutSeconds: number; envVars: Record<string, string> };
+
+/**
+ * A deployment whose runtime records every launch it receives.
+ *
+ * No target binds a runtime into `ServerEnv` from configuration, so a test that
+ * drives the dispatcher supplies one here. A `launch` that throws is a refusing
+ * runtime; `sink` collects each spec a launch receives.
+ */
+export function withHarness(
+  resolve: () => ServerEnv,
+  options: { sink?: LaunchSpec[]; launch?: (spec: LaunchSpec) => Promise<void> } = {},
+): ServerEnv {
+  const sink = options.sink ?? [];
+  const launch = options.launch ?? (async (spec: LaunchSpec) => { sink.push(spec); });
+  // A thunk, not a deployment: `sqliteEnv` re-maps on every access so a test can
+  // swap a binding mid-test and see the failure it injects. Taking a value here
+  // would flatten that at construction, silently, at every call site. No
+  // tsconfig covers this directory, so passing one fails when the fixture runs
+  // rather than when it is compiled.
+  return new Proxy({} as ServerEnv, {
+    get: (_t, key) => (key === 'harnessLaunch' ? launch : resolve()[key as keyof ServerEnv]),
+    has: (_t, key) => key === 'harnessLaunch' || key in resolve(),
+    ownKeys: () => [...new Set([...Reflect.ownKeys(resolve()), 'harnessLaunch'])],
+    getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true }),
+  });
 }
 
 /** Records every piece of work handed to the deferral and settles it on request, so a test observes what a request scheduled past its answer. */

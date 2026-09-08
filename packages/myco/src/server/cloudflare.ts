@@ -15,14 +15,7 @@ import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
 import { jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
-import { LIVE_RUNS_QUERY, readLiveRunsTwice, type LiveRun, type LiveRunRow } from './live-runs.js';
 import { VECTOR_INDEX_NAME, VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
-
-// The wait policy and its read shape are one implementation for both targets;
-// this module keeps the names it published so the Worker's callers reach them
-// where they already do.
-export { LIVE_RUNS_RETRY_MS, LiveRunsUnreadable } from './live-runs.js';
-export type { LiveRun } from './live-runs.js';
 
 /** Wrangler refuses to guess between accounts, and guessing is what must not happen. */
 export class AccountNotSelected extends Error {
@@ -91,32 +84,6 @@ export async function listAccounts(runner: CommandRunner = systemRunner()): Prom
 export interface DeployResult {
   versionId: string | null;
   url: string | null;
-  /** Whether this deploy asked the platform to replace the container instances; a watcher has something to watch only when it did. */
-  willRoll: boolean;
-}
-
-/** What a deploy passes wrangler to leave the container application's images and instances exactly as they stand. */
-export const CONTAINERS_ROLLOUT_NONE = '--containers-rollout=none';
-
-/** What a deploy carries into the container application: the image bytes, and the settings the rendered `[[containers]]` table holds. */
-export interface ContainerState {
-  image?: string;
-  containersTable?: string;
-}
-
-/**
- * Whether a deploy shipping `pushed` over `deployed` rolls the container
- * application. The platform replaces the instances when the image bytes move
- * or the `[[containers]]` table changes, so either moving rolls and identical
- * bytes under identical settings roll nothing. A deployed state naming no
- * image or no settings is one nothing can be compared against, and rolls.
- *
- * A caller that has to prepare for a rollout — reading the application's
- * version before the deploy, say — asks this before running one.
- */
-export function rollsContainers(pushed: ContainerState, deployed: ContainerState): boolean {
-  if (pushed.image === undefined || pushed.image !== deployed.image) return true;
-  return deployed.containersTable === undefined || pushed.containersTable !== deployed.containersTable;
 }
 
 /**
@@ -138,19 +105,15 @@ export function wranglerJson<T>(stdout: string): T | null {
  * account holding some of what it was going to create, and the build is where
  * most failures are.
  *
- * A deploy that changes nothing the container instances carry rolls nothing:
- * replacing them would take every run in flight through a drain to arrive at
- * what is already there. `willRoll` is that decision, made by the caller
- * holding the record the image and the container settings are compared
- * against; a caller naming none rolls.
+ * The Worker carries no runtime, so a deploy replaces nothing that holds a run:
+ * a request in flight finishes on the version that took it, and a run executes
+ * on a worker this command never touches.
  */
-export async function deployWorker(options: CloudflareOptions & { dryRun?: boolean; willRoll?: boolean }): Promise<DeployResult> {
+export async function deployWorker(options: CloudflareOptions & { dryRun?: boolean }): Promise<DeployResult> {
   const { runner, env } = resolved(options);
-  const willRoll = options.willRoll ?? true;
   const args = wrangler(
     'deploy',
     ...configArgs(options),
-    ...(willRoll ? [] : [CONTAINERS_ROLLOUT_NONE]),
     ...(options.dryRun === true ? ['--dry-run'] : []),
   );
   const result = await runOrThrow(runner, 'npx', args, { cwd: options.configDir, env });
@@ -158,98 +121,7 @@ export async function deployWorker(options: CloudflareOptions & { dryRun?: boole
   return {
     versionId: /Current Version ID:\s*([0-9a-f-]+)/.exec(result.stdout)?.[1] ?? null,
     url: /(https:\/\/[^\s]+\.workers\.dev)/.exec(result.stdout)?.[1] ?? null,
-    willRoll,
   };
-}
-
-/** The container application wrangler derives from the Worker and its container class; the image the deploy pushes carries the same name. */
-export function harnessApplicationName(workerName: string): string {
-  return `${workerName}-harnesscontainer`;
-}
-
-/** The registry URI a `containers build --push` output pins: the LAST manifest digest it exported, under the image name wrangler derives from the Worker and container class. */
-export function harnessImageUri(buildOutput: string, accountId: string, workerName: string): string {
-  const digests = [...buildOutput.matchAll(/exporting manifest sha256:([0-9a-f]{64})/g)];
-  const digest = digests.at(-1)?.[1];
-  if (digest === undefined) throw new Error('the container build output carries no manifest digest; the image cannot be pinned');
-  return `registry.cloudflare.com/${accountId}/${harnessApplicationName(workerName)}@sha256:${digest}`;
-}
-
-/**
- * The runs the Deployment has in flight, read from its own database.
- *
- * A deploy holds no application credential, so this reads through the
- * operator's own wrangler login like every other command here. The read shape
- * — asked twice, refusing on a second bad answer — is the one both targets
- * use, and only the command differs.
- */
-export async function readLiveRuns(
-  options: CloudflareOptions & { databaseName: string; sleep?: (ms: number) => Promise<void> },
-): Promise<LiveRun[]> {
-  const { runner, env } = resolved(options);
-  return readLiveRunsTwice({
-    ask: async () => (await runOrThrow(runner, 'npx',
-      wrangler('d1', 'execute', options.databaseName, '--remote', '--json', '--command', LIVE_RUNS_QUERY, ...configArgs(options)),
-      { cwd: options.configDir, env })).stdout,
-    rowsIn: (output) => wranglerJson<{ results?: LiveRunRow[] }[]>(output)?.flatMap((answer) => answer.results ?? []) ?? null,
-    ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
-  });
-}
-
-/** Where a rollout stands: the image and version the application carries, how many instances it has, and how many answer healthy. */
-export interface ContainerRollout {
-  version: number;
-  instances: number;
-  healthy: number;
-  /** The digest-pinned image the application is configured with, or null when the answer names none. */
-  image: string | null;
-}
-
-/** The container application's id, or null when the account holds none of that name — a Deployment whose first deploy has not created one. A failed command is raised, because that is a different fact. */
-export async function containerApplicationId(options: CloudflareOptions & { workerName: string }): Promise<string | null> {
-  const { runner, env } = resolved(options);
-  const result = await runOrThrow(runner, 'npx', wrangler('containers', 'list', '--json', ...configArgs(options)), { cwd: options.configDir, env });
-  const rows = wranglerJson<{ id?: unknown; name?: unknown }[]>(result.stdout) ?? [];
-  const name = harnessApplicationName(options.workerName);
-  const match = rows.find((row) => row.name === name);
-  return typeof match?.id === 'string' ? match.id : null;
-}
-
-/**
- * Where the container application stands, or null when the answer is not
- * readable. A failed command is raised so its stderr reaches the operator; an
- * answer that came back unreadable is a reason to ask again rather than to
- * fail a deploy that already succeeded.
- */
-export async function containerRollout(options: CloudflareOptions & { applicationId: string }): Promise<ContainerRollout | null> {
-  const { runner, env } = resolved(options);
-  const result = await runOrThrow(runner, 'npx', wrangler('containers', 'info', options.applicationId, '--json', ...configArgs(options)), { cwd: options.configDir, env });
-  const info = wranglerJson<{ version?: unknown; instances?: unknown; health?: { instances?: { healthy?: unknown } }; configuration?: { image?: unknown } }>(result.stdout);
-  if (info === null || typeof info.version !== 'number' || typeof info.instances !== 'number') return null;
-  const healthy = info.health?.instances?.healthy;
-  const image = info.configuration?.image;
-  return {
-    version: info.version,
-    instances: info.instances,
-    healthy: typeof healthy === 'number' ? healthy : 0,
-    image: typeof image === 'string' && image !== '' ? image : null,
-  };
-}
-
-/**
- * Build and push the harness container image, answering the registry URI of
- * the exact bytes pushed. The deploy config pins this URI, so the container
- * application rolls precisely when image content changes — a Dockerfile-path
- * config rolls only on `[[containers]]` table edits, and an image-only deploy
- * pushes a digest the application never adopts. The push is idempotent: an
- * image already in the registry answers the same digest.
- */
-export async function buildAndPushHarnessImage(options: CloudflareOptions & { workerName: string }): Promise<string> {
-  const { runner, env } = resolved(options);
-  const result = await runOrThrow(runner, 'npx',
-    wrangler('containers', 'build', './harness', '-t', `${options.workerName}-harnesscontainer:latest`, '--push'),
-    { cwd: options.configDir, env });
-  return harnessImageUri(`${result.stdout}\n${result.stderr}`, options.accountId, options.workerName);
 }
 
 /** Apply pending D1 migrations against the deployed database. */
@@ -463,14 +335,8 @@ export interface DeploymentRecord {
   databaseId?: string;
   /** The account's secrets store id; present once the wrapping key is provisioned. */
   storeId?: string;
-  /** The pushed harness image's digest-pinned registry URI; the deploy config pins it once a push has recorded one. */
-  harnessImage?: string;
-  /** How many harness runtimes the Deployment may start at once — the container fleet, set by `myco server config --fleet`; the template's number until then. */
+  /** How many runs the Deployment may have in flight at once, set by `myco server config --fleet`; the dispatcher counts against it. */
   fleet?: number;
-  /** The container settings the running instances carry: the hash of the rendered `[[containers]]` table the deploy that shipped them wrote. A record naming none carries settings nothing can be compared against, and the next deploy rolls. */
-  containersTable?: string;
-  /** The last container rollout a deploy watched to its end: the application version the instances reached, and when they all carried it. Absent until one completes under a watch. */
-  lastRollout?: { version: number; completedAt: string };
 }
 
 /** The Worker's sign-in secrets, named as the Worker reads them. */
@@ -488,7 +354,7 @@ export interface WorkerSecretTarget {
 /** Raised when wrangler is not installed where `npx` would find it; `npx` would otherwise ask on stdin whether to fetch it, and stdin carries the secrets. */
 export class WranglerAbsent extends Error {
   constructor() {
-    super('wrangler is not installed; `npm install -g wrangler` (or run from a checkout that has it) and retry');
+    super('wrangler is not installed; `npm install -g wrangler`, then `wrangler login`, and retry');
     this.name = 'WranglerAbsent';
   }
 }

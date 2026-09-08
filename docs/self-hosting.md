@@ -4,6 +4,8 @@ Myco's server is one file. It holds your team's sessions, spores and plans, answ
 
 It needs no container runtime, no Node.js, and no source checkout. The `myco` binary you already installed is the server.
 
+There is one exception, and it is on your own computer rather than the server: putting a server on Cloudflare uses Cloudflare's own command-line tool, which needs Node.js. Nothing is installed on the server itself.
+
 ## On your laptop
 
 ```bash
@@ -50,6 +52,33 @@ sudo loginctl enable-linger "$USER"
 Without that, a server on a VM you connect to over SSH stops the moment you disconnect.
 
 When something else terminates HTTPS in front of your server, tell it which header carries the caller's real address. `myco server status` shows the settings file to edit. The server refuses to start rather than trusting an address a caller could have written itself.
+
+## On Cloudflare
+
+Your server can also run on Cloudflare's free plan, where there is no machine to keep alive and no address to expose. Its storage, its files and its scheduled work all live on Cloudflare, and it costs nothing until your team is large.
+
+You need three things on your own computer, and none of them on the server: the `myco` binary, Node.js, and the Cloudflare command-line tool signed in to your account.
+
+```bash
+npm install -g wrangler && wrangler login
+myco server create --target cloudflare --account-id <your account id>
+```
+
+`wrangler whoami` lists the accounts your login can reach, with their ids. Naming one is required rather than optional, so resources can never land in an account you did not mean.
+
+The command creates everything the server needs, brings its storage up to date, and puts it online. Re-running it is safe: it keeps what already exists and moves the rest forward, which also makes it the way to adopt pieces you created by hand.
+
+Add `--url https://myco.example.com` to put the server on a domain you own, if the domain is already in the same Cloudflare account. Without it you get a `workers.dev` address, which works just as well for agents.
+
+```bash
+myco server status --target cloudflare      # the account, the address, and the version serving
+myco server update --target cloudflare      # move it to the version this binary carries
+myco server rollback --target cloudflare    # go back to the version that served before
+```
+
+Updating waits for nothing and interrupts nothing: a request already in progress finishes on the version that took it.
+
+`myco server destroy --target cloudflare --yes` takes the server offline. Your data is kept — the database, the file storage and the stored keys all stay, and creating again brings the same server back.
 
 ## Reaching it from cloud agents
 
