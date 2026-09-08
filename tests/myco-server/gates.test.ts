@@ -558,11 +558,6 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `run_${runSeq++}`, agentId: 'agent_gate', task: `digest_${runSeq}`, capability: 'cortex' }) }),
       },
-      'POST /runs/admission': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/admission', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/admission', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ capability: 'cortex' }) }),
-      },
       'POST /runs/get': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/get', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -603,36 +598,6 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ events: [{ runId: 'nope', eventType: 'phase_start' }] }) }),
       },
-      'POST /runs/session-material': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/session-material', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/session-material', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', sessionId: 's_gate' }) }),
-      },
-      'POST /runs/session-title': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/session-title', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/session-title', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', sessionId: 's_gate', title: 'T', summary: 'S' }) }),
-      },
-      'POST /runs/spores': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/spores', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/spores', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
-      'POST /runs/spore': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/spore', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/spore', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', id: 'nope' }) }),
-      },
-      'POST /runs/spore-create': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/spore-create', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/spore-create', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', observation_type: 'gotcha', content: 'c' }) }),
-      },
-      'POST /runs/spore-resolve': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/spore-resolve', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/spore-resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', action: 'obsolete', spore_id: 'nope', reason: 'gone' }) }),
-      },
       'POST /runs/instruction': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/instruction', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -642,11 +607,6 @@ describe('gates', () => {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
-      'POST /runs/sessions': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/sessions', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/sessions', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
       },
       'POST /runs/digest': {
         shape: 'persisted',
@@ -697,16 +657,6 @@ describe('gates', () => {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/canopy-map', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/canopy-map', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
-      'POST /runs/state/read': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/state/read', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/state/read', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ agentId: 'agent_gate', key: 'k' }) }),
-      },
-      'POST /runs/state/write': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/state/write', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/state/write', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ agentId: 'agent_gate', key: `k_${runSeq++}`, value: 'v' }) }),
       },
       'POST /mcp': {
         shape: 'answered',
@@ -1092,7 +1042,6 @@ describe('gates', () => {
       'member POST /events',
       'member POST /mcp',
       'member POST /members/link-github',
-      'member POST /runs/admission',
       'member POST /runs/canopy-map',
       'member POST /runs/claim',
       'member POST /runs/digest',
@@ -1106,15 +1055,6 @@ describe('gates', () => {
       'member POST /runs/reports',
       'member POST /runs/repository',
       'member POST /runs/resume-admission',
-      'member POST /runs/session-material',
-      'member POST /runs/session-title',
-      'member POST /runs/sessions',
-      'member POST /runs/spore',
-      'member POST /runs/spore-create',
-      'member POST /runs/spore-resolve',
-      'member POST /runs/spores',
-      'member POST /runs/state/read',
-      'member POST /runs/state/write',
       'member POST /runs/supersede',
       'member POST /runs/update',
       'member POST /spores/get',

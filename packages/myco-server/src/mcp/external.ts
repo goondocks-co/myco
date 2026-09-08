@@ -52,10 +52,15 @@ export const EXTERNAL_PROJECT_DESCRIPTION = 'The Project this access key reads a
  * schema that offers `save` and refuses it sends the agent into a refusal it
  * could have avoided. The narrowing is presentation: `callTool` judges every
  * call by the allowlist whatever schema the caller read. One narrowing serves
- * the external surface and the run surface (`run-surface.ts`).
+ * the external surface and the run surface (`run-surface.ts`), which passes the
+ * run-only definitions beside the catalogued ones.
  */
-export function narrowDefinitions(allowlist: Readonly<Record<string, ReadonlySet<string>>>, projectIdDescription: string): ToolDefinition[] {
-  return TOOL_DEFINITIONS.filter((d) => d.name in allowlist).map((d) => {
+export function narrowDefinitions(
+  definitions: readonly ToolDefinition[],
+  allowlist: Readonly<Record<string, ReadonlySet<string>>>,
+  projectIdDescription: string,
+): ToolDefinition[] {
+  return definitions.filter((d) => d.name in allowlist).map((d) => {
     const ops = allowlist[d.name];
     const properties = { ...d.inputSchema.properties };
     const op = properties.op;
@@ -67,5 +72,5 @@ export function narrowDefinitions(allowlist: Readonly<Record<string, ReadonlySet
 
 /** The definitions the external surface lists. */
 export function externalDefinitions(): ToolDefinition[] {
-  return narrowDefinitions(EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_PROJECT_DESCRIPTION);
+  return narrowDefinitions(TOOL_DEFINITIONS, EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_PROJECT_DESCRIPTION);
 }

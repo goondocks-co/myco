@@ -111,7 +111,9 @@ describe('the routes a Cortex run holds', () => {
     const f = await fixture();
     f.liveRun('run_1', TASK, { input_hash: 'h1' }, 'THE PROMPT');
     const before = f.executed.length;
-    await f.answered('/runs/spores', { runId: 'run_1' });
+    // A surviving run route, so the assertion runs against a real answer
+    // rather than an auth refusal.
+    expect(await f.answered('/runs/digest', { runId: 'run_1' })).toMatchObject({ held: true });
     expect(f.executed.slice(before).some((sql) => sql.includes('instruction'))).toBe(false);
   });
 
@@ -145,34 +147,6 @@ describe('the routes a Cortex run holds', () => {
     // The columns stay settable on a run nothing dispatched.
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at) VALUES ('proj_1', 'run_local', ?, 'digest-only', 'running', 0, ?)`, [HARNESS_AGENT_ID, Date.now()]);
     expect(await f.answered('/runs/update', { runId: 'run_local', update: { run_context: '{}' } })).toMatchObject({ persisted: true, changed: 1 });
-  });
-
-  it('serves the settled sessions within a clamped page, and never one still in flight', async () => {
-    const f = await fixture();
-    f.liveRun('run_1', TASK, { input_hash: 'h' });
-    for (let i = 0; i < 4; i += 1) f.session(`s${i}`, `Session ${i}`, true);
-    f.session('live', 'Still going', false);
-    const answered = await f.answered('/runs/sessions', { runId: 'run_1', limit: 2 });
-    const sessions = answered.sessions as Array<{ id: string; title: string; summary: string }>;
-    expect(sessions).toHaveLength(2);
-    expect(sessions.map((s) => s.id)).not.toContain('live');
-    expect(sessions[0]!.summary).toContain('summary of');
-    const all = await f.answered('/runs/sessions', { runId: 'run_1', limit: 9999 });
-    expect((all.sessions as unknown[]).length).toBe(4);
-  });
-
-  it('cuts every part of a session row to its own bound, so a long title cannot outgrow the page', async () => {
-    const f = await fixture();
-    f.liveRun('run_1', TASK, { input_hash: 'h' });
-    f.sqlite.run(
-      `INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at, title, summary)
-       VALUES ('proj_1', 'long', 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?, ?, ?)`,
-      [NOW, NOW, NOW, NOW + 1, 'title '.repeat(200), 'summary '.repeat(200)],
-    );
-    const row = ((await f.answered('/runs/sessions', { runId: 'run_1' })).sessions as Array<{ title: string; label: string; summary: string }>)[0]!;
-    expect(row.title.length).toBeLessThanOrEqual(RUN_SESSION_TITLE_CHARS + 1);
-    expect(row.label.length).toBeLessThanOrEqual(RUN_SESSION_LABEL_CHARS + 1);
-    expect(row.summary.length).toBeLessThanOrEqual(RUN_SESSION_SUMMARY_CHARS + 1);
   });
 
   it('serves one digest tier in full and every tier\'s shape when none is named', async () => {
@@ -317,55 +291,19 @@ describe('the digest a run writes', () => {
       .toEqual([{ content: '# third', substrateHash: 'hash-three' }]);
   });
 
-  it('admits a digest run to the material a Cortex run reads', async () => {
+  it('serves a digest run the tier it asked for, or nothing', async () => {
     const f = await fixture();
     f.liveRun('run_digest', DIGEST_TASK, { input_hash: 'h' });
     f.session('s1', 'Session one', true);
     await f.spore('sp_1', 'the digest run reads this');
     await upsertDigest(f.db, SCOPE, { id: 'd1', agentId: HARNESS_AGENT_ID, tier: 5000, content: 'held', substrateHash: null, generatedAt: NOW });
 
-    expect(((await f.answered('/runs/sessions', { runId: 'run_digest' })).sessions as unknown[]).length).toBe(1);
-    expect(((await f.answered('/runs/spores', { runId: 'run_digest' })).spores as unknown[]).length).toBe(1);
     expect(await f.answered('/runs/digest', { runId: 'run_digest', tier: 5000 }))
       .toEqual({ persisted: true, held: true, digest: { tier: 5000, content: 'held', generatedAt: NOW, fallback: false } });
     // The run that WRITES the tiers is served the tier it asked for or nothing: a
     // neighbour's body carried forward under an absent tier's name collapses the two.
     expect(await f.answered('/runs/digest', { runId: 'run_digest', tier: 10000 }))
       .toEqual({ persisted: true, held: true, digest: null });
-  });
-
-  it('hands a digest run its tier window rather than the page any other run may ask for', async () => {
-    const f = await fixture();
-    f.liveRun('run_digest', DIGEST_TASK, { input_hash: 'h' });
-    const second = await f.credential();
-    f.liveRun('run_sweep', 'supersession-sweep', {}, null, false, second.tokenId);
-    for (let i = 0; i < DIGEST_SESSION_PAGE_LIMIT + 1; i += 1) f.session(`s${i}`, `Session ${i}`, true);
-    for (let i = 0; i < DIGEST_SPORE_PAGE_LIMIT + 1; i += 1) await f.spore(`sp_${i}`, `spore ${i}`);
-
-    // The digest run is the only task holding the session surface, so its window
-    // is compared against what it asked for rather than against another run.
-    const digestSessions = await f.answered('/runs/sessions', { runId: 'run_digest', limit: 9999 });
-    expect((digestSessions.sessions as unknown[]).length).toBe(DIGEST_SESSION_PAGE_LIMIT);
-
-    const digestSpores = await f.answered('/runs/spores', { runId: 'run_digest', limit: 200 });
-    const sweepSpores = await f.answered('/runs/spores', { runId: 'run_sweep', limit: 200 }, second.token);
-    expect((digestSpores.spores as unknown[]).length).toBe(DIGEST_SPORE_PAGE_LIMIT);
-    expect((sweepSpores.spores as unknown[]).length).toBe(DIGEST_SPORE_PAGE_LIMIT + 1);
-  });
-
-  it('cuts a digest run\'s full read to the window\'s share, and leaves the sweep its own bound', async () => {
-    const f = await fixture();
-    f.liveRun('run_digest', DIGEST_TASK, { input_hash: 'h' });
-    const second = await f.credential();
-    f.liveRun('run_sweep', 'supersession-sweep', {}, null, false, second.tokenId);
-    await f.spore('sp_long', 'x'.repeat(SPORE_BODY_CHARS + 1000));
-
-    const digestRead = await f.answered('/runs/spore', { runId: 'run_digest', id: 'sp_long' });
-    expect((digestRead.spore as { content: string }).content.length).toBe(DIGEST_FULL_READ_BODY_CHARS);
-    expect(digestRead.truncated).toBe(true);
-
-    const sweepRead = await f.answered('/runs/spore', { runId: 'run_sweep', id: 'sp_long' }, second.token);
-    expect((sweepRead.spore as { content: string }).content.length).toBe(SPORE_BODY_CHARS);
   });
 
   it('carries the owner\'s from-scratch ask onto the run\'s own context, and never answers a digest ask unchanged', async () => {

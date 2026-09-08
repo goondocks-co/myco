@@ -26,6 +26,32 @@ export function isServedTool(name: string): name is ServedTool {
   return (SERVED_TOOLS as readonly string[]).includes(name);
 }
 
+/**
+ * The tools only a run's credential may call.
+ *
+ * Deliberately outside `SERVED_TOOLS`: a member and a grant never see these
+ * names, and the member side declares none of them, so the parity gate and the
+ * ledger's §7.3 catalogue judge the seven and only the seven. What a run does
+ * that a member also does — every write of vault content, and search — stays on
+ * the catalogued tools rather than being copied here.
+ */
+export const RUN_TOOLS = [
+  'myco_run',
+  'myco_run_spores',
+  'myco_run_sessions',
+  'myco_run_prompts',
+] as const;
+
+export type RunTool = (typeof RUN_TOOLS)[number];
+
+/** Whether this name is one of the run-only tools. */
+export function isRunTool(name: string): name is RunTool {
+  return (RUN_TOOLS as readonly string[]).includes(name);
+}
+
+/** Every tool name either surface may carry. */
+export type AnyTool = ServedTool | RunTool;
+
 /** The op key of a tool that declares no op of its own. */
 export const NO_OP = '*';
 
@@ -70,13 +96,18 @@ export const UNSERVED_OPS: Readonly<Partial<Record<ServedTool, Readonly<Record<s
  * Names only, as above: `run-surface.ts` and the chokepoint both read it, and
  * neither imports the registry.
  */
-export const WRITE_OPS: Readonly<Partial<Record<ServedTool, readonly string[]>>> = {
+export const WRITE_OPS: Readonly<Partial<Record<AnyTool, readonly string[]>>> = {
   myco_plans: ['save'],
   myco_spores: ['save', 'supersede', 'consolidate', 'obsolete'],
+  // `report` is absent deliberately: a dry run does its work, writes nothing,
+  // and still files the report the close gate reads.
+  myco_run: ['state_set'],
+  myco_run_sessions: ['title'],
+  myco_run_prompts: ['mark_processed'],
 };
 
 /** Whether this op of this tool writes. */
-export function isWriteOp(tool: ServedTool, op: string): boolean {
+export function isWriteOp(tool: AnyTool, op: string): boolean {
   return (WRITE_OPS[tool] ?? []).includes(op);
 }
 

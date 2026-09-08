@@ -15,11 +15,12 @@ import { describe, expect, it } from 'bun:test';
 import { TOOL_DEFINITIONS as MEMBER_DEFINITIONS } from '@myco/tools/definitions.js';
 import { GROVE_PIVOT, PROJECT_PIVOT as MEMBER_PROJECT_PIVOT } from '@myco/tools/pivot.js';
 import { EXTERNAL_TOOL_ALLOWLIST as MEMBER_ALLOWLIST, isAllowedExternalCall } from '@myco/mcp/external-surface.js';
-import { isWriteOp, PROJECT_PIVOT, SERVED_TOOLS, WRITE_OPS, type ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
+import { isRunTool, isWriteOp, PROJECT_PIVOT, RUN_TOOLS, SERVED_TOOLS, WRITE_OPS, type AnyTool, type ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { EXTERNAL_PROJECT_DESCRIPTION, EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
 import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
-import { RUN_TOOL_MAP, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
+import { ALWAYS_ALLOWED, RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
+import { RUN_DEFINITIONS } from '@myco-server-worker/mcp/run-definitions.js';
 import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 
 /** The one property whose description the server words for a Deployment. Both sides spell the key once, and this holds the two spellings equal. */
@@ -100,7 +101,7 @@ describe('tool parity', () => {
    * key sets equal keeps the schema a caller reads the schema its call is judged by.
    */
   it('narrows ops and the tenancy description only: every served schema declares the full definition\'s property set', () => {
-    const full = new Map(TOOL_DEFINITIONS.map((d) => [d.name, Object.keys(d.inputSchema.properties).sort()]));
+    const full = new Map([...TOOL_DEFINITIONS, ...RUN_DEFINITIONS].map((d) => [d.name, Object.keys(d.inputSchema.properties).sort()]));
     const narrowed = [
       ...externalDefinitions(),
       ...Object.keys(TASK_TOOLS).flatMap((task) => runDefinitions(runAllowlist(TASK_TOOLS[task], { dryRun: false }))),
@@ -126,13 +127,13 @@ describe('tool parity', () => {
   it('marks every write op once, and every marked op is one the registry serves', () => {
     for (const [tool, ops] of Object.entries(WRITE_OPS)) {
       for (const op of ops ?? []) {
-        const entry = TOOL_REGISTRY[tool as ServedTool].ops[op];
+        const entry = isRunTool(tool) ? RUN_TOOL_REGISTRY[tool].ops[op] : TOOL_REGISTRY[tool as ServedTool].ops[op];
         expect({ tool, op, served: entry !== undefined && 'handler' in entry }).toEqual({ tool, op, served: true });
       }
     }
-    for (const def of TOOL_DEFINITIONS) {
+    for (const def of [...TOOL_DEFINITIONS, ...RUN_DEFINITIONS]) {
       const ops = opsOf(def) ?? [NO_OP];
-      const writes = ops.some((op) => isWriteOp(def.name, op));
+      const writes = ops.some((op) => isWriteOp(def.name as AnyTool, op));
       expect({ tool: def.name, writes, readOnlyHint: def.annotations?.readOnlyHint }).toEqual({ tool: def.name, writes, readOnlyHint: !writes });
     }
   });
@@ -232,23 +233,50 @@ describe('tool parity', () => {
     expect({ server: judged('myco_plans', { op: '' }), member: isAllowedExternalCall('myco_plans', { op: '' }) }).toEqual({ server: false, member: true });
   });
 
-  it('maps every run tool onto a served registry entry that some task declares, and lists a run its allowlisted names with the op enum narrowed', () => {
+  it('maps every run tool onto a registry entry that some task declares, keeps the two surfaces disjoint, and lists a run its allowlisted names with the op enum narrowed', () => {
+    // The one assertion that makes "the Myco agent does not share a tool
+    // surface with Symbionts" mechanical rather than a convention.
+    expect(RUN_TOOLS.filter((t) => (SERVED_TOOLS as readonly string[]).includes(t))).toEqual([]);
+    expect(RUN_DEFINITIONS.map((d) => d.name).sort()).toEqual([...RUN_TOOLS].sort());
+    expect(Object.keys(RUN_TOOL_REGISTRY).sort()).toEqual([...RUN_TOOLS].sort());
+    // No run-only name reaches the member side, which is what keeps the parity
+    // gate above judging the seven and only the seven.
+    expect(MEMBER_DEFINITIONS.filter((d) => (RUN_TOOLS as readonly string[]).includes(d.name))).toEqual([]);
+
     const declared = new Set(Object.values(TASK_TOOLS).flat());
     for (const [source, targets] of Object.entries(RUN_TOOL_MAP)) {
       expect({ source, declared: declared.has(source) }).toEqual({ source, declared: true });
       expect({ source, targets: targets.length > 0 }).toEqual({ source, targets: true });
       for (const { tool, op } of targets) {
-        expect({ source, tool, served: (SERVED_TOOLS as readonly string[]).includes(tool) }).toEqual({ source, tool, served: true });
-        const entry = TOOL_REGISTRY[tool];
-        const keyed = op === NO_OP ? entry.defaultOp === null && NO_OP in entry.ops : op in entry.ops && 'handler' in entry.ops[op];
+        const keyed = isRunTool(tool)
+          ? op in RUN_TOOL_REGISTRY[tool].ops && 'handler' in RUN_TOOL_REGISTRY[tool].ops[op]
+          : op === NO_OP
+            ? TOOL_REGISTRY[tool].defaultOp === null && NO_OP in TOOL_REGISTRY[tool].ops
+            : op in TOOL_REGISTRY[tool].ops && 'handler' in TOOL_REGISTRY[tool].ops[op];
         expect({ source, tool, op, keyed }).toEqual({ source, tool, op, keyed: true });
       }
     }
-    const allow = runAllowlist(TASK_TOOLS['supersession-sweep'], { dryRun: false });
-    expect([...allow.entries()].map(([tool, ops]) => [tool, [...ops].sort()])).toEqual([['myco_spores', ['get', 'list', 'obsolete', 'save', 'supersede']]]);
-    expect(runDefinitions(allow).map((d) => [d.name, (d.inputSchema.properties.op as { enum: string[] }).enum.sort()])).toEqual([['myco_spores', ['get', 'list', 'obsolete', 'save', 'supersede']]]);
-    expect([...runAllowlist(TASK_TOOLS['supersession-sweep'], { dryRun: true }).get('myco_spores')!].sort()).toEqual(['get', 'list']);
-    expect(runAllowlist(TASK_TOOLS['title-summary'], { dryRun: false }).size).toBe(0);
+    // Every declared op of a run-only tool is one the map or the always-allowed
+    // pair can reach: a definition offering an op no task unlocks is dead.
+    const reachable = new Set(Object.values(RUN_TOOL_MAP).flat().map((t) => `${t.tool}.${t.op}`));
+    for (const def of RUN_DEFINITIONS) {
+      for (const op of opsOf(def) ?? []) {
+        expect({ tool: def.name, op, reachable: reachable.has(`${def.name}.${op}`) }).toEqual({ tool: def.name, op, reachable: true });
+      }
+    }
+
+    const sweep = runAllowlist(TASK_TOOLS['supersession-sweep'], { dryRun: false });
+    expect([...sweep.entries()].map(([tool, ops]) => [tool, [...ops].sort()]).sort())
+      .toEqual([['myco_run', ['report']], ['myco_run_spores', ['get', 'list']], ['myco_spores', ['consolidate', 'obsolete', 'save', 'supersede']]]);
+    // A dry run keeps every read and loses every write, and keeps `report`,
+    // which the close gate reads whether or not the run wrote anything.
+    const dry = runAllowlist(TASK_TOOLS['supersession-sweep'], { dryRun: true });
+    expect([...dry.get('myco_spores') ?? []]).toEqual([]);
+    expect([...dry.get('myco_run')!]).toEqual([ALWAYS_ALLOWED.op]);
+    // A task declaring no tools of its own still closes.
+    const bare = runAllowlist(TASK_TOOLS['container-smoke'], { dryRun: false });
+    expect([...bare.entries()].map(([tool, ops]) => [tool, [...ops]])).toEqual([['myco_run', ['report']]]);
+    expect(runDefinitions(bare).map((d) => [d.name, (d.inputSchema.properties.op as { enum: string[] }).enum])).toEqual([['myco_run', ['report']]]);
   });
 
   it('names an issue, or never, on every op it does not serve', () => {

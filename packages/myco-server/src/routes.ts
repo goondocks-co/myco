@@ -28,11 +28,11 @@ import {
   handleProjectSkill, handleProjectSkills, handleProjectSpore, handleProjectSpores, handleProjectInstructions,
 } from './api/intelligence.js';
 import {
-  handleAdmitResume, handleAgents, handleClaimRun, handleGetRun, handleReadState, handleRecordFailure,
-  handleRegisterAgent, handleRunAdmission,
-  handleRunReports, handleWriteReport, handleRecordRunEvents, handleSupersedeRuns, handleUpdateRun, handleWriteState,
+  handleAdmitResume, handleAgents, handleClaimRun, handleGetRun, handleRecordFailure,
+  handleRegisterAgent,
+  handleRunReports, handleWriteReport, handleRecordRunEvents, handleSupersedeRuns, handleUpdateRun,
 } from './api/runs.js';
-import { handleDigestWrite, handleRunDigest, handleRunInstruction, handleRunSessions } from './api/cortex-tasks.js';
+import { handleDigestWrite, handleRunDigest, handleRunInstruction } from './api/cortex-tasks.js';
 import { handleEmbeddingStep } from './api/embedding-task.js';
 import {
   handleCredentialActivity, handleCredentials, handleInvitations, handleMembers, handleMintInvitation,
@@ -46,8 +46,6 @@ import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
 import { handleBlob } from './ingest/blobs.js';
 import { handleHarnessDispatch, handleHarnessProbe } from './api/harness.js';
-import { handleSessionMaterial, handleSessionTitle } from './api/session-tasks.js';
-import { handleRunSpore, handleRunSporeCreate, handleRunSporeResolve, handleRunSpores } from './api/run-spores.js';
 import { handleEvents } from './ingest/events.js';
 import { handleGrantMcp, handleMcp, handleRunMcp } from './mcp/http.js';
 
@@ -97,16 +95,15 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
   { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, handler: handleRefresh },
-  // The run control plane. `legacyRunRoute: true` admits the harness credential as a
+  // The run's own channel. `legacyRunRoute: true` admits the harness credential as a
   // member here alone, with whatever admission each handler performs itself —
-  // `heldRun` on the task surfaces, none on the state and run-row handlers — until
-  // #1146 moves these operations onto the run-scoped MCP surface and deletes them.
-  // `quotaPrecheck: false`: the byte quota bounds what a
+  // `heldRun` on the task surfaces, none on the run-row handlers. The model's tool
+  // surface is `/mcp`; these are the worker's and the push-launch seam's, and go
+  // with the seam. `quotaPrecheck: false`: the byte quota bounds what a
   // member's CAPTURE may write, and charging a Deployment's own scheduled
   // intelligence against a human's capture allowance would let ordinary agent
   // work exhaust that member's ability to record their sessions.
   { method: 'POST', path: '/runs/claim', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleClaimRun },
-  { method: 'POST', path: '/runs/admission', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunAdmission },
   { method: 'POST', path: '/runs/get', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleGetRun },
   { method: 'POST', path: '/runs/update', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleUpdateRun },
   { method: 'POST', path: '/runs/failed', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRecordFailure },
@@ -115,21 +112,12 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/runs/reports', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunReports },
   { method: 'POST', path: '/runs/report', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteReport },
   { method: 'POST', path: '/runs/events', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRecordRunEvents },
-  // What a titling run reads and writes: admitted only to the harness credential that dispatched a live `title-summary` run bound to the named session.
-  { method: 'POST', path: '/runs/session-material', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionMaterial },
-  { method: 'POST', path: '/runs/session-title', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionTitle },
-  // What a spore task's run reads and writes: an inventory of previews, one spore in full, and the two writes — admitted only to the harness credential that dispatched a live run of such a task.
-  { method: 'POST', path: '/runs/spores', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSpores },
-  { method: 'POST', path: '/runs/spore', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSpore },
-  { method: 'POST', path: '/runs/spore-create', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSporeCreate },
-  { method: 'POST', path: '/runs/spore-resolve', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSporeResolve },
   // What a Cortex run reads and writes: the prompt the server built for it, the
   // Project's settled sessions and its digest, and what it owes — the instructions
   // artifact, or one digest extract per tier — admitted only to the harness
   // credential that dispatched a live run of such a task.
   { method: 'POST', path: '/runs/instruction', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunInstruction },
   { method: 'POST', path: '/runs/embedding-step', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleEmbeddingStep },
-  { method: 'POST', path: '/runs/sessions', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunSessions },
   { method: 'POST', path: '/runs/digest', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunDigest },
   { method: 'POST', path: '/runs/digest-write', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleDigestWrite },
   { method: 'POST', path: '/spores/save', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSaveSpore },
@@ -145,8 +133,6 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/context/session', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionContext },
   { method: 'POST', path: '/runs/repository', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunRepository },
   { method: 'POST', path: '/runs/canopy-map', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunMap },
-  { method: 'POST', path: '/runs/state/read', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleReadState },
-  { method: 'POST', path: '/runs/state/write', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteState },
   // The tool surface: the seven MCP tools over the Deployment for a member, the
   // read-only six for an External Agent grant, answered as JSON-RPC. `answered`
   // is its refusal shape — an error envelope, at 400 or 503.
