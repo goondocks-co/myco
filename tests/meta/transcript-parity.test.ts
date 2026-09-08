@@ -138,7 +138,7 @@ async function parseArm(sqlite: Database, env: { db: unknown; blobs: { put: (k: 
 
   await parseOnce(env as never, {
     projectId: PARSE_PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-    tokenId, agent: 'claude-code', size: bytes.length, parsedOffset: 0, fidelity: null,
+    tokenId, agent: 'claude-code', size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null,
   }, NOW);
 }
 

@@ -88,12 +88,13 @@ const target = (sqlite: Database) => {
 async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max = 50): Promise<number> {
   let passes = 0;
   while (passes < max && target(sqlite).parsed_offset < target(sqlite).size && target(sqlite).parse_error === null) {
-    const t = sqlite.query(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity FROM transcripts`).get() as Record<string, unknown>;
+    const t = sqlite.query(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id FROM transcripts`).get() as Record<string, unknown>;
     const before = target(sqlite).parsed_offset;
     await parseOnce(env as never, {
       projectId: t.project_id as string, transcriptId: t.transcript_id as string, sessionId: t.session_id as string,
       machineId: t.machine_id as string, tokenId: t.token_id as string, agent: t.agent as string,
       size: t.size as number, parsedOffset: t.parsed_offset as number, fidelity: null,
+      openPromptId: (t.open_prompt_id as string | null) ?? null,
     }, NOW);
     passes += 1;
     if (target(sqlite).parsed_offset === before) break;
@@ -125,7 +126,7 @@ describe('parsing a held transcript', () => {
     const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
     const report = await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null,
     }, NOW);
     expect(report.calls).toBeLessThanOrEqual(TRANSCRIPT_PARSE_CALLS_PER_PASS + 2);
     expect(report.derived).toBeGreaterThan(TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
@@ -146,7 +147,7 @@ describe('parsing a held transcript', () => {
     const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
     const report = await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null,
     }, NOW);
     expect(report.calls).toBeLessThanOrEqual(TRANSCRIPT_PARSE_CALLS_PER_PASS + 2);
   });
@@ -225,6 +226,45 @@ describe('parsing a held transcript', () => {
     expect(count(sqlite, 'prompt_batches')).toBe(300);
     expect(count(sqlite, 'responses')).toBe(300);
     expect(count(sqlite, 'tool_calls')).toBe(300);
+  });
+
+  it('resumes against the turn it stopped in, not whatever prompt is newest in the session', async () => {
+    // A single turn, so every tool call belongs to the one prompt that opened
+    // it, and the pass must stop inside that turn.
+    const { sqlite, env, tokenId } = await rig(singleTurn(600));
+    const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
+    const first = await parseOnce(env as never, {
+      projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null,
+    }, NOW);
+    expect(first.nextOffset).toBeGreaterThan(0);
+    expect(first.nextOffset).toBeLessThan(t.size as number);
+
+    // The turn the pass stopped inside is recorded, not inferred.
+    const carried = (sqlite.query(`SELECT open_prompt_id FROM transcripts`).get() as { open_prompt_id: string | null }).open_prompt_id;
+    expect(carried).not.toBeNull();
+
+    // A hook ships a NEWER prompt for the same session while the parse lags —
+    // a second agent on the machine, or a subagent sibling. A lookup for the
+    // session's newest prompt would take this one and attribute the resumed
+    // tail to it.
+    sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, text, content_hash, created_at, updated_at, token_id, received_at)
+                VALUES (?, ?, ?, 'hook-event', 'user', 'a later prompt', 'h', ?, ?, ?, ?)`,
+               PROJECT, uuid(999), SESSION, NOW + 10_000, NOW + 10_000, tokenId, NOW + 10_000);
+
+    await drain(env, sqlite, 400);
+    expect(target(sqlite).parse_error).toBeNull();
+    expect(count(sqlite, 'tool_calls')).toBe(600);
+    const wrong = sqlite.query(`SELECT COUNT(*) c FROM tool_calls WHERE prompt_id IS NOT ?`).get(carried) as { c: number };
+    expect(wrong.c).toBe(0);
+  });
+
+  it('closes the turn at the end of the file, so nothing inherits a stale carry', async () => {
+    const { sqlite, env } = await rig(body(2));
+    await drain(env, sqlite);
+    expect(target(sqlite).parsed_offset).toBe(target(sqlite).size);
+    const row = sqlite.query(`SELECT open_prompt_id FROM transcripts`).get() as { open_prompt_id: string | null };
+    expect(row.open_prompt_id).toBeNull();
   });
 
   it('re-derives a resumed turn identically, so no row is refused as a conflict against itself', async () => {

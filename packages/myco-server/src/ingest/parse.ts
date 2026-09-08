@@ -31,7 +31,6 @@ import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import type { DerivedEvent } from './parsers/index.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
-import { latestPromptId } from '../read/sessions.js';
 import { SERVER_PROTOCOL } from '../constants.js';
 
 /** Derived events collapsed into one database call. */
@@ -94,6 +93,8 @@ interface ParseTarget {
   size: number;
   parsedOffset: number;
   fidelity: string | null;
+  /** The turn open where the cursor stands, recorded by the pass that stopped there. */
+  openPromptId: string | null;
 }
 
 /** Why a transcript's parse stopped. Each is a stable classifier a dashboard and an operator read; none is a caller's text. */
@@ -102,7 +103,7 @@ export type ParseFailure = Extract<Classifier, 'parse'> | 'blob_absent';
 /** The next transcript with unread bytes and no failure holding it, oldest receipt first. */
 async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget | null> {
   const row = await db
-    .prepare(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity
+    .prepare(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id
                 FROM transcripts
                WHERE ${PENDING_TRANSCRIPTS}
                  AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = transcripts.project_id AND t.session_id = transcripts.session_id)
@@ -120,7 +121,25 @@ async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget
     size: row.size as number,
     parsedOffset: (row.parsed_offset as number | null) ?? 0,
     fidelity: (row.fidelity as string | null) ?? null,
+    openPromptId: (row.open_prompt_id as string | null) ?? null,
   };
+}
+
+/**
+ * The turn an event belongs to: its own id when it opens one, else the prompt
+ * it names.
+ *
+ * This is what a pass records when it stops mid-turn, so the next pass derives
+ * the remainder against the same prompt. Reading it from the events themselves
+ * rather than from the store is what makes it exact: a lookup for "the
+ * session's newest prompt" answers with whatever landed most recently, which a
+ * member-shipped prompt or a subagent sibling can be.
+ */
+function turnOf(event: DerivedEvent): string | null {
+  // Every kind the parsers derive names its turn in the same field, a prompt
+  // included: a prompt's `promptId` is its own.
+  const named = event.payload.promptId;
+  return typeof named === 'string' ? named : null;
 }
 
 /** Stop this transcript where it stands and say why. Its rows to this point are kept; later passes skip it until the failure is cleared. */
@@ -284,19 +303,18 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     return { derived: 0, calls, nextOffset: null, failure: null };
   }
 
-  // The turn open where this window begins: only a resumed pass has one, and
-  // only the store still holds it. With it, an event derived here is identical
-  // to the same event derived in one uninterrupted read, so a pass may stop
-  // anywhere rather than only where a turn begins.
-  const openPromptId = target.parsedOffset === 0
-    ? undefined
-    : (await latestPromptId(env.db, { projectId: target.projectId }, target.sessionId)) ?? undefined;
-  if (target.parsedOffset > 0) calls += 1;
-  const events = await parser.parse({ lines: split.lines, sessionId: target.sessionId, now, openPromptId });
+  // The turn open where this window begins, as the pass that stopped here
+  // recorded it. With it, an event derived after a break is identical to the
+  // same event derived in one uninterrupted read, so a pass may stop anywhere
+  // rather than only where a turn begins.
+  const events = await parser.parse({ lines: split.lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined });
   const ctx = { projectId: target.projectId, machineId: target.machineId, tokenId: target.tokenId, bodyBytes: 0, now, writeOrigin: 'server' as const };
 
   let derived = 0;
   let cursor = split.nextOffset;
+  // A pass that reads to the end of the file closes the turn: nothing follows
+  // to attribute, and a stale carry would be handed to whatever arrives next.
+  let openPrompt: string | null = null;
   for (let i = 0; i < events.length; i += TRANSCRIPT_PARSE_EVENTS_PER_BATCH) {
     // The first group always runs, whatever the reads already cost, and the
     // budget ends a pass anywhere the cursor can actually move. A resumed pass
@@ -305,6 +323,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     // needs to advance, or the transcript would be re-read forever.
     if (i > 0 && calls >= TRANSCRIPT_PARSE_CALLS_PER_PASS && events[i].offset > target.parsedOffset) {
       cursor = events[i].offset;
+      openPrompt = turnOf(events[i]);
       break;
     }
     const group = events.slice(i, i + TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
@@ -340,9 +359,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   }
 
   await env.db
-    .prepare(`UPDATE transcripts SET parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?, fidelity = COALESCE(fidelity, ?)
+    .prepare(`UPDATE transcripts SET parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?, fidelity = COALESCE(fidelity, ?), open_prompt_id = ?
                WHERE project_id = ? AND transcript_id = ?`)
-    .bind(cursor, now, PARSER_VERSION, parser.fidelity, target.projectId, target.transcriptId)
+    .bind(cursor, now, PARSER_VERSION, parser.fidelity, openPrompt, target.projectId, target.transcriptId)
     .run();
   calls += 1;
 
