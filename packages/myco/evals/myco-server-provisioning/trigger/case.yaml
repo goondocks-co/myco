@@ -3,7 +3,7 @@ name: myco-server-provisioning-trigger
 runs: 3
 max_turns: 4
 prompt: |
-  Deploy the new version of our Myco deployment to Cloudflare and wait for the runs in flight.
+  Deploy our Myco deployment to Cloudflare, and make sure the D1 migrations apply in the right order.
 graders:
   - tool_used:
       tool: Skill
