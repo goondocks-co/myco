@@ -16,6 +16,7 @@ import { sha256Hex } from '@myco-server-worker/hash.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
 import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL, count } from './helpers/fixtures.js';
+import { isDeploymentAccessPath } from './helpers/access-paths.js';
 import { OWNER_ENV as OWNER_ENV2, ownerCookie as ownerCookie2 } from './helpers/owner.js';
 
 const WORKER = fileURLToPath(new URL('../../packages/myco-server/', import.meta.url));
@@ -494,13 +495,10 @@ describe('gates', () => {
     // credential belongs to a member and a Deployment, not to one project — so
     // their indexes lead with what they are actually looked up by.
     const deploymentScoped = /ON (member_tokens|members|member_credentials|enrollment_authorities|step_up_authorities|identity_link_authorities|backups)\b/;
-    // Two indexes are keyed on the credential rather than the project: a credential
-    // spans every Project in its Deployment, so the quota admission looks reservations
-    // up by credential, and the foreign key on a run's dispatching credential is
-    // checked by credential alone. Both have to lead with what they are read by.
-    // Pending search work is ordered across the Deployment by its last attempt.
-    const byAccessPath = /idx_blob_reservations_credential|idx_agent_runs_credential|idx_external_grants_hash|idx_external_grants_expiry|idx_events_token_only|idx_search_blob_pending/;
-    for (const s of SCHEMA_DDL.filter((x) => /CREATE (UNIQUE )?INDEX .* ON \w+/.test(x) && !deploymentScoped.test(x) && !byAccessPath.test(x))) {
+    // An index read by a Deployment-wide access path leads with what it is read
+    // by; the set of those, each with its read, is declared once in
+    // `helpers/access-paths.ts` and shared with the v2-table gate.
+    for (const s of SCHEMA_DDL.filter((x) => /CREATE (UNIQUE )?INDEX .* ON \w+/.test(x) && !deploymentScoped.test(x) && !isDeploymentAccessPath(x))) {
       expect(s).toMatch(/\(project_id/);
     }
   });

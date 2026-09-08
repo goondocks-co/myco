@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite';
 import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { MEMBER_TOKEN_BYTE_QUOTA, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { DEPLOYMENT_ACCESS_PATH_INDEXES } from './helpers/access-paths.js';
 
 const table = (name: string) => SCHEMA_DDL.find((s) => new RegExp(`CREATE TABLE IF NOT EXISTS ${name}\\b`).test(s))!;
 
@@ -62,7 +63,10 @@ describe('server schema', () => {
         expect({ t, c: c.name, blob: c.type === 'BLOB' }).toEqual({ t, c: c.name, blob: false });
         if (c.name.endsWith('_at')) expect({ t, c: c.name, type: c.type }).toEqual({ t, c: c.name, type: 'INTEGER' });
       }
-      for (const i of indexes(sqlite, t)) expect({ t, i: i.name, first: indexColumns(sqlite, i.name)[0] }).toEqual({ t, i: i.name, first: 'project_id' });
+      for (const i of indexes(sqlite, t)) {
+        if (DEPLOYMENT_ACCESS_PATH_INDEXES.has(i.name)) continue;
+        expect({ t, i: i.name, first: indexColumns(sqlite, i.name)[0] }).toEqual({ t, i: i.name, first: 'project_id' });
+      }
     }
     for (const t of CONTINUED_TABLES) {
       const machine = columns(sqlite, t).find((c) => c.name === 'machine_id')!;
