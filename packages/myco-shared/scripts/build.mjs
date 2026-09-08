@@ -22,11 +22,23 @@ function entrypoints() {
   return [...new Set(sources)];
 }
 
-rmSync(resolve(pkgRoot, 'dist'), { recursive: true, force: true }); // matches tsup clean:true
+/** Where the output goes: `dist` beside the package, or the `--outdir` a caller names. */
+function outdir() {
+  const named = process.argv.slice(2).find((arg) => arg.startsWith('--outdir='));
+  return named ? resolve(named.slice('--outdir='.length)) : resolve(pkgRoot, 'dist');
+}
+
+const out = outdir();
+
+rmSync(out, { recursive: true, force: true }); // matches tsup clean:true
 
 const result = await Bun.build({
   entrypoints: entrypoints(),
-  outdir: resolve(pkgRoot, 'dist'),
+  outdir: out,
+  // Stated rather than inferred: the output layout is what `exports` promises,
+  // `./dist/<name>.js`, and an inferred common root makes that layout depend on
+  // which entry points happen to exist.
+  root: resolve(pkgRoot, 'src'),
   target: 'node',
   format: 'esm',
   sourcemap: 'linked',
