@@ -62,7 +62,7 @@ export async function handleSessions(input: ToolInput, ctx: ToolContext): Promis
     return { ...summary(row, counts), counts };
   }
 
-  let sessionId = str(input.session);
+  let sessionId: string | undefined;
   const plan = str(input.plan);
   if (plan !== undefined) {
     const row = await getPlan(db, scope, plan);

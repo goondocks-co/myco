@@ -28,6 +28,8 @@ const RETIRED = GROVE_PIVOT;
 /** Properties the Deployment serves beyond the member definition, by tool: each is a named difference, worded in the server definition. */
 const ADDED: Record<string, readonly string[]> = {
   myco_plans: ['prompt_id'], myco_search: ['mode', 'session_id'],
+  // A Deployment holds many Projects; the member's run history has one vault and takes no tenancy argument.
+  myco_agent: [PROJECT_PIVOT],
   // #1149: what a grant's write cites in place of the session it has none of.
   myco_spores: ['provenance_kind', 'provenance_ref'],
 };
@@ -75,12 +77,11 @@ describe('tool parity', () => {
   /**
    * A retired spelling of the tenancy key must not reappear on either side.
    *
-   * Neither validator refuses an argument a schema does not declare — the
-   * member's `validateInput` walks the declared properties and the Deployment's
-   * `declaredOnly` drops the rest — so a definition that declared BOTH
-   * spellings, or a site that reverted to the old one, would be admitted and
-   * ignored rather than refused. This wave hit that three times: the external
-   * narrowing, a grant write test, and a leaf sample helper.
+   * The Deployment refuses an argument its schema does not declare; the
+   * member's 1.4 dispatcher walks the declared properties and ignores the rest.
+   * A definition that declared BOTH spellings would admit the retired one on
+   * both sides, so the definitions themselves are held to one spelling here,
+   * and `mcp.test.ts` holds the refusal of the other.
    */
   it('declares the tenancy key under one spelling, and never the retired one', () => {
     const RETIRED_PIVOT = 'project_id';
@@ -90,6 +91,24 @@ describe('tool parity', () => {
       }
     }
     expect(PROJECT_PIVOT).not.toBe(RETIRED_PIVOT);
+  });
+
+  /**
+   * Every narrowing keeps the property set whole. `callTool` judges arguments
+   * against the full definition, so a narrowing that dropped a property would
+   * advertise less than the validator accepts and refuse nothing; holding the
+   * key sets equal keeps the schema a caller reads the schema its call is judged by.
+   */
+  it('narrows ops and the tenancy description only: every served schema declares the full definition\'s property set', () => {
+    const full = new Map(TOOL_DEFINITIONS.map((d) => [d.name, Object.keys(d.inputSchema.properties).sort()]));
+    const narrowed = [
+      ...externalDefinitions(),
+      ...Object.keys(TASK_TOOLS).flatMap((task) => runDefinitions(runAllowlist(TASK_TOOLS[task], { dryRun: false }))),
+    ];
+    expect(narrowed.length).toBeGreaterThan(0);
+    for (const d of narrowed) {
+      expect({ tool: d.name, properties: Object.keys(d.inputSchema.properties).sort() }).toEqual({ tool: d.name, properties: full.get(d.name) });
+    }
   });
 
   it('spells the tenancy key once on each side, and the two agree', () => {
