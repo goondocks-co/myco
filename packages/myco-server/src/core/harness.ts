@@ -32,6 +32,7 @@ import { leafValues } from './settings.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
+import { runCloseRefusal } from './run-postconditions.js';
 import { buildTaskInput } from './task-inputs.js';
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
@@ -943,12 +944,23 @@ export async function renewLease(env: ServerEnv, worker: { tokenId: string; now:
  * worker drives the run, the harness child holds the run credential, and only
  * one of them can say the run is over. The credential is retired as the row
  * stops naming it, through the one function that owns that rule.
+ *
+ * **The worker reports; the Deployment judges.** A worker sees a harness end
+ * its turn, which is a fact about the harness rather than about the task: a
+ * harness that never called the Deployment ends its turn the same way one that
+ * did its work does. So a `completed` report is held to the task's own close
+ * rule (`core/run-postconditions.ts`) against the evidence the store holds, and
+ * a run that owes work it did not do is recorded `failed` with what it owed. The
+ * report is still accepted either way — the lease ends and the credential is
+ * retired — for a run that is over whatever it left behind; only the OUTCOME is
+ * the Deployment's. The launch seam judges the same rule at `handleUpdateRun`,
+ * so both front doors answer alike.
  */
 export async function endLeasedRun(
   env: ServerEnv,
   worker: { tokenId: string; now: number },
   run: { projectId: string; runId: string; status: 'completed' | 'failed'; error?: string | null },
-): Promise<{ ended: boolean; reason?: string }> {
+): Promise<{ ended: boolean; reason?: string; status?: 'completed' | 'failed' }> {
   const scope = { projectId: run.projectId };
   const row = await getRun(env.db, scope, run.runId);
   if (row === null) return { ended: false, reason: 'no run of that id' };
@@ -956,17 +968,22 @@ export async function endLeasedRun(
   if (!(await renewRunLease(env.db, scope, run.runId, worker.tokenId, worker.now + WORKER_LEASE_MS, worker.now))) {
     return { ended: false, reason: 'the lease is no longer held' };
   }
+  const unmet = run.status === 'completed' ? await runCloseRefusal(env.db, scope, row) : null;
+  const status = unmet === null ? run.status : 'failed';
+  const error = unmet ?? (run.error === undefined || run.error === null ? null : run.error.slice(0, MAX_RUN_ERROR_CHARS));
   const changed = await applyRunUpdate(env.db, scope, run.runId, {
-    status: run.status, completed_at: worker.now,
-    ...(run.error === undefined || run.error === null ? {} : { error: run.error.slice(0, MAX_RUN_ERROR_CHARS) }),
+    status, completed_at: worker.now, ...(error === null ? {} : { error }),
   });
   if (changed === 0) return { ended: false, reason: 'the run had already ended' };
   // The lease goes with the run: a worker that has finished holds nothing, and
   // a lease left behind reports it busy until the lease would have lapsed.
   await clearLease(env.db, scope, run.runId);
   await retireDispatchCredential(env, row.dispatchedBy, worker.now);
-  emit({ kind: 'worker_ended', runId: run.runId, projectId: run.projectId, status: run.status, tokenId: worker.tokenId });
-  return { ended: true };
+  if (unmet !== null) {
+    emit({ kind: 'run_postcondition_unmet', runId: run.runId, projectId: run.projectId, task: row.task, reported: run.status, unmet, tokenId: worker.tokenId });
+  }
+  emit({ kind: 'worker_ended', runId: run.runId, projectId: run.projectId, status, tokenId: worker.tokenId });
+  return { ended: true, status };
 }
 
 /**

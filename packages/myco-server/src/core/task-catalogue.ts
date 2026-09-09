@@ -22,6 +22,9 @@
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import type { RunAdmissionGate } from './runs.js';
 
+/** The task that writes a session's title and summary. */
+export const TITLING_TASK = 'title-summary';
+
 /** Every retained task, with the gate it runs behind. */
 export const TASK_ADMISSION: Readonly<Record<string, RunAdmissionGate>> = {
   [MAP_TASK]: { kind: 'capability', capability: 'canopy' },
@@ -40,7 +43,7 @@ export const TASK_ADMISSION: Readonly<Record<string, RunAdmissionGate>> = {
   'extract-only': { kind: 'capability', capability: 'vault_evolution' },
   'review-session': { kind: 'capability', capability: 'vault_evolution' },
 
-  'title-summary': { kind: 'provider' },
+  [TITLING_TASK]: { kind: 'provider' },
 };
 
 export const RETAINED_TASKS = Object.keys(TASK_ADMISSION);

@@ -28,6 +28,7 @@ import { runWorker, type WorkerOutcome } from '@myco/runner/loop.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
+import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.ts';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
 
@@ -64,7 +65,7 @@ async function rig(before: (path: string, n: number) => Response | null = () => 
       [PROJECT_ID, id, NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
     );
   };
-  const runRow = (id: string) => e.sqlite.query(`SELECT status, harness FROM agent_runs WHERE id = ?`).get(id) as { status: string; harness: string | null } | null;
+  const runRow = (id: string) => e.sqlite.query(`SELECT status, harness, error FROM agent_runs WHERE id = ?`).get(id) as { status: string; harness: string | null; error: string | null } | null;
 
   /** Attach a worker, bounded by this test's own signal, and answer what it did with the lines it logged. */
   const attach = async (
@@ -121,7 +122,14 @@ describe('a worker on the real claim wire', () => {
     // declaring no protocol. A worker whose headers carry none never gets here.
     if (attached.driven !== 1 || attached.refused !== null) throw new Error(reportOf('the worker drove no run', attached, paths));
     expect(attached.lines.some((l) => l.startsWith('claimed run_wire'))).toBe(true);
-    expect(r.runRow('run_wire')).toEqual({ status: 'completed', harness: STUB_HARNESS });
+    // The row reached a terminal status over the wire. It is `failed` rather than
+    // `completed` on the Deployment's own judgement: the stub ends its turn
+    // without calling back, and a titling run owes a report and a title.
+    expect(r.runRow('run_wire')).toEqual({ status: 'failed', harness: STUB_HARNESS, error: RUN_CLOSE_ERROR });
+    // The worker reported what the harness did; the Deployment recorded what the
+    // task left behind. A worker that logged only its own report would show a
+    // clean drive against a run the Deployment failed, so it says both.
+    expect(attached.lines).toContain('reported run_wire as completed; the Deployment recorded it failed');
     // Every request the worker made declared the protocol: the header is on the
     // claim and on the end, not only on the first call.
     expect(paths).toEqual(['/worker/claim', '/worker/end']);
@@ -161,7 +169,7 @@ describe('a worker on the real claim wire', () => {
     const attached = await r.attach(admin);
     const paths = r.sent.map((s) => s.path);
     if (attached.driven !== 1 || attached.refused !== null) throw new Error(reportOf('a 503 ended the attachment', attached, paths));
-    expect(r.runRow('run_after_503')).toEqual({ status: 'completed', harness: STUB_HARNESS });
+    expect(r.runRow('run_after_503')).toEqual({ status: 'failed', harness: STUB_HARNESS, error: RUN_CLOSE_ERROR });
     // Two claims: the faulted one and the one that was answered.
     expect(paths).toEqual(['/worker/claim', '/worker/claim', '/worker/end']);
     expect(attached.lines.filter((l) => l.includes('cannot reach'))).toHaveLength(1);

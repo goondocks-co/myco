@@ -492,6 +492,15 @@ export async function overwriteTitle(db: RelationalStore, projectId: string, ses
   return result.meta.changes > 0;
 }
 
+/** Whether a session inside the scope carries a title. The row a titling run owed, as the store holds it. */
+export async function sessionCarriesTitle(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT 1 AS one FROM sessions WHERE project_id = ? AND session_id = ? AND title IS NOT NULL`)
+    .bind(scope.projectId, sessionId)
+    .first<{ one: number }>();
+  return row !== null;
+}
+
 /** Stores a session's title and summary where none exists yet; false when one already does. */
 export async function writeTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string): Promise<boolean> {
   const result = await db

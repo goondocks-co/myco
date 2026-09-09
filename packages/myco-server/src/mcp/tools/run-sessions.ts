@@ -15,11 +15,14 @@
 import { listSessions, getSession, overwriteTitle, sessionCounts, writeTitle } from '../../read/sessions.js';
 import { cleanSummary, cleanTitle, sessionMaterial, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsOf } from '../../core/titling.js';
 import { preview } from '../../core/cortex-input.js';
+import { recordRunWrite } from '../../core/runs.js';
+import { TITLE_WRITE_TOOL } from '../../core/tool-catalogue.js';
 import { emit } from '../../telemetry.js';
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
 const int = (v: unknown): number | undefined => (typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined);
+
 
 export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
   const run = runOf(ctx, 'myco_run_sessions');
@@ -73,6 +76,14 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
   const written = params.mode === 'owner'
     ? await overwriteTitle(db, ctx.projectId, sessionId, title, summary, params.by ?? null)
     : await writeTitle(db, ctx.projectId, sessionId, title, summary);
-  if (written) emit({ kind: 'session_titled', projectId: ctx.projectId, sessionId, mode: params.mode, runId: run.runId });
+  // A write that took is the run's own record of doing its work, and the only
+  // thing keyed to THIS run: the session row carries no run of its own, and a
+  // title standing from an earlier run reads the same as one this run wrote.
+  // A `claim` write over a title that already stands takes nothing and records
+  // nothing, which is what the close rule then reads.
+  if (written) {
+    await recordRunWrite(db, scope, { runId: run.runId, toolName: TITLE_WRITE_TOOL, op: 'title', recordedAt: ctx.now, detail: { session_id: sessionId } });
+    emit({ kind: 'session_titled', projectId: ctx.projectId, sessionId, mode: params.mode, runId: run.runId });
+  }
   return { session_id: sessionId, written };
 }

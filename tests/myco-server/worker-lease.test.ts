@@ -232,9 +232,11 @@ describe('the lease', () => {
     expect(await endLeasedRun(f.e.serverEnv, { tokenId: other, now: NOW + 5 }, { projectId: 'proj_1', runId: 'run_1', status: 'completed' }))
       .toEqual({ ended: false, reason: 'the lease is no longer held' });
     expect(f.row('run_1').status).toBe('running');
+    // The lease is what admits the write; the task's own close rule decides what
+    // the row records, and this run left none of the evidence a titling run owes.
     expect(await endLeasedRun(f.e.serverEnv, { tokenId: ta, now: NOW + 5 }, { projectId: 'proj_1', runId: 'run_1', status: 'completed' }))
-      .toEqual({ ended: true });
-    expect((await getRun(f.e.db, SCOPE, 'run_1'))?.status).toBe('completed');
+      .toEqual({ ended: true, status: 'failed' });
+    expect((await getRun(f.e.db, SCOPE, 'run_1'))?.status).toBe('failed');
     expect(f.live(credential)?.revoked_at).not.toBeNull();
     // A second ending finds the run already over.
     expect(await endLeasedRun(f.e.serverEnv, { tokenId: ta, now: NOW + 6 }, { projectId: 'proj_1', runId: 'run_1', status: 'failed' }))
@@ -282,7 +284,7 @@ describe('what an operator reads', () => {
     await claimNextRun(f.e.serverEnv, { tokenId: ta, machineId: 'm1', harnesses: OFFERED, now: NOW });
     expect(await workerLiveness(f.e.db, NOW + 1)).toEqual({ workersBusy: 1, runsQueued: 0 });
     expect(await endLeasedRun(f.e.serverEnv, { tokenId: ta, now: NOW + 2 }, { projectId: 'proj_1', runId: 'run_1', status: 'completed' }))
-      .toEqual({ ended: true });
+      .toMatchObject({ ended: true });
     expect(await workerLiveness(f.e.db, NOW + 3)).toEqual({ workersBusy: 0, runsQueued: 0 });
     expect(f.row('run_1')).toMatchObject({ leasedBy: null, leaseExpiresAt: null });
   });

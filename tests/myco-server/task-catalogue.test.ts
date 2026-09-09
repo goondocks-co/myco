@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { admissionForTask, MANUAL_ONLY_TASKS, RETAINED_TASKS, scheduledTasks, TASK_ADMISSION, TASK_SCHEDULE } from '@myco-server-worker/core/task-catalogue.js';
 import { PROJECT_CAPABILITIES } from '@myco-server-worker/core/settings.js';
+import { RUN_CLOSE_NONE, RUN_CLOSE_RULES, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LEDGER = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
@@ -66,5 +67,36 @@ describe('what the clock runs', () => {
 
   it('takes a switched-off override away from a task the Deployment otherwise runs', () => {
     expect(scheduledTasks({ 'container-smoke': { schedule: { enabled: false } } })).toEqual([]);
+  });
+});
+
+/**
+ * Gate: a task closes on evidence the Deployment can see, or on a decision that
+ * it cannot.
+ *
+ * A task with no entry closes on its runtime's word while reading, from the
+ * catalogue, as governed like every other. That is the shape of the defect this
+ * table answers: a titling run whose harness never called back lands `completed`
+ * wherever nothing here names what it owed. So the absence has to be written
+ * down as `RUN_CLOSE_NONE` rather than left as a name nobody added.
+ */
+describe('what each task owes before it closes', () => {
+  it('declares a close rule or an explicit none for every retained task, and for nothing else', () => {
+    expect(Object.keys(RUN_CLOSE_RULES).sort()).toEqual([...RETAINED_TASKS].sort());
+  });
+
+  it('names the tasks whose product the Deployment cannot yet see', () => {
+    const undeclared = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule === RUN_CLOSE_NONE).map(([task]) => task);
+    expect(undeclared.sort()).toEqual([
+      'cortex-prompt-builder', 'extract-only', 'review-session', 'skill-evolve', 'skill-generate', 'skill-survey', 'vault-evolve', 'vault-seed',
+    ]);
+  });
+
+  it('holds a titling run to the row it was dispatched to write, not to its report alone', () => {
+    const rule = RUN_CLOSE_RULES['title-summary'];
+    expect(rule).not.toBe(RUN_CLOSE_NONE);
+    if (rule === RUN_CLOSE_NONE || rule === undefined) return;
+    expect(rule.reports).toEqual([TITLING_REPORT_ACTION]);
+    expect(typeof rule.artifact).toBe('function');
   });
 });

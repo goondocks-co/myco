@@ -133,11 +133,13 @@ describe('runServerTask', () => {
     } as unknown as AgentHarness;
     const params = { session_id: 'sess_1', mode: 'claim' };
     const result = await runServerTask({ client, budget, runId: 'run_title_1', taskName: 'title-summary', harness: observing, params, admission: CAPTURE_DRIVEN_ADMISSION });
-    expect(result.status).toBe('completed');
     expect(seen!.names).toEqual(['vault_report', 'vault_session_summary_material', 'vault_update_session']);
     expect(seen!.prompt).toContain('Target session: sess_1');
-    const run = sqlite.query(`SELECT status, task, run_context c FROM agent_runs WHERE id = 'run_title_1'`).get() as { status: string; task: string; c: string };
-    expect(run).toEqual({ status: 'completed', task: 'title-summary', c: JSON.stringify(params) });
+    // The harness answered with prose and called nothing, so the close is
+    // refused on what a titling run owes and the row says which run did nothing.
+    expect({ status: result.status, refused: result.refused }).toEqual({ status: 'failed', refused: 'postcondition' });
+    const run = sqlite.query(`SELECT status, error, task, run_context c FROM agent_runs WHERE id = 'run_title_1'`).get() as { status: string; error: string; task: string; c: string };
+    expect(run).toEqual({ status: 'failed', error: 'the run ended without its report', task: 'title-summary', c: JSON.stringify(params) });
     // Every other task holds the report tool alone.
     let smokeNames: string[] = [];
     const smoke: AgentHarness = { async execute(input: HarnessExecuteInput) { smokeNames = (input.toolSurface.tools ?? []).map((t) => t.name); return { finalText: 'done', turnsUsed: 1 } as never; }, supports: () => false } as unknown as AgentHarness;
@@ -239,7 +241,7 @@ describe('a run that dies names itself', () => {
     } as unknown as AgentHarness;
 
     const result = await runServerTask({
-      client, budget, runId: 'run_drained', taskName: 'container-smoke', harness: takenMidRun,
+      client, budget, runId: 'run_drained', taskName: 'cortex-prompt-builder', harness: takenMidRun,
       onClaimed: () => { held = { client, budget, runId: 'run_drained' }; },
       onClosing: () => { held = null; },
     });

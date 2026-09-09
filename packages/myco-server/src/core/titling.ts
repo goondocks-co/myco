@@ -20,8 +20,9 @@ import type { RelationalStore, ServerEnv } from './adapters.js';
 import { sessionMaterialRows, sessionMaterialTailRows, type MaterialRow } from '../read/children.js';
 import { claimOwnerTitling, claimTitling, restoreTitlingStamp } from '../read/sessions.js';
 import { dispatchPrepared, prepareDispatch, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS } from './harness.js';
+import { TITLING_TASK } from './task-catalogue.js';
 
-export const TITLING_TASK = 'title-summary';
+export { TITLING_TASK } from './task-catalogue.js';
 export const TITLE_MAX_CHARS = 80;
 export const SUMMARY_MAX_CHARS = 1200;
 /** How long a titling run may take. The task definition says the same (`title-summary.yaml`); this is the bound the claim's in-flight window is computed from. */

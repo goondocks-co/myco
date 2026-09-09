@@ -67,10 +67,13 @@ if (claim.claimed !== true) {
   process.exit(11);
 }
 
+// The action the task this stands in for actually files. A close is held to the
+// task's own rule, so a stand-in reporting under a name of its own would close
+// no run the shipped task closes.
 await postRunReport(client, budget, {
   runId,
   agentId: HARNESS_AGENT_ID,
-  action: 'stand-in',
+  action: taskName,
   summary: env('STANDIN_SUMMARY') ?? 'the runtime ran',
 });
 

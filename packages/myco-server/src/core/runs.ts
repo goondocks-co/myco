@@ -27,6 +27,7 @@ import { REPOSITORY_COMMIT_PATTERN, type RepositoryPin } from '@goondocks/myco-s
 import { parseMapSourcePin, type MapSourcePin } from '@goondocks/myco-shared/canopy';
 import type { DispatchLimits } from './limits.js';
 import type { RelationalStore } from './adapters.js';
+import { emit } from '../telemetry.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
 import { providerConfiguredFor, settingsWriter, type ProjectCapability } from './settings.js';
 
@@ -527,6 +528,18 @@ export async function liveRunsOfCredential(db: RelationalStore, tokenId: string)
   return results;
 }
 
+/** The session a run's recorded context names, or null when it names none. */
+export function sessionNamedByRun(run: RunRow): string | null {
+  if (run.runContext === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(run.runContext);
+    const value = typeof parsed === 'object' && parsed !== null ? (parsed as { session_id?: unknown }).session_id : undefined;
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The hash of the material the server built this run's prompt from, as its context records it. */
 export function inputHashOf(run: RunRow): string | null {
   if (run.runContext === null) return null;
@@ -651,6 +664,78 @@ export async function insertReport(db: RelationalStore, scope: ReadScope, report
           scope.projectId, report.runId, report.agentId)
     .run();
   return result.meta.changes === 1;
+}
+
+/**
+ * The event type a run's own tool call is recorded under.
+ *
+ * A run's turns happen inside a harness the Deployment cannot see; the calls it
+ * makes back are the only part of a run the Deployment observes directly. A run
+ * that ended its turn without ever calling is the case this record exists to
+ * make legible — an empty list against a closed run is the evidence.
+ */
+export const RUN_TOOL_EVENT = 'run_tool';
+
+/**
+ * Record one call a run made back to the Deployment, whichever door it came
+ * through: an MCP tool the harness child called, or a run route a container
+ * drove itself. One list holds both, so an empty one means the run reached this
+ * Deployment not at all rather than reached it another way.
+ *
+ * A store that refuses the row is named in telemetry rather than failing the
+ * call the caller already has an answer to.
+ */
+export async function recordRunCall(
+  db: RelationalStore,
+  scope: ReadScope,
+  call: { runId: string; toolName: string; op: string | null; durationMs: number | null; recordedAt: number },
+): Promise<void> {
+  try {
+    await recordRunEvents(db, scope, [{
+      runId: call.runId, phaseName: null, eventType: RUN_TOOL_EVENT, toolName: call.toolName,
+      outcome: 'success', durationMs: call.durationMs,
+      payload: call.op === null ? null : JSON.stringify({ op: call.op }), recordedAt: call.recordedAt,
+    }]);
+  } catch {
+    emit({ kind: 'run_tool_unrecorded', runId: call.runId, tool: call.toolName, op: call.op });
+  }
+}
+
+/**
+ * The event type a run's LANDED write of its task's artifact is recorded under.
+ *
+ * A tool call says the run asked; this says the write took. The two differ
+ * wherever a write is conditional — a titling run in `claim` mode writes only
+ * where no title stands — and a postcondition that read the call alone would
+ * pass a run whose write did nothing.
+ *
+ * It is the run key for an artifact whose own row carries none. Where the
+ * artifact table names the run itself (`digest_extract_revisions.run_id`,
+ * `canopy_maps.source_run_id`) the rule reads that instead.
+ */
+export const RUN_WRITE_EVENT = 'run_write';
+
+/** Whether this run recorded a landed write through the named tool. */
+export async function runRecordedWrite(db: RelationalStore, scope: ReadScope, runId: string, toolName: string): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT 1 AS one FROM agent_run_events
+       WHERE project_id = ? AND run_id = ? AND event_type = ? AND tool_name = ? LIMIT 1`)
+    .bind(scope.projectId, runId, RUN_WRITE_EVENT, toolName)
+    .first<{ one: number }>();
+  return row !== null;
+}
+
+/** Record one landed write against the run that made it. */
+export async function recordRunWrite(
+  db: RelationalStore,
+  scope: ReadScope,
+  write: { runId: string; toolName: string; op: string; recordedAt: number; detail?: Record<string, unknown> },
+): Promise<void> {
+  await recordRunEvents(db, scope, [{
+    runId: write.runId, phaseName: null, eventType: RUN_WRITE_EVENT, toolName: write.toolName,
+    outcome: 'written', durationMs: null,
+    payload: JSON.stringify({ op: write.op, ...(write.detail ?? {}) }), recordedAt: write.recordedAt,
+  }]);
 }
 
 export interface RunEventRowInsert {

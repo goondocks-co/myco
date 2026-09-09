@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWorker, type WorkerOutcome } from '@myco/runner/loop.js';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../../helpers/stub-acp-harness.ts';
+import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js';
 import { lit, MEMBER_ID, type ParityScenario, type ParityTarget, waitFor } from '../harness.ts';
 
 /** Well under the scenario timeout, so a worker that cannot claim reports rather than hangs. */
@@ -24,9 +25,16 @@ const PARK_MS = 3_600_000;
  * The harness is a stub on PATH and the model is never reached; what is under
  * test is the wire from a claim to an outcome, which runs the same on a machine
  * with three real harnesses.
+ *
+ * The stub answers `end_turn` without ever calling the Deployment back, which is
+ * exactly the harness this Deployment must not believe: the run is a titling run
+ * and the session it names is never titled, so the outcome the row carries is
+ * `failed` with what the task owed, on both targets. A worker's `completed`
+ * report is still accepted — the lease ends and the run credential is retired —
+ * for a run that is over whatever it left behind.
  */
 export const workerWire: ParityScenario = {
-  name: 'the worker wire: a claim, a lease and an outcome from the shipped worker against a booted Deployment',
+  name: 'the worker wire: a claim, a lease and the outcome the Deployment judges, from the shipped worker against a booted Deployment',
   async run(target: ParityTarget) {
     const now = Date.now();
     // The turn is held open until this scenario releases it, so the run is still
@@ -45,6 +53,7 @@ export const workerWire: ParityScenario = {
     // moved back in the queue rather than completed, and moved forward again
     // afterwards by the same offset, so relative order survives.
     const runId = `run_parity_wire_${now}`;
+    const sessionId = `sess_parity_wire_${now}`;
     const parked = (await target.sql(
       `SELECT id FROM agent_runs WHERE status = 'queued' AND dispatched_by IS NULL AND task IS NOT NULL`,
     )).map((r) => String((r as { id: string }).id));
@@ -54,11 +63,17 @@ export const workerWire: ParityScenario = {
     };
     await shiftParked(PARK_MS);
     await target.sql(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ${now})`);
+    // The session the run is dispatched to title. A stub that never calls back
+    // leaves it untitled, which is the whole reading this scenario takes.
+    await target.sql(
+      `INSERT OR IGNORE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+       VALUES (${lit(target.projectId)}, ${lit(sessionId)}, 'm_parity', 'tok_parity', ${now}, ${now})`,
+    );
     await target.sql(
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
        VALUES (${lit(target.projectId)}, ${lit(runId)}, 'myco-agent', 'title-summary', 'queued', ${now}, 'worker',
                ${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 120 }))},
-               ${lit(JSON.stringify({ timeoutSeconds: 120 }))}, 'do it')`,
+               ${lit(JSON.stringify({ timeoutSeconds: 120, session_id: sessionId, mode: 'claim' }))}, 'do it')`,
     );
 
     /**
@@ -74,8 +89,8 @@ export const workerWire: ParityScenario = {
 
     const row = async () =>
       (await target.sql(
-        `SELECT status, harness, leased_by IS NOT NULL AS leased, dispatched_by AS dispatchedBy FROM agent_runs WHERE id = ${lit(runId)}`,
-      ))[0] as { status: string; harness: string | null; leased: number; dispatchedBy: string | null };
+        `SELECT status, harness, error, leased_by IS NOT NULL AS leased, dispatched_by AS dispatchedBy FROM agent_runs WHERE id = ${lit(runId)}`,
+      ))[0] as { status: string; harness: string | null; error: string | null; leased: number; dispatchedBy: string | null };
 
     /** What this scenario asserts while the attachment is live. */
     const drove = async (attached: Promise<WorkerOutcome>, lines: string[], ended: () => WorkerOutcome | null): Promise<void> => {
@@ -116,7 +131,8 @@ export const workerWire: ParityScenario = {
       // `/worker/end` is what moves the row off running, and the credential the
       // claim minted for THIS run is retired as the row stops naming it.
       const finalRow = await row();
-      expect(`${target.name} ended: ${finalRow.status}`).toBe(`${target.name} ended: completed`);
+      expect(`${target.name} ended: ${finalRow.status} — ${finalRow.error ?? 'no error'}`)
+        .toBe(`${target.name} ended: failed — ${RUN_CLOSE_ERROR}`);
       expect(await target.sql(
         `SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(minted)}`,
       )).toEqual([{ revoked: 1 }]);
