@@ -33,6 +33,8 @@ myco server destroy  --target cloudflare --yes
 
 `create` is idempotent: every resource is ensured, an existing record keeps its ids, and a re-run converges. That also makes it the adopt path for resources created by hand. `destroy` removes the Worker only — the database, bucket, store and record all stand, because the Worker is re-creatable from the binary and the data is not.
 
+Every verb checks those prerequisites before it runs anything: wrangler resolvable without a fetch (`npx --no-install`), and a Cloudflare identity — an interactive `wrangler login`, or `CLOUDFLARE_API_TOKEN` in a shell that cannot open a browser, which is taken on trust rather than verified, so a stale or wrong-scope token fails in the first command's own words. Each missing one is refused by name in one line, so the first thing an operator reads is Myco's instruction rather than wrangler's.
+
 `--account-id` is required rather than defaulted. A login reaching several accounts and a command that picks one silently is how resources land in the wrong account, and a half-provisioned account is worse than a refused command. `wrangler whoami` lists them.
 
 `--dir` and `--no-drain` are refused **by name**. Neither applies: there is no checkout to point at, and a deploy replaces no runtime so it waits for nothing.

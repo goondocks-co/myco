@@ -37,6 +37,25 @@ const SCANNED_ROOTS = ['packages', 'scripts'] as const;
 const TEST_FILE_PATTERN = /\.test\.tsx?$/;
 
 /**
+ * The names bun collects. A suite under `tests/` named anything else is not a
+ * suite at all: `bun test <path>` answers that the filter matched no test
+ * files, `npm test -- <path>` exits having run nothing, and the only signal is
+ * an absence — which is why the NAME is what is gated.
+ */
+const COLLECTED_NAME = /(?:\.|_)(?:test|spec)\.tsx?$/;
+
+/** What a file brings in from `bun:test`; only these names declare a suite. */
+const SUITE_IMPORT = /import\s*\{([^}]*)\}\s*from\s*'bun:test'/;
+
+/** A suite declaration, token-anchored so `target.it(` or `latest(` does not count. */
+const DECLARES_SUITE = /(?:^|[^.\w])(?:describe|it|test)\s*(?:\.\w+)?\s*\(/;
+
+/** Source with its comments dropped: a suite drawn in a doc comment is documentation. */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+/**
  * `it.only` / `test.only` / `describe.only`, token-anchored so `monotonic.only`
  * or a `.only` inside a string does not trip the gate.
  */
@@ -69,6 +88,21 @@ describe('meta: test suite integrity', () => {
     ).map(repoRelative).sort();
 
     expect(stranded).toEqual([]);
+  });
+
+  it('has no suite under tests/ whose name bun never collects', () => {
+    const unrunnable = listFiles(path.join(REPO_ROOT, 'tests'), (name) => /\.tsx?$/.test(name))
+      .filter((file) => {
+        if (COLLECTED_NAME.test(path.basename(file))) return false;
+        const source = fs.readFileSync(file, 'utf-8');
+        const imported = SUITE_IMPORT.exec(source)?.[1] ?? '';
+        if (!/\b(?:describe|it|test)\b/.test(imported)) return false;
+        return DECLARES_SUITE.test(withoutComments(source));
+      })
+      .map(repoRelative)
+      .sort();
+
+    expect(unrunnable).toEqual([]);
   });
 
   it('has no focused tests narrowing a file to a subset', () => {

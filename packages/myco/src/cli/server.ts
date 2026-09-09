@@ -22,7 +22,7 @@ import {
 import { CommandFailed } from '../server/runner.js';
 import { ComposeFilesUnreadable, HarnessLeftStopped, RestoreLeftIncomplete, UpdateRolledBack, UpdateRollbackFailed } from '../server/deployment.js';
 import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
-import { WranglerAbsent, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
+import { WranglerNotReady, deploymentRecordPath, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
 import { cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { existsSync } from 'node:fs';
@@ -213,12 +213,15 @@ export async function run(args: string[]): Promise<void> {
 
   /** The Cloudflare lifecycle inputs a verb needs; only a deploying verb needs a checkout. */
   const cloudflareOptions = () => {
+    // A flag this target refuses by name is answered first: a refusal about a
+    // missing value tells an operator to supply one, which is the wrong move
+    // when the flag beside it does not apply here at all.
+    if (flags.has('dir')) fail('--dir is not a flag for this target: the Worker, its dashboard and its migrations all travel in this binary, so a deploy reads no checkout.');
+    if (flags.has('no-drain')) fail('--no-drain is not a flag for this target: a deploy replaces no runtime, so it waits for nothing.');
     const record = readDeploymentRecord();
     const accountId = flags.get('account-id') ?? record?.accountId;
     if (accountId === undefined || accountId === '' || accountId === 'true') fail('pass --account-id <id> (npx wrangler whoami lists the accounts this login reaches).');
-    if (flags.has('dir')) fail('--dir is not a flag for this target: the Worker, its dashboard and its migrations all travel in this binary, so a deploy reads no checkout.');
-    if (flags.has('no-drain')) fail('--no-drain is not a flag for this target: a deploy replaces no runtime, so it waits for nothing.');
-    return { accountId };
+    return { accountId, report: (line: string) => { console.log(line); } };
   };
 
   /** Where this machine's own Deployment lives, and what it is running under. */
@@ -337,7 +340,9 @@ export async function run(args: string[]): Promise<void> {
       console.log('\nCloudflare Deployment deployed.');
       if (created.createdResources.length > 0) console.log(`  Provisioned: ${created.createdResources.join(', ')}`);
       console.log(`  Version:     ${created.versionId ?? 'unknown'}`);
-      console.log('  Record:      ~/.myco/server/cloudflare/record.json');
+      // The path this home actually holds it at: a `MYCO_HOME` somewhere else
+      // makes a literal a file the operator will not find.
+      console.log(`  Record:      ${deploymentRecordPath()}`);
       if (created.record.url !== undefined) console.log(`  URL:         ${created.record.url}`);
       return;
     }
@@ -491,7 +496,7 @@ export async function run(args: string[]): Promise<void> {
 
     if (command === 'config') {
       let record = readDeploymentRecord();
-      if (record === null) fail('no Cloudflare deployment record on this machine (~/.myco/server/cloudflare.json).');
+      if (record === null) fail(`no Cloudflare deployment record on this machine (${deploymentRecordPath()}).`);
       const fleetFlag = flags.get('fleet');
       if (fleetFlag !== undefined) {
         const fleet = Number(fleetFlag);
@@ -540,7 +545,7 @@ export async function run(args: string[]): Promise<void> {
     // Deployment is serving again on the version it started from.
     if (err instanceof UpdateRolledBack || err instanceof UpdateRollbackFailed || err instanceof HarnessLeftStopped) fail(err.message);
     if (err instanceof RestoreLeftIncomplete || err instanceof ComposeFilesUnreadable) fail(err.message);
-    if (err instanceof RegistrationRefused || err instanceof WranglerAbsent) fail(err.message);
+    if (err instanceof RegistrationRefused || err instanceof WranglerNotReady) fail(err.message);
     if (err instanceof DeployConfigIncomplete) fail(err.message);
     if (err instanceof LocalDeploymentAbsent || err instanceof LocalRecordUnreadable) fail(err.message);
     if (err instanceof ServicePathUnsupported || err instanceof ServicePlatformUnsupported) fail(err.message);
