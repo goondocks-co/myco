@@ -9,11 +9,20 @@ import { assertGroveEraId, isGroveEraId } from './ids.js';
 
 export {
   MYCO_HOME_ENV,
+  RUNTIME_HOME_FILENAME,
+  defaultMycoHome,
   expandHome,
+  findProjectHomePin,
+  machineHomePinPath,
+  readHomePin,
+  readMachineHomePin,
   resolveHomeDir,
   resolveMachineIdPath,
   resolveMycoHome,
+  resolveMycoHomeWithSource,
   type MycoHomeOptions,
+  type MycoHomeSource,
+  type ResolvedMycoHome,
 } from '../paths/home.js';
 
 /**

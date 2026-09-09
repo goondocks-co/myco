@@ -8,10 +8,12 @@
  * to serve it, capture is already on disk when the call goes out, so nothing a
  * server says or fails to say can cost a record.
  */
+import fs from 'node:fs';
 import { readHookInput } from '../hooks/input.js';
 import type { NormalizedHookInput } from '../hooks/normalize.js';
 import { writeHookResponse, type HookResponse } from '../hooks/response.js';
 import { canStartRequest, clippedRequestBudget, resolveHookBudget, type HookBudget } from './budget.js';
+import { resolveMycoHome } from '../paths/home.js';
 import { parseCredentialFlag, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
 import { ensureJoinedFromCode, joinCodePresent } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
@@ -90,6 +92,32 @@ export interface HookOutcome {
 const harnessEventOf = (input: NormalizedHookInput): string | undefined =>
   typeof input.raw.hook_event_name === 'string' ? input.raw.hook_event_name : undefined;
 
+/**
+ * The directory this hook invocation belongs to: the directory the harness
+ * names in its payload when that directory is on this machine, else this
+ * process's own — the launch preamble has already anchored that to the
+ * harness's project dir, so a symbiont whose payload names no directory still
+ * resolves the project it fired in.
+ *
+ * It decides BOTH the project root the credential is keyed on and the Myco home
+ * that root's membership lives in, so the two can never disagree. A
+ * GUI-launched agent inherits no `MYCO_HOME` from any shell; the home comes
+ * from the project's `.myco/runtime.home` pin, found by walking up from here.
+ */
+function hookCwd(input: NormalizedHookInput): string {
+  const named = input.raw.cwd;
+  if (typeof named !== 'string' || named.length === 0) return process.cwd();
+  try {
+    // `stat`, not `lstat`: a checkout reached through a symlinked path is an
+    // ordinary way to work, and this only decides WHERE to look. The pin file
+    // found at the end of that walk is what decides anything, and that read is
+    // an `lstat` (`paths/pin-trust.ts`).
+    return fs.statSync(named).isDirectory() ? named : process.cwd();
+  } catch {
+    return process.cwd();
+  }
+}
+
 export async function runMemberHook(
   hookName: string,
   opts: HookMainOptions,
@@ -109,6 +137,11 @@ export async function runMemberHook(
     const now = opts.now ?? Date.now;
     const budget = resolveHookBudget(input.agent, hookName, { hookEventName: harnessEventOf(input), startedAt: opts.startedAt });
 
+    // One directory decides the project root and the home its membership is
+    // held under, so a pinned project's hooks read the registry that holds it.
+    const cwd = hookCwd(input);
+    const mycoHome = resolveMycoHome({ cwd });
+
     // A sandbox arrives holding a join code and nothing else; this turns it into a
     // registry entry on disk so the resolve below finds a credential like any other
     // run. It sits under the budget: the exchange is a network call the harness will
@@ -117,13 +150,13 @@ export async function runMemberHook(
     // resolved only when there is a code to redeem, which is never on an ordinary run.
     if (joinCodePresent(opts.env)) {
       await ensureJoinedFromCode({
-        env: opts.env, fetch: opts.fetch as typeof fetch | undefined, root: resolveMemberProjectRoot(), budget,
+        env: opts.env, fetch: opts.fetch as typeof fetch | undefined, root: resolveMemberProjectRoot(cwd), mycoHome, budget,
       });
     }
-    const credential = resolveCredential(source);
+    const credential = resolveCredential(source, { cwd, mycoHome, invokedBy: `hook ${hookName}` });
     if (!credential) return;
 
-    const spool = new MemberSpool(credential.projectId);
+    const spool = new MemberSpool(credential.projectId, { mycoHome });
     const ctx: EnvelopeContext = { agent: input.agent, sessionId, stage: spool.stagerFor(sessionId), now };
     const client = new ServerClient(credential, opts.fetch ?? globalThis.fetch);
     const run: HookRun = { hookName, input, sessionId, agent: input.agent, credential, spool, ctx, budget, client, now, argv };
@@ -147,7 +180,7 @@ export async function runMemberHook(
       const root = refreshableRoot(credential);
       // A 401 on a live send: another hook may have rotated this root's token, so the registry is re-read and the record retried once.
       const recovery = root === null ? {} : {
-        onUnauthorized: async (): Promise<ClientRecord | null> => rotatedCredential(root, credential),
+        onUnauthorized: async (): Promise<ClientRecord | null> => rotatedCredential(root, credential, mycoHome),
         clientFor: (record: ClientRecord) => new ServerClient(record, fetchImpl),
       };
       await spool.drainSession(sessionId, client, budget, { force: outcome.probe, now, ...recovery });
@@ -156,7 +189,7 @@ export async function runMemberHook(
       if (outcome.probe) applySpoolRetention(spool, now());
       // Registry-sourced credentials rotate after the hook's main work, inside what remains of the budget; env-sourced ones never do.
       if (root !== null && refreshDue(credential, now()) && canStartRequest(budget, now())) {
-        await refreshMemberCredential(root, { fetch: fetchImpl, now, budget: clippedRequestBudget(budget, now()) });
+        await refreshMemberCredential(root, { mycoHome, fetch: fetchImpl, now, budget: clippedRequestBudget(budget, now()) });
       }
     }
   } catch (error) {

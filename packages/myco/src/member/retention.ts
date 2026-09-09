@@ -53,12 +53,12 @@ export interface RetentionResult {
  * declaration is what makes that a checkable boundary rather than a property
  * of where the loop happens to look.
  */
-export function memberOwnedTranscriptRoots(env: NodeJS.ProcessEnv = process.env): string[] {
+export function memberOwnedTranscriptRoots(env: NodeJS.ProcessEnv = process.env, mycoHome?: string): string[] {
   const roots: string[] = [];
   for (const manifest of BUNDLED_MANIFESTS) {
     const discovery = manifest.capture?.transcriptDiscovery;
     if (!discovery || discovery.retention !== 'member') continue;
-    for (const root of discovery.roots) roots.push(expandRoot(root, env));
+    for (const root of discovery.roots) roots.push(expandRoot(root, env, mycoHome));
   }
   return roots;
 }
@@ -70,11 +70,15 @@ export function memberOwnedTranscriptRoots(env: NodeJS.ProcessEnv = process.env)
  * session, so a still-running session keeps bumping it and cannot be pruned
  * out from under itself.
  */
-export function prunePluginTranscripts(now: number = Date.now(), env: NodeJS.ProcessEnv = process.env): number {
+export function prunePluginTranscripts(
+  now: number = Date.now(),
+  env: NodeJS.ProcessEnv = process.env,
+  mycoHome?: string,
+): number {
   let pruned = 0;
   // A claim names the instance that speaks for a session. It outlives nothing:
   // once past the window no runtime holds it and no transcript needs it.
-  const claims = path.join(resolveMycoHome({ env }), 'member', 'claims');
+  const claims = path.join(mycoHome ?? resolveMycoHome({ env }), 'member', 'claims');
   try {
     for (const entry of fs.readdirSync(claims, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.lock')) continue;
@@ -85,7 +89,7 @@ export function prunePluginTranscripts(now: number = Date.now(), env: NodeJS.Pro
       } catch { /* already gone */ }
     }
   } catch { /* no claims taken on this machine */ }
-  for (const root of memberOwnedTranscriptRoots(env)) {
+  for (const root of memberOwnedTranscriptRoots(env, mycoHome)) {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
@@ -244,6 +248,8 @@ export function applySpoolRetention(spool: MemberSpool, now: number = Date.now()
   // After the prune, whatever no quarantined spool still names goes with it.
   pruneQuarantinedStagedBlobs(spool);
   result.releasedBlobs = sweepStagedBlobs(spool, spool.sessionIds(), now);
-  result.prunedTranscripts = prunePluginTranscripts(now);
+  // The spool's OWN home: a hook resolving a project pin must not age the
+  // claims and transcripts of whatever home the process's environment names.
+  result.prunedTranscripts = prunePluginTranscripts(now, process.env, spool.mycoHome);
   return result;
 }

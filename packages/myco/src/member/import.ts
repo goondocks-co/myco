@@ -264,7 +264,7 @@ const emptyTally = (agent: string): AgentTally => ({ agent, found: 0, imported: 
  */
 export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<ImportReport> {
   const now = deps.now ?? Date.now;
-  const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: deps.cwd ?? process.cwd() });
   const fetchImpl = deps.fetch ?? globalThis.fetch;
 
   const entries = listRegistryEntries(mycoHome);

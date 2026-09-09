@@ -13,7 +13,7 @@
  */
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { memberHeaders, type CredentialSource } from '../member/constants.js';
-import { parseCredentialFlag, resolveCredential, type CredentialRecord } from '../member/credential.js';
+import { parseCredentialFlag, resolveCredential, type CredentialOptions, type CredentialRecord } from '../member/credential.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES } from '../member/constants.js';
 
 export const MCP_PATH = '/mcp';
@@ -36,7 +36,7 @@ export interface DeploymentUpstream {
 /** The Deployment upstream for the declared source, or null (with the member's stderr diagnostic) when no credential resolves. */
 export function resolveDeploymentUpstream(
   source: CredentialSource,
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; mycoHome?: string } = {},
+  opts: CredentialOptions = {},
 ): DeploymentUpstream | null {
   const record = resolveCredential(source, opts);
   if (record === null) return null;

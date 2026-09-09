@@ -77,6 +77,10 @@ describe('the member-project install scope', () => {
       expect(command).toContain('--myco-managed');
       expect(command).toContain('--symbiont claude-code');
       expect(path.isAbsolute(command.split(' ')[0])).toBe(true);
+      // No environment prefix: the binary resolves the home from the project's
+      // own pin, so a command carrying one would freeze this machine's home
+      // into a file the project keeps.
+      expect(command).not.toContain('MYCO_HOME');
       expect(hookNameInCommand(command)).not.toBe(NEVER_DRAINS_HOOK);
     }
     expect(Object.keys(readTarget().hooks as object)).not.toContain('PreToolUse');
@@ -88,10 +92,12 @@ describe('the member-project install scope', () => {
     // The member scope writes two files for an mcp-transport symbiont: the hooks target and the MCP server list.
     expect(fs.readdirSync(projectRoot).sort()).toEqual(['.claude', '.mcp.json']);
     expect(fs.readdirSync(path.join(projectRoot, '.claude'))).toEqual(['settings.local.json']);
-    const mcp = JSON.parse(fs.readFileSync(path.join(projectRoot, '.mcp.json'), 'utf8')) as { mcpServers: Record<string, { command: string; args: string[] }> };
+    const mcp = JSON.parse(fs.readFileSync(path.join(projectRoot, '.mcp.json'), 'utf8')) as { mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> };
     expect(Object.keys(mcp.mcpServers)).toEqual(['myco']);
     expect(mcp.mcpServers.myco.args).toEqual(['mcp', CREDENTIAL_FLAG, 'registry']);
     expect(path.isAbsolute(mcp.mcpServers.myco.command)).toBe(true);
+    // Nor does the MCP entry name a home: `myco mcp` resolves the project's pin itself.
+    expect(mcp.mcpServers.myco.env?.MYCO_HOME).toBeUndefined();
   });
 
   it('preserves the file\'s other keys and every hook it does not own', () => {

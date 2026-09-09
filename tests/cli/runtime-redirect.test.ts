@@ -510,7 +510,7 @@ describe('maybeRedirect (integration)', () => {
     return pinned;
   }
 
-  it('carries a trusted project runtime.home into the re-exec as MYCO_HOME', () => {
+  it('carries a trusted project runtime.home into the re-exec as MYCO_HOME, and keeps an explicit one', () => {
     if (!POSIX) return;
     const { shimPath } = makeShim();
     const home = makeMycoHome();
@@ -523,13 +523,47 @@ describe('maybeRedirect (integration)', () => {
     fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), pinned);
     fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.home'), devHome);
 
+    // Nothing exported (a `make dev-link` contributor's shell): the pin decides.
     const res = spawnSync(process.execPath, [shimPath], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+      env: { ...process.env, MYCO_HOME: undefined, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+    });
+    expect(res.status).toBe(0);
+    expect(res.stdout).toBe(`home=${devHome}`);
+
+    // An explicit MYCO_HOME outranks the pin — the same order the binary's
+    // resolver and the plugin snippet apply, so one project cannot send the CLI
+    // to one home and its in-process plugin to another.
+    const explicit = spawnSync(process.execPath, [shimPath], {
       cwd: projectRoot,
       encoding: 'utf-8',
       env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
     });
+    expect(explicit.status).toBe(0);
+    expect(explicit.stdout).toBe(`home=${home}`);
+  });
+
+  it('refuses a runtime.home whose value is not an absolute path', () => {
+    if (!POSIX) return;
+    const { shimPath } = makeShim();
+    makeMycoHome();
+    const pinned = makeHomeEchoBinary('home-echo-relative.sh');
+    const projectRoot = fs.mkdtempSync(path.join(tmpRoot, 'project-relative-'));
+    fs.mkdirSync(path.join(projectRoot, '.myco'));
+    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), pinned);
+    // The shape a repository could carry: relative, so it would resolve inside
+    // whatever checkout the reader happens to be standing in.
+    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.home'), 'vendor/home');
+
+    const res = spawnSync(process.execPath, [shimPath], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+      env: { ...process.env, MYCO_HOME: undefined, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+    });
     expect(res.status).toBe(0);
-    expect(res.stdout).toBe(`home=${devHome}`);
+    // Nothing exported: the child resolves its home for itself.
+    expect(res.stdout).toBe('home=');
   });
 
   it('leaves MYCO_HOME at the inherited prod default when no runtime.home pin exists', () => {
@@ -549,25 +583,31 @@ describe('maybeRedirect (integration)', () => {
     expect(res.stdout).toBe(`home=${home}`);
   });
 
-  it('refuses an untrusted (group-writable) runtime.home — MYCO_HOME stays prod', () => {
+  it('refuses an untrusted (group-writable) runtime.home — nothing is exported', () => {
     if (!POSIX) return;
     const { shimPath } = makeShim();
-    const home = makeMycoHome();
+    makeMycoHome();
     const pinned = makeHomeEchoBinary('home-echo-untrusted.sh');
     const devHome = fs.mkdtempSync(path.join(tmpRoot, 'dev-home-untrusted-'));
 
-    fs.writeFileSync(path.join(home, 'runtime.command'), pinned);
-    const homePin = path.join(home, 'runtime.home');
+    // A PROJECT-scope pin, found by the walk from cwd: the machine scope would
+    // need MYCO_HOME to locate it, and an explicit MYCO_HOME outranks the home
+    // pin, so this gate would pass without the refusal ever running.
+    const projectRoot = fs.mkdtempSync(path.join(tmpRoot, 'project-untrusted-'));
+    fs.mkdirSync(path.join(projectRoot, '.myco'));
+    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), pinned);
+    const homePin = path.join(projectRoot, '.myco', 'runtime.home');
     fs.writeFileSync(homePin, devHome);
     fs.chmodSync(homePin, 0o664); // group-writable → refused by G7
 
     const res = spawnSync(process.execPath, [shimPath], {
-      cwd: tmpRoot,
+      cwd: projectRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+      env: { ...process.env, MYCO_HOME: undefined, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
     });
     expect(res.status).toBe(0);
-    // The untrusted dev-home pin is refused; the child keeps the prod home.
-    expect(res.stdout).toBe(`home=${home}`);
+    // The untrusted dev-home pin is refused, so nothing is exported and the
+    // child resolves its own home.
+    expect(res.stdout).toBe('home=');
   });
 });

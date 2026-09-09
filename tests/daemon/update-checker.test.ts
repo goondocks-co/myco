@@ -42,6 +42,13 @@ const fsMocks = {
     err.code = 'ENOENT';
     throw err;
   }),
+  // The pin trust check lstats a pin — following a link would report the
+  // target's owner and mode — so the mock answers it exactly as statSync does.
+  lstatSync: mock(() => {
+    const err: NodeJS.ErrnoException = new Error('ENOENT');
+    err.code = 'ENOENT';
+    throw err;
+  }),
   realpathSync: mock((p: unknown) => String(p)),
   writeFileSync: mock(() => undefined),
   mkdirSync: mock(() => undefined),
@@ -145,7 +152,20 @@ function fakeStat(content: string): fs.Stats {
     size: content.length,
     uid: typeof process.getuid === 'function' ? process.getuid() : 0,
     mode: 0o100644,
+    isSymbolicLink: () => false,
   } as unknown as fs.Stats;
+}
+
+/**
+ * Point `lstatSync` at whatever `statSync` currently answers, so a test that
+ * describes a pin file through statSync describes it to the trust check too.
+ * A stat that names no `isSymbolicLink` reads as a regular file.
+ */
+function lstatFollowsStat(): void {
+  vi.mocked(fs.lstatSync).mockImplementation(((p: unknown) => {
+    const stat = (fs.statSync as unknown as (path: unknown) => fs.Stats)(p);
+    return (typeof stat.isSymbolicLink === 'function' ? stat : { ...stat, isSymbolicLink: () => false }) as fs.Stats;
+  }) as never);
 }
 
 /** Helper: mock fs.readFileSync to return specific content for a path. */
@@ -197,6 +217,7 @@ beforeEach(() => {
     err.code = 'ENOENT';
     throw err;
   });
+  lstatFollowsStat();
   vi.mocked(fs.realpathSync).mockImplementation((p) => String(p));
   vi.mocked(fs.mkdirSync).mockReturnValue(undefined);
   vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
