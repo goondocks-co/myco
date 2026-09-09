@@ -10,6 +10,11 @@
  *
  * A harness absent here has no Deployment credential to inject and runs under
  * its own login, which is the ordinary case on a machine a person uses.
+ *
+ * A provider is one secret slot, and a slot serves everything the Deployment
+ * authenticates with it: the `openai` slot a codex run reads is the same one
+ * the embedding provider reads, so a Deployment holding a key for embeddings is
+ * holding one for every codex run as well.
  */
 export type HarnessProvider = 'anthropic' | 'openai' | 'google';
 

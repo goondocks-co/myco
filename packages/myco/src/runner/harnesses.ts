@@ -17,6 +17,8 @@
  *   airtight, which is why it is a field rather than one rule applied thrice.
  */
 
+import { expandHome } from '../paths/home.js';
+
 /** How a harness is started so it speaks the agent protocol, or that it does not speak it at all. */
 export type LaunchShape =
   | { kind: 'native' }
@@ -34,10 +36,14 @@ export type CredentialProbe =
  * How a per-run configuration becomes the harness's only tool source.
  *
  * `flag` is airtight: the harness is told to use this configuration and ignore
- * every other. `home` redirects the harness's whole configuration directory, so
- * the servers a host already configured are out of reach. `additive` is neither:
- * the run's servers are added to whatever the harness already has, and a worker
- * cannot make that exclusive from outside.
+ * every other. `home` is airtight for the TOOL surface, by giving the harness a
+ * configuration directory of its own: what the machine configured is carried
+ * into it, its login included, and the servers it configured are not, so no
+ * server but the run's is in reach. What a home does not isolate is the rest of
+ * that configuration, which flows into a run queued from elsewhere, so a driver
+ * that redirects a home pins what a queued run cannot inherit. `additive` is
+ * neither: the run's servers are added to whatever the harness already has, and
+ * a worker cannot make that exclusive from outside.
  */
 export type Isolation =
   | { kind: 'flag'; args: readonly string[] }
@@ -98,4 +104,19 @@ const BY_ID = new Map(HARNESSES.map((h) => [h.id, h]));
 /** The harness this id names, or null when the worker serves none by that name. */
 export function harnessById(id: string): Harness | null {
   return BY_ID.get(id) ?? null;
+}
+
+/**
+ * The absolute path of the file this harness keeps its login in, or null where
+ * only its binary can answer.
+ *
+ * The declaration above is the one place that path is written. Detection reads
+ * a login through this, and so does a driver that has to carry one into a run,
+ * so a harness that moves its credential file is followed everywhere by the
+ * edit that moves it here.
+ */
+export function credentialFile(harness: Harness): string | null {
+  const probe = harness.credential;
+  if (probe.kind === 'command') return null;
+  return expandHome(probe.path);
 }

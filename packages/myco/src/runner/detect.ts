@@ -11,17 +11,13 @@
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { HARNESSES, type CredentialProbe, type Harness } from './harnesses.js';
+import { credentialFile, HARNESSES, type Harness } from './harnesses.js';
 
 export interface DetectedHarness {
   id: string;
   installed: boolean;
   authenticated: boolean;
 }
-
-const expand = (path: string): string => (path.startsWith('~/') ? join(homedir(), path.slice(2)) : path);
 
 /**
  * The environment every probe runs under: this process's own, passed explicitly.
@@ -49,9 +45,8 @@ export function locate(binary: string): string | null {
 }
 
 /** A file that exists and holds at least one of the keys a login writes. An empty file is a logged-out file. */
-function fileHolds(path: string, requires: readonly string[]): boolean {
-  const at = expand(path);
-  if (!existsSync(at)) return false;
+function fileHolds(at: string | null, requires: readonly string[]): boolean {
+  if (at === null || !existsSync(at)) return false;
   let parsed: unknown;
   try { parsed = JSON.parse(readFileSync(at, 'utf8')); } catch { return false; }
   if (parsed === null || typeof parsed !== 'object') return false;
@@ -70,10 +65,11 @@ function commandSucceeds(binary: string, args: readonly string[]): boolean {
   }
 }
 
-function authenticated(harness: Harness, probe: CredentialProbe): boolean {
-  if (probe.kind === 'file') return fileHolds(probe.path, probe.requires);
+function authenticated(harness: Harness): boolean {
+  const probe = harness.credential;
+  if (probe.kind === 'file') return fileHolds(credentialFile(harness), probe.requires);
   if (probe.kind === 'command') return commandSucceeds(harness.binary, probe.args);
-  return fileHolds(probe.path, probe.requires) || commandSucceeds(harness.binary, probe.args);
+  return fileHolds(credentialFile(harness), probe.requires) || commandSucceeds(harness.binary, probe.args);
 }
 
 /** Every harness this machine has, with whether each is logged in. A worker offers this list on every claim. */
@@ -83,7 +79,7 @@ export function detectHarnesses(only?: readonly string[]): DetectedHarness[] {
   for (const harness of HARNESSES) {
     if (wanted !== null && !wanted.has(harness.id)) continue;
     const installed = locate(harness.binary) !== null;
-    out.push({ id: harness.id, installed, authenticated: installed && authenticated(harness, harness.credential) });
+    out.push({ id: harness.id, installed, authenticated: installed && authenticated(harness) });
   }
   return out;
 }
