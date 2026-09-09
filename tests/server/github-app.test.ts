@@ -8,12 +8,12 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   convertManifestCode, installSignInSecrets, isDeploymentUrl, manifestFor, manifestFormAction, manifestPage,
   registerGitHubApp, RegistrationRefused, resolveSignInTarget, verifySignIn,
 } from '@myco/server/github-app.js';
-import { putWorkerSecrets, writeDeploymentRecord, WranglerAbsent } from '@myco/server/cloudflare.js';
+import { deploymentRecordPath, putWorkerSecrets, writeDeploymentRecord, WranglerAbsent } from '@myco/server/cloudflare.js';
 import { materializeBundle, resolveDeploymentPaths } from '@myco/server/deployment.js';
 import { HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
 import { systemRunner, type CommandRunner, type CommandResult, type RunOptions } from '@myco/server/runner.js';
@@ -100,16 +100,20 @@ describe('the conversion', () => {
 });
 
 describe('installing the credentials', () => {
-  it('Cloudflare: one `secret bulk` naming the Worker, both values on stdin, the account pinned, no cwd, after the wrangler presence check', async () => {
+  it('Cloudflare: one `secret bulk` naming the Worker, both values on stdin, the account pinned, in the binary\'s own directory, after the wrangler presence check', async () => {
     const r = runner();
-    await installSignInSecrets({ kind: 'cloudflare', record: RECORD }, { clientId: 'Iv1.x', clientSecret: 's' }, r);
+    const home = mkdtempSync(join(tmpdir(), 'myco-github-secrets-'));
+    await installSignInSecrets({ kind: 'cloudflare', record: RECORD, mycoHome: home }, { clientId: 'Iv1.x', clientSecret: 's' }, r);
     // The service list Compose is asked for is a read, not an act.
     expect(calls.filter((c) => !c.args.includes('--services')).map((c) => [c.command, ...c.args])).toEqual([
       ['npx', '--no-install', 'wrangler', '--version'],
       ['npx', '--no-install', 'wrangler', 'secret', 'bulk', '--name', 'myco-server'],
     ]);
+    // GATE: wrangler walks UP from its working directory for a configuration, so
+    // every command here runs in the directory beside the record — the binary's
+    // own, holding none — and not wherever the operator stands.
+    for (const call of calls) expect({ args: call.args.join(' '), cwd: call.options?.cwd }).toEqual({ args: call.args.join(' '), cwd: dirname(deploymentRecordPath(home)) });
     const bulk = calls[1]!;
-    expect(bulk.options?.cwd).toBeUndefined();
     expect(bulk.options?.env?.CLOUDFLARE_ACCOUNT_ID).toBe(ACCOUNT);
     expect(JSON.parse(bulk.options?.input ?? '')).toEqual({ GITHUB_CLIENT_ID: 'Iv1.x', GITHUB_CLIENT_SECRET: 's' });
     expect(bulk.args.join(' ')).not.toContain('s3cr3t');
@@ -236,6 +240,7 @@ describe('the whole flow on a loopback listener', () => {
     await expect(fetch(pageUrl)).rejects.toThrow();
     expect(result).toEqual({ app: { slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', clientId: 'Iv1.deadbeef', ownerLogin: 'goondocks-co' }, callbackUrl: `${URL_}/auth/callback`, verified: { ok: true } });
     expect(calls.map((c) => c.args.slice(0, 4))).toEqual([['--no-install', 'wrangler', '--version'], ['--no-install', 'wrangler', 'secret', 'bulk']]);
+    for (const call of calls) expect({ args: call.args.join(' '), cwd: call.options?.cwd }).toEqual({ args: call.args.join(' '), cwd: dirname(deploymentRecordPath(home)) });
     expect(calls[1]!.options?.env?.WRANGLER_LOG).toBe('log');
     expect(JSON.parse(readFileSync(join(home, 'server', 'cloudflare', 'record.json'), 'utf8')).url).toBe(URL_);
     expect(logs.join('\n')).not.toContain('s3cr3t');

@@ -3,15 +3,15 @@
  * run returning to the queue.
  *
  * This needs three authenticated harnesses on the machine it runs on, which a
- * CI runner does not have, so MYCO_SMOKE_SERVER is what selects it: without a
- * Deployment named there the suite skips, and it is run by hand on a machine
- * that holds the harnesses. What CI holds instead is the claim, the lease, the
- * role gate and the driver contract, which need no harness at all.
+ * CI runner does not have. The default profile collects this file like any
+ * other, so MYCO_SMOKE_SERVER is what selects it: with no Deployment named
+ * there every test here skips, and it is run by hand on a machine that holds
+ * the harnesses. What CI holds instead is the claim, the lease, the role gate
+ * and the driver contract, which need no harness at all.
  *
  * Run it as:
- *   MYCO_TEST_PROFILE=integration MYCO_SMOKE_SERVER=<url> npm test -- tests/smoke/worker-run.smoke.test.ts
- * against a Deployment this machine holds an administrator membership for. The
- * default profile excludes `tests/smoke/`, so the profile is what selects it.
+ *   MYCO_SMOKE_SERVER=<url> npm test -- tests/smoke/worker-run.smoke.test.ts
+ * against a Deployment this machine holds an administrator membership for.
  */
 import { describe, expect, it } from 'bun:test';
 import { detectHarnesses } from '@myco/runner/detect.js';

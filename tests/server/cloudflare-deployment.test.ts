@@ -11,13 +11,14 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   AccountNotSelected,
   backupCloudflare,
   cloudflareStatus,
   deployWorker,
   applyMigrations,
+  deploymentRecordPath,
   listAccounts,
   readDeploymentRecord,
   writeDeploymentRecord,
@@ -26,10 +27,10 @@ import {
 import { VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 
-let calls: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = [];
+let calls: { command: string; args: string[]; env?: NodeJS.ProcessEnv; cwd?: string }[] = [];
 const runner = (result: Partial<CommandResult> = {}): CommandRunner => ({
   async run(command, args, options) {
-    calls.push({ command, args: [...args], env: options?.env });
+    calls.push({ command, args: [...args], env: options?.env, cwd: options?.cwd });
     return { code: 0, stdout: '', stderr: '', ...result };
   },
 });
@@ -93,10 +94,15 @@ describe('account selection', () => {
       '└───────────────────────────┴──────────────────────────────────┘',
     ].join('\n');
 
-    expect(await listAccounts(runner({ stdout: whoami }))).toEqual([
+    const home = mkdtempSync(join(tmpdir(), 'myco-cf-accounts-'));
+    expect(await listAccounts(runner({ stdout: whoami }), home)).toEqual([
       { name: 'Chris Kirby', id: 'b134c2135129c4800082e677fbffb286' },
       { name: 'Collagen Advocacy Network', id: '1f776044f26a8bbc73dc418bfafd4e0f' },
     ]);
+    // GATE: this one runs before any record exists, and it runs where every
+    // other command here does — the binary's own directory, holding no wrangler
+    // configuration for wrangler to walk up into.
+    expect(calls.map((c) => c.cwd)).toEqual([dirname(deploymentRecordPath(home))]);
   });
 });
 

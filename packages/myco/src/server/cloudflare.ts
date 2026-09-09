@@ -80,8 +80,8 @@ function configArgs(options: { configFile?: string }): string[] {
 export interface AccountRef { name: string; id: string }
 
 /** Accounts this login can reach, for a caller that has to choose one. */
-export async function listAccounts(runner: CommandRunner = systemRunner()): Promise<AccountRef[]> {
-  const result = await runner.run('npx', wrangler('whoami'), {});
+export async function listAccounts(runner: CommandRunner = systemRunner(), mycoHome?: string): Promise<AccountRef[]> {
+  const result = await runner.run('npx', wrangler('whoami'), { cwd: ensureCommandDir(mycoHome) });
   const rows: AccountRef[] = [];
   for (const line of result.stdout.split('\n')) {
     // `whoami` prints a table; the id is the 32-hex cell.
@@ -359,6 +359,8 @@ export interface WorkerSecretTarget {
   accountId: string;
   workerName: string;
   runner?: CommandRunner;
+  /** Whose machine state the command directory belongs to; this machine's by default. */
+  mycoHome?: string;
 }
 
 /**
@@ -381,7 +383,7 @@ export class WranglerNotSignedIn extends WranglerNotReady {
   constructor() {
     super(
       'wrangler is installed and signed in to no Cloudflare account; run `wrangler login` on this machine, '
-      + 'or set CLOUDFLARE_API_TOKEN in a shell that cannot open a browser, and retry',
+      + 'or set CLOUDFLARE_API_TOKEN in a shell that cannot open a browser (a token in the environment is taken on trust), and retry',
     );
     this.name = 'WranglerNotSignedIn';
   }
@@ -421,7 +423,9 @@ function versionOf(printed: string): string | null {
  *
  * Both are checked where the commands run, because `npx` resolves wrangler from
  * its working directory: a check that passed somewhere else clears a command
- * that fails. The token, when the environment carries one, is the identity —
+ * that fails. The token, when the environment carries one, is the identity and
+ * is taken on trust: verifying it costs a request to Cloudflare, and a token
+ * that is stale or scoped wrong fails in the first real command's own words.
  * `whoami` is what an interactive login is asked for.
  *
  * The bundled-version comparison is a note, not a refusal: the Worker travels
@@ -458,13 +462,31 @@ export async function assertWranglerReady(readiness: WranglerReadiness = {}): Pr
 export async function putWorkerSecrets(target: WorkerSecretTarget, secrets: WorkerSecrets): Promise<void> {
   if (!target.accountId) throw new AccountNotSelected([]);
   const runner = target.runner ?? systemRunner();
-  await assertWranglerPresent(runner);
+  const cwd = ensureCommandDir(target.mycoHome);
+  await assertWranglerPresent(runner, cwd);
   // A debug log level makes wrangler print the request it sends — the secrets
   // with it — and a failed command's output is what the operator reads.
   await runOrThrow(runner, 'npx', wrangler('secret', 'bulk', '--name', target.workerName), {
+    cwd,
     env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: target.accountId, WRANGLER_LOG: 'log' },
     input: JSON.stringify(secrets),
   });
+}
+
+/**
+ * The directory every command here spawns in, on disk.
+ *
+ * Wrangler walks UP from its working directory looking for a configuration, so a
+ * command run from wherever the operator stands can pick up a checkout's
+ * `wrangler.toml`; this directory is the binary's own and holds none. It sits
+ * beside the deployment record, and it is created on the way to the command
+ * rather than by whatever happens to write a file first — a spawn into a
+ * directory that is not there reports a missing COMMAND.
+ */
+export function ensureCommandDir(mycoHome?: string): string {
+  const dir = path.dirname(deploymentRecordPath(mycoHome));
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
 }
 
 export function deploymentRecordPath(mycoHome = resolveMycoHome()): string {

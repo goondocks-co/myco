@@ -156,7 +156,7 @@ export async function convertManifestCode(code: string, fetchImpl: typeof fetch 
 /** The target's own way of holding the two secrets. */
 export async function installSignInSecrets(target: SignInTarget, app: Pick<RegisteredApp, 'clientId' | 'clientSecret'>, runner?: CommandRunner): Promise<void> {
   if (target.kind === 'cloudflare') {
-    await putWorkerSecrets({ accountId: target.record.accountId, workerName: target.record.workerName, runner }, { GITHUB_CLIENT_ID: app.clientId, GITHUB_CLIENT_SECRET: app.clientSecret });
+    await putWorkerSecrets({ accountId: target.record.accountId, workerName: target.record.workerName, runner, mycoHome: target.mycoHome }, { GITHUB_CLIENT_ID: app.clientId, GITHUB_CLIENT_SECRET: app.clientSecret });
     return;
   }
   // The credential is written only once the recreate that applies it is known

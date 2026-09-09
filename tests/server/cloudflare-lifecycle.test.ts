@@ -447,7 +447,7 @@ describe('what the CLI prints when this machine is not ready', () => {
    * constants the code reads, so a new filter does not leave this hanging on
    * the index it waits for.
    */
-  const WRANGLER_ANSWERS = [
+  const wranglerAnswers = (version: string): string => [
     'case "$*" in',
     `  *"vectorize list-metadata-index"*) echo '${JSON.stringify(VECTOR_METADATA_FIELDS.map((field) => ({ propertyName: field, indexType: field === 'created_at' ? 'Number' : 'String' })))}';;`,
     `  *"vectorize list --json"*) echo '[{"name":"${VECTOR_INDEX_NAME}"}]';;`,
@@ -457,19 +457,44 @@ describe('what the CLI prints when this machine is not ready', () => {
     `  *"secrets-store store list"*) echo '${STORE}';;`,
     '  *" deploy "*) echo "Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b";;',
     '  *whoami*) echo "account";;',
-    '  *--version*) echo " wrangler ' + BUNDLED_WORKER_WRANGLER + '";;',
+    `  *--version*) echo " wrangler ${version}";;`,
     'esac',
   ].join('\n');
 
   it.skipIf(process.platform === 'win32')('GATE: a finished create names the record at the path THIS home holds it, not a literal home', async () => {
     const home = freshHome();
-    const done = await withEnvironment(npxAnswering(WRANGLER_ANSWERS), ['create', '--target', 'cloudflare', '--account-id', ACCOUNT], home);
+    const done = await withEnvironment(npxAnswering(wranglerAnswers(BUNDLED_WORKER_WRANGLER)), ['create', '--target', 'cloudflare', '--account-id', ACCOUNT], home);
 
     expect({ exited: done.exited, said: done.said }).toEqual({ exited: false, said: '' });
     // An operator with MYCO_HOME elsewhere is sent to the file that exists.
     expect(done.printed).toContain(join(home, 'server', 'cloudflare', 'record.json'));
     expect(done.printed).not.toContain('~/.myco');
     expect(existsSync(join(home, 'server', 'cloudflare', 'record.json'))).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('GATE: a wrangler a major version from the bundled one says so to the operator, and the verb still finishes', async () => {
+    // The note is reported through the lifecycle's `report`, and the CLI is the
+    // only thing that wires one: unwired, the comparison talks to nobody.
+    const done = await withEnvironment(npxAnswering(wranglerAnswers('3.0.0')), ['create', '--target', 'cloudflare', '--account-id', ACCOUNT]);
+
+    expect({ exited: done.exited, said: done.said }).toEqual({ exited: false, said: '' });
+    expect(done.printed).toContain('wrangler 3.0.0');
+    expect(done.printed).toContain(BUNDLED_WORKER_WRANGLER);
+  });
+
+  it('GATE: `server config` without a record names the file this home would hold it in', async () => {
+    const held = process.env.MYCO_HOME;
+    const home = freshHome();
+    process.env.MYCO_HOME = home;
+    try {
+      const refused = await drive(['config']);
+      expect(refused.exited).toBe(true);
+      expect(refused.said).toContain(join(home, 'server', 'cloudflare', 'record.json'));
+      expect(refused.said).not.toContain('~/.myco');
+    } finally {
+      if (held === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = held;
+    }
   });
 
   it.skipIf(process.platform === 'win32')('GATE: with no Cloudflare login, it names `wrangler login` and CLOUDFLARE_API_TOKEN, and exits 1', async () => {

@@ -14,6 +14,7 @@ import { randomBytes } from 'node:crypto';
 import {
   applyMigrations,
   assertWranglerReady,
+  ensureCommandDir,
   cloudflareStatus,
   deleteWorker,
   deployWorker,
@@ -29,7 +30,7 @@ import {
   type CloudflareOptions,
   type DeploymentRecord,
 } from './cloudflare.js';
-import { ensureStagingRoot, stageCloudflareDeploy } from './cloudflare-stage.js';
+import { stageCloudflareDeploy } from './cloudflare-stage.js';
 import { VECTOR_INDEX_NAME } from './vector-config.js';
 
 export { DEPLOY_CONFIG_NAME } from './cloudflare-stage.js';
@@ -65,7 +66,7 @@ function staged(record: DeploymentRecord, options: LifecycleOptions): Cloudflare
  * disk before any command is pointed at it.
  */
 function bareCommand(options: LifecycleOptions): CloudflareOptions {
-  return { ...options, configDir: ensureStagingRoot(options.mycoHome) };
+  return { ...options, configDir: ensureCommandDir(options.mycoHome) };
 }
 
 /**
@@ -80,7 +81,7 @@ function bareCommand(options: LifecycleOptions): CloudflareOptions {
 async function preflight(options: LifecycleOptions): Promise<void> {
   await assertWranglerReady({
     ...(options.runner === undefined ? {} : { runner: options.runner }),
-    cwd: ensureStagingRoot(options.mycoHome),
+    cwd: ensureCommandDir(options.mycoHome),
     ...(options.report === undefined ? {} : { report: options.report }),
   });
 }
