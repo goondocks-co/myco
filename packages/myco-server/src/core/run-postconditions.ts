@@ -77,6 +77,12 @@ export const TITLING_REPORT_ACTION = 'summary';
  * question `digest-only` and `canopy-map` ask of their own artifact rows — those
  * carry a run column and the session row does not. The title is checked as well,
  * so a write recorded against a row that no longer holds one does not pass.
+ *
+ * The record is a second statement after the title commits, and it throws where
+ * the store refuses it, so a store fault between the two leaves the title
+ * standing and the run failed for an artifact it did in fact write. A
+ * `titled_by_run` column on the session would make the two one write and is the
+ * long-run shape; the record is what holds the rule without a migration.
  */
 export async function titleWrittenBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
   const sessionId = sessionNamedByRun(run);

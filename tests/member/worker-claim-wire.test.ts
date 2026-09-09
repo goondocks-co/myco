@@ -126,6 +126,10 @@ describe('a worker on the real claim wire', () => {
     // `completed` on the Deployment's own judgement: the stub ends its turn
     // without calling back, and a titling run owes a report and a title.
     expect(r.runRow('run_wire')).toEqual({ status: 'failed', harness: STUB_HARNESS, error: RUN_CLOSE_ERROR });
+    // The worker reported what the harness did; the Deployment recorded what the
+    // task left behind. A worker that logged only its own report would show a
+    // clean drive against a run the Deployment failed, so it says both.
+    expect(attached.lines).toContain('reported run_wire as completed; the Deployment recorded it failed');
     // Every request the worker made declared the protocol: the header is on the
     // claim and on the end, not only on the first call.
     expect(paths).toEqual(['/worker/claim', '/worker/end']);

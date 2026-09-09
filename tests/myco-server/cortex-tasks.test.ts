@@ -395,6 +395,34 @@ describe('what a run reaching the Deployment over its own routes records', () =>
     expect(calls.map((c) => c.tool)).toEqual(['/runs/report', '/runs/digest-write']);
   });
 
+  it('records the claim itself, so a container that claims and then dies has one call against it', async () => {
+    const f = await fixture();
+    // A claim is the call that MAKES a run held, so nothing holds it beforehand.
+    // A record that skipped it would read a container that claimed and died as
+    // one that never reached this Deployment at all.
+    f.pendingRun('run_claimed_only', TASK, { input_hash: 'server-hash' }, 'THE PROMPT');
+    expect(await f.answered('/runs/claim', { id: 'run_claimed_only', agentId: HARNESS_AGENT_ID, task: TASK, capability: 'cortex', harness: 'claude-sdk' }))
+      .toMatchObject({ persisted: true, claimed: true });
+    expect((await runToolCalls(f.db, SCOPE, 'run_claimed_only')).map((c) => c.tool)).toEqual(['/runs/claim']);
+  });
+
+  it('records nothing for a route it refused, so a malformed call leaves no row', async () => {
+    const f = await fixture();
+    const minted = await f.credential();
+    f.liveRun('run_malformed', DIGEST_TASK, { input_hash: 'h' }, null, false, minted.tokenId);
+
+    // A report naming no action is refused on its shape. Reaching the
+    // Deployment and being turned away is the one thing neither door records:
+    // a credential may not turn calls it may not make into rows.
+    expect(await f.answered('/runs/report', { runId: 'run_malformed', agentId: HARNESS_AGENT_ID }, minted.token))
+      .toMatchObject({ persisted: false });
+    expect(await runToolCalls(f.db, SCOPE, 'run_malformed')).toEqual([]);
+
+    // The same route, answered, does record.
+    await f.answered('/runs/report', { runId: 'run_malformed', agentId: HARNESS_AGENT_ID, action: 'digest', summary: 'wrote it' }, minted.token);
+    expect((await runToolCalls(f.db, SCOPE, 'run_malformed')).map((c) => c.tool)).toEqual(['/runs/report']);
+  });
+
   it('records nothing against a run for a credential that holds none', async () => {
     const f = await fixture();
     f.liveRun('run_unheld', DIGEST_TASK, { input_hash: 'h' });

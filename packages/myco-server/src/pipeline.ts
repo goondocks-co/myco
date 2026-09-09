@@ -3,7 +3,7 @@ import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
 import { heldRunOfCredential } from './api/run-admission.js';
-import { recordRunCall } from './core/runs.js';
+import { recordRunCall, type HeldRun } from './core/runs.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
 import { memberRole } from './auth/members-admin.js';
 import { isAdmin } from './auth/roles.js';
@@ -170,6 +170,42 @@ function requestedProject(request: Request): string | null {
 const PROTOCOL_VALUE = /^[0-9]+$/;
 
 /** A terminal refusal of the caller's own request: 200, never retried, in the route's refusal shape, carrying the classifier as its `code` beside the `reason`; telemetry carries the classifier only. */
+/**
+ * Record one run route a container drove, against the run its credential holds.
+ *
+ * Both doors a run calls through record on one rule: a call the Deployment
+ * ADMITTED and answered. A refused route answers `persisted: false` and writes
+ * nothing at all, which is what keeps a credential from turning calls it may not
+ * make into rows — the same rule the MCP door applies to a call off a run's
+ * surface.
+ *
+ * The run is normally the one resolved before the handler ran. A claim is the
+ * exception: it is the call that MAKES a run held, so nothing held it beforehand
+ * and the run is resolved again once the claim has been answered. A container
+ * that claims and then dies is then a run with one call against it rather than a
+ * run that reads as never having reached this Deployment at all.
+ */
+async function recordRunRoute(
+  env: ServerEnv,
+  auth: MemberAuth,
+  path: string,
+  answered: Response,
+  heldBefore: HeldRun | null,
+  now: number,
+): Promise<void> {
+  let persisted = false;
+  try {
+    persisted = ((await answered.clone().json()) as { persisted?: unknown }).persisted === true;
+  } catch {
+    persisted = false;
+  }
+  if (!persisted) return;
+  const held = heldBefore ?? await heldRunOfCredential(env, auth, now);
+  if (held === null) return;
+  emit({ kind: 'run_tool', runId: held.id, task: held.task, tool: path, op: null, tokenId: auth.tokenId });
+  await recordRunCall(env.db, { projectId: held.projectId }, { runId: held.id, toolName: path, op: null, durationMs: null, recordedAt: now });
+}
+
 function refuse(auth: MemberAuth, shape: Shape, reason: string, classifier: Classifier, named: Record<string, string> = {}): Response {
   emit({ kind: shape === 'stored' ? 'blob_refused' : shape === 'answered' ? 'mcp_refused' : 'ingest_refused', memberId: auth.memberId, tokenId: auth.tokenId, reason: classifier, ...named });
   return refusalResponse(shape, classifier, reason, 'terminal');
@@ -477,16 +513,14 @@ export function createServer(deps: ServerDeps) {
       // container drives itself. The run is resolved from its credential BEFORE
       // the handler runs: the handler that closes a run leaves it terminal, and a
       // terminal row resolves to no held run.
-      const holder = route.legacyRunRoute === true ? await heldRunOfCredential(env, auth, now) : null;
+      const drivesRun = route.legacyRunRoute === true && auth.memberId === HARNESS_MEMBER_ID;
+      const heldBefore = drivesRun ? await heldRunOfCredential(env, auth, now) : null;
       const answered = await route.handler(env, {
         projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
         body: body.text, bodyBytes: body.bytes, now, origin: url.origin,
       });
-      if (holder !== null) {
-        emit({ kind: 'run_tool', runId: holder.id, task: holder.task, tool: route.path, op: null, tokenId: auth.tokenId });
-        await recordRunCall(env.db, { projectId: holder.projectId }, { runId: holder.id, toolName: route.path, op: null, durationMs: null, recordedAt: now });
-      }
+      if (drivesRun) await recordRunRoute(env, auth, route.path, answered, heldBefore, now);
       return answered;
     } catch (err) {
       return failed(env, auth, route, err, bodyBytes);
