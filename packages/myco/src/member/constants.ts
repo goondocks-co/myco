@@ -19,6 +19,39 @@ export const PROTOCOL_HEADER = 'x-myco-protocol';
 export const PROJECT_HEADER = 'x-myco-project';
 
 /**
+ * The credential and the protocol, which every member request carries.
+ *
+ * Every member call composes its headers through this file and
+ * `tests/meta/member-bearer-composition.test.ts` holds that. A Deployment
+ * answers a request that declares no protocol with 409
+ * `protocol_version_unsupported` — on every route, for the life of the process
+ * — so a call site writing its own bearer header reaches no Deployment at all
+ * while passing every test that stubs one.
+ */
+function credentialHeaders(token: string, protocol: number): Record<string, string> {
+  return { authorization: `Bearer ${token}`, [PROTOCOL_HEADER]: String(protocol) };
+}
+
+/**
+ * The headers a request that acts on one Project carries. The Project is
+ * required: a credential is Deployment-wide, so a request that names none is
+ * refused `no_project`, and an optional argument would turn forgetting it into a
+ * silently omitted header rather than a type error.
+ */
+export function memberHeaders(credential: { token: string; projectId: string }, protocol: number = MEMBER_PROTOCOL): Record<string, string> {
+  return { ...credentialHeaders(credential.token, protocol), [PROJECT_HEADER]: credential.projectId };
+}
+
+/**
+ * The headers a Deployment-scoped request carries: no Project header, because
+ * the route names no Project. Stated as its own function so the absence is a
+ * choice at the call site rather than an argument someone left out.
+ */
+export function deploymentScopedHeaders(credential: { token: string }, protocol: number = MEMBER_PROTOCOL): Record<string, string> {
+  return credentialHeaders(credential.token, protocol);
+}
+
+/**
  * Every stable `code` a server answer can carry: the worker's refusal
  * classifiers plus the 503 `unavailable` code. The member classifies on these
  * and never on `reason` text.

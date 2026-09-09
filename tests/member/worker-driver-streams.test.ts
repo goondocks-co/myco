@@ -18,6 +18,7 @@ import { codexDriver } from '@myco/runner/drivers/codex.js';
 import { jsonLines } from '@myco/runner/drivers/stream.js';
 import { writeRunDir } from '@myco/runner/mcp-config.js';
 import { runWorker } from '@myco/runner/loop.js';
+import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
 import { readFileSync } from 'node:fs';
 import { turnOver, type Channel } from '@myco/runner/drivers/acp.js';
 import type { RunEvent } from '@myco/runner/events.js';
@@ -303,4 +304,65 @@ describe('the cadence a worker keeps', () => {
       ended: { projectId: 'proj_1', runId: 'run_1', status: 'completed', error: null },
     });
   }, 15_000);
+});
+
+describe('the budget a run is held to', () => {
+  it('stops a harness that outlives the run\'s budget and reports the overrun as the outcome', async () => {
+    // A harness that never ends its turn. Without a budget enforced here the
+    // worker holds the child until the harness exits on its own, and the
+    // Deployment's sweep fails the run long before that — leaving a child
+    // driving a run that no longer belongs to it.
+    expect(stubAcpHarness({ turnDelayMs: 3_600_000 })).toEqual(STUB_DETECTED);
+    const stopping = new AbortController();
+    let ended: Record<string, unknown> | null = null;
+    const lines: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
+      if (url.endsWith('/worker/claim')) {
+        return new Response(JSON.stringify({
+          persisted: true, claimed: true, heartbeatMs: 60_000,
+          run: {
+            projectId: 'proj_1', id: 'run_overrun', task: 'title-summary', instruction: 'do it',
+            // A budget of zero seconds: the grace the worker allows past a budget
+            // is what bounds this test, not the budget itself.
+            harness: STUB_HARNESS, runToken: 'tok_run', credentialEnv: {}, timeoutSeconds: 0,
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith('/worker/lease')) return new Response(JSON.stringify({ persisted: true, held: true, expiresAt: 0 }), { status: 200 });
+      if (url.endsWith('/worker/end')) { ended = JSON.parse(String(init?.body)) as Record<string, unknown>; return new Response(JSON.stringify({ persisted: true, ended: true }), { status: 200 }); }
+      return new Response(JSON.stringify({ persisted: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const attached = runWorker({
+      serverUrl: 'https://deployment.example', token: 'tok',
+      runRoot: mkdtempSync(join(tmpdir(), 'myco-budget-')),
+      only: [STUB_HARNESS], once: true, pollIdleMs: 1_000,
+      log: (line) => { lines.push(line); }, fetchImpl, signal: stopping.signal,
+    });
+    // Raced against a bound of this test's own, so a worker held by the harness
+    // fails with what it was doing rather than with a bare runner timeout.
+    const stalled = Symbol('stalled');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      attached,
+      new Promise<typeof stalled>((resolve) => { timer = setTimeout(() => resolve(stalled), 15_000); }),
+    ]);
+    clearTimeout(timer);
+    if (settled === stalled) {
+      stopping.abort();
+      await attached.catch(() => undefined);
+      throw new Error(
+        'the worker never returned: a harness that never ends its turn was not stopped by the run budget.'
+        + `\n  worker log:\n${lines.map((l) => `    ${l}`).join('\n') || '    (nothing)'}`,
+      );
+    }
+
+    // The worker stopped the child itself and said so, rather than waiting an
+    // hour for a harness that was never going to finish.
+    const { driven, refused } = settled;
+    expect({ driven, refused }).toEqual({ driven: 1, refused: null });
+    expect(ended).toEqual({ projectId: 'proj_1', runId: 'run_overrun', status: 'failed', error: 'the run outlived its budget of 0s' });
+    expect(lines.some((l) => l.includes('outlived its budget'))).toBe(true);
+  }, 40_000);
 });

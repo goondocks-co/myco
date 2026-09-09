@@ -12,7 +12,7 @@
  * re-reads the entry the next time it rebuilds its upstream.
  */
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, type CredentialSource } from '../member/constants.js';
+import { memberHeaders, type CredentialSource } from '../member/constants.js';
 import { parseCredentialFlag, resolveCredential, type CredentialRecord } from '../member/credential.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES } from '../member/constants.js';
 
@@ -21,11 +21,7 @@ export const HEALTH_PATH = '/health';
 
 /** The headers every request to the Deployment carries: the credential, the member protocol, and the Project it acts on. */
 export function deploymentHeaders(record: Pick<CredentialRecord, 'token' | 'projectId'>): Record<string, string> {
-  return {
-    authorization: `Bearer ${record.token}`,
-    [PROTOCOL_HEADER]: String(MEMBER_PROTOCOL),
-    [PROJECT_HEADER]: record.projectId,
-  };
+  return memberHeaders(record);
 }
 
 export interface DeploymentUpstream {

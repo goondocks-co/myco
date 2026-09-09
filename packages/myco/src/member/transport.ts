@@ -6,7 +6,7 @@
  * connect timeout bounds the wait for response headers, the request timeout
  * bounds the whole exchange.
  */
-import { MEMBER_CODES, MEMBER_PROTOCOL, PARKED_CODE, PROJECT_HEADER, PROTOCOL_HEADER, RESLICE_CODES, type MemberCode } from './constants.js';
+import { MEMBER_CODES, MEMBER_PROTOCOL, memberHeaders, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, type MemberCode } from './constants.js';
 import type { RequestBudget } from './budget.js';
 import type { MemberEnvelope } from './envelope.js';
 
@@ -57,6 +57,30 @@ const CODE_SET = new Set<string>(MEMBER_CODES);
 const memberCode = (value: unknown): MemberCode | null => (typeof value === 'string' && CODE_SET.has(value) ? (value as MemberCode) : null);
 const reasonOf = (body: Record<string, unknown> | null): string => (typeof body?.reason === 'string' ? body.reason : '');
 
+/**
+ * A response read into the shape every classifier decides on: the status line,
+ * whether the server disclosed its protocol, the wait it asked for, and its
+ * JSON object body where it sent one. Reading it in one place is what keeps a
+ * caller from deciding on `res.json()` alone, which makes a 409 refusal and a
+ * 200 answer indistinguishable.
+ */
+export async function rawAnswerOf(res: Response): Promise<RawAnswer> {
+  const text = await res.text();
+  let json: Record<string, unknown> | null = null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    json = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch { /* a non-JSON body classifies by its status alone */ }
+  const retryAfter = res.headers.get(RETRY_AFTER_HEADER);
+  return {
+    kind: 'response',
+    status: res.status,
+    protocolHeader: res.headers.get(PROTOCOL_HEADER) !== null,
+    retryAfterMs: retryAfter !== null && /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : undefined,
+    json,
+  };
+}
+
 export class ServerClient {
   private readonly base: string;
   private readonly protocol: number;
@@ -80,12 +104,7 @@ export class ServerClient {
     try {
       const res = await this.fetchImpl(`${this.base}${path}`, {
         method,
-        headers: {
-          authorization: `Bearer ${this.record.token}`,
-          [PROTOCOL_HEADER]: String(this.protocol),
-          [PROJECT_HEADER]: this.record.projectId,
-          ...init.headers,
-        },
+        headers: { ...memberHeaders(this.record, this.protocol), ...init.headers },
         body: init.body,
         // A redirect is an error, never a hop. Following one ships the capture
         // body to whatever host the response names and answers in that host's
@@ -97,20 +116,7 @@ export class ServerClient {
       });
       clearTimeout(connectTimer);
       phase = 'request';
-      const text = await res.text();
-      let json: Record<string, unknown> | null = null;
-      try {
-        const parsed: unknown = JSON.parse(text);
-        json = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-      } catch { /* a non-JSON body classifies by its status alone */ }
-      const retryAfter = res.headers.get(RETRY_AFTER_HEADER);
-      return {
-        kind: 'response',
-        status: res.status,
-        protocolHeader: res.headers.get(PROTOCOL_HEADER) !== null,
-        retryAfterMs: retryAfter !== null && /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : undefined,
-        json,
-      };
+      return await rawAnswerOf(res);
     } catch (err) {
       if (timedOut) return { kind: 'timeout', phase };
       return { kind: 'transport', detail: err instanceof Error ? err.message : String(err) };
