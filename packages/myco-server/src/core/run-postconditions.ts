@@ -46,6 +46,8 @@ import { TITLING_TASK } from './task-catalogue.js';
 
 /** The report a run records to say it found nothing to write. */
 export const RUN_SKIP_ACTION = 'skip';
+/** The report a digest run files after writing. */
+export const DIGEST_REPORT_ACTION = 'digest';
 
 /** A task whose product the server cannot yet see: its runs close as their runtime reports them. */
 export const RUN_CLOSE_NONE = 'none';
@@ -96,12 +98,13 @@ export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule | typeof RUN_
   'embedding-reconcile': { reports: ['embedding'] },
   'supersession-sweep': { reports: ['supersession'] },
   'digest-only': {
-    reports: ['digest', RUN_SKIP_ACTION],
+    reports: [DIGEST_REPORT_ACTION, RUN_SKIP_ACTION],
     artifact: (db, scope, run) => digestWrittenBy(db, scope, { runId: run.id, substrateHash: inputHashOf(run), since: run.startedAt }),
   },
   // The whole product of a titling run is the title on the session its dispatch
   // named, which is why it names an artifact and not the report alone.
-  [TITLING_TASK]: { reports: [TITLING_REPORT_ACTION], artifact: titleWrittenBy },
+  // A write refused for a title already standing is a pass with nothing to do, and closes as one.
+  [TITLING_TASK]: { reports: [TITLING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: titleWrittenBy },
 
   // The probe's product is the one report it files, which is what it proves.
   'container-smoke': { reports: ['container-smoke'] },

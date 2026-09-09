@@ -43,6 +43,7 @@ import { countSpores, listSpores, SPORE_BODY_CHARS, SPORE_FULL_READ_BUDGET, SPOR
 import { DIGEST_TIERS, type RecallLeaves } from './recall.js';
 import type { ProjectCapability } from './settings.js';
 import { isServedOp, NO_OP, SERVED_TOOLS, type ServedTool } from './tool-catalogue.js';
+import { DIGEST_REPORT_ACTION, RUN_SKIP_ACTION } from './run-postconditions.js';
 import { TOOL_DEFINITIONS, type ToolDefinition } from '../mcp/definitions.js';
 import { listProjectPlans } from '../read/plans.js';
 import { listSessions } from '../read/sessions.js';
@@ -350,8 +351,9 @@ export async function buildDigestInput(
     '',
     '## Material windows per tier',
     renderWindows(),
-    `One page of \`vault_spores\` carries at most ${DIGEST_SPORE_PAGE_LIMIT} previews and one page of \`vault_sessions\` at most ${DIGEST_SESSION_PAGE_LIMIT} sessions; page with \`offset\` for the rest.`,
-    `This run gets up to ${SPORE_FULL_READ_BUDGET} full reads with \`vault_spore\`, each bounded to ${DIGEST_FULL_READ_BODY_CHARS} characters; judge the rest by their previews.`,
+    `One page of \`myco_run_spores\` op "list" carries at most ${DIGEST_SPORE_PAGE_LIMIT} previews; page with \`offset\` for the rest. \`myco_run_sessions\` op "list" answers at most ${DIGEST_SESSION_PAGE_LIMIT} sessions.`,
+    `This run gets up to ${SPORE_FULL_READ_BUDGET} full reads with \`myco_run_spores\` op "get", each bounded to ${DIGEST_FULL_READ_BODY_CHARS} characters; judge the rest by their previews.`,
+    `Close with \`myco_run\` op "report": action "${DIGEST_REPORT_ACTION}" after writing, or action "${RUN_SKIP_ACTION}" when every tier was left as it stood.`,
   ];
 
   const body = parts.join('\n');

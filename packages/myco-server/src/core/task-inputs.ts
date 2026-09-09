@@ -18,6 +18,8 @@
 import type { ServerEnv } from './adapters.js';
 import { buildDigestInput } from './cortex-input.js';
 import { readRecallLeaves } from './recall.js';
+import { TITLING_TASK } from './task-catalogue.js';
+import { buildTitlingInput } from './titling-input.js';
 
 /** The task whose run regenerates this Project's digest extracts. */
 export const DIGEST_TASK = 'digest-only';
@@ -45,11 +47,14 @@ export interface TaskInput {
 export interface TaskInputOptions {
   /** The run writes its artifact from the material alone rather than carrying the current one forward. */
   fresh?: boolean;
+  /** The parameters the dispatch carries, for a task whose instruction is about one thing the dispatch names rather than the Project as a whole. */
+  params?: Record<string, unknown>;
 }
 
 /** Builds a task's prompt for one Project, and where the task is deduped, reads the hash the Project's current artifact carries. */
 export interface TaskInputBuilder {
-  build(env: ServerEnv, projectId: string, now: number, options: TaskInputOptions): Promise<TaskInput>;
+  /** The instruction, or null when what the run carries is not enough to write one. */
+  build(env: ServerEnv, projectId: string, now: number, options: TaskInputOptions): Promise<TaskInput | null>;
   /**
    * The hash on the artifact this task last wrote, or null where it has written
    * none. A builder that offers none is never deduped: its run judges tier by
@@ -66,6 +71,9 @@ export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
       const leaves = await readRecallLeaves(env.db);
       return buildDigestInput(env.db, { projectId }, { leaves, fresh: options.fresh === true, now });
     },
+  },
+  [TITLING_TASK]: {
+    build: (_env, _projectId, _now, options) => buildTitlingInput(options.params ?? {}),
   },
 };
 
@@ -91,5 +99,26 @@ export async function buildTaskInput(
     builder.build(env, projectId, now, options),
     builder.currentHash === undefined ? Promise.resolve(null) : builder.currentHash(env, projectId),
   ]);
+  if (input === null) return null;
   return builder.currentHash !== undefined && held === input.inputHash ? { unchanged: true } : { unchanged: false, input };
+}
+
+/**
+ * How a run nobody can instruct is recorded.
+ *
+ * A worker hands its harness the instruction the claim answers, and a harness
+ * given an empty prompt ends its turn at once, having called nothing; the
+ * Deployment then records a run that reports nothing. That run never reaches a
+ * worker: a queued run whose task has no builder and whose dispatch carried no
+ * instruction is ended at the claim, under this error, where the runs page
+ * shows it.
+ */
+export function uninstructedError(task: string): string {
+  return `the Deployment has no instruction for a ${task} run`;
+}
+
+/** The instruction a claimed run is driven under: the one built for its task now, else the one its dispatch carries; null when there is neither. */
+export function instructionFor(built: BuiltInput | null, stored: string | null): string | null {
+  const instruction = built !== null && !built.unchanged ? built.input.instruction : stored;
+  return instruction === null || instruction.trim() === '' ? null : instruction;
 }

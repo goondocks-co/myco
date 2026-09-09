@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { admissionForTask, MANUAL_ONLY_TASKS, RETAINED_TASKS, scheduledTasks, TASK_ADMISSION, TASK_SCHEDULE } from '@myco-server-worker/core/task-catalogue.js';
 import { PROJECT_CAPABILITIES } from '@myco-server-worker/core/settings.js';
-import { RUN_CLOSE_NONE, RUN_CLOSE_RULES, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
+import { RUN_CLOSE_NONE, RUN_CLOSE_RULES, RUN_SKIP_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LEDGER = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
@@ -96,7 +96,8 @@ describe('what each task owes before it closes', () => {
     const rule = RUN_CLOSE_RULES['title-summary'];
     expect(rule).not.toBe(RUN_CLOSE_NONE);
     if (rule === RUN_CLOSE_NONE || rule === undefined) return;
-    expect(rule.reports).toEqual([TITLING_REPORT_ACTION]);
+    // The skip is the pass whose write a standing title refused: nothing owed, nothing to hold it to.
+    expect(rule.reports).toEqual([TITLING_REPORT_ACTION, RUN_SKIP_ACTION]);
     expect(typeof rule.artifact).toBe('function');
   });
 });
