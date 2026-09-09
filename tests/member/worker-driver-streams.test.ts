@@ -10,14 +10,19 @@
  * a peer over pipes, so a peer written here answers it.
  */
 import { describe, expect, it } from 'bun:test';
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
 import { codexDriver } from '@myco/runner/drivers/codex.js';
 import { jsonLines } from '@myco/runner/drivers/stream.js';
-import { writeRunDir } from '@myco/runner/mcp-config.js';
+import { discardRunDir, writeRunDir } from '@myco/runner/mcp-config.js';
+import { credentialFile, harnessById } from '@myco/runner/harnesses.js';
+import { detectHarnesses } from '@myco/runner/detect.js';
 import { runWorker } from '@myco/runner/loop.js';
+import { parse } from 'smol-toml';
+import { MCP_SERVER_NAME } from '@myco/runner/mcp-config.js';
+import { PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
 import { readFileSync } from 'node:fs';
 import { turnOver, type Channel } from '@myco/runner/drivers/acp.js';
@@ -141,6 +146,212 @@ describe('the Codex driver', () => {
     expect(written).toContain('[mcp_servers.myco]');
     expect(written).toContain('https://deployment.example/mcp');
     expect(written).toContain(CONNECTION.runToken);
+  });
+
+  /** What a login looks like in the file this harness keeps one in. */
+  const LOGIN = '{"tokens":{"access_token":"tok_machine_login"}}';
+
+  /**
+   * The machine's own configuration home, at the path the harness manifest
+   * declares, holding these files.
+   *
+   * That path hangs off the home directory, which `tests/setup/sandbox-preload`
+   * has already pointed at a throwaway of this process's own, so what is written
+   * here is never the developer's own `~/.codex`.
+   */
+  function machineCodexHome(files: Record<string, string>): { login: string; remove: () => void } {
+    const login = credentialFile(harnessById('codex')!)!;
+    mkdirSync(dirname(login), { recursive: true, mode: 0o700 });
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(dirname(login), name), body, { mode: 0o600 });
+    return { login, remove: () => { rmSync(dirname(login), { recursive: true, force: true }); } };
+  }
+
+  /**
+   * A stub `codex` that answers the way the harness does: a turn where the home
+   * it was given holds the login, and the model API's own 401 where it does not.
+   */
+  function stubCodexReadingItsHome(signedInAs = 'tok_machine_login'): string {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-stub-'));
+    writeFileSync(join(dir, 'codex'), [
+      '#!/bin/sh',
+      `if ! grep -q ${JSON.stringify(signedInAs)} "$CODEX_HOME/auth.json" 2>/dev/null; then`,
+      `  printf '%s\\n' '{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses"}}'`,
+      '  exit 0',
+      'fi',
+      `printf '%s\\n' '{"type":"thread.started","thread_id":"t_login"}'`,
+      `printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+      '',
+    ].join('\n'), { mode: 0o755 });
+    chmodSync(join(dir, 'codex'), 0o755);
+    return dir;
+  }
+
+  it('carries the machine\'s login into the run\'s home, so a run on a signed-in machine authenticates', async () => {
+    const machine = machineCodexHome({ 'auth.json': LOGIN });
+    process.env.PATH = `${stubCodexReadingItsHome()}:${process.env.PATH ?? ''}`;
+    try {
+      const events = await collect(codexDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+      // A home carrying only the run's server is a run with no login at all: the
+      // harness reaches the model's API unauthenticated and fails the turn.
+      expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+    } finally { machine.remove(); }
+  });
+
+  it('leaves the run\'s server as the only MCP server and keeps every other setting the machine has', async () => {
+    const machine = machineCodexHome({
+      'auth.json': LOGIN,
+      'config.toml': [
+        'model = "gpt-machine"',
+        'notify = [',
+        '  "a-command",',
+        ']',
+        'mcp_servers.rooted.url = "https://rooted.example"',
+        '',
+        '[features]',
+        'web_search = true',
+        'instructions = """',
+        'a machine writes prose here, and prose says things like',
+        '[mcp_servers.playwright]',
+        '"""',
+        'kept_after_the_string = true',
+        '',
+        '[mcp_servers.playwright]',
+        'command = "npx"',
+        '',
+        '[mcp_servers.playwright.env]',
+        'TOKEN = "operator-secret"',
+        '',
+        '[mcp_servers.myco]',
+        'url = "https://someone-elses.example/mcp"',
+        '',
+        '[tui]',
+        'theme = "dark"',
+        '',
+      ].join('\n'),
+    });
+    process.env.PATH = `${stubCodexReadingItsHome()}:${process.env.PATH ?? ''}`;
+    try {
+      const run = runDir();
+      await collect(codexDriver.run({ ...run, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+      const merged = readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8');
+      // What the operator set is what the run behaves under, whatever shape they
+      // wrote it in — a multi-line string that reads like a server declaration
+      // among it, which is a value and not a declaration.
+      const read = parse(merged) as Record<string, Record<string, unknown>>;
+      expect(read.model).toBe('gpt-machine');
+      expect(read.features).toEqual({
+        web_search: true,
+        instructions: 'a machine writes prose here, and prose says things like\n[mcp_servers.playwright]\n',
+        kept_after_the_string: true,
+      });
+      expect(read.tui).toEqual({ theme: 'dark' });
+      expect(read.notify).toEqual(['a-command']);
+      // A run queued from elsewhere answers no approvals and is bounded by its
+      // own directory, whatever the machine allows the person in front of it.
+      expect({ approval: read.approval_policy, sandbox: read.sandbox_mode }).toEqual({ approval: 'never', sandbox: 'workspace-write' });
+      // The run's server is the only server, whether the machine declared its
+      // own under a header or at the root — and no header a machine's server
+      // carries reaches the run's directory.
+      expect(Object.keys(read.mcp_servers)).toEqual([MCP_SERVER_NAME]);
+      expect(read.mcp_servers[MCP_SERVER_NAME]).toEqual({
+        url: 'https://deployment.example/mcp',
+        http_headers: { authorization: `Bearer ${CONNECTION.runToken}`, [PROTOCOL_HEADER]: '1', [PROJECT_HEADER]: 'proj_1' },
+      });
+      expect(merged).not.toContain('operator-secret');
+      expect(merged).not.toContain('someone-elses.example');
+    } finally { machine.remove(); }
+  });
+
+  it('keeps no copy of the login, and the machine\'s login outlives the run\'s home', async () => {
+    const machine = machineCodexHome({ 'auth.json': LOGIN });
+    process.env.PATH = `${stubCodexReadingItsHome()}:${process.env.PATH ?? ''}`;
+    try {
+      const run = runDir();
+      await collect(codexDriver.run({ ...run, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+      const home = join(run.scratchDir, 'codex-home');
+      // The login is reachable from the run's home and is not in it: a token the
+      // harness refreshes is refreshed in the file the machine signs in with,
+      // and there is no second copy of a credential for anything to read.
+      expect(lstatSync(join(home, 'auth.json')).isSymbolicLink()).toBe(true);
+      expect(readFileSync(join(home, 'auth.json'), 'utf8')).toBe(LOGIN);
+      const copies = readdirSync(home).filter((entry) => {
+        const at = join(home, entry);
+        return lstatSync(at).isFile() && readFileSync(at, 'utf8').includes('tok_machine_login');
+      });
+      expect({ copies, mode: (statSync(home).mode & 0o777).toString(8) }).toEqual({ copies: [], mode: '700' });
+      discardRunDir(run.scratchDir);
+      expect(existsSync(run.scratchDir)).toBe(false);
+      // What the run's directory took with it is the run's, and the machine's
+      // login is not: removing a link removes the link.
+      expect(readFileSync(machine.login, 'utf8')).toBe(LOGIN);
+    } finally { machine.remove(); }
+  });
+
+  it('reads where the login is kept from the harness declaration rather than restating the path', async () => {
+    const machine = machineCodexHome({ 'auth.json': LOGIN });
+    process.env.PATH = `${stubCodexReadingItsHome()}:${process.env.PATH ?? ''}`;
+    try {
+      const run = runDir();
+      await collect(codexDriver.run({ ...run, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+      // The manifest is where this path changes, so a driver naming it a second
+      // time carries the old one the moment the manifest moves.
+      expect(readlinkSync(join(run.scratchDir, 'codex-home', 'auth.json'))).toBe(credentialFile(harnessById('codex')!));
+    } finally { machine.remove(); }
+  });
+
+  it('signs the run in with the Deployment\'s own key where it holds one, rather than with the machine\'s login', async () => {
+    const machine = machineCodexHome({ 'auth.json': LOGIN });
+    // The harness reads a key from its login file and not from the environment,
+    // so a key left in the environment alone signs nothing in.
+    process.env.PATH = `${stubCodexReadingItsHome('sk-deployment')}:${process.env.PATH ?? ''}`;
+    try {
+      const run = runDir();
+      const events = await collect(codexDriver.run({ ...run, prompt: 'do it', credentialEnv: { OPENAI_API_KEY: 'sk-deployment' } }, new AbortController().signal));
+      expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+      const at = join(run.scratchDir, 'codex-home', 'auth.json');
+      expect(lstatSync(at).isSymbolicLink()).toBe(false);
+      expect({ login: JSON.parse(readFileSync(at, 'utf8')) as unknown, mode: (statSync(at).mode & 0o777).toString(8) })
+        .toEqual({ login: { OPENAI_API_KEY: 'sk-deployment' }, mode: '600' });
+    } finally { machine.remove(); }
+  });
+
+  it('signs the run in with the machine\'s login where the Deployment holds a key for another harness', async () => {
+    const machine = machineCodexHome({ 'auth.json': LOGIN });
+    process.env.PATH = `${stubCodexReadingItsHome()}:${process.env.PATH ?? ''}`;
+    try {
+      // A credential naming another harness's variable is not a key for this
+      // one, and a machine that is signed in still runs.
+      const run = runDir();
+      const events = await collect(codexDriver.run({ ...run, prompt: 'do it', credentialEnv: { ANTHROPIC_API_KEY: 'sk-not-this-harness' } }, new AbortController().signal));
+      expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+      expect(lstatSync(join(run.scratchDir, 'codex-home', 'auth.json')).isSymbolicLink()).toBe(true);
+    } finally { machine.remove(); }
+  });
+
+  it('reads the machine\'s login where the harness declares it, so detection and a run cannot disagree', () => {
+    const machine = machineCodexHome({ 'auth.json': LOGIN });
+    process.env.PATH = `${stubCodexReadingItsHome()}:${process.env.PATH ?? ''}`;
+    try {
+      expect(detectHarnesses(['codex'])).toEqual([{ id: 'codex', installed: true, authenticated: true }]);
+      rmSync(machine.login);
+      // The manifest is where this path changes, and a detector naming it a
+      // second time answers for a file no run carries.
+      expect(detectHarnesses(['codex'])).toEqual([{ id: 'codex', installed: true, authenticated: false }]);
+    } finally { machine.remove(); }
+  });
+
+  it('builds the run\'s home from nothing, over what a worker that was killed left behind', async () => {
+    const machine = machineCodexHome({ 'auth.json': LOGIN });
+    process.env.PATH = `${stubCodexReadingItsHome()}:${process.env.PATH ?? ''}`;
+    try {
+      const run = runDir();
+      const spec = { ...run, prompt: 'do it', credentialEnv: {} };
+      await collect(codexDriver.run(spec, new AbortController().signal));
+      // The same run is claimed again under the same id, and what the last
+      // attempt left in its directory is not what the next one reads.
+      const events = await collect(codexDriver.run(spec, new AbortController().signal));
+      expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+    } finally { machine.remove(); }
   });
 });
 
