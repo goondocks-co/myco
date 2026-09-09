@@ -117,26 +117,102 @@ export function renderDeployConfig(record: DeploymentRecord): string {
 }
 
 /**
+ * The class-lifecycle ledger a configuration declares, in order: each entry's
+ * tag, the classes it brings into existence, and the classes it ends.
+ *
+ * A rename is both: the new name comes into existence and the old one ceases,
+ * so a class renamed and later deleted under its new name is a complete and
+ * legitimate history. Reading only creates and deletes would call that a delete
+ * of something never created.
+ */
+export function migrationLedger(config: string): Array<{ tag: string; creates: string[]; deletes: string[] }> {
+  const entries: Array<{ tag: string; creates: string[]; deletes: string[] }> = [];
+  // A rename may be written as a sub-table under the entry it belongs to, whose
+  // `from` and `to` arrive on their own lines after the header.
+  let scope: 'none' | 'entry' | 'rename' = 'none';
+  let pending: { from?: string; to?: string } = {};
+  const closeRename = (): void => {
+    const entry = entries[entries.length - 1];
+    if (entry !== undefined && pending.to !== undefined) entry.creates.push(pending.to);
+    if (entry !== undefined && pending.from !== undefined) entry.deletes.push(pending.from);
+    pending = {};
+  };
+  for (const raw of config.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('[')) {
+      if (scope === 'rename') closeRename();
+      if (line === '[[migrations]]') { entries.push({ tag: '', creates: [], deletes: [] }); scope = 'entry'; }
+      else if (line === '[[migrations.renamed_classes]]' && entries.length > 0) scope = 'rename';
+      else scope = 'none';
+      continue;
+    }
+    if (scope === 'none' || entries.length === 0) continue;
+    const entry = entries[entries.length - 1]!;
+    if (scope === 'rename') {
+      const from = /^from = "([^"]+)"$/.exec(line);
+      const to = /^to = "([^"]+)"$/.exec(line);
+      if (from) pending.from = from[1]!;
+      if (to) pending.to = to[1]!;
+      continue;
+    }
+    const tag = /^tag = "([^"]+)"$/.exec(line);
+    if (tag) { entry.tag = tag[1]!; continue; }
+    const names = (key: string): string[] =>
+      [...(new RegExp(`^${key} = \\[([^\\]]*)\\]$`).exec(line)?.[1] ?? '').matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+    entry.creates.push(...names('new_sqlite_classes'), ...names('new_classes'));
+    entry.deletes.push(...names('deleted_classes'));
+    // The inline form of the same rename: `renamed_classes = [{ from = "A", to = "B" }]`.
+    for (const pair of (/^renamed_classes = \[(.*)\]$/.exec(line)?.[1] ?? '').matchAll(/\{[^}]*\}/g)) {
+      const from = /from = "([^"]+)"/.exec(pair[0])?.[1];
+      const to = /to = "([^"]+)"/.exec(pair[0])?.[1];
+      if (to !== undefined) entry.creates.push(to);
+      if (from !== undefined) entry.deletes.push(from);
+    }
+  }
+  if (scope === 'rename') closeRename();
+  return entries;
+}
+
+/**
+ * Every class a configuration deletes that is not live when the delete runs.
+ *
+ * The ledger is applied in order from the instance's own recorded tag, so a
+ * delete naming a class the history never created is refused and the instance
+ * never starts — on a fresh local boot and on a Deployment created after the
+ * class was retired alike. Retiring a class means appending a delete, never
+ * removing the entry that created it. A rename carries the class forward under
+ * its new name, so deleting the new name later is legitimate and deleting the
+ * old one after the rename is not.
+ */
+export function undeletableClasses(config: string): string[] {
+  const live = new Set<string>();
+  const orphans: string[] = [];
+  for (const entry of migrationLedger(config)) {
+    // Liveness, not history: an entry ends a class as well as beginning one, so
+    // a name deleted twice, or deleted after a rename carried it away, is as
+    // absent as one never created.
+    for (const name of entry.deletes) { if (!live.has(name)) orphans.push(name); live.delete(name); }
+    for (const name of entry.creates) live.add(name);
+  }
+  return orphans;
+}
+
+/**
  * The committed configuration shaped for a local parity/dev boot:
  * `global_fetch_strictly_public` dropped (a scenario's loopback provider stub
  * must be reachable), the `[assets]` table dropped (a fresh worktree holds no
- * ui/dist, and every parity route is worker-owned), and the retired class's
- * migration dropped. A multi-line flags array or a second flag fails loudly
- * rather than shipping a silently different runtime.
+ * ui/dist, and every parity route is worker-owned). A multi-line flags array or
+ * a second flag fails loudly rather than shipping a silently different runtime.
  */
 const PARITY_DROPPED_HEADERS = ['[assets]'];
 
 /**
- * Whether a table is dropped for parity: the assets, and any class-lifecycle
- * migration naming a class this Worker no longer exports — a local boot
- * resolves every named class against the code it is running. The clock is
- * exported and rides into parity so the wake is proven on this target as on
- * the other.
+ * Whether a table is dropped for parity: the assets, and nothing else. The
+ * class-lifecycle ledger rides into parity whole, so a local boot applies the
+ * same migrations a deploy does and refuses the same ones.
  */
-function parityDrops(header: string, block: readonly string[]): boolean {
-  if (PARITY_DROPPED_HEADERS.includes(header)) return true;
-  if (header === '[[migrations]]') return block.some((line) => line.includes('"HarnessContainer"'));
-  return false;
+function parityDrops(header: string): boolean {
+  return PARITY_DROPPED_HEADERS.includes(header);
 }
 
 export function parityWranglerConfig(): string {
@@ -144,7 +220,7 @@ export function parityWranglerConfig(): string {
   let header: string | null = null;
   let block: string[] = [];
   const flush = (): void => {
-    if (header === null || !parityDrops(header, block)) kept.push(...block);
+    if (header === null || !parityDrops(header)) kept.push(...block);
     block = [];
   };
   for (const line of WRANGLER_TEMPLATE.split('\n')) {
