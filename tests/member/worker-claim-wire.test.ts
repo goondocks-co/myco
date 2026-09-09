@@ -136,6 +136,23 @@ describe('a worker on the real claim wire', () => {
     expect([...new Set(r.sent.map((s) => s.protocol))]).toEqual(['1']);
   }, 30_000);
 
+  it('fails a run the Deployment handed it without an instruction, launching no harness', async () => {
+    // A Deployment ends such a run at the claim; this one is stubbed to hand it
+    // out anyway, which is the case the worker's own refusal exists for.
+    const bare = {
+      persisted: true, claimed: true, heartbeatMs: 30_000,
+      run: { projectId: PROJECT_ID, id: 'run_bare', task: 'skill-survey', instruction: null, harness: STUB_HARNESS, runToken: 'run_token', credentialEnv: {}, leaseExpiresAt: Date.now() + 60_000, timeoutSeconds: 60 },
+    };
+    const r = await rig((path) => (path === '/worker/claim' ? Response.json(bare, { headers: { 'x-myco-protocol': '1' } }) : null));
+    const token = await r.member('mem_admin', 'admin');
+    const attached = await r.attach(token);
+    const paths = r.sent.map((s) => s.path);
+    // No lease was ever renewed and no run directory was written: the harness never started.
+    const failed = attached.lines.some((l) => l.includes('supplied no instruction'));
+    if (!failed) throw new Error(reportOf('the worker did not refuse the bare run', attached, paths));
+    expect({ paths, driven: attached.driven, refused: attached.refused }).toEqual({ paths: ['/worker/claim', '/worker/end'], driven: 1, refused: null });
+  });
+
   it('ends on a refusal, naming it, rather than polling silently against it', async () => {
     expect(stubAcpHarness()).toEqual(STUB_DETECTED);
     const r = await rig();

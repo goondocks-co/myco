@@ -134,8 +134,12 @@ const DEFAULT_HEARTBEAT_MS = 30_000;
  */
 const RUN_OVERRUN_GRACE_MS = 5_000;
 
-const asRun = (value: unknown): ClaimedRun | null =>
-  (value !== null && typeof value === 'object' && typeof (value as ClaimedRun).id === 'string' ? value as ClaimedRun : null);
+const asRun = (value: unknown): ClaimedRun | null => {
+  if (value === null || typeof value !== 'object') return null;
+  const run = value as ClaimedRun;
+  const named = typeof run.id === 'string' && typeof run.task === 'string' && typeof run.harness === 'string' && typeof run.runToken === 'string';
+  return named && (typeof run.instruction === 'string' || run.instruction === null) ? run : null;
+};
 
 /**
  * Drive one claimed run to its end.
@@ -146,8 +150,18 @@ const asRun = (value: unknown): ClaimedRun | null =>
  * success.
  */
 async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: number): Promise<{ status: 'completed' | 'failed' | 'lost'; error: string | null }> {
+  // A run that fails before its harness starts has no event to log it by, so it is said here.
+  const failedBeforeStart = (error: string): { status: 'failed'; error: string } => {
+    options.log(`run ${run.id} failed before its harness started: ${error}`);
+    return { status: 'failed', error };
+  };
   const driver = driverFor(run.harness);
-  if (driver === null) return { status: 'failed', error: `no driver serves the harness ${run.harness}` };
+  if (driver === null) return failedBeforeStart(`no driver serves the harness ${run.harness}`);
+  // A harness given nothing to do ends its turn at once, and a worker that
+  // launched it would then report a run that did nothing as one that finished.
+  // The Deployment ends such a run at the claim; a Deployment that hands one
+  // out anyway is answered with the failure it would otherwise have hidden.
+  if (run.instruction === null || run.instruction.trim() === '') return failedBeforeStart(`the Deployment supplied no instruction for this ${run.task} run`);
 
   mkdirSync(options.runRoot, { recursive: true, mode: 0o700 });
   const { scratchDir, mcpConfigPath } = writeRunDir(options.runRoot, run.id, {
@@ -200,7 +214,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
 
   const events: RunEvent[] = [];
   const stream = driver.run({
-    prompt: run.instruction ?? '',
+    prompt: run.instruction,
     scratchDir,
     mcpConfigPath,
     credentialEnv: run.credentialEnv,
@@ -210,6 +224,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
       const step = await Promise.race([stream.next(), overrunReached]);
       if (step === 'overran' || step.done === true) break;
       events.push(step.value);
+      if (step.value.kind === 'tool_call') options.log(`run ${run.id} called ${step.value.name}: ${step.value.status}`);
       if (step.value.kind === 'ended') options.log(`run ${run.id} ended ${step.value.stop}`);
     }
   } catch (error) {

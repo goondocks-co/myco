@@ -29,7 +29,7 @@ export const COLD_PROJECT_THRESHOLD_DAYS_DEFAULT = 14;
 export const ACTIVE_WINDOW_DAYS_DEFAULT = 14;
 
 /** Why the clock left a task alone this wake; a ceiling met is recorded on a run row, the rest are told. */
-export type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged';
+export type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed';
 
 export interface ScheduleReport {
   /** Dispatches the clock made, launched or queued. */

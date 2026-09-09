@@ -127,6 +127,21 @@ describe('the Codex driver', () => {
     expect(events.find((e) => e.kind === 'usage')).toEqual({ kind: 'usage', inputTokens: 28, outputTokens: 5, costUsd: null });
   });
 
+  it('reads each MCP tool call as a call, with the tool\'s name and how it ended', async () => {
+    const dir = stubHarness('codex', [
+      '{"type":"thread.started","thread_id":"t1"}',
+      '{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","server":"myco","tool":"myco_run_sessions","status":"completed"}}',
+      '{"type":"item.completed","item":{"id":"i2","type":"mcp_tool_call","server":"myco","tool":"myco_run","status":"failed"}}',
+      '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}',
+    ]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(codexDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
+      { kind: 'tool_call', name: 'myco_run_sessions', status: 'ok' },
+      { kind: 'tool_call', name: 'myco_run', status: 'error' },
+    ]);
+  });
+
   it('reads a failed turn as a failure', async () => {
     const dir = stubHarness('codex', [
       '{"type":"thread.started","thread_id":"t1"}',
