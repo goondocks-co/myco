@@ -234,7 +234,7 @@ describe('a dispatch that starts a real runtime', () => {
 
     // The report the runtime wrote is on the run.
     expect(seam.sql(`SELECT action, summary FROM agent_reports WHERE run_id = '${dispatched.runId}'`))
-      .toEqual([{ action: 'stand-in', summary: 'the runtime ran' }]);
+      .toEqual([{ action: TASK, summary: 'the runtime ran' }]);
 
     // A credential that exists for one run is revoked when that run closes.
     expect(seam.sql(`SELECT revoked_at AS revokedAt FROM member_credentials WHERE id = '${dispatchedBy}' AND member_id = '${HARNESS_MEMBER_ID}'`)

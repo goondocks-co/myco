@@ -10,7 +10,7 @@ import { Row } from '../components/ui/row';
 import { MetricCard } from '../components/ui/metric-card';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
 import { SubtabPill } from '../components/ui/subtab-pill';
-import { useAgents, useRun, useRuns, type PhaseRow, type ReportRow, type RunDetailRow, type RunListRow } from '../hooks/use-intelligence';
+import { useAgents, useRun, useRuns, type PhaseRow, type ReportRow, type RunDetailRow, type RunListRow, type RunToolCallRow } from '../hooks/use-intelligence';
 import { ApiError } from '../lib/api';
 import { formatCost, formatDateTime, formatDuration, formatRelative, formatTokens } from '../lib/format';
 import { NotFound } from './NotFound';
@@ -133,12 +133,12 @@ function RunDetail({ projectId, runId }: { projectId: string; runId: string }) {
   if (detail.error instanceof ApiError && detail.error.status === 404) return <NotFound />;
   return (
     <PageLoading isLoading={detail.isPending} error={detail.error}>
-      {detail.data && <RunBody run={detail.data.run} phases={detail.data.phases} reports={detail.data.reports} agentName={agents.data?.agents.find((a) => a.id === detail.data.run.agentId)?.name ?? null} />}
+      {detail.data && <RunBody run={detail.data.run} phases={detail.data.phases} reports={detail.data.reports} toolCalls={detail.data.toolCalls} agentName={agents.data?.agents.find((a) => a.id === detail.data.run.agentId)?.name ?? null} />}
     </PageLoading>
   );
 }
 
-function RunBody({ run, phases, reports, agentName }: { run: RunDetailRow; phases: PhaseRow[] | null; reports: ReportRow[]; agentName: string | null }) {
+function RunBody({ run, phases, reports, toolCalls, agentName }: { run: RunDetailRow; phases: PhaseRow[] | null; reports: ReportRow[]; toolCalls: RunToolCallRow[]; agentName: string | null }) {
   const failed = run.status === 'failed' || run.error !== null;
   const deploy = deployWords(run);
   return (
@@ -212,6 +212,25 @@ function RunBody({ run, phases, reports, agentName }: { run: RunDetailRow; phase
                   </div>
                 )}
                 {phase.summary !== null && <p className="mt-1 text-xs text-on-surface-variant">{phase.summary}</p>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+
+      <Panel title="Calls back to this Deployment" padded={toolCalls.length === 0}>
+        {toolCalls.length === 0 ? (
+          <p className="font-sans text-sm text-on-surface-variant" data-testid="no-tool-calls">
+            This run never reached this Deployment. Nothing it was asked to do landed here.
+          </p>
+        ) : (
+          <ul className="divide-y divide-outline-variant/10" aria-label="Calls back to this Deployment">
+            {toolCalls.map((call, i) => (
+              <li key={`${call.recordedAt}-${i}`} className="flex items-center gap-2 px-5 py-2 font-sans text-sm">
+                <StatusDot tone="sage" />
+                <span className="font-mono text-[11px] text-on-surface">{call.tool}</span>
+                {call.op !== null && <span className="font-mono text-[11px] text-on-surface-variant">{call.op}</span>}
+                <span className="ml-auto font-mono text-[11px] text-on-surface-variant">{formatRelative(call.recordedAt)}</span>
               </li>
             ))}
           </ul>

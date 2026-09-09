@@ -121,7 +121,10 @@ describe('a worker on the real claim wire', () => {
     // declaring no protocol. A worker whose headers carry none never gets here.
     if (attached.driven !== 1 || attached.refused !== null) throw new Error(reportOf('the worker drove no run', attached, paths));
     expect(attached.lines.some((l) => l.startsWith('claimed run_wire'))).toBe(true);
-    expect(r.runRow('run_wire')).toEqual({ status: 'completed', harness: STUB_HARNESS });
+    // The row reached a terminal status over the wire. It is `failed` rather than
+    // `completed` on the Deployment's own judgement: the stub ends its turn
+    // without calling back, and a titling run owes a report and a title.
+    expect(r.runRow('run_wire')).toEqual({ status: 'failed', harness: STUB_HARNESS });
     // Every request the worker made declared the protocol: the header is on the
     // claim and on the end, not only on the first call.
     expect(paths).toEqual(['/worker/claim', '/worker/end']);
@@ -161,7 +164,7 @@ describe('a worker on the real claim wire', () => {
     const attached = await r.attach(admin);
     const paths = r.sent.map((s) => s.path);
     if (attached.driven !== 1 || attached.refused !== null) throw new Error(reportOf('a 503 ended the attachment', attached, paths));
-    expect(r.runRow('run_after_503')).toEqual({ status: 'completed', harness: STUB_HARNESS });
+    expect(r.runRow('run_after_503')).toEqual({ status: 'failed', harness: STUB_HARNESS });
     // Two claims: the faulted one and the one that was answered.
     expect(paths).toEqual(['/worker/claim', '/worker/claim', '/worker/end']);
     expect(attached.lines.filter((l) => l.includes('cannot reach'))).toHaveLength(1);

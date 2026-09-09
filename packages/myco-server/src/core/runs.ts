@@ -527,6 +527,18 @@ export async function liveRunsOfCredential(db: RelationalStore, tokenId: string)
   return results;
 }
 
+/** The session a run's recorded context names, or null when it names none. */
+export function sessionNamedByRun(run: RunRow): string | null {
+  if (run.runContext === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(run.runContext);
+    const value = typeof parsed === 'object' && parsed !== null ? (parsed as { session_id?: unknown }).session_id : undefined;
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The hash of the material the server built this run's prompt from, as its context records it. */
 export function inputHashOf(run: RunRow): string | null {
   if (run.runContext === null) return null;
@@ -652,6 +664,16 @@ export async function insertReport(db: RelationalStore, scope: ReadScope, report
     .run();
   return result.meta.changes === 1;
 }
+
+/**
+ * The event type a run's own tool call is recorded under.
+ *
+ * A run's turns happen inside a harness the Deployment cannot see; the calls it
+ * makes back are the only part of a run the Deployment observes directly. A run
+ * that ended its turn without ever calling is the case this record exists to
+ * make legible — an empty list against a closed run is the evidence.
+ */
+export const RUN_TOOL_EVENT = 'run_tool';
 
 export interface RunEventRowInsert {
   runId: string;

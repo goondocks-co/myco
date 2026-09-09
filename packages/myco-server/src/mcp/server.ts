@@ -28,7 +28,7 @@ import { ProtocolError, Server, SUPPORTED_PROTOCOL_VERSIONS, type Tool } from '@
 import { isServedTool, isWriteOp, NO_OP, PROJECT_PIVOT, type AnyTool } from '../core/tool-catalogue.js';
 import { emit } from '../telemetry.js';
 import { normalizeRemote, projectForRemote } from '../core/remotes.js';
-import { boundProject, namedProject, principalFields, type ToolContext } from './context.js';
+import { boundProject, namedProject, principalFields, recordRunToolCall, type ToolContext } from './context.js';
 import { TOOL_DEFINITIONS, definitionOf, type ToolDefinition } from './definitions.js';
 import { externalDefinitions, isExternalCall } from './external.js';
 import { entryFor, opOf, TOOL_REGISTRY, type RegistryEntry } from './registry.js';
@@ -252,13 +252,20 @@ export function createProtocolServer(ctx: ToolContext, version: string, onFailur
 
   server.setRequestHandler('tools/call', async (request) => {
     const { name, arguments: args } = request.params;
+    // Every call a run makes and the Deployment answers is recorded against the
+    // run: an empty list against a closed run is how a harness that never dialled
+    // the Deployment at all is read.
+    const began = Date.now();
     try {
       const { tool, op, result } = await callTool(ctx, name, args);
       emit({ kind: 'mcp_tool', tool, op, status: 'ok', ...principalFields(ctx) });
+      await recordRunToolCall(ctx, { tool, op, durationMs: Date.now() - began });
       return { content: [{ type: 'text' as const, text: serializeResult(tool, result) }], structuredContent: { result } };
     } catch (err) {
       if (!(err instanceof ToolError)) onFailure(err);
       const failure = err instanceof ToolError ? err : new ToolError('tool_call_failed', 'the Deployment could not complete the call');
+      // A refused call is named in telemetry and writes nothing: a credential may
+      // not turn calls it is not admitted to make into rows.
       emit({ kind: 'mcp_tool', tool: surfaceFor(ctx).definitionOf(name) === undefined ? 'unknown' : name, status: failure.code, ...principalFields(ctx) });
       throw toolError(failure);
     }

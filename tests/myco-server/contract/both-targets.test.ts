@@ -336,6 +336,7 @@ describe('agent runs read the same on both stores', () => {
           { name: 'prepare', status: 'completed', updatedAt: 5, summary: null, turnsUsed: 2, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: false, semanticCheckBlocked: false, postConditionFailed: false },
           { name: 'write', status: 'failed', updatedAt: 6, summary: 'ran out of turns', turnsUsed: null, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: true, semanticCheckBlocked: false, postConditionFailed: false },
         ],
+        toolCalls: [],
       },
       foreign: null,
       leaks: false,
