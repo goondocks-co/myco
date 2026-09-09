@@ -16,7 +16,7 @@
  */
 // myco:plugin-marker — Myco owns this file; `myco remove` deletes it while it carries this line.
 import { execFileSync } from "node:child_process";
-import { accessSync, appendFileSync, closeSync, constants as fsConstants, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { accessSync, appendFileSync, closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
@@ -39,7 +39,8 @@ import { Type } from "@sinclair/typebox";
 // runtime would be a second member, and the wire contract only has one.
 //
 // Contract: the containing file has already defined imports for
-//   `readFileSync`, `appendFileSync`, `mkdirSync`, `statSync`, `accessSync`,
+//   `readFileSync`, `appendFileSync`, `mkdirSync`, `statSync`, `lstatSync`,
+//   `accessSync`,
 //   `openSync`, `closeSync`, `writeSync`, `unlinkSync`,
 //   `constants as fsConstants`, `join`, `dirname`, `resolve`, `homedir`,
 //   `execFileSync`
@@ -76,14 +77,16 @@ const RUNTIME_PIN_INSECURE_MODE_MASK = 0o022;
 
 /**
  * Read a `runtime.home` or `runtime.command` pin only when it passes the same
- * trust check the CLI shim uses: a group/other-writable or foreign-owned pin is
- * refused, so a hostile local user cannot redirect capture to a runtime they
- * control. Returns the trimmed value or null.
+ * trust check the CLI shim uses: a group/other-writable, foreign-owned or
+ * symlinked pin is refused, so a hostile local user cannot redirect capture to
+ * a runtime they control. The stat is an `lstat` — following a link would
+ * report the target's owner and mode. Returns the trimmed value or null.
  */
 function readTrustedPin(filePath: string): string | null {
   try {
     if (process.platform !== "win32") {
-      const stat = statSync(filePath);
+      const stat = lstatSync(filePath);
+      if (stat.isSymbolicLink()) return null;
       const myUid = typeof process.getuid === "function" ? process.getuid() : null;
       if (myUid !== null && stat.uid !== myUid) return null;
       if ((stat.mode & 0o777) & RUNTIME_PIN_INSECURE_MODE_MASK) return null;
@@ -103,34 +106,51 @@ function expandTilde(value: string): string {
 
 /**
  * The `runtime.home` pin for a project: a project pin found by walking up from
- * `directory`, then the machine pin. Returns an absolute path or null.
+ * `directory` when one is given, then the machine pin. Returns an absolute
+ * path or null.
  */
-function readRuntimeHomePin(directory: string): string | null {
-  let dir = resolve(directory);
-  while (true) {
-    const pin = readTrustedPin(join(dir, ".myco", "runtime.home"));
-    if (pin) return expandTilde(pin);
+function readRuntimeHomePin(directory?: string): string | null {
+  let dir = directory === undefined ? null : resolve(directory);
+  while (dir !== null) {
+    const pin = readAbsolutePin(join(dir, ".myco", "runtime.home"));
+    if (pin) return pin;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  const machine = readTrustedPin(join(homedir(), ".myco", "runtime.home"));
-  return machine ? expandTilde(machine) : null;
+  return readAbsolutePin(join(homedir(), ".myco", "runtime.home"));
 }
 
 /**
- * This project's Myco home. A trusted `runtime.home` pin wins so a dogfood
- * project pinned to `~/.myco-dev` writes and reads there; then `MYCO_HOME`;
- * then `~/.myco`. Identity is the home, never a path this file guesses.
+ * A trusted pin whose value names an absolute path. A relative value would
+ * resolve against whatever directory this process is standing in, so a
+ * `runtime.home` committed into a repository would send capture — and the
+ * binary this file execs — into a directory that repository controls.
+ */
+function readAbsolutePin(filePath: string): string | null {
+  const raw = readTrustedPin(filePath);
+  if (raw === null) return null;
+  const expanded = expandTilde(raw);
+  return expanded.startsWith("/") || /^[A-Za-z]:[\\/]/.test(expanded) ? expanded : null;
+}
+
+/**
+ * This project's Myco home, in the binary's precedence (`src/paths/home.ts`):
+ * an explicit `MYCO_HOME`, then a trusted project `runtime.home` pin found by
+ * walking up from `directory`, then the machine pin, then `~/.myco`. A dogfood
+ * project pinned to `~/.myco-dev` therefore writes and reads there without any
+ * environment. Identity is the home, never a path this file guesses.
+ *
+ * The plugin resolves the home to FIND the binary, so it cannot ask the binary
+ * for it; the two implementations are held to the same answers over one
+ * fixture tree by tests/symbionts/plugin-home-agreement.test.ts.
  */
 function resolveMycoHome(directory?: string): string {
-  if (directory) {
-    const pinned = readRuntimeHomePin(directory);
-    if (pinned) return pinned;
-  }
   const configured = process.env.MYCO_HOME?.trim();
-  if (!configured) return join(homedir(), ".myco");
-  return expandTilde(configured);
+  if (configured) return expandTilde(configured);
+  const pinned = readRuntimeHomePin(directory);
+  if (pinned) return pinned;
+  return join(homedir(), ".myco");
 }
 
 /**
@@ -392,13 +412,14 @@ function appendTranscriptLine(
 /**
  * Run one Myco hook verb, handing it `payload` on stdin.
  *
- * The resolved home travels to the binary as `MYCO_HOME`. A spawned binary
- * resolves its own home from the environment and never walks the project's
- * `runtime.home` pin, so a pinned project would otherwise write its transcript
- * to the pinned home while the hook's spool, registry and retention used the
- * default one. One side resolves the home and tells the other. This mirrors
- * the same injection the installer makes for an MCP server entry, and for the
- * same reason.
+ * The resolved home travels to the binary as `MYCO_HOME`. The binary walks the
+ * same pin from the directory it is given, so both sides reach the same home on
+ * their own; naming it here settles the one case where they could not — a
+ * harness that moves the spawned process's working directory, which would leave
+ * this file's transcript under the pinned home and the hook's spool, registry
+ * and retention under whatever the new directory resolves. The side that has
+ * already resolved a home says which one, and `MYCO_HOME` is what the binary
+ * reads first.
  *
  * Returns the hook's parsed response, or null when Myco is not installed, the
  * binary fails, or the output is not the expected shape. Never throws and

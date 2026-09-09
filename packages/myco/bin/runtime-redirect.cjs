@@ -20,6 +20,12 @@
 // routes every CLI invocation at the matching daemon. It shares the winning-pin
 // dir and the G7 trust check below.
 //
+// The pin is applied HERE, by writing MYCO_HOME for the child, so the binary
+// downstream reads an explicit environment and the two agree on the answer —
+// and an MYCO_HOME the caller already exported is left alone, matching the
+// binary's resolver and the plugin snippet. One rule at all three layers:
+// explicit environment, then the project pin, then the machine pin.
+//
 // G7 (security): `runtime.command` files are exec'd as the user's `myco`
 // binary. A sloppy umask that leaves either file group/other-writable would
 // let a hostile local user redirect every `myco` command. Both layers go
@@ -105,12 +111,21 @@ function expandHome(value) {
  *
  * Returns the absolute `MYCO_HOME` value (a plain single-line path) when a
  * trusted pin is present, or null when absent / untrusted (untrusted pins are
- * refused exactly like an untrusted `runtime.command`).
+ * refused exactly like an untrusted `runtime.command`). A value that is not an
+ * absolute path is refused too: a relative one would resolve against whatever
+ * directory this invocation stands in, so a `runtime.home` committed into a
+ * repository could redirect a clone at a directory that repository controls.
  */
 function readRuntimeHomeBeside(commandSource, traceRefusal) {
   const filePath = path.join(path.dirname(commandSource), RUNTIME_HOME_FILENAME);
   const home = readPinAt(filePath, traceRefusal);
-  return home ? expandHome(home) : null;
+  if (!home) return null;
+  const expanded = expandHome(home);
+  if (!path.isAbsolute(expanded)) {
+    if (typeof traceRefusal === 'function') traceRefusal(`${filePath}: home "${home}" is not an absolute path`);
+    return null;
+  }
+  return expanded;
 }
 
 function pointsAtSelf(target, selfPath) {
@@ -158,7 +173,18 @@ function maybeRedirect(selfPath, env = process.env, startDir = process.cwd()) {
   // invocation's home to a non-default daemon (e.g. a dogfood `~/.myco-dev`).
   // Absent → leave MYCO_HOME as-is (prod default). Untrusted → refused inside
   // readRuntimeHomeBeside, same as an untrusted runtime.command.
-  const pinnedHome = readRuntimeHomeBeside(found.source, (reason) => trace(`home refused (${reason})`));
+  //
+  // An MYCO_HOME already in the environment outranks the pin, which is the
+  // order the binary's own resolver applies (`src/paths/home.ts`) and the order
+  // the plugin snippet applies: explicit beats implicit at every layer, so one
+  // project cannot send the CLI to one home and its in-process plugin to
+  // another. A `make dev-link` contributor exports nothing, so the pin still
+  // decides for them.
+  const inheritedHome = (env.MYCO_HOME || '').trim();
+  const pinnedHome = inheritedHome
+    ? null
+    : readRuntimeHomeBeside(found.source, (reason) => trace(`home refused (${reason})`));
+  if (inheritedHome) trace(`MYCO_HOME kept at ${inheritedHome} (explicit env outranks any runtime.home pin)`);
   const childEnv = { ...env, MYCO_REDIRECTED: '1' };
   if (pinnedHome) {
     trace(`MYCO_HOME → ${pinnedHome} (via ${path.join(path.dirname(found.source), RUNTIME_HOME_FILENAME)})`);

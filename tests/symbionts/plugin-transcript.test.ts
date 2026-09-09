@@ -53,11 +53,11 @@ describe('native plugin transcripts', () => {
     const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8');
     const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet);
     const composed = new Function(
-      'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'accessSync', 'openSync', 'closeSync',
+      'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'lstatSync', 'accessSync', 'openSync', 'closeSync',
       'fsConstants', 'join', 'dirname', 'resolve', 'homedir', 'execFileSync', 'process',
       `${js}; return transcriptPathFor;`,
     )(
-      fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.accessSync, fs.openSync, fs.closeSync,
+      fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.lstatSync, fs.accessSync, fs.openSync, fs.closeSync,
       fs.constants, path.join, path.dirname, path.resolve, () => ENV.HOME, () => '',
       { ...process, env: ENV, platform: process.platform },
     ) as (d: string, a: string, s: string) => string;
@@ -212,11 +212,11 @@ function snippetModule(
   const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8');
   const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet.split('{{mycoCredentialSource}}').join('registry'));
   return new Function(
-    'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'accessSync', 'openSync', 'closeSync',
+    'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'lstatSync', 'accessSync', 'openSync', 'closeSync',
     'writeSync', 'unlinkSync', 'fsConstants', 'join', 'dirname', 'resolve', 'homedir', 'execFileSync', 'process',
     `${js}; return { transcriptPathFor, appendTranscriptLine, holdsSessionClaim, runMycoHook };`,
   )(
-    fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.accessSync, fs.openSync, fs.closeSync,
+    fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.lstatSync, fs.accessSync, fs.openSync, fs.closeSync,
     fs.writeSync, fs.unlinkSync, fs.constants, path.join, path.dirname, path.resolve, () => env.HOME,
     execImpl ?? ((_bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => { spawns.push({ env: opts?.env, args }); return '{}'; }),
     { ...process, env, platform: process.platform, stderr: { write: (line: string) => { noted.push(String(line)); return true; } } },
@@ -385,19 +385,26 @@ describe('one instance speaks for a session', () => {
   });
 
   it('tells the binary which home it resolved, so a pinned project keeps one', () => {
-    // The spawned binary reads its home from the environment and walks no pin,
-    // so the side that walked the pin has to name the home it chose.
-    const env = sandboxEnv();
-    const spawns: { env?: NodeJS.ProcessEnv; args: string[] }[] = [];
-    const mod = snippetModule(env, spawns);
+    // Both sides walk the pin, and the plugin names the home it chose on the
+    // spawn anyway: the child then resolves from an environment rather than
+    // from a cwd that a harness is free to move.
+    const sandbox = sandboxEnv();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-pinned-'));
     const pinnedHome = path.join(dir, 'dev-home');
     fs.mkdirSync(path.join(dir, '.myco'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.myco', 'runtime.home'), pinnedHome);
     fs.chmodSync(path.join(dir, '.myco', 'runtime.home'), 0o644);
 
-    mod.runMycoHook(dir, 'opencode', 'ses_4', 'session-start', {});
-    expect(spawns).toHaveLength(1);
-    expect(spawns[0].env?.MYCO_HOME).toBe(pinnedHome);
+    // A GUI-launched harness carries no MYCO_HOME: the project's pin decides.
+    const pinned: { env?: NodeJS.ProcessEnv; args: string[] }[] = [];
+    snippetModule({ HOME: sandbox.HOME } as NodeJS.ProcessEnv, pinned)
+      .runMycoHook(dir, 'opencode', 'ses_4', 'session-start', {});
+    expect(pinned).toHaveLength(1);
+    expect(pinned[0].env?.MYCO_HOME).toBe(pinnedHome);
+
+    // An explicit MYCO_HOME outranks the pin, in the plugin exactly as in the binary.
+    const declared: { env?: NodeJS.ProcessEnv; args: string[] }[] = [];
+    snippetModule(sandbox, declared).runMycoHook(dir, 'opencode', 'ses_5', 'session-start', {});
+    expect(declared[0].env?.MYCO_HOME).toBe(sandbox.MYCO_HOME);
   });
 });

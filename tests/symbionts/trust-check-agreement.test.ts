@@ -2,14 +2,14 @@
  * G7 trust-check cross-copy agreement test.
  *
  * The runtime pin trust check (G7) exists in two real implementations — the
- * TS contract (src/runtime/binary-resolution.ts, consumed by all TS sites via
- * delegation) and the shared shim module (bin/binary-resolution.cjs, consumed
- * by every bin/ entry point) — plus mirrors in agent plugin templates that
- * cannot import either. All copies must enforce the SAME mask (0o022) and the
- * SAME check shape (win32 short-circuit / uid-ownership / mode-mask).
+ * TS contract (src/paths/pin-trust.ts, consumed by the binary resolver and the
+ * home resolver alike) and the shared shim module (bin/binary-resolution.cjs,
+ * consumed by every bin/ entry point) — plus mirrors in agent plugin templates
+ * that cannot import either. All copies must enforce the SAME mask (0o022) and
+ * the SAME check shape (win32 short-circuit / uid-ownership / mode-mask).
  *
  * Copies covered:
- *   - src/runtime/binary-resolution.ts     (PIN_INSECURE_MODE_MASK — TS contract)
+ *   - src/paths/pin-trust.ts               (PIN_INSECURE_MODE_MASK — TS contract)
  *   - bin/binary-resolution.cjs             (PIN_INSECURE_MODE_MASK — shim module)
  *   - src/symbionts/templates/myco-run.cjs  (RUNTIME_COMMAND_INSECURE_MODE_MASK)
  *   - src/symbionts/templates/{cline,opencode,pi}/plugin.ts (RUNTIME_PIN_INSECURE_MODE_MASK)
@@ -23,8 +23,8 @@ const REPO_ROOT = path.resolve('.');
 
 const COPIES = [
   {
-    label: 'src/runtime/binary-resolution.ts',
-    file: 'packages/myco/src/runtime/binary-resolution.ts',
+    label: 'src/paths/pin-trust.ts',
+    file: 'packages/myco/src/paths/pin-trust.ts',
     maskName: 'PIN_INSECURE_MODE_MASK',
   },
   {
@@ -88,6 +88,34 @@ describe('G7 trust-check cross-copy agreement', () => {
         `(?:stat\\.mode\\s*&|mode\\s*&)\\s*(?:0o777\\s*\\)\\s*&\\s*)?${maskName}`,
       );
       expect(modeCheck.test(src)).toBe(true);
+    });
+  }
+
+  /**
+   * Every copy that turns a `runtime.home` pin into a home refuses a value that
+   * is not an absolute path. A relative one resolves against whatever directory
+   * the reader stands in, so a `runtime.home` committed into a repository would
+   * send a clone's capture — and, through the plugin, the binary it execs — into
+   * a directory that repository controls.
+   *
+   * `myco-run.cjs` is the copy no gate can drive as a process from here; the
+   * other three are held to their answers over a fixture tree by
+   * tests/symbionts/plugin-home-agreement.test.ts.
+   */
+  const HOME_READERS = [
+    { label: 'src/paths/home.ts', file: 'packages/myco/src/paths/home.ts' },
+    { label: 'bin/runtime-redirect.cjs', file: 'packages/myco/bin/runtime-redirect.cjs' },
+    { label: 'src/symbionts/templates/myco-run.cjs', file: 'packages/myco/src/symbionts/templates/myco-run.cjs' },
+    { label: 'src/symbionts/templates/_shared/plugin-helpers.ts.snippet', file: 'packages/myco/src/symbionts/templates/_shared/plugin-helpers.ts.snippet' },
+  ] as const;
+
+  for (const { label, file } of HOME_READERS) {
+    it(`${label}: refuses a runtime.home value that is not an absolute path`, () => {
+      const src = fs.readFileSync(path.join(REPO_ROOT, file), 'utf-8');
+      // `path.isAbsolute(...)` in the Node copies; the plugin snippet cannot
+      // import `path`, so it tests the expanded value's own shape.
+      const refuses = /isAbsolute\(/.test(src) || /startsWith\("\/"\)/.test(src);
+      expect({ label, refuses }).toEqual({ label, refuses: true });
     });
   }
 

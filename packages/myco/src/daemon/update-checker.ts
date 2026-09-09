@@ -26,9 +26,10 @@ import {
   type UpdatePackageId,
 } from '../constants/update.js';
 import {
+  readHomePin,
+  readMachineHomePin,
   resolveMachineRuntimeCommandPath,
   resolveMycoHome,
-  expandHome,
 } from '../grove/paths.js';
 import { readLayeredPin, readTrustedPin, resolveBinary } from '../runtime/binary-resolution.js';
 
@@ -107,14 +108,17 @@ export function resolveRuntimeCommand(vaultDir?: string): string | null {
  *
  * Mirrors `resolveRuntimeCommand`'s layering: when `vaultDir` is supplied,
  * `<vaultDir>/runtime.home` (the project-scope dogfood pin) is checked first,
- * then the machine-scope `~/.myco/runtime.home`. Both go through the same G7
- * trust check (`readPinFile`). `~` in the value is expanded.
+ * then the machine-scope `~/.myco/runtime.home`. Both are the home resolver's
+ * own readers (`paths/home.ts`), so a daemon asking whether a project is
+ * pinned elsewhere applies the rule that resolves the home in the first place —
+ * same trust check, same `~` expansion.
  */
 export function resolveRuntimeHome(vaultDir?: string): string | null {
-  let raw: string | null = null;
-  if (vaultDir) raw = readTrustedPin(path.join(vaultDir, MACHINE_RUNTIME_HOME_FILENAME));
-  if (!raw) raw = readTrustedPin(path.join(resolveMycoHome(), MACHINE_RUNTIME_HOME_FILENAME));
-  return raw ? expandHome(raw) : null;
+  if (vaultDir) {
+    const project = readHomePin(path.join(vaultDir, MACHINE_RUNTIME_HOME_FILENAME));
+    if (project) return project;
+  }
+  return readMachineHomePin()?.home ?? null;
 }
 
 /**

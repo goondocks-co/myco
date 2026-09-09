@@ -47,12 +47,14 @@ const MEMBER_HOME_PREFIX = '@memberHome';
 /**
  * Expand `@memberHome`, `~` and `$VAR` / `${VAR}` forms.
  *
- * `@memberHome` resolves through the member's own home resolver so discovery
- * and the runtime that writes the transcript name one directory.
+ * `@memberHome` is the home the caller is working under — passed in by a
+ * caller that has already resolved one (a hook under a project pin), else the
+ * member's own resolver — so discovery and the runtime that wrote the
+ * transcript name one directory.
  */
-export function expandRoot(root: string, env: NodeJS.ProcessEnv = process.env): string {
+export function expandRoot(root: string, env: NodeJS.ProcessEnv = process.env, mycoHome?: string): string {
   if (root === MEMBER_HOME_PREFIX || root.startsWith(`${MEMBER_HOME_PREFIX}/`)) {
-    const home = resolveMycoHome({ env, homeDir: env.HOME && env.HOME.length > 0 ? env.HOME : undefined });
+    const home = mycoHome ?? resolveMycoHome({ env, homeDir: env.HOME && env.HOME.length > 0 ? env.HOME : undefined });
     const rest = root.slice(MEMBER_HOME_PREFIX.length).replace(/^\//, '');
     return rest === '' ? home : path.join(home, rest);
   }

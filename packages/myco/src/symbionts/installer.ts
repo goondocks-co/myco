@@ -341,16 +341,18 @@ interface ScopeCapabilities {
   globalLauncher: boolean;
   flatSkills: boolean;
   detectionGate: boolean;
+  /** Name the pinned home in each MCP server's `env`. See {@link SymbiontInstaller.injectMcpHomeEnv}. */
+  mcpHomeEnv: boolean;
 }
 
 const SCOPE_CAPABILITIES: Record<InstallScope, ScopeCapabilities> = {
   project: {
     agentsMd: true, gitignore: true, instructions: true, pluginPackage: true,
-    globalLauncher: false, flatSkills: false, detectionGate: false,
+    globalLauncher: false, flatSkills: false, detectionGate: false, mcpHomeEnv: true,
   },
   global: {
     agentsMd: false, gitignore: false, instructions: false, pluginPackage: false,
-    globalLauncher: true, flatSkills: true, detectionGate: true,
+    globalLauncher: true, flatSkills: true, detectionGate: true, mcpHomeEnv: true,
   },
   // The 2.0 member scope writes the symbiont's memberHooksTarget and, for an
   // mcp-transport symbiont, its MCP server list. Every project-content surface,
@@ -358,7 +360,7 @@ const SCOPE_CAPABILITIES: Record<InstallScope, ScopeCapabilities> = {
   // this scope can reach the file a 1.4 project install owns.
   'member-project': {
     agentsMd: false, gitignore: false, instructions: false, pluginPackage: false,
-    globalLauncher: false, flatSkills: false, detectionGate: false,
+    globalLauncher: false, flatSkills: false, detectionGate: false, mcpHomeEnv: false,
   },
 };
 
@@ -710,18 +712,27 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Inject `MYCO_HOME` into each MCP server entry's `env` when a `runtime.home`
-   * pin redirects this project to a non-default daemon home (e.g. a dogfood
-   * `~/.myco-dev`). The MCP server is exec'd directly by the host agent as
-   * `<binary> mcp`; the self-contained binary's entry does NOT run the
-   * `runtime-redirect.cjs` shim, so without this the MCP server binds to the
-   * prod home and a dev-pinned project's tools hit the wrong daemon.
+   * Name the pinned home in each MCP server entry's `env`, for the scopes whose
+   * file is machine-local.
    *
-   * No pin → no injection: the daemon-agnostic prod default (see
-   * `resolveManagedBinaryPath`) is preserved so a global config never embeds a
-   * dev home. Mirrors the CLI/hook redirect: same layered pin, same trust check.
+   * A dogfood project pinned to `~/.myco-dev` writes its `runtime.command`
+   * beside the home pin, and the host agent execs `<binary> mcp` without the
+   * `runtime-redirect.cjs` shim; the env is what carries that operator's
+   * intent through to the server.
+   *
+   * OFF under `member-project`: that scope's `.mcp.json` lives in the project
+   * tree and is normally committed, so a machine's absolute home path would
+   * travel to everyone who clones it. Nothing is lost — `myco mcp` resolves the
+   * project's own `runtime.home` pin (`paths/home.ts`), reaching the same home
+   * without the committed file naming it.
+   *
+   * No pin → no injection either way: the daemon-agnostic prod default (see
+   * `resolveManagedBinaryPath`) is preserved so a config never embeds a home
+   * nothing asked for. Mirrors the CLI/hook redirect: same layered pin, same
+   * trust check.
    */
   private injectMcpHomeEnv(servers: Record<string, unknown>): void {
+    if (!this.capabilities.mcpHomeEnv) return;
     const home = resolveRuntimeHome(this.vaultDir);
     if (!home) return;
     for (const entry of Object.values(servers)) {
