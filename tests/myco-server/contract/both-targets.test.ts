@@ -323,6 +323,13 @@ describe('agent runs read the same on both stores', () => {
       await t.env.db.prepare(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_c', 'c', 'built-in', 1, 1)`).run();
       await t.env.db.prepare(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, error, checkpoints, execution_overrides, resume_status, resumable)
         VALUES ('proj_1', 'run_c', 'agent_c', 'digest', 'failed', 1000, 2000, 'boom', ?, '{"provider":{"apiKey":"sk-canary"}}', 'session_expired', 1)`).bind(checkpoints).run();
+      // Two calls, so the ordered, bound read of the run's calls runs on each
+      // store rather than being asserted empty on both.
+      for (const [i, ev] of [['myco_run_sessions', 'material'], ['/runs/report', null]].entries()) {
+        await t.env.db.prepare(`INSERT INTO agent_run_events (project_id, run_id, phase_name, event_type, tool_name, outcome, duration_ms, payload, recorded_at)
+          VALUES ('proj_1', 'run_c', NULL, 'run_tool', ?, 'success', ?, ?, ?)`)
+          .bind(ev[0], (i + 1) * 5, ev[1] === null ? null : JSON.stringify({ op: ev[1] }), 1500 + i).run();
+      }
       const listed = await listRuns(t.env.db, { projectId: 'proj_1' });
       const detail = await getRunDetail(t.env.db, { projectId: 'proj_1' }, 'run_c');
       const foreign = await getRunDetail(t.env.db, { projectId: 'proj_2' }, 'run_c');
@@ -335,6 +342,10 @@ describe('agent runs read the same on both stores', () => {
         phases: [
           { name: 'prepare', status: 'completed', updatedAt: 5, summary: null, turnsUsed: 2, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: false, semanticCheckBlocked: false, postConditionFailed: false },
           { name: 'write', status: 'failed', updatedAt: 6, summary: 'ran out of turns', turnsUsed: null, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: true, semanticCheckBlocked: false, postConditionFailed: false },
+        ],
+        toolCalls: [
+          { tool: 'myco_run_sessions', op: 'material', durationMs: 5, recordedAt: 1500 },
+          { tool: '/runs/report', op: null, durationMs: 10, recordedAt: 1501 },
         ],
       },
       foreign: null,

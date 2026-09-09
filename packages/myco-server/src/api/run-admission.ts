@@ -20,18 +20,6 @@ import { HARNESS_MEMBER_ID } from '../core/harness.js';
 import { staleAfter } from '../core/jobs-run.js';
 import { getRun, liveRunsOfCredential, type HeldRun, type RunRow } from '../core/runs.js';
 
-/** The session a run's recorded context names, or null when it names none. */
-export function sessionNamedByRun(run: RunRow): string | null {
-  if (run.runContext === null) return null;
-  try {
-    const parsed: unknown = JSON.parse(run.runContext);
-    const value = typeof parsed === 'object' && parsed !== null ? (parsed as { session_id?: unknown }).session_id : undefined;
-    return typeof value === 'string' && value.length > 0 ? value : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * True while a run's runtime is taken to be alive: the row is `running`, this
  * instant is inside the run's own bound, and any lease on it is still held. One

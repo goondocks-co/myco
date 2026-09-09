@@ -1,5 +1,9 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
+import { RUN_TOOL_EVENT } from '../core/runs.js';
+
+/** The most calls one run's detail lists; a run that called more is read in the record rather than the page. */
+const MAX_TOOL_CALLS = 200;
 
 /** A run as the list shows it: what ran, how it ended, and what it cost. The error text stays in the detail; the list carries only that there is one. */
 export interface RunListRow {
@@ -69,10 +73,20 @@ export interface PhaseRow {
   postConditionFailed: boolean;
 }
 
+/** One call a run made back to the Deployment, in the order the calls landed. */
+export interface RunToolCallRow {
+  tool: string;
+  op: string | null;
+  durationMs: number | null;
+  recordedAt: number;
+}
+
 export interface RunDetail {
   run: RunDetailRow;
   /** The phases the checkpoint records; empty when it records none, null when it cannot be read. */
   phases: PhaseRow[] | null;
+  /** Every call this run made back to the Deployment; empty for a run that made none. */
+  toolCalls: RunToolCallRow[];
 }
 
 export interface RunFilters {
@@ -204,12 +218,46 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, opts: RunF
   return page(results.map(toListRow), k.limit, (r) => ({ createdAt: r.queuedAt ?? r.startedAt ?? 0, id: r.id }));
 }
 
-/** One run inside the scope with its phases, or null — including when the run exists under another project. */
+/** The op a recorded tool call names, off the payload the record carries. */
+function opOfPayload(raw: string | null): string | null {
+  if (raw === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const op = typeof parsed === 'object' && parsed !== null ? (parsed as { op?: unknown }).op : undefined;
+    return typeof op === 'string' && op.length > 0 ? op : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every call a run made back to the Deployment, oldest first.
+ *
+ * An empty list is the answer for a run that made none, which is the reading
+ * that matters: a run whose harness never called is indistinguishable from one
+ * that worked until this list is read.
+ */
+export async function runToolCalls(db: RelationalStore, scope: ReadScope, runId: string, limit = MAX_TOOL_CALLS): Promise<RunToolCallRow[]> {
+  const { results } = await db
+    .prepare(`SELECT tool_name AS tool, duration_ms AS durationMs, payload, recorded_at AS recordedAt
+       FROM agent_run_events WHERE project_id = ? AND run_id = ? AND event_type = ?
+       ORDER BY recorded_at ASC, id ASC LIMIT ?`)
+    .bind(scope.projectId, runId, RUN_TOOL_EVENT, limit)
+    .all<Record<string, unknown>>();
+  return results.map((r) => ({
+    tool: String(r.tool ?? ''),
+    op: opOfPayload(text(r.payload)),
+    durationMs: typeof r.durationMs === 'number' ? r.durationMs : null,
+    recordedAt: Number(r.recordedAt ?? 0),
+  }));
+}
+
+/** One run inside the scope with its phases and the calls it made, or null — including when the run exists under another project. */
 export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId: string): Promise<RunDetail | null> {
   const row = await db
     .prepare(`SELECT ${DETAIL_COLUMNS} FROM agent_runs WHERE project_id = ? AND id = ?`)
     .bind(scope.projectId, runId)
     .first<Record<string, unknown>>();
   if (row === null) return null;
-  return { run: toDetailRow(row), phases: phasesOf(text(row.checkpoints)) };
+  return { run: toDetailRow(row), phases: phasesOf(text(row.checkpoints)), toolCalls: await runToolCalls(db, scope, runId) };
 }

@@ -27,6 +27,7 @@ import {
 } from '@myco-server-worker/core/cortex-input.js';
 import { SPORE_BODY_CHARS } from '@myco-server-worker/core/spores.js';
 import { memberHeaders, sqliteEnv, withHarness } from './helpers/fixtures.js';
+import { runToolCalls } from '@myco-server-worker/read/runs.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 
 const NOW = 1_800_000_000_000;
@@ -370,5 +371,66 @@ describe('the digest a run writes', () => {
     expect(await f.close('run_silent')).toMatchObject({ persisted: true, applied: false, reason: 'postcondition' });
     const failed = await getRun(f.db, SCOPE, 'run_silent');
     expect({ status: failed?.status, error: failed?.error }).toEqual({ status: 'failed', error: RUN_CLOSE_ERROR });
+  });
+});
+
+/**
+ * The other door a run reaches this Deployment through.
+ *
+ * A container drives the run routes itself and never touches the MCP tool
+ * surface, so a record that held only `tools/call` would read a working
+ * container run as one that never called at all — the very reading the record
+ * exists to make.
+ */
+describe('what a run reaching the Deployment over its own routes records', () => {
+  it('records each run route the run drove, in the one list its tool calls land in', async () => {
+    const f = await fixture();
+    const minted = await f.credential();
+    f.liveRun('run_routed', DIGEST_TASK, { input_hash: 'h' }, null, false, minted.tokenId);
+
+    await f.answered('/runs/report', { runId: 'run_routed', agentId: HARNESS_AGENT_ID, action: 'digest', summary: 'wrote a tier' }, minted.token);
+    await f.answered('/runs/digest-write', { runId: 'run_routed', tier: 5000, content: '# a tier' }, minted.token);
+
+    const calls = await runToolCalls(f.db, SCOPE, 'run_routed');
+    expect(calls.map((c) => c.tool)).toEqual(['/runs/report', '/runs/digest-write']);
+  });
+
+  it('records the claim itself, so a container that claims and then dies has one call against it', async () => {
+    const f = await fixture();
+    // A claim is the call that MAKES a run held, so nothing holds it beforehand.
+    // A record that skipped it would read a container that claimed and died as
+    // one that never reached this Deployment at all.
+    f.pendingRun('run_claimed_only', TASK, { input_hash: 'server-hash' }, 'THE PROMPT');
+    expect(await f.answered('/runs/claim', { id: 'run_claimed_only', agentId: HARNESS_AGENT_ID, task: TASK, capability: 'cortex', harness: 'claude-sdk' }))
+      .toMatchObject({ persisted: true, claimed: true });
+    expect((await runToolCalls(f.db, SCOPE, 'run_claimed_only')).map((c) => c.tool)).toEqual(['/runs/claim']);
+  });
+
+  it('records nothing for a route it refused, so a malformed call leaves no row', async () => {
+    const f = await fixture();
+    const minted = await f.credential();
+    f.liveRun('run_malformed', DIGEST_TASK, { input_hash: 'h' }, null, false, minted.tokenId);
+
+    // A report naming no action is refused on its shape. Reaching the
+    // Deployment and being turned away is the one thing neither door records:
+    // a credential may not turn calls it may not make into rows.
+    expect(await f.answered('/runs/report', { runId: 'run_malformed', agentId: HARNESS_AGENT_ID }, minted.token))
+      .toMatchObject({ persisted: false });
+    expect(await runToolCalls(f.db, SCOPE, 'run_malformed')).toEqual([]);
+
+    // The same route, answered, does record.
+    await f.answered('/runs/report', { runId: 'run_malformed', agentId: HARNESS_AGENT_ID, action: 'digest', summary: 'wrote it' }, minted.token);
+    expect((await runToolCalls(f.db, SCOPE, 'run_malformed')).map((c) => c.tool)).toEqual(['/runs/report']);
+  });
+
+  it('records nothing against a run for a credential that holds none', async () => {
+    const f = await fixture();
+    f.liveRun('run_unheld', DIGEST_TASK, { input_hash: 'h' });
+    // A member's own credential drives the route, not a run's. It holds no run,
+    // so there is nothing for the call to be recorded against and the run's list
+    // stays the empty one that says its own runtime never called.
+    const plain = (await issueMemberToken(f.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, NOW)).token;
+    await f.answered('/runs/report', { runId: 'run_unheld', agentId: HARNESS_AGENT_ID, action: 'digest', summary: 'said so' }, plain);
+    expect(await runToolCalls(f.db, SCOPE, 'run_unheld')).toEqual([]);
   });
 });

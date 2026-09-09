@@ -14,9 +14,9 @@ const run = (over: Record<string, unknown> = {}) => ({
   id: 'r1', agentId: 'agent_1', task: 'digest', status: 'completed', provider: 'anthropic', model: 'claude', startedAt: NOW - 60_000, resumedAt: null, completedAt: NOW,
   tokensUsed: 1200, costUsd: 0.02, costSource: 'actual', dryRun: false, resumable: false, resumeStatus: null, failed: false, ...over,
 });
-const detail = (over: Record<string, unknown> = {}, phases: unknown = [], reports: unknown[] = []) => ({
+const detail = (over: Record<string, unknown> = {}, phases: unknown = [], reports: unknown[] = [], toolCalls: unknown[] = []) => ({
   run: { ...run(over), instruction: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: null, reasoningLevel: null, resumeMode: null, resumeAttempts: 0, error: null, dispatchedBy: null, usageData: null, actionsTaken: null, ...over },
-  phases, reports, projectId: 'x',
+  phases, reports, toolCalls, projectId: 'x',
 });
 
 const originalFetch = globalThis.fetch;
@@ -96,6 +96,31 @@ describe('Agent runs', () => {
     expect(await screen.findByTestId('failure-record')).toBeTruthy();
     expect(screen.getByText('This run recorded an error')).toBeTruthy();
     expect(screen.getByText('a tool refused')).toBeTruthy();
+  });
+
+  it('reads a run that never called back as having called nothing, and shows what it failed for', async () => {
+    server(base({
+      '/api/projects/x/runs': () => Response.json({ rows: [run({ status: 'failed', failed: true })], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail({ status: 'failed', failed: true, error: 'the run ended without its report' })),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByTestId('no-tool-calls')).toBeTruthy();
+    expect(screen.getByText('the run ended without its report')).toBeTruthy();
+  });
+
+  it('lists the calls a run made back to the Deployment', async () => {
+    server(base({
+      '/api/projects/x/runs': () => Response.json({ rows: [run()], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail({}, [], [], [
+        { tool: 'myco_run_sessions', op: 'material', durationMs: 12, recordedAt: NOW - 2000 },
+        { tool: 'myco_run', op: 'report', durationMs: 3, recordedAt: NOW - 1000 },
+      ])),
+    }));
+    mount('/p/x/runs/r1');
+    const calls = await screen.findByLabelText('Calls back to this Deployment');
+    expect(calls.textContent).toContain('myco_run_sessions');
+    expect(calls.textContent).toContain('report');
+    expect(screen.queryByTestId('no-tool-calls')).toBeNull();
   });
 
   it('tells an unreadable phase record apart from an empty one', async () => {

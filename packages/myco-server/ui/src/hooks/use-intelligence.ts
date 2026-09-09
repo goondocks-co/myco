@@ -84,11 +84,21 @@ export interface ReportRow {
   createdAt: number;
 }
 
+/** One call a run made back to the Deployment. */
+export interface RunToolCallRow {
+  tool: string;
+  op: string | null;
+  durationMs: number | null;
+  recordedAt: number;
+}
+
 export interface RunDetailResponse {
   run: RunDetailRow;
   /** Empty when the run recorded no phases; null when its record could not be read. */
   phases: PhaseRow[] | null;
   reports: ReportRow[];
+  /** Every call the run made back; empty for a run that made none. */
+  toolCalls: RunToolCallRow[];
   projectId: string;
 }
 
