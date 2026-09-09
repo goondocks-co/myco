@@ -47,7 +47,7 @@ export interface TaskInput {
 export interface TaskInputOptions {
   /** The run writes its artifact from the material alone rather than carrying the current one forward. */
   fresh?: boolean;
-  /** What the run was dispatched with, for a task whose instruction is about one thing the dispatch named rather than the Project as a whole. */
+  /** The parameters the dispatch carries, for a task whose instruction is about one thing the dispatch names rather than the Project as a whole. */
   params?: Record<string, unknown>;
 }
 
@@ -117,7 +117,7 @@ export function uninstructedError(task: string): string {
   return `the Deployment has no instruction for a ${task} run`;
 }
 
-/** The instruction a claimed run is driven under: the one built for its task now, else the one it was dispatched with; null when there is neither. */
+/** The instruction a claimed run is driven under: the one built for its task now, else the one its dispatch carries; null when there is neither. */
 export function instructionFor(built: BuiltInput | null, stored: string | null): string | null {
   const instruction = built !== null && !built.unchanged ? built.input.instruction : stored;
   return instruction === null || instruction.trim() === '' ? null : instruction;

@@ -3,8 +3,8 @@
  *
  * A worker hands its harness whatever the claim answers, and a harness given
  * nothing ends its turn having done nothing. The prompt is therefore the
- * Deployment's, composed here from the run's own context — the session it was
- * dispatched for and the mode it was asked in — and written in the vocabulary
+ * Deployment's, composed here from the run's own context — the session its
+ * dispatch names and the mode of the ask — and written in the vocabulary
  * of the tools the run's MCP surface actually serves, which is the only
  * vocabulary a harness on a worker can call.
  *

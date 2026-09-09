@@ -6,7 +6,7 @@
  * and the worker then reports a run that did nothing as one that finished. So:
  * the Deployment writes the instruction for the tasks a worker serves, in the
  * vocabulary of the tools the run's MCP surface actually serves; a queued run
- * that has neither a built instruction nor one it was dispatched with is ended
+ * that has neither a built instruction nor one its dispatch carries is ended
  * at the claim, named, and never handed out.
  */
 import { describe, expect, it } from 'bun:test';
@@ -105,7 +105,7 @@ describe('what a claim hands out', () => {
     if (!claimed.claimed) return;
     expect(claimed.run.instruction).toContain('Target session: s1');
     expect(claimed.run.instruction).toContain('`myco_run_sessions` op "material"');
-    // The row carries what the worker was told, so the runs page shows it and a re-claim reads the same.
+    // The row carries what the worker is told, so the runs page shows it and a re-claim reads the same.
     expect(r.row(claimed.run.id).instruction).toBe(claimed.run.instruction);
   });
 
