@@ -1,4 +1,5 @@
 import { MEMBER_TOKEN_BYTE_QUOTA } from '../constants.js';
+import type { RelationalStore } from '../core/adapters.js';
 import type { Fragment } from './projections.js';
 
 /** The write in flight, as far as the quota is concerned: the token, its project, and the server clock the reservations are read against. */
@@ -19,6 +20,13 @@ export function heldBytes(ctx: QuotaContext, except: string | null = null): Frag
           + (SELECT COALESCE(SUM(size), 0) FROM blob_reservations WHERE token_id = ? AND expires_at > ?${except === null ? '' : ' AND reservation_id != ?'})`,
     params: [ctx.tokenId, ctx.tokenId, ctx.now, ...(except === null ? [] : [except])],
   };
+}
+
+/** The bytes a credential may still write: the quota less what it holds, floored at zero. Read through `heldBytes`, so what a caller is told it may spend and what the admission will actually admit are the same expression. */
+export async function remainingQuotaBytes(db: RelationalStore, ctx: QuotaContext): Promise<number> {
+  const held = heldBytes(ctx);
+  const row = await db.prepare(`SELECT ${MEMBER_TOKEN_BYTE_QUOTA} - (${held.sql}) AS remaining`).bind(...held.params).first<{ remaining: number }>();
+  return Math.max(0, row?.remaining ?? 0);
 }
 
 /** An admission that always holds, in the fragment shape every other admission takes. What a write the Deployment makes for itself is admitted by: it spends no quota and names no credential to be live. */

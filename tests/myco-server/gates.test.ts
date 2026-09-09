@@ -49,7 +49,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 94;
+const EMIT_CALLS = 97;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -552,6 +552,13 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
         wellFormed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
       },
+      // #1148 — the import plan. Advice, not an authority: it stores nothing,
+      // so a malformed ask is refused in the same shape as any other.
+      'POST /import/plan': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/import/plan', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/import/plan', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ candidates: [] }) }),
+      },
       'POST /runs/claim': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -1053,6 +1060,7 @@ describe('gates', () => {
       'member POST /context/prompt',
       'member POST /context/session',
       'member POST /events',
+      'member POST /import/plan',
       'member POST /mcp',
       'member POST /members/link-github',
       'member POST /runs/canopy-map',

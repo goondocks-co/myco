@@ -181,7 +181,7 @@ export async function unarchiveProject(db: RelationalStore, projectId: string): 
   return (await projectExists(db, projectId)) ? 'not_archived' : 'absent';
 }
 
-/** A project's sessions, most recently started first. The key is `first_received_at` paired with `session_id`: a keyset page must order by a column no later write moves, or an actively capturing session slips above the cursor between two pages and appears on neither. */
+/** A project's sessions, most recently started first, over `idx_sessions_occurred`. The key is `COALESCE(started_at, first_received_at)` paired with `session_id`: a keyset page must order by a value no later write moves, or an actively capturing session slips above the cursor between two pages and appears on neither. Both halves stay with the first writer — `started_at` is the minimum over the session's starts, `first_received_at` never changes. */
 export interface SessionFilters {
   branch?: string;
   /** Sessions started at or after this instant (ms). */
@@ -218,8 +218,25 @@ export function containsPattern(text: string): string {
   return `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
 
+/**
+ * When a session happened, for ordering: its own start where it has one, and
+ * the receipt where it does not.
+ *
+ * The receipt records when the Deployment learned of a session, which is a
+ * different instant from when the session ran. The two coincide for live
+ * capture and diverge everywhere else — a month-old transcript imported today,
+ * a spool drained days after an outage — and ordering on the receipt puts both
+ * at the top of a list of recent work.
+ *
+ * The keyset predicate, the sort and the page cursor all derive from this one
+ * expression. A sort changed without the other two leaves the cursor comparing
+ * a column the rows are no longer ordered by, which drops and repeats rows
+ * across pages rather than failing.
+ */
+const SESSION_OCCURRED_AT = 'COALESCE(s.started_at, s.first_received_at)';
+
 export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters = {}): Promise<Page<SessionRow>> {
-  const k = keyset(opts, { order: 's.first_received_at', id: 's.session_id', direction: 'DESC' });
+  const k = keyset(opts, { order: SESSION_OCCURRED_AT, id: 's.session_id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
   const conditions = ['s.project_id = ?', LIVE_SESSION];
   if ((opts.fidelity ?? 'full') === 'full') conditions.push(FULL_FIDELITY);
@@ -237,10 +254,13 @@ export async function listSessions(db: RelationalStore, scope: ReadScope, opts: 
   }
   if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
   const { results } = await db
-    .prepare(`SELECT ${SESSION_COLUMNS} ${SESSION_FROM} WHERE ${conditions.join(' AND ')} ORDER BY s.first_received_at DESC, s.session_id DESC LIMIT ?`)
+    .prepare(`SELECT ${SESSION_COLUMNS} ${SESSION_FROM} WHERE ${conditions.join(' AND ')} ORDER BY ${SESSION_OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`)
     .bind(...params, k.limit + 1)
     .all<Record<string, unknown>>();
-  return page(results.map(toSession), k.limit, (r) => ({ createdAt: r.firstReceivedAt, id: r.sessionId }));
+  // The cursor carries the same value the sort ordered by. Both columns are
+  // already on the row, so this is the SQL COALESCE read back rather than a
+  // second definition of it.
+  return page(results.map(toSession), k.limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, id: r.sessionId }));
 }
 
 /** One session inside the scope, or null — including when the session exists under another project. */
@@ -365,7 +385,7 @@ export async function listSessionSummaries(db: RelationalStore, scope: ReadScope
 export async function projectStats(db: RelationalStore, scope: ReadScope, nowMs: number): Promise<ProjectStats> {
   const sessions = await db
     .prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END) AS open,
-                     SUM(CASE WHEN first_received_at >= ? THEN 1 ELSE 0 END) AS recent, MAX(last_received_at) AS last
+                     SUM(CASE WHEN COALESCE(started_at, first_received_at) >= ? THEN 1 ELSE 0 END) AS recent, MAX(last_received_at) AS last
                 FROM sessions s WHERE s.project_id = ? AND ${LIVE_SESSION}`)
     .bind(nowMs - WEEK_MS, scope.projectId)
     .first<Record<string, unknown>>();

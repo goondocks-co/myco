@@ -75,6 +75,12 @@ export const TRANSCRIPT_PRODUCER = { adapter: 'transcript-parse', version: Strin
  * Which transcripts still owe a pass: bytes unread, and either no failure or a
  * failure recorded against an older parser.
  *
+ * Live transcripts are read before imported ones. `imported_at` is NULL for a
+ * transcript a hook shipped, and SQLite orders NULLs first ascending, so
+ * leading the sort with it puts live work ahead of a backfill without a second
+ * job and without a second call budget — a backfill needs lower priority, not
+ * more calls. Within the live half the order is unchanged.
+ *
  * `nextTarget` and `pendingTranscriptBytes` share it. Counting work the
  * selection would not take keeps a Deployment awake for nothing; counting less
  * than it takes leaves a transcript a newer parser has reopened unread until
@@ -107,7 +113,7 @@ async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget
                 FROM transcripts
                WHERE ${PENDING_TRANSCRIPTS}
                  AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = transcripts.project_id AND t.session_id = transcripts.session_id)
-               ORDER BY last_received_at, transcript_id LIMIT 1`)
+               ORDER BY imported_at, last_received_at, transcript_id LIMIT 1`)
     .bind(PARSER_VERSION)
     .first<Record<string, unknown>>();
   if (row === null) return null;
@@ -385,6 +391,23 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
 export async function pendingTranscriptBytes(db: RelationalStore): Promise<number> {
   const row = await db
     .prepare(`SELECT COUNT(*) AS n FROM transcripts WHERE ${PENDING_TRANSCRIPTS}`)
+    .bind(PARSER_VERSION)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/**
+ * How many of the pending transcripts arrived by import.
+ *
+ * Beside `pendingTranscriptBytes` rather than inside it: that count is what
+ * keeps a Deployment awake for unread bytes, and a backfill must not. The tick
+ * takes the difference for the live half and holds the Deployment at `active`
+ * for that alone, leaving an import backlog to finish at `idle` as the
+ * Deployment is used.
+ */
+export async function pendingImportedTranscripts(db: RelationalStore): Promise<number> {
+  const row = await db
+    .prepare(`SELECT COUNT(*) AS n FROM transcripts WHERE ${PENDING_TRANSCRIPTS} AND imported_at IS NOT NULL`)
     .bind(PARSER_VERSION)
     .first<{ n: number }>();
   return row?.n ?? 0;

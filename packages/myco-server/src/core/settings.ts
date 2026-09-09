@@ -1,5 +1,5 @@
 import type { RelationalStore } from './adapters.js';
-import { INSTRUCTIONS_TEMPLATE_MAX_BYTES } from '../constants.js';
+import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 
 /**
  * Deployment Settings: one operation every write goes through.
@@ -97,6 +97,12 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'embedding.model': {},
   'embedding.prevent_deep_sleep': {},
   'embedding.provider': {},
+  // #1148 — bounded import. `enabled` is also an admission on the write path;
+  // the window and the per-harness cap are applied where a whole pass is
+  // visible, which one event is not.
+  'import.enabled': {},
+  'import.max_sessions_per_harness': { type: 'integer', min: 1, max: IMPORT_MAX_SESSIONS_MAX },
+  'import.window_days': { type: 'integer', min: 1, max: IMPORT_WINDOW_DAYS_MAX },
   'instructions.template': { type: 'markdown', maxBytes: INSTRUCTIONS_TEMPLATE_MAX_BYTES },
   'maintenance.auto_integrity_check': {},
   'maintenance.auto_integrity_check_interval_hours': {},
@@ -211,6 +217,24 @@ export interface SettingsWriter {
  * Deployment, not to a Project, so this asks what the server can do rather than
  * what a Project is admitted to.
  */
+/**
+ * SQL over one leaf's stored text, for an admission that runs inside another
+ * module's batch.
+ *
+ * The settings store is the only module that names its own table, so a check
+ * elsewhere reads through this rather than spelling the query itself: one
+ * module knows how a leaf is stored, and every admission over a leaf asks it.
+ *
+ * `admission` holds while the leaf is absent or carries anything but `off`;
+ * `read` answers the row that carries it.
+ */
+export function leafOffChecks(leaf: string, off: string): { admission: { sql: string; params: string[] }; read: { sql: string; params: string[] } } {
+  return {
+    admission: { sql: `NOT EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = ? AND value = ?)`, params: [leaf, off] },
+    read: { sql: `SELECT 1 AS disabled FROM deployment_settings WHERE leaf = ? AND value = ?`, params: [leaf, off] },
+  };
+}
+
 /** The stored value of each named leaf, as the JSON text the settings surface wrote; a leaf never written is absent from the map. */
 export async function leafValues(db: RelationalStore, leaves: readonly string[]): Promise<Map<string, string>> {
   if (leaves.length === 0) return new Map();

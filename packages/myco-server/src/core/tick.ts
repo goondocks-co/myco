@@ -22,7 +22,7 @@ import { runScheduledTasks, type ScheduleReport } from './scheduled-tasks.js';
 import { lastActivityAt } from './activity.js';
 import { classify, emit } from '../telemetry.js';
 import { pendingSearchBlobs } from './search-index.js';
-import { pendingTranscriptBytes } from '../ingest/parse.js';
+import { pendingImportedTranscripts, pendingTranscriptBytes } from '../ingest/parse.js';
 import { embeddingKeepsAwake } from './embedding/jobs.js';
 
 /** Inactivity before each depth: the same thresholds the 1.4 daemon applies on a machine. */
@@ -56,7 +56,10 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   const [inside, queued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db)]);
   const assertions: PowerAssertion[] = [];
   if (await pendingSearchBlobs(env.db) > 0) assertions.push({ name: 'search:pending', maxDepth: 'active' });
-  if (await pendingTranscriptBytes(env.db) > 0) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });
+  const pendingTranscripts = await pendingTranscriptBytes(env.db);
+  const pendingImported = await pendingImportedTranscripts(env.db);
+  if (pendingTranscripts - pendingImported > 0) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });
+  if (pendingImported > 0) assertions.push({ name: 'import:pending', maxDepth: 'idle' });
   if (await embeddingKeepsAwake(env, now)) assertions.push({ name: 'embedding:pending', maxDepth: 'idle' });
   // Requested work that waits keeps the Deployment awake until it runs.
   if (queued) assertions.push({ name: 'queue:pending', maxDepth: 'active' });

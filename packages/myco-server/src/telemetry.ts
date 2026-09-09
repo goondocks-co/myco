@@ -68,6 +68,8 @@ export const CLASSIFIERS = [
   'session_tombstoned', 'transcript_replaced',
   // #1151 — worker mode
   'not_admin',
+  // #1148 — bounded import
+  'import_disabled',
 ] as const;
 export type Classifier = (typeof CLASSIFIERS)[number];
 

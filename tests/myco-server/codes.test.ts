@@ -145,6 +145,13 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   // #1151 — worker mode. A member the Deployment holds but does not make an
   // administrator reaches no Deployment-scoped route.
   not_admin: (r) => r.fetch(memberPost(r.plain.token, '{}', '/worker/claim')),
+  // #1148 — an import-channel write to a Deployment that has import switched
+  // off. The check is composed into the shared checks for that channel alone,
+  // so the same envelope on `cli` stores.
+  import_disabled: async (r) => {
+    r.e.sqlite.query(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('import.enabled', ?, ?, 'mem_machine_1')`).run(JSON.stringify(false), r.now);
+    return r.post(r.t1.token, { eventId: uuid(710), channel: 'import', payload: { promptId: uuid(711), text: 'imported', origin: 'user' } });
+  },
   run_scope: (r) => r.post(r.harness.token, {}),
   no_run: (r) => r.mcp(r.harness.token),
   project_mismatch: async (r) => { await r.running(); return r.mcp(r.harness.token, { [PROJECT_HEADER]: 'proj_2' }); },

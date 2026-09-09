@@ -42,6 +42,7 @@ Commands:
   detach <project>         Clear a project's Team Host mapping (resolves local again)
   host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key|members|revoke)
   login <invite-link>      Redeem an invite link and sign this machine in
+  import                   Bring this machine's existing agent history to its Deployment
   member <op>              2.0 member: join | leave | drain | status | refresh
   settings                 Print harness settings for a sandboxed agent (--harness <name> --project <id>)
   version                  Show plugin version
@@ -119,6 +120,7 @@ const DELEGATED_HELP: Record<string, () => Promise<string>> = {
   host: async () => (await import('./cli/host.js')).HOST_HELP,
   member: async () => (await import('./cli/member.js')).MEMBER_HELP,
   login: async () => (await import('./cli/login.js')).LOGIN_HELP,
+  import: async () => (await import('./cli/import.js')).IMPORT_HELP,
   settings: async () => (await import('./cli/settings.js')).SETTINGS_HELP,
   server: async () => (await import('./cli/server.js')).SERVER_HELP,
   worker: async () => (await import('./cli/worker.js')).WORKER_HELP,
@@ -252,6 +254,15 @@ async function main(): Promise<void> {
   // 2.0 member operations — registry and spool under MYCO_HOME, never a project
   // vault, so they sit above the myco.yaml gate and work from any cwd.
   if (cmd === 'member') return (await import('./cli/member.js')).run(args);
+
+  // #1148: reads the harness stores on this machine and the member registry,
+  // never a project vault, so it sits above the myco.yaml gate like the rest of
+  // the member family.
+  if (cmd === 'import') {
+    // The verb reports its outcome; the exit status is the dispatcher's to set.
+    if (!await (await import('./cli/import.js')).run(args)) process.exitCode = 2;
+    return;
+  }
 
   // #1158: redeeming an invite link is the FIRST thing a machine does, before it
   // has a vault, a config file or a project — so it sits above the myco.yaml gate.

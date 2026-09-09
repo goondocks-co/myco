@@ -19,7 +19,8 @@ export const AHEAD_OF_CLOCK = (field: string): string => `${field} is more than 
 /** The refusal a member sees when a payload is over the cap; it names the route that takes large content. */
 export const PAYLOAD_CAP_REASON = `payload exceeds ${MAX_PAYLOAD_BYTES} bytes; spill to POST /blobs/{sha256} and reference it`;
 
-export type Channel = 'cli' | 'http';
+/** How an event reached the Deployment. `import` is a member shipping bytes that already existed on its disk (#1148): the same kinds and the same path, marked so the parse orders it behind live work and no title is scheduled for a session that ended weeks ago. */
+export type Channel = 'cli' | 'http' | 'import';
 
 export interface Producer {
   adapter: string;
@@ -42,7 +43,8 @@ export type Refused = { ok: false } & Refusal;
 export type ParseResult = { ok: true; value: CaptureEnvelope } | Refused;
 const refused = (reason: string, classifier?: Refusal['classifier']): Refused => ({ ok: false, ...refusal(reason, classifier) });
 
-const CHANNELS = new Set(['cli', 'http']);
+/** Every channel an envelope may declare. Exported so the member's own list is pinned against it rather than kept in step by hand. */
+export const CHANNELS: ReadonlySet<string> = new Set<Channel>(['cli', 'http', 'import']);
 /** The closed envelope: every field it carries, and every field of its producer block. The envelope digest covers all of them but `eventId`, which is the key. */
 export const ENVELOPE_FIELDS = ['eventId', 'sessionId', 'kind', 'createdAt', 'channel', 'producer', 'payload'] as const;
 export const PRODUCER_FIELDS = ['adapter', 'version'] as const;
@@ -105,7 +107,7 @@ export function parseEnvelope(input: unknown, now: number): ParseResult {
   }
   if (aheadOfClock(raw.createdAt, now)) return refused(AHEAD_OF_CLOCK('createdAt'), 'clock_skew');
   if (typeof raw.channel !== 'string' || !CHANNELS.has(raw.channel)) {
-    return refused('channel must be "cli" or "http"');
+    return refused(`channel must be one of ${[...CHANNELS].join(', ')}`);
   }
 
   const payload = raw.payload ?? null;

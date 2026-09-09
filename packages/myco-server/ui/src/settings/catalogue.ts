@@ -180,6 +180,16 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     ],
   },
   {
+    id: 'import',
+    label: 'Importing past sessions',
+    note: 'What a machine brings with it when someone joins. Their agents have been keeping transcripts all along; this is how much of that history arrives.',
+    leaves: [
+      { leaf: 'import.enabled', label: 'Import past sessions on join', kind: 'toggle', defaultValue: true, note: 'Off means a machine brings nothing, and `myco import` is refused.' },
+      { leaf: 'import.window_days', label: 'Reach back at most', kind: 'number', min: 1, max: 3650, unit: 'days', note: 'Most agents keep transcripts for about a month, so reaching further back finds more only on machines whose archive survived longer.' },
+      { leaf: 'import.max_sessions_per_harness', label: 'At most, per agent', kind: 'number', min: 1, max: 1000, unit: 'sessions' },
+    ],
+  },
+  {
     id: 'advanced',
     label: 'Advanced',
     note: 'Per-tier provider settings and per-task overrides, as documents.',

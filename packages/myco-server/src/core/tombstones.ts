@@ -53,6 +53,16 @@ export const notTombstonedSql = (alias: string): string =>
 /** The same predicate for a query that names its project and session by parameter rather than by alias. */
 export const NOT_TOMBSTONED_PARAMS = `NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = ? AND t.session_id = ?)`;
 
+/** Which of these sessions this Project has deleted. The set an import checks before it offers anything: a tombstoned session is never held again. */
+export async function tombstonedAmong(db: RelationalStore, projectId: string, sessionIds: readonly string[]): Promise<Set<string>> {
+  if (sessionIds.length === 0) return new Set();
+  const { results } = await db
+    .prepare(`SELECT session_id FROM session_tombstones WHERE project_id = ? AND session_id IN (${sessionIds.map(() => '?').join(', ')})`)
+    .bind(projectId, ...sessionIds)
+    .all<{ session_id: string }>();
+  return new Set(results.map((r) => r.session_id));
+}
+
 export interface TombstoneOutcome {
   /** False when the Project holds no such session; the caller answers not-found rather than inventing a tombstone. */
   applied: boolean;

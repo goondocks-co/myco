@@ -204,6 +204,8 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
 
 /** The kind whose projected arrival schedules a title for its session, past the answer. */
 const SESSION_END_KIND = 'session.end';
+/** The channel a member ships pre-existing bytes on; no title is scheduled for a session that arrives over it. */
+const IMPORT_CHANNEL = 'import';
 /** The kind whose projected arrival leaves the Deployment bytes to read. */
 const TRANSCRIPT_SEGMENT_KIND = 'transcript.segment';
 
@@ -215,7 +217,7 @@ export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<R
     return Response.json(refused(ctx, refusal('body must be JSON', 'parse')));
   }
   const result = await ingestEvent(env.db, ctx, parsed);
-  const envelope = parsed as { kind?: unknown; sessionId?: unknown; payload?: { blob?: unknown } } | null;
+  const envelope = parsed as { kind?: unknown; sessionId?: unknown; channel?: unknown; payload?: { blob?: unknown } } | null;
   if (result.persisted && result.projected === true && typeof envelope?.payload?.blob === 'string') {
     env.afterResponse(async () => {
       try {
@@ -232,7 +234,11 @@ export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<R
       try { await env.wake?.(); } catch { emit({ kind: 'transcript_wake_failed', projectId: ctx.projectId }); }
     });
   }
-  const endedSession = envelope?.kind === SESSION_END_KIND && typeof envelope.sessionId === 'string' ? envelope.sessionId : null;
+  // A session ended weeks ago and imported now is not a session that just
+  // ended: titling it would spend a model run per imported session at join,
+  // for history a person can title from the dashboard when they want it.
+  const imported = envelope?.channel === IMPORT_CHANNEL;
+  const endedSession = !imported && envelope?.kind === SESSION_END_KIND && typeof envelope.sessionId === 'string' ? envelope.sessionId : null;
   if (result.persisted && result.projected === true && endedSession !== null) {
     const target = { projectId: ctx.projectId, sessionId: endedSession, now: ctx.now, origin: ctx.origin };
     env.afterResponse(() => titleSession(env, target).then(() => undefined));

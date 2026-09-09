@@ -47,6 +47,7 @@ import { handleRefresh } from './auth/refresh.js';
 import { handleBlob } from './ingest/blobs.js';
 import { handleHarnessDispatch } from './api/harness.js';
 import { handleEvents } from './ingest/events.js';
+import { handleImportPlan } from './api/import.js';
 import { handleGrantMcp, handleMcp, handleRunMcp } from './mcp/http.js';
 import { handleWorkerClaim, handleWorkerEnd, handleWorkerLease } from './api/worker.js';
 
@@ -98,6 +99,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
   { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, handler: handleRefresh },
+  // #1148 — bounded import and backfill
+  { method: 'POST', path: '/import/plan', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleImportPlan },
   // The run's own channel. `legacyRunRoute: true` admits the harness credential as a
   // member here alone, with whatever admission each handler performs itself —
   // `heldRun` on the task surfaces, none on the run-row handlers. The model's tool

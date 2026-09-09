@@ -4,6 +4,8 @@ import { blobFields, promptReferenceFields, type KindSpec, type Payload } from '
 import { emit, refusal, type Refusal } from '../telemetry.js';
 import { PROJECT_ARCHIVED } from './projects.js';
 import { NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
+import { IMPORT_DISABLED, IMPORT_ENABLED_LEAF, LEAF_OFF } from '../core/import-policy.js';
+import { leafOffChecks } from '../core/settings.js';
 
 /** The identity of the write in flight: project, token, machine, the server clock, and the nonce that names this request's raw row. */
 export interface WriteContext {
@@ -127,11 +129,30 @@ const notTombstoned = (ctx: WriteContext, sessionId: string): SharedCheck => ({
   refusal: (row) => (row === undefined ? null : SESSION_TOMBSTONED),
 });
 
+/**
+ * A Deployment with import switched off takes no import-channel write.
+ *
+ * Composed only for an import-channel envelope, so an ordinary capture pays
+ * neither the fragment nor the read: the cost falls on the traffic the switch
+ * governs. Here rather than in a handler for the same reason the tombstone
+ * check is — it covers every kind by construction, so a kind that becomes
+ * importable later inherits the switch instead of needing to remember it.
+ *
+ * `LEAF_OFF` is bound rather than spelled, and the plan route compares the
+ * stored text against the same constant, so the admission and the plan cannot
+ * read one stored value differently.
+ */
+const importEnabled = (): SharedCheck => ({
+  ...leafOffChecks(IMPORT_ENABLED_LEAF, LEAF_OFF),
+  refusal: (row) => (row === undefined ? null : IMPORT_DISABLED),
+});
+
 /** The checks every kind shares, derived from the catalogue and the kind's declared identities in the one order they are admitted, read, and refused: the session carries no tombstone, then the session's machine, then every continued row the kind names, then every referenced blob present, then every referenced prompt absent or owned by this machine. */
 export function sharedChecks(spec: KindSpec, ctx: WriteContext, e: CaptureEnvelope, p: Payload, identities: Identity[]): SharedCheck[] {
   const named = (fields: string[]) => fields.filter((field) => typeof p[field] === 'string').map((field) => p[field] as string);
   return [
     notTombstoned(ctx, e.sessionId),
+    ...(e.channel === 'import' ? [importEnabled()] : []),
     owned(ctx, { table: 'sessions', keyColumn: 'session_id', key: e.sessionId, owner: 'row' }),
     ...identities.map((identity) => owned(ctx, identity)),
     ...named(blobFields(spec)).map((key) => present(ctx, key)),
@@ -406,11 +427,16 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${RAW_ROW_GATE}
           ON CONFLICT (project_id, transcript_id, base_offset) DO NOTHING`)
         .bind(ctx.projectId, transcriptId, baseOffset, length, blob, e.eventId, e.createdAt, ctx.now, ctx.tokenId, ...rawGateParams(ctx, e)),
-      db.prepare(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, origin_path, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id)
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ? WHERE ${RAW_ROW_GATE} AND ${segmentWritten}
+      // `imported_at` is the lane of the NEWEST segment, not of the first: a
+      // session imported and then continued live is live work, and a COALESCE
+      // would leave it in the backfill lane for the rest of its life.
+      db.prepare(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, origin_path, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id, imported_at)
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ? WHERE ${RAW_ROW_GATE} AND ${segmentWritten}
           ON CONFLICT (project_id, transcript_id) DO UPDATE SET size = excluded.size, segment_count = transcripts.segment_count + 1,
-            last_received_at = excluded.last_received_at, head_hash = COALESCE(transcripts.head_hash, excluded.head_hash)`)
+            last_received_at = excluded.last_received_at, head_hash = COALESCE(transcripts.head_hash, excluded.head_hash),
+            imported_at = excluded.imported_at`)
         .bind(ctx.projectId, transcriptId, e.sessionId, ctx.machineId, opt(p.agent), opt(p.originPath), opt(p.role) ?? 'primary', headHash, size, ctx.now, ctx.now, ctx.tokenId,
+              e.channel === 'import' ? ctx.now : null,
               ...rawGateParams(ctx, e), ctx.projectId, transcriptId, baseOffset, e.eventId),
     ],
     reads: [
