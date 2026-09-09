@@ -29,6 +29,7 @@ Commands:
   setup-llm [options]      Configure LLM and embedding providers
   setup-digest [options]   Configure digest and capture settings
   agent [options]          Run the intelligence agent
+  worker [options]         Attach this machine's harnesses to a Deployment
   task <subcommand>        Manage agent task definitions
   tool <list|call>         List or call Myco tools as JSON
   doctor [--fix]          Check vault health and repair issues
@@ -120,6 +121,7 @@ const DELEGATED_HELP: Record<string, () => Promise<string>> = {
   login: async () => (await import('./cli/login.js')).LOGIN_HELP,
   settings: async () => (await import('./cli/settings.js')).SETTINGS_HELP,
   server: async () => (await import('./cli/server.js')).SERVER_HELP,
+  worker: async () => (await import('./cli/worker.js')).WORKER_HELP,
 };
 
 async function helpForCommand(command: string, args: readonly string[] = []): Promise<string> {
@@ -262,6 +264,15 @@ async function main(): Promise<void> {
   // Self-hosted Deployment lifecycle — a Compose bundle under MYCO_HOME, no
   // project vault, so it sits above the myco.yaml gate and works from any cwd.
   if (cmd === 'server') return (await import('./cli/server.js')).run(args);
+
+  // #1151: a worker attaches this machine's harnesses to a Deployment. It reads
+  // the membership under MYCO_HOME and no project vault, so it sits above the
+  // myco.yaml gate and runs from any cwd.
+  if (cmd === 'worker') {
+    // The verb reports its outcome; the exit status is the dispatcher's to set.
+    if (!await (await import('./cli/worker.js')).run(args)) process.exitCode = 2;
+    return;
+  }
 
   // The sandbox settings emitter reads no vault and writes nothing.
   if (cmd === 'settings') return (await import('./cli/settings.js')).run(args);

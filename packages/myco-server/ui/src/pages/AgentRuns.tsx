@@ -1,3 +1,4 @@
+import { heldByWords } from '@goondocks/myco-shared/run-holds';
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
@@ -25,15 +26,6 @@ const STATUS_TABS = [
 
 const STATUS_TONE: Record<string, StatusTone> = { queued: 'outline', skipped: 'outline', running: 'ochre', completed: 'sage', failed: 'terracotta' };
 
-/** Each thing that can hold a queued run, in the reader's words. */
-const HELD_BY_WORDS: Record<string, string> = {
-  concurrent_runs: 'the limit on runs at once',
-  task_concurrent_runs: 'the limit on runs of this task at once',
-  task_runs_per_hour: 'the limit on runs of this task per hour',
-  fleet: 'the size of the fleet',
-  runtime: 'the runtime is not taking a run right now',
-};
-
 /** What a deploy did to a run, in the reader's words: nothing for an ordinary run. */
 export function deployWords(run: { replaced: boolean; replaces: string | null }): string | null {
   if (run.replaced) return 'replaced during a deploy';
@@ -45,7 +37,7 @@ export function deployWords(run: { replaced: boolean; replaces: string | null })
 export function queuedWords(run: { position: number | null; heldBy: string | null }): string {
   const ahead = run.position ?? 0;
   const turn = ahead === 0 ? 'next in line' : `${ahead} ahead of it`;
-  const holder = run.heldBy === null ? 'a limit' : (HELD_BY_WORDS[run.heldBy] ?? run.heldBy);
+  const holder = run.heldBy === null ? 'a limit' : (heldByWords(run.heldBy) ?? run.heldBy);
   return `waiting — ${turn} · held by ${holder}`;
 }
 

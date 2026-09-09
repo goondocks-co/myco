@@ -4,6 +4,8 @@ import { matchRoute, methodsServing, type Route, type Shape } from './routes.js'
 import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
 import { heldRunOfCredential } from './api/run-admission.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
+import { memberRole } from './auth/members-admin.js';
+import { isAdmin } from './auth/roles.js';
 import { authenticateGrant, GRANT_KEY_PATTERN, touchGrant } from './auth/grants.js';
 import { HSTS_MAX_AGE_SECONDS, LINEAGE_REPLAY_GRACE_MS, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from './constants.js';
 import { sha256Hex } from './hash.js';
@@ -63,6 +65,9 @@ type MemberRoute = Extract<Route, { auth: 'member' }>;
 /** A json member route that serves the run principal. */
 type RunRoute = Extract<MemberRoute, { bodyMode: 'json' }> & { run: NonNullable<Extract<MemberRoute, { bodyMode: 'json' }>['run']> };
 const servesRun = (route: MemberRoute): route is RunRoute => route.bodyMode === 'json' && route.run !== undefined;
+/** A route scoped to the whole Deployment rather than to one Project. */
+type DeploymentRoute = Extract<MemberRoute, { scope: 'deployment' }>;
+const deploymentScoped = (route: MemberRoute): route is DeploymentRoute => 'scope' in route && route.scope === 'deployment';
 /** A member route that also admits an External Agent grant. */
 type GrantRoute = Extract<MemberRoute, { bodyMode: 'json' }> & { grant: NonNullable<Extract<MemberRoute, { bodyMode: 'json' }>['grant']> };
 const admitsGrant = (route: Route): route is GrantRoute => route.auth === 'member' && route.bodyMode === 'json' && route.grant !== undefined;
@@ -129,6 +134,8 @@ const unsupportedProtocol = () =>
   Response.json({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL }, { status: 409 });
 export const NO_MACHINE_IDENTITY = 'token has no machine identity';
 export const NO_PROJECT = 'project header required';
+/** What a member who does not administer the Deployment is told on a Deployment-scoped route. */
+export const NOT_ADMIN = 'this route serves an administrator of the Deployment';
 /** What a run's credential is told on a member route that is not its run's surface. */
 export const RUN_SCOPE = 'a run credential reaches only its run\'s surface';
 /** What a run's credential is told when no live run names it. */
@@ -401,6 +408,13 @@ export function createServer(deps: ServerDeps) {
     }
     if (auth.machineId === null) return refuse(auth, shapeOf(route), NO_MACHINE_IDENTITY, 'no_machine_identity');
 
+    // #1151 — worker mode. A Deployment-scoped route names no Project, so it is
+    // answered ahead of the Project header the rest of this function requires.
+    // Who may reach it is decided here rather than in a handler: the answer to a
+    // claim carries a minted run credential and a Deployment credential opened
+    // for the harness, so a fourth route added later cannot forget the check.
+    if (deploymentScoped(route)) return await asDeployment(request, env, auth, auth.machineId, route, now);
+
     // The Project is resolved once, ahead of both body modes, so a request that
     // names none is refused before anything reads its body.
     const projectId = requestedProject(request);
@@ -461,6 +475,30 @@ export function createServer(deps: ServerDeps) {
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
         body: body.text, bodyBytes: body.bytes, now, origin: url.origin,
       });
+    } catch (err) {
+      return failed(env, auth, route, err, bodyBytes);
+    }
+  }
+
+  /**
+   * A Deployment-scoped request: a worker's claim, lease or end.
+   *
+   * Admission is the member's role, read once here. A member who does not
+   * administer the Deployment is refused before its body is read: a claim
+   * answers with a minted run credential and the Deployment's own harness
+   * credential in the run's environment, which is the Deployment's authority
+   * and not a member's. A member the Deployment no longer holds has no role and
+   * is refused on the same line.
+   */
+  async function asDeployment(request: Request, env: ServerEnv, auth: MemberAuth, machineId: string, route: DeploymentRoute, now: number): Promise<Response> {
+    const role = await memberRole(env.db, auth.memberId);
+    if (role === null || !isAdmin(role)) return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
+    let bodyBytes = 0;
+    try {
+      const body = await readBoundedBody(request, MAX_BODY_BYTES);
+      if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
+      bodyBytes = body.bytes;
+      return await route.deployment(env, { memberId: auth.memberId, machineId, tokenId: auth.tokenId, body: body.text, now });
     } catch (err) {
       return failed(env, auth, route, err, bodyBytes);
     }

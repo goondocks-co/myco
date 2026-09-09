@@ -1,17 +1,17 @@
 /**
- * The titling gate: one harness dispatch per ended session, claimed only after
- * every refusal is ruled out, with the credential travelling only into the
- * launched runtime's environment and never into telemetry.
+ * The titling gate: one harness dispatch per ended session, queued for a worker
+ * to claim, with the queued row carrying the whole launch the dispatch asked for
+ * and no credential at all, and nothing of the Deployment's secrets in telemetry.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import {
-  cleanSummary, cleanTitle, OWNER_TITLING_WINDOW_MS, RUN_OVERRUN_MARGIN_MS, sessionMaterial, titleSession, TITLING_RUN_TIMEOUT_SECONDS, titlingParamsOf,
+  cleanSummary, cleanTitle, OWNER_TITLING_WINDOW_MS, RUN_OVERRUN_MARGIN_MS, sessionMaterial, titleSession, TITLING_RUN_TIMEOUT_SECONDS, TITLING_TASK, titlingParamsOf,
 } from '@myco-server-worker/core/titling.js';
 import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MATERIAL_EXCERPT_CHARS } from '@myco-server-worker/constants.js';
-import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
-import { LAUNCH_REFUSED_ERROR } from '@myco-server-worker/core/harness.js';
+import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
+import { dispatchTask, prepareDispatch } from '@myco-server-worker/core/harness.js';
 import { sqliteEnv, withHarness } from './helpers/fixtures.js';
 
 const NOW = 1_700_000_000_000;
@@ -41,12 +41,27 @@ function harness(opts: { bound?: boolean; refuse?: boolean } = {}) {
     e.sqlite.run(`INSERT INTO responses (project_id, session_id, response_id, prompt_id, event_id, text, content_hash, created_at, token_id, received_at)
                   VALUES ('proj_1', ?, ?, ?, ?, ?, ?, ?, 'tok_1', ?)`, [session, id, promptId, `e_${id}`, text, `h_${id}`, at, at]);
   const row = (id: string) => e.sqlite.query(`SELECT title, summary, titled_at, titled_by FROM sessions WHERE session_id = ?`).get(id) as { title: string | null; summary: string | null; titled_at: number | null; titled_by: string | null };
-  const runRow = (id: string) => e.sqlite.query(`SELECT status, task, run_context, dispatched_by, agent_id, error FROM agent_runs WHERE id = ?`).get(id) as { status: string; task: string; run_context: string | null; dispatched_by: string | null; agent_id: string; error: string | null } | null;
+  const RUN_COLUMNS = `id, status, task, run_context, dispatch_spec, held_by, dispatched_by, agent_id, provider, model, error`;
+  type RunRow = { id: string; status: string; task: string; run_context: string | null; dispatch_spec: string | null; held_by: string | null; dispatched_by: string | null; agent_id: string; provider: string | null; model: string | null; error: string | null };
+  const runRow = (id: string) => e.sqlite.query(`SELECT ${RUN_COLUMNS} FROM agent_runs WHERE id = ?`).get(id) as RunRow | null;
+  const runRows = () => e.sqlite.query(`SELECT ${RUN_COLUMNS} FROM agent_runs ORDER BY COALESCE(queued_at, started_at), id`).all() as RunRow[];
   const secrets = deploymentSecretStore(env.db, env.wrappingKey);
   const title = (id: string, now = NOW) => titleSession(env, { projectId: 'proj_1', sessionId: id, now, origin: ORIGIN });
   const ask = (id: string, now = NOW) => titleSession(env, { projectId: 'proj_1', sessionId: id, now, origin: ORIGIN }, { mode: 'owner', by: 'mem_asker' });
-  return { ...e, env, launches, setting, session, prompt, response, row, runRow, secrets, title, ask };
+  return { ...e, env, launches, setting, session, prompt, response, row, runRow, runRows, secrets, title, ask };
 }
+
+/** The same Deployment with the queue's own write refused, so a dispatch that has spent a claim fails after it. */
+const queueRefusing = (env: ServerEnv): ServerEnv => {
+  const db: RelationalStore = {
+    prepare: (sql: string) => {
+      if (sql.includes('INSERT INTO agent_runs')) throw new Error('the queue refused the write');
+      return env.db.prepare(sql);
+    },
+    batch: (statements) => env.db.batch(statements),
+  };
+  return { ...env, db };
+};
 
 const logged: string[] = [];
 const originalLog = console.log;
@@ -60,51 +75,57 @@ const seedAnthropic = async (h: ReturnType<typeof harness>, key = KEY) => {
 const untouched = { title: null, summary: null, titled_at: null, titled_by: null };
 
 describe('titleSession', () => {
-  it('claims the session, launches one titling run with the dispatch as environment, and skips every later attempt without a launch', async () => {
+  it('claims the session, queues one titling run carrying the whole dispatch, and skips every later attempt', async () => {
     const h = harness();
     await seedAnthropic(h, OAT);
     h.session('s1');
     h.prompt('s1', 'p1', 'Fix the flaky test in runner.ts', NOW - 9000);
     h.response('s1', 'p1', 'r1', 'Looking at runner.ts now.', NOW - 8500);
 
+    // A worker claims this task from the queue, so the dispatch resolves no provider and opens no credential; the admission the claim is gated on is the capture-driven one.
+    expect(await prepareDispatch(h.env, TITLING_TASK, 'proj_1')).toEqual({
+      ok: true,
+      prepared: { task: 'title-summary', projectId: 'proj_1', servedBy: 'worker', providerType: null, model: null, provider: {}, credentialEnv: {}, admission: 'captureDriven' },
+    });
+
     const first = await h.title('s1');
-    expect(first.outcome).toBe('dispatched');
-    expect(h.launches).toHaveLength(1);
-    const [launch] = h.launches;
-    expect(launch.runId).toBe(first.runId!);
-    expect(launch.timeoutSeconds).toBe(TITLING_RUN_TIMEOUT_SECONDS);
-    const vars = launch.envVars;
-    expect({ task: vars.MYCO_TASK, url: vars.MYCO_SERVER_URL, project: vars.MYCO_PROJECT, run: vars.MYCO_RUN_ID, admission: vars.MYCO_TASK_ADMISSION, oat: vars.CLAUDE_CODE_OAUTH_TOKEN, apiKey: vars.ANTHROPIC_API_KEY, timeout: vars.MYCO_TIMEOUT_SECONDS })
-      .toEqual({ task: 'title-summary', url: ORIGIN, project: 'proj_1', run: first.runId, admission: 'captureDriven', oat: OAT, apiKey: undefined, timeout: String(TITLING_RUN_TIMEOUT_SECONDS) });
-    expect(JSON.parse(vars.MYCO_TASK_PARAMS!)).toEqual({ session_id: 's1', mode: 'claim', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS });
-    expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic' });
-    expect(vars.MYCO_MEMBER_TOKEN.length).toBeGreaterThan(20);
+    expect(first.outcome).toBe('queued');
+    expect(h.launches).toHaveLength(0);
     expect(h.row('s1')).toEqual({ ...untouched, titled_at: NOW });
-    // The run's row is the server's record of the dispatch, written before the launch: pending, with the parameters as its context, attributed to the minted credential.
-    const run = h.runRow(first.runId!);
-    expect({ status: run?.status, task: run?.task, agent: run?.agent_id, context: JSON.parse(run?.run_context ?? 'null') }).toEqual({ status: 'pending', task: 'title-summary', agent: 'myco-agent', context: { session_id: 's1', mode: 'claim', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS } });
-    expect(h.sqlite.query(`SELECT member_id FROM member_credentials WHERE id = ?`).get(run!.dispatched_by!)).toEqual({ member_id: 'mem_harness' });
-    expect(logged.some((l) => l.includes('session_title_dispatched'))).toBe(true);
-    expect(logged.some((l) => l.includes('harness_dispatch'))).toBe(true);
+    // The run's row is the server's record of the dispatch: queued behind a worker, naming no provider and holding no credential while it waits.
+    const run = h.runRow(first.runId!)!;
+    expect({ status: run.status, task: run.task, agent: run.agent_id, held: run.held_by, credential: run.dispatched_by, provider: run.provider, model: run.model })
+      .toEqual({ status: 'queued', task: 'title-summary', agent: 'myco-agent', held: 'worker', credential: null, provider: null, model: null });
+    // The launch the dispatch asked for rides the row: where the run calls back, who it is attributed to, its bound, and the task's parameters.
+    expect(JSON.parse(run.dispatch_spec ?? 'null')).toEqual({ serverUrl: ORIGIN, actor: 'deployment', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS, params: { session_id: 's1', mode: 'claim' } });
+    expect(logged.some((l) => l.includes('session_title_queued'))).toBe(true);
+    expect(logged.some((l) => l.includes('harness_queued'))).toBe(true);
 
     expect((await h.title('s1')).outcome).toBe('already');
-    expect(h.launches).toHaveLength(1);
+    expect(h.runRows()).toHaveLength(1);
     expect(logged.join('\n')).not.toContain(OAT);
-    expect(logged.join('\n')).not.toContain(vars.MYCO_MEMBER_TOKEN);
   });
 
-  it('hands an API key under its own variable, and the task override for provider and model ahead of the defaults', async () => {
+  it('hands an API key under its own variable, and the task override for provider and model ahead of the defaults, on a runtime-served launch', async () => {
     const h = harness();
     await seedAnthropic(h);
     h.setting('agent.provider.model', 'claude-default');
-    h.setting('agent.tasks', { 'title-summary': { provider: 'anthropic', model: 'claude-for-titles' } });
-    h.session('s1');
-    h.prompt('s1', 'p1', 'hello', NOW - 9000);
-    expect((await h.title('s1')).outcome).toBe('dispatched');
+    h.setting('agent.tasks', { 'container-smoke': { provider: 'anthropic', model: 'claude-for-titles' } });
+    expect(await dispatchTask(h.env, 'container-smoke', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW)).toMatchObject({ dispatched: true, queued: false });
     const vars = h.launches[0]!.envVars;
     expect({ apiKey: vars.ANTHROPIC_API_KEY, oat: vars.CLAUDE_CODE_OAUTH_TOKEN, model: vars.MYCO_MODEL }).toEqual({ apiKey: KEY, oat: undefined, model: 'claude-for-titles' });
     expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic', model: 'claude-for-titles' });
     expect(logged.join('\n')).not.toContain(KEY);
+
+    // A titling dispatch reads none of it: the harness that runs the run, and the credential that harness reads, are the worker's to resolve at the claim.
+    h.setting('agent.tasks', { 'title-summary': { provider: 'anthropic', model: 'claude-for-titles' } });
+    h.session('s1');
+    h.prompt('s1', 'p1', 'hello', NOW - 9000);
+    const titling = await h.title('s1');
+    expect(titling.outcome).toBe('queued');
+    const queued = h.runRow(titling.runId!)!;
+    expect({ provider: queued.provider, model: queued.model, credential: queued.dispatched_by }).toEqual({ provider: null, model: null, credential: null });
+    expect(h.launches).toHaveLength(1);
   });
 
   it('makes one attempt per session even when two ends race, none for a session that has not ended, and one run each for two sessions ending together', async () => {
@@ -115,57 +136,68 @@ describe('titleSession', () => {
     h.session('open', { endedAt: null });
     h.prompt('open', 'p2', 'hello', NOW - 9000);
     const [a, b] = await Promise.all([h.title('s1'), h.title('s1')]);
-    expect([a.outcome, b.outcome].sort()).toEqual(['already', 'dispatched']);
-    expect(h.launches).toHaveLength(1);
+    expect([a.outcome, b.outcome].sort()).toEqual(['already', 'queued']);
+    expect(h.runRows()).toHaveLength(1);
     expect((await h.title('open')).outcome).toBe('already');
-    expect(h.launches).toHaveLength(1);
+    expect(h.runRows()).toHaveLength(1);
 
     h.session('s2');
     h.prompt('s2', 'p3', 'hello', NOW - 9000);
     h.session('s3');
     h.prompt('s3', 'p4', 'hello', NOW - 9000);
     const [c, d] = await Promise.all([h.title('s2'), h.title('s3')]);
-    expect([c.outcome, d.outcome]).toEqual(['dispatched', 'dispatched']);
-    expect(h.launches).toHaveLength(3);
-    expect(new Set(h.launches.map((l) => l.runId)).size).toBe(3);
+    expect([c.outcome, d.outcome]).toEqual(['queued', 'queued']);
+    expect(h.runRows()).toHaveLength(3);
+    expect(new Set(h.runRows().map((r) => r.id)).size).toBe(3);
   });
 
-  it('launches nothing and stamps nothing without a bound runtime, in both modes', async () => {
+  it('queues and spends each session\'s claim without a bound runtime, in both modes', async () => {
     const h = harness({ bound: false });
     await seedAnthropic(h);
-    h.session('s1');
-    h.prompt('s1', 'p1', 'hello', NOW - 9000);
-    expect((await h.title('s1')).outcome).toBe('harness_unavailable');
-    expect((await h.ask('s1')).outcome).toBe('harness_unavailable');
-    expect(h.row('s1')).toEqual(untouched);
+    for (const id of ['s1', 's2']) {
+      h.session(id);
+      h.prompt(id, `p_${id}`, 'hello', NOW - 9000);
+    }
+    expect((await h.title('s1')).outcome).toBe('queued');
+    expect((await h.ask('s2')).outcome).toBe('queued');
+    expect([h.row('s1'), h.row('s2')]).toEqual([{ ...untouched, titled_at: NOW }, { ...untouched, titled_at: NOW }]);
     expect(h.launches).toHaveLength(0);
-    expect(logged.filter((l) => l.includes('session_title_skipped') && l.includes('harness_unavailable'))).toHaveLength(2);
+    const waiting = { status: 'queued', task: 'title-summary', held: 'worker', credential: null };
+    expect(h.runRows().map((r) => ({ status: r.status, task: r.task, held: r.held_by, credential: r.dispatched_by }))).toEqual([waiting, waiting]);
   });
 
-  it('launches nothing and stamps nothing without a provider, without its credential, for a provider the dispatcher does not serve, or for an endpoint provider with no endpoint', async () => {
+  it('queues and spends the claim with no provider, no credential, an unserved provider, or an endpoint provider with no endpoint — and refuses each for a runtime-served task', async () => {
     const h = harness();
-    h.session('s1');
-    h.prompt('s1', 'p1', 'hello', NOW - 9000);
-    expect((await h.title('s1')).outcome).toBe('no_provider');
-    expect((await h.ask('s1')).outcome).toBe('no_provider');
-
+    // The three refusals the launch seam still answers, on the task the seam still serves.
+    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'no_provider' });
     h.setting('agent.provider.type', 'anthropic');
-    expect((await h.title('s1')).outcome).toBe('no_credential');
-
-    h.setting('agent.provider.type', 'ollama');
-    h.setting('agent.provider.model', 'llama3');
-    expect((await h.title('s1')).outcome).toBe('unsupported_provider');
-    h.setting('agent.provider.type', 'openrouter');
-    expect((await h.ask('s1')).outcome).toBe('unsupported_provider');
-
+    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'no_credential' });
     h.setting('agent.provider.type', 'openai-compatible');
-    expect((await h.title('s1')).outcome).toBe('no_endpoint');
+    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'no_endpoint' });
+    h.setting('agent.provider.type', 'openrouter');
+    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'unsupported_provider', providerType: 'openrouter' });
 
-    expect(h.row('s1')).toEqual(untouched);
+    // A titling dispatch names no provider at all, so none of those settings decides it: each ask queues and spends its session's claim.
+    const sessions = ['unserved', 'none', 'uncredentialed', 'endpointless'];
+    for (const id of sessions) {
+      h.session(id);
+      h.prompt(id, `p_${id}`, 'hello', NOW - 9000);
+    }
+    expect((await h.ask('unserved')).outcome).toBe('queued');
+    h.sqlite.run(`DELETE FROM deployment_settings WHERE leaf = 'agent.provider.type'`);
+    expect((await h.title('none')).outcome).toBe('queued');
+    h.setting('agent.provider.type', 'anthropic');
+    expect((await h.title('uncredentialed')).outcome).toBe('queued');
+    h.setting('agent.provider.type', 'openai-compatible');
+    expect((await h.title('endpointless')).outcome).toBe('queued');
+
+    expect(sessions.map((id) => h.row(id))).toEqual(sessions.map(() => ({ ...untouched, titled_at: NOW })));
     expect(h.launches).toHaveLength(0);
+    const unresolved = { held: 'worker', provider: null, model: null };
+    expect(h.runRows().map((r) => ({ held: r.held_by, provider: r.provider, model: r.model }))).toEqual(sessions.map(() => unresolved));
   });
 
-  it('launches nothing and stamps nothing for an empty session, and reaches an openai-compatible endpoint without a credential', async () => {
+  it('queues nothing and stamps nothing for an empty session, and carries no endpoint or credential on the run it does queue', async () => {
     const h = harness();
     h.setting('agent.provider.type', 'openai-compatible');
     h.setting('agent.provider.model', 'local-model');
@@ -174,36 +206,42 @@ describe('titleSession', () => {
     expect((await h.title('empty')).outcome).toBe('no_material');
     expect((await h.ask('empty')).outcome).toBe('no_material');
     expect(h.row('empty')).toEqual(untouched);
+    expect(h.runRows()).toHaveLength(0);
 
     h.session('s1');
     h.prompt('s1', 'p1', 'hello', NOW - 9000);
     h.prompt('s1', 'spilled', null, NOW - 9500);
-    expect((await h.title('s1')).outcome).toBe('dispatched');
-    const vars = h.launches[0]!.envVars;
-    expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'openai-compatible', model: 'local-model', baseUrl: 'http://models.internal/v1' });
-    expect({ apiKey: vars.ANTHROPIC_API_KEY, oat: vars.CLAUDE_CODE_OAUTH_TOKEN }).toEqual({ apiKey: undefined, oat: undefined });
+    const queued = await h.title('s1');
+    expect(queued.outcome).toBe('queued');
+    const run = h.runRow(queued.runId!)!;
+    expect({ provider: run.provider, model: run.model, credential: run.dispatched_by }).toEqual({ provider: null, model: null, credential: null });
+    expect(JSON.parse(run.dispatch_spec ?? 'null')).toEqual({ serverUrl: ORIGIN, actor: 'deployment', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS, params: { session_id: 's1', mode: 'claim' } });
   });
 
-  it('gives the claim back when the runtime refuses to launch, in both modes, and resolves rather than rejecting', async () => {
+  it('reaches no runtime at all, gives the claim back when the queue refuses the write, and resolves rather than rejecting', async () => {
     const h = harness({ refuse: true });
     await seedAnthropic(h);
     h.session('s1');
     h.prompt('s1', 'p1', 'hello', NOW - 9000);
-    expect((await h.title('s1')).outcome).toBe('error');
-    expect(h.row('s1')).toEqual(untouched);
-    // The dispatch's row records the refusal, in the runtime's own words, rather than sitting pending forever.
-    const failedRows = h.sqlite.query(`SELECT status, error FROM agent_runs`).all() as Array<{ status: string; error: string | null }>;
-    expect(failedRows).toEqual([{ status: 'failed', error: `${LAUNCH_REFUSED_ERROR}: the runtime refused the launch` }]);
-    // The session's own attempt is still open, and an owner may ask at once.
-    expect((await h.ask('s1')).outcome).toBe('error');
-    expect(h.row('s1')).toEqual(untouched);
-    // A stamp an owner's claim replaced comes back whole.
+    // The runtime bound here refuses every launch. A titling dispatch attempts none, and queues past it.
+    expect((await h.title('s1')).outcome).toBe('queued');
+    expect(h.launches).toHaveLength(0);
+    expect(h.runRows().map((r) => ({ status: r.status, error: r.error }))).toEqual([{ status: 'queued', error: null }]);
+
+    // A claim the dispatch then cannot spend comes back: the stamp an owner's claim replaced is whole again, and an owner may ask afresh.
     h.session('s2');
     h.sqlite.run(`UPDATE sessions SET titled_at = ?, titled_by = 'mem_earlier' WHERE session_id = 's2'`, [NOW - 60_000]);
     h.prompt('s2', 'p2', 'hello', NOW - 9000);
-    expect((await h.ask('s2', NOW + OWNER_TITLING_WINDOW_MS)).outcome).toBe('error');
+    const refusing = queueRefusing(h.env);
+    expect((await titleSession(refusing, { projectId: 'proj_1', sessionId: 's2', now: NOW + OWNER_TITLING_WINDOW_MS, origin: ORIGIN }, { mode: 'owner', by: 'mem_asker' })).outcome).toBe('error');
     expect(h.row('s2')).toEqual({ ...untouched, titled_at: NOW - 60_000, titled_by: 'mem_earlier' });
-    expect(logged.filter((l) => l.includes('session_title_failed'))).toHaveLength(3);
+
+    // The session's own attempt is untouched by the same refusal, and stays open.
+    h.session('s3');
+    h.prompt('s3', 'p3', 'hello', NOW - 9000);
+    expect((await titleSession(refusing, { projectId: 'proj_1', sessionId: 's3', now: NOW, origin: ORIGIN })).outcome).toBe('error');
+    expect(h.row('s3')).toEqual(untouched);
+    expect(logged.filter((l) => l.includes('session_title_failed'))).toHaveLength(2);
 
     const broken = { ...h.env, db: { prepare: () => { throw new Error('store detached'); } } as never };
     expect((await titleSession(broken, { projectId: 'proj_1', sessionId: 's1', now: NOW, origin: ORIGIN })).outcome).toBe('error');
@@ -257,25 +295,25 @@ describe('titleSession', () => {
 });
 
 describe('titleSession on an owner\'s ask', () => {
-  it('dispatches for an open session, for a titled one, names who asked in the run\'s context, and leaves the end-of-session claim spent', async () => {
+  it('dispatches for an open session, for a titled one, names who asked in the run\'s spec, and leaves the end-of-session claim spent', async () => {
     const h = harness();
     await seedAnthropic(h);
     h.session('open', { endedAt: null });
     h.prompt('open', 'p1', 'hello', NOW - 9000);
     const asked = await h.ask('open');
-    expect(asked.outcome).toBe('dispatched');
-    // The stamp is the claim; who wrote the title is stamped by the write, from the context the server recorded.
+    expect(asked.outcome).toBe('queued');
+    // The stamp is the claim; the ask is attributed to the member who made it, and the run carries their name through to the write.
     expect(h.row('open')).toEqual({ ...untouched, titled_at: NOW });
-    expect(JSON.parse(h.launches[0]!.envVars.MYCO_TASK_PARAMS!)).toEqual({ session_id: 'open', mode: 'owner', by: 'mem_asker', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS });
-    expect(JSON.parse(h.runRow(asked.runId!)!.run_context!)).toEqual({ session_id: 'open', mode: 'owner', by: 'mem_asker', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS });
+    expect(JSON.parse(h.runRow(asked.runId!)!.dispatch_spec ?? 'null'))
+      .toEqual({ serverUrl: ORIGIN, actor: 'mem_asker', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS, params: { session_id: 'open', mode: 'owner', by: 'mem_asker' } });
     expect(logged.join('\n')).not.toContain(KEY);
     h.sqlite.run(`UPDATE sessions SET title = 'Old', summary = 'old' WHERE session_id = 'open'`);
-    expect((await h.ask('open', NOW + OWNER_TITLING_WINDOW_MS + 1)).outcome).toBe('dispatched');
-    expect(h.launches).toHaveLength(2);
-    // The session's own end finds the claim spent and launches nothing.
+    expect((await h.ask('open', NOW + OWNER_TITLING_WINDOW_MS + 1)).outcome).toBe('queued');
+    expect(h.runRows()).toHaveLength(2);
+    // The session's own end finds the claim spent and dispatches nothing.
     h.sqlite.run(`UPDATE sessions SET ended_at = ? WHERE session_id = 'open'`, [NOW + 40_000]);
     expect((await h.title('open')).outcome).toBe('already');
-    expect(h.launches).toHaveLength(2);
+    expect(h.runRows()).toHaveLength(2);
   });
 
   it('refuses a second ask while the first run may still be writing, and admits one after the window', async () => {
@@ -283,11 +321,11 @@ describe('titleSession on an owner\'s ask', () => {
     await seedAnthropic(h);
     h.session('s1');
     h.prompt('s1', 'p1', 'hello', NOW - 9000);
-    expect((await h.ask('s1')).outcome).toBe('dispatched');
+    expect((await h.ask('s1')).outcome).toBe('queued');
     expect((await h.ask('s1', NOW + 1000)).outcome).toBe('already');
     expect((await h.ask('s1', NOW + OWNER_TITLING_WINDOW_MS - 1)).outcome).toBe('already');
-    expect((await h.ask('s1', NOW + OWNER_TITLING_WINDOW_MS + 1)).outcome).toBe('dispatched');
-    expect(h.launches).toHaveLength(2);
+    expect((await h.ask('s1', NOW + OWNER_TITLING_WINDOW_MS + 1)).outcome).toBe('queued');
+    expect(h.runRows()).toHaveLength(2);
   });
 
   it('reads the opening and the closing prompts inside the budget, so the arc\'s end reaches the run', async () => {

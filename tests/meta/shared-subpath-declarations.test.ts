@@ -27,6 +27,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -119,14 +120,32 @@ describe('the build derives its entrypoints rather than restating them', () => {
     expect(named.filter((name) => build.includes(`'${name}'`))).toEqual([]);
   });
 
-  it('builds every published subpath', () => {
-    // Run against whatever `dist` the last build produced; absent, this is
-    // skipped rather than asserted, since a clean checkout has none.
-    const dist = path.join(SHARED, 'dist');
-    if (!fs.existsSync(dist)) return;
-    const built = new Set(fs.readdirSync(dist).filter((f) => f.endsWith('.js')));
-    const expected = [...EXPORTS.values()].map((d) => path.basename(d));
-    expect(expected.filter((f) => !built.has(f))).toEqual([]);
+  it('builds every published subpath, into the flat layout the exports map promises', () => {
+    // Run the build here, into a temp directory, rather than reading whatever
+    // `dist` some earlier command left behind: a clean checkout carries no
+    // `dist`, and a gate that reads one holds nothing on the machine that
+    // matters. The same script the package's `build` script and the server
+    // Dockerfile run, with only its output directory redirected.
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-shared-build-'));
+    try {
+      const built = Bun.spawnSync(['bun', 'scripts/build.mjs', `--outdir=${out}`], {
+        cwd: SHARED,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const detail = built.exitCode === 0 ? '' : new TextDecoder().decode(built.stderr);
+      expect({ code: built.exitCode, detail }).toEqual({ code: 0, detail: '' });
+      // Each name at the top level of the output, which is what `./dist/<name>.js`
+      // means. A nested emit puts the same files one directory down, where every
+      // consumer resolving through the map misses them.
+      const emitted = new Set(
+        fs.readdirSync(out, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith('.js')).map((e) => e.name),
+      );
+      const expected = [...EXPORTS.values()].map((d) => path.basename(d));
+      expect(expected.filter((f) => !emitted.has(f))).toEqual([]);
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
   });
 });
 
