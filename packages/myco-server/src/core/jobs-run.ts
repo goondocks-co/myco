@@ -8,7 +8,7 @@
  */
 import type { ServerEnv } from './adapters.js';
 import { expireGrants } from '../auth/grants.js';
-import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, endQueuedRun, HARNESS_MEMBER_ID, RUN_OVERRUN_MARGIN_MS } from './harness.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, endQueuedRun, expireLeases, HARNESS_MEMBER_ID, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 import { emit } from '../telemetry.js';
 import { failStaleRun, listLiveRunsAcrossProjects, listQueuedAcrossProjects, pruneRevokedCredentials, pruneTerminalRuns } from './runs.js';
 import { leafValues } from './settings.js';
@@ -148,4 +148,6 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   // #1147 — transcript-first ingest
   'transcript-parse': (env, now) => parseTranscripts(env, now),
   'transcript-retention': transcriptRetention,
+  // #1151 — worker mode
+  'worker-lease-sweep': (env, now) => expireLeases(env, now),
 };

@@ -49,7 +49,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 90;
+const EMIT_CALLS = 94;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -657,6 +657,21 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/canopy-map', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/canopy-map', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
       },
+      'POST /worker/claim': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/worker/claim', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/worker/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [] }) }),
+      },
+      'POST /worker/lease': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/worker/lease', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/worker/lease', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent' }) }),
+      },
+      'POST /worker/end': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/worker/end', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/worker/end', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent', status: 'failed' }) }),
+      },
       'POST /mcp': {
         shape: 'answered',
         malformed: (token) => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
@@ -1060,6 +1075,9 @@ describe('gates', () => {
       'member POST /spores/resolve',
       'member POST /spores/save',
       'member POST /tokens/refresh',
+      'member POST /worker/claim',
+      'member POST /worker/end',
+      'member POST /worker/lease',
       'owner DELETE /api/projects/{projectId}/repository',
       'owner DELETE /api/secrets/{name}',
       'owner GET /api/agents',
@@ -1235,5 +1253,32 @@ describe('gates', () => {
     expect(res.status).toBe(200);
     expect(count(e.sqlite, 'events')).toBe(before);
     expect(e.executed.filter((sql) => /UPDATE\s+member_credentials/i.test(sql))).toEqual([]);
+  });
+
+  it('spells a run-status set in one place, so a predicate cannot drift from the one the writes use', () => {
+    // Two constants name what a run in flight is. A statement spelling either
+    // set by hand is a second copy that answers the same today and diverges the
+    // first time one of them changes.
+    const offenders: string[] = [];
+    for (const file of files(SRC)) {
+      const relative = file.slice(SRC.length);
+      if (relative.endsWith('core/runs.ts')) continue;
+      for (const line of readFileSync(file, 'utf8').split('\n')) {
+        if (/status\s+IN\s*\(\s*'(pending|running|queued)'/.test(line)) offenders.push(`${relative}: ${line.trim().slice(0, 80)}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('declares each run-status set exactly once, and nothing else spells one', () => {
+    const source = readFileSync(join(SRC, 'core', 'runs.ts'), 'utf8');
+    const spelled = [...source.matchAll(/status IN \('pending'[^)]*\)/g)].map((m) => m[0]);
+    // Three sets, three definitions, and no fourth spelling in the file that owns them.
+    // Three sets, three definitions, in the order the file declares them.
+    expect([...spelled].sort()).toEqual([
+      "status IN ('pending', 'queued')",
+      "status IN ('pending', 'running')",
+      "status IN ('pending', 'running', 'queued')",
+    ]);
   });
 });

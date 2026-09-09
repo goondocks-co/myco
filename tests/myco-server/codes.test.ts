@@ -19,6 +19,10 @@ async function rig() {
   const t1 = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
   const t2 = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now);
   const anonymous = await issueMemberToken(e.db, { memberId: 'mem_anon', machineId: null }, now);
+  // A member the Deployment holds without making an administrator. Every row
+  // predating roles is an admin by default, so a non-admin is created as one.
+  await ensureMember(e.db, 'mem_plain', now, 'member', 'a member who administers nothing');
+  const plain = await issueMemberToken(e.db, { memberId: 'mem_plain', machineId: 'machine_3' }, now);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [now]);
   await ensureMember(e.db, HARNESS_MEMBER_ID, now, 'member', 'harness runtime');
   const harness = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, now);
@@ -52,7 +56,7 @@ async function rig() {
   /** A join presenting `key`, from a machine of its own so no join can collide with another. */
   const join = (key: string, machineId = 'machine_join', over: Record<string, unknown> = {}) =>
     fetch(new Request('https://s/members/join', { method: 'POST', headers: { 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json' }, body: JSON.stringify({ key, machineId, ...over }) }));
-  return { e, t1, t2, anonymous, harness, running, mcp, windowed, now, fetch, post, upload, segment, transcript, join };
+  return { e, t1, t2, anonymous, plain, harness, running, mcp, windowed, now, fetch, post, upload, segment, transcript, join };
 }
 type Rig = Awaited<ReturnType<typeof rig>>;
 
@@ -138,6 +142,9 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
     r.e.sqlite.query(`UPDATE transcripts SET head_hash = ?`).run('a'.repeat(64));
     return r.segment(4, t.a.byteLength, t.kb, t.b.byteLength, { headHash: 'c'.repeat(64) });
   },
+  // #1151 — worker mode. A member the Deployment holds but does not make an
+  // administrator reaches no Deployment-scoped route.
+  not_admin: (r) => r.fetch(memberPost(r.plain.token, '{}', '/worker/claim')),
   run_scope: (r) => r.post(r.harness.token, {}),
   no_run: (r) => r.mcp(r.harness.token),
   project_mismatch: async (r) => { await r.running(); return r.mcp(r.harness.token, { [PROJECT_HEADER]: 'proj_2' }); },

@@ -32,9 +32,20 @@ export function sessionNamedByRun(run: RunRow): string | null {
   }
 }
 
-/** True while a run's runtime is taken to be alive: the row is `running` and this instant is inside its own bound. One predicate serves the run routes and the run principal on MCP. */
+/**
+ * True while a run's runtime is taken to be alive: the row is `running`, this
+ * instant is inside the run's own bound, and any lease on it is still held. One
+ * predicate serves the run routes and the run principal on MCP.
+ *
+ * The two clocks answer different questions and both must hold. The bound is
+ * the task's budget, which a run outruns when its harness hangs. The lease is
+ * the worker's liveness, which lapses when the worker goes away — and once it
+ * has, another worker may take the run, so the credential of the worker that
+ * lost it must stop resolving before that happens rather than after.
+ */
 export function isLiveRun(run: RunRow, now: number): boolean {
   if (run.status !== 'running') return false;
+  if (run.leaseExpiresAt !== null && run.leaseExpiresAt <= now) return false;
   const attemptAt = run.resumedAt ?? run.startedAt;
   return attemptAt !== null && staleAfter(attemptAt, run.runContext) > now;
 }

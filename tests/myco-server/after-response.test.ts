@@ -65,7 +65,7 @@ describe('afterResponse', () => {
     const { token } = await issueMemberToken(sqliteRelationalStore(sqlite), { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     sqlite.close();
 
-    // The work a session's end leaves behind is a titling dispatch; the self-hosted target binds no runtime, so it is answered by name and nothing is stamped — and close() still lands it before the store closes.
+    // The work a session's end leaves behind is a titling dispatch: a run queued for a worker to claim, and the session's claim spent. close() lands both before the store closes.
     const logged: string[] = [];
     const originalLog = console.log;
     console.log = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
@@ -79,9 +79,12 @@ describe('afterResponse', () => {
     } finally {
       console.log = originalLog;
     }
-    expect(logged.some((l) => l.includes('session_title_skipped') && l.includes('harness_unavailable'))).toBe(true);
+    expect(logged.some((l) => l.includes('session_title_queued'))).toBe(true);
     const reopened = new Database(databasePath, { readonly: true });
-    expect(reopened.query(`SELECT title, titled_at FROM sessions WHERE session_id = 'sess_1'`).get()).toEqual({ title: null, titled_at: null });
+    const session = reopened.query(`SELECT title, titled_at AS titledAt FROM sessions WHERE session_id = 'sess_1'`).get() as { title: string | null; titledAt: number | null };
+    expect({ title: session.title, stamped: session.titledAt !== null }).toEqual({ title: null, stamped: true });
+    expect(reopened.query(`SELECT task, status, held_by AS heldBy, dispatched_by AS dispatchedBy FROM agent_runs`).all())
+      .toEqual([{ task: 'title-summary', status: 'queued', heldBy: 'worker', dispatchedBy: null }]);
     reopened.close();
   });
 });

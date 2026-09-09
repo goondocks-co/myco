@@ -47,6 +47,24 @@ export interface RouteContext {
   origin: string;
 }
 
+/**
+ * Context for a Deployment-scoped route: a worker's claim, lease and end.
+ *
+ * There is no `projectId`, and that absence is the point. A worker claims from
+ * one queue across every Project the Deployment holds, so it can name no Project
+ * ahead of the row it is given; the Project travels back in the answer, read off
+ * the run the claim took. Nothing here resolves a Project into existence and
+ * nothing is charged to a member's capture quota.
+ */
+export interface DeploymentContext {
+  /** The member holding the presented credential; the pipeline has already admitted it as an admin. */
+  memberId: string;
+  machineId: string;
+  tokenId: string;
+  body: string;
+  now: number;
+}
+
 /** Context for a json route reached over a run's credential: the live run the credential dispatched, the run's own Project — the request's, whatever the header named — and the body the pipeline read. Nothing of a person travels here. */
 export interface RunContext {
   projectId: string;

@@ -45,11 +45,12 @@ export const sessionsTitling: ParityScenario = {
       return (await res.json()) as { outcome: string; runId?: string };
     };
 
-    // capture, then the end's deferred attempt: the recording runtime takes the dispatch, so the claim is stamped and a run row waits for a runtime that never writes
+    // capture, then the end's deferred attempt: titling runs on a worker, so
+    // the claim is stamped and the run waits in the claim queue on both targets
     const s1 = `parity-${Date.now()}-1`;
     await runSession(s1, 'Add a retry to the runner please');
-    const runFor = (sessionId: string) => target.sql(`SELECT status, harness FROM agent_runs WHERE task = 'title-summary' AND run_context LIKE ${lit(`%${sessionId}%`)} ORDER BY started_at DESC LIMIT 1`);
-    expect(await runFor(s1)).toEqual([{ status: 'pending', harness: 'record' }]);
+    const runFor = (sessionId: string) => target.sql(`SELECT status, harness, held_by AS heldBy, dispatched_by IS NOT NULL AS credentialed FROM agent_runs WHERE task = 'title-summary' AND run_context LIKE ${lit(`%${sessionId}%`)} ORDER BY queued_at DESC LIMIT 1`);
+    expect(await runFor(s1)).toEqual([{ status: 'queued', harness: null, heldBy: 'worker', credentialed: 0 }]);
     expect(await sessionRow(s1)).toEqual({ title: null, summary: null, titled_at: expect.any(Number) });
     // The owner's ask lands inside the deferred attempt's window; it is answered as already asked.
     expect(await askTitle(s1)).toEqual({ outcome: 'already' });
@@ -78,8 +79,8 @@ export const sessionsTitling: ParityScenario = {
     const s2 = `parity-${Date.now()}-2`;
     await post(s2, 'session.start', { agent: 'claude-code', startedAt: Date.now() });
     await post(s2, 'prompt', { promptId: crypto.randomUUID(), text: 'Rename the project from the card', origin: 'user' });
-    expect(await askTitle(s2)).toMatchObject({ outcome: 'dispatched' });
-    expect(await runFor(s2)).toEqual([{ status: 'pending', harness: 'record' }]);
+    expect(await askTitle(s2)).toMatchObject({ outcome: 'queued' });
+    expect(await runFor(s2)).toEqual([{ status: 'queued', harness: null, heldBy: 'worker', credentialed: 0 }]);
     expect(await sessionRow(s2)).toEqual({ title: null, summary: null, titled_at: expect.any(Number) });
     expect((await ownerRows()).find((row) => row.sessionId === s2)?.label).toBe('Rename the project from the card');
   },

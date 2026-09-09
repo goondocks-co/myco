@@ -2,7 +2,7 @@ import { handleRepository, handleSaveRepository, handleRemoveRepository, handleR
 import { handleProjectMap, handleRunMap } from './api/canopy.js';
 import { handleSkillCandidates, handleReviewSkillCandidate } from './api/skill-candidates.js';
 import type { ServerEnv } from './core/adapters.js';
-import type { AuthContext, GrantContext, OwnerContext, RouteContext, RunContext, SessionContext, StreamContext } from './context.js';
+import type { AuthContext, DeploymentContext, GrantContext, OwnerContext, RouteContext, RunContext, SessionContext, StreamContext } from './context.js';
 import { handleLink, handleMe } from './api/identity.js';
 import { handleLinkGithub } from './auth/members.js';
 import { clearCookie } from './auth/owner/cookie.js';
@@ -48,6 +48,7 @@ import { handleBlob } from './ingest/blobs.js';
 import { handleHarnessDispatch } from './api/harness.js';
 import { handleEvents } from './ingest/events.js';
 import { handleGrantMcp, handleMcp, handleRunMcp } from './mcp/http.js';
+import { handleWorkerClaim, handleWorkerEnd, handleWorkerLease } from './api/worker.js';
 
 /** Public handlers receive the request only; they cannot reach storage or bindings. */
 export type PublicHandler = (request: Request) => Promise<Response>;
@@ -57,6 +58,8 @@ export type MemberHandler = (env: ServerEnv, ctx: RouteContext) => Promise<Respo
 export type GrantHandler = (env: ServerEnv, ctx: GrantContext) => Promise<Response>;
 /** Run handlers answer a json route reached over a run's credential: the run, its Project and the consumed body. A route declares one to serve the run principal at all; a run credential is refused on every member route that declares neither this nor `legacyRunRoute`. */
 export type RunHandler = (env: ServerEnv, ctx: RunContext) => Promise<Response>;
+/** Deployment handlers answer a route scoped to the whole Deployment rather than to one Project: a worker's claim, lease and end. A route declares one to be reached at all, and the pipeline admits only an admin member to it. */
+export type DeploymentHandler = (env: ServerEnv, ctx: DeploymentContext) => Promise<Response>;
 /** Member handlers on stream routes receive the unread request; the handler alone consumes the body. */
 export type StreamHandler = (env: ServerEnv, request: Request, ctx: StreamContext) => Promise<Response>;
 /** Auth handlers require no credential but do need the owner configuration and outbound fetch. They receive a narrowed context and never an `ServerEnv`, so a credential-free route still cannot reach storage or bindings by type. */
@@ -75,6 +78,7 @@ export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
 export type Route =
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; quotaPrecheck?: boolean; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true }
+  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; quotaPrecheck: false; scope: 'deployment'; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; quotaPrecheck?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
   | { method: string; path: string; auth: 'enroll'; handler: EnrollHandler }
@@ -135,6 +139,13 @@ export const ROUTES: readonly Route[] = [
   // The tool surface: the seven MCP tools over the Deployment for a member, the
   // read-only six for an External Agent grant, answered as JSON-RPC. `answered`
   // is its refusal shape — an error envelope, at 400 or 503.
+  // #1151 — worker mode. Deployment-scoped: a worker claims from one queue
+  // across every Project, so it names none and the pipeline resolves none. Only
+  // an administrator is admitted: a claim answers with a minted run credential
+  // and the Deployment's own harness credential.
+  { method: 'POST', path: '/worker/claim', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerClaim },
+  { method: 'POST', path: '/worker/lease', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerLease },
+  { method: 'POST', path: '/worker/end', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerEnd },
   { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', quotaPrecheck: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleLinkGithub },

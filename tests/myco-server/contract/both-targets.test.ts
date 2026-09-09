@@ -345,7 +345,7 @@ describe('agent runs read the same on both stores', () => {
 });
 
 describe('archival refuses capture the same on both stores', () => {
-  it('answers an ended session\'s titling the same on each target with no runtime bound — nothing stamped, no outbound call, the label from its first prompt — and renames its project', async () => {
+  it('answers an ended session\'s titling the same on each target with no runtime bound — the claim spent, no outbound call, the label from its first prompt — and renames its project', async () => {
     const outcomes: unknown[] = [];
     for (const make of [cloudflareTarget, selfHostedTarget]) {
       const sent: string[] = [];
@@ -384,15 +384,18 @@ describe('archival refuses capture the same on both stores', () => {
 
       const renamed = await renameProject(t.env.db, 'proj_1', 'Myco');
       const absent = await renameProject(t.env.db, 'proj_nobody', 'Nobody');
+      // Each end leaves a run for a worker to claim; the Deployment itself runs no harness, so the settings it holds decide nothing here.
+      const queued = (await t.env.db.prepare(`SELECT task, status, held_by AS heldBy, dispatched_by AS dispatchedBy FROM agent_runs ORDER BY queued_at, id`).all<Record<string, unknown>>()).results;
       outcomes.push({
         labelBefore, beforeEnd, title: titled?.title, summary: titled?.summary, label: titled?.label, attempted: titled?.titledAt !== null,
-        sent, sentAfterSecondEnd, unprovided: { attempted: unprovided?.titledAt !== null, title: unprovided?.title, label: unprovided?.label }, renamed, absent,
+        sent, sentAfterSecondEnd, queued, unprovided: { attempted: unprovided?.titledAt !== null, title: unprovided?.title, label: unprovided?.label }, renamed, absent,
       });
     }
+    const waiting = { task: 'title-summary', status: 'queued', heldBy: 'worker', dispatchedBy: null };
     const expected = {
-      labelBefore: 'Add a retry to the runner', beforeEnd: 'harness_unavailable', title: null, summary: null, label: 'Add a retry to the runner', attempted: false,
-      sent: [], sentAfterSecondEnd: 0,
-      unprovided: { attempted: false, title: null, label: 'No provider here' }, renamed: 'renamed', absent: 'absent',
+      labelBefore: 'Add a retry to the runner', beforeEnd: 'already', title: null, summary: null, label: 'Add a retry to the runner', attempted: true,
+      sent: [], sentAfterSecondEnd: 0, queued: [waiting, waiting],
+      unprovided: { attempted: true, title: null, label: 'No provider here' }, renamed: 'renamed', absent: 'absent',
     };
     expect({ cloudflare: outcomes[0], selfHosted: outcomes[1] }).toEqual({ cloudflare: expected, selfHosted: expected });
   });

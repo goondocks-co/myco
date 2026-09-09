@@ -79,7 +79,8 @@ export const cortex: ParityScenario = {
     expect(first.status).toBe(200);
     const firstRunId = String(first.body.runId);
     const firstRow = await row(firstRunId);
-    expect(firstRow.status).toBe('pending');
+    // The digest runs on a worker: the ask lands a queued run on both targets.
+    expect(firstRow.status).toBe('queued');
     expect(firstRow.instruction).toContain('write every tier from the material alone');
     expect(firstRow.dryRun).toBe(0);
     const firstHash = (JSON.parse(firstRow.runContext!) as { input_hash: string }).input_hash;
@@ -129,24 +130,28 @@ export const cortex: ParityScenario = {
     // The day's ceiling: one run a day, whatever else has moved.
     await saveSpore(`the ceiling is the day's spend ${stamp}`);
     expect(await dispatch()).toMatchObject({ status: 409, body: { error: 'max_runs_per_day' } });
-    // Yesterday's run leaves today free again.
-    await target.sql(`UPDATE agent_runs SET started_at = ${now - 2 * 86_400_000} WHERE id = ${lit(firstRunId)}`);
+    // Yesterday's run leaves today free again. The ceiling counts a run from
+    // the instant it entered the queue, so a run that waits is dated by that.
+    await target.sql(`UPDATE agent_runs SET started_at = ${now - 2 * 86_400_000}, queued_at = ${now - 2 * 86_400_000} WHERE id = ${lit(firstRunId)}`);
 
-    // A queued ask has its prompt rebuilt at the drain: a spore saved after it
-    // queued is in the prompt the launch writes, under a hash that has moved.
+    // A waiting ask carries the prompt and the hash the server built for it,
+    // and the wake launches nothing: a worker takes it, and rebuilds the prompt
+    // against the vault as it stands when it does (held in `worker-lease`).
     await leaf('agent.limits.concurrent_runs', 1);
     await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at) VALUES (${lit(target.projectId)}, ${lit(`blocker-${stamp}`)}, 'myco-agent', 'supersession-sweep', 'running', 0, ${Date.now()})`);
     await saveSpore(`the queue holds a run row ${stamp}`);
     const queued = await dispatch();
     expect(queued.body.queued).toBe(true);
     const queuedRunId = String(queued.body.runId);
-    await saveSpore(`a drained run reads the vault as it stands ${stamp}`);
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${Date.now()} WHERE id = ${lit(`blocker-${stamp}`)}`);
     await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.limits.concurrent_runs'`);
     await wake();
-    const drained = await row(queuedRunId);
-    expect(drained.status).toBe('pending');
-    expect((JSON.parse(drained.runContext!) as { input_hash: string }).input_hash).not.toBe(firstHash);
+    const waiting = await row(queuedRunId);
+    expect(waiting.status).toBe('queued');
+    // The server built this run's prompt and filed it under its own hash before
+    // anything took it, and the wake leaves it for a worker.
+    expect(waiting.instruction).toContain('Regenerate this project');
+    expect((JSON.parse(waiting.runContext!) as { input_hash?: string }).input_hash).toEqual(expect.any(String));
 
     // Session start serves the Project the agent works in and the Deployment's
     // own instructions. Nothing a run wrote reaches it: the digest above stands

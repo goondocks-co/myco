@@ -42,7 +42,9 @@ function fixture() {
   const rows = () => e.sqlite.query(`SELECT id, task, status, run_context AS runContext FROM agent_runs ORDER BY COALESCE(queued_at, started_at), id`)
     .all() as Array<{ id: string; task: string; status: string; runContext: string | null }>;
   const contextOf = (id: string) => JSON.parse((e.sqlite.query(`SELECT run_context c FROM agent_runs WHERE id = ?`).get(id) as { c: string }).c) as Record<string, unknown>;
-  return { ...e, env, bindings, launches, setting, rows, contextOf };
+  /** The launch a queued row carries, as the dispatch recorded it. */
+  const specOf = (id: string) => JSON.parse((e.sqlite.query(`SELECT dispatch_spec s FROM agent_runs WHERE id = ?`).get(id) as { s: string }).s) as Record<string, unknown>;
+  return { ...e, env, bindings, launches, setting, rows, contextOf, specOf };
 }
 
 /** A dispatched run of a task, recorded the way the dispatcher records one. */
@@ -84,20 +86,23 @@ describe('what a replaced run costs the day', () => {
 });
 
 describe('the run that stands in for a replaced one', () => {
-  it('dispatches the same task once, naming the run it replaces and carrying that run\'s parameters', async () => {
+  it('queues the same task once, naming the run it replaces and carrying that run\'s parameters', async () => {
     const f = fixture();
     await dispatched(f, 'run_a', 'title-summary', { session_id: 'sess_1', mode: 'claim', timeoutSeconds: 900, input_hash: 'h', fresh: true });
     await markRunReplaced(f.db, SCOPE, 'run_a');
     const run = (await getRun(f.db, SCOPE, 'run_a'))!;
 
     const first = await requeueReplaced(f.env, { run, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 1);
-    expect(first).toMatchObject({ requeued: true, queued: false });
+    expect(first).toMatchObject({ requeued: true, queued: true });
     const successor = (first as { runId: string }).runId;
     // The successor names its predecessor and carries what the dispatch asked
     // for. The hash of the ended run's own material stays behind: a task whose
-    // prompt the server builds has it built again at launch.
-    expect(f.contextOf(successor)).toEqual({ session_id: 'sess_1', mode: 'claim', timeoutSeconds: 900, fresh: true, replaces: 'run_a' });
-    expect(f.launches.map((l) => l.runId)).toEqual([successor]);
+    // prompt the server builds has it built again for the run that stands in.
+    expect(f.specOf(successor)).toEqual({
+      serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID, timeoutSeconds: 900,
+      params: { session_id: 'sess_1', mode: 'claim' }, options: { dryRun: false, fresh: true }, replaces: 'run_a',
+    });
+    expect(f.launches).toEqual([]);
 
     // A run already answered by a successor is never answered twice.
     expect(await requeueReplaced(f.env, { run, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 2))

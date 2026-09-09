@@ -97,6 +97,9 @@ export interface StateRow {
   updatedAt: number;
 }
 
+/** A run a dispatch has written and no runtime has taken: what the launch path's own claim moves. */
+export const UNCLAIMED_RUN_STATUSES = "status IN ('pending', 'queued')";
+
 const CLAIM_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, instruction, harness, provider, model, status, dry_run, started_at, run_context, dispatched_by)
   SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?
@@ -122,7 +125,7 @@ const CLAIM_SQL = `INSERT INTO agent_runs
 const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
    SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?),
        started_at = COALESCE(started_at, ?), held_by = NULL
- WHERE project_id = ? AND id = ? AND status IN ('pending', 'queued') AND dispatched_by = ?`;
+ WHERE project_id = ? AND id = ? AND ${UNCLAIMED_RUN_STATUSES} AND dispatched_by = ?`;
 
 /**
  * The one exclusion rule: a run is never counted by a limit it is itself being
@@ -137,6 +140,31 @@ const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
 export const NOT_THE_RUN_ADMITTED = '(? IS NULL OR id != ?)';
 
 /**
+ * Which runs are in flight.
+ *
+ * A `pending` row counts as one: the dispatcher writes the row before the
+ * runtime starts. Every reader of the fleet shares this predicate — the sweep,
+ * the drain's load, and the read a deploy makes before it recreates the
+ * container — and each projects the columns it needs from it.
+ */
+export const LIVE_RUN_STATUSES = "status IN ('pending', 'running')";
+
+/**
+ * A run in flight, queued included: what single-flight and the queue's own
+ * refusals read. A `queued` row is still the task's one run — it is waiting to
+ * be launched or claimed, not finished — so admitting a second dispatch beside
+ * it would double the work rather than replace it.
+ *
+ * This is the other half of `LIVE_RUN_STATUSES`, and both exist so no statement
+ * spells either set by hand. A lease is deliberately absent from both: expiry is
+ * interpreted in exactly one place, `expireLeases`, which returns the row to the
+ * queue. Reading a lapsed lease as "not in flight" here would admit a duplicate
+ * of a run that is merely waiting for another worker to take it.
+ */
+export const IN_FLIGHT_RUN_STATUSES = "status IN ('pending', 'running', 'queued')";
+
+
+/**
  * The limit check, as part of the write that launches: each limit is either
  * unset (its parameter NULL) or compared against the count the same statement
  * reads, so two launches deciding at once cannot both pass a limit of one.
@@ -146,11 +174,11 @@ export const NOT_THE_RUN_ADMITTED = '(? IS NULL OR id != ?)';
  * hour-start, per-hour; single, project, task, run.
  */
 const ADMISSION_WHERE = `
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND ${NOT_THE_RUN_ADMITTED}) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND ${NOT_THE_RUN_ADMITTED}) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending', 'running') AND task = ? AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ? AND ${NOT_THE_RUN_ADMITTED}) < ?)
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) < ?)
-   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND status IN ('pending', 'running', 'queued') AND id != ?))`;
+   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES} AND id != ?))`;
 
 /**
  * What a write is admitted against, or none: an unguarded write is a claim the
@@ -472,12 +500,14 @@ export interface RunRow {
   resumeAttempts: number;
   dryRun: number;
   dispatchedBy: string | null;
+  /** When the worker holding this run stops holding it, or null for a run no worker claimed. */
+  leaseExpiresAt: number | null;
 }
 
 const RUN_COLUMNS = `id, agent_id AS agentId, task, status, run_context AS runContext, started_at AS startedAt,
     resumed_at AS resumedAt, completed_at AS completedAt, error, checkpoints,
     resumable, resume_status AS resumeStatus, resume_attempts AS resumeAttempts,
-    dry_run AS dryRun, dispatched_by AS dispatchedBy`;
+    dry_run AS dryRun, dispatched_by AS dispatchedBy, lease_expires_at AS leaseExpiresAt`;
 
 const RUN_SELECT = `SELECT ${RUN_COLUMNS} FROM agent_runs WHERE project_id = ? AND id = ?`;
 
@@ -715,15 +745,6 @@ export interface LiveRunRef {
   dispatchedBy: string | null;
 }
 
-/**
- * Which runs are in flight.
- *
- * A `pending` row counts as one: the dispatcher writes the row before the
- * runtime starts. Every reader of the fleet shares this predicate — the sweep,
- * the drain's load, and the read a deploy makes before it recreates the
- * container — and each projects the columns it needs from it.
- */
-export const LIVE_RUN_STATUSES = "status IN ('pending', 'running')";
 
 const LIVE_RUNS_SQL = `SELECT project_id AS projectId, id, task, status, started_at AS startedAt,
     run_context AS runContext, dispatched_by AS dispatchedBy
@@ -826,19 +847,21 @@ export interface QueuedRecord {
   dryRun?: boolean;
   /** The launch spec as JSON: server URL, actor, bound and parameters. */
   dispatchSpec: string;
+  /** What the run carries on its row: the task's parameters and what the server decided at dispatch. A run a worker claims is never launched, so this is written here or nowhere. */
+  runContext?: string | null;
 }
 
 const RECORD_QUEUED_SQL = `INSERT INTO agent_runs
-    (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, queued_at, held_by, dispatch_spec)
-  SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?
+    (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, queued_at, held_by, dispatch_spec, run_context)
+  SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
-   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND status IN ('pending', 'running', 'queued')))`;
+   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES}))`;
 
 /** Record a dispatch the Deployment holds back: a run row in `queued`, with no credential until it launches. A single-flight task is refused while another run of it is live. */
 export async function recordQueued(db: RelationalStore, scope: ReadScope, record: QueuedRecord, options: { singleFlight?: boolean } = {}): Promise<boolean> {
   const result = await db.prepare(RECORD_QUEUED_SQL).bind(
     scope.projectId, record.id, record.agentId, record.task, record.instruction ?? null, record.provider, record.model,
-    record.dryRun === true ? 1 : 0, record.queuedAt, record.heldBy, record.dispatchSpec,
+    record.dryRun === true ? 1 : 0, record.queuedAt, record.heldBy, record.dispatchSpec, record.runContext ?? null,
     scope.projectId, record.id,
     options.singleFlight === true ? record.task : null, scope.projectId, record.task,
   ).run();
@@ -987,6 +1010,167 @@ export async function listQueuedAcrossProjects(db: RelationalStore, limit: numbe
   return results;
 }
 
+/**
+ * The claim queue, as a worker sees it.
+ *
+ * Two statements rather than one: the candidate is read, then taken by a write
+ * guarded on everything the read relied on. Two workers reading the same row
+ * both attempt the write and exactly one changes a row, which is the same shape
+ * the dispatched claim already uses and needs no row-value support.
+ *
+ * `dispatched_by IS NULL` is what keeps this queue disjoint from the launch
+ * path's. A queued row that still names a credential belongs to a launch the
+ * queue took back while its child runs, and that child claims under the
+ * credential the row names; a worker must never take it. `expireLeases` clears the column when it
+ * requeues, which is what makes a run it held claimable again.
+ */
+export interface ClaimCandidate {
+  projectId: string;
+  id: string;
+  task: string;
+  instruction: string | null;
+  dispatchSpec: string | null;
+}
+
+export interface ClaimedRunRow {
+  projectId: string;
+  id: string;
+  task: string;
+  instruction: string | null;
+  runContext: string | null;
+  dryRun: number;
+}
+
+function excludedTasks(tasks: readonly string[]): string {
+  return tasks.length === 0 ? '' : ` AND task NOT IN (${tasks.map(() => '?').join(', ')})`;
+}
+
+/** The oldest queued run a worker may take, or null when the queue holds none it may. */
+export async function nextClaimable(db: RelationalStore, excluded: readonly string[]): Promise<ClaimCandidate | null> {
+  return db.prepare(
+    `SELECT project_id AS projectId, id, task, instruction, dispatch_spec AS dispatchSpec FROM agent_runs
+      WHERE status = 'queued' AND dispatched_by IS NULL AND task IS NOT NULL${excludedTasks(excluded)}
+      ORDER BY queued_at LIMIT 1`,
+  ).bind(...excluded).first<ClaimCandidate>();
+}
+
+/**
+ * Take one queued run for a worker.
+ *
+ * The row reaches `running` and names its credential in the same statement: a
+ * claim that answered a credential the row did not yet name would leave a run
+ * the MCP surface resolves nothing for while it looked healthy. `started_at` is
+ * rewritten so the task budget bounds the run rather than its wait in the queue.
+ */
+export async function claimQueuedRun(
+  db: RelationalStore,
+  candidate: ClaimCandidate,
+  claim: { dispatchedBy: string; leasedBy: string; leaseExpiresAt: number; harness: string; now: number },
+  admission: WriteAdmission,
+): Promise<ClaimedRunRow | null> {
+  const { results } = await db.prepare(
+    `UPDATE agent_runs
+        SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, lease_expires_at = ?, harness = ?, held_by = NULL
+      WHERE project_id = ? AND id = ? AND status = 'queued' AND dispatched_by IS NULL${ADMISSION_WHERE}
+      RETURNING project_id AS projectId, id, task, instruction, run_context AS runContext, dry_run AS dryRun`,
+  ).bind(
+    claim.now, claim.dispatchedBy, claim.leasedBy, claim.leaseExpiresAt, claim.harness,
+    candidate.projectId, candidate.id,
+    ...admissionParams({ projectId: candidate.projectId }, candidate.task, candidate.id, admission),
+  ).all<ClaimedRunRow>();
+  return results[0] ?? null;
+}
+
+/**
+ * Release the lease a finished run held.
+ *
+ * Separate from the terminal write, and deliberately not a run-update column: a
+ * run writes its own outcome through that surface and must not be able to hand
+ * its lease to nobody. The lease is the worker's and the release is the
+ * Deployment's.
+ */
+export async function clearLease(db: RelationalStore, scope: ReadScope, runId: string): Promise<void> {
+  await db.prepare(`UPDATE agent_runs SET leased_by = NULL, lease_expires_at = NULL WHERE project_id = ? AND id = ?`)
+    .bind(scope.projectId, runId).run();
+}
+
+/** Record what holds a queued run, so an operator reads the wait on the run rather than inferring it. */
+export async function recordQueueHolder(db: RelationalStore, scope: ReadScope, runId: string, heldBy: string): Promise<void> {
+  await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE project_id = ? AND id = ? AND status = 'queued'`)
+    .bind(heldBy, scope.projectId, runId).run();
+}
+
+/** The prompt a claim rebuilt, and the hash and counts the server filed it under, onto the row a worker now holds. */
+export async function recordClaimedInput(
+  db: RelationalStore, scope: ReadScope, runId: string, input: { instruction: string; inputHash: string; counts: Readonly<Record<string, number | boolean>> },
+): Promise<void> {
+  await db.prepare(
+    `UPDATE agent_runs SET instruction = ?, run_context = json_patch(COALESCE(run_context, '{}'), ?) WHERE project_id = ? AND id = ?`,
+  ).bind(input.instruction, JSON.stringify({ input_hash: input.inputHash, counts: input.counts }), scope.projectId, runId).run();
+}
+
+/** Extend a lease the caller still holds. False says the lease is gone: swept, or the run ended. */
+export async function renewRunLease(
+  db: RelationalStore, scope: ReadScope, runId: string, leasedBy: string, expiresAt: number, now: number,
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE agent_runs SET lease_expires_at = ?
+      WHERE project_id = ? AND id = ? AND status = 'running' AND leased_by = ? AND lease_expires_at > ?`,
+  ).bind(expiresAt, scope.projectId, runId, leasedBy, now).run();
+  return result.meta.changes === 1;
+}
+
+/**
+ * Every run whose lease has lapsed, with the credential each still names, so the
+ * release can retire what the row held. Unordered on purpose: expiry is not a
+ * queue and every row read here is requeued, so an order would buy a sort over
+ * the running rows and change nothing.
+ */
+export async function lapsedLeases(db: RelationalStore, now: number, limit: number): Promise<Array<{ projectId: string; id: string; leasedBy: string; dispatchedBy: string | null }>> {
+  const { results } = await db.prepare(
+    `SELECT project_id AS projectId, id, leased_by AS leasedBy, dispatched_by AS dispatchedBy FROM agent_runs
+      WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+      LIMIT ?`,
+  ).bind(now, limit).all<{ projectId: string; id: string; leasedBy: string; dispatchedBy: string | null }>();
+  return results;
+}
+
+/**
+ * Return one lapsed run to the queue.
+ *
+ * `dispatched_by` is cleared with the lease: the credential is retired as the
+ * row stops naming it, and a row still naming a revoked token could be taken by
+ * no one. Clearing it is also what makes the row claimable again: the queue
+ * reads rows that name none. `queued_at` is left as it was, so a run that
+ * lost its worker keeps the place in the queue it had already waited for.
+ */
+export async function requeueLapsedLease(db: RelationalStore, scope: ReadScope, runId: string, leasedBy: string, now: number): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE agent_runs SET status = 'queued', leased_by = NULL, lease_expires_at = NULL, dispatched_by = NULL, started_at = NULL
+      WHERE project_id = ? AND id = ? AND status = 'running' AND leased_by = ? AND lease_expires_at <= ?`,
+  ).bind(scope.projectId, runId, leasedBy, now).run();
+  return result.meta.changes === 1;
+}
+
+/**
+ * How many workers hold a run right now, and how many runs wait for one.
+ *
+ * A lease is a fact about a BUSY worker, so this counts what is being driven
+ * and what is waiting — the pair that tells an operator whether the queue is
+ * moving. It cannot see a worker that is attached and idle: nothing a claim
+ * writes survives an answer of "no work", so an idle worker and no worker read
+ * alike. Telling those apart needs a last-seen the claim poll writes, which is
+ * a column this schema does not have.
+ */
+export async function workerLiveness(db: RelationalStore, now: number): Promise<{ workersBusy: number; runsQueued: number }> {
+  const row = await db.prepare(
+    `SELECT
+       (SELECT COUNT(DISTINCT leased_by) FROM agent_runs WHERE status = 'running' AND lease_expires_at > ?) AS workersBusy,
+       (SELECT COUNT(*) FROM agent_runs WHERE status = 'queued') AS runsQueued`,
+  ).bind(now).first<{ workersBusy: number; runsQueued: number }>();
+  return { workersBusy: Number(row?.workersBusy ?? 0), runsQueued: Number(row?.runsQueued ?? 0) };
+}
+
 export async function hasQueuedRun(db: RelationalStore): Promise<boolean> {
   return (await db.prepare(`SELECT 1 AS one FROM agent_runs WHERE status = 'queued' LIMIT 1`).first<{ one: number }>()) !== null;
 }
@@ -1107,7 +1291,7 @@ export async function successorsSince(db: RelationalStore, scope: ReadScope, tas
 /** Whether a run of this task is live — pending, running or queued — in the Project. */
 export async function hasLiveTaskRun(db: RelationalStore, scope: ReadScope, task: string): Promise<boolean> {
   return (await db.prepare(
-    `SELECT 1 AS one FROM agent_runs WHERE project_id = ? AND task = ? AND status IN ('pending', 'running', 'queued') LIMIT 1`,
+    `SELECT 1 AS one FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES} LIMIT 1`,
   ).bind(scope.projectId, task).first<{ one: number }>()) !== null;
 }
 

@@ -109,6 +109,9 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'retention.transcripts': { type: 'integer', min: 0, max: 3650 },
   'skills.confidence_threshold': {},
   'skills.usage_stale_days': {},
+  // #1151 — worker mode: the harness a worker prefers and the order it falls back through.
+  'worker.harness': {},
+  'worker.harness_fallback': {},
 };
 
 /** The leaves this tier owns. Derived from the specs, so a leaf cannot be named in one and missing from the other. */

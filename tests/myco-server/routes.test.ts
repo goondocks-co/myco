@@ -12,7 +12,9 @@ describe('route table', () => {
    * successor credential, which is the server's own bookkeeping. The run-control
    * routes are the Deployment's own scheduled intelligence: charging those against
    * a human's capture allowance would let ordinary agent work exhaust that
-   * member's ability to record their own sessions.
+   * member's ability to record their own sessions. A worker's claim, lease and
+   * end are the Deployment's own work for the same reason, and are scoped to the
+   * Deployment rather than to any Project, so no member's capture pays for them.
    */
   /**
    * Member routes exempt from the byte quota that are not run routes, each
@@ -29,6 +31,7 @@ describe('route table', () => {
     '/members/link-github',   // identity, not capture
     '/spores/save', '/spores/list', '/spores/get', '/spores/resolve',  // the member's own spore surface
     '/context/prompt', '/context/session',                              // injection reads
+    '/worker/claim', '/worker/lease', '/worker/end',                    // the Deployment's own work, scoped to no Project
   ]);
   const quotaExempt = (r: { path: string; legacyRunRoute?: true }): boolean =>
     r.legacyRunRoute === true || NON_RUN_EXEMPT.has(r.path);
@@ -45,7 +48,7 @@ describe('route table', () => {
         expect({ path: r.path, quotaPrecheck: r.quotaPrecheck }).toEqual({ path: r.path, quotaPrecheck: quotaExempt(r) ? false : undefined });
       }
     }
-    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /runs/claim', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/report', 'POST /runs/events', 'POST /runs/instruction', 'POST /runs/embedding-step', 'POST /runs/digest', 'POST /runs/digest-write', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /context/prompt', 'POST /context/session', 'POST /runs/repository', 'POST /runs/canopy-map', 'POST /mcp', 'POST /members/link-github']);
+    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /runs/claim', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/report', 'POST /runs/events', 'POST /runs/instruction', 'POST /runs/embedding-step', 'POST /runs/digest', 'POST /runs/digest-write', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /context/prompt', 'POST /context/session', 'POST /runs/repository', 'POST /runs/canopy-map', 'POST /worker/claim', 'POST /worker/lease', 'POST /worker/end', 'POST /mcp', 'POST /members/link-github']);
   });
 
   it('admits a run credential as a member on the run-control plane alone: every /runs/ route is flagged legacy, no other route is, and /mcp is the one route that serves the run principal', () => {

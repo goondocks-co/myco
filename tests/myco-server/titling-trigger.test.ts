@@ -29,37 +29,45 @@ describe('the events route', () => {
     expect((await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_500 } })).code).toBe('event_id_conflict');
     expect(e.deferred.pending).toHaveLength(1);
     await e.deferred.settle();
-    // No runtime is bound: the attempt is answered by name and the session keeps its claim.
-    expect((e.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = 'sess_1'`).get() as { titled_at: number | null }).titled_at).toBeNull();
+    // Titling runs on a worker, so a Deployment with no runtime bound still
+    // schedules it: the claim is spent and the run waits to be claimed.
+    expect((e.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = 'sess_1'`).get() as { titled_at: number | null }).titled_at).not.toBeNull();
+    expect(e.sqlite.query(`SELECT status, task, held_by FROM agent_runs`).all()).toEqual([{ status: 'queued', task: 'title-summary', held_by: 'worker' }]);
 
     expect((await post({ eventId: uuid(4), kind: 'session.end', createdAt: 6_000, payload: { endedAt: 6_000 } })).projected).toBe(true);
     expect(e.deferred.pending).toHaveLength(2);
     await e.deferred.settle();
   });
 
-  it('dispatches one titling run for an ended session, and the session\'s second end dispatches nothing', async () => {
+  it('queues one titling run for an ended session, carrying the request\'s own origin, and launches nothing even with a runtime bound', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     e.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.provider.type', '"openai-compatible"', 1, 'test'), ('agent.provider.base_url', '"http://models.internal/v1"', 1, 'test')`).run();
-    const bound = { ...e.env, HARNESS_LAUNCH_MODE: 'record' };
+    const launches: Array<{ runId: string; timeoutSeconds: number; envVars: Record<string, string> }> = [];
+    const bound = { ...e.env, HARNESS: { idFromName: (name: string) => ({ name }), get: () => ({ launch: async (spec: never) => { launches.push(spec); } }) } };
     const post = async (over: Record<string, unknown>) => (await worker.fetch(memberPost(t.token, envelope(over)), bound, e.deferred)).json() as Promise<Record<string, unknown>>;
 
     expect((await post({ eventId: uuid(1), kind: 'session.start', payload: { agent: 'claude-code', startedAt: 1_000 } })).persisted).toBe(true);
     expect((await post({ eventId: uuid(2), kind: 'prompt', payload: { promptId: uuid(20), text: 'hi', origin: 'user' } })).persisted).toBe(true);
     expect(await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_000 } })).toEqual({ persisted: true, projected: true });
     await e.deferred.settle();
-    // The recorder marks the row it took, so the dispatch is read where it lands
-    // rather than from a runtime the entry cannot be given. The environment a
-    // dispatch carries is asserted against the dispatcher itself in titling.test.ts.
-    const runs = () => e.sqlite.query(`SELECT status, task, harness, run_context AS runContext FROM agent_runs`).all() as Array<Record<string, unknown>>;
-    expect(runs()).toEqual([{
-      status: 'pending', task: 'title-summary', harness: 'record',
-      runContext: JSON.stringify({ session_id: 'sess_1', mode: 'claim', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS }),
-    }]);
+    // A bound runtime serves three tasks and titling is not one of them: the
+    // run waits for a worker, and the origin the request arrived on rides the
+    // row so a worker calls back to the Deployment that asked.
+    expect(launches).toHaveLength(0);
     expect((e.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = 'sess_1'`).get() as { titled_at: number | null }).titled_at).not.toBeNull();
-    // A second end of the same session finds the claim spent and dispatches nothing.
+    const row = e.sqlite.query(`SELECT id, status, task, held_by, dispatched_by, run_context, dispatch_spec FROM agent_runs`).all() as Array<Record<string, unknown>>;
+    expect(row).toHaveLength(1);
+    expect({ status: row[0]!.status, task: row[0]!.task, held_by: row[0]!.held_by, dispatched_by: row[0]!.dispatched_by })
+      .toEqual({ status: 'queued', task: 'title-summary', held_by: 'worker', dispatched_by: null });
+    expect(JSON.parse(String(row[0]!.run_context)))
+      .toEqual({ session_id: 'sess_1', mode: 'claim', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS });
+    expect(JSON.parse(String(row[0]!.dispatch_spec)))
+      .toEqual({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS, params: { session_id: 'sess_1', mode: 'claim' } });
+    // A second end of the same session finds the claim spent and queues nothing.
     expect((await post({ eventId: uuid(4), kind: 'session.end', createdAt: 6_000, payload: { endedAt: 6_000 } })).projected).toBe(true);
     await e.deferred.settle();
-    expect(runs()).toHaveLength(1);
+    expect(launches).toHaveLength(0);
+    expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs`).get()).toEqual({ n: 1 });
   });
 });

@@ -23,11 +23,15 @@ import type { ServerEnv } from './adapters.js';
 import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
+import { WORKER_LEASE_MS } from '../constants.js';
 import { emit } from '../telemetry.js';
+import { claimQueuedRun, clearLease, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, renewRunLease, requeueLapsedLease, type ClaimedRunRow } from './runs.js';
 import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openProviderCredential } from './provider-credentials.js';
 import { leafValues } from './settings.js';
-import { admissionForTask } from './task-catalogue.js';
+import { MAP_TASK } from '@goondocks/myco-shared/canopy';
+import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
+import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
 import { buildTaskInput } from './task-inputs.js';
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
@@ -47,6 +51,19 @@ export const MAX_RUN_ERROR_CHARS = 2000;
 export const LAUNCH_REFUSED_ERROR = 'the runtime refused to start';
 /** The admission a capture-driven task carries into its container, in place of a capability name. */
 export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
+
+/**
+ * The tasks the launch seam serves, which a worker cannot.
+ *
+ * Two of them declare no tool: their whole surface is a server-side step
+ * loop over a run route — `/runs/embedding-step` and `/runs/canopy-map` —
+ * rather than the MCP surface a worker's harness speaks. The third is the
+ * containerized runtime's own end-to-end proof, so serving it anywhere else
+ * would leave the path it exists to exercise untested.
+ *
+ * These three are why the seam survives, and all three retire with it.
+ */
+export const RUNTIME_SERVED_TASKS: readonly string[] = ['embedding-reconcile', MAP_TASK, 'container-smoke'];
 /** How many runs of one task a Project may have re-queued in a day in place of runs the platform replaced. */
 export const REPLACED_REQUEUES_PER_DAY = 2;
 /** The window the per-day caps are counted over. */
@@ -78,7 +95,15 @@ export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>>
 export interface PreparedDispatch {
   task: string;
   projectId: string;
-  providerType: string;
+  /**
+   * Who runs this task: a worker that claims it from the queue, or the launch
+   * seam. Two tasks have no MCP tool surface at all — their whole surface is a
+   * server-side step loop over a run route — so a worker whose only channel is
+   * MCP cannot serve them. They keep the seam until it retires with them.
+   */
+  servedBy: 'worker' | 'runtime';
+  /** Null for a worker-served task: which harness runs it, and under which credential, is resolved at the claim. */
+  providerType: string | null;
   model: string | null;
   /** The provider block the runtime reads as `MYCO_PROVIDER_JSON`. */
   provider: Record<string, unknown>;
@@ -157,6 +182,28 @@ interface StoredSpec {
 }
 
 /** What the queue keeps of a dispatch, from the launch spec it carries. */
+/**
+ * The context a run carries on its row: the task's parameters, the bound it
+ * runs under, and what the server decided at dispatch — the input hash it
+ * filed the ask under, the counts behind it, an owner's from-scratch ask, and
+ * the run this one stands in for.
+ *
+ * One builder serves both ways a row is written. A run that waits for a worker
+ * is written once and never launched, so a context built only at launch would
+ * leave every reader of these fields — the titling material, the digest's
+ * substrate hash, the run bound, the replaced-run cap — with nothing to read.
+ */
+function runContextOf(spec: LaunchSpec, timeoutSeconds: number): string {
+  return JSON.stringify({
+    ...(spec.params ?? {}),
+    timeoutSeconds,
+    ...(spec.inputHash === undefined ? {} : { input_hash: spec.inputHash }),
+    ...(spec.counts === undefined ? {} : { counts: spec.counts }),
+    ...(spec.options?.fresh === true ? { fresh: true } : {}),
+    ...(spec.replaces === undefined ? {} : { replaces: spec.replaces }),
+  });
+}
+
 function storedSpecOf(spec: LaunchSpec): StoredSpec {
   return {
     serverUrl: spec.serverUrl, actor: spec.actor, timeoutSeconds: spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
@@ -256,6 +303,11 @@ export async function admitDispatch(env: ServerEnv, task: string, now: number, l
 export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { singleFlight?: boolean } = {}): Promise<({ queued: false } & Launched) | ({ queued: true } & Queued)> {
   const limits = await readDispatchLimits(env);
   const held = await admitDispatch(env, prepared.task, now, limits);
+  // Neither front door runs a harness. A worker-served task waits in the claim
+  // queue whatever the load is, and a limit that holds it is still the holder
+  // recorded on the run: a run past one is queued behind that limit rather than
+  // behind a worker, which is what an operator reads on the run.
+  if (prepared.servedBy === 'worker') return { queued: true, ...(await enqueueDispatch(env, prepared, spec, held ?? 'worker', now, options)) };
   if (held !== null) return { queued: true, ...(await enqueueDispatch(env, prepared, spec, held, now, options)) };
   try {
     return { queued: false, ...(await launchDispatch(env, prepared, spec, now, { limits, singleFlight: options.singleFlight })) };
@@ -280,7 +332,7 @@ export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch
   const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
   const stored = storedSpecOf(spec);
   const scope = { projectId: prepared.projectId };
-  if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored) }, options))) {
+  if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored), runContext: runContextOf(spec, spec.timeoutSeconds ?? runTimeoutForTask(prepared.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS) }, options))) {
     if (options.singleFlight === true && (await getRun(env.db, scope, runId)) === null) throw new AlreadyRunning();
     throw new Error('run id already taken');
   }
@@ -365,6 +417,10 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
       await endQueuedRun(env, scope, queued, now, { failed: DISPATCH_REFUSAL_MESSAGE[prepared.refusal] });
       continue;
     }
+    // A worker-served run is not the drain's to launch: it waits in the claim
+    // queue until a worker takes it, and the drain passes over it rather than
+    // stopping, so a runtime-served run behind it still launches.
+    if (prepared.prepared.servedBy === 'worker') continue;
     const held = await admitDispatch(env, queued.task, now, limits, queued.id);
     if (held !== null) {
       // A Deployment-wide holder holds every later row too; a per-task holder holds only this task's.
@@ -430,7 +486,6 @@ const record = (value: unknown): Record<string, unknown> => (value !== null && t
  * nothing and launches nothing.
  */
 export async function prepareDispatch(env: ServerEnv, task: string, projectId: string): Promise<PrepareOutcome> {
-  if (env.harnessLaunch === undefined) return { ok: false, refusal: 'harness_unavailable' };
   const gate = admissionForTask(task);
   if (gate === null) return { ok: false, refusal: 'unknown_task' };
   if (!(await projectExists(env.db, projectId))) return { ok: false, refusal: 'unknown_project' };
@@ -439,10 +494,20 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
     return { ok: false, refusal: 'repository_missing' };
   }
 
+  // A worker-served task queues and stops here. Its harness, and the credential
+  // that harness reads, are resolved at the claim, where the worker's own
+  // detection is known; nothing about a provider can be decided from settings
+  // alone. A dispatch is never refused for want of one.
+  if (!RUNTIME_SERVED_TASKS.includes(task)) {
+    const admission = gate.kind === 'provider' ? CAPTURE_DRIVEN_ADMISSION : gate.kind === 'embedding' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
+    return { ok: true, prepared: { task, projectId, servedBy: 'worker', providerType: null, model: null, provider: {}, credentialEnv: {}, admission } };
+  }
+
+  if (env.harnessLaunch === undefined) return { ok: false, refusal: 'harness_unavailable' };
   if (gate.kind === 'embedding') {
     const embedding = await env.embeddingProvider?.();
     if (env.vectors === undefined || embedding == null) return { ok: false, refusal: 'no_provider' };
-    return { ok: true, prepared: { task, projectId, providerType: 'embedding', model: embedding.modelKey, provider: {}, credentialEnv: {}, admission: CAPTURE_DRIVEN_ADMISSION } };
+    return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType: 'embedding', model: embedding.modelKey, provider: {}, credentialEnv: {}, admission: CAPTURE_DRIVEN_ADMISSION } };
   }
 
   const byLeaf = await leafValues(env.db, ['agent.tasks', 'agent.provider.type', 'agent.provider.model', 'agent.model', 'agent.provider.base_url']);
@@ -467,7 +532,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   }
 
   const admission = gate.kind === 'provider' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
-  return { ok: true, prepared: { task, projectId, providerType, model, provider, credentialEnv, admission } };
+  return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType, model, provider, credentialEnv, admission } };
 }
 
 /**
@@ -493,14 +558,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   // The hash of the material the server built this run's prompt from rides the
   // context beside the bound, so the route that writes the run's artifact takes
   // it from the row rather than from the runtime's word.
-  const runContext = JSON.stringify({
-    ...(spec.params ?? {}),
-    timeoutSeconds,
-    ...(spec.inputHash === undefined ? {} : { input_hash: spec.inputHash }),
-    ...(spec.counts === undefined ? {} : { counts: spec.counts }),
-    ...(spec.options?.fresh === true ? { fresh: true } : {}),
-    ...(spec.replaces === undefined ? {} : { replaces: spec.replaces }),
-  });
+  const runContext = runContextOf(spec, timeoutSeconds);
   const scope = { projectId: prepared.projectId };
   // A re-queued row carries the credential of the child an earlier launch may
   // have started; the launch below replaces it, and what becomes of it depends
@@ -540,11 +598,14 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
    * The row names `minted` from the write above; `carried` is what it named
    * before, and no attempt is coming back for it.
    */
+  // Only a runtime-served dispatch reaches a launch, and one always names its
+  // provider: a worker-served task returns from `dispatchPrepared` before here.
+  const provider = prepared.providerType ?? 'unknown';
   const landed = async (options: { retire?: string | null } = {}): Promise<Launched> => {
     if (options.retire !== minted.tokenId) await retireDispatchCredential(env, options.retire ?? null, now);
     emit({ kind: 'harness_dispatch', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor });
     try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
-    return { runId, task: prepared.task, projectId: prepared.projectId, timeoutSeconds, provider: prepared.providerType };
+    return { runId, task: prepared.task, projectId: prepared.projectId, timeoutSeconds, provider };
   };
 
   try {
@@ -712,4 +773,217 @@ export async function requeueReplaced(env: ServerEnv, replaced: ReplacedRun, now
   if (!outcome.dispatched) return { requeued: false, reason: 'refused' };
   emit({ kind: 'harness_requeued', runId: outcome.runId, task: run.task, projectId, replaces: run.id, queued: outcome.queued });
   return { requeued: true, runId: outcome.runId, queued: outcome.queued };
+}
+
+// ---------------------------------------------------------------------------
+// Worker mode: the claim queue, the lease, and what returns a run to it (#1151)
+// ---------------------------------------------------------------------------
+
+/** A harness a worker has, and whether it is logged in. A worker offers these; the Deployment chooses among them. */
+export interface OfferedHarness {
+  id: string;
+  authenticated: boolean;
+}
+
+/** What a claim answers a worker: the run, the harness chosen for it, and the credentials it runs under. */
+export interface ClaimedRun extends ClaimedRunRow {
+  harness: string;
+  runToken: string;
+  credentialEnv: Record<string, string>;
+  leaseExpiresAt: number;
+  timeoutSeconds: number;
+}
+
+export type ClaimOutcome =
+  | { claimed: true; run: ClaimedRun }
+  | { claimed: false; reason: 'no_work' | 'no_harness' | 'lost_race' | 'at_limit' };
+
+/**
+ * Which harness runs this task: the Deployment's preference and fallback order,
+ * intersected with what the worker actually has logged in. A per-task override
+ * is read out of the `agent.tasks` document, the same way a provider override
+ * is; there is no dotted-path leaf for it.
+ *
+ * A Deployment that names nothing takes whatever the worker offers. Settings
+ * narrow the choice; their absence is not a refusal, so a machine with a
+ * logged-in harness runs work the moment it attaches and an operator configures
+ * a preference only to override that.
+ *
+ * Ids are matched against what the worker offers, never against a list this
+ * server keeps. A worker released later carries harnesses this server has never
+ * heard of, and a Deployment names one and gets it. The same rule answers an id
+ * nobody offers: it yields no run rather than a substitute, so an operator who
+ * misspells a preference reads an unrun queue instead of work quietly sent to
+ * another vendor on another vendor's key.
+ */
+export function chooseHarness(preferred: string | null, fallback: readonly string[], override: string | null, offered: readonly OfferedHarness[]): string | null {
+  const ready = offered.filter((h) => h.authenticated).map((h) => h.id);
+  const wanted = [override ?? preferred, ...fallback].filter((id): id is string => typeof id === 'string' && id.length > 0);
+  if (wanted.length === 0) return ready[0] ?? null;
+  for (const id of wanted) if (ready.includes(id)) return id;
+  return null;
+}
+
+async function harnessPreference(env: ServerEnv, task: string): Promise<{ preferred: string | null; fallback: string[]; override: string | null }> {
+  const byLeaf = await leafValues(env.db, ['worker.harness', 'worker.harness_fallback', 'agent.tasks']);
+  const fallbackLeaf = parseLeaf(byLeaf.get('worker.harness_fallback'));
+  return {
+    preferred: str(parseLeaf(byLeaf.get('worker.harness'))),
+    fallback: Array.isArray(fallbackLeaf) ? fallbackLeaf.filter((v): v is string => typeof v === 'string' && v.trim() !== '') : [],
+    override: str(record(record(parseLeaf(byLeaf.get('agent.tasks')))[task]).harness),
+  };
+}
+
+/**
+ * The credential the chosen harness reads, or nothing.
+ *
+ * Nothing is the ordinary case on a laptop: the harness is logged in on the
+ * host and the Deployment holds no key for it. A cloud worker has no such login,
+ * and this is what the Deployment injects per run.
+ */
+async function harnessCredentialEnv(env: ServerEnv, harness: string): Promise<Record<string, string>> {
+  const declared = HARNESS_CREDENTIALS[harness];
+  if (declared === undefined) return {};
+  // Only the chosen harness's own provider is opened. A claim answering every
+  // key the Deployment holds would widen what one answer discloses to every
+  // provider at once, for keys the run cannot use.
+  if (declared.provider === 'google') return {};
+  const key = await openProviderCredential(env.db, env.wrappingKey, declared.provider);
+  if (key === null) return {};
+  // One rule decides the Anthropic variable on both paths: a subscription token
+  // and an API key are the same slot under different names, and the value says
+  // which. A harness declaring one variable takes it.
+  const variable = declared.variables.length === 1
+    ? declared.variables[0]!
+    : (key.startsWith(SUBSCRIPTION_TOKEN_PREFIX) ? declared.variables[0]! : declared.variables[1]!);
+  return { [variable]: key };
+}
+
+/**
+ * Take the oldest queued run this worker can run.
+ *
+ * The queue is peeked before anything is minted, so an idle poll costs no
+ * credential; a mint whose claim then loses the race is retired at once, through
+ * the one function allowed to revoke a harness credential. The row reaches
+ * `running` and names its credential in the same statement, so a claim never
+ * answers a credential the MCP surface cannot yet resolve.
+ */
+export async function claimNextRun(
+  env: ServerEnv,
+  worker: { tokenId: string; machineId: string; harnesses: readonly OfferedHarness[]; now: number },
+): Promise<ClaimOutcome> {
+  const candidate = await nextClaimable(env.db, RUNTIME_SERVED_TASKS);
+  if (candidate === null) return { claimed: false, reason: 'no_work' };
+
+  const preference = await harnessPreference(env, candidate.task);
+  const harness = chooseHarness(preference.preferred, preference.fallback, preference.override, worker.harnesses);
+  if (harness === null) return { claimed: false, reason: 'no_harness' };
+
+  // A task whose prompt the server builds has it built again here: the run
+  // reads the vault as it stands at the instant a worker takes it, rather than
+  // as it stood at the dispatch. A Project that has not moved past the artifact
+  // it already holds is skipped where it waits, before anything is minted,
+  // through the release every queued row goes terminal by.
+  let stored: StoredSpec | null = null;
+  try { stored = candidate.dispatchSpec === null ? null : JSON.parse(candidate.dispatchSpec) as StoredSpec; } catch { stored = null; }
+  const scope = { projectId: candidate.projectId };
+  const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { fresh: stored?.options?.fresh === true });
+  if (built !== null && built.unchanged) {
+    await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: INPUT_UNCHANGED });
+    emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip: INPUT_UNCHANGED });
+    return { claimed: false, reason: 'no_work' };
+  }
+
+  await ensureMember(env.db, HARNESS_MEMBER_ID, worker.now, 'member', 'harness runtime');
+  await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: harness, model: null, enabled: true }, worker.now);
+  const minted = await issueMemberToken(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, worker.now);
+
+  // The claim carries the same admission the launch does, in the write. A run
+  // held by a limit stays queued with that limit recorded on it, and two
+  // workers deciding at once cannot both pass a limit of one.
+  const limits = await readDispatchLimits(env);
+  const row = await claimQueuedRun(env.db, candidate, {
+    dispatchedBy: minted.tokenId, leasedBy: worker.tokenId, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, now: worker.now,
+  }, { limits, now: worker.now });
+  if (row === null) {
+    await retireDispatchCredential(env, minted.tokenId, worker.now);
+    const held = await admitDispatch(env, candidate.task, worker.now, limits, candidate.id);
+    if (held === null) return { claimed: false, reason: 'lost_race' };
+    await recordQueueHolder(env.db, scope, candidate.id, held);
+    return { claimed: false, reason: 'at_limit' };
+  }
+  if (built !== null && !built.unchanged) await recordClaimedInput(env.db, scope, row.id, built.input);
+
+  emit({ kind: 'worker_claimed', runId: row.id, task: row.task, projectId: row.projectId, harness, tokenId: worker.tokenId });
+  return {
+    claimed: true,
+    run: {
+      ...row,
+      instruction: built === null || built.unchanged ? row.instruction : built.input.instruction,
+      harness,
+      runToken: minted.token,
+      credentialEnv: await harnessCredentialEnv(env, harness),
+      leaseExpiresAt: worker.now + WORKER_LEASE_MS,
+      timeoutSeconds: runTimeoutForTask(row.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
+    },
+  };
+}
+
+/** Extend a lease this worker still holds. `held: false` says the lease is gone, and the worker stops driving a run it no longer owns. */
+export async function renewLease(env: ServerEnv, worker: { tokenId: string; now: number }, run: { projectId: string; runId: string }): Promise<{ held: boolean; expiresAt: number }> {
+  const expiresAt = worker.now + WORKER_LEASE_MS;
+  const held = await renewRunLease(env.db, { projectId: run.projectId }, run.runId, worker.tokenId, expiresAt, worker.now);
+  return { held, expiresAt };
+}
+
+/**
+ * End a run the caller leases.
+ *
+ * The lease is what authorizes the write, not the dispatch credential: the
+ * worker drives the run, the harness child holds the run credential, and only
+ * one of them can say the run is over. The credential is retired as the row
+ * stops naming it, through the one function that owns that rule.
+ */
+export async function endLeasedRun(
+  env: ServerEnv,
+  worker: { tokenId: string; now: number },
+  run: { projectId: string; runId: string; status: 'completed' | 'failed'; error?: string | null },
+): Promise<{ ended: boolean; reason?: string }> {
+  const scope = { projectId: run.projectId };
+  const row = await getRun(env.db, scope, run.runId);
+  if (row === null) return { ended: false, reason: 'no run of that id' };
+  if (row.dispatchedBy === null || row.status !== 'running') return { ended: false, reason: 'the run is not running' };
+  if (!(await renewRunLease(env.db, scope, run.runId, worker.tokenId, worker.now + WORKER_LEASE_MS, worker.now))) {
+    return { ended: false, reason: 'the lease is no longer held' };
+  }
+  const changed = await applyRunUpdate(env.db, scope, run.runId, {
+    status: run.status, completed_at: worker.now,
+    ...(run.error === undefined || run.error === null ? {} : { error: run.error.slice(0, MAX_RUN_ERROR_CHARS) }),
+  });
+  if (changed === 0) return { ended: false, reason: 'the run had already ended' };
+  // The lease goes with the run: a worker that has finished holds nothing, and
+  // a lease left behind reports it busy until the lease would have lapsed.
+  await clearLease(env.db, scope, run.runId);
+  await retireDispatchCredential(env, row.dispatchedBy, worker.now);
+  emit({ kind: 'worker_ended', runId: run.runId, projectId: run.projectId, status: run.status, tokenId: worker.tokenId });
+  return { ended: true };
+}
+
+/**
+ * Return every run whose lease has lapsed to the claim queue.
+ *
+ * A lapsed lease says the worker went away, which is a different fact from a
+ * run outrunning its budget: this one is re-runnable and the stale sweep's is
+ * not. So it requeues rather than fails, and the run keeps the place in the
+ * queue it had already waited for.
+ */
+export async function expireLeases(env: ServerEnv, now: number): Promise<number> {
+  let requeued = 0;
+  for (const lapsed of await lapsedLeases(env.db, now, DRAIN_BATCH)) {
+    if (!(await requeueLapsedLease(env.db, { projectId: lapsed.projectId }, lapsed.id, lapsed.leasedBy, now))) continue;
+    await retireDispatchCredential(env, lapsed.dispatchedBy, now);
+    requeued += 1;
+    emit({ kind: 'worker_lease_expired', runId: lapsed.id, projectId: lapsed.projectId, tokenId: lapsed.leasedBy });
+  }
+  return requeued;
 }
