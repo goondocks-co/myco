@@ -4,7 +4,7 @@
  * real infrastructure.
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,21 +17,25 @@ import {
   DEPLOY_CONFIG_NAME,
 } from '@myco/server/cloudflare-lifecycle.js';
 import { stagingDir, stagingRoot, WORKER_ENTRY } from '@myco/server/cloudflare-stage.js';
-import { readDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
+import { readDeploymentRecord, writeDeploymentRecord, WranglerAbsent, WranglerNotSignedIn } from '@myco/server/cloudflare.js';
+import { BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
+import { VECTOR_INDEX_DIMENSIONS, VECTOR_INDEX_NAME, VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 
 const ACCOUNT = 'a'.repeat(32);
 const DB_ID = '11111111-2222-4333-8444-555555555555';
 const STORE = 'f'.repeat(32);
 
-let calls: { args: string[]; input?: string; cwd?: string }[] = [];
+let calls: { args: string[]; input?: string; cwd?: string; cwdOnDisk: boolean | null }[] = [];
 
 /** Answers each wrangler subcommand the way the real one does; the account's state accumulates across calls like the real one's. */
 const buckets = new Set<string>();
 const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunner => ({
   async run(_command, args, options) {
     const opts = options as { input?: string; cwd?: string } | undefined;
-    calls.push({ args: [...args], input: opts?.input, cwd: opts?.cwd });
+    // Answered at spawn time, not afterwards: a directory a later step creates
+    // is not a directory this command could run in.
+    calls.push({ args: [...args], input: opts?.input, cwd: opts?.cwd, cwdOnDisk: opts?.cwd === undefined ? null : existsSync(opts.cwd) });
     const flat = args.join(' ');
     if (flat.includes('r2 bucket create')) {
       const name = args[args.indexOf('create') + 1]!;
@@ -60,6 +64,47 @@ beforeEach(() => { calls = []; buckets.clear(); });
 const setup = () => {
   const home = mkdtempSync(join(tmpdir(), 'myco-cf-life-'));
   return { home, dir: stagingDir(home), options: { accountId: ACCOUNT, mycoHome: home } };
+};
+
+/** A home no command has touched: `stagingDir` is a path answer, so naming it writes nothing. */
+const freshHome = (): string => mkdtempSync(join(tmpdir(), 'myco-cf-fresh-'));
+
+/** Drives the CLI, capturing what it says and whether it exited. */
+const drive = async (argv: string[]): Promise<{ exited: boolean; said: string; printed: string }> => {
+  const said: string[] = [];
+  const printed: string[] = [];
+  const error = console.error;
+  const log = console.log;
+  const exit = process.exit;
+  console.error = (line: unknown) => { said.push(String(line)); };
+  console.log = (line: unknown) => { printed.push(String(line)); };
+  process.exit = ((code?: number) => { throw new Error(`exit ${code ?? 0}`); }) as typeof process.exit;
+  try {
+    const { run } = await import('@myco/cli/server.js');
+    await run(argv);
+    return { exited: false, said: said.join('\n'), printed: printed.join('\n') };
+  } catch (err) {
+    if (!(err instanceof Error) || !err.message.startsWith('exit ')) throw err;
+    return { exited: true, said: said.join('\n'), printed: printed.join('\n') };
+  } finally {
+    console.error = error;
+    console.log = log;
+    process.exit = exit;
+  }
+};
+
+/** Every lifecycle verb, by name, driven against one home. */
+const EVERY_VERB: ReadonlyArray<{ verb: string; run: (options: { accountId: string; mycoHome: string }, r: CommandRunner) => Promise<unknown> }> = [
+  { verb: 'create', run: (o, runner) => createCloudflareDeployment({ ...o, runner }) },
+  { verb: 'update', run: (o, runner) => updateCloudflareDeployment({ ...o, runner }) },
+  { verb: 'status', run: (o, runner) => cloudflareDeploymentStatus({ ...o, runner }) },
+  { verb: 'rollback', run: (o, runner) => rollbackCloudflareDeployment({ ...o, runner, versionId: 'a'.repeat(8) }) },
+  { verb: 'destroy', run: (o, runner) => destroyCloudflareDeployment({ ...o, runner }) },
+];
+
+/** The record the verbs that read one need, written into a home. */
+const recordFor = (home: string): void => {
+  writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: 'old-version', deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
 };
 
 describe('create', () => {
@@ -227,30 +272,112 @@ describe('rollback', () => {
 });
 
 /**
+ * What the first Cloudflare command on a machine meets before it does anything.
+ *
+ * A fresh machine has no staging directory and may have no wrangler and no
+ * Cloudflare login, and each of those has a way of arriving as something else:
+ * a missing working directory as `ENOENT` against `npx`, a missing wrangler as
+ * a version `npx` fetches, a missing login as wrangler's own message about an
+ * environment variable. Every gate here drives ALL FIVE verbs, because a verb
+ * that skips the preflight is exactly how this comes back.
+ */
+describe('the prerequisites every verb checks first', () => {
+  it('GATE: every command spawns into a directory that is on disk', async () => {
+    for (const { verb, run } of EVERY_VERB) {
+      calls = [];
+      const home = freshHome();
+      // `create` starts from nothing at all; the verbs that read a record get
+      // one, and writing it is itself the only thing that has touched the home.
+      if (verb !== 'create') recordFor(home);
+      await run({ accountId: ACCOUNT, mycoHome: home }, runner());
+      expect({ verb, ran: calls.length > 0 }).toEqual({ verb, ran: true });
+      for (const call of calls) {
+        expect({ verb, args: call.args.join(' '), cwdOnDisk: call.cwdOnDisk })
+          .toEqual({ verb, args: call.args.join(' '), cwdOnDisk: true });
+      }
+    }
+  });
+
+  it('GATE: every npx invocation leads with --no-install, so no verb can fetch a wrangler', async () => {
+    for (const { verb, run } of EVERY_VERB) {
+      calls = [];
+      const home = freshHome();
+      if (verb !== 'create') recordFor(home);
+      await run({ accountId: ACCOUNT, mycoHome: home }, runner());
+      expect({ verb, ran: calls.length > 0 }).toEqual({ verb, ran: true });
+      for (const call of calls) {
+        expect({ verb, args: call.args.join(' '), leads: call.args[0] })
+          .toEqual({ verb, args: call.args.join(' '), leads: '--no-install' });
+      }
+    }
+  });
+
+  it('GATE: with no wrangler installed, every verb refuses by name and runs nothing else', async () => {
+    const absent = () => runner({ 'wrangler --version': { code: 1, stderr: 'npx: command not found: wrangler' } });
+    for (const { verb, run } of EVERY_VERB) {
+      calls = [];
+      const home = freshHome();
+      if (verb !== 'create') recordFor(home);
+      await expect(run({ accountId: ACCOUNT, mycoHome: home }, absent())).rejects.toThrow(WranglerAbsent);
+      expect({ verb, calls: calls.map((c) => c.args.join(' ')) })
+        .toEqual({ verb, calls: ['--no-install wrangler --version'] });
+    }
+  });
+
+  it('GATE: with wrangler signed in to nothing, every verb refuses by name and runs nothing else', async () => {
+    const held = process.env.CLOUDFLARE_API_TOKEN;
+    delete process.env.CLOUDFLARE_API_TOKEN;
+    try {
+      const anonymous = () => runner({ 'wrangler whoami': { code: 1, stderr: 'not authenticated' } });
+      for (const { verb, run } of EVERY_VERB) {
+        calls = [];
+        const home = freshHome();
+        if (verb !== 'create') recordFor(home);
+        await expect(run({ accountId: ACCOUNT, mycoHome: home }, anonymous())).rejects.toThrow(WranglerNotSignedIn);
+        expect({ verb, calls: calls.map((c) => c.args.join(' ')) })
+          .toEqual({ verb, calls: ['--no-install wrangler --version', '--no-install wrangler whoami'] });
+      }
+    } finally {
+      if (held === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
+      else process.env.CLOUDFLARE_API_TOKEN = held;
+    }
+  });
+
+  it('takes an API token in the environment as the identity, and asks whoami nothing', async () => {
+    const held = process.env.CLOUDFLARE_API_TOKEN;
+    process.env.CLOUDFLARE_API_TOKEN = 'a-token';
+    try {
+      const home = freshHome();
+      recordFor(home);
+      await cloudflareDeploymentStatus({ accountId: ACCOUNT, mycoHome: home, runner: runner({ 'wrangler whoami': { code: 1 } }) });
+      expect(calls.some((c) => c.args.includes('whoami'))).toBe(false);
+    } finally {
+      if (held === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
+      else process.env.CLOUDFLARE_API_TOKEN = held;
+    }
+  });
+
+  it('says so when the installed wrangler is a major version from the one the carried Worker was built with', async () => {
+    const home = freshHome();
+    recordFor(home);
+    const said: string[] = [];
+    await cloudflareDeploymentStatus({
+      accountId: ACCOUNT,
+      mycoHome: home,
+      report: (line) => { said.push(line); },
+      runner: runner({ 'wrangler --version': { stdout: ' ⛅️ wrangler 3.0.0\n' } }),
+    });
+    expect(said.join('\n')).toContain('3.0.0');
+    expect(said.join('\n')).toContain(BUNDLED_WORKER_WRANGLER);
+  });
+});
+
+/**
  * The two flags that no longer apply to this target. A flag silently ignored is
  * a flag an operator believes did something; both are refused by name and the
  * verb is driven to prove it, rather than the help text being read back.
  */
 describe('the flags this target refuses by name', () => {
-  const drive = async (argv: string[]): Promise<{ exited: boolean; said: string }> => {
-    const said: string[] = [];
-    const error = console.error;
-    const exit = process.exit;
-    console.error = (line: unknown) => { said.push(String(line)); };
-    process.exit = ((code?: number) => { throw new Error(`exit ${code ?? 0}`); }) as typeof process.exit;
-    try {
-      const { run } = await import('@myco/cli/server.js');
-      await run(argv);
-      return { exited: false, said: said.join('\n') };
-    } catch (err) {
-      if (!(err instanceof Error) || !err.message.startsWith('exit ')) throw err;
-      return { exited: true, said: said.join('\n') };
-    } finally {
-      console.error = error;
-      process.exit = exit;
-    }
-  };
-
   it('refuses --dir, naming what carries the deploy instead', async () => {
     const refused = await drive(['create', '--target', 'cloudflare', '--account-id', ACCOUNT, '--dir', '/some/checkout']);
     expect({ exited: refused.exited, names: /--dir is not a flag for this target/.test(refused.said) }).toEqual({ exited: true, names: true });
@@ -261,5 +388,95 @@ describe('the flags this target refuses by name', () => {
     const refused = await drive(['update', '--target', 'cloudflare', '--account-id', ACCOUNT, '--no-drain']);
     expect({ exited: refused.exited, names: /--no-drain is not a flag for this target/.test(refused.said) }).toEqual({ exited: true, names: true });
     expect(refused.said).toContain('waits for nothing');
+  });
+
+  it('GATE: a flag this target refuses by name is answered before a flag that is merely absent', async () => {
+    // An operator who passed a flag that does not apply here is told THAT,
+    // rather than being sent to supply the account id a refused command would
+    // never have used.
+    const held = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = freshHome();
+    try {
+      const refused = await drive(['update', '--target', 'cloudflare', '--no-drain']);
+      expect({ exited: refused.exited, names: /--no-drain is not a flag for this target/.test(refused.said) }).toEqual({ exited: true, names: true });
+      expect(refused.said).not.toContain('--account-id');
+    } finally {
+      if (held === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = held;
+    }
+  });
+});
+
+/**
+ * The refusals as an operator meets them: one line on stderr and exit 1, from
+ * the binary, with a `npx` on the PATH that answers the way a machine without
+ * wrangler and a machine without a login answer.
+ */
+describe('what the CLI prints when this machine is not ready', () => {
+  /** A directory holding an `npx` that answers as the script says. */
+  const npxAnswering = (body: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-cf-npx-'));
+    writeFileSync(join(dir, 'npx'), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    return dir;
+  };
+
+  const withEnvironment = async (npxDir: string, argv: string[], home = freshHome()): Promise<{ exited: boolean; said: string; printed: string }> => {
+    const held = { path: process.env.PATH, home: process.env.MYCO_HOME, token: process.env.CLOUDFLARE_API_TOKEN };
+    process.env.PATH = `${npxDir}:${held.path ?? ''}`;
+    process.env.MYCO_HOME = home;
+    delete process.env.CLOUDFLARE_API_TOKEN;
+    try {
+      return await drive(argv);
+    } finally {
+      if (held.path === undefined) delete process.env.PATH; else process.env.PATH = held.path;
+      if (held.home === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = held.home;
+      if (held.token !== undefined) process.env.CLOUDFLARE_API_TOKEN = held.token;
+    }
+  };
+
+  it.skipIf(process.platform === 'win32')('GATE: with no wrangler, `server create --target cloudflare` prints the install refusal and exits 1', async () => {
+    const refused = await withEnvironment(npxAnswering('exit 1'), ['create', '--target', 'cloudflare', '--account-id', ACCOUNT]);
+    expect({ exited: refused.exited, lines: refused.said.split('\n').length }).toEqual({ exited: true, lines: 1 });
+    expect(refused.said).toContain('wrangler is not installed');
+    expect(refused.said).not.toContain('posix_spawn');
+  });
+
+  /**
+   * A wrangler that answers every command a create runs, so the verb completes
+   * without reaching Cloudflare. The metadata answer is rendered from the
+   * constants the code reads, so a new filter does not leave this hanging on
+   * the index it waits for.
+   */
+  const WRANGLER_ANSWERS = [
+    'case "$*" in',
+    `  *"vectorize list-metadata-index"*) echo '${JSON.stringify(VECTOR_METADATA_FIELDS.map((field) => ({ propertyName: field, indexType: field === 'created_at' ? 'Number' : 'String' })))}';;`,
+    `  *"vectorize list --json"*) echo '[{"name":"${VECTOR_INDEX_NAME}"}]';;`,
+    `  *"vectorize get"*) echo '{"config":{"dimensions":${VECTOR_INDEX_DIMENSIONS},"metric":"cosine"}}';;`,
+    '  *"d1 list --json"*) echo "[]";;',
+    `  *"d1 create"*) echo 'database_id = "${DB_ID}"';;`,
+    `  *"secrets-store store list"*) echo '${STORE}';;`,
+    '  *" deploy "*) echo "Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b";;',
+    '  *whoami*) echo "account";;',
+    '  *--version*) echo " wrangler ' + BUNDLED_WORKER_WRANGLER + '";;',
+    'esac',
+  ].join('\n');
+
+  it.skipIf(process.platform === 'win32')('GATE: a finished create names the record at the path THIS home holds it, not a literal home', async () => {
+    const home = freshHome();
+    const done = await withEnvironment(npxAnswering(WRANGLER_ANSWERS), ['create', '--target', 'cloudflare', '--account-id', ACCOUNT], home);
+
+    expect({ exited: done.exited, said: done.said }).toEqual({ exited: false, said: '' });
+    // An operator with MYCO_HOME elsewhere is sent to the file that exists.
+    expect(done.printed).toContain(join(home, 'server', 'cloudflare', 'record.json'));
+    expect(done.printed).not.toContain('~/.myco');
+    expect(existsSync(join(home, 'server', 'cloudflare', 'record.json'))).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('GATE: with no Cloudflare login, it names `wrangler login` and CLOUDFLARE_API_TOKEN, and exits 1', async () => {
+    const npxDir = npxAnswering(`case "$*" in *whoami*) exit 1;; esac\necho " wrangler ${BUNDLED_WORKER_WRANGLER}"`);
+    const refused = await withEnvironment(npxDir, ['create', '--target', 'cloudflare', '--account-id', ACCOUNT]);
+    expect({ exited: refused.exited, lines: refused.said.split('\n').length }).toEqual({ exited: true, lines: 1 });
+    expect(refused.said).toContain('wrangler login');
+    expect(refused.said).toContain('CLOUDFLARE_API_TOKEN');
   });
 });

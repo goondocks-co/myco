@@ -15,6 +15,7 @@ import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
 import { jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
+import { BUNDLED_WORKER_WRANGLER } from '../worker-bundle.generated.js';
 import { VECTOR_INDEX_NAME, VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
 
 /** Wrangler refuses to guess between accounts, and guessing is what must not happen. */
@@ -57,9 +58,18 @@ function resolved(options: CloudflareOptions): { runner: CommandRunner; env: Nod
   };
 }
 
-/** Every wrangler invocation carries the account explicitly. */
+/**
+ * Every wrangler invocation, as `npx` argv.
+ *
+ * `--no-install` leads, always: without it `npx` fetches whatever wrangler is
+ * current the moment a machine has none, so an operator's first command
+ * downloads a version nobody chose — and a command that reads a secret on stdin
+ * takes npx's own install prompt as the answer. Refusing is
+ * {@link assertWranglerPresent}'s job, and it can only refuse if nothing here
+ * can fetch.
+ */
 function wrangler(...args: string[]): string[] {
-  return ['wrangler', ...args];
+  return ['--no-install', 'wrangler', ...args];
 }
 
 /** The `-c` pair for a derived config, or nothing for the committed one. */
@@ -351,18 +361,89 @@ export interface WorkerSecretTarget {
   runner?: CommandRunner;
 }
 
+/**
+ * What this machine must already have before a Cloudflare command can do
+ * anything. Every one of these is refused by name, in one line: the alternative
+ * is wrangler's own message about a variable an operator never heard of.
+ */
+export class WranglerNotReady extends Error {}
+
 /** Raised when wrangler is not installed where `npx` would find it; `npx` would otherwise ask on stdin whether to fetch it, and stdin carries the secrets. */
-export class WranglerAbsent extends Error {
+export class WranglerAbsent extends WranglerNotReady {
   constructor() {
     super('wrangler is not installed; `npm install -g wrangler`, then `wrangler login`, and retry');
     this.name = 'WranglerAbsent';
   }
 }
 
+/** Raised when wrangler answers but reaches no Cloudflare account, which every command here needs before it touches anything. */
+export class WranglerNotSignedIn extends WranglerNotReady {
+  constructor() {
+    super(
+      'wrangler is installed and signed in to no Cloudflare account; run `wrangler login` on this machine, '
+      + 'or set CLOUDFLARE_API_TOKEN in a shell that cannot open a browser, and retry',
+    );
+    this.name = 'WranglerNotSignedIn';
+  }
+}
+
+/** The environment variable wrangler authenticates with where no browser can open. */
+const API_TOKEN_ENV = 'CLOUDFLARE_API_TOKEN';
+
 /** True when `npx` resolves wrangler without fetching it. */
-export async function wranglerPresent(runner: CommandRunner = systemRunner()): Promise<boolean> {
-  const result = await runner.run('npx', ['--no-install', 'wrangler', '--version'], {});
+export async function wranglerPresent(runner: CommandRunner = systemRunner(), cwd?: string): Promise<boolean> {
+  const result = await runner.run('npx', wrangler('--version'), { ...(cwd === undefined ? {} : { cwd }) });
   return result.code === 0;
+}
+
+/** Refuse unless wrangler answers where the commands run. */
+export async function assertWranglerPresent(runner: CommandRunner = systemRunner(), cwd?: string): Promise<void> {
+  if (!(await wranglerPresent(runner, cwd))) throw new WranglerAbsent();
+}
+
+export interface WranglerReadiness {
+  runner?: CommandRunner;
+  /** Where the check runs, which is where the commands it clears run: `npx` resolves wrangler from there. */
+  cwd?: string;
+  /** Where a version note goes; nothing is reported when the versions agree. */
+  report?: (line: string) => void;
+  env?: NodeJS.ProcessEnv;
+}
+
+/** The version in a `wrangler --version` line, or null when it prints none. */
+function versionOf(printed: string): string | null {
+  return /(\d+\.\d+\.\d+)/.exec(printed)?.[1] ?? null;
+}
+
+/**
+ * Everything wrangler must be before a Cloudflare command runs: installed, and
+ * holding a Cloudflare identity.
+ *
+ * Both are checked where the commands run, because `npx` resolves wrangler from
+ * its working directory: a check that passed somewhere else clears a command
+ * that fails. The token, when the environment carries one, is the identity —
+ * `whoami` is what an interactive login is asked for.
+ *
+ * The bundled-version comparison is a note, not a refusal: the Worker travels
+ * in this binary already built, so a wrangler of another version uploads it
+ * rather than rebuilds it. A different MAJOR reads the deploy config by its own
+ * rules, which is worth saying out loud before an operator reads a config error.
+ */
+export async function assertWranglerReady(readiness: WranglerReadiness = {}): Promise<void> {
+  const runner = readiness.runner ?? systemRunner();
+  const where = readiness.cwd === undefined ? {} : { cwd: readiness.cwd };
+  const version = await runner.run('npx', wrangler('--version'), where);
+  if (version.code !== 0) throw new WranglerAbsent();
+
+  const installed = versionOf(version.stdout + version.stderr);
+  if (installed !== null && installed.split('.')[0] !== BUNDLED_WORKER_WRANGLER.split('.')[0]) {
+    readiness.report?.(`wrangler ${installed} is a major version away from the ${BUNDLED_WORKER_WRANGLER} this binary's Worker was built with; a deploy config error is the first place that shows.`);
+  }
+
+  const env = readiness.env ?? process.env;
+  if ((env[API_TOKEN_ENV] ?? '').trim() !== '') return;
+  const who = await runner.run('npx', wrangler('whoami'), where);
+  if (who.code !== 0) throw new WranglerNotSignedIn();
 }
 
 /**
@@ -377,7 +458,7 @@ export async function wranglerPresent(runner: CommandRunner = systemRunner()): P
 export async function putWorkerSecrets(target: WorkerSecretTarget, secrets: WorkerSecrets): Promise<void> {
   if (!target.accountId) throw new AccountNotSelected([]);
   const runner = target.runner ?? systemRunner();
-  if (!(await wranglerPresent(runner))) throw new WranglerAbsent();
+  await assertWranglerPresent(runner);
   // A debug log level makes wrangler print the request it sends — the secrets
   // with it — and a failed command's output is what the operator reads.
   await runOrThrow(runner, 'npx', wrangler('secret', 'bulk', '--name', target.workerName), {

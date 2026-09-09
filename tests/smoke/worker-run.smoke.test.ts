@@ -3,14 +3,15 @@
  * run returning to the queue.
  *
  * This needs three authenticated harnesses on the machine it runs on, which a
- * CI runner does not have, so it is excluded from the default profile and run
- * by hand on a machine that does. What CI holds instead is the claim, the
- * lease, the role gate and the driver contract, which need no harness at all.
+ * CI runner does not have, so MYCO_SMOKE_SERVER is what selects it: without a
+ * Deployment named there the suite skips, and it is run by hand on a machine
+ * that holds the harnesses. What CI holds instead is the claim, the lease, the
+ * role gate and the driver contract, which need no harness at all.
  *
  * Run it as:
- *   npm test -- tests/smoke/worker-run.smoke.ts
- * against a Deployment this machine holds an administrator membership for,
- * named by MYCO_SMOKE_SERVER.
+ *   MYCO_TEST_PROFILE=integration MYCO_SMOKE_SERVER=<url> npm test -- tests/smoke/worker-run.smoke.test.ts
+ * against a Deployment this machine holds an administrator membership for. The
+ * default profile excludes `tests/smoke/`, so the profile is what selects it.
  */
 import { describe, expect, it } from 'bun:test';
 import { detectHarnesses } from '@myco/runner/detect.js';
@@ -22,9 +23,8 @@ import { join } from 'node:path';
 const SERVER = process.env.MYCO_SMOKE_SERVER ?? '';
 const HARNESSES = ['claude-code', 'codex', 'opencode'] as const;
 
-describe('a worker drives one run on each harness', () => {
+describe.skipIf(SERVER === '')('a worker drives one run on each harness', () => {
   it('names the machine\'s harnesses before anything is claimed', () => {
-    expect(SERVER).not.toBe('');
     const found = detectHarnesses();
     const ready = found.filter((h) => h.authenticated).map((h) => h.id);
     // The smoke's whole premise: without these three logged in it proves nothing.

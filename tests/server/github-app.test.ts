@@ -106,7 +106,7 @@ describe('installing the credentials', () => {
     // The service list Compose is asked for is a read, not an act.
     expect(calls.filter((c) => !c.args.includes('--services')).map((c) => [c.command, ...c.args])).toEqual([
       ['npx', '--no-install', 'wrangler', '--version'],
-      ['npx', 'wrangler', 'secret', 'bulk', '--name', 'myco-server'],
+      ['npx', '--no-install', 'wrangler', 'secret', 'bulk', '--name', 'myco-server'],
     ]);
     const bulk = calls[1]!;
     expect(bulk.options?.cwd).toBeUndefined();
@@ -235,7 +235,7 @@ describe('the whole flow on a loopback listener', () => {
     const result = await pending;
     await expect(fetch(pageUrl)).rejects.toThrow();
     expect(result).toEqual({ app: { slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', clientId: 'Iv1.deadbeef', ownerLogin: 'goondocks-co' }, callbackUrl: `${URL_}/auth/callback`, verified: { ok: true } });
-    expect(calls.map((c) => c.args.slice(0, 3))).toEqual([['--no-install', 'wrangler', '--version'], ['wrangler', 'secret', 'bulk']]);
+    expect(calls.map((c) => c.args.slice(0, 4))).toEqual([['--no-install', 'wrangler', '--version'], ['--no-install', 'wrangler', 'secret', 'bulk']]);
     expect(calls[1]!.options?.env?.WRANGLER_LOG).toBe('log');
     expect(JSON.parse(readFileSync(join(home, 'server', 'cloudflare', 'record.json'), 'utf8')).url).toBe(URL_);
     expect(logs.join('\n')).not.toContain('s3cr3t');

@@ -13,6 +13,7 @@
 import { randomBytes } from 'node:crypto';
 import {
   applyMigrations,
+  assertWranglerReady,
   cloudflareStatus,
   deleteWorker,
   deployWorker,
@@ -28,7 +29,7 @@ import {
   type CloudflareOptions,
   type DeploymentRecord,
 } from './cloudflare.js';
-import { stageCloudflareDeploy, stagingRoot } from './cloudflare-stage.js';
+import { ensureStagingRoot, stageCloudflareDeploy } from './cloudflare-stage.js';
 import { VECTOR_INDEX_NAME } from './vector-config.js';
 
 export { DEPLOY_CONFIG_NAME } from './cloudflare-stage.js';
@@ -60,10 +61,28 @@ function staged(record: DeploymentRecord, options: LifecycleOptions): Cloudflare
  * Wrangler walks UP from its working directory looking for a configuration, so
  * running these from wherever the operator happens to stand can pick up a
  * checkout's `wrangler.toml` — the second config source this target no longer
- * has. This directory is the binary's own and holds no configuration.
+ * has. This directory is the binary's own, holds no configuration, and is on
+ * disk before any command is pointed at it.
  */
 function bareCommand(options: LifecycleOptions): CloudflareOptions {
-  return { ...options, configDir: stagingRoot(options.mycoHome) };
+  return { ...options, configDir: ensureStagingRoot(options.mycoHome) };
+}
+
+/**
+ * What every verb here needs before it runs anything, checked once, first.
+ *
+ * The first command a fresh machine runs is the one that reports the machine's
+ * state — as wrangler's own message about a missing environment variable, or as
+ * a version `npx` fetched to answer with. Both are refused by name instead, and
+ * the check runs in the directory the commands run in, so what it clears is
+ * what they get.
+ */
+async function preflight(options: LifecycleOptions): Promise<void> {
+  await assertWranglerReady({
+    ...(options.runner === undefined ? {} : { runner: options.runner }),
+    cwd: ensureStagingRoot(options.mycoHome),
+    ...(options.report === undefined ? {} : { report: options.report }),
+  });
 }
 
 export interface CreateResult {
@@ -78,6 +97,7 @@ export interface CreateResult {
  * which also makes this the adopt path for resources created by hand.
  */
 export async function createCloudflareDeployment(options: LifecycleOptions & { url?: string }): Promise<CreateResult> {
+  await preflight(options);
   const existing = readDeploymentRecord(options.mycoHome);
   const createdResources: string[] = [];
   const bare = bareCommand(options);
@@ -143,6 +163,7 @@ export async function createCloudflareDeployment(options: LifecycleOptions & { u
  * command never touches.
  */
 export async function updateCloudflareDeployment(options: LifecycleOptions): Promise<{ versionId: string | null }> {
+  await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; `myco server create --target cloudflare` provisions one');
   await ensureVectorIndex(bareCommand(options));
@@ -165,6 +186,7 @@ export async function updateCloudflareDeployment(options: LifecycleOptions): Pro
  * version it captured.
  */
 export async function rollbackCloudflareDeployment(options: LifecycleOptions & { versionId?: string; message?: string }): Promise<{ versionId: string }> {
+  await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; nothing to roll back');
   const target = options.versionId ?? record.versionId ?? '';
@@ -181,6 +203,7 @@ export interface CloudflareDeploymentStatus {
 }
 
 export async function cloudflareDeploymentStatus(options: LifecycleOptions): Promise<CloudflareDeploymentStatus | null> {
+  await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) return null;
   const status = await cloudflareStatus({ ...bareCommand(options), workerName: record.workerName });
@@ -193,6 +216,7 @@ export async function cloudflareDeploymentStatus(options: LifecycleOptions): Pro
  * data removal stays a by-hand act this command refuses to own.
  */
 export async function destroyCloudflareDeployment(options: LifecycleOptions): Promise<{ kept: string[] }> {
+  await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; nothing to destroy');
   await deleteWorker({ ...bareCommand(options), workerName: record.workerName });

@@ -48,6 +48,20 @@ export function stagingRoot(mycoHome?: string): string {
   return path.dirname(deploymentRecordPath(mycoHome));
 }
 
+/**
+ * That subtree, on disk.
+ *
+ * Every wrangler command runs in this directory or in the deploy directory
+ * under it, and a spawn into a directory that is not there reports a missing
+ * COMMAND rather than a missing directory. It is created on the way to the
+ * first command rather than by the first thing that happens to write a file.
+ */
+export function ensureStagingRoot(mycoHome?: string): string {
+  const root = stagingRoot(mycoHome);
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  return root;
+}
+
 /** The staging directory for this machine, beside the deployment record. */
 export function stagingDir(mycoHome?: string): string {
   return path.join(stagingRoot(mycoHome), 'deploy');
