@@ -37,7 +37,7 @@ describe.skipIf(SERVER === '')('a worker drives one run on each harness', () => 
       expect(membership).not.toBeNull();
       const stopping = new AbortController();
       const lines: string[] = [];
-      const driven = await runWorker({
+      const { driven, refused } = await runWorker({
         serverUrl: SERVER,
         token: membership!.token,
         runRoot: join(resolveMycoHome(), 'worker', 'smoke'),
@@ -47,7 +47,7 @@ describe.skipIf(SERVER === '')('a worker drives one run on each harness', () => 
         log: (line) => { lines.push(line); },
         signal: stopping.signal,
       });
-      expect({ harness, driven, offered: lines.some((l) => l.includes(harness)) }).toEqual({ harness, driven: 1, offered: true });
+      expect({ harness, driven, refused, offered: lines.some((l) => l.includes(harness)) }).toEqual({ harness, driven: 1, refused: null, offered: true });
     });
   }
 });

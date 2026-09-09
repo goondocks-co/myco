@@ -177,6 +177,12 @@ async function startLocalWorker(port: number): Promise<void> {
   }
   const stopping = new AbortController();
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { stopping.abort(); });
+  // The Deployment serves whatever becomes of the worker, so its end is reported
+  // in the same words as a machine that holds no membership at all: a refused
+  // worker and an absent one leave the same queue waiting, and the operator
+  // needs to be told which. An unexpected failure is reported rather than left
+  // to surface as an unhandled rejection, which would say nothing about what the
+  // queue is now waiting for.
   void runWorker({
     serverUrl,
     token: membership.token,
@@ -184,6 +190,10 @@ async function startLocalWorker(port: number): Promise<void> {
     pollIdleMs: WORKER_POLL_IDLE_MS,
     log: (line) => { console.log(`worker: ${line}`); },
     signal: stopping.signal,
+  }).then(({ refused }) => {
+    if (refused !== null) console.log(`This Deployment refused the worker on this machine (${refused}); serving without one.`);
+  }).catch((error: unknown) => {
+    console.log(`The worker on this machine stopped (${error instanceof Error ? error.message : String(error)}); serving without one.`);
   });
 }
 

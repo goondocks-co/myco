@@ -16,6 +16,8 @@ import { mkdirSync } from 'node:fs';
 import { detectHarnesses, type DetectedHarness } from './detect.js';
 import { driverFor } from './drivers/registry.js';
 import { discardRunDir, writeRunDir } from './mcp-config.js';
+import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js';
+import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import type { RunEvent } from './events.js';
 
 /** What a claim answers: the run, the harness chosen for it, and what it runs under. */
@@ -46,19 +48,67 @@ export interface WorkerOptions {
   signal: AbortSignal;
 }
 
-async function post(options: WorkerOptions, path: string, body: unknown): Promise<Record<string, unknown> | null> {
+/**
+ * What a worker's request came back as.
+ *
+ * Three outcomes, acted on differently and therefore distinct: an answer the
+ * worker can read, a refusal of the worker itself, and a Deployment it could not
+ * reach. A refusal is repeated identically on every later request and ends the
+ * attachment; an unreachable Deployment is not, and the worker keeps polling. A
+ * single "no answer" for both makes a refusal indistinguishable from silence.
+ */
+type WorkerAnswer =
+  | { kind: 'answered'; body: Record<string, unknown> }
+  | { kind: 'refused'; code: string; detail: string }
+  | { kind: 'unreachable'; detail: string };
+
+/**
+ * One worker request, classified the way every other member call is.
+ *
+ * The headers are the member's own — bearer and protocol, and no Project, which
+ * a Deployment-scoped route names none of — and the answer goes through the
+ * member classifier, so a protocol window, a dead credential and a refusal all
+ * arrive here as themselves rather than as an unreadable body.
+ */
+async function post(options: WorkerOptions, path: string, body: unknown): Promise<WorkerAnswer> {
   const send = options.fetchImpl ?? fetch;
+  let raw: RawAnswer;
   try {
     const res = await send(new URL(path, options.serverUrl).toString(), {
       method: 'POST',
-      headers: { authorization: `Bearer ${options.token}`, 'content-type': 'application/json' },
+      headers: { ...deploymentScopedHeaders({ token: options.token }), 'content-type': 'application/json' },
       body: JSON.stringify(body),
       signal: options.signal,
     });
-    const answered: unknown = await res.json();
-    return answered !== null && typeof answered === 'object' ? answered as Record<string, unknown> : null;
-  } catch {
-    return null;
+    raw = await rawAnswerOf(res);
+  } catch (error) {
+    raw = { kind: 'transport', detail: error instanceof Error ? error.message : String(error) };
+  }
+  const outcome = classifyEventAnswer(raw);
+  switch (outcome.class) {
+    case 'acked':
+      return { kind: 'answered', body: outcome.body };
+    case 'protocol':
+      return {
+        kind: 'refused',
+        code: 'protocol_version_unsupported',
+        detail: `this worker speaks member protocol ${MEMBER_PROTOCOL}; the Deployment speaks ${outcome.serverProtocol ?? '?'}`
+          + ` and accepts nothing below ${outcome.minCompatMemberProtocol ?? '?'}`,
+      };
+    case 'unauthorized':
+      return { kind: 'refused', code: 'unauthorized', detail: 'the Deployment does not hold the credential this worker presented' };
+    case 'route_missing':
+      return { kind: 'refused', code: 'route_missing', detail: 'the Deployment serves no worker control plane at this address' };
+    case 'retry':
+      // A 200 whose body is not the shape this route answers in is a wrong
+      // address rather than a passing fault: nothing the worker sends next
+      // time differs, so it is a refusal. Every other retry class — 429, 503,
+      // 5xx, a timeout, a dead socket — is transient and keeps the worker.
+      return outcome.status === 200
+        ? { kind: 'refused', code: 'malformed_answer', detail: outcome.detail }
+        : { kind: 'unreachable', detail: outcome.detail };
+    default:
+      return { kind: 'refused', code: outcome.code, detail: 'reason' in outcome ? outcome.reason : '' };
   }
 }
 
@@ -69,6 +119,20 @@ function waitOf(told: unknown, fallback: number): number {
 
 /** What a worker keeps only until a Deployment tells it otherwise, which is on its first answer. */
 const DEFAULT_HEARTBEAT_MS = 30_000;
+
+/**
+ * How long past its own budget a run's child is left alone before the worker
+ * stops it.
+ *
+ * The worker enforces the budget the claim answered, rather than leaving it to
+ * the Deployment: the Deployment's sweep fails an overrunning run on a margin of
+ * its own, and a worker that waited for that would hold a harness child for
+ * minutes after the run it belongs to was already lost. This grace is small for
+ * the same reason — it is there for a harness finishing its last write, not for
+ * a second attempt — and well under the Deployment's margin, so the worker's own
+ * account of the overrun is the one that lands.
+ */
+const RUN_OVERRUN_GRACE_MS = 5_000;
 
 const asRun = (value: unknown): ClaimedRun | null =>
   (value !== null && typeof value === 'object' && typeof (value as ClaimedRun).id === 'string' ? value as ClaimedRun : null);
@@ -94,35 +158,82 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
   const onAbort = (): void => { stopping.abort(); };
   options.signal.addEventListener('abort', onAbort, { once: true });
   let lost = false;
+  let unreachable = false;
+  let overran = false;
+  /**
+   * The budget, settled by the timer rather than by the harness.
+   *
+   * Aborting the child is asked for, not waited on: a signal reaches the process
+   * the driver started, and that process may leave a grandchild holding the same
+   * standard output — a shell waiting on a sleep is enough — in which case the
+   * driver's stream never ends and a worker that only read it would hold the run
+   * for as long as the harness felt like living. The budget therefore ends the
+   * READ as well, and the run's outcome is written from it.
+   */
+  let budgetReached: () => void = () => {};
+  const overrunReached = new Promise<'overran'>((resolve) => { budgetReached = () => { resolve('overran'); }; });
+  const budget = setTimeout(() => {
+    overran = true;
+    options.log(`run ${run.id} outlived its budget of ${run.timeoutSeconds}s; stopping the harness`);
+    stopping.abort();
+    budgetReached();
+  }, run.timeoutSeconds * 1000 + RUN_OVERRUN_GRACE_MS);
   const heartbeat = setInterval(() => {
     void post(options, '/worker/lease', { projectId: run.projectId, runId: run.id }).then((answer) => {
-      if (answer?.held === true) return;
+      // A renewal that never arrived is not a renewal declined. The Deployment's
+      // own sweep gives the run to another worker once the lease runs out, and
+      // it refuses an outcome from a worker that no longer holds it, so a
+      // network blip leaves the child running rather than killing the run.
+      if (answer.kind === 'unreachable') {
+        if (!unreachable) { unreachable = true; options.log(`cannot renew the lease on ${run.id}: ${answer.detail}`); }
+        return;
+      }
+      unreachable = false;
+      if (answer.kind === 'answered' && answer.body.held === true) return;
       lost = true;
-      options.log(`lease lost on ${run.id}; another worker holds it`);
+      options.log(answer.kind === 'refused'
+        ? `the Deployment refused the lease on ${run.id}: ${answer.code}`
+        : `lease lost on ${run.id}; another worker holds it`);
       stopping.abort();
     });
   }, heartbeatMs);
 
   const events: RunEvent[] = [];
+  const stream = driver.run({
+    prompt: run.instruction ?? '',
+    scratchDir,
+    mcpConfigPath,
+    credentialEnv: run.credentialEnv,
+  }, stopping.signal)[Symbol.asyncIterator]();
   try {
-    for await (const event of driver.run({
-      prompt: run.instruction ?? '',
-      scratchDir,
-      mcpConfigPath,
-      credentialEnv: run.credentialEnv,
-    }, stopping.signal)) {
-      events.push(event);
-      if (event.kind === 'ended') options.log(`run ${run.id} ended ${event.stop}`);
+    for (;;) {
+      const step = await Promise.race([stream.next(), overrunReached]);
+      if (step === 'overran' || step.done === true) break;
+      events.push(step.value);
+      if (step.value.kind === 'ended') options.log(`run ${run.id} ended ${step.value.stop}`);
     }
   } catch (error) {
     return { status: 'failed', error: error instanceof Error ? error.message : String(error) };
   } finally {
     clearInterval(heartbeat);
+    clearTimeout(budget);
     options.signal.removeEventListener('abort', onAbort);
+    // Closing the stream runs the driver's own cleanup, which stops the child.
+    // Not awaited: the driver may be blocked on the very read the budget gave up
+    // on, and a worker that waited here would be held by it all over again.
+    void Promise.resolve(stream.return?.()).catch(() => undefined);
     discardRunDir(scratchDir);
   }
 
+  // A lost lease is decided before anything else, including an overrun: a worker
+  // that no longer holds the run writes NOTHING about it, and a run that both
+  // overran and changed hands belongs to whoever holds it now. Reporting the
+  // overrun instead would have this worker account for a run it does not own.
   if (lost) return { status: 'lost', error: null };
+  // The budget is otherwise the outcome, whatever the harness wrote on its way
+  // out: a child stopped for overrunning did not finish its turn, and a stop
+  // reason it managed to emit as it died would otherwise read as one.
+  if (overran) return { status: 'failed', error: `the run outlived its budget of ${run.timeoutSeconds}s` };
   const last = events.at(-1);
   if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: 'the harness wrote no ending' };
   return last.stop === 'end_turn'
@@ -130,8 +241,25 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
     : { status: 'failed', error: `the harness stopped: ${last.stop}${last.detail === null ? '' : ` (${last.detail})`}` };
 }
 
-/** Claim runs until the caller stops the worker, or until one run has been driven when `once` is set. */
-export async function runWorker(options: WorkerOptions): Promise<number> {
+/** How a worker's attachment ended: what it drove, and the code it was refused with where a Deployment refused it. */
+export interface WorkerOutcome {
+  driven: number;
+  /** The code the Deployment answered, or null when the worker was stopped or drove its one run. A worker refused here cannot claim anything and exits non-zero. */
+  refused: string | null;
+}
+
+/**
+ * Claim runs until the caller stops the worker, or until one run has been
+ * driven when `once` is set.
+ *
+ * A refusal ends the attachment and says why. There is nothing a worker can do
+ * about a credential the Deployment does not hold, a protocol it does not
+ * speak, or a membership that does not administer it — every later claim is
+ * refused identically — so polling against one is an attached worker that drives
+ * nothing and reports nothing. A Deployment it cannot reach is the opposite: the
+ * worker keeps polling, and says once that it is failing and once that it is back.
+ */
+export async function runWorker(options: WorkerOptions): Promise<WorkerOutcome> {
   const harnesses: DetectedHarness[] = detectHarnesses(options.only);
   const ready = harnesses.filter((h) => h.authenticated).map((h) => h.id);
   options.log(ready.length === 0
@@ -139,28 +267,64 @@ export async function runWorker(options: WorkerOptions): Promise<number> {
     : `offering ${ready.join(', ')}`);
 
   let driven = 0;
+  let unreachable = false;
+  /** The reason the last claim answered nothing, so a change in it is said once and a repeat is not. */
+  let waiting: string | null = null;
   while (!options.signal.aborted) {
     const answer = await post(options, '/worker/claim', { harnesses });
-    if (answer === null) { await sleep(options.pollIdleMs, options.signal); continue; }
-    if (answer.persisted === false) { options.log(`the Deployment refused the claim: ${String(answer.code)}`); return driven; }
-    if (answer.claimed !== true) { await sleep(waitOf(answer.pollAfterMs, options.pollIdleMs), options.signal); continue; }
+    if (answer.kind === 'refused') {
+      options.log(`the Deployment refused the claim: ${answer.code}${answer.detail === '' ? '' : ` — ${answer.detail}`}`);
+      return { driven, refused: answer.code };
+    }
+    if (answer.kind === 'unreachable') {
+      // Said once rather than every poll: a worker left attached across an
+      // outage would otherwise fill a log with one line per poll, and the
+      // recovery — the line that says claiming resumed — would be lost in it.
+      if (!unreachable && !options.signal.aborted) { unreachable = true; options.log(`cannot reach ${options.serverUrl}: ${answer.detail}; still polling`); }
+      await sleep(options.pollIdleMs, options.signal);
+      continue;
+    }
+    if (unreachable) { unreachable = false; options.log(`reached ${options.serverUrl} again`); }
 
-    const run = asRun(answer.run);
-    if (run === null) { await sleep(options.pollIdleMs, options.signal); continue; }
+    const claim = answer.body;
+    if (claim.claimed !== true) {
+      // Said once per change rather than once per poll. `no_work` is an idle
+      // queue and `no_harness` is work this worker cannot run — actionable, and
+      // indistinguishable from idleness to anyone reading an unlabelled silence.
+      const reason = typeof claim.reason === 'string' ? claim.reason : 'unexplained';
+      if (reason !== waiting) { waiting = reason; options.log(`nothing claimed: ${reason}`); }
+      await sleep(waitOf(claim.pollAfterMs, options.pollIdleMs), options.signal);
+      continue;
+    }
+    waiting = null;
+
+    const run = asRun(claim.run);
+    if (run === null) {
+      options.log('the Deployment answered a claim naming no run');
+      return { driven, refused: 'malformed_answer' };
+    }
     options.log(`claimed ${run.id} (${run.task}) on ${run.harness}, budget ${run.timeoutSeconds}s`);
     // The cadence is the Deployment's, carried on the claim it answered.
-    const outcome = await drive(options, run, waitOf(answer.heartbeatMs, DEFAULT_HEARTBEAT_MS));
+    const outcome = await drive(options, run, waitOf(claim.heartbeatMs, DEFAULT_HEARTBEAT_MS));
     // A worker that lost its lease writes nothing: the run belongs to whoever
     // holds it now, and a late outcome would be one worker reporting on
     // another's run. The Deployment refuses such a write anyway; not making it
     // is what keeps the two accounts of a run from disagreeing.
     if (outcome.status !== 'lost') {
-      await post(options, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error });
+      const ended = await post(options, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error });
+      if (ended.kind === 'refused') {
+        options.log(`the Deployment refused the outcome of ${run.id}: ${ended.code}`);
+        return { driven, refused: ended.code };
+      }
+      // An outcome that never arrived leaves the run to the Deployment's sweep,
+      // which is what owns a run no worker reports on. Saying so is what makes
+      // the difference visible between that and a run nobody ever claimed.
+      if (ended.kind === 'unreachable') options.log(`could not report the outcome of ${run.id}: ${ended.detail}`);
     }
     driven += 1;
-    if (options.once === true) return driven;
+    if (options.once === true) return { driven, refused: null };
   }
-  return driven;
+  return { driven, refused: null };
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {

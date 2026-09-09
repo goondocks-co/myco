@@ -66,7 +66,7 @@ export async function run(args: string[]): Promise<boolean> {
   const stopping = new AbortController();
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { stopping.abort(); });
 
-  const driven = await runWorker({
+  const { driven, refused } = await runWorker({
     serverUrl,
     token: membership.token,
     runRoot: path.join(resolveMycoHome(), 'worker', 'runs'),
@@ -77,5 +77,11 @@ export async function run(args: string[]): Promise<boolean> {
     signal: stopping.signal,
   });
   console.log(`worker: drove ${driven} run${driven === 1 ? '' : 's'}`);
+  // A worker the Deployment refused attached to nothing, so the verb fails
+  // rather than reporting a quiet zero runs that reads like an idle queue.
+  if (refused !== null) {
+    console.error(`myco worker: ${serverUrl} refused this worker (${refused})`);
+    return false;
+  }
   return true;
 }

@@ -19,8 +19,9 @@ import { cortex } from './scenarios/cortex.ts';
 import { replacedRun } from './scenarios/replaced-run.ts';
 import { search } from './scenarios/search.ts';
 import { grants } from './scenarios/grants.ts';
+import { workerWire } from './scenarios/worker-wire.ts';
 
-const scenarios = [repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity];
+const scenarios = [repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, workerWire];
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

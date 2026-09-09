@@ -43,7 +43,7 @@ import { chownSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
+import { memberHeaders } from '@myco/member/constants.js';
 import { NO_RUNTIME_LISTENER } from './runtime-port.js';
 import { MAX_RUN_ERROR_CHARS } from './run-store.js';
 import { onStopSignals, RUNTIME_EXIT, RUNTIME_OWN_ENDINGS, type ProcessEvents } from './process-signals.js';
@@ -191,12 +191,7 @@ async function closeAbandonedRun(
 ): Promise<Response> {
   return await fetch(`${control.serverUrl}/runs/update`, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${control.token}`,
-      [PROTOCOL_HEADER]: String(MEMBER_PROTOCOL),
-      [PROJECT_HEADER]: control.projectId,
-      'content-type': 'application/json',
-    },
+    headers: { ...memberHeaders(control), 'content-type': 'application/json' },
     body: JSON.stringify({
       runId,
       update: { status: 'failed', completed_at: now, error: close.error.slice(0, MAX_RUN_ERROR_CHARS) },
