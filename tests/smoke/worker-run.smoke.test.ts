@@ -50,8 +50,12 @@ describe.skipIf(SERVER === '')('a worker drives one run on each harness', () => 
       // The worker's own word is the harness ending its turn; the Deployment's
       // verdict is whether the run left its artifact behind, and it says so on
       // the worker's log only when the two disagree.
-      const disagreed = lines.filter((l) => l.includes('the Deployment recorded it'));
-      expect({ harness, driven, refused, offered: lines.some((l) => l.includes(harness)), disagreed }).toEqual({ harness, driven: 1, refused: null, offered: true, disagreed: [] });
+      // A run that failed on both sides also agrees, so the log must show the
+      // harness calling a run tool and the worker starting it.
+      const disagreed = lines.filter((l) => l.includes('the Deployment recorded it') || l.includes('failed before its harness started'));
+      const called = lines.filter((l) => /^run \S+ called \S+: ok$/.test(l)).length;
+      expect({ harness, driven, refused, offered: lines.some((l) => l.includes(harness)), disagreed, called: called > 0 })
+        .toEqual({ harness, driven: 1, refused: null, offered: true, disagreed: [], called: true });
     });
   }
 });

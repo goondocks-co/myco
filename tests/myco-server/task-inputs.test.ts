@@ -16,7 +16,7 @@ import { claimNextRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harnes
 import { buildTaskInput, INPUT_BUILDERS, instructionFor, uninstructedError } from '@myco-server-worker/core/task-inputs.js';
 import { buildTitlingInput } from '@myco-server-worker/core/titling-input.js';
 import { taskTools, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
-import { TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
+import { RUN_CLOSE_REPORTS, RUN_SKIP_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -52,6 +52,8 @@ async function rig() {
 
 /** Every tool name an instruction cites in backticks, in either vocabulary a prompt has ever been written in. */
 const citedTools = (instruction: string): string[] => [...instruction.matchAll(/`((?:myco|vault)_[a-z_]+)`/g)].map((m) => m[1]!);
+/** Every report action an instruction tells the run to close with. */
+const citedActions = (instruction: string): string[] => [...instruction.matchAll(/\baction "([a-z_]+)"/g)].map((m) => m[1]!);
 
 describe('the instruction a titling run receives', () => {
   it('names the session, the mode, and the three calls in the words the run surface serves', async () => {
@@ -61,7 +63,9 @@ describe('the instruction a titling run receives', () => {
     expect(owner!.instruction).toContain('Write over whatever title stands');
     expect(owner!.instruction).toContain('`myco_run_sessions` op "material"');
     expect(owner!.instruction).toContain('`myco_run_sessions` op "title"');
-    expect(owner!.instruction).toContain(`\`myco_run\` op "report" with action "${TITLING_REPORT_ACTION}"`);
+    expect(owner!.instruction).toContain(`action "${TITLING_REPORT_ACTION}"`);
+    expect(owner!.instruction).toContain(`action "${RUN_SKIP_ACTION}"`);
+    expect(owner!.instruction).toContain('serialized JSON object string');
     expect(owner!.inputHash).toHaveLength(64);
     expect(owner!.counts).toEqual({ owner: true });
 
@@ -90,6 +94,20 @@ describe('every instruction the Deployment builds', () => {
       // A prompt that names no tool at all instructs nothing; one that names a tool
       // the surface does not serve sends the harness after a call that will fail.
       expect({ task, cited: cited.length > 0, unserved: cited.filter((name) => !served.has(name)) }).toEqual({ task, cited: true, unserved: [] });
+    }
+  });
+
+  it('tells the run to close only with actions its task\'s close rule accepts, and names at least one', async () => {
+    const r = await rig();
+    for (const task of Object.keys(INPUT_BUILDERS)) {
+      const built = await buildTaskInput(r.e.serverEnv, task, 'proj_1', NOW, { params: { session_id: 's1', mode: 'claim' } });
+      if (built === null || built.unchanged) throw new Error(`${task} built nothing`);
+      const accepted = RUN_CLOSE_REPORTS[task];
+      if (accepted === undefined) continue;
+      const actions = citedActions(built.input.instruction);
+      // A run that closes with an action the rule does not accept is recorded as
+      // having ended without its report, however faithfully it followed the prompt.
+      expect({ task, named: actions.length > 0, unaccepted: actions.filter((a) => !accepted.includes(a)) }).toEqual({ task, named: true, unaccepted: [] });
     }
   });
 });
@@ -123,10 +141,10 @@ describe('what a claim hands out', () => {
     r.queued('run_bare', UNBUILT_TASK, null);
     r.queued('run_blank', UNBUILT_TASK, '   ');
     const before = r.credentials();
+    // One claim ends every such row it meets and answers from what is left; a
+    // queue of them drains in one poll rather than one row per poll interval.
     expect(await r.claim(NOW + 1)).toEqual({ claimed: false, reason: 'no_work' });
     expect(r.row('run_bare')).toEqual({ status: 'failed', error: uninstructedError(UNBUILT_TASK), instruction: null });
-    // The next poll meets the next row and ends it the same way; the queue drains rather than sticking on it.
-    expect(await r.claim(NOW + 2)).toEqual({ claimed: false, reason: 'no_work' });
     expect(r.row('run_blank').status).toBe('failed');
     expect(r.credentials()).toBe(before);
   });

@@ -1,8 +1,7 @@
 /**
  * What a titling run is asked with, and the bounds on what it may write.
  *
- * A leaf: the instruction builder, the run tools and the dispatcher all read
- * these, and none of them may pull the dispatcher in to do so.
+ * A leaf: the instruction builder reads these without pulling the dispatcher in.
  */
 
 export const TITLE_MAX_CHARS = 80;

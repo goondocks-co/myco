@@ -13,12 +13,12 @@
  * instruction is the same size whatever the session holds.
  */
 import { sha256Hex } from '../hash.js';
-import { TITLING_REPORT_ACTION } from './run-postconditions.js';
+import { RUN_SKIP_ACTION, TITLING_REPORT_ACTION } from './run-postconditions.js';
 import type { TaskInput } from './task-inputs.js';
 import { SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsFrom, type TitlingMode } from './titling-params.js';
 
 const MODE_NOTE: Readonly<Record<TitlingMode, string>> = {
-  claim: 'The session has just ended. Its material is the opening prompts, in order. A title already standing is kept: your write is refused and you report that.',
+  claim: 'The session has just ended. Its material is the opening prompts, in order. A title already standing is kept: your write is refused, and you close with the skip action instead.',
   owner: 'A person asked for a fresh title from the dashboard. Its material is the earliest and the latest prompts, in order, with the middle omitted. Write over whatever title stands.',
 };
 
@@ -36,7 +36,7 @@ export async function buildTitlingInput(params: Record<string, unknown>): Promis
     '',
     '1. Call `myco_run_sessions` op "material": the session\'s current title and summary, if any, and its prompt batches in order, each a user prompt with an excerpt of the response. Read the whole arc before writing.',
     '2. Call `myco_run_sessions` op "title" with BOTH `title` and `summary`. The run may write only this session, so no session argument is needed.',
-    `3. Close by calling \`myco_run\` op "report" with action "${TITLING_REPORT_ACTION}", a one-line \`summary\` of what you wrote, and \`details\` as a JSON object: {"updated": 1} after a write that took, or {"updated": 0, "reason": "…"} when the write was refused or the material was empty.`,
+    `3. Close by calling \`myco_run\` op "report": after a write that took, action "${TITLING_REPORT_ACTION}" with a one-line \`summary\` of what you wrote and \`details\` as a serialized JSON object string such as "{\\"updated\\":1}"; when the write was refused, action "${RUN_SKIP_ACTION}" with the refusal in \`summary\`.`,
     '',
     '## Title rules',
     '',

@@ -134,8 +134,12 @@ const DEFAULT_HEARTBEAT_MS = 30_000;
  */
 const RUN_OVERRUN_GRACE_MS = 5_000;
 
-const asRun = (value: unknown): ClaimedRun | null =>
-  (value !== null && typeof value === 'object' && typeof (value as ClaimedRun).id === 'string' ? value as ClaimedRun : null);
+const asRun = (value: unknown): ClaimedRun | null => {
+  if (value === null || typeof value !== 'object') return null;
+  const run = value as ClaimedRun;
+  const named = typeof run.id === 'string' && typeof run.task === 'string' && typeof run.harness === 'string' && typeof run.runToken === 'string';
+  return named && (typeof run.instruction === 'string' || run.instruction === null) ? run : null;
+};
 
 /**
  * Drive one claimed run to its end.

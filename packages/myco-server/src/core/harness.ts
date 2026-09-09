@@ -912,7 +912,8 @@ export async function claimNextRun(
   if (instruction === null) {
     await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { failed: uninstructedError(candidate.task) });
     emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip: 'uninstructed' });
-    return { claimed: false, reason: 'no_work' };
+    // The next row is taken now; a worker told `no_work` sleeps a poll interval per such row.
+    return claimNextRun(env, worker);
   }
 
   await ensureMember(env.db, HARNESS_MEMBER_ID, worker.now, 'member', 'harness runtime');
