@@ -14,7 +14,7 @@
  */
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER } from '../member/constants.js';
+import { memberHeaders } from '../member/constants.js';
 
 /** The name a harness sees for the Deployment's tools. */
 export const MCP_SERVER_NAME = 'myco';
@@ -32,11 +32,7 @@ export function mcpConfigOf(connection: RunConnection): Record<string, unknown> 
       [MCP_SERVER_NAME]: {
         type: 'http',
         url: new URL('/mcp', connection.serverUrl).toString(),
-        headers: {
-          authorization: `Bearer ${connection.runToken}`,
-          [PROTOCOL_HEADER]: String(MEMBER_PROTOCOL),
-          [PROJECT_HEADER]: connection.projectId,
-        },
+        headers: memberHeaders({ token: connection.runToken, projectId: connection.projectId }),
       },
     },
   };

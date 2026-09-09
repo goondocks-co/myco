@@ -23,10 +23,24 @@ export interface DetectedHarness {
 
 const expand = (path: string): string => (path.startsWith('~/') ? join(homedir(), path.slice(2)) : path);
 
+/**
+ * The environment every probe runs under: this process's own, passed explicitly.
+ *
+ * A probe must resolve a binary against the PATH this process actually holds,
+ * because that is the PATH a driver's `spawn` resolves the harness against. The
+ * two are not the same by default — a synchronous child inherits the environment
+ * the process STARTED with, while an asynchronous one reads it as it stands — so
+ * a probe left to the default answers for a PATH the launch no longer uses, and
+ * a worker can refuse to offer a harness it would spawn without trouble, or
+ * offer one it cannot find. `tests/member/worker-claim-wire.test.ts` holds the
+ * two together.
+ */
+const probeEnv = (): NodeJS.ProcessEnv => process.env;
+
 /** Where this harness's binary is, or null when the machine has none. */
 export function locate(binary: string): string | null {
   try {
-    const found = execFileSync(process.platform === 'win32' ? 'where' : 'which', [binary], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const found = execFileSync(process.platform === 'win32' ? 'where' : 'which', [binary], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: probeEnv() });
     const first = found.split('\n')[0]?.trim() ?? '';
     return first.length > 0 ? first : null;
   } catch {
@@ -49,7 +63,7 @@ function fileHolds(path: string, requires: readonly string[]): boolean {
 
 function commandSucceeds(binary: string, args: readonly string[]): boolean {
   try {
-    execFileSync(binary, [...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 });
+    execFileSync(binary, [...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000, env: probeEnv() });
     return true;
   } catch {
     return false;
