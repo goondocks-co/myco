@@ -33,7 +33,7 @@ import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
 import { runCloseRefusal } from './run-postconditions.js';
-import { buildTaskInput } from './task-inputs.js';
+import { buildTaskInput, instructionFor, uninstructedError } from './task-inputs.js';
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';
@@ -431,7 +431,7 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
     // A task whose prompt the server builds has it built again here: the run
     // launches with the vault as it stands at this instant, and a Project that
     // has not moved past the artifact it already holds costs nothing.
-    const built = await buildTaskInput(env, queued.task, queued.projectId, now, { fresh: stored.options?.fresh === true });
+    const built = await buildTaskInput(env, queued.task, queued.projectId, now, { fresh: stored.options?.fresh === true, params: stored.params });
     if (built !== null && built.unchanged) {
       await endQueuedRun(env, scope, queued, now, { skipped: INPUT_UNCHANGED });
       emit({ kind: 'task_skipped', task: queued.task, projectId: queued.projectId, skip: INPUT_UNCHANGED });
@@ -713,6 +713,17 @@ function carriedParams(runContext: string | null): Record<string, string> {
   );
 }
 
+/** The run's context as a record, or an empty one where it holds none the reader can parse. */
+function contextRecord(runContext: string | null): Record<string, unknown> {
+  if (runContext === null) return {};
+  try {
+    const parsed: unknown = JSON.parse(runContext);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
 /** One field of a run's context, read as the type the caller expects. */
 function contextField<T>(runContext: string | null, key: string, ofType: (value: unknown) => T | undefined): T | undefined {
   if (runContext === null) return undefined;
@@ -754,7 +765,7 @@ export async function requeueReplaced(env: ServerEnv, replaced: ReplacedRun, now
   }
   const timeoutSeconds = contextField(run.runContext, 'timeoutSeconds', (v) => (typeof v === 'number' && v > 0 ? v : undefined));
   const fresh = contextField(run.runContext, 'fresh', (v) => (v === true ? true : undefined));
-  const built = await buildTaskInput(env, run.task, projectId, now, { fresh: fresh === true });
+  const built = await buildTaskInput(env, run.task, projectId, now, { fresh: fresh === true, params: contextRecord(run.runContext) });
   if (built !== null && built.unchanged) {
     emit({ kind: 'task_skipped', task: run.task, projectId, skip: INPUT_UNCHANGED });
     return { requeued: false, reason: 'unchanged' };
@@ -888,10 +899,19 @@ export async function claimNextRun(
   let stored: StoredSpec | null = null;
   try { stored = candidate.dispatchSpec === null ? null : JSON.parse(candidate.dispatchSpec) as StoredSpec; } catch { stored = null; }
   const scope = { projectId: candidate.projectId };
-  const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { fresh: stored?.options?.fresh === true });
+  const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { fresh: stored?.options?.fresh === true, params: stored?.params });
   if (built !== null && built.unchanged) {
     await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: INPUT_UNCHANGED });
     emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip: INPUT_UNCHANGED });
+    return { claimed: false, reason: 'no_work' };
+  }
+  // A run with nothing to say to its harness is ended here, before anything is
+  // minted: handed out, it would end its turn having called nothing, and the
+  // worker would report a run that did nothing as a run that finished.
+  const instruction = instructionFor(built, candidate.instruction);
+  if (instruction === null) {
+    await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { failed: uninstructedError(candidate.task) });
+    emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip: 'uninstructed' });
     return { claimed: false, reason: 'no_work' };
   }
 
@@ -920,7 +940,7 @@ export async function claimNextRun(
     claimed: true,
     run: {
       ...row,
-      instruction: built === null || built.unchanged ? row.instruction : built.input.instruction,
+      instruction,
       harness,
       runToken: minted.token,
       credentialEnv: await harnessCredentialEnv(env, harness),

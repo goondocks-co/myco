@@ -350,8 +350,8 @@ export async function buildDigestInput(
     '',
     '## Material windows per tier',
     renderWindows(),
-    `One page of \`vault_spores\` carries at most ${DIGEST_SPORE_PAGE_LIMIT} previews and one page of \`vault_sessions\` at most ${DIGEST_SESSION_PAGE_LIMIT} sessions; page with \`offset\` for the rest.`,
-    `This run gets up to ${SPORE_FULL_READ_BUDGET} full reads with \`vault_spore\`, each bounded to ${DIGEST_FULL_READ_BODY_CHARS} characters; judge the rest by their previews.`,
+    `One page of \`myco_run_spores\` op "list" carries at most ${DIGEST_SPORE_PAGE_LIMIT} previews and one page of \`myco_run_sessions\` op "list" at most ${DIGEST_SESSION_PAGE_LIMIT} sessions; page with \`offset\` for the rest.`,
+    `This run gets up to ${SPORE_FULL_READ_BUDGET} full reads with \`myco_run_spores\` op "get", each bounded to ${DIGEST_FULL_READ_BODY_CHARS} characters; judge the rest by their previews.`,
   ];
 
   const body = parts.join('\n');

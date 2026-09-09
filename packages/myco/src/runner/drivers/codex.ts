@@ -118,6 +118,11 @@ function runHome(spec: RunSpec, harness: Harness): string {
   return home;
 }
 
+/** A tool call's outcome in the driver's words: Codex says `completed` and `failed`, and anything else is a call still going. */
+function toolStatus(status: string | null): 'started' | 'ok' | 'error' {
+  return status === 'completed' ? 'ok' : status === 'failed' ? 'error' : 'started';
+}
+
 export const codexDriver: Driver = {
   id: 'codex',
   async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
@@ -136,6 +141,7 @@ export const codexDriver: Driver = {
         const itemType = item === null ? null : stringOf(item.type);
         // An error item is one item among many and never the end of the turn.
         if (itemType === 'agent_message') yield { kind: 'message', role: 'assistant', text: stringOf(item?.text) ?? '' };
+        else if (itemType === 'mcp_tool_call') yield { kind: 'tool_call', name: stringOf(item?.tool) ?? 'mcp', status: toolStatus(stringOf(item?.status)) };
         else if (itemType === 'error') yield { kind: 'tool_call', name: 'item', status: 'error' };
       } else if (type === 'turn.completed') {
         const usage = recordOf(line.usage);
