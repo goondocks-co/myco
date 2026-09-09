@@ -71,6 +71,8 @@ const ALLOWLIST: readonly string[] = [
   'symbionts/windsurf.ts',
   'symbionts/copilot.ts',
   'symbionts/transcript-discovery.ts',
+  // #1148 — which project a transcript found on disk belongs to.
+  'symbionts/transcript-attribution.ts',
   'symbionts/envelope-prefixes.ts',
   'symbionts/manifests.generated.ts',
   'paths/home.ts',
@@ -432,6 +434,15 @@ describe('member seam boundary (transitive)', () => {
     }
     expect({ outside: outside.size, literals: literals.length, externals: externals.length, unknowable: unknowable.length })
       .toEqual({ outside: 0, literals: 0, externals: 0, unknowable: 0 });
+  });
+
+  it('keeps the import pass out of every hook: a walk of every harness store does not fit a hook budget', () => {
+    // The seam gate reads the closure OF the hooks; this reads the same graph
+    // in the same direction and asks whether one module is inside it. A hook
+    // that reached the import would enumerate every harness's store under a
+    // budget measured in seconds.
+    const reachable = closureOf(hookEntries).modules;
+    expect({ reachable: reachable.has('member/import.ts'), entries: reachable.size > 1 }).toEqual({ reachable: false, entries: true });
   });
 
   it('reports the closure and keeps it whole — a gate over a collapsed graph proves nothing', () => {

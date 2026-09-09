@@ -28,7 +28,7 @@ export interface MemberEnvelope {
   sessionId: string;
   kind: MemberKind;
   createdAt: number;
-  channel: 'cli';
+  channel: OutboundChannel;
   producer: { adapter: string; version: string };
   payload: Record<string, unknown>;
 }
@@ -50,6 +50,10 @@ export interface OutboundEvent {
 /** Writes bytes somewhere the drain can read them back and returns the reference; the member spool supplies this. */
 export type BlobStager = (bytes: Uint8Array, mediaType: string) => BlobSource;
 
+/** How an event reaches the Deployment. `import` marks bytes that already existed on this machine's disk (#1148); the Deployment orders their parse behind live work and schedules no title for a session that ended weeks ago. */
+export const OUTBOUND_CHANNELS = ['cli', 'import'] as const;
+export type OutboundChannel = (typeof OUTBOUND_CHANNELS)[number];
+
 export interface EnvelopeContext {
   /** The manifest name of the symbiont driving the hook (`producer.adapter`). */
   agent: string;
@@ -57,6 +61,8 @@ export interface EnvelopeContext {
   stage: BlobStager;
   now?: () => number;
   version?: string;
+  /** How these events reach the Deployment; `cli` where a caller names none. */
+  channel?: OutboundChannel;
 }
 
 export const TEXT_MEDIA_TYPE = 'text/plain; charset=utf-8';
@@ -173,7 +179,7 @@ function envelope(ctx: EnvelopeContext, kind: MemberKind, payload: Record<string
     sessionId: ctx.sessionId,
     kind,
     createdAt: (ctx.now ?? Date.now)(),
-    channel: 'cli',
+    channel: ctx.channel ?? 'cli',
     producer: { adapter: producerIdentifier(ctx.agent), version: producerIdentifier(ctx.version ?? getPluginVersion()) },
     payload: compact(payload),
   };
@@ -399,7 +405,7 @@ export function attachmentEvent(ctx: EnvelopeContext, facts: {
 
 /** One slice of a transcript: the bytes are read from the transcript file itself at drain time. */
 export function transcriptSegmentEvent(ctx: EnvelopeContext, facts: {
-  transcriptId: string; baseOffset: number; blobSource: BlobSource; originPath?: string;
+  transcriptId: string; baseOffset: number; blobSource: BlobSource; originPath?: string; headHash?: string;
 }): OutboundEvent {
   if (facts.blobSource.size < 1) throw new Error('transcriptSegmentEvent: a segment carries at least one byte');
   return envelope(ctx, 'transcript.segment', {
@@ -409,6 +415,11 @@ export function transcriptSegmentEvent(ctx: EnvelopeContext, facts: {
     blob: facts.blobSource.sha256,
     originPath: facts.originPath === undefined ? undefined : trunc(homeRelativePath(facts.originPath), BOUNDS.originPath),
     agent: trunc(ctx.agent, BOUNDS.agent),
+    // The digest of the file's first bytes. Until it is sent the Deployment's
+    // integrity gate has nothing to compare, and a file truncated and rewritten
+    // in place keeps its path and inode and so keeps its identity: its bytes
+    // would be appended to the record of the file it replaced.
+    headHash: facts.headHash,
   }, facts.blobSource);
 }
 

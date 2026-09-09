@@ -15,6 +15,7 @@ import { unboundedBudget } from '../member/budget.js';
 import { isProjectId, MEMBER_TOKEN_REFRESH_WINDOW_MS } from '../member/constants.js';
 import { isHttpsUrl, isMemberTokenShape, resolveMemberProjectRoot } from '../member/credential.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
+import { runImport } from '../member/import.js';
 import { listRegistryEntries, readRegistryEntry, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention, lastAckAt } from '../member/retention.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
@@ -167,6 +168,15 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
       ? `provisioned ${manifest.displayName} for ${root}${installed.mcp ? ' (hooks and MCP)' : ''}`
       : `${manifest.displayName} cannot report to a server; nothing provisioned`);
   }
+
+  // #1148: the machine's existing history for this project, once, bounded by
+  // what the Deployment allows. A failure never fails the join — the membership
+  // is recorded, and `myco import` fetches the history whenever it is wanted.
+  const report = await runImport({ project: parsed.project, serverUrl: parsed.serverUrl }, {
+    fetch: deps.fetch, now: deps.now, cwd: root, mycoHome, machineId: entry.machineId,
+  }).catch(() => null);
+  const imported = report?.projects.reduce((n, project) => n + project.agents.reduce((m, a) => m + a.imported, 0), 0) ?? 0;
+  if (imported > 0) out(`imported ${imported} past sessions; run \`myco import\` to reach further back`);
   return entry;
 }
 

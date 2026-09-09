@@ -9,7 +9,10 @@ import { CLASSIFIERS, UNAVAILABLE } from '@myco-server-worker/telemetry.js';
 import { isProjectId as serverIsProjectId, PROJECT_ID as SERVER_PROJECT_ID } from '@myco-server-worker/pipeline.js';
 import { JOIN_PATH as SERVER_JOIN_PATH } from '@myco-server-worker/constants.js';
 import { ENROLLMENT_KEY_PATTERN as SERVER_ENROLLMENT_KEY_PATTERN } from '@myco-server-worker/auth/enrollment.js';
-import { ID_GRAMMAR, MAX_PAYLOAD_BYTES, PRODUCER_GRAMMAR } from '@myco-server-worker/ingest/envelope.js';
+import { CHANNELS as SERVER_CHANNELS, ID_GRAMMAR, MAX_PAYLOAD_BYTES, PRODUCER_GRAMMAR } from '@myco-server-worker/ingest/envelope.js';
+import { IMPORT_PLAN_MAX_CANDIDATES as SERVER_PLAN_MAX } from '@myco-server-worker/constants.js';
+import { IMPORT_PLAN_MAX_CANDIDATES as MEMBER_PLAN_MAX } from '@myco/member/import.js';
+import { OUTBOUND_CHANNELS as MEMBER_CHANNELS } from '@myco/member/envelope.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
 import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
@@ -54,6 +57,19 @@ describe('member ↔ worker pins', () => {
   it('the member code list is exactly the worker classifiers plus unavailable', () => {
     expect(new Set(MEMBER_CODES)).toEqual(new Set([...CLASSIFIERS, UNAVAILABLE]));
     expect(MEMBER_CODES.length).toBe(CLASSIFIERS.length + 1);
+  });
+
+  it('agrees on the channels an envelope may carry, and on the candidates one import plan holds', () => {
+    // Every channel the member can build is one the worker admits. A subset,
+    // not an equality: `http` is a channel the worker takes from a caller the
+    // member is not. A member channel the worker does not know is a refusal the
+    // member cannot see coming.
+    expect(MEMBER_CHANNELS.filter((c) => !SERVER_CHANNELS.has(c))).toEqual([]);
+    expect(MEMBER_CHANNELS).toContain('import');
+    // The member trims to this before it asks; the route refuses above it. A
+    // member trimming to more than the route takes is a refused request rather
+    // than a smaller import.
+    expect(MEMBER_PLAN_MAX).toBe(SERVER_PLAN_MAX);
     expect(CLASSIFIERS as readonly string[]).not.toContain(UNAVAILABLE);
   });
 

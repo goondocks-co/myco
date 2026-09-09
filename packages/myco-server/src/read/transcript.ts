@@ -22,6 +22,48 @@ export interface TranscriptRow {
   parseFailedAt: number | null;
 }
 
+/** What an import needs to know about a transcript this Project holds: where to resume it, and what its head says it is. */
+export interface HeldTranscript {
+  transcriptId: string;
+  sessionId: string;
+  size: number;
+  headHash: string | null;
+  role: string;
+}
+
+/**
+ * The held transcripts of any of these sessions, or under any of these
+ * identities.
+ *
+ * Both halves are needed and answer different questions. The identity match
+ * says where to resume a transcript the Deployment already has; the session
+ * match says whether a DIFFERENT identity for the same session is the same file
+ * renamed — which must not be re-derived — or a rotation, which is history
+ * worth importing. Only the head digest tells those two apart.
+ */
+export async function heldTranscriptsFor(
+  db: RelationalStore, scope: ReadScope, sessionIds: readonly string[], transcriptIds: readonly string[],
+): Promise<HeldTranscript[]> {
+  // One statement per key, not one with an OR across two. An OR leaves the
+  // planner a single equality to work with and it falls back to scanning the
+  // table; separately, each half is an index lookup. It also removes the
+  // `IN ()` an empty list would produce, which is a syntax error rather than an
+  // empty answer.
+  const rows = new Map<string, HeldTranscript>();
+  for (const [column, keys] of [['session_id', sessionIds], ['transcript_id', transcriptIds]] as const) {
+    if (keys.length === 0) continue;
+    const { results } = await db
+      .prepare(`SELECT transcript_id, session_id, size, head_hash, role FROM transcripts
+                 WHERE project_id = ? AND ${column} IN (${keys.map(() => '?').join(', ')})`)
+      .bind(scope.projectId, ...keys)
+      .all<{ transcript_id: string; session_id: string; size: number; head_hash: string | null; role: string }>();
+    for (const r of results) {
+      rows.set(r.transcript_id, { transcriptId: r.transcript_id, sessionId: r.session_id, size: r.size, headHash: r.head_hash, role: r.role });
+    }
+  }
+  return [...rows.values()];
+}
+
 export interface SegmentRow {
   baseOffset: number;
   length: number;

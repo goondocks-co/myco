@@ -36,6 +36,8 @@ export const MEMBER_CODES = [
   'session_tombstoned', 'transcript_replaced',
   // #1151 — worker mode
   'not_admin',
+  // #1148 — bounded import
+  'import_disabled',
   'unavailable',
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];
@@ -52,6 +54,17 @@ export const MEMBER_ID_NAMESPACE = '6f0b1f8e-2c3a-4d5e-9a7b-8c1d2e3f4a5b';
 export const MEMBER_INLINE_TEXT_MAX_BYTES = 196_608;
 /** A transcript is shipped in segments of at most this many bytes. Under the server blob cap. */
 export const TRANSCRIPT_SLICE_BYTES = 8 * 1024 * 1024;
+/**
+ * Bytes of a transcript the head digest covers (#1148).
+ *
+ * A FIXED prefix, never the whole file: a digest over "what is there so far"
+ * changes every time the file grows, and the Deployment would read ordinary
+ * appending as the file having been replaced. A transcript shorter than this
+ * therefore has no head digest yet, and the integrity gate stays inert for it
+ * until it reaches this length — the same inertness the gate already has for a
+ * transcript whose member never sent the field.
+ */
+export const TRANSCRIPT_HEAD_HASH_BYTES = 4096;
 
 /**
  * What may be presented as a project id.
