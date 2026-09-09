@@ -63,10 +63,21 @@ async function rig() {
     if (!claimed.claimed) throw new Error('the titling run was not claimed');
     return claimed.run;
   };
+  /** An owner's re-title run a worker has claimed, over a session that already carries a title. */
+  const claimedRetitle = async (now: number) => {
+    e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at, title, summary) VALUES ('proj_1', 's2', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?, 'A title an earlier run wrote', 'And its summary.')`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);
+    e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's2', 'p2', 'e2', 'rename the thing', 'user', 'h2', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
+    const asked = await titleSession(e.serverEnv, { projectId: 'proj_1', sessionId: 's2', now, origin: ORIGIN }, { mode: 'owner', by: 'mem_worker' });
+    expect(asked.outcome).toBe('queued');
+    const claimed = await claimNextRun(e.serverEnv, { tokenId: workerToken, machineId: 'm1', harnesses: OFFERED, now: now + 1 });
+    expect(claimed.claimed).toBe(true);
+    if (!claimed.claimed) throw new Error('the re-title run was not claimed');
+    return claimed.run;
+  };
   /** The worker's own report that the harness ended its turn. */
   const workerEnds = (runId: string, status: 'completed' | 'failed', now: number) =>
     endLeasedRun(e.serverEnv, { tokenId: workerToken, now }, { projectId: 'proj_1', runId, status });
-  return { e, workerToken, asRun, outcome, calls, claimedTitling, workerEnds };
+  return { e, workerToken, asRun, outcome, calls, claimedTitling, claimedRetitle, workerEnds };
 }
 
 describe('a titling run a worker claimed', () => {
@@ -205,5 +216,54 @@ describe('the record of what a run called', () => {
     const detail = await getRunDetail(r.e.db, { projectId: 'proj_1' }, run.id);
     expect({ status: detail?.run.status, calls: detail?.toolCalls, error: detail?.run.error })
       .toEqual({ status: 'failed', calls: [], error: RUN_CLOSE_ERROR });
+  });
+});
+
+/**
+ * A title standing on a session is not proof THIS run wrote it.
+ *
+ * An owner may re-title any session, titled or not, and that write goes over
+ * whatever is there; a session may also carry a title with no claim stamp at
+ * all. A rule that asked only whether the session has a title would pass a run
+ * that filed its report, called nothing, and left an earlier run's title
+ * standing — the same defect one re-title later.
+ */
+describe('whose title a titling run is held to', () => {
+  it('fails an owner\'s re-title that reported over a titled session and wrote nothing', async () => {
+    const r = await rig();
+    const run = await r.claimedRetitle(NOW + 1);
+
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'looked at it' });
+    expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'failed' });
+    expect(r.outcome(run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
+    // The title the earlier run wrote is untouched, which is the whole point:
+    // the row looks titled and the run still did nothing.
+    expect(r.e.sqlite.query(`SELECT title FROM sessions WHERE session_id = 's2'`).get())
+      .toEqual({ title: 'A title an earlier run wrote' });
+  });
+
+  it('completes an owner\'s re-title that actually wrote over the title that stood', async () => {
+    const r = await rig();
+    const run = await r.claimedRetitle(NOW + 1);
+
+    await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'What the session really did', summary: 'A truer summary of the same work.' });
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 're-titled it' });
+    expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
+    expect(r.e.sqlite.query(`SELECT title FROM sessions WHERE session_id = 's2'`).get())
+      .toEqual({ title: 'What the session really did' });
+  });
+
+  it('fails a claim-mode run whose write took nothing because a title already stood', async () => {
+    const r = await rig();
+    const run = await r.claimedTitling(NOW + 1);
+    // A title lands between the dispatch and the run's own write, so the run's
+    // `claim` write takes nothing while answering that it ran.
+    r.e.sqlite.run(`UPDATE sessions SET title = 'A title that arrived first', summary = 's' WHERE session_id = 's1'`);
+
+    expect(await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'What this run would have written', summary: 'Its own summary of the work.' }))
+      .toEqual({ session_id: 's1', written: false });
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'tried' });
+    expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'failed' });
+    expect(r.outcome(run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
   });
 });

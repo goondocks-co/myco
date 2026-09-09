@@ -44,6 +44,9 @@ export const RUN_TOOLS = [
 
 export type RunTool = (typeof RUN_TOOLS)[number];
 
+/** The run tool a titling run's write of its session lands through; the close rule reads the write back under this name. */
+export const TITLE_WRITE_TOOL: RunTool = 'myco_run_sessions';
+
 /** Whether this name is one of the run-only tools. */
 export function isRunTool(name: string): name is RunTool {
   return (RUN_TOOLS as readonly string[]).includes(name);

@@ -73,7 +73,7 @@ if (claim.claimed !== true) {
 await postRunReport(client, budget, {
   runId,
   agentId: HARNESS_AGENT_ID,
-  action: env('STANDIN_ACTION') ?? taskName,
+  action: taskName,
   summary: env('STANDIN_SUMMARY') ?? 'the runtime ran',
 });
 

@@ -320,6 +320,16 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerOutcome> 
       // which is what owns a run no worker reports on. Saying so is what makes
       // the difference visible between that and a run nobody ever claimed.
       if (ended.kind === 'unreachable') options.log(`could not report the outcome of ${run.id}: ${ended.detail}`);
+      // The worker reports what the harness did; the Deployment records what the
+      // task actually left behind, and the two differ whenever a harness ends its
+      // turn having done none of the work. A worker that logged only its own
+      // report would show a clean drive against a run the Deployment failed.
+      if (ended.kind === 'answered') {
+        const recorded = ended.body.status;
+        if (typeof recorded === 'string' && recorded !== outcome.status) {
+          options.log(`reported ${run.id} as ${outcome.status}; the Deployment recorded it ${recorded}`);
+        }
+      }
     }
     driven += 1;
     if (options.once === true) return { driven, refused: null };

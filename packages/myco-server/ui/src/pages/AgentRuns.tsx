@@ -221,7 +221,7 @@ function RunBody({ run, phases, reports, toolCalls, agentName }: { run: RunDetai
       <Panel title="Calls back to this Deployment" padded={toolCalls.length === 0}>
         {toolCalls.length === 0 ? (
           <p className="font-sans text-sm text-on-surface-variant" data-testid="no-tool-calls">
-            This run never reached this Deployment. Nothing it was asked to do landed here.
+            This run never reached this Deployment — no tool call and no run route. Nothing it was asked to do landed here.
           </p>
         ) : (
           <ul className="divide-y divide-outline-variant/10" aria-label="Calls back to this Deployment">

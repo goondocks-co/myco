@@ -3,6 +3,7 @@ import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
 import { heldRunOfCredential } from './api/run-admission.js';
+import { recordRunCall } from './core/runs.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
 import { memberRole } from './auth/members-admin.js';
 import { isAdmin } from './auth/roles.js';
@@ -470,11 +471,23 @@ export function createServer(deps: ServerDeps) {
       if (captureRoute(route) && auth.bytesWritten + body.bytes > MEMBER_TOKEN_BYTE_QUOTA) return refuse(auth, shapeOf(route), QUOTA_REASON, 'quota');
       const limit = await resolved();
       if (limit !== null) return limit;
-      return await route.handler(env, {
+      // A run reaches this Deployment through two doors, and the record of what
+      // it called has to hold both or an empty list means nothing. The MCP door
+      // is recorded at `tools/call`; this is the other one — the run routes a
+      // container drives itself. The run is resolved from its credential BEFORE
+      // the handler runs: the handler that closes a run leaves it terminal, and a
+      // terminal row resolves to no held run.
+      const holder = route.legacyRunRoute === true ? await heldRunOfCredential(env, auth, now) : null;
+      const answered = await route.handler(env, {
         projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
         body: body.text, bodyBytes: body.bytes, now, origin: url.origin,
       });
+      if (holder !== null) {
+        emit({ kind: 'run_tool', runId: holder.id, task: holder.task, tool: route.path, op: null, tokenId: auth.tokenId });
+        await recordRunCall(env.db, { projectId: holder.projectId }, { runId: holder.id, toolName: route.path, op: null, durationMs: null, recordedAt: now });
+      }
+      return answered;
     } catch (err) {
       return failed(env, auth, route, err, bodyBytes);
     }

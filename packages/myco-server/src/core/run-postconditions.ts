@@ -36,11 +36,13 @@
  */
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { inputHashOf, listReports, sessionNamedByRun, type RunRow } from './runs.js';
+import { inputHashOf, listReports, runRecordedWrite, sessionNamedByRun, type RunRow } from './runs.js';
 import { digestWrittenBy } from './digests.js';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { canopyMapWrittenBy } from './canopy.js';
 import { sessionCarriesTitle } from '../read/sessions.js';
+import { TITLE_WRITE_TOOL } from './tool-catalogue.js';
+import { TITLING_TASK } from './task-catalogue.js';
 
 /** The report a run records to say it found nothing to write. */
 export const RUN_SKIP_ACTION = 'skip';
@@ -60,16 +62,26 @@ export interface RunCloseRule {
 export const TITLING_REPORT_ACTION = 'summary';
 
 /**
- * Whether the session a titling dispatch named carries a title.
+ * Whether THIS run wrote the title on the session its dispatch named.
  *
  * The session is read off the run's own recorded context, which the dispatcher
  * wrote and no runtime may move, so the row checked is the one the dispatch named
  * to write. A run whose context names no session owed a title it can never be
  * held to, and answers false rather than passing on the absence.
+ *
+ * **A title standing on the session is not this run's work.** An owner may
+ * re-title any session, titled or not, and that write goes over whatever is
+ * there; a session may also carry a title with no claim stamp at all. So a run
+ * that filed its report and never called would pass on a title an earlier run
+ * wrote. The run key is the write the run landed (`RUN_WRITE_EVENT`), the same
+ * question `digest-only` and `canopy-map` ask of their own artifact rows — those
+ * carry a run column and the session row does not. The title is checked as well,
+ * so a write recorded against a row that no longer holds one does not pass.
  */
 export async function titleWrittenBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
   const sessionId = sessionNamedByRun(run);
-  return sessionId !== null && (await sessionCarriesTitle(db, scope, sessionId));
+  if (sessionId === null) return false;
+  return (await runRecordedWrite(db, scope, run.id, TITLE_WRITE_TOOL)) && (await sessionCarriesTitle(db, scope, sessionId));
 }
 
 /** What each task's run must have left behind, by task. Every retained task appears. */
@@ -83,7 +95,7 @@ export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule | typeof RUN_
   },
   // The whole product of a titling run is the title on the session its dispatch
   // named, which is why it names an artifact and not the report alone.
-  'title-summary': { reports: [TITLING_REPORT_ACTION], artifact: titleWrittenBy },
+  [TITLING_TASK]: { reports: [TITLING_REPORT_ACTION], artifact: titleWrittenBy },
 
   // The probe's product is the one report it files, which is what it proves.
   'container-smoke': { reports: ['container-smoke'] },
