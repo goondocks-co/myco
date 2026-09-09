@@ -343,7 +343,7 @@ function daemonUpstreamSource(vaultDir: string): UpstreamSource {
 
 function deploymentUpstreamSource(source: CredentialSource): UpstreamSource {
   const resolve = (): Upstream | null => {
-    const upstream = resolveDeploymentUpstream(source, { cwd: process.cwd(), env: process.env });
+    const upstream = resolveDeploymentUpstream(source, { cwd: process.cwd(), env: process.env, invokedBy: 'mcp' });
     if (!upstream) return null;
     return {
       transport: deploymentTransport(upstream),

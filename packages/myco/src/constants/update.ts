@@ -1,5 +1,6 @@
 import path from 'node:path';
 import os from 'node:os';
+import { RUNTIME_HOME_FILENAME } from '../paths/home.js';
 
 /** npm registry base URL for Myco packages. */
 export const NPM_REGISTRY_BASE_URL = 'https://registry.npmjs.org';
@@ -44,7 +45,7 @@ export const MACHINE_RUNTIME_COMMAND_FILENAME = 'runtime.command';
  * symbiont capture plugins at a non-default daemon (e.g. a dogfood `~/.myco-dev`).
  * Read under the same G7 trust check as `runtime.command`.
  */
-export const MACHINE_RUNTIME_HOME_FILENAME = 'runtime.home';
+export const MACHINE_RUNTIME_HOME_FILENAME = RUNTIME_HOME_FILENAME;
 
 /** Filename for the restart reason signal file (lives inside vault .myco/). */
 export const RESTART_REASON_FILENAME = 'restart-reason.json';

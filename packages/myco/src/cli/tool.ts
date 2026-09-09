@@ -176,7 +176,7 @@ async function withCliTransportDirective(result: unknown): Promise<unknown> {
 /** The transport for this invocation: the Deployment when a credential source is declared, the local daemon otherwise. */
 async function transportFor(vaultDir: string, source: CredentialSource | null): Promise<{ ok: true; transport: StreamableHTTPClientTransport } | { ok: false; error: ToolCliError }> {
   if (source !== null) {
-    const upstream = resolveDeploymentUpstream(source, { env: process.env });
+    const upstream = resolveDeploymentUpstream(source, { cwd: process.cwd(), env: process.env, invokedBy: 'tool' });
     if (!upstream) return { ok: false, error: { code: 'credential_unavailable', message: `No member credential resolves for ${CREDENTIAL_FLAG} ${source}; the reason is on stderr.` } };
     return { ok: true, transport: deploymentTransport(upstream, { 'x-myco-tool-transport': 'cli' }) };
   }

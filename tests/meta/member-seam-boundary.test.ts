@@ -76,6 +76,8 @@ const ALLOWLIST: readonly string[] = [
   'symbionts/envelope-prefixes.ts',
   'symbionts/manifests.generated.ts',
   'paths/home.ts',
+  // The G7 pin trust check the home resolver applies to a `runtime.home` pin.
+  'paths/pin-trust.ts',
   'project-root.ts',
   'machine-id.ts',
   'utils/lifecycle-lock.ts',
@@ -103,6 +105,7 @@ const ENFORCED_LEAVES: readonly string[] = [
   'hooks/**',
   'member/**',
   'paths/home.ts',
+  'paths/pin-trust.ts',
   'project-root.ts',
   'machine-id.ts',
   'capture/transcript-id.ts',

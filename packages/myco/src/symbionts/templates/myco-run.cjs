@@ -54,6 +54,11 @@ try { process.chdir(path.resolve(__dirname, '..')); } catch { /* best effort */ 
 // MYCO_HOME before exec so a project pinned to a dev home (`~/.myco-dev`)
 // reaches the matching daemon. Shares the winning-pin dir and the G7 trust
 // check below — identical to the CLI shim's runtime-redirect.cjs.
+//
+// An MYCO_HOME already in the environment wins: explicit beats implicit at
+// every layer, which is the order `src/paths/home.ts` applies. A value that is
+// not an absolute path is refused — a relative one would resolve against
+// whatever directory this process stands in.
 const args = process.argv.slice(2);
 
 // G7 (security): pin files are exec'd as the user's `myco` binary, so a
@@ -66,11 +71,12 @@ function checkRuntimePinTrust(filePath) {
   if (process.platform === 'win32') return { ok: true };
   let stat;
   try {
-    stat = fs.statSync(filePath);
+    stat = fs.lstatSync(filePath);
   } catch (err) {
     if (err && err.code === 'ENOENT') return { ok: false, reason: 'pin file missing' };
     return { ok: false, reason: `stat failed: ${(err && err.message) || 'unknown'}` };
   }
+  if (stat.isSymbolicLink()) return { ok: false, reason: 'pin file is a symlink' };
   const myUid = typeof process.getuid === 'function' ? process.getuid() : null;
   if (myUid !== null && stat.uid !== myUid) {
     return { ok: false, reason: `pin file owned by uid ${stat.uid}, expected ${myUid}` };
@@ -118,14 +124,25 @@ function expandHome(value) {
   return value;
 }
 
+// A trusted pin whose value names an absolute path. A relative value would
+// resolve against this process's cwd, so a `runtime.home` committed into a
+// repository could redirect a clone's capture at a directory that repository
+// controls.
+function readAbsolutePinValue(filePath) {
+  const raw = readPinFile(filePath);
+  if (!raw) return null;
+  const expanded = expandHome(raw);
+  return path.isAbsolute(expanded) ? expanded : null;
+}
+
 const found = readLayeredRuntimeCommand();
 const bin = found ? found.pin : 'myco';
 
 // Read the trusted `runtime.home` beside the winning `runtime.command` and set
-// MYCO_HOME before exec. Absent → leave MYCO_HOME as-is (prod default).
-if (found) {
-  const homePin = readPinFile(path.join(path.dirname(found.source), 'runtime.home'));
-  if (homePin) process.env.MYCO_HOME = expandHome(homePin);
+// MYCO_HOME before exec. Absent, refused, or already set → leave it as-is.
+if (found && !(process.env.MYCO_HOME || '').trim()) {
+  const homePin = readAbsolutePinValue(path.join(path.dirname(found.source), 'runtime.home'));
+  if (homePin) process.env.MYCO_HOME = homePin;
 }
 
 function toolNameFromArgs(args) {

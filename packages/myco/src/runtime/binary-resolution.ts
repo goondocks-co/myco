@@ -24,6 +24,7 @@ import path from 'node:path';
 import { managedBinDir, managedBinaryPath } from '../install/managed-binary.js';
 import { isDefaultMycoHome, resolveMycoHome } from '../grove/paths.js';
 import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
+import { checkPinTrust as checkPinTrustShared, readTrustedPin as readTrustedPinShared, PIN_MISSING_REASON } from '../paths/pin-trust.js';
 
 /**
  * Resolution order per caller kind.
@@ -87,57 +88,21 @@ export interface ResolutionEnv {
   getuid?: (() => number) | undefined;
 }
 
-const PIN_INSECURE_MODE_MASK = 0o022;
-
 /**
- * G7 pin trust: refuse a pin owned by another uid or writable by group/other.
- * The pin is exec'd as the user's `myco`, so writability is the threat
- * surface; `0o644` is trusted. Win32 has no POSIX modes — always trusted.
+ * G7 pin trust, and the trusted read that applies it. Both are the shared
+ * implementation in `paths/pin-trust.ts` — the home resolver applies the SAME
+ * rule to `runtime.home`, and a second copy here would let the two drift.
  */
 export function checkPinTrust(
   filePath: string,
   env: ResolutionEnv = {},
 ): { ok: true } | { ok: false; reason: string } {
-  const platform = env.platform ?? process.platform;
-  if (platform === 'win32') return { ok: true };
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(filePath);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') return { ok: false, reason: 'pin file missing' };
-    return { ok: false, reason: `stat failed: ${(err as Error).message ?? 'unknown'}` };
-  }
-  const getuid = env.getuid ?? (typeof process.getuid === 'function' ? process.getuid : undefined);
-  const myUid = getuid ? getuid() : null;
-  if (myUid !== null && stat.uid !== myUid) {
-    return { ok: false, reason: `pin file owned by uid ${stat.uid}, expected ${myUid}` };
-  }
-  const mode = stat.mode & 0o777;
-  if (mode & PIN_INSECURE_MODE_MASK) {
-    return { ok: false, reason: `pin file mode 0${mode.toString(8)} is writable by group/other` };
-  }
-  return { ok: true };
+  return checkPinTrustShared(filePath, env);
 }
 
 /** Trusted pin read: null when absent, untrusted, or empty. */
 export function readTrustedPin(filePath: string, env: ResolutionEnv = {}): string | null {
-  const trust = checkPinTrust(filePath, env);
-  if (!trust.ok) {
-    // A real refusal (foreign owner / group-other-writable) is warned
-    // unconditionally: a silently ignored pin is indistinguishable from no
-    // pin. A missing file is the normal no-pin state and stays silent.
-    if (trust.reason !== 'pin file missing') {
-      warn(`ignoring runtime pin (${trust.reason}): ${filePath}`);
-    }
-    return null;
-  }
-  try {
-    const raw = fs.readFileSync(filePath, 'utf-8').trim();
-    return raw || null;
-  } catch {
-    return null;
-  }
+  return readTrustedPinShared(filePath, env);
 }
 
 /**
@@ -189,7 +154,7 @@ export function gatherFacts(scope: PinScope, env: ResolutionEnv = {}): Resolutio
   if (!layered) {
     const machinePinPath = path.join(home, MACHINE_RUNTIME_COMMAND_FILENAME);
     const trust = checkPinTrust(machinePinPath, env);
-    if (!trust.ok && trust.reason !== 'pin file missing') {
+    if (!trust.ok && trust.reason !== PIN_MISSING_REASON) {
       pinRefusal = { pinPath: machinePinPath, reason: trust.reason };
     }
   }

@@ -18,18 +18,20 @@ const path = require('node:path');
 const PIN_INSECURE_MODE_MASK = 0o022;
 const PIN_FILENAME = 'runtime.command';
 
-// G7 pin trust: refuse a pin owned by another uid or writable by group/other —
-// the pin is exec'd as the user's `myco`. 0o644 is trusted. Win32 has no POSIX
-// modes; always trusted.
+// G7 pin trust: refuse a pin owned by another uid, writable by group/other, or
+// reached through a symlink — the pin is exec'd as the user's `myco`. 0o644 is
+// trusted. Win32 has no POSIX modes; always trusted. The stat is an `lstat`:
+// following the link would report the target's owner and mode.
 function checkPinTrust(filePath) {
   if (process.platform === 'win32') return { ok: true };
   let stat;
   try {
-    stat = fs.statSync(filePath);
+    stat = fs.lstatSync(filePath);
   } catch (err) {
     if (err && err.code === 'ENOENT') return { ok: false, reason: 'pin file missing' };
     return { ok: false, reason: `stat failed: ${(err && err.message) || 'unknown'}` };
   }
+  if (stat.isSymbolicLink()) return { ok: false, reason: 'pin file is a symlink' };
   const myUid = typeof process.getuid === 'function' ? process.getuid() : null;
   if (myUid !== null && stat.uid !== myUid) {
     return { ok: false, reason: `pin file owned by uid ${stat.uid}, expected ${myUid}` };

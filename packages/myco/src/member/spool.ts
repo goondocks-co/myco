@@ -96,7 +96,8 @@ const stderr = (line: string): void => { process.stderr.write(`[myco] member: ${
 export class MemberSpool {
   readonly dir: string;
   readonly blobsDir: string;
-  private readonly mycoHome: string;
+  /** The home this spool lives under; retention ages that home and no other. */
+  readonly mycoHome: string;
 
   constructor(readonly projectId: string, opts: { mycoHome?: string } = {}) {
     this.mycoHome = opts.mycoHome ?? resolveMycoHome();

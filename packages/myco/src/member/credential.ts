@@ -9,6 +9,7 @@
 import { resolveProjectRoot, resolveVaultDir } from '../project-root.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, MEMBER_TOKEN_PATTERN, type CredentialSource } from './constants.js';
+import { recordMissingMembership } from './no-membership.js';
 import { readRegistryEntry } from './registry.js';
 
 export { CREDENTIAL_FLAG, type CredentialSource };
@@ -74,23 +75,43 @@ export function resolveMemberProjectRoot(cwd: string = process.cwd()): string {
 
 const stderr = (line: string): void => { process.stderr.write(`[myco] member: ${line}\n`); };
 
+export interface CredentialOptions {
+  /** The directory this invocation belongs to: a hook's payload `cwd`, else the process's. */
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  mycoHome?: string;
+  /** What is asking, for the record a missed membership leaves behind (`hook stop`, `mcp`). */
+  invokedBy?: string;
+}
+
 /**
  * The record for the declared source, or null with one stderr line when the
  * source is missing, the entry is absent, the triplet is partial, or the URL
  * is not https. Nothing here reads a source the command did not declare.
+ *
+ * The home is resolved from the SAME directory the project root is resolved
+ * from, so a project pinned to a non-default home reads the registry that
+ * holds its membership even when nothing set `MYCO_HOME` (see
+ * `paths/home.ts`).
  */
 export function resolveCredential(
   source: CredentialSource | null,
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; mycoHome?: string } = {},
+  opts: CredentialOptions = {},
 ): CredentialRecord | null {
   if (source === null) {
     stderr(`hook command must declare ${CREDENTIAL_FLAG} registry|env — no capture`);
     return null;
   }
   if (source === 'env') return envCredential(opts.env ?? process.env);
-  const root = resolveMemberProjectRoot(opts.cwd);
-  const entry = readRegistryEntry(root, opts.mycoHome ?? resolveMycoHome());
+  const cwd = opts.cwd ?? process.cwd();
+  const root = resolveMemberProjectRoot(cwd);
+  const mycoHome = opts.mycoHome ?? resolveMycoHome({ cwd, env: opts.env });
+  const entry = readRegistryEntry(root, mycoHome);
   if (!entry) {
+    // The hook still exits 0 — a non-zero hook breaks the harness — so the
+    // miss is counted under the home this invocation resolved, where
+    // `myco member status` reads it back.
+    recordMissingMembership(root, { mycoHome, invokedBy: opts.invokedBy });
     stderr(`no registry entry for ${root} — run \`myco member join <server-url> --project <id>\`; no capture`);
     return null;
   }
