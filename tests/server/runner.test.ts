@@ -5,7 +5,9 @@
  * stderr alone.
  */
 import { describe, expect, it } from 'bun:test';
-import { CommandFailed, commandFailureDetail } from '@myco/server/runner.js';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { CommandFailed, commandFailureDetail, systemRunner, WorkingDirectoryMissing } from '@myco/server/runner.js';
 
 const failed = (stdout: string, stderr: string, code = 1): CommandFailed =>
   new CommandFailed('npx', ['wrangler', 'd1', 'execute', 'myco-server'], { code, stdout, stderr });
@@ -61,5 +63,23 @@ describe('a failed command names what it printed', () => {
   it('GATE: never drops everything — output that is all noise is carried raw', () => {
     const err = failed('', WARNING);
     expect(err.message).toContain('Unexpected fields found in top-level field');
+  });
+});
+
+/**
+ * Where a command is asked to run, when it is asked to run somewhere that does
+ * not exist.
+ */
+describe('a command pointed at a directory that is not there', () => {
+  it('GATE: names the directory rather than the command, which is on the PATH', async () => {
+    const absent = join(tmpdir(), 'myco-runner-absent', 'never-created');
+    const refused = await systemRunner().run('npx', ['--version'], { cwd: absent }).catch((err: unknown) => err as Error);
+
+    expect(refused).toBeInstanceOf(WorkingDirectoryMissing);
+    // The platform reports this as ENOENT against `npx`, which sends whoever
+    // reads it hunting for a program that is installed.
+    expect(refused.message).toContain(absent);
+    expect(refused.message).not.toContain('posix_spawn');
+    expect(refused.message).not.toContain('no such file or directory, ');
   });
 });

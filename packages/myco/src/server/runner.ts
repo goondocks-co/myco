@@ -11,6 +11,8 @@
  * anything, so `tests/server/deployment-*.test.ts` can assert the exact argv a
  * command produces rather than its effect on a machine.
  */
+import { existsSync } from 'node:fs';
+
 export interface CommandResult {
   code: number;
   stdout: string;
@@ -30,10 +32,26 @@ export interface CommandRunner {
   run(command: string, args: readonly string[], options?: RunOptions): Promise<CommandResult>;
 }
 
+/**
+ * Raised when a command is pointed at a working directory that is not on disk.
+ *
+ * The platform reports a spawn into an absent directory as `ENOENT` against the
+ * COMMAND, which sends whoever reads it hunting for a program that is on the
+ * PATH. The directory is named here instead, so the message points at the thing
+ * that is missing.
+ */
+export class WorkingDirectoryMissing extends Error {
+  constructor(readonly directory: string, readonly command: string) {
+    super(`${command} cannot run in ${directory}: that directory does not exist`);
+    this.name = 'WorkingDirectoryMissing';
+  }
+}
+
 /** Spawns for real. */
 export function systemRunner(): CommandRunner {
   return {
     async run(command, args, options) {
+      if (options?.cwd !== undefined && !existsSync(options.cwd)) throw new WorkingDirectoryMissing(options.cwd, command);
       const { spawn } = await import('node:child_process');
       return new Promise<CommandResult>((resolve, reject) => {
         const child = spawn(command, [...args], {

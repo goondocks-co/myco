@@ -43,7 +43,11 @@ export interface StagedDeploy {
   migrations: number;
 }
 
-/** This target's own subtree on this machine: the binary's, holding no wrangler configuration. */
+/**
+ * This target's own subtree on this machine: the binary's, holding no wrangler
+ * configuration. `ensureCommandDir` in `cloudflare.js` is the same directory,
+ * put on disk; this answers the path.
+ */
 export function stagingRoot(mycoHome?: string): string {
   return path.dirname(deploymentRecordPath(mycoHome));
 }
