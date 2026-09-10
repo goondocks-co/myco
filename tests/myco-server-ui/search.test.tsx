@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { GlobalSearch } from '../../packages/myco-server/ui/src/components/GlobalSearch';
+import { planPath } from '../../packages/myco-server/ui/src/hooks/use-plans';
 import { searchResultPath, type SearchResult } from '../../packages/myco-server/ui/src/hooks/use-search';
 
 const originalFetch = globalThis.fetch;
@@ -81,8 +82,13 @@ it('shows a failed request as a failure and supports retry', async () => {
   await screen.findByText('No results match this search.');
 });
 
-it('links captured plans and responses to the corresponding session detail', () => {
+it('links captured plans and responses to the corresponding session detail, and gives a skill hit no link at all', () => {
+  // Read through the shared destination, so the search hit and the project
+  // overview's panel cannot drift to two different URLs for the same plan.
+  expect(searchResultPath('a/b', hit({ type: 'plan', id: 'p&1', session_id: 's' })))
+    .toBe(planPath('a/b', { planKey: 'p&1', sessionId: 's' }));
   expect(searchResultPath('a/b', hit({ type: 'plan', id: 'p&1', session_id: 's' }))).toBe('/p/a%2Fb/sessions/s?tab=plans&plan=p%261');
   expect(searchResultPath('p', hit({ type: 'response', session_id: 's', prompt_id: 'turn' }))).toBe('/p/p/sessions/s?turn=turn');
-  expect(searchResultPath('p', hit({ type: 'skill', id: 'skill' }))).toBe('/p/p/skills/skill');
+  // A skill is read from the catalogue Myco ships rather than from a page here, so the hit shows and does not link.
+  expect(searchResultPath('p', hit({ type: 'skill', id: 'skill' }))).toBeNull();
 });

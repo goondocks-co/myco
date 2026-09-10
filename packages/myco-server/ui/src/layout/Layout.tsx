@@ -1,4 +1,4 @@
-import { Activity, Bell, Bot, Brain, FolderTree, KeyRound, LayoutDashboard, MessageSquare, Settings2, Sparkles, Sprout, Users, Wrench } from 'lucide-react';
+import { Activity, Bell, Bot, FolderTree, Gauge, KeyRound, LayoutDashboard, ListChecks, MessageSquare, Settings2, Sprout, Users, Wrench } from 'lucide-react';
 import { NavLink, Outlet, useParams } from 'react-router-dom';
 import { ProjectSwitcher } from '../components/ProjectSwitcher';
 import { GlobalSearch } from '../components/GlobalSearch';
@@ -21,9 +21,8 @@ interface ProjectNavItem {
 const PROJECT_NAV: ProjectNavItem[] = [
   { label: 'Overview', icon: LayoutDashboard, suffix: '' },
   { label: 'Sessions', icon: MessageSquare, suffix: '/sessions' },
-  { label: 'Cortex', icon: Brain, suffix: '/cortex' },
+  { label: 'Plans', icon: ListChecks, suffix: '/plans' },
   { label: 'Spores', icon: Sprout, suffix: '/spores' },
-  { label: 'Skills', icon: Sparkles, suffix: '/skills' },
   { label: 'Agent runs', icon: Bot, suffix: '/runs' },
   { label: 'Access', icon: KeyRound, suffix: '/access' },
 ];
@@ -31,7 +30,8 @@ const PROJECT_NAV: ProjectNavItem[] = [
 const SERVER_NAV = [
   { label: 'Projects', icon: FolderTree, to: '/projects' },
   { label: 'Status', icon: Activity, to: '/status' },
-  { label: 'Access', icon: Users, to: '/access' },
+  { label: 'Measures', icon: Gauge, to: '/measures' },
+  { label: 'Members', icon: Users, to: '/access' },
   { label: 'Settings', icon: Settings2, to: '/settings' },
   { label: 'Operations', icon: Wrench, to: '/operations' },
   { label: 'Notifications', icon: Bell, to: '/notifications' },

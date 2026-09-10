@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import type { SearchAnswer, SearchResult } from '../../../src/read/search-types';
 import { fetchJson } from '../lib/api';
+import { planPath } from './use-plans';
 
 export type { SearchResult };
 export const SEARCH_DEBOUNCE_MS = 300;
@@ -21,13 +22,20 @@ export function useSearch(projectId: string, { query, type, mode = 'auto', since
   });
 }
 
-export function searchResultPath(projectId: string, hit: SearchResult): string {
+/**
+ * Where a hit opens, or null when this dashboard has no page for it.
+ *
+ * A skill is read from the catalogue that ships with Myco rather than from a page
+ * here, so a skill hit has no destination. Answering null is what lets the result
+ * list show the hit and not pretend it is a link.
+ */
+export function searchResultPath(projectId: string, hit: SearchResult): string | null {
   const base = `/p/${encodeURIComponent(projectId)}`;
   const id = encodeURIComponent(hit.id);
   if (hit.type === 'spore') return `${base}/spores/${id}`;
-  if (hit.type === 'skill') return `${base}/skills/${id}`;
+  if (hit.type === 'skill') return null;
   const session = `${base}/sessions/${encodeURIComponent(hit.session_id ?? hit.id)}`;
-  if (hit.type === 'plan') return `${session}?${new URLSearchParams({ tab: 'plans', plan: hit.id })}`;
+  if (hit.type === 'plan') return planPath(projectId, { planKey: hit.id, sessionId: hit.session_id ?? hit.id });
   if (hit.prompt_id) return `${session}?${new URLSearchParams({ turn: hit.prompt_id })}`;
   return session;
 }

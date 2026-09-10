@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Check, ChevronDown, ChevronRight, Copy, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Badge } from '../ui/badge';
 import { useMembers } from '../../hooks/use-access';
-import { PLAN_STATUSES, useSetPlanStatus, type PlanRow, type PlanStatus } from '../../hooks/use-sessions';
+import { PLAN_STATUSES, useSetPlanStatus, type PlanCardRow, type PlanStatus } from '../../hooks/use-sessions';
 import { cn } from '../../lib/cn';
 import { formatDateTime, formatRelative } from '../../lib/format';
 import { TextOrBlob } from './stored-text';
@@ -56,7 +56,7 @@ function StatusSetBy({ memberId }: { memberId: string }) {
 }
 
 /** The status control: writes the plan's status as the signed-in member. A change while one is saving is ignored rather than the control being disabled, so focus stays put. */
-function StatusControl({ projectId, sessionId, plan }: { projectId: string; sessionId: string; plan: PlanRow }) {
+function StatusControl({ projectId, sessionId, plan }: { projectId: string; sessionId: string; plan: PlanCardRow }) {
   const set = useSetPlanStatus(projectId, sessionId);
   // While the write is in flight the control shows the choice just made, not the row's old value.
   const shown = set.isPending && set.variables !== undefined ? set.variables.status : plan.status;
@@ -82,14 +82,25 @@ function StatusControl({ projectId, sessionId, plan }: { projectId: string; sess
 export interface PlanCardProps {
   projectId: string;
   sessionId: string;
-  plan: PlanRow;
+  plan: PlanCardRow;
   defaultOpen?: boolean;
   /** Rendered under the turn that produced it: the link back to that turn is left out. */
   inTurn?: boolean;
+  /** Extra facts for the metadata row — what the surface showing the card knows and the card does not. */
+  meta?: ReactNode;
 }
 
-/** A captured plan: its status, title, key, timing, who last set its status, the turn it came from, and its task-list progress; open, its markdown. Only the title row toggles, so the controls never sit inside the toggle. */
-export function PlanCard({ projectId, sessionId, plan, defaultOpen = false, inTurn = false }: PlanCardProps) {
+/**
+ * A captured plan: its status, title, key, timing, who last set its status, the
+ * turn it came from, and its task-list progress; open, its markdown. Only the
+ * title row toggles, so the controls never sit inside the toggle.
+ *
+ * The turn link names the session path in full rather than riding the current
+ * one. A relative `?turn=` resolves against whatever page is showing the card, so
+ * it worked on the session timeline and was inert everywhere else; naming the
+ * path makes the card carry its own destination.
+ */
+export function PlanCard({ projectId, sessionId, plan, defaultOpen = false, inTurn = false, meta }: PlanCardProps) {
   const [open, setOpen] = useState(defaultOpen);
   const checklist = progressParts(plan.progress);
   const pct = checklist !== null && checklist.total > 0 ? Math.round((checklist.checked / checklist.total) * 100) : 0;
@@ -110,8 +121,14 @@ export function PlanCard({ projectId, sessionId, plan, defaultOpen = false, inTu
           <span title={formatDateTime(plan.createdAt)}>Created {formatRelative(plan.createdAt)}</span>
           {plan.updatedAt !== plan.createdAt && <span title={formatDateTime(plan.updatedAt)}>Updated {formatRelative(plan.updatedAt)}</span>}
           {!inTurn && plan.promptId !== null && (
-            <Link to={`?turn=${encodeURIComponent(plan.promptId)}`} className="text-primary underline">From its turn</Link>
+            <Link
+              to={`/p/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}?turn=${encodeURIComponent(plan.promptId)}`}
+              className="text-primary underline"
+            >
+              From its turn
+            </Link>
           )}
+          {meta}
         </div>
         {checklist !== null && checklist.total > 0 && (
           <div className="space-y-1 pl-5 pt-0.5">

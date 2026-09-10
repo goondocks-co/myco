@@ -98,6 +98,9 @@ export interface PlanRow {
   orderedAt: number;
 }
 
+/** The fields a plan card renders. Every plan surface carries these; the session ordering is the session timeline's alone. */
+export type PlanCardRow = Omit<PlanRow, 'orderedAt'>;
+
 /** The statuses a person may set on a plan, in the order the control lists them. */
 export const PLAN_STATUSES = ['active', 'in_progress', 'completed', 'abandoned'] as const;
 export type PlanStatus = (typeof PLAN_STATUSES)[number];
@@ -326,7 +329,7 @@ export function useTitleSession(projectId: string, sessionId: string) {
   });
 }
 
-/** Sets a plan's status as the signed-in member; on an answer, the session's plans, the turn that produced it, and the session's counts are read again. */
+/** Sets a plan's status as the signed-in member; on an answer, the session's plans, the turn that produced it, the session's counts and the project's plan list are read again. */
 export function useSetPlanStatus(projectId: string, sessionId: string) {
   const client = useQueryClient();
   return useMutation({
@@ -336,6 +339,7 @@ export function useSetPlanStatus(projectId: string, sessionId: string) {
       client.invalidateQueries({ queryKey: ['session-children', projectId, sessionId, 'plans'] }),
       client.invalidateQueries({ queryKey: ['turn', projectId, sessionId] }),
       client.invalidateQueries({ queryKey: ['session', projectId, sessionId] }),
+      client.invalidateQueries({ queryKey: ['project-plans', projectId] }),
     ]),
   });
 }

@@ -22,7 +22,7 @@ const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-san
 const primary = 'rounded-md bg-primary px-3 py-1.5 font-sans text-sm text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50';
 const inputClass = 'rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 font-sans text-sm text-on-surface';
 
-const CAPABILITY_LABEL: Record<string, string> = { cortex: 'Cortex: digests and instructions', canopy: 'Code map', skills: 'Skills', vault_evolution: 'Memory upkeep' };
+const CAPABILITY_LABEL: Record<string, string> = { cortex: 'Context at session start and on prompts', canopy: 'Code map', skills: 'Skills', vault_evolution: 'Memory upkeep' };
 
 /** Who a member id is, in the words the page shows elsewhere. */
 function useMemberName(): (id: string | null) => string | null {
@@ -77,7 +77,14 @@ const textOf = (field: LeafField, value: unknown): string => {
   return String(value);
 };
 
-function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
+/**
+ * One leaf's control.
+ *
+ * Exported so a gate can render a field of every kind: the catalogue holds no
+ * read-only `select` or `textarea` today, and a property held only where the
+ * catalogue happens to exercise it is a property with no gate.
+ */
+export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
   const actions = useSettingsActions();
   const nameOf = useMemberName();
   const [draft, setDraft] = useState<string | null>(null);
@@ -129,15 +136,17 @@ function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefine
           </button>
         )}
         {field.kind === 'select' && (
-          <select id={`leaf-${field.leaf}`} aria-label={field.label} className={inputClass} value={value === null ? '' : String(value)} disabled={actions.setLeaf.isPending}
+          <select id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} ${field.readOnly === true ? 'opacity-60' : ''}`}
+            value={value === null ? '' : String(value)} disabled={actions.setLeaf.isPending || field.readOnly === true}
             onChange={(e) => { const raw = e.target.value; if (raw === '') return; const opt = (field.options ?? []).find((o) => String(o) === raw); save(opt ?? raw); }}>
             <option value="" disabled={row?.configured === true}>Server default</option>
             {(field.options ?? []).map((o) => <option key={String(o)} value={String(o)}>{String(o)}{field.unit ? ` ${field.unit}` : ''}</option>)}
           </select>
         )}
         {(field.kind === 'number' || field.kind === 'text') && (
-          <input id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} w-full`} type={field.kind === 'number' ? 'number' : 'text'}
-            min={field.min} max={field.max} step={field.step} value={shown} placeholder="Server default"
+          <input id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} w-full ${field.readOnly === true ? 'opacity-60' : ''}`} type={field.kind === 'number' ? 'number' : 'text'}
+            min={field.min} max={field.max} step={field.step} value={shown} readOnly={field.readOnly}
+            placeholder={field.readOnly === true ? 'Nothing stored' : 'Server default'}
             onChange={(e) => setDraft(e.target.value)} onBlur={commitText} onKeyDown={(e) => { if (e.key === 'Enter') commitText(); }} />
         )}
         {field.kind === 'textarea' && (

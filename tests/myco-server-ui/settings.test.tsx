@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { LEAF_FIELDS, LEAF_GROUPS } from '../../packages/myco-server/ui/src/settings/catalogue';
+import { LeafControl } from '../../packages/myco-server/ui/src/pages/Settings';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
 const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 0, lastActivityAt: null, archivedAt: null, archivedBy: null }] };
@@ -74,7 +75,7 @@ describe('Deployment Settings', () => {
       }
     }
     expect(controls).toBe(LEAF_FIELDS.length);
-    await tab('Cortex');
+    await tab('What sessions receive');
     expect(screen.getByTestId('saved-cortex.digest.inject_on_session_start').textContent).toMatch(/Saved · by chris/);
     expect(screen.getByTestId('saved-cortex.digest.tier').textContent).toBe('Server default');
   });
@@ -82,7 +83,7 @@ describe('Deployment Settings', () => {
   it('saves a toggle on change and a text leaf on blur, each to its own leaf', async () => {
     const { sent } = server(base({ '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: true }), '/api/settings/agent.provider.model': () => Response.json({ applied: true }) }));
     mount('/settings');
-    await tab('Cortex');
+    await tab('What sessions receive');
     // A setting the Deployment no longer reads is shown and not offered: an
     // enabled switch that changes nothing is worse than a disabled one.
     expect(await screen.findByRole('switch', { name: 'Digest at session start' })).toBeDisabled();
@@ -116,7 +117,7 @@ describe('Deployment Settings', () => {
       '/api/settings/embedding.model': () => Response.json({ error: 'nope' }, { status: 503 }),
     }));
     mount('/settings');
-    await tab('Cortex');
+    await tab('What sessions receive');
     fireEvent.change(await screen.findByLabelText('Digest size'), { target: { value: '5000' } });
     expect((await screen.findByTestId('saved-cortex.digest.tier')).textContent).toBe('That setting is not held by the server.');
     await tab('Embedding');
@@ -155,11 +156,147 @@ describe('Deployment Settings', () => {
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.digest.tier', body: { value: 5000 } });
   });
 
+  /**
+   * The 2.0 Settings leaves, each written on its own and each leaving its siblings
+   * alone.
+   *
+   * The classic silent-data-loss shape is a form that POSTs a whole settings
+   * document: one field edited, every sibling overwritten with whatever the form
+   * held. This asserts the write cannot take that shape — each edit produces
+   * exactly one request, naming exactly its own leaf, carrying exactly its own
+   * value — and that every other leaf still reads back what the server holds after
+   * the write.
+   */
+  it('writes each 2.0 leaf on its own and leaves every sibling reading what the server holds', async () => {
+    const CONFIGURED: Record<string, unknown> = {
+      'instructions.template': '# House rules',
+      'worker.harness': 'claude-code',
+      'retention.transcripts': 30,
+      'import.window_days': 45,
+      'import.max_sessions_per_harness': 25,
+      'agent.limits.task_runs_per_hour': 6,
+    };
+    const held = { ...CONFIGURED };
+    const { sent } = server(base({
+      '/api/settings': () => Response.json({
+        leaves: LEAF_FIELDS.map((f) => ({
+          leaf: f.leaf, configured: f.leaf in held, value: held[f.leaf] ?? null,
+          updatedAt: f.leaf in held ? NOW : null, updatedBy: f.leaf in held ? 'mem_1' : null,
+        })),
+      }),
+      '/api/settings/retention.transcripts': (init) => {
+        held['retention.transcripts'] = JSON.parse(String(init!.body)).value;
+        return Response.json({ applied: true });
+      },
+    }));
+    mount('/settings?tab=records');
+
+    const window = await screen.findByLabelText('Keep raw transcripts for');
+    expect((window as HTMLInputElement).value).toBe('30');
+    fireEvent.change(window, { target: { value: '0' } });
+    fireEvent.blur(window);
+    await waitFor(() => expect(sent).toHaveLength(1));
+
+    // One request, one leaf, one value: nothing else could have been overwritten.
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/retention.transcripts', body: { value: 0 } });
+    expect(Object.keys(sent[0]!.body as object)).toEqual(['value']);
+
+    // Every sibling still reads back what the server holds for it.
+    await waitFor(() => expect((screen.getByLabelText('Keep raw transcripts for') as HTMLInputElement).value).toBe('0'));
+    for (const [tabLabel, label, leaf] of [
+      ['What sessions receive', 'Session-start instructions', 'instructions.template'],
+      ['Workers', 'Preferred harness', 'worker.harness'],
+      ['Importing past sessions', 'Reach back at most', 'import.window_days'],
+      ['Importing past sessions', 'At most, per agent', 'import.max_sessions_per_harness'],
+      ['Limits', 'Runs of one task per hour', 'agent.limits.task_runs_per_hour'],
+    ] as const) {
+      await tab(tabLabel);
+      const field = await screen.findByLabelText(label);
+      expect({ leaf, value: (field as HTMLInputElement).value }).toEqual({ leaf, value: String(CONFIGURED[leaf]) });
+    }
+    expect(sent).toHaveLength(1);
+  });
+
+  /**
+   * Every KIND of control honours the flag, not only the kinds the catalogue
+   * happens to mark today.
+   *
+   * The catalogue carries a read-only toggle, patterns field and number, and
+   * nothing read-only of the other three kinds — so the catalogue-driven test
+   * below cannot reach a `select`, a `text` or a `textarea`. This renders one of
+   * each directly and asserts none of them is offered.
+   */
+  it.each(['toggle', 'number', 'text', 'textarea', 'select', 'json'] as const)('does not offer a read-only %s', async (kind) => {
+    const field = { leaf: `probe.${kind}`, label: `Probe ${kind}`, kind, readOnly: true, options: ['a', 'b'] };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    server(base());
+    render(
+      <AppearanceProvider><QueryClientProvider client={client}><MemoryRouter>
+        <ul><LeafControl field={field} row={{ leaf: field.leaf, configured: true, value: kind === 'toggle' ? true : 'a', updatedAt: NOW, updatedBy: 'mem_1' }} /></ul>
+      </MemoryRouter></QueryClientProvider></AppearanceProvider>,
+    );
+    const control = await screen.findByLabelText(field.label);
+    const offered = control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement
+      ? !control.readOnly && !control.disabled
+      : !(control as HTMLButtonElement | HTMLSelectElement).disabled;
+    expect({ kind, offered }).toEqual({ kind, offered: false });
+  });
+
+  /**
+   * A setting nothing reads is shown and not offered — every kind of it.
+   *
+   * The same treatment the unread digest switch already gets: a control that
+   * changes nothing reads worse than one that cannot be moved, and hiding the
+   * field would lose sight of a value an older deployment stored. The write path
+   * refuses a read-only leaf whatever the control does, so this is about what a
+   * person is offered; a kind that quietly ignored the flag would offer a change
+   * the save then swallowed.
+   *
+   * Driven from the catalogue rather than from a list of leaves, so a leaf that
+   * takes the flag later is covered the day it does.
+   */
+  it('shows every read-only setting without offering it, whatever kind of control it is', async () => {
+    const readOnly = LEAF_GROUPS.flatMap((g) => g.leaves.filter((f) => f.readOnly === true).map((f) => ({ group: g.label, field: f })));
+    expect(readOnly.length).toBeGreaterThan(0);
+    const { sent } = server(base({ '/api/settings': () => Response.json(leaves({ 'skills.usage_stale_days': { value: 45, updatedBy: 'mem_1', updatedAt: NOW } })) }));
+    mount('/settings');
+    await screen.findByRole('list', { name: LEAF_GROUPS[0]!.label });
+
+    // A value an older deployment stored is shown, not hidden: that is the whole
+    // point of showing a setting nothing reads.
+    await tab('Skills');
+    expect((await screen.findByLabelText('Stale after') as HTMLInputElement).value).toBe('45');
+
+    for (const { group, field } of readOnly) {
+      await tab(group);
+      const control = await screen.findByLabelText(field.label);
+      // Each kind says "not offered" in its own grammar: an input or textarea
+      // takes the attribute, a toggle and a select are disabled, and the patterns
+      // editor renders neither its add box nor its remove buttons.
+      const offered = control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement
+        ? !control.readOnly && !control.disabled
+        : control instanceof HTMLButtonElement || control instanceof HTMLSelectElement
+          ? !control.disabled
+          : screen.queryByLabelText(`Add ${field.label.toLowerCase()}`) !== null
+            || within(control).queryAllByRole('button', { name: /^Remove / }).length > 0;
+      expect({ leaf: field.leaf, kind: field.kind, offered }).toEqual({ leaf: field.leaf, kind: field.kind, offered: false });
+      // Then try to change it the way a person would, in the grammar its kind has.
+      if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement) {
+        fireEvent.change(control, { target: { value: '99' } });
+        fireEvent.blur(control);
+      } else {
+        fireEvent.click(control);
+      }
+    }
+    // Not one of those controls wrote anything.
+    expect(sent).toEqual([]);
+  });
+
   it('toggles a project capability through the project route', async () => {
     const { sent } = server(base({ '/api/projects/x/capabilities/cortex': () => Response.json({ applied: true }) }));
     mount('/settings');
     await tab('Projects');
-    fireEvent.click(await screen.findByRole('switch', { name: 'Cortex: digests and instructions for Project X' }));
+    fireEvent.click(await screen.findByRole('switch', { name: 'Context at session start and on prompts for Project X' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/projects/x/capabilities/cortex', body: { enabled: false } });
   });
