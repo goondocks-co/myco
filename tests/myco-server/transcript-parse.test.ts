@@ -103,6 +103,17 @@ async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max
 }
 
 describe('parsing a held transcript', () => {
+  it('stores the custom tool call and array output in the recorded Codex rollout', async () => {
+    const text = fs.readFileSync(path.join(FIXTURES, 'codex-0.153.4-redacted.jsonl'), 'utf8');
+    const { sqlite, env } = await rig(text, 1 << 20, { agent: 'codex' });
+    await drain(env, sqlite);
+    expect(target(sqlite).parse_error).toBeNull();
+    expect(target(sqlite).parsed_offset).toBe(target(sqlite).size);
+    expect(sqlite.query('SELECT tool_name, input, output_preview, success FROM tool_calls').all()).toEqual([
+      { tool_name: 'exec', input: JSON.stringify('[redacted input]'), output_preview: '[redacted text]\n\n[redacted text]', success: 1 },
+    ]);
+  });
+
   it('derives the rows the transcript holds and advances the cursor to its end', async () => {
     const { sqlite, env } = await rig(body(2));
     await drain(env, sqlite);
