@@ -12,6 +12,7 @@
  * a full-read budget: different operations, so different tools, rather than one
  * tool that behaves two ways depending on who asked.
  */
+import { AGENTS_BLOCK_MAX_CHARS } from '@goondocks/myco-shared/agents-block';
 import { PROJECT_PIVOT, RUN_TOOLS, type RunTool } from '../core/tool-catalogue.js';
 import type { ToolDefinition } from './definitions.js';
 
@@ -31,8 +32,8 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
       type: 'object',
       properties: {
         op: { type: 'string', enum: ['report', 'state_get', 'state_set', 'agents_block'], description: 'report: record what this pass did. state_get: read one key. state_set: move one key, guarded by the version state_get answered. agents_block: hand the Deployment the managed AGENTS.md block for this Project, whole.' },
-        block: { type: 'string', description: 'For agents_block: the body of the managed block, at most 500 characters, replacing whatever the Project held.' },
-        action: { type: 'string', description: 'For report: the action this pass performed, e.g. extract, digest, skip.' },
+        block: { type: 'string', description: `For agents_block: the body of the managed block, at most ${AGENTS_BLOCK_MAX_CHARS} characters and carrying no block marker, replacing whatever the Project held.` },
+        action: { type: 'string', description: 'For report: the action this pass performed, one of the actions this run\'s task closes with, e.g. extract, seed, summary, skip.' },
         summary: { type: 'string', description: 'For report: one line saying what was done.' },
         details: { type: 'string', description: 'For report: structured detail as a JSON object, serialized.' },
         key: { type: 'string', description: 'For state_get and state_set: the state key.' },

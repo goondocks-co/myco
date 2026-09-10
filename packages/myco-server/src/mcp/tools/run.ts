@@ -19,9 +19,10 @@
  * instructions file may carry, and a renderer — a member's `myco update`, or a
  * worker's checkout — reads it back whole. The run never touches the file.
  */
-import { AGENTS_BLOCK_MAX_CHARS } from '@goondocks/myco-shared/agents-block';
+import { managedBlockBodyProblem } from '@goondocks/myco-shared/agents-block';
 import { sha256Hex } from '../../hash.js';
 import { getState, mutateState, recordRunWrite } from '../../core/runs.js';
+import { BLOCK_WRITE_TOOL } from '../../core/tool-catalogue.js';
 import { recordReport } from '../../core/run-postconditions.js';
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
@@ -68,14 +69,18 @@ export async function handleRun(input: ToolInput, ctx: ToolContext): Promise<unk
 
   if (op === 'agents_block') {
     const block = typeof input.block === 'string' ? input.block.trim() : '';
-    if (block.length === 0 || block.length > AGENTS_BLOCK_MAX_CHARS) return failure(`block is required for op: agents_block, and is at most ${AGENTS_BLOCK_MAX_CHARS} characters`);
+    const problem = managedBlockBodyProblem(block);
+    if (problem !== null) return failure(`block is required for op: agents_block; ${problem}`);
     const settled = await mutateState(db, scope, run.agentId, AGENTS_BLOCK_STATE_KEY, () => block, ctx.now);
-    if (settled) await recordRunWrite(db, scope, { runId: run.runId, toolName: 'myco_run', op: 'agents_block', recordedAt: ctx.now, detail: { chars: block.length } });
+    if (settled) await recordRunWrite(db, scope, { runId: run.runId, toolName: BLOCK_WRITE_TOOL, op: 'agents_block', recordedAt: ctx.now, detail: { chars: block.length } });
     return { written: settled, chars: block.length };
   }
 
   const key = str(input.key, MAX_KEY_CHARS);
   if (key === undefined) return failure(`key is required for op: ${String(op)}`);
+  // The block's key is reached through its own op alone, which is where its bound
+  // and its marker rule are judged; the state door would let a run write it unbounded.
+  if (key === AGENTS_BLOCK_STATE_KEY && op === 'state_set') return failure(`${AGENTS_BLOCK_STATE_KEY} is written through op: agents_block`);
 
   if (op === 'state_get') {
     const row = await getState(db, scope, run.agentId, key);

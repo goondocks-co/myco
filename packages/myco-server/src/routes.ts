@@ -234,6 +234,9 @@ export const RETIRED_ROUTES: readonly RetiredRoute[] = [
   { method: 'POST', path: '/routed-capture/plan', replacedBy: ['plan'] },
   { method: 'POST', path: '/context/subagent', replacedBy: ['subagent.start'] },
   { method: 'POST', path: '/runs/cortex-instructions', replacedBy: ['PUT /api/settings/{leaf}'] },
+  { method: 'POST', path: '/runs/instruction', replacedBy: ['POST /worker/claim'] },
+  { method: 'POST', path: '/runs/digest', replacedBy: ['GET /api/projects/{projectId}/digests'] },
+  { method: 'POST', path: '/runs/digest-write', replacedBy: ['PUT /api/settings/{leaf}'] },
 ];
 
 /**

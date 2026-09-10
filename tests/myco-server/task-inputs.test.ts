@@ -19,7 +19,7 @@ import { buildTaskInput, INPUT_BUILDERS, instructionFor, instructionsFileFor, un
 import { buildTitlingInput } from '@myco-server-worker/core/titling-input.js';
 import { buildExtractionInput, EXTRACTION_PAGE, EXTRACTION_RULES } from '@myco-server-worker/core/extraction-input.js';
 import { buildSeedingInput, SEEDING_CHECKOUT_DIR, SEEDING_RULES } from '@myco-server-worker/core/seeding-input.js';
-import { EXTRACTION_TASK, OUTCOME_TASKS, SEEDING_TASK, taskTools, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
+import { EXTRACTION_TASK, OUTCOME_TASKS, SEEDING_TASK, taskTools, TITLING_TASK, UNLANDED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import { acceptedActions, EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
@@ -189,6 +189,14 @@ describe('a task the Deployment cannot instruct', () => {
     // With its builder back, the same ask queues.
     expect(await prepareDispatch(r.e.serverEnv, EXTRACTION_TASK, 'proj_1')).toMatchObject({ ok: true, prepared: { servedBy: 'worker' } });
   });
+
+  it('refuses an outcome whose worker half has not landed, by name, so an owner cannot queue a run no worker can drive', async () => {
+    const r = await rig();
+    for (const task of UNLANDED_TASKS) {
+      expect({ task, outcome: await prepareDispatch(r.e.serverEnv, task, 'proj_1') }).toEqual({ task, outcome: { ok: false, refusal: 'not_landed' } });
+    }
+    expect(DISPATCH_REFUSAL_MESSAGE.not_landed).toContain('queues no run');
+  });
 });
 
 describe('what a claim hands out', () => {
@@ -202,9 +210,8 @@ describe('what a claim hands out', () => {
     if (!claimed.claimed) return;
     expect(claimed.run.instruction).toContain('Target session: s1');
     expect(claimed.run.instruction).toContain('`myco_run_sessions` op "material"');
-    // A titling run's whole instruction is its prompt, and it takes no checkout.
+    // A titling run's whole instruction is its prompt.
     expect(claimed.run.instructions).toBeNull();
-    expect(claimed.run.repository).toBeNull();
     // The row carries what the worker is told, so the runs page shows it and a re-claim reads the same.
     expect(r.row(claimed.run.id).instruction).toBe(claimed.run.instruction);
   });
@@ -217,42 +224,55 @@ describe('what a claim hands out', () => {
     if (!claimed.claimed) return;
     expect(claimed.run.instruction).toContain('Read the prompts nobody has read yet');
     expect(claimed.run.instructions).toBe(EXTRACTION_RULES);
-    expect(claimed.run.repository).toBeNull();
   });
 
-  it('a seeding run with the repository the Project connected, opened for this one claim', async () => {
+  it('a seeding run under the prompt built from the repository the Project connected, and no credential on the claim', async () => {
     const r = await rig();
     r.queued('run_seed', SEEDING_TASK, null);
     const claimed = await r.claim(NOW + 1);
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) return;
     expect(claimed.run.instructions).toBe(SEEDING_RULES);
-    expect(claimed.run.repository).toEqual({ url: 'https://github.com/goondocks-co/myco', branch: 'main' });
+    expect(claimed.run.instruction).toContain('https://github.com/goondocks-co/myco');
+    expect('repository' in claimed.run).toBe(false);
+  });
+
+  it('never a stale instruction for a task whose build now answers nothing: the run is ended, not driven about a thing that is gone', async () => {
+    const r = await rig();
+    // The dispatch's prompt describes a repository the Project no longer connects.
+    r.queued('run_seed_stale', SEEDING_TASK, 'Seed from the repository checked out at ./repo');
+    r.e.sqlite.run(`DELETE FROM project_repositories WHERE project_id = 'proj_1'`);
+    expect(await r.claim(NOW + 1)).toEqual({ claimed: false, reason: 'no_work' });
+    expect(r.row('run_seed_stale')).toMatchObject({ status: 'failed', error: uninstructedError(SEEDING_TASK) });
   });
 
   it('never a run nobody can instruct: it is ended failed, named, and nothing is minted for it', async () => {
     const r = await rig();
-    // A titling dispatch naming no session builds nothing, and carries nothing.
+    // A titling dispatch naming no session builds nothing; what its row carries does not stand in.
     r.queued('run_bare', TITLING_TASK, null);
     r.queued('run_blank', TITLING_TASK, '   ');
+    r.queued('run_told', TITLING_TASK, 'title session s1');
     const before = r.credentials();
     // One claim ends every such row it meets and answers from what is left; a
     // queue of them drains in one poll rather than one row per poll interval.
     expect(await r.claim(NOW + 1)).toEqual({ claimed: false, reason: 'no_work' });
     expect(r.row('run_bare')).toEqual({ status: 'failed', error: uninstructedError(TITLING_TASK), instruction: null });
     expect(r.row('run_blank').status).toBe('failed');
+    expect(r.row('run_told')).toMatchObject({ status: 'failed', error: uninstructedError(TITLING_TASK) });
     expect(r.credentials()).toBe(before);
   });
 });
 
 describe('the instruction a claim settles on', () => {
-  it('is the one built now over the one dispatched, and nothing over blank', () => {
+  it('is the build for a task that has a builder, the dispatch\'s own only for a task that has none, and nothing over blank', () => {
     const built = { unchanged: false as const, input: { instruction: 'built now', instructions: 'the rules', inputHash: 'h', counts: {} } };
-    expect(instructionFor(built, 'dispatched')).toBe('built now');
-    expect(instructionFor(null, 'dispatched')).toBe('dispatched');
-    expect(instructionFor({ unchanged: true }, 'dispatched')).toBe('dispatched');
-    expect(instructionFor(null, '  ')).toBeNull();
-    expect(instructionFor(null, null)).toBeNull();
+    expect(instructionFor(built, 'dispatched', true)).toBe('built now');
+    // A builder that answered nothing ends the run rather than handing out what the dispatch stored.
+    expect(instructionFor(null, 'dispatched', true)).toBeNull();
+    expect(instructionFor({ unchanged: true }, 'dispatched', true)).toBeNull();
+    expect(instructionFor(null, 'dispatched', false)).toBe('dispatched');
+    expect(instructionFor(null, '  ', false)).toBeNull();
+    expect(instructionFor(null, null, false)).toBeNull();
     expect(instructionsFileFor(built)).toBe('the rules');
     expect(instructionsFileFor({ unchanged: false, input: { instruction: 'x', inputHash: 'h', counts: {} } })).toBeNull();
     expect(instructionsFileFor(null)).toBeNull();

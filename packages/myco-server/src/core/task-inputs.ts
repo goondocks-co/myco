@@ -98,9 +98,18 @@ export function uninstructedError(task: string): string {
   return `the Deployment has no instruction for a ${task} run`;
 }
 
-/** The instruction a claimed run is driven under: the one built for its task now, else the one its dispatch carries; null when there is neither. */
-export function instructionFor(built: BuiltInput | null, stored: string | null): string | null {
-  const instruction = built !== null && !built.unchanged ? built.input.instruction : stored;
+/**
+ * The instruction a claimed run is driven under.
+ *
+ * A task with a builder is driven by its build alone: a build that answers
+ * nothing means what the prompt described is gone — a repository disconnected
+ * after the dispatch, a session the dispatch never named — and the instruction
+ * the dispatch stored would drive a run about a thing that is not there. Only a
+ * task with no builder is driven by what its dispatch carried. Null when there
+ * is neither.
+ */
+export function instructionFor(built: BuiltInput | null, stored: string | null, hasBuilder: boolean): string | null {
+  const instruction = built !== null && !built.unchanged ? built.input.instruction : hasBuilder ? null : stored;
   return instruction === null || instruction.trim() === '' ? null : instruction;
 }
 

@@ -22,7 +22,7 @@
  * that takes the server down stops the harness on its own first, and every
  * runtime it holds finishes in this window with the server still serving.
  */
-export const HARNESS_STOP_GRACE_SECONDS = 3600;
+export const HARNESS_STOP_GRACE_SECONDS = 3600 + 120;
 
 export const COMPOSE_TEMPLATE = `# Self-hosted Myco Deployment.
 #

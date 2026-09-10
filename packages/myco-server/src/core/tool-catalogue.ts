@@ -48,6 +48,8 @@ export type RunTool = (typeof RUN_TOOLS)[number];
 export const TITLE_WRITE_TOOL: RunTool = 'myco_run_sessions';
 /** The run tool an extraction run's mark of a read prompt lands through; the close rule reads the write back under this name. */
 export const PROMPT_MARK_TOOL: RunTool = 'myco_run_prompts';
+/** The run tool a seeding run's managed block lands through; the close rule reads the write back under this name. */
+export const BLOCK_WRITE_TOOL: RunTool = 'myco_run';
 
 /** Whether this name is one of the run-only tools. */
 export function isRunTool(name: string): name is RunTool {

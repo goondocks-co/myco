@@ -1,6 +1,5 @@
-import { REPOSITORY_TASKS, type RepositoryAccess } from '@goondocks/myco-shared/repository';
-import { projectRepositories, repositoryIdentity } from './repositories.js';
-import { deploymentSecretStore } from './secrets.js';
+import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
+import { repositoryIdentity } from './repositories.js';
 /**
  * The one dispatcher: every agent task a Deployment runs goes through here,
  * whatever asked for it — an owner's dispatch control, a session's end, a
@@ -32,7 +31,7 @@ import { openProviderCredential } from './provider-credentials.js';
 import { leafValues } from './settings.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
-import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
+import { admissionForTask, runTimeoutForTask, UNLANDED_TASKS } from './task-catalogue.js';
 import { runCloseRefusal } from './run-postconditions.js';
 import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, uninstructedError } from './task-inputs.js';
 
@@ -79,7 +78,7 @@ const DISPATCHER_CONTEXT_KEYS = new Set(['timeoutSeconds', 'input_hash', 'counts
  * none clears by retrying.
  */
 export type DispatchRefusal =
-  | 'harness_unavailable' | 'unknown_task' | 'unknown_project' | 'repository_missing' | 'no_instruction'
+  | 'harness_unavailable' | 'unknown_task' | 'unknown_project' | 'repository_missing' | 'no_instruction' | 'not_landed'
   | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider';
 
 export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>> = {
@@ -87,6 +86,7 @@ export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>>
   harness_unavailable: 'this deployment has no harness runtime bound',
   unknown_task: 'the task is not one this deployment serves',
   no_instruction: 'the Deployment builds no instruction for this task, so a worker could not run it',
+  not_landed: 'this task is not yet one a worker can drive; the Deployment queues no run of it',
   unknown_project: 'projectId names no Project this Deployment holds',
   no_provider: 'no provider is configured; Settings names one before a dispatch can run',
   no_credential: 'no anthropic credential is stored; Settings takes one before a dispatch can run',
@@ -506,6 +506,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   // ever hand out.
   if (!RUNTIME_SERVED_TASKS.includes(task)) {
     if (inputBuilderFor(task) === null) return { ok: false, refusal: 'no_instruction' };
+    if (UNLANDED_TASKS.includes(task)) return { ok: false, refusal: 'not_landed' };
     const admission = gate.kind === 'provider' ? CAPTURE_DRIVEN_ADMISSION : gate.kind === 'embedding' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
     return { ok: true, prepared: { task, projectId, servedBy: 'worker', providerType: null, model: null, provider: {}, credentialEnv: {}, admission } };
   }
@@ -812,8 +813,6 @@ export interface ClaimedRun extends ClaimedRunRow {
   timeoutSeconds: number;
   /** The standing rules the worker writes as the run's instructions file, or null for a task whose whole instruction is the prompt. */
   instructions: string | null;
-  /** The repository the worker checks out for a code task, with the read credential the Project connected; null for a task with no checkout. */
-  repository: RepositoryAccess | null;
 }
 
 export type ClaimOutcome =
@@ -918,7 +917,7 @@ export async function claimNextRun(
   // A run with nothing to say to its harness is ended here, before anything is
   // minted: handed out, it would end its turn having called nothing, and the
   // worker would report a run that did nothing as a run that finished.
-  const instruction = instructionFor(built, candidate.instruction);
+  const instruction = instructionFor(built, candidate.instruction, inputBuilderFor(candidate.task) !== null);
   if (instruction === null) {
     await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { failed: uninstructedError(candidate.task) });
     emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip: 'uninstructed' });
@@ -958,20 +957,8 @@ export async function claimNextRun(
       credentialEnv: await harnessCredentialEnv(env, harness),
       leaseExpiresAt: worker.now + WORKER_LEASE_MS,
       timeoutSeconds: runTimeoutForTask(row.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
-      repository: await repositoryForClaim(env, row.task, row.projectId),
     },
   };
-}
-
-/**
- * The repository a code task's worker checks out, with the read credential the
- * Project connected. Opened only for a task that takes a checkout, and only at
- * the claim: the credential travels to the one worker driving the run and is
- * never written on the run row.
- */
-async function repositoryForClaim(env: ServerEnv, task: string, projectId: string): Promise<RepositoryAccess | null> {
-  if (!REPOSITORY_TASKS.includes(task)) return null;
-  return projectRepositories(env.db, deploymentSecretStore(env.db, env.wrappingKey)).access(projectId);
 }
 
 /** Extend a lease this worker still holds. `held: false` says the lease is gone, and the worker stops driving a run it no longer owns. */

@@ -782,12 +782,10 @@ describe('gates', () => {
       .filter((f) => /deploymentSecretStore\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1));
     // The settings surface, which only ever calls `describe`/`list`/`put`/`delete`;
-    // the repository surface and the claim, which open a Project's repository
-    // read credential to hand it to the one run checking the repository out;
     // and the one dispatcher, which opens a provider credential to hand it to
     // the launched runtime's environment and nothing else. A new file here is
     // the thing to look at.
-    expect(callers.sort()).toEqual([join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'harness.ts'), join('core', 'provider-credentials.ts')]);
+    expect(callers.sort()).toEqual([join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts')]);
     const credentialCallers = files(SRC).filter((f) => /\bopenProviderCredential\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1)).sort();
     expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'harness.ts'), join('core', 'provider-credentials.ts')]);
@@ -919,6 +917,9 @@ describe('gates', () => {
       'POST /routed-capture/plan',
       'POST /routed-capture/transcript',
       'POST /runs/cortex-instructions',
+      'POST /runs/digest',
+      'POST /runs/digest-write',
+      'POST /runs/instruction',
       'POST /sessions/register',
       'POST /sessions/unregister',
     ]);

@@ -169,7 +169,7 @@ services:
     # it holds. The window covers the longest task budget, and the verbs spend
     # it while the server is still serving, so a run in flight when the stack is
     # updated finishes and posts its own ending.
-    stop_grace_period: 3600s
+    stop_grace_period: 3720s
 
     deploy:
       resources:

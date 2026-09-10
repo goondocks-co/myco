@@ -8,7 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { admissionForTask, EXTRACTION_TASK, MANUAL_ONLY_TASKS, OUTCOME_TASKS, RETAINED_TASKS, SEEDING_TASK, TASK_ADMISSION, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
+import { admissionForTask, EXTRACTION_TASK, MANUAL_ONLY_TASKS, OUTCOME_TASKS, RETAINED_TASKS, SEEDING_TASK, TASK_ADMISSION, TITLING_TASK, UNLANDED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/harness.js';
@@ -116,6 +116,11 @@ describe('what each task owes before it closes', () => {
  * start. The three lists are held to one another here, by name.
  */
 describe('the three run outcomes', () => {
+  it('name which of them a worker cannot drive yet, and only among themselves', () => {
+    for (const task of UNLANDED_TASKS) expect({ task, outcome: OUTCOME_TASKS.includes(task) }).toEqual({ task, outcome: true });
+    expect(UNLANDED_TASKS).toEqual([SEEDING_TASK]);
+  });
+
   it('are exactly the worker-served tasks, each with a prompt the Deployment builds', () => {
     const workerServed = RETAINED_TASKS.filter((task) => !RUNTIME_SERVED_TASKS.includes(task)).sort();
     expect(workerServed).toEqual([...OUTCOME_TASKS].sort());
@@ -123,10 +128,15 @@ describe('the three run outcomes', () => {
     expect([...OUTCOME_TASKS].sort()).toEqual([EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK].sort());
   });
 
-  it('each close on a rule that names an artifact the server can see, and accept the skip for a pass with nothing to do', () => {
+  it('each close on a rule that names an artifact the server can see, and accept a skip only where the server reads to agree with it', () => {
     for (const task of OUTCOME_TASKS) {
       const rule = RUN_CLOSE_RULES[task];
-      expect({ task, artifact: typeof rule?.artifact, skip: rule?.reports.includes(RUN_SKIP_ACTION) }).toEqual({ task, artifact: 'function', skip: true });
+      expect({ task, artifact: typeof rule?.artifact, skip: rule?.reports.includes(RUN_SKIP_ACTION), skipHolds: typeof rule?.skipHolds })
+        .toEqual({ task, artifact: 'function', skip: true, skipHolds: 'function' });
+    }
+    // A rule that accepts the skip reads the server's own answer for it; no rule reads one for a skip it does not accept.
+    for (const [task, rule] of Object.entries(RUN_CLOSE_RULES)) {
+      expect({ task, paired: rule.reports.includes(RUN_SKIP_ACTION) === (rule.skipHolds !== undefined) }).toEqual({ task, paired: true });
     }
     // A rule with an artifact check belongs to an outcome or to the map, which is the seam's own code task.
     const artifactRules = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule.artifact !== undefined).map(([task]) => task).sort();
