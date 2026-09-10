@@ -1,0 +1,12 @@
+{
+  "source_sha256": "65532d9982eba2f00ed50a32f86ded79300f18171ee3d44e07592252bbf82b49",
+  "source_rows": 22,
+  "retained_rows": 9,
+  "types": [
+    "custom_tool_call",
+    "custom_tool_call_output",
+    "message"
+  ],
+  "shape_preserved": true,
+  "redacted_sha256": "5cc6aaffa66cad8a4b60499f1c94f2414157f6db06791b556cbfd7e729fa1edb"
+}

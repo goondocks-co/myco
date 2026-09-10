@@ -10,6 +10,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { PARSERS, parserFor } from '@myco-server-worker/ingest/parsers/registry.js';
 import { FIDELITIES, type DerivedEvent, type ParsedLine } from '@myco-server-worker/ingest/parsers/index.js';
 import { kindSpec, parsePayload } from '@myco-server-worker/ingest/kinds.js';
@@ -243,6 +244,17 @@ describe('claude-code parser', () => {
 });
 
 describe('codex parser', () => {
+  it('pins the redacted recording and the item variants its provenance declares', () => {
+    const file = 'codex-0.153.4-redacted.jsonl';
+    const provenance = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'codex-0.153.4-provenance.json'), 'utf8')) as {
+      redacted_sha256: string; retained_rows: number; types: string[];
+    };
+    const lines = linesOf(file);
+    expect(createHash('sha256').update(fs.readFileSync(path.join(FIXTURES, file))).digest('hex')).toBe(provenance.redacted_sha256);
+    expect(lines).toHaveLength(provenance.retained_rows);
+    expect([...new Set(lines.map(({ value }) => (value.payload as { type: string }).type))].sort()).toEqual(provenance.types);
+  });
+
   it('derives a prompt, a tool call and a response, skipping meta and reasoning records', async () => {
     const events = await parseFixture('codex');
     expect(kinds(events)).toEqual(['prompt', 'tool.use', 'response']);
