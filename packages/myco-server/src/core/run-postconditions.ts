@@ -138,14 +138,34 @@ export const RUN_CLOSE_ERROR = 'the run ended without its report';
 /** How a run that reported but left no row is recorded. */
 export const RUN_CLOSE_ARTIFACT_ERROR = 'the run ended without its artifact';
 
-/** Why this run may not close as completed, or null when it may. */
+/**
+ * The report actions a task's run may close with, or null for a task held to
+ * no rule. Every ruled task accepts the skip: a pass that found nothing to do
+ * says so, and a close rule that could not hear it would fail an honest run.
+ */
+export function acceptedActions(task: string | null): readonly string[] | null {
+  const rule = closeRuleFor(task);
+  return rule === undefined ? null : [...new Set([...rule.reports, RUN_SKIP_ACTION])];
+}
+
+/**
+ * Why this run may not close as completed, or null when it may.
+ *
+ * A task with an artifact is judged on the artifact first: the row the run was
+ * dispatched to write is the reliable fact, and a run that wrote it did its
+ * work whatever its report says. Without the artifact, a report is heard: a
+ * skip closes the run as a pass with nothing to do, any other accepted action
+ * is a claim the artifact contradicts, and no report at all is a run that
+ * never closed.
+ */
 export async function runCloseRefusal(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<string | null> {
   const rule = closeRuleFor(run.task);
   if (rule === undefined) return null;
-  const reports = await listReports(db, scope, run.id);
-  const evidence = reports.filter((report) => rule.reports.includes(report.action));
+  const judged = rule.artifact !== undefined && run.dryRun !== 1;
+  if (judged && await rule.artifact!(db, scope, run)) return null;
+  const accepted = acceptedActions(run.task)!;
+  const evidence = (await listReports(db, scope, run.id)).filter((report) => accepted.includes(report.action));
   if (evidence.length === 0) return RUN_CLOSE_ERROR;
-  if (rule.artifact === undefined || run.dryRun === 1) return null;
-  if (evidence.every((report) => report.action === RUN_SKIP_ACTION)) return null;
-  return (await rule.artifact(db, scope, run)) ? null : RUN_CLOSE_ARTIFACT_ERROR;
+  if (!judged) return null;
+  return evidence.every((report) => report.action === RUN_SKIP_ACTION) ? null : RUN_CLOSE_ARTIFACT_ERROR;
 }

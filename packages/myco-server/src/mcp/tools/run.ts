@@ -16,6 +16,7 @@
  */
 import { sha256Hex } from '../../hash.js';
 import { getState, insertReport, mutateState } from '../../core/runs.js';
+import { acceptedActions } from '../../core/run-postconditions.js';
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
@@ -50,6 +51,11 @@ export async function handleRun(input: ToolInput, ctx: ToolContext): Promise<unk
     const action = str(input.action, MAX_ACTION_CHARS);
     const summary = str(input.summary, MAX_SUMMARY_CHARS);
     if (action === undefined || summary === undefined) return failure('action and summary are required for op: report');
+    // The action is what the close rule reads back, so one the rule cannot hear
+    // is refused here, naming what it can, rather than recorded and then judged
+    // as a run that never reported.
+    const accepted = acceptedActions(run.task);
+    if (accepted !== null && !accepted.includes(action)) return failure(`a ${run.task} run closes with action ${accepted.map((a) => `"${a}"`).join(' or ')}`);
     const details = input.details === undefined || input.details === null ? null : str(input.details, MAX_DETAILS_CHARS);
     if (details === undefined) return failure(`details is at most ${MAX_DETAILS_CHARS} characters`);
     const recorded = await insertReport(db, scope, {
