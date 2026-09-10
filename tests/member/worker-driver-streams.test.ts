@@ -91,6 +91,42 @@ describe('the Claude Code driver', () => {
     expect(events[2]).toEqual({ kind: 'usage', inputTokens: 10, outputTokens: 2, costUsd: 0.5 });
   });
 
+  it('pins the run\'s permissions on the command line: the asking mode, with the run\'s own server allowed whole', async () => {
+    // A `-p` turn answers every permission prompt with a denial. A machine whose
+    // own mode asks would run a harness that calls nothing; a machine whose own
+    // mode bypasses would hand a queued run every tool it has. Neither reaches
+    // the run: what it may call is exactly its own server.
+    const dir = mkdtempSync(join(tmpdir(), 'myco-stub-'));
+    writeFileSync(join(dir, 'claude'), `#!/bin/sh\nprintf '%s\\n' "$@" > "$(dirname "$0")/argv.txt"\nprintf '%s\\n' '${RESULT_SUCCESS}'\n`, { mode: 0o755 });
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    const argv = readFileSync(join(dir, 'argv.txt'), 'utf8').split('\n');
+    expect(argv.slice(argv.indexOf('--permission-mode'))).toEqual(['--permission-mode', 'default', '--allowedTools', `mcp__${MCP_SERVER_NAME}`, '']);
+    expect(argv).toContain('--strict-mcp-config');
+  });
+
+  it('reads the stream the harness actually writes: content blocks, each tool call and its result, and a denial', async () => {
+    const dir = stubHarness('claude', [
+      '{"type":"system","subtype":"init","session_id":"sess_9"}',
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"reading the material"},{"type":"tool_use","id":"tu_1","name":"mcp__myco__myco_run_sessions","input":{"op":"material"}}]}}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","content":"{\\"session_id\\":\\"s1\\"}"}]}}',
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_2","name":"mcp__myco__myco_run","input":{"op":"report"}}]}}',
+      '{"type":"system","subtype":"permission_denied","tool_name":"mcp__myco__myco_run","tool_use_id":"tu_2"}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_2","is_error":true,"content":"Claude requested permissions to use mcp__myco__myco_run, but you haven\'t granted it yet."}]}}',
+      RESULT_SUCCESS,
+    ]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.filter((e) => e.kind === 'message')).toEqual([{ kind: 'message', role: 'assistant', text: 'reading the material' }]);
+    expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
+      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'started' },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'ok' },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run', status: 'started' },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run', status: 'error' },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run', status: 'error' },
+    ]);
+  });
+
   it('reads an in-band error on a message as the end of the run', async () => {
     const dir = stubHarness('claude', [
       '{"type":"system","subtype":"init","session_id":"sess_9"}',

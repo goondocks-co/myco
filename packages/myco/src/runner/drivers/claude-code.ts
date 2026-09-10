@@ -16,6 +16,7 @@
  */
 import { harnessById } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
+import { MCP_SERVER_NAME } from '../mcp-config.js';
 import { jsonLines, numberOf, recordOf, startHarness, stringOf } from './stream.js';
 
 const STOP: Readonly<Record<string, StopReason>> = {
@@ -25,6 +26,26 @@ const STOP: Readonly<Record<string, StopReason>> = {
   refusal: 'refusal',
   cancelled: 'cancelled',
 };
+
+/**
+ * The permissions a run holds, pinned rather than inherited.
+ *
+ * There is nobody at a terminal to answer a permission prompt, and a `-p` turn
+ * denies every tool it would have asked about, so a run on a machine whose own
+ * mode asks is a run that calls nothing and ends its turn having done nothing.
+ * The run's own server is allowed whole; the mode is the asking one, so the
+ * machine's own `bypassPermissions` or `auto` does not reach a run queued from
+ * elsewhere, and everything outside the run's server is refused.
+ */
+export const RUN_PERMISSIONS: readonly string[] = ['--permission-mode', 'default', '--allowedTools', `mcp__${MCP_SERVER_NAME}`];
+
+/** A message's content blocks: an array of typed blocks, or one text block where the harness wrote a bare string. */
+function blocksOf(message: Record<string, unknown> | null): Record<string, unknown>[] {
+  const content = message?.content;
+  if (Array.isArray(content)) return content.map(recordOf).filter((b): b is Record<string, unknown> => b !== null);
+  const said = stringOf(content);
+  return said === null ? [] : [{ type: 'text', text: said }];
+}
 
 export const claudeCodeDriver: Driver = {
   id: 'claude-code',
@@ -37,19 +58,39 @@ export const claudeCodeDriver: Driver = {
       '--verbose',
       '--mcp-config', spec.mcpConfigPath,
       ...isolation,
+      ...RUN_PERMISSIONS,
     ], { cwd: spec.scratchDir, env: spec.credentialEnv, signal });
 
     let ended = false;
+    /** The tool each call id named, so a result can be read back as that call's outcome. */
+    const calls = new Map<string, string>();
     for await (const line of jsonLines(started.lines)) {
       const type = stringOf(line.type);
       if (type === 'system' && stringOf(line.subtype) === 'init') {
         yield { kind: 'started', harness: harness.id, sessionId: stringOf(line.session_id) };
+      } else if (type === 'system' && stringOf(line.subtype) === 'permission_denied') {
+        yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error' };
       } else if (type === 'assistant') {
         const failure = stringOf(line.error);
         if (failure !== null) { ended = true; yield { kind: 'ended', stop: 'error', detail: failure }; break; }
-        const message = recordOf(line.message);
-        const said = message === null ? null : stringOf(message.content);
-        if (said !== null) yield { kind: 'message', role: 'assistant', text: said };
+        for (const block of blocksOf(recordOf(line.message))) {
+          const kind = stringOf(block.type);
+          if (kind === 'text') {
+            const said = stringOf(block.text);
+            if (said !== null) yield { kind: 'message', role: 'assistant', text: said };
+          } else if (kind === 'tool_use') {
+            const name = stringOf(block.name) ?? 'tool';
+            const id = stringOf(block.id);
+            if (id !== null) calls.set(id, name);
+            yield { kind: 'tool_call', name, status: 'started' };
+          }
+        }
+      } else if (type === 'user') {
+        for (const block of blocksOf(recordOf(line.message))) {
+          if (stringOf(block.type) !== 'tool_result') continue;
+          const name = calls.get(stringOf(block.tool_use_id) ?? '') ?? 'tool';
+          yield { kind: 'tool_call', name, status: block.is_error === true ? 'error' : 'ok' };
+        }
       } else if (type === 'result') {
         const usage = recordOf(line.usage);
         yield {
