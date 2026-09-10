@@ -25,7 +25,7 @@ export interface RepositoryCheckoutRequest {
   gitPath?: string;
   /** A new directory owned by the caller's run; an existing path is refused. */
   destination?: string;
-  /** Number of commits fetched from the source, bounded by the source-reading policy. */
+  /** Git fetch depth, bounded by the source-reading policy. */
   historyDepth?: number;
 }
 

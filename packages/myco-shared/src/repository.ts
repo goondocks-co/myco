@@ -33,7 +33,7 @@ export interface RepositoryAccess extends RepositoryIdentity {
 export const REPOSITORY_CHECKOUT_CAPABILITY = 'repository-checkout';
 /** Source lives beside the run's own instructions and MCP configuration. */
 export const RUN_REPOSITORY_DIR = 'repo';
-/** The maximum history a source-reading run receives. */
+/** The maximum Git fetch depth for a source-reading run. */
 export const MAX_REPOSITORY_HISTORY_DEPTH = 200;
 
 /** Credential-free source material named by a task's prompt. */
