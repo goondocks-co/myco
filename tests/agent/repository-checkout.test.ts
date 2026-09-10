@@ -1,65 +1,43 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { prepareRepositoryCheckout, repositoryUrl } from '../../packages/myco/src/agent/runtime/repository-checkout.js';
+import { prepareRepositoryCheckout, repositoryUrl } from '@myco/runner/repository-checkout.js';
 
+import { gitRepositoryFixture, GIT_READ_CREDENTIAL } from '../helpers/git-repository.js';
+
+let fixture: Awaited<ReturnType<typeof gitRepositoryFixture>>;
 let home: string;
 let repo: string;
 let gitPath: string;
 let first: string;
 let second: string;
-let server: ReturnType<typeof Bun.serve>;
 let url: string;
-const token = 'fixture-only-repository-read-token';
-const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+const token = GIT_READ_CREDENTIAL.token;
+const git = (...args: string[]) => fixture.git(...args);
 
 beforeAll(async () => {
-  home = await mkdtemp(join(tmpdir(), 'myco-git-fixture-'));
-  repo = join(home, 'source');
-  await mkdir(repo);
-  git('init', '--quiet', '--initial-branch=main');
-  git('config', 'user.email', 'fixture@example.invalid');
-  git('config', 'user.name', 'Repository fixture');
-  await writeFile(join(repo, 'AGENTS.md'), 'First committed rules.');
-  git('add', '.'); git('commit', '--quiet', '-m', 'first'); first = git('rev-parse', 'HEAD');
-  await writeFile(join(repo, 'AGENTS.md'), 'Second committed rules.');
-  git('commit', '--quiet', '-am', 'second'); second = git('rev-parse', 'HEAD');
-  git('config', 'uploadpack.allowReachableSHA1InWant', 'true');
-  const key = join(home, 'key.pem');
-  const cert = join(home, 'cert.pem');
-  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost'], { stdio: 'ignore' });
-  gitPath = join(home, 'git-fixture');
-  await writeFile(gitPath, `#!/bin/sh\nGIT_SSL_CAINFO='${cert}' exec git "$@"\n`, { mode: 0o700 });
-  server = Bun.serve({
-    hostname: '127.0.0.1', port: 0,
-    tls: { key: await readFile(key), cert: await readFile(cert) },
-    async fetch(request) {
-      if (request.headers.get('authorization') !== `Basic ${Buffer.from(`reader:${token}`).toString('base64')}`) {
-        return new Response('Read credential required', { status: 401, headers: { 'www-authenticate': 'Basic realm="repository"' } });
-      }
-      const endpoint = new URL(request.url);
-      const advertise = endpoint.pathname === '/repo.git/info/refs';
-      if (!advertise && endpoint.pathname !== '/repo.git/git-upload-pack') return new Response('Not found', { status: 404 });
-      const child = Bun.spawn(['git', 'upload-pack', '--stateless-rpc', ...(advertise ? ['--advertise-refs'] : []), repo], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
-      if (!advertise) child.stdin.write(await request.arrayBuffer());
-      child.stdin.end();
-      const [body, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), child.exited]);
-      if (code !== 0) return new Response('Git failed', { status: 500 });
-      return new Response(advertise ? Buffer.concat([Buffer.from('001e# service=git-upload-pack\n0000'), Buffer.from(body)]) : body, {
-        headers: { 'content-type': `application/x-git-upload-pack-${advertise ? 'advertisement' : 'result'}` },
-      });
-    },
-  });
-  url = `https://localhost:${server.port}/repo.git`;
+  fixture = await gitRepositoryFixture();
+  ({ home, repo, gitPath, first, second, url } = fixture);
 }, 20_000);
 
-afterAll(async () => { server?.stop(true); await rm(home, { recursive: true, force: true }); });
+afterAll(async () => { await fixture?.dispose(); });
 
 const request = () => ({ url, branch: 'main', credential: { username: 'reader', token }, gitPath, signal: AbortSignal.timeout(15_000) });
 
 describe('committed repository checkout', () => {
+  it('supplies bounded history and removes its owned destination without removing pre-existing paths', async () => {
+    const destination = join(home, 'run-source');
+    const checkout = await prepareRepositoryCheckout({ ...request(), destination, historyDepth: 200, pin: async (commit) => commit });
+    try {
+      expect(checkout.root).toBe(destination);
+      expect(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: checkout.root, encoding: 'utf8' }).trim()).toBe('2');
+      await expect(prepareRepositoryCheckout({ ...request(), destination, pin: async (commit) => commit })).rejects.toThrow();
+      expect(await readFile(join(destination, 'AGENTS.md'), 'utf8')).toBe('Second committed rules.');
+    } finally { await checkout.dispose(); }
+    await expect(access(destination)).rejects.toThrow();
+  });
+
   it('checks out the commit pinned for the run even when the branch has advanced', async () => {
     const checkout = await prepareRepositoryCheckout({ ...request(), pin: async (resolved) => { expect(resolved).toBe(second); return first; } });
     try {

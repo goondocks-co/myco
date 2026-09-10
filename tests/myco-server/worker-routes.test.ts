@@ -38,7 +38,7 @@ async function rig() {
   return { e, member, harness, anonymous, json };
 }
 
-const PATHS = ['/worker/claim', '/worker/lease', '/worker/end'] as const;
+const PATHS = ['/worker/claim', '/worker/lease', '/worker/end', '/worker/repository'] as const;
 
 describe('the worker control plane', () => {
   it('answers an administrator a claim that names no Project', async () => {

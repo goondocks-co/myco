@@ -17,6 +17,7 @@
 import { harnessById } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
+import { RUN_REPOSITORY_DIR } from '@goondocks/myco-shared/repository';
 import { jsonLines, numberOf, recordOf, startHarness, stringOf } from './stream.js';
 
 const STOP: Readonly<Record<string, StopReason>> = {
@@ -33,10 +34,13 @@ const STOP: Readonly<Record<string, StopReason>> = {
  * There is nobody at a terminal to answer a permission prompt, so nobody is
  * declared to answer one and every tool that would have asked is refused. The
  * run's own server is allowed whole; the mode is the asking one, so the
- * machine's own `bypassPermissions` or `auto` does not reach a run queued from
- * elsewhere, and everything outside the run's server is refused.
+ * machine's own `bypassPermissions` or `auto` does not reach a queued run.
+ * Source runs additionally allow file reads and bounded Git history commands.
  */
 export const RUN_PERMISSIONS: readonly string[] = ['--permission-mode', 'manual', '--permission-prompts', 'none', '--allowedTools', `mcp__${MCP_SERVER_NAME}`];
+
+/** Source runs can inspect files and repository history without approving writes. */
+const SOURCE_READ_TOOLS = ['Read', 'Glob', 'Grep', ...['log', 'shortlog', 'show', 'diff', 'ls-tree', 'rev-parse'].map((command) => `Bash(git -C ${RUN_REPOSITORY_DIR} ${command}:*)`)];
 
 /** A message's content blocks. */
 function blocksOf(message: Record<string, unknown> | null): Record<string, unknown>[] {
@@ -62,6 +66,7 @@ export const claudeCodeDriver: Driver = {
       '--mcp-config', spec.mcpConfigPath,
       ...isolation,
       ...RUN_PERMISSIONS,
+      ...(spec.sourceReadOnly === true ? SOURCE_READ_TOOLS : []),
     ], { cwd: spec.scratchDir, env: spec.credentialEnv, signal });
 
     let ended = false;

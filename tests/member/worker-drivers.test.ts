@@ -64,6 +64,17 @@ describe('the harness manifest', () => {
 });
 
 describe('the run credential', () => {
+  it('keeps reclaimed attempts in distinct directories and preserves the current attempt during cleanup', () => {
+    const root = mkdtempSync(join(tmpdir(), 'myco-worker-'));
+    try {
+      const previous = writeRunDir(root, 'same_run', CONNECTION);
+      const current = writeRunDir(root, 'same_run', { ...CONNECTION, runToken: 'current_run_token' });
+      expect(previous.scratchDir).not.toBe(current.scratchDir);
+      discardRunDir(previous.scratchDir);
+      expect(readFileSync(current.mcpConfigPath, 'utf8')).toContain('current_run_token');
+    } finally { discardRunDir(root); }
+  });
+
   it('reaches the run\'s own configuration file and nothing else, readable only by the worker', () => {
     const root = mkdtempSync(join(tmpdir(), 'myco-worker-'));
     const { scratchDir, mcpConfigPath } = writeRunDir(root, 'run_1', CONNECTION);

@@ -87,7 +87,7 @@ function runConfig(spec: RunSpec, harness: Harness): string {
     ? parse(readFileSync(machinePath, 'utf8'))
     : {}) as Record<string, unknown>;
   machine.approval_policy = 'never';
-  machine.sandbox_mode = 'workspace-write';
+  machine.sandbox_mode = spec.sourceReadOnly === true ? 'read-only' : 'workspace-write';
 
   // The run's connection is authored once, in `mcp-config.ts`. This reads that
   // file and restates it in the language this harness configures servers in,

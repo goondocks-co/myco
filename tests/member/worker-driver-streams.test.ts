@@ -210,6 +210,16 @@ describe('the Codex driver', () => {
     expect(written).toContain(CONNECTION.runToken);
   });
 
+  it('gives source runs a read-only sandbox with no approval prompts', async () => {
+    const dir = stubHarness('codex', ['{"type":"turn.completed","usage":{}}']);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const run = runDir();
+    await collect(codexDriver.run({ ...run, sourceReadOnly: true, prompt: 'read source', credentialEnv: {} }, new AbortController().signal));
+    const config = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8'));
+    expect(config.sandbox_mode).toBe('read-only');
+    expect(config.approval_policy).toBe('never');
+  });
+
   /** What a login looks like in the file this harness keeps one in. */
   const LOGIN = '{"tokens":{"access_token":"tok_machine_login"}}';
 

@@ -16,6 +16,7 @@
  * dispatch is refused before a row exists (`prepareDispatch`, `no_instruction`).
  */
 import type { ServerEnv } from './adapters.js';
+import type { RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { buildExtractionInput } from './extraction-input.js';
 import { buildSeedingInput } from './seeding-input.js';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
@@ -28,6 +29,7 @@ export interface TaskInput {
   instructions?: string;
   inputHash: string;
   counts: Readonly<Record<string, number | boolean>>;
+  repository?: RepositoryCheckoutSpec;
 }
 
 /** What a caller asks of one build beyond the Project and the instant. */
