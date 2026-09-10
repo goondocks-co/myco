@@ -1,18 +1,6 @@
 /**
- * Every hand-written `.d.mts` beside a `.mjs` script declares that module's
- * exports, all of them and nothing else.
- *
- * The two build scripts under `packages/myco/scripts/` are plain JavaScript
- * that TypeScript callers import — `gen-plugin-bundle.ts` pulls from
- * `codegen-bundle.mjs`, and `tests/install/select-binary-converge.test.ts`
- * pulls from `select-binary.mjs`. Their declarations are a second copy of the
- * export list by hand, so an export renamed in the module, or one added and
- * never declared, would drift silently: the declaration would keep compiling
- * and the import would resolve to nothing at runtime.
- *
- * This holds the two lists equal by name. It does not check the signatures —
- * a `.mjs` has none to check against — so a changed parameter list is still on
- * the reader. The names are what a caller resolves.
+ * Each `.d.mts` beside a `.mjs` script declares exactly that module's export
+ * names. This gate compares names only; it does not validate signatures.
  */
 import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs';

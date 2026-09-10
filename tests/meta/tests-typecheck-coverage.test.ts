@@ -1,26 +1,10 @@
 /**
- * Everything under `tests/` is either typechecked or named as out, with why.
+ * The test program's exclusions and explicit inclusions match these lists,
+ * and every listed path exists. TypeScript applies `files` independently of
+ * `exclude`, allowing selected suites inside excluded trees.
  *
- * `tsconfig.tests.json` includes the whole `tests/` tree and subtracts a closed
- * list, so a new test tree is typechecked the moment it exists — nobody can add
- * one that nothing reads. What this gate holds is the subtraction: the config's
- * exclusions equal the names below and nothing else, and every name still
- * resolves to something on disk. A tree the 1.4 sweep deletes therefore has to
- * leave the config and this list in the same commit, which is what keeps the
- * list shrinking instead of outliving the code it describes.
- *
- * Two of the deferred trees hold live 2.0 suites among the 1.4 ones, so their
- * survivors are named file by file in the config's `files` array — which
- * TypeScript does not filter through `exclude` — and held here the same way.
- *
- * It also pins the one type-set decision the program rests on: the Cloudflare
- * declarations it loads must not declare a global `Buffer`. The package root's
- * `index.d.ts` does (`declare const Buffer: any`), and under it every Node
- * `Buffer` method in the program disappears — `toString('hex')` becomes
- * "Expected 0 arguments", `readUInt16LE` and `equals` stop existing — across
- * files no test touches. The `experimental` entrypoint omits that line. If a
- * release adds it, this fails naming the cause rather than scattering dozens of
- * Buffer errors through production source.
+ * The Cloudflare declarations must preserve Node's global Buffer type. The
+ * package's experimental entrypoint omits the conflicting global declaration.
  */
 import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
@@ -32,10 +16,9 @@ const TESTS = path.join(REPO, 'tests');
 const CONFIG = path.join(REPO, 'tsconfig.tests.json');
 
 /**
- * Trees whose suites exercise 1.4 surfaces the #1170 sweep retires: the daemon
- * and its jobs, the capture surface, the local vault schema and its queries,
- * Grove and Team-Host, Canopy, the 1.4 CLI verbs, and the Team-Sync worker.
- * They are outside the typecheck program until that sweep deletes them.
+ * Deferred trees containing the local runtime's agent, capture, CLI, daemon,
+ * database, Grove, host, vault and worker suites. Explicit inclusions below
+ * identify the typechecked suites within these trees.
  */
 const AWAITING_THE_1_4_SWEEP = [
   'agent',
