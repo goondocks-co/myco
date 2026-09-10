@@ -493,9 +493,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   if (gate === null) return { ok: false, refusal: 'unknown_task' };
   if (!(await projectExists(env.db, projectId))) return { ok: false, refusal: 'unknown_project' };
 
-  // A task no worker can drive yet is refused as that, ahead of anything the
-  // owner could fix in Settings: a repository-less Project asked to connect one
-  // for a task refused either way would be sent on an errand.
+  // Unavailable tasks are refused before repository and provider requirements.
   if (UNLANDED_TASKS.includes(task)) return { ok: false, refusal: 'not_landed' };
   if (REPOSITORY_TASKS.includes(task) && await repositoryIdentity(env.db, { projectId }) === null) {
     return { ok: false, refusal: 'repository_missing' };
