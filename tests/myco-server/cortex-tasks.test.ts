@@ -338,6 +338,9 @@ describe('the digest a run writes', () => {
   it('closes a run that reported a skip, which owes no row at all', async () => {
     const f = await fixture();
     f.liveRun('run_skipped', DIGEST_TASK, { input_hash: 'h' });
+    // The container's door refuses what the run tool refuses: an action the digest's rule cannot hear.
+    expect(await f.answered('/runs/report', { runId: 'run_skipped', agentId: HARNESS_AGENT_ID, action: 'title', summary: 'already current' }))
+      .toMatchObject({ persisted: false, code: 'parse', reason: 'a digest-only run closes with action "digest" or "skip"' });
     await f.answered('/runs/report', { runId: 'run_skipped', agentId: HARNESS_AGENT_ID, action: 'skip', summary: 'already current' });
     expect(await f.close('run_skipped')).toMatchObject({ persisted: true, changed: 1 });
     expect((await getRun(f.db, SCOPE, 'run_skipped'))?.status).toBe('completed');

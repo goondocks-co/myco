@@ -21,7 +21,9 @@ import { NO_OP } from '@myco-server-worker/mcp/registry.js';
 import { readWindowFor } from '@myco-server-worker/core/read-window.js';
 import { SPORE_PREVIEW_CHARS } from '@myco-server-worker/core/spores.js';
 import { RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
-import { GRANT_INSTRUCTIONS, RUN_INSTRUCTIONS, SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_MAX_BYTES } from '@myco-server-worker/mcp/server.js';
+import { GRANT_INSTRUCTIONS, RUN_INSTRUCTIONS, runInstructionsFor, SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_MAX_BYTES } from '@myco-server-worker/mcp/server.js';
+import { acceptedActions, RUN_CLOSE_NONE, RUN_CLOSE_RULES, RUN_SKIP_ACTION, unacceptedActionError } from '@myco-server-worker/core/run-postconditions.js';
+import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -198,11 +200,14 @@ describe('the handshake is the principal\'s', () => {
     const grant = await issueExternalGrant(db, { projectId: 'proj_1' }, 'copilot', 'owner', NOW);
 
     expect(await initialize(member.token)).toBe(SERVER_INSTRUCTIONS);
-    expect(await initialize(harness.token)).toBe(RUN_INSTRUCTIONS);
+    // A run is told the actions its task's close rule accepts, so the refusal is the backstop rather than the channel.
+    expect(await initialize(harness.token)).toBe(runInstructionsFor(acceptedActions(SWEEP)));
+    expect(await initialize(harness.token)).toContain('under action "supersession"; no other action is accepted');
     const res = await worker.fetch(grantRequest(grant.key, rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } })), env);
     expect((await res.json() as any).result.instructions).toBe(GRANT_INSTRUCTIONS);
 
-    for (const [what, text] of [['member', SERVER_INSTRUCTIONS], ['run', RUN_INSTRUCTIONS], ['grant', GRANT_INSTRUCTIONS]] as const) {
+    const runTexts = Object.keys(RUN_CLOSE_RULES).map((task) => [`run:${task}`, runInstructionsFor(acceptedActions(task))] as const);
+    for (const [what, text] of [['member', SERVER_INSTRUCTIONS], ['run', RUN_INSTRUCTIONS], ...runTexts, ['grant', GRANT_INSTRUCTIONS]] as const) {
       expect({ what, within: Buffer.byteLength(text, 'utf8') <= SERVER_INSTRUCTIONS_MAX_BYTES }).toEqual({ what, within: true });
     }
     // Derived, not probed: every tool a string names must be one that
@@ -247,6 +252,26 @@ describe('a run reports whatever its task declares', () => {
       .toEqual([{ a: 'myco-agent', action: 'container-smoke' }]);
   });
 
+  it('refuses an action the task\'s close rule cannot hear, naming every action it can, and records nothing', async () => {
+    const { harness, dispatch, call, sqlite } = await setup();
+    await dispatch('run_map', MAP_TASK);
+    const refused = await call(harness.token, 'myco_run', { op: 'report', action: 'skip', summary: 'nothing changed' });
+    expect(refused.result).toEqual({ ok: false, error: `a ${MAP_TASK} run closes with action "${MAP_ACTION}" or "${MAP_UNCHANGED_ACTION}"` });
+    expect(sqlite.query(`SELECT COUNT(*) AS n FROM agent_reports WHERE run_id = 'run_map'`).get()).toEqual({ n: 0 });
+    expect((await call(harness.token, 'myco_run', { op: 'report', action: MAP_UNCHANGED_ACTION, summary: 'nothing changed' })).result).toEqual({ recorded: true, action: MAP_UNCHANGED_ACTION });
+  });
+
+  it('accepts exactly the actions each rule declares: the skip where a rule lists it, and any action for a task held to no rule', () => {
+    for (const [task, rule] of Object.entries(RUN_CLOSE_RULES)) {
+      expect({ task, accepted: acceptedActions(task) }).toEqual({ task, accepted: rule === RUN_CLOSE_NONE ? null : rule.reports });
+    }
+    expect(acceptedActions('not-a-task')).toBeNull();
+    // A pass with nothing to do is a designed outcome of these tasks and no other; the canopy map says it with its own action.
+    const skipping = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule !== RUN_CLOSE_NONE && rule.reports.includes(RUN_SKIP_ACTION)).map(([task]) => task).sort();
+    expect(skipping).toEqual(['digest-only', 'title-summary']);
+    expect(unacceptedActionError(MAP_TASK, [MAP_ACTION, MAP_UNCHANGED_ACTION])).toBe(`a ${MAP_TASK} run closes with action "${MAP_ACTION}" or "${MAP_UNCHANGED_ACTION}"`);
+  });
+
   it('takes the report\'s agent off the run, never off the arguments', async () => {
     const { harness, dispatch, call } = await setup();
     await dispatch('run_1', SWEEP);
@@ -258,8 +283,8 @@ describe('a run reports whatever its task declares', () => {
     const { harness, dispatch, call, list } = await setup();
     await dispatch('run_dry', SWEEP, { dryRun: true });
     expect(await list(harness.token)).toContain('myco_run');
-    expect((await call(harness.token, 'myco_run', { op: 'report', action: 'skip', summary: 'nothing to do' })).result)
-      .toEqual({ recorded: true, action: 'skip' });
+    expect((await call(harness.token, 'myco_run', { op: 'report', action: 'supersession', summary: 'nothing to do' })).result)
+      .toEqual({ recorded: true, action: 'supersession' });
     expect((await call(harness.token, 'myco_spores', { op: 'save', content: 'x', type: 'gotcha' })).error.data.code).toBe('unknown_tool');
   });
 });

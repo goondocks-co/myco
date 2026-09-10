@@ -159,24 +159,15 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(r.outcome(run.id)).toEqual({ status: 'completed', error: null });
   });
 
-  it('completes a titling run on the title it wrote, whatever its report said or whether it reported at all', async () => {
-    // The row its dispatch named is the reliable fact; the report
-    // is the harness's own account, and a run that wrote the title did its work.
-    const r = await rig();
-    const run = await r.claimedTitling(NOW + 1);
-    await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'Add a retry to the runner', summary: 'The runner gained a retry around its one flaky call.' });
-    expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
-    expect(r.outcome(run.id)).toEqual({ status: 'completed', error: null });
-  });
-
   it('refuses a report under an action the task\'s close rule cannot hear, naming the ones it can, and records nothing', async () => {
     const r = await rig();
     const run = await r.claimedTitling(NOW + 1);
     const refused = await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'title', summary: 'wrote the title' });
     expect(refused).toEqual({ ok: false, error: `a title-summary run closes with action "${TITLING_REPORT_ACTION}" or "${RUN_SKIP_ACTION}"` });
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_reports WHERE run_id = ?`).get(run.id)).toEqual({ n: 0 });
-    // The skip is heard by every ruled task; nothing else than the rule's own actions is.
+    // A retry under an accepted action lands, and the run then closes on it.
     expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'nothing to do' })).toEqual({ recorded: true, action: RUN_SKIP_ACTION });
+    expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
   });
 
   it('completes a task whose product the Deployment cannot see on the worker\'s word', async () => {

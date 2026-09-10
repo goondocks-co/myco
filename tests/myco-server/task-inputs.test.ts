@@ -16,7 +16,7 @@ import { claimNextRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harnes
 import { buildTaskInput, INPUT_BUILDERS, instructionFor, uninstructedError } from '@myco-server-worker/core/task-inputs.js';
 import { buildTitlingInput } from '@myco-server-worker/core/titling-input.js';
 import { taskTools, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
-import { RUN_CLOSE_REPORTS, RUN_SKIP_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
+import { acceptedActions, RUN_SKIP_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -102,8 +102,8 @@ describe('every instruction the Deployment builds', () => {
     for (const task of Object.keys(INPUT_BUILDERS)) {
       const built = await buildTaskInput(r.e.serverEnv, task, 'proj_1', NOW, { params: { session_id: 's1', mode: 'claim' } });
       if (built === null || built.unchanged) throw new Error(`${task} built nothing`);
-      const accepted = RUN_CLOSE_REPORTS[task];
-      if (accepted === undefined) continue;
+      const accepted = acceptedActions(task);
+      if (accepted === null) continue;
       const actions = citedActions(built.input.instruction);
       // A run that closes with an action the rule does not accept is recorded as
       // having ended without its report, however faithfully it followed the prompt.

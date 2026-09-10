@@ -21,12 +21,7 @@
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
-import {
-  applyRunUpdate, claimRun, DISPATCHER_OWNED_COLUMNS, getRun, getState, insertReport, isTerminalRunStatus, listAgents,
-  listReports, markRunReplaced, mutateState, projectAdmission, recordRunEvents, RUN_UPDATE_COLUMNS,
-  supersedeEquivalentResumableRuns, upsertAgent,
-  type RunInsert, type RunUpdate, type RunEventRowInsert,
-} from '../core/runs.js';
+import { DISPATCHER_OWNED_COLUMNS, RUN_UPDATE_COLUMNS, applyRunUpdate, claimRun, getRun, getState, insertReport, isTerminalRunStatus, listAgents, listReports, markRunReplaced, mutateState, projectAdmission, recordRunEvents, supersedeEquivalentResumableRuns, type RunEventRowInsert, type RunInsert, type RunUpdate, upsertAgent } from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
 import type { RunAdmissionGate, RunRow } from '../core/runs.js';
 import { admitResume, classifyFailure, type FailureObservation } from '../core/resume.js';
@@ -34,7 +29,7 @@ import { admitResume, classifyFailure, type FailureObservation } from '../core/r
 /** The failure classes a harness may report; anything else is refused rather than mapped to a default. */
 const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
 import { releaseRun } from '../core/release.js';
-import { runCloseRefusal } from '../core/run-postconditions.js';
+import { acceptedActions, runCloseRefusal, unacceptedActionError } from '../core/run-postconditions.js';
 import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
@@ -399,6 +394,9 @@ export async function handleWriteReport(env: ServerEnv, ctx: RouteContext): Prom
   if (runId === null || agentId === null || action === null || summary === null || details === undefined) {
     return Response.json(refused(ctx, refusal('a report requires runId, agentId, action and summary within bounds', 'parse')));
   }
+  const run = await getRun(env.db, { projectId: ctx.projectId }, runId);
+  const accepted = run === null ? null : acceptedActions(run.task);
+  if (accepted !== null && !accepted.includes(action)) return Response.json(refused(ctx, refusal(unacceptedActionError(run!.task, accepted), 'parse')));
   const recorded = await insertReport(env.db, { projectId: ctx.projectId }, { runId, agentId, action, summary, details, createdAt: ctx.now });
   if (!recorded) return Response.json(refused(ctx, refusal('report names a run this Project does not hold, or an agent this Deployment does not know', 'parse')));
   return Response.json({ persisted: true, recorded: true });
