@@ -25,6 +25,7 @@ import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { declared } from './declared.js';
 import type { PowerState } from './power.js';
 import { POWER_STATE_DEPTH } from './power.js';
+import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 
 export interface ServerJob {
   name: string;
@@ -144,28 +145,9 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   [MAP_TASK]: { enabled: false, intervalSeconds: 21_600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 4 },
   'embedding-reconcile': null,
   'container-smoke': { intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 },
-  // Declared and switched off. 1.4 ran this every 8 hours against a local
-  // model-agnostic vault; a Deployment run is a container and a frontier model,
-  // so the cadence is daily and an owner turns it on after one measured run.
-  // A dispatch whose input matches the artifact already written costs nothing,
-  // which is what makes a daily interval safe once it is on.
-  'cortex-prompt-builder': null,
-  // Declared and switched off, for the ceiling rather than the clock. A digest
-  // run is the dearest thing this Deployment starts — three tiers rewritten by a
-  // frontier model — and a task with no schedule has no per-day cap, so an
-  // owner's button could spend it again and again in an afternoon. The block
-  // gives the button its one-a-day ceiling and gives the owner the same override
-  // to lift it, while the clock runs nothing until they turn it on.
-  'digest-only': { enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 },
-  'skill-survey': null,
-  'skill-generate': null,
-  'skill-evolve': null,
-  'vault-evolve': null,
-  'vault-seed': null,
-  'supersession-sweep': null,
-  'extract-only': null,
-  'review-session': null,
-  'title-summary': null,
+  [EXTRACTION_TASK]: { intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12, preCondition: 'has-unprocessed-prompts' },
+  [SEEDING_TASK]: null,
+  [TITLING_TASK]: null,
 };
 
 /** The schedule this Deployment declares for a task: the block, or null for a task it schedules nothing for and for a name it does not serve. */

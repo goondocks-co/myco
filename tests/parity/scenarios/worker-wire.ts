@@ -64,7 +64,9 @@ export const workerWire: ParityScenario = {
     await shiftParked(PARK_MS);
     await target.sql(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ${now})`);
     // The session the run is dispatched to title. A stub that never calls back
-    // leaves it untitled, which is the whole reading this scenario takes.
+    // leaves it untitled, which is the whole reading this scenario takes. The
+    // row is what the dispatcher records: the titling parameters ride the
+    // launch spec, and the claim builds the prompt from them.
     await target.sql(
       `INSERT OR IGNORE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
        VALUES (${lit(target.projectId)}, ${lit(sessionId)}, 'm_parity', 'tok_parity', ${now}, ${now})`,
@@ -72,8 +74,8 @@ export const workerWire: ParityScenario = {
     await target.sql(
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
        VALUES (${lit(target.projectId)}, ${lit(runId)}, 'myco-agent', 'title-summary', 'queued', ${now}, 'worker',
-               ${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 120 }))},
-               ${lit(JSON.stringify({ timeoutSeconds: 120, session_id: sessionId, mode: 'claim' }))}, 'do it')`,
+               ${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 120, params: { session_id: sessionId, mode: 'claim' } }))},
+               ${lit(JSON.stringify({ timeoutSeconds: 120, session_id: sessionId, mode: 'claim' }))}, NULL)`,
     );
 
     /**

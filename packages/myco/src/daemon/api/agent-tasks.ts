@@ -28,12 +28,8 @@ import { resolveDefinitionsDir } from '@myco/agent/loader.js';
 import { USER_TASK_SOURCE } from '@myco/constants.js';
 import { z } from 'zod';
 import { loadMergedConfig, updateConfig, loadGroveConfig, updateTierConfigRaw, TierConfigUnreadableError } from '../../config/loader.js';
-import {
-  capabilityEnabled,
-  effectiveTaskScheduleEnabled,
-  governingCapability,
-  taskHasExplicitProvider,
-} from '../../config/capabilities.js';
+import { capabilityEnabled, governingCapability } from '../../config/capabilities.js';
+import { effectiveTaskScheduleEnabled, taskHasExplicitProvider } from '../../agent/schedule-gates.js';
 import { withTaskConfig } from '../../config/updates.js';
 import type { TaskConfigUpdate } from '../../config/updates.js';
 import { setAtPath, unsetAtPath } from '../../utils/dot-path.js';

@@ -110,6 +110,8 @@ export interface TitlingResult {
 
 const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
   harness_unavailable: 'harness_unavailable',
+  no_instruction: 'error',
+  not_landed: 'error',
   no_provider: 'no_provider',
   no_credential: 'no_credential',
   no_endpoint: 'no_endpoint',

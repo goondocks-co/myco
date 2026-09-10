@@ -148,38 +148,6 @@ describe('runServerTask', () => {
     expect(smokeNames).toEqual(['vault_report']);
   });
 
-  it('reads its prompt off the run row, and composes a phased task into one query', async () => {
-    const fixture = sqliteEnv();
-    const now = Date.now();
-    fixture.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`).run(AGENT, now);
-    fixture.sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`).run(now);
-    await ensureMember(fixture.db, HARNESS_MEMBER_ID, now, 'member', 'harness runtime');
-    const minted = await issueMemberToken(fixture.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, now);
-    await recordDispatch(fixture.db, { projectId: 'proj_1' }, {
-      id: 'run_cortex_1', agentId: AGENT, task: 'digest-only', instruction: 'THE SERVER PROMPT',
-      provider: 'anthropic', model: null, runContext: JSON.stringify({ input_hash: 'h' }), dispatchedBy: minted.tokenId, startedAt: now,
-    });
-    const client = new ServerClient(
-      { serverUrl: 'https://s', token: minted.token, projectId: 'proj_1' },
-      ((input: RequestInfo | URL, init?: RequestInit) => {
-        const request = new Request(input, init);
-        request.headers.set('cf-connecting-ip', '1.2.3.4');
-        return worker.fetch(request, fixture.env);
-      }) as typeof fetch,
-    );
-    let seen: { names: string[]; prompt: string } | null = null;
-    const observing: AgentHarness = {
-      async execute(input: HarnessExecuteInput) {
-        seen = { names: (input.toolSurface.tools ?? []).map((t) => t.name), prompt: input.prompt };
-        return { finalText: 'done', turnsUsed: 1, usage: { totalTokens: 9 } as never };
-      },
-      supports: () => false,
-    } as unknown as AgentHarness;
-    await runServerTask({ client, budget, runId: 'run_cortex_1', taskName: 'digest-only', harness: observing, admission: 'cortex' });
-    expect(seen!.names).toEqual(['vault_report', 'vault_spores', 'vault_spore', 'vault_sessions', 'vault_read_digest', 'vault_write_digest']);
-    expect(seen!.prompt).toContain('THE SERVER PROMPT');
-  });
-
   it('fails an unknown task by name without claiming anything', async () => {
     const { client, sqlite } = await harness();
     const result = await runServerTask({ client, budget, runId: 'run_smoke_4', taskName: 'no-such-task', harness: fakeHarness('silent') });

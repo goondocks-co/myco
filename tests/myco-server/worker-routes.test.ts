@@ -102,7 +102,7 @@ describe('the worker control plane', () => {
     r.e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
     r.e.sqlite.run(
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-       VALUES ('proj_1', 'run_c', 'myco-agent', 'title-summary', 'queued', ?, 'worker', ?, ?, 'do it')`,
+       VALUES ('proj_1', 'run_c', 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'do it')`,
       [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
     );
     const claimed = await r.json(post(admin, '/worker/claim', { harnesses: [{ id: 'claude-code', authenticated: true }] }));

@@ -144,7 +144,7 @@ describe('the harness rides in the server\'s network namespace', () => {
     // work that had time left. The number is copied into this package, which is
     // why it is compared against the budgets the Deployment enforces.
     const longest = Math.max(...Object.values(TASK_RUN_TIMEOUT_SECONDS));
-    expect(HARNESS_STOP_GRACE_SECONDS).toBe(longest);
+    expect(HARNESS_STOP_GRACE_SECONDS).toBe(longest + RUN_OVERRUN_MARGIN_MS / 1000);
     for (const [task, seconds] of Object.entries(TASK_RUN_TIMEOUT_SECONDS)) {
       expect({ task, spared: HARNESS_STOP_GRACE_SECONDS >= seconds }).toEqual({ task, spared: true });
     }

@@ -298,7 +298,7 @@ describe('the live-runs read', () => {
 
   it('prints one JSON array of the runs in flight, with the columns the wait reads', async () => {
     const path = volumeWith([
-      { id: 'run_r', status: 'running', task: 'digest-only', startedAt: 1_700_000_000_000, context: JSON.stringify({ timeoutSeconds: 1800 }) },
+      { id: 'run_r', status: 'running', task: 'extract-curate', startedAt: 1_700_000_000_000, context: JSON.stringify({ timeoutSeconds: 1800 }) },
       { id: 'run_p', status: 'pending', task: 'titling', startedAt: null, context: null },
       { id: 'run_done', status: 'completed', task: 'titling', startedAt: 1, context: null },
       // A launch answered too late: the run is back in the queue with the start
@@ -315,7 +315,7 @@ describe('the live-runs read', () => {
     // neither does a row waiting behind a limit.
     expect(rows.map((r) => r.id).sort()).toEqual(['run_p', 'run_q_live', 'run_r']);
     expect(rows.find((r) => r.id === 'run_r')).toEqual({
-      id: 'run_r', task: 'digest-only', status: 'running', started_at: 1_700_000_000_000, run_context: JSON.stringify({ timeoutSeconds: 1800 }),
+      id: 'run_r', task: 'extract-curate', status: 'running', started_at: 1_700_000_000_000, run_context: JSON.stringify({ timeoutSeconds: 1800 }),
     });
     // A queued row is bounded from the launch that went out for it, like any other.
     expect(rows.find((r) => r.id === 'run_q_live')).toMatchObject({ started_at: 1_700_000_000_500 });

@@ -170,11 +170,11 @@ describe('gates', () => {
     }
   });
 
-  it('serves no retired 1.4.x route, and every retired route names a catalogued kind or a served route as its replacement', async () => {
+  it('serves no retired 1.4.x route, and every retired route names a catalogued kind or a served route as its replacement, or says what it carried is dropped', async () => {
     const served = new Set(ROUTES.map((r) => `${r.method} ${r.path}`));
     for (const r of RETIRED_ROUTES) {
       expect(served.has(`${r.method} ${r.path}`)).toBe(false);
-      expect(r.replacedBy.length).toBeGreaterThan(0);
+      expect({ path: r.path, answered: r.replacedBy.length > 0 || (r.dropped !== undefined && r.dropped.length > 0) }).toEqual({ path: r.path, answered: true });
       for (const target of r.replacedBy) expect({ target, known: served.has(target) || kindSpec(target) !== null }).toEqual({ target, known: true });
       const anonymous = await worker.fetch(withSource(r.path, { method: r.method, body: '{}' }), env());
       expect({ path: r.path, status: anonymous.status }).toEqual({ path: r.path, status: 401 });
@@ -604,25 +604,10 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ events: [{ runId: 'nope', eventType: 'phase_start' }] }) }),
       },
-      'POST /runs/instruction': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/instruction', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/instruction', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
       'POST /runs/embedding-step': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
-      'POST /runs/digest': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/digest', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/digest', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
-      'POST /runs/digest-write': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/digest-write', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/digest-write', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', tier: 5000, content: '# digest' }) }),
       },
       'POST /spores/save': {
         shape: 'persisted',
@@ -932,6 +917,9 @@ describe('gates', () => {
       'POST /routed-capture/plan',
       'POST /routed-capture/transcript',
       'POST /runs/cortex-instructions',
+      'POST /runs/digest',
+      'POST /runs/digest-write',
+      'POST /runs/instruction',
       'POST /sessions/register',
       'POST /sessions/unregister',
     ]);
@@ -1065,13 +1053,10 @@ describe('gates', () => {
       'member POST /members/link-github',
       'member POST /runs/canopy-map',
       'member POST /runs/claim',
-      'member POST /runs/digest',
-      'member POST /runs/digest-write',
       'member POST /runs/embedding-step',
       'member POST /runs/events',
       'member POST /runs/failed',
       'member POST /runs/get',
-      'member POST /runs/instruction',
       'member POST /runs/report',
       'member POST /runs/reports',
       'member POST /runs/repository',

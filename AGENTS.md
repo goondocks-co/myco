@@ -74,7 +74,7 @@ Myco installs once at the per-user/global level for every symbiont; project-loca
 
 Three actors interact with Myco. Mixing them is the source of architectural drift.
 
-- **Myco agent** — Myco's own intelligence runs, driven on a worker. Does work users don't do. Its tools come from the run-scoped MCP surface: a run-scoped credential whose allowlist is the task definition's, enforced at the MCP chokepoint — **not** the member's tool set.
+- **Myco agent** — Myco's own intelligence runs, driven on a worker: three outcomes (`extract-curate`, `vault-seed`, `title-summary`), each one prompt the Deployment builds with declared close evidence (`packages/myco-server/src/core/task-catalogue.ts`, `run-postconditions.ts`). Does work users don't do. Its tools come from the run-scoped MCP surface: a run-scoped credential whose allowlist is the task's declared tools, enforced at the MCP chokepoint — **not** the member's tool set.
 - **Symbiont** — coding agents like Claude Code, Cursor, opencode, Codex that integrate with Myco via hooks + the MCP bridge + installed skills. Symbionts **use Myco; they do not control it**.
 - **User** — the human. Uses Myco, controls Myco, reviews Myco-agent-generated data, and administers the Myco agent.
 
@@ -82,11 +82,11 @@ The surface each actor touches is fixed:
 
 | Surface | Whose | For |
 |---|---|---|
-| **MCP tools** (`packages/myco/src/tools/`) | Symbionts | Read project intelligence. No administrative ops. |
+| **MCP tools** (`packages/myco/src/tools/` declares; `packages/myco-server/src/mcp/` serves) | Symbionts | Read project intelligence and record spores and plans. No administrative ops. |
 | **Skills** (`packages/myco/skills/` built-in + vault-generated) | Symbionts | Workflows; may instruct the symbiont to invoke the CLI. |
 | **CLI** (`packages/myco/src/cli/`) | Users (primary) and Symbionts (via skills) | Bootstrap + admin. |
 | **UI** (`packages/myco/ui/`) | Users | Primary interface for ongoing work. |
-| **Run tools** (`packages/myco-server/src/mcp/run-surface.ts`) | Myco agent | A run's allowlist from its task definition; writes attributed to the run. Two sets: the catalogued tools where a run's work is a member's work, and run-only tools (`mcp/run-definitions.ts`) for the run's own bounded reads, state and cursor — never in `SERVED_TOOLS`, never on the member side. |
+| **Run tools** (`packages/myco-server/src/mcp/run-surface.ts`) | Myco agent | A run's allowlist from `TASK_TOOLS` in the task catalogue; writes attributed to the run. Two sets: the catalogued tools where a run's work is a member's work, and run-only tools (`mcp/run-definitions.ts`) for the run's own bounded reads, state and cursor — never in `SERVED_TOOLS`, never on the member side. A run's prompt and its instructions file are the Deployment's (`core/task-inputs.ts`); `packages/myco/src/agent/` is the 1.4 executor awaiting the sweep and nothing in the server or in `config/` imports it (`tests/meta/agent-tree-import-boundary.test.ts`). |
 
 **Non-rules** (these are violations to push back on):
 - Symbionts do **not** drive admin ops (restart, update, restore, backup). Add no MCP tool that does.

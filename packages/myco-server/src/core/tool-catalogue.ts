@@ -46,6 +46,10 @@ export type RunTool = (typeof RUN_TOOLS)[number];
 
 /** The run tool a titling run's write of its session lands through; the close rule reads the write back under this name. */
 export const TITLE_WRITE_TOOL: RunTool = 'myco_run_sessions';
+/** The run tool an extraction run's mark of a read prompt lands through; the close rule reads the write back under this name. */
+export const PROMPT_MARK_TOOL: RunTool = 'myco_run_prompts';
+/** The run tool a seeding run's managed block lands through; the close rule reads the write back under this name. */
+export const BLOCK_WRITE_TOOL: RunTool = 'myco_run';
 
 /** Whether this name is one of the run-only tools. */
 export function isRunTool(name: string): name is RunTool {
@@ -75,11 +79,9 @@ export const PROJECT_PIVOT = 'project';
  * issue that delivers it, or `never` for one a Deployment does not offer.
  *
  * Names only, as above — a handler is what makes an op answered, and handlers
- * live with the MCP surface. Two readers share this one list: the handler
- * registry expands it into the entries that answer a call with `not_served`
- * (`mcp/registry.ts`), and the payload a Cortex run is handed cuts its rendered
- * tool surface and its guidance to what is left (`core/cortex-input.ts`), so an
- * artifact never teaches a call that refuses. `tests/myco-server/tool-parity.test.ts`
+ * live with the MCP surface. The handler registry expands this list into the
+ * entries that answer a call with `not_served` (`mcp/registry.ts`), and
+ * `tests/myco-server/tool-parity.test.ts`
  * holds the union of this list and the registry's handlers equal to each tool's
  * declared op enum.
  */
@@ -104,7 +106,7 @@ export const WRITE_OPS: Readonly<Partial<Record<AnyTool, readonly string[]>>> = 
   myco_spores: ['save', 'supersede', 'consolidate', 'obsolete'],
   // `report` is absent deliberately: a dry run does its work, writes nothing,
   // and still files the report the close gate reads.
-  myco_run: ['state_set'],
+  myco_run: ['state_set', 'agents_block'],
   myco_run_sessions: ['title'],
   myco_run_prompts: ['mark_processed'],
 };

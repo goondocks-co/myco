@@ -18,39 +18,36 @@
  * met a refusal — an unheld surface, a lost connection — closes failed by name
  * rather than completed on the strength of a report it filed anyway.
  *
- * A task may name several reports, one of which says the run wrote nothing: a
- * digest run that finds every tier current reports a skip, and that is as
- * complete a pass as one that wrote three tiers. A run whose evidence is only
- * such a skip owes no row.
+ * A task may name several reports, one of which says the run wrote nothing: an
+ * extraction pass that finds no unread prompt reports a skip, and that is as
+ * complete a pass as one that wrote ten spores. A run whose evidence is only
+ * such a skip owes no row — but the skip is still the model's word, so a rule
+ * names what the server reads to agree with it (`skipHolds`): no unread prompt
+ * for extraction, a seeded Project for seeding, a standing title for titling. A
+ * skip the server cannot agree with closes failed, naming the artifact.
  *
  * A dry run reaches no artifact check: it does the work and writes nothing by
  * the dispatcher's decision, and that decision is on its own row.
  *
- * **Every retained task declares a rule or declares `RUN_CLOSE_NONE`**, and
+ * **Every retained task declares a rule**, and
  * `tests/myco-server/task-catalogue.test.ts` holds this table equal to the task
- * catalogue's own. A
- * task with no entry would close on the runtime's word while reading as
- * governed, so the absence has to be a decision someone wrote down rather than
- * a name nobody added. `RUN_CLOSE_NONE` says this task's product is not yet
- * something the server can see, and a run of it closes as its runtime reports.
+ * catalogue's own. A task with no entry would close on the runtime's word while
+ * reading as governed, so there is no entry that means "no rule".
  */
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { inputHashOf, listReports, runRecordedWrite, sessionNamedByRun, type RunRow, getRun, insertReport, type ReportInsert } from './runs.js';
-import { digestWrittenBy } from './digests.js';
+import { listReports, runRecordedWrite, sessionNamedByRun, type RunRow, getRun, insertReport, type ReportInsert } from './runs.js';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { canopyMapWrittenBy } from './canopy.js';
 import { sessionCarriesTitle } from '../read/sessions.js';
-import { TITLE_WRITE_TOOL } from './tool-catalogue.js';
-import { TITLING_TASK } from './task-catalogue.js';
+import { countSpores, sporeAuthoredBy } from './spores.js';
+import { listUnprocessedPrompts } from '../read/prompts.js';
+import { BLOCK_WRITE_TOOL, PROMPT_MARK_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
+import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
 
 /** The report a run records to say it found nothing to write. */
 export const RUN_SKIP_ACTION = 'skip';
-/** The report a digest run files after writing. */
-export const DIGEST_REPORT_ACTION = 'digest';
-
-/** A task whose product the server cannot yet see: its runs close as their runtime reports them. */
-export const RUN_CLOSE_NONE = 'none';
 
 /** What one task's run owes before it closes. */
 export interface RunCloseRule {
@@ -58,10 +55,16 @@ export interface RunCloseRule {
   reports: readonly string[];
   /** Whether the row this run owed exists. Absent for a task whose product is the report itself. */
   artifact?: (db: RelationalStore, scope: ReadScope, run: RunRow) => Promise<boolean>;
+  /** Whether the server's own read agrees with a skip. Absent where a skip is not accepted. */
+  skipHolds?: (db: RelationalStore, scope: ReadScope, run: RunRow) => Promise<boolean>;
 }
 
 /** The report a titling run files, whatever it found to do. */
 export const TITLING_REPORT_ACTION = 'summary';
+/** The report an extraction run files after reading a page of prompts. */
+export const EXTRACTION_REPORT_ACTION = 'extract';
+/** The report a seeding run files after writing a Project's first spores. */
+export const SEEDING_REPORT_ACTION = 'seed';
 
 /**
  * Whether THIS run wrote the title on the session its dispatch named.
@@ -76,9 +79,9 @@ export const TITLING_REPORT_ACTION = 'summary';
  * there; a session may also carry a title with no claim stamp at all. So a run
  * that filed its report and never called would pass on a title an earlier run
  * wrote. The run key is the write the run landed (`RUN_WRITE_EVENT`), the same
- * question `digest-only` and `canopy-map` ask of their own artifact rows — those
- * carry a run column and the session row does not. The title is checked as well,
- * so a write recorded against a row that no longer holds one does not pass.
+ * question the canopy map asks of its own artifact row — that one carries a run
+ * column and the session row does not. The title is checked as well, so a write
+ * recorded against a row that no longer holds one does not pass.
  *
  * The record is a second statement after the title commits, and it throws where
  * the store refuses it, so a store fault between the two leaves the title
@@ -92,40 +95,72 @@ export async function titleWrittenBy(db: RelationalStore, scope: ReadScope, run:
   return (await runRecordedWrite(db, scope, run.id, TITLE_WRITE_TOOL)) && (await sessionCarriesTitle(db, scope, sessionId));
 }
 
+/**
+ * Whether THIS run marked at least one prompt read.
+ *
+ * The mark is the extraction run's own landed write: it says the run read the
+ * prompt and decided what it taught, and it is what moves the cursor so the next
+ * pass reads on. A run that wrote spores and marked nothing has left the next
+ * pass to read the same prompts again, and is held to the mark rather than to
+ * the spores; a run that read a page and judged none of it worth a spore has
+ * still done the pass, and the mark is the row that says so.
+ */
+export async function promptsMarkedBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
+  return runRecordedWrite(db, scope, run.id, PROMPT_MARK_TOOL);
+}
+
+/** Whether THIS run wrote a spore: the spore row's `author` column names the run. */
+export async function sporesWrittenBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
+  return sporeAuthoredBy(db, scope, run.id);
+}
+
+/** Whether THIS run handed over the managed block: the `run_write` row the `agents_block` op lands. */
+export async function blockWrittenBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
+  return runRecordedWrite(db, scope, run.id, BLOCK_WRITE_TOOL);
+}
+
+/** A seeding run owes both: a spore it authored and the block it handed over. */
+export async function seedingWrittenBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
+  return (await sporesWrittenBy(db, scope, run)) && (await blockWrittenBy(db, scope, run));
+}
+
+/** An extraction skip holds when no settled prompt is left unread. */
+export async function nothingUnread(db: RelationalStore, scope: ReadScope): Promise<boolean> {
+  return (await listUnprocessedPrompts(db, scope, { limit: 1 })).rows.length === 0;
+}
+
+/** A seeding skip holds when the Project already holds enough active spores to count as seeded. */
+export async function alreadySeeded(db: RelationalStore, scope: ReadScope): Promise<boolean> {
+  return (await countSpores(db, scope, { status: 'active' })) >= SEEDED_SPORE_FLOOR;
+}
+
+/** A titling skip holds when the session its dispatch named carries a title. */
+export async function titleStands(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
+  const sessionId = sessionNamedByRun(run);
+  return sessionId !== null && (await sessionCarriesTitle(db, scope, sessionId));
+}
+
 /** What each task's run must have left behind, by task. Every retained task appears. */
-export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule | typeof RUN_CLOSE_NONE>> = {
+export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
   [MAP_TASK]: { reports: [MAP_ACTION, MAP_UNCHANGED_ACTION], artifact: canopyMapWrittenBy },
   'embedding-reconcile': { reports: ['embedding'] },
-  'supersession-sweep': { reports: ['supersession'] },
-  'digest-only': {
-    reports: [DIGEST_REPORT_ACTION, RUN_SKIP_ACTION],
-    artifact: (db, scope, run) => digestWrittenBy(db, scope, { runId: run.id, substrateHash: inputHashOf(run), since: run.startedAt }),
-  },
   // The whole product of a titling run is the title on the session its dispatch
   // named, which is why it names an artifact and not the report alone.
   // A write refused for a title already standing is a pass with nothing to do, and closes as one.
-  [TITLING_TASK]: { reports: [TITLING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: titleWrittenBy },
-
+  [TITLING_TASK]: { reports: [TITLING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: titleWrittenBy, skipHolds: titleStands },
+  // An extraction pass owes the cursor move: a prompt it read, marked read under
+  // its own credential. The skip is a pass that found no unread prompt.
+  [EXTRACTION_TASK]: { reports: [EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION], artifact: promptsMarkedBy, skipHolds: (db, scope) => nothingUnread(db, scope) },
+  // A seeding run owes the Project's first spores, authored by the run, and the
+  // managed block it handed over. The skip is a pass that found the Project seeded.
+  [SEEDING_TASK]: { reports: [SEEDING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: seedingWrittenBy, skipHolds: (db, scope) => alreadySeeded(db, scope) },
   // The probe's product is the one report it files, which is what it proves.
   'container-smoke': { reports: ['container-smoke'] },
-
-  // Spores, skills and instructions a run writes carry the run as their author,
-  // but nothing yet reads that back as the row a NAMED run owed.
-  'cortex-prompt-builder': RUN_CLOSE_NONE,
-  'skill-survey': RUN_CLOSE_NONE,
-  'skill-generate': RUN_CLOSE_NONE,
-  'skill-evolve': RUN_CLOSE_NONE,
-  'vault-evolve': RUN_CLOSE_NONE,
-  'vault-seed': RUN_CLOSE_NONE,
-  'extract-only': RUN_CLOSE_NONE,
-  'review-session': RUN_CLOSE_NONE,
 };
 
 /** The rule this task's runs close under, or undefined for a name this Deployment does not serve. */
 export function closeRuleFor(task: string | null): RunCloseRule | undefined {
-  if (task === null) return undefined;
-  const rule = RUN_CLOSE_RULES[task];
-  return rule === undefined || rule === RUN_CLOSE_NONE ? undefined : rule;
+  return task === null ? undefined : RUN_CLOSE_RULES[task];
 }
 
 /** How a run that closed without the report its task owes is recorded. */
@@ -149,7 +184,9 @@ export async function runCloseRefusal(db: RelationalStore, scope: ReadScope, run
   const evidence = (await listReports(db, scope, run.id)).filter((report) => rule.reports.includes(report.action));
   if (evidence.length === 0) return RUN_CLOSE_ERROR;
   if (rule.artifact === undefined || run.dryRun === 1) return null;
-  if (evidence.every((report) => report.action === RUN_SKIP_ACTION)) return null;
+  if (evidence.every((report) => report.action === RUN_SKIP_ACTION)) {
+    return rule.skipHolds === undefined || (await rule.skipHolds(db, scope, run)) ? null : RUN_CLOSE_ARTIFACT_ERROR;
+  }
   return (await rule.artifact(db, scope, run)) ? null : RUN_CLOSE_ARTIFACT_ERROR;
 }
 
