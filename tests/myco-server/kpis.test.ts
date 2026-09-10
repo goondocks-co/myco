@@ -182,6 +182,24 @@ describe('the measures', () => {
     ]);
   });
 
+  it('gives a harness whose calls landed in the window but whose prompts did not an empty sample rather than leaving it out', async () => {
+    const r = rig();
+    r.session('recent', { agent: 'claude-code', at: NOW - DAY });
+    r.session('old', { agent: 'codex', at: NOW - 60 * DAY });
+    r.prompt('p_recent', 'recent', { at: NOW - DAY });
+    r.prompt('p_old', 'old', { at: NOW - 60 * DAY });
+    r.call('c1', 'recent', { at: NOW - DAY });
+    // A codex call inside the window whose prompt sits outside it. The call is
+    // counted in the whole, so the split accounts for it rather than dropping it.
+    r.call('c2', 'old', { at: NOW - DAY });
+    const week = await readKpis(r.db, { windowDays: 7, now: NOW });
+    expect(week.callsPerPrompt).toEqual({ value: 2, sampleSize: 1 });
+    expect(week.callsPerPromptByHarness).toEqual([
+      { harness: 'claude-code', value: 1, sampleSize: 1 },
+      { harness: 'codex', value: null, sampleSize: 0 },
+    ]);
+  });
+
   it('counts plan reads per session and leaves a plan write out of the count', async () => {
     const r = rig();
     r.session('s1');

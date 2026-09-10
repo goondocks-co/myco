@@ -136,7 +136,16 @@ async function promptMeasures(db: RelationalStore, since: number | null): Promis
   return { prompts, served, withSpores };
 }
 
-/** Myco calls and prompts, split by the harness each session ran under. */
+/**
+ * Myco calls and prompts, split by the harness each session ran under.
+ *
+ * The harnesses are the union of the two sides, not the prompt side alone. A
+ * harness whose calls land inside the window while its prompts land outside it
+ * has calls counted in the whole and would have them counted in no part, leaving
+ * the split unable to account for the figure above it. Such a harness takes a row
+ * with an empty sample, which the surface renders as no value — the same rule the
+ * page applies everywhere else.
+ */
 async function harnessSplit(db: RelationalStore, since: number | null): Promise<HarnessMeasure[]> {
   const prompts = windowClause('p.created_at', since);
   const calls = windowClause('c.created_at', since);
@@ -146,9 +155,10 @@ async function harnessSplit(db: RelationalStore, since: number | null): Promise<
     db.prepare(`SELECT ${HARNESS_OF('c')} AS harness, COUNT(*) AS n FROM tool_calls c WHERE ${calls.sql} AND ${MYCO_CALL} GROUP BY harness`)
       .bind(...calls.params).all<{ harness: string; n: number }>(),
   ]);
+  const promptsBy = new Map(promptRows.results.map((r) => [r.harness, r.n]));
   const callsBy = new Map(callRows.results.map((r) => [r.harness, r.n]));
-  return promptRows.results
-    .map((r) => ({ harness: r.harness, ...rate(callsBy.get(r.harness) ?? 0, r.n) }))
+  return [...new Set([...promptsBy.keys(), ...callsBy.keys()])]
+    .map((harness) => ({ harness, ...rate(callsBy.get(harness) ?? 0, promptsBy.get(harness) ?? 0) }))
     .sort((a, b) => b.sampleSize - a.sampleSize || a.harness.localeCompare(b.harness));
 }
 

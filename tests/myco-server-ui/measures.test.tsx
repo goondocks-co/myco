@@ -130,15 +130,18 @@ describe('the measures page', () => {
         callsPerPromptByHarness: [
           { harness: 'claude-code', value: 1.5, sampleSize: 2 },
           { harness: 'unrecorded', value: 0, sampleSize: 1 },
+          { harness: 'codex', value: null, sampleSize: 0 },
         ],
       })),
     }));
     mount('/measures');
     const body = await screen.findByLabelText('Calls per prompt by agent');
     const rows = [...body.querySelectorAll('tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent));
+    // A split with no prompts behind it shows no figure, the same rule the tiles follow.
     expect(rows).toEqual([
       ['Claude Code', '1.50', 'n = 2 prompts'],
       ['Agent not recorded', '0.00', 'n = 1 prompts'],
+      ['Codex', '—', 'n = 0 prompts'],
     ]);
   });
 
