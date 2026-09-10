@@ -104,12 +104,12 @@ describe('credential source', () => {
     process.env[ENV_PROJECT] = 'proj_1';
     const rig = await memberRig();
     const { fetch, requests } = recordingFetch(rig.fetch);
-    const result = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { fetch, credential: 'registry' });
+    const result = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { fetch, credential: 'registry', symbiont: 'copilot' });
     expect(requests).toEqual([]);
     expect(result.stderr).toContain('no registry entry');
     expect(rig.rows('events')).toBe(0);
     // The same hook declared `env` would dial the env URL — the source is the command's to declare.
-    const envRun = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { fetch, credential: 'env' });
+    const envRun = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { fetch, credential: 'env', symbiont: 'copilot' });
     expect(requests.map((r) => r.path)).toEqual(['/events']);
     expect(envRun.stderr).not.toContain('no registry entry');
   });

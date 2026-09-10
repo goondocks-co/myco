@@ -6,13 +6,6 @@
       "timeout": 10
     }
   ],
-  "beforeSubmitPrompt": [
-    {
-      "command": "{{mycoLauncher}} hook user-prompt-submit --symbiont cursor",
-      "type": "command",
-      "timeout": 5
-    }
-  ],
   "postToolUse": [
     {
       "command": "{{mycoLauncher}} hook post-tool-use --symbiont cursor",
@@ -39,27 +32,6 @@
       "command": "{{mycoLauncher}} hook session-end --symbiont cursor",
       "type": "command",
       "timeout": 10
-    }
-  ],
-  "subagentStart": [
-    {
-      "command": "{{mycoLauncher}} hook subagent-start --symbiont cursor",
-      "type": "command",
-      "timeout": 5
-    }
-  ],
-  "subagentStop": [
-    {
-      "command": "{{mycoLauncher}} hook subagent-stop --symbiont cursor",
-      "type": "command",
-      "timeout": 10
-    }
-  ],
-  "preCompact": [
-    {
-      "command": "{{mycoLauncher}} hook pre-compact --symbiont cursor",
-      "type": "command",
-      "timeout": 5
     }
   ]
 }

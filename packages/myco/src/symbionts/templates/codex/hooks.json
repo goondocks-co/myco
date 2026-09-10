@@ -10,34 +10,12 @@
       ]
     }
   ],
-  "PreToolUse": [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "{{mycoLauncher}} hook pre-tool-use --symbiont codex",
-          "timeout": 3
-        }
-      ]
-    }
-  ],
   "UserPromptSubmit": [
     {
       "hooks": [
         {
           "type": "command",
           "command": "{{mycoLauncher}} hook user-prompt-submit --symbiont codex",
-          "timeout": 5
-        }
-      ]
-    }
-  ],
-  "PostToolUse": [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "{{mycoLauncher}} hook post-tool-use --symbiont codex",
           "timeout": 5
         }
       ]

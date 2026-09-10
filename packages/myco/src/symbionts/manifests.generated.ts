@@ -74,8 +74,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
-      "toolTransport": "cli",
+      "postToolUseInjection": false,
       "turnRowSource": "hook",
+      "transcriptFidelity": "full",
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -381,6 +382,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "transcriptCwdPath": "cwd",
         "retention": "harness"
       },
+      "subagentTranscripts": "{sessionId}/subagents/*.jsonl",
       "sessionContinuation": {
         "parentSessionIdPath": "session_id",
         "defaultReason": "fork",
@@ -416,8 +418,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": true,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
-      "toolTransport": "mcp",
-      "turnRowSource": "hook",
+      "postToolUseInjection": false,
+      "turnRowSource": "transcript",
+      "transcriptFidelity": "full",
       "canopyReadTools": [
         {
           "tool": "Read",
@@ -559,8 +562,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
-      "toolTransport": "mcp",
+      "postToolUseInjection": false,
       "turnRowSource": "transcript",
+      "transcriptFidelity": "full",
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -860,8 +864,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": true,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
-      "toolTransport": "cli",
-      "turnRowSource": "hook",
+      "postToolUseInjection": false,
+      "turnRowSource": "transcript",
+      "transcriptFidelity": "full",
       "canopyReadTools": [
         {
           "tool": "Bash",
@@ -987,8 +992,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": true,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
-      "toolTransport": "mcp",
+      "postToolUseInjection": false,
       "turnRowSource": "hook",
+      "transcriptFidelity": "full",
       "canopyReadTools": [
         {
           "tool": "read_file",
@@ -1301,8 +1307,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
-      "toolTransport": "cli",
-      "turnRowSource": "hook",
+      "postToolUseInjection": true,
+      "turnRowSource": "transcript",
+      "transcriptFidelity": "no_tool_results",
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -1436,8 +1443,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
-      "toolTransport": "mcp",
+      "postToolUseInjection": false,
       "turnRowSource": "transcript",
+      "transcriptFidelity": "full",
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -1553,8 +1561,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
-      "toolTransport": "mcp",
+      "postToolUseInjection": false,
       "turnRowSource": "transcript",
+      "transcriptFidelity": "full",
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -1660,8 +1669,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": false,
       "subagentStartInjection": false,
-      "toolTransport": "cli",
+      "postToolUseInjection": false,
       "turnRowSource": "hook",
+      "transcriptFidelity": "full",
       "canopyReadTools": [],
       "pathBearingTools": [
         {

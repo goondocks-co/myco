@@ -146,8 +146,8 @@ describe('the hook path itself, end to end', () => {
         }
         return new Response(JSON.stringify({ persisted: true }), { status: 200 });
       }) as never;
-      // A transcript path is present in every real invocation, and Claude
-      // Code's own manifest drops a prompt that arrives without one.
+      // A transcript path is present in every real invocation, and Codex's
+      // own manifest drops a prompt that arrives without one.
       const transcript = path.join(home, 'transcript.jsonl');
       fs.writeFileSync(transcript, '');
       const { stdout } = await runHook(
@@ -174,8 +174,17 @@ describe('the hook path itself, end to end', () => {
   });
 
   it('writes the prompt for an agent whose hooks still carry its turn rows', async () => {
-    const { posted } = await runFor('claude-code');
+    const { posted } = await runFor('copilot');
     expect(posted).toContain('prompt');
+  });
+
+  it('writes no prompt, response or tool call from the hooks of an agent the Deployment parses', async () => {
+    for (const agent of ['claude-code', 'codex']) {
+      for (const verb of ['user-prompt-submit', 'stop', 'post-tool-use', 'subagent-start'] as const) {
+        const { posted } = await runFor(agent, verb);
+        expect({ agent, verb, posted: posted.filter((k) => ['prompt', 'response', 'tool.use', 'subagent.start'].includes(k)) }).toEqual({ agent, verb, posted: [] });
+      }
+    }
   });
 
   /**
@@ -196,7 +205,7 @@ describe('the hook path itself, end to end', () => {
     // would look identical to one being read everywhere.
     const seen: string[] = [];
     for (const verb of ['user-prompt-submit', 'stop', 'post-tool-use'] as const) {
-      seen.push(...(await runFor('claude-code', verb)).posted);
+      seen.push(...(await runFor('copilot', verb)).posted);
     }
     expect(seen.length).toBeGreaterThan(2);
   });

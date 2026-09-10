@@ -170,6 +170,14 @@ export const MEMBER_SPOOL_QUARANTINE_MS = 30 * MS_PER_DAY;
 /** A quarantined spool file older than this is pruned. */
 export const MEMBER_SPOOL_QUARANTINE_PRUNE_MS = 60 * MS_PER_DAY;
 /**
+ * A fully delivered session's state file untouched for this long is pruned
+ * after a drain that delivered everything. The state holds the transcript
+ * pointer and the served-block receipts of a session nothing has written to
+ * in weeks; a session that does resume past it re-ships from the offset the
+ * Deployment reports and is served its block once more.
+ */
+export const MEMBER_SESSION_STATE_RETENTION_MS = 14 * MS_PER_DAY;
+/**
  * A plugin-written transcript older than this is deleted.
  *
  * These are the only transcripts the member owns: a harness writes and ages

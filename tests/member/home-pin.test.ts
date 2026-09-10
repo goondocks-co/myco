@@ -175,7 +175,7 @@ describe('a hook launched with no MYCO_HOME', () => {
     const result = await runHook(
       'post-tool-use',
       { session_id: 'sess-pinned', cwd: project, tool_name: 'Read', tool_input: { file_path: '/a' } },
-      { fetch, credential: 'registry' },
+      { fetch, credential: 'registry', symbiont: 'copilot' },
     );
 
     expect(result.stderr).not.toContain('no registry entry');
@@ -199,7 +199,7 @@ describe('a hook launched with no MYCO_HOME', () => {
     const result = await runHook(
       'post-tool-use',
       { session_id: 'sess-untrusted', cwd: project, tool_name: 'Read', tool_input: { file_path: '/a' } },
-      { fetch, credential: 'registry' },
+      { fetch, credential: 'registry', symbiont: 'copilot' },
     );
 
     expect(result.stderr).toContain('pin file mode 0664 is writable by group/other');
@@ -243,7 +243,7 @@ describe('hooks that find no membership', () => {
       await runHook(
         'post-tool-use',
         { session_id: sessionId, cwd: project, tool_name: 'Read', tool_input: { file_path: '/a' } },
-        { fetch, credential: 'registry' },
+        { fetch, credential: 'registry', symbiont: 'copilot' },
       );
     }
     expect(requests).toEqual([]);

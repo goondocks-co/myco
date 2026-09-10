@@ -1,14 +1,19 @@
 /**
- * Transcript-derived capture at Stop/SessionEnd, from the parser alone: the
- * prompts hooks never see (queued/steering commands, transcript-only prompts),
- * plan-tag plans from assistant turns, images as attachments, session lineage
- * for `session.start` — and the transcript bytes themselves as
- * `transcript.segment`s with the server as offset authority. The transcript
- * file on disk is the durable copy: only the pointer (next offset, parsed
- * size) lives in session-state; no transcript byte is ever spooled.
+ * The transcript as the member ships it: bytes from the server-held offset, in
+ * segments, for the session's own file and for the subagent transcripts found
+ * beside it. The transcript file on disk is the durable copy: only the pointer
+ * (identity, next offset, bytes already read) lives in session-state; no
+ * transcript byte is ever spooled.
+ *
+ * For an agent whose hooks still write its turn rows, the transcript is also
+ * read here at Stop for what hooks never delivered — queued and steering
+ * prompts, plan-tag plans from assistant turns, images as attachments, and
+ * session lineage. An agent the Deployment parses has none of that derived
+ * here: the parse is the one writer of its turns.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { extractUserPromptRecordsWithDrops } from '../capture/prompt-kind.js';
 import { eventsOwnedBySession, findSessionContinuation } from '../capture/session-continuation.js';
 import { deriveTranscriptId } from '../capture/transcript-id.js';
@@ -22,7 +27,7 @@ import { canStartRequest, clippedRequestBudget, type HookBudget } from './budget
 import { TRANSCRIPT_HEAD_HASH_BYTES, TRANSCRIPT_SLICE_BYTES, type MemberCode } from './constants.js';
 import {
   attachmentEvent, deriveId, planEvent, planKeyForTag, promptEvent, queuedPromptIdFor, transcriptSegmentEvent, TEXT_MEDIA_TYPE,
-  type EnvelopeContext, type OutboundEvent,
+  type EnvelopeContext, type OutboundEvent, type TranscriptRole,
 } from './envelope.js';
 import { readSessionState, updateSessionState, type SessionState, type TranscriptPointer } from './session-state.js';
 import type { MemberSpool } from './spool.js';
@@ -31,6 +36,8 @@ import type { ServerClient } from './transport.js';
 let registry: SymbiontRegistry | undefined;
 const adapters = (): SymbiontRegistry => (registry ??= new SymbiontRegistry());
 
+/** The code the Deployment answers a segment whose head digest disagrees with the one it holds. */
+const REPLACED_CODE: MemberCode = 'transcript_replaced';
 
 /** The parsed JSON object of every line that is one. */
 export function parseTranscriptLines(content: string): Array<Record<string, unknown>> {
@@ -45,7 +52,17 @@ export function parseTranscriptLines(content: string): Array<Record<string, unkn
   return out;
 }
 
-/** The transcript pointer for a path: a new inode (rotation) or a new path starts over at offset 0. */
+/**
+ * The transcript pointer for a path.
+ *
+ * Identity is (machine, path, inode, head digest): a new inode (rotation) or
+ * a new path starts over at offset 0 under a new id, and so does a file whose
+ * first bytes no longer match the ones its pointer was minted over — truncated
+ * and rewritten in place, it keeps its path and inode and is a different
+ * transcript. A pointer minted before the file had enough bytes for a digest
+ * keeps its id and gains the digest once the file is long enough, so an
+ * ordinary append never re-mints a live transcript.
+ */
 export function transcriptPointerFor(transcriptPath: string, machineId: string, previous?: TranscriptPointer): TranscriptPointer | null {
   let stat: fs.Stats;
   try {
@@ -54,8 +71,51 @@ export function transcriptPointerFor(transcriptPath: string, machineId: string, 
     return null;
   }
   const inode = Number(stat.ino);
-  if (previous && previous.path === transcriptPath && previous.inode === inode) return previous;
-  return { path: transcriptPath, transcriptId: deriveTranscriptId({ machineId, transcriptPath, inode }), inode, nextOffset: 0, parsedSize: 0 };
+  const headHash = transcriptHeadHash(transcriptPath) ?? undefined;
+  if (previous && previous.path === transcriptPath && previous.inode === inode && (previous.headHash === undefined || headHash === undefined || previous.headHash === headHash)) {
+    return previous.headHash === undefined && headHash !== undefined ? { ...previous, headHash } : previous;
+  }
+  return { path: transcriptPath, transcriptId: deriveTranscriptId({ machineId, transcriptPath, inode, headHash }), inode, headHash, nextOffset: 0, parsedSize: 0 };
+}
+
+/** Whether `next` is a different transcript under the path `previous` named: a rotation, or a file replaced in place. */
+export const pointerReplaced = (previous: TranscriptPointer | undefined, next: TranscriptPointer): boolean =>
+  previous !== undefined && previous.path === next.path && previous.transcriptId !== next.transcriptId;
+
+/** A fresh pointer for a file the Deployment reports as replaced under its current identity: minted over the bytes the file holds now, from offset 0. */
+export function remintedPointer(pointer: TranscriptPointer, machineId: string): TranscriptPointer | null {
+  const fresh = transcriptPointerFor(pointer.path, machineId);
+  // The same bytes mint the same id: a file too short for a digest has no second identity to offer.
+  return fresh !== null && fresh.transcriptId !== pointer.transcriptId ? fresh : null;
+}
+
+/**
+ * The subagent transcripts written beside a session's own, as the agent's
+ * manifest declares their layout: a glob relative to the transcript's
+ * directory, `{sessionId}` substituted, `*` matching one path segment.
+ */
+export function siblingTranscripts(agent: string, sessionId: string, transcriptPath: string): string[] {
+  const pattern = HOOK_CONFIG[agent]?.subagentTranscripts;
+  if (pattern === undefined) return [];
+  const segments = pattern.split('/').filter((s) => s.length > 0).map((s) => s.split('{sessionId}').join(sessionId));
+  let candidates = [path.dirname(transcriptPath)];
+  for (const segment of segments) {
+    const next: string[] = [];
+    for (const dir of candidates) {
+      if (!segment.includes('*')) {
+        next.push(path.join(dir, segment));
+        continue;
+      }
+      const matcher = new RegExp(`^${segment.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}$`);
+      let entries: string[];
+      try { entries = fs.readdirSync(dir); } catch { continue; }
+      for (const entry of entries) if (matcher.test(entry)) next.push(path.join(dir, entry));
+    }
+    candidates = next;
+  }
+  return candidates.filter((file) => {
+    try { return fs.statSync(file).isFile(); } catch { return false; }
+  }).sort();
 }
 
 /** The predecessor a continuation transcript names, for agents that declare `sessionContinuation`. */
@@ -86,13 +146,28 @@ export interface DerivedCapture {
   record: (state: SessionState) => void;
 }
 
+/**
+ * The bytes of a transcript past what the member has already read, as parsed
+ * lines, with the size they were read at. Nothing when the file is unchanged
+ * since the last read.
+ */
+export function unreadTranscriptLines(transcriptPath: string, state: SessionState): { lines: Array<Record<string, unknown>>; size: number } | null {
+  try {
+    const size = fs.statSync(transcriptPath).size;
+    const from = state.transcript && state.transcript.path === transcriptPath ? state.transcript.parsedSize : 0;
+    if (from >= size) return null;
+    return { lines: parseTranscriptLines(readSlice(transcriptPath, from, size - from).toString('utf-8')), size };
+  } catch {
+    return null;
+  }
+}
 
 /**
- * The events the transcript holds that hooks never delivered: prompts not yet
- * captured (by text hash), plan-tag plans from assistant turns, and images.
- * `state` is READ — the receipts come back in `record` for the caller to apply
- * with the append. A transcript whose size is unchanged since the last parse
- * yields nothing.
+ * The events the transcript holds that hooks never delivered, for an agent
+ * whose hooks write its turn rows: prompts not yet captured (by text hash),
+ * plan-tag plans from assistant turns, and images. `state` is READ — the
+ * receipts come back in `record` for the caller to apply with the append. A
+ * transcript whose size is unchanged since the last parse yields nothing.
  */
 export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: string, state: SessionState): DerivedCapture {
   const noop = { events: [], record: () => {} };
@@ -220,19 +295,34 @@ const readSlice = (file: string, offset: number, length: number): Buffer => {
   }
 };
 
+/** Which of a session's transcripts a pass ships: the session's own, or the subagent transcript at a path. */
+export type TranscriptSlot = { role: 'primary' } | { role: 'subagent'; path: string };
+export const PRIMARY_SLOT: TranscriptSlot = { role: 'primary' };
+
+const slotPointer = (state: SessionState, slot: TranscriptSlot): TranscriptPointer | undefined =>
+  slot.role === 'primary' ? state.transcript : state.siblings[slot.path];
+
+const setSlotPointer = (state: SessionState, slot: TranscriptSlot, pointer: TranscriptPointer): void => {
+  if (slot.role === 'primary') state.transcript = pointer;
+  else state.siblings[slot.path] = pointer;
+};
+
 /**
- * Ship the session's transcript from its pointer: blob then event per slice
- * (≤ `TRANSCRIPT_SLICE_BYTES`), the server's held size as the next offset, a
- * `reslice` answer re-slicing from the held size. Stops at the budget, at
- * `until`, or at the first non-ack that is not a reslice.
+ * Ship one of the session's transcripts from its pointer: blob then event per
+ * slice (≤ `TRANSCRIPT_SLICE_BYTES`), the server's held size as the next
+ * offset, a `reslice` answer re-slicing from the held size, a
+ * `transcript_replaced` answer re-minting the pointer over the file's current
+ * bytes and starting it over. Stops at the budget, at `until`, or at the first
+ * non-ack that is none of those.
  */
 export async function shipTranscriptSegments(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
-  opts: { now?: () => number; until?: number; headHash?: string } = {},
+  opts: { now?: () => number; until?: number; headHash?: string; slot?: TranscriptSlot; machineId?: string } = {},
 ): Promise<ShipResult> {
   const now = opts.now ?? Date.now;
+  const slot = opts.slot ?? PRIMARY_SLOT;
   const { sessionId } = ctx;
-  let pointer = readSessionState(spool.dir, sessionId).transcript;
+  let pointer = slotPointer(readSessionState(spool.dir, sessionId), slot);
   if (!pointer) return { shipped: 0, endedBy: 'absent' };
   /**
    * Move THIS transcript's offset, computed under the lock against what is
@@ -256,8 +346,20 @@ export async function shipTranscriptSegments(
   const persist = (next: TranscriptPointer): boolean => {
     let applied = false;
     updateSessionState(spool.dir, sessionId, (s) => {
-      if (s.transcript?.transcriptId !== next.transcriptId) return;
-      s.transcript = { ...s.transcript, nextOffset: next.nextOffset };
+      const stored = slotPointer(s, slot);
+      if (stored?.transcriptId !== next.transcriptId) return;
+      setSlotPointer(s, slot, { ...stored, nextOffset: next.nextOffset });
+      applied = true;
+    }, now());
+    if (applied) pointer = next;
+    return applied;
+  };
+  /** Replace the pointer outright: the Deployment says the file under this identity is not the file it holds. Only while the stored pointer is still the one that was refused. */
+  const replace = (replaced: TranscriptPointer, next: TranscriptPointer): boolean => {
+    let applied = false;
+    updateSessionState(spool.dir, sessionId, (s) => {
+      if (slotPointer(s, slot)?.transcriptId !== replaced.transcriptId) return;
+      setSlotPointer(s, slot, next);
       applied = true;
     }, now());
     if (applied) pointer = next;
@@ -265,6 +367,7 @@ export async function shipTranscriptSegments(
   };
   let shipped = 0;
   let lastReslice = -1;
+  let reminted = false;
   for (;;) {
     let size: number;
     try { size = fs.statSync(pointer.path).size; } catch { return { shipped, endedBy: 'absent' }; }
@@ -278,7 +381,10 @@ export async function shipTranscriptSegments(
     const source = { path: pointer.path, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), mediaType: TEXT_MEDIA_TYPE, size: bytes.byteLength };
 
     // Built before the upload so both refusal paths can name the segment they lost.
-    const event = transcriptSegmentEvent(ctx, { transcriptId: pointer.transcriptId, baseOffset: offset, blobSource: source, originPath: pointer.path, headHash: opts.headHash });
+    const event = transcriptSegmentEvent(ctx, {
+      transcriptId: pointer.transcriptId, baseOffset: offset, blobSource: source, originPath: pointer.path,
+      headHash: opts.headHash ?? pointer.headHash, role: slot.role,
+    });
     const logRefusal = (code: MemberCode, reason: string): void => {
       spool.appendRefused({ eventId: event.envelope.eventId, sessionId, kind: event.envelope.kind, code, reason, at: now() });
     };
@@ -306,12 +412,44 @@ export async function shipTranscriptSegments(
         lastReslice = outcome.heldSize;
         if (!persist({ ...pointer, nextOffset: outcome.heldSize })) return { shipped, endedBy: 'done' };
         continue;
+      case 'refused': {
+        // The file under this identity is not the one the Deployment holds.
+        // Its bytes are a transcript of their own and ship under a fresh id,
+        // once: a second disagreement under the fresh id is a refusal.
+        const fresh = outcome.code === REPLACED_CODE && !reminted && opts.machineId !== undefined ? remintedPointer(pointer, opts.machineId) : null;
+        if (fresh !== null && replace(pointer, fresh)) {
+          reminted = true;
+          process.stderr.write(`[myco] member: transcript ${pointer.path} was replaced under its identity; shipping it again as ${fresh.transcriptId}\n`);
+          continue;
+        }
+        logRefusal(outcome.code, outcome.reason);
+        spool.endPass(outcome, now());
+        return { shipped, endedBy: outcome.class };
+      }
       default:
-        // The caller logs its own refusal: `endPass` owns the latch and the
-        // diagnostics, and only this frame knows which segment was refused.
-        if (outcome.class === 'refused') logRefusal(outcome.code, outcome.reason);
         spool.endPass(outcome, now());
         return { shipped, endedBy: outcome.class };
     }
   }
+}
+
+/**
+ * Ship every transcript the session holds a pointer for: its own, then each
+ * subagent transcript beside it, inside one budget. A pass that ends for any
+ * reason other than finishing its transcript ends the whole walk: whatever
+ * stopped it will stop the next one too.
+ */
+export async function shipSessionTranscripts(
+  ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
+  opts: { now?: () => number; until?: number; machineId: string },
+): Promise<ShipResult> {
+  let shipped = 0;
+  const state = readSessionState(spool.dir, ctx.sessionId);
+  const slots: TranscriptSlot[] = [PRIMARY_SLOT, ...Object.keys(state.siblings).sort().map((p): TranscriptSlot => ({ role: 'subagent', path: p }))];
+  for (const slot of slots) {
+    const result = await shipTranscriptSegments(ctx, spool, client, budget, { ...opts, slot });
+    shipped += result.shipped;
+    if (result.endedBy !== 'done' && result.endedBy !== 'absent') return { shipped, endedBy: result.endedBy };
+  }
+  return { shipped, endedBy: 'done' };
 }

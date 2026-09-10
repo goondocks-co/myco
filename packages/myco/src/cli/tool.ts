@@ -145,10 +145,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    let result = extractStructuredResult(called.value);
-    // The Deployment serves instructions bare; how this host reaches the
-    // tools is this host's own knowledge, so the CLI renders the directive.
-    if (source !== null && tool === 'myco_cortex' && (input as { op?: unknown }).op === 'instructions') result = await withCliTransportDirective(result);
+    const result = extractStructuredResult(called.value);
     await writeEnvelope({ ok: true, tool, result });
     return;
   }
@@ -163,16 +160,6 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
  * first (spawns/recovers exactly like every other daemon-backed CLI path),
  * then a clear, actionable error instead of a hung connection attempt.
  */
-/** Prefix an instructions result with the CLI transport directive, the way the daemon does for a CLI caller. */
-async function withCliTransportDirective(result: unknown): Promise<unknown> {
-  if (!result || typeof result !== 'object') return result;
-  const body = result as { content?: unknown };
-  if (typeof body.content !== 'string' || !body.content.trim()) return result;
-  const { cliToolTransportDirective } = await import('@myco/context/cortex-injection-context.js');
-  const { resolveBinary } = await import('@myco/runtime/binary-resolution.js');
-  return { ...body, content: `${cliToolTransportDirective(resolveBinary('instruction', { kind: 'machine' }).path)}\n\n${body.content}` };
-}
-
 /** The transport for this invocation: the Deployment when a credential source is declared, the local daemon otherwise. */
 async function transportFor(vaultDir: string, source: CredentialSource | null): Promise<{ ok: true; transport: StreamableHTTPClientTransport } | { ok: false; error: ToolCliError }> {
   if (source !== null) {

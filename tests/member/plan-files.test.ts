@@ -46,7 +46,7 @@ describe('plan file capture', () => {
   it('reads the file once per content, keys it by its normalized path, names the prompt, and carries no status', () => {
     fs.writeFileSync(file, '# The plan\n\n- [ ] one\n');
     const state = { ...emptySessionState(), promptId: 'prompt-1' };
-    const first = planFileCapture(ctx(), state, 'proj_1', root, file);
+    const first = planFileCapture(ctx(), state, 'proj_1', root, file, state.promptId);
     expect(first.events).toHaveLength(1);
     const payload = first.events[0]!.envelope.payload as Record<string, unknown>;
     expect([payload.planKey, payload.title, payload.originPath, payload.promptId, payload.status, payload.content]).toEqual([planKeyForPath('proj_1', '.claude/plans/p.md'), 'The plan', '.claude/plans/p.md', 'prompt-1', undefined, '# The plan\n\n- [ ] one\n']);
@@ -55,7 +55,7 @@ describe('plan file capture', () => {
     expect(planFileCapture(ctx(), state, 'proj_1', root, file).events).toEqual([]);
     // New content under a captured path keeps the key and names no prompt: the plan belongs to the turn that produced it.
     fs.writeFileSync(file, '# The plan\n\n- [x] one\n');
-    const again = planFileCapture(ctx(), { ...state, promptId: 'prompt-9' }, 'proj_1', root, file);
+    const again = planFileCapture(ctx(), { ...state, promptId: 'prompt-9' }, 'proj_1', root, file, 'prompt-9');
     const againPayload = again.events[0]!.envelope.payload as Record<string, unknown>;
     expect([againPayload.planKey, againPayload.promptId]).toEqual([payload.planKey, undefined]);
     expect(readPlanFile(path.join(root, 'missing.md'))).toBeNull();
