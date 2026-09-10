@@ -41,6 +41,8 @@ export const SEEDING_RULES = [
   '',
   '## What git history is for',
   '',
+  `Run each Git read as a separate shell tool call using the literal relative path: \`git -C ${SEEDING_CHECKOUT_DIR} <command>\`. Do not use shell variables, pipelines, command chains, or \`cd\`; those forms require permissions this unattended run does not hold. Use dedicated file read, glob and search tools when your harness provides them.`,
+  '',
   `The log says what the code cannot: which areas churn, which decisions were reversed, what a large refactor replaced and why its message says so. Read \`git -C ${SEEDING_CHECKOUT_DIR} log --oneline -n ${MAX_REPOSITORY_HISTORY_DEPTH}\`, \`git -C ${SEEDING_CHECKOUT_DIR} shortlog -sn --no-merges HEAD\`, and the messages of the largest recent commits. A commit message that explains a reversal is a decision spore; a file rewritten three times is a gotcha worth naming.`,
   '',
   '## What to skip',
