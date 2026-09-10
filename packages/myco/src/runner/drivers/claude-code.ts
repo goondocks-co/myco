@@ -16,6 +16,7 @@
  */
 import { harnessById } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
+import { MCP_SERVER_NAME } from '../mcp-config.js';
 import { jsonLines, numberOf, recordOf, startHarness, stringOf } from './stream.js';
 
 const STOP: Readonly<Record<string, StopReason>> = {
@@ -25,6 +26,29 @@ const STOP: Readonly<Record<string, StopReason>> = {
   refusal: 'refusal',
   cancelled: 'cancelled',
 };
+
+/**
+ * The permissions a run holds, pinned rather than inherited.
+ *
+ * There is nobody at a terminal to answer a permission prompt, so nobody is
+ * declared to answer one and every tool that would have asked is refused. The
+ * run's own server is allowed whole; the mode is the asking one, so the
+ * machine's own `bypassPermissions` or `auto` does not reach a run queued from
+ * elsewhere, and everything outside the run's server is refused.
+ */
+export const RUN_PERMISSIONS: readonly string[] = ['--permission-mode', 'manual', '--permission-prompts', 'none', '--allowedTools', `mcp__${MCP_SERVER_NAME}`];
+
+/** A message's content blocks. */
+function blocksOf(message: Record<string, unknown> | null): Record<string, unknown>[] {
+  const content = message?.content;
+  return Array.isArray(content) ? content.map(recordOf).filter((b): b is Record<string, unknown> => b !== null) : [];
+}
+
+/** The tools a turn's result says were refused, by name. */
+function deniedTools(result: Record<string, unknown>): string[] {
+  const denials = Array.isArray(result.permission_denials) ? result.permission_denials : [];
+  return denials.map((d) => stringOf(recordOf(d)?.tool_name)).filter((n): n is string => n !== null);
+}
 
 export const claudeCodeDriver: Driver = {
   id: 'claude-code',
@@ -37,19 +61,44 @@ export const claudeCodeDriver: Driver = {
       '--verbose',
       '--mcp-config', spec.mcpConfigPath,
       ...isolation,
+      ...RUN_PERMISSIONS,
     ], { cwd: spec.scratchDir, env: spec.credentialEnv, signal });
 
     let ended = false;
+    /** The tool each call id named, so a result can be read back as that call's outcome. */
+    const calls = new Map<string, string>();
+    /** Calls already reported as refused: the harness says so twice, on a system line and on the result. */
+    const denied = new Set<string>();
     for await (const line of jsonLines(started.lines)) {
       const type = stringOf(line.type);
       if (type === 'system' && stringOf(line.subtype) === 'init') {
         yield { kind: 'started', harness: harness.id, sessionId: stringOf(line.session_id) };
+      } else if (type === 'system' && stringOf(line.subtype) === 'permission_denied') {
+        const id = stringOf(line.tool_use_id);
+        if (id !== null) denied.add(id);
+        yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error' };
       } else if (type === 'assistant') {
         const failure = stringOf(line.error);
         if (failure !== null) { ended = true; yield { kind: 'ended', stop: 'error', detail: failure }; break; }
-        const message = recordOf(line.message);
-        const said = message === null ? null : stringOf(message.content);
-        if (said !== null) yield { kind: 'message', role: 'assistant', text: said };
+        for (const block of blocksOf(recordOf(line.message))) {
+          const kind = stringOf(block.type);
+          if (kind === 'text') {
+            const said = stringOf(block.text);
+            if (said !== null) yield { kind: 'message', role: 'assistant', text: said };
+          } else if (kind === 'tool_use') {
+            const name = stringOf(block.name) ?? 'tool';
+            const id = stringOf(block.id);
+            if (id !== null) calls.set(id, name);
+            yield { kind: 'tool_call', name, status: 'started' };
+          }
+        }
+      } else if (type === 'user') {
+        for (const block of blocksOf(recordOf(line.message))) {
+          if (stringOf(block.type) !== 'tool_result') continue;
+          const id = stringOf(block.tool_use_id) ?? '';
+          if (denied.has(id)) continue;
+          yield { kind: 'tool_call', name: calls.get(id) ?? 'tool', status: block.is_error === true ? 'error' : 'ok' };
+        }
       } else if (type === 'result') {
         const usage = recordOf(line.usage);
         yield {
@@ -59,6 +108,10 @@ export const claudeCodeDriver: Driver = {
           costUsd: numberOf(line.total_cost_usd),
         };
         ended = true;
+        // A turn the harness calls a success while it refused the run's own
+        // tools is the run doing nothing; the refusals are its outcome.
+        const refused = deniedTools(line);
+        if (refused.length > 0) { yield { kind: 'ended', stop: 'error', detail: `permission refused for ${[...new Set(refused)].join(', ')}` }; break; }
         const stop = line.is_error === true ? 'error' : STOP[stringOf(line.stop_reason) ?? ''] ?? 'error';
         yield { kind: 'ended', stop, detail: stop === 'error' ? stringOf(line.terminal_reason) ?? stringOf(line.subtype) : null };
       }
