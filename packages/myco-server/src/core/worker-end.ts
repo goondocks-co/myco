@@ -1,4 +1,4 @@
-import { WorkerAccountingSchema, type WorkerUsage } from '@goondocks/myco-shared/worker-usage';
+import { parseWorkerAccounting, type WorkerUsage } from '@goondocks/myco-shared/worker-usage';
 import { MAX_RUN_ERROR_CHARS } from '../constants.js';
 import { resolveCost } from './cost/resolver.js';
 import { runCloseRefusal } from './run-postconditions.js';
@@ -13,7 +13,7 @@ interface WorkerEnd extends WorkerRunIdentity {
 
 /** Close evidence and accounting are prepared under the same dispatched attempt. */
 export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEnd, row) => {
-  const { usage = null, attemptId } = WorkerAccountingSchema.parse(run);
+  const { usage = null, attemptId } = parseWorkerAccounting(run);
   const unmet = run.status === 'completed' ? await runCloseRefusal(env.db, { projectId: run.projectId }, row) : null;
   const status = unmet === null ? run.status : 'failed';
   const error = unmet ?? (run.error == null ? null : run.error.slice(0, MAX_RUN_ERROR_CHARS));

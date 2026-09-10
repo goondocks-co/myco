@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { claudeUsage } from '@myco/runner/drivers/usage.js';
-import { WorkerUsageSchema } from '@goondocks/myco-shared/worker-usage';
+import { parseWorkerUsage } from '@goondocks/myco-shared/worker-usage';
 
 describe('native harness accounting', () => {
   it('uses all model totals instead of main-loop usage, including both cache categories', () => {
@@ -22,9 +22,9 @@ describe('native harness accounting', () => {
 
   it('refuses non-finite accounting and preserves known zero', () => {
     for (const value of [NaN, Infinity, -Infinity, -1]) {
-      expect(WorkerUsageSchema.safeParse({ inputTokens: 1, outputTokens: 1, costUsd: value }).success).toBe(false);
+      expect(() => parseWorkerUsage({ inputTokens: 1, outputTokens: 1, costUsd: value })).toThrow();
     }
-    expect(WorkerUsageSchema.parse({ inputTokens: 0, outputTokens: 0, costUsd: null, estimatedCostUsd: 0 }))
+    expect(parseWorkerUsage({ inputTokens: 0, outputTokens: 0, costUsd: null, estimatedCostUsd: 0 }))
       .toMatchObject({ inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 });
   });
 });

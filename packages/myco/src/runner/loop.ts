@@ -1,4 +1,4 @@
-import { WorkerUsageSchema, type WorkerUsage } from '@goondocks/myco-shared/worker-usage';
+import { parseWorkerUsage, type WorkerUsage } from '@goondocks/myco-shared/worker-usage';
 /**
  * The worker: claim one run, hold it on a lease, drive a harness, end it.
  *
@@ -252,7 +252,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
       events.push(step.value);
       if (step.value.kind === 'usage') {
         const { kind: _kind, ...reported } = step.value;
-        const parsed = WorkerUsageSchema.parse(reported);
+        const parsed = parseWorkerUsage(reported);
         usage = Object.values(parsed).every((value) => value == null) ? null : parsed;
       }
       if (step.value.kind === 'tool_call') options.log(`run ${run.id} called ${step.value.name}: ${step.value.status}`);
