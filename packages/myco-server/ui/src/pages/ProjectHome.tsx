@@ -11,7 +11,7 @@ import { Skeleton } from '../components/ui/skeleton';
 import { ActivitySparkline } from '../components/ui/sparkline';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
 import { useRuns, type RunListRow } from '../hooks/use-intelligence';
-import { useProjectPlans, type ProjectPlanRow } from '../hooks/use-plans';
+import { planPath, useProjectPlans, type ProjectPlanRow } from '../hooks/use-plans';
 import { useProjectActions, useProjects } from '../hooks/use-projects';
 import { useSettings, type LeafRow } from '../hooks/use-settings';
 import { refusalText } from '../hooks/use-access';
@@ -277,12 +277,6 @@ export function orderPlans(plans: readonly ProjectPlanRow[]): ProjectPlanRow[] {
   return plans
     .filter((p) => OPEN_PLAN_STATUSES.includes(p.status))
     .sort((a, b) => rank(a.status) - rank(b.status) || b.updatedAt - a.updatedAt);
-}
-
-/** Where one plan opens: its own session's plans, with the plan named — the destination a plan search hit already uses. */
-export function planPath(projectId: string, plan: Pick<ProjectPlanRow, 'planKey' | 'sessionId'>): string {
-  const search = new URLSearchParams({ tab: 'plans', plan: plan.planKey });
-  return `/p/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(plan.sessionId)}?${search}`;
 }
 
 function PlansPanel({ projectId, base, plans, pending, error }: { projectId: string; base: string; plans: ProjectPlanRow[]; pending: boolean; error: Error | null }) {

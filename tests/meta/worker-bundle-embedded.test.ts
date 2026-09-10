@@ -22,10 +22,13 @@ import { BUNDLED_WORKER, BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.gen
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /**
- * Set from the bundle measured AFTER #1162 — 1,203,929 bytes decoded, 260,181
- * gzipped — with room for ordinary growth. The figure before that work was
- * 1,196,848, only 3,152 under the previous 1,200,000 ceiling, which is why a
- * page's worth of new server code tripped it.
+ * Set from the bundle as #1162 left it: about 1.204 MB decoded and about 261 KB
+ * gzipped, measured 2026-09-10 at 1,203,929 bytes on one machine and 1,204,399 on
+ * another. The few hundred bytes between them are the bundler's, not the source's,
+ * which is why the figure is quoted as approximate and the ceiling is set well
+ * clear of it. Before that work the bundle was 1,196,848 bytes, only 3,152 under
+ * the previous 1,200,000 ceiling, which is why a page's worth of new server code
+ * tripped it.
  *
  * The ceiling is a tripwire, not a platform budget: Cloudflare enforces 64 MiB
  * uncompressed on every plan, so this exists to catch a bundler that starts

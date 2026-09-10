@@ -58,12 +58,35 @@ function mount(path: string) {
 }
 
 /**
+ * Class tokens that hide what carries them, in the utility vocabulary this
+ * dashboard uses, plus the arbitrary-value spellings of the same three
+ * declarations.
+ *
+ * Matched by NAME, not by computed style. jsdom loads no stylesheet, so a class
+ * that hides an element in the browser leaves `getComputedStyle` reporting a
+ * visible element here — which is exactly how three hiding mutations survived a
+ * gate that read computed style alone.
+ */
+const HIDING_CLASS = /^(?:[\w-]+:)*(hidden|invisible|sr-only|opacity-0|\[display:none\]|\[visibility:hidden\]|\[opacity:0\])$/;
+
+/**
  * Whether an element is actually on the screen, not merely in the document.
  *
  * `textContent` reads straight through `hidden`, `display: none` and a
  * screen-reader-only class, so a gate written on text alone is satisfied by a
- * sample nobody can see — which is the same failure as no sample at all. This
- * walks the ancestors so a hidden wrapper counts too.
+ * sample nobody can see — which is the same failure as no sample at all. Three
+ * checks together, because no one of them catches the others: the `hidden`
+ * attribute, the computed style (which sees inline styles), and the class name
+ * (which is the only signal jsdom has for a utility class). The walk goes up the
+ * ancestors, so a hidden wrapper counts.
+ *
+ * A responsive prefix does not excuse a token: `lg:hidden` on a measure's sample
+ * hides it at some width, and a sample that disappears at some widths is not a
+ * sample the reader can rely on.
+ *
+ * `aria-hidden` is deliberately NOT checked. It changes what a screen reader
+ * announces rather than whether the figure is on the screen, and the two are
+ * different claims; a gate conflating them would fail a correct page.
  */
 function onScreen(el: Element | null | undefined): boolean {
   if (el == null) return false;
@@ -71,7 +94,7 @@ function onScreen(el: Element | null | undefined): boolean {
     if (node instanceof HTMLElement && node.hidden) return false;
     const style = globalThis.getComputedStyle(node);
     if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-    if (node.className.toString().split(/\s+/).includes('sr-only')) return false;
+    if (node.className.toString().split(/\s+/).some((token) => HIDING_CLASS.test(token))) return false;
   }
   return true;
 }

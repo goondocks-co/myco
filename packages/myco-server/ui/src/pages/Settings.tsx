@@ -77,7 +77,14 @@ const textOf = (field: LeafField, value: unknown): string => {
   return String(value);
 };
 
-function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
+/**
+ * One leaf's control.
+ *
+ * Exported so a gate can render a field of every kind: the catalogue holds no
+ * read-only `select` or `textarea` today, and a property held only where the
+ * catalogue happens to exercise it is a property with no gate.
+ */
+export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
   const actions = useSettingsActions();
   const nameOf = useMemberName();
   const [draft, setDraft] = useState<string | null>(null);
@@ -129,7 +136,8 @@ function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefine
           </button>
         )}
         {field.kind === 'select' && (
-          <select id={`leaf-${field.leaf}`} aria-label={field.label} className={inputClass} value={value === null ? '' : String(value)} disabled={actions.setLeaf.isPending}
+          <select id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} ${field.readOnly === true ? 'opacity-60' : ''}`}
+            value={value === null ? '' : String(value)} disabled={actions.setLeaf.isPending || field.readOnly === true}
             onChange={(e) => { const raw = e.target.value; if (raw === '') return; const opt = (field.options ?? []).find((o) => String(o) === raw); save(opt ?? raw); }}>
             <option value="" disabled={row?.configured === true}>Server default</option>
             {(field.options ?? []).map((o) => <option key={String(o)} value={String(o)}>{String(o)}{field.unit ? ` ${field.unit}` : ''}</option>)}

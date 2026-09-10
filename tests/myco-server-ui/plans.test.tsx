@@ -9,7 +9,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
-import { orderPlans, planPath } from '../../packages/myco-server/ui/src/pages/ProjectHome';
+import { orderPlans } from '../../packages/myco-server/ui/src/pages/ProjectHome';
+import { planPath } from '../../packages/myco-server/ui/src/hooks/use-plans';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
 const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 1, lastActivityAt: null, archivedAt: null, archivedBy: null }] };

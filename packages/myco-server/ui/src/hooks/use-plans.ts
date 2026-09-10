@@ -8,6 +8,19 @@ export interface ProjectPlanRow extends PlanCardRow {
   tags: string[];
 }
 
+/**
+ * Where one plan opens: its own session's plans, with the plan named.
+ *
+ * One function, two callers — the project overview's panel and a plan search hit.
+ * A plan has no page of its own, so the destination is a shape rather than a
+ * route, and a shape spelled out at each call site is one that drifts at one of
+ * them.
+ */
+export function planPath(projectId: string, plan: { planKey: string; sessionId: string }): string {
+  const search = new URLSearchParams({ tab: 'plans', plan: plan.planKey });
+  return `/p/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(plan.sessionId)}?${search}`;
+}
+
 /** The statuses the page filters by, in the order it lists them. `all` is the page's own, not the server's. */
 export const PLAN_FILTERS = [
   { id: 'all', label: 'All' },

@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { LEAF_FIELDS, LEAF_GROUPS } from '../../packages/myco-server/ui/src/settings/catalogue';
+import { LeafControl } from '../../packages/myco-server/ui/src/pages/Settings';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
 const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 0, lastActivityAt: null, archivedAt: null, archivedBy: null }] };
@@ -217,21 +218,77 @@ describe('Deployment Settings', () => {
   });
 
   /**
-   * A setting nothing reads is shown and not offered.
+   * Every KIND of control honours the flag, not only the kinds the catalogue
+   * happens to mark today.
+   *
+   * The catalogue carries a read-only toggle, patterns field and number, and
+   * nothing read-only of the other three kinds — so the catalogue-driven test
+   * below cannot reach a `select`, a `text` or a `textarea`. This renders one of
+   * each directly and asserts none of them is offered.
+   */
+  it.each(['toggle', 'number', 'text', 'textarea', 'select', 'json'] as const)('does not offer a read-only %s', async (kind) => {
+    const field = { leaf: `probe.${kind}`, label: `Probe ${kind}`, kind, readOnly: true, options: ['a', 'b'] };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    server(base());
+    render(
+      <AppearanceProvider><QueryClientProvider client={client}><MemoryRouter>
+        <ul><LeafControl field={field} row={{ leaf: field.leaf, configured: true, value: kind === 'toggle' ? true : 'a', updatedAt: NOW, updatedBy: 'mem_1' }} /></ul>
+      </MemoryRouter></QueryClientProvider></AppearanceProvider>,
+    );
+    const control = await screen.findByLabelText(field.label);
+    const offered = control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement
+      ? !control.readOnly && !control.disabled
+      : !(control as HTMLButtonElement | HTMLSelectElement).disabled;
+    expect({ kind, offered }).toEqual({ kind, offered: false });
+  });
+
+  /**
+   * A setting nothing reads is shown and not offered — every kind of it.
    *
    * The same treatment the unread digest switch already gets: a control that
    * changes nothing reads worse than one that cannot be moved, and hiding the
-   * field would lose sight of a value an older deployment stored. The number
-   * kind honours `readOnly` here for the first time, so this is its gate.
+   * field would lose sight of a value an older deployment stored. The write path
+   * refuses a read-only leaf whatever the control does, so this is about what a
+   * person is offered; a kind that quietly ignored the flag would offer a change
+   * the save then swallowed.
+   *
+   * Driven from the catalogue rather than from a list of leaves, so a leaf that
+   * takes the flag later is covered the day it does.
    */
-  it('shows a setting nothing reads without offering it, and writes nothing when one is typed into', async () => {
+  it('shows every read-only setting without offering it, whatever kind of control it is', async () => {
+    const readOnly = LEAF_GROUPS.flatMap((g) => g.leaves.filter((f) => f.readOnly === true).map((f) => ({ group: g.label, field: f })));
+    expect(readOnly.length).toBeGreaterThan(0);
     const { sent } = server(base({ '/api/settings': () => Response.json(leaves({ 'skills.usage_stale_days': { value: 45, updatedBy: 'mem_1', updatedAt: NOW } })) }));
-    mount('/settings?tab=skills');
-    const stale = await screen.findByLabelText('Stale after');
-    expect((stale as HTMLInputElement).readOnly).toBe(true);
-    expect((stale as HTMLInputElement).value).toBe('45');
-    fireEvent.change(stale, { target: { value: '90' } });
-    fireEvent.blur(stale);
+    mount('/settings');
+    await screen.findByRole('list', { name: LEAF_GROUPS[0]!.label });
+
+    // A value an older deployment stored is shown, not hidden: that is the whole
+    // point of showing a setting nothing reads.
+    await tab('Skills');
+    expect((await screen.findByLabelText('Stale after') as HTMLInputElement).value).toBe('45');
+
+    for (const { group, field } of readOnly) {
+      await tab(group);
+      const control = await screen.findByLabelText(field.label);
+      // Each kind says "not offered" in its own grammar: an input or textarea
+      // takes the attribute, a toggle and a select are disabled, and the patterns
+      // editor renders neither its add box nor its remove buttons.
+      const offered = control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement
+        ? !control.readOnly && !control.disabled
+        : control instanceof HTMLButtonElement || control instanceof HTMLSelectElement
+          ? !control.disabled
+          : screen.queryByLabelText(`Add ${field.label.toLowerCase()}`) !== null
+            || within(control).queryAllByRole('button', { name: /^Remove / }).length > 0;
+      expect({ leaf: field.leaf, kind: field.kind, offered }).toEqual({ leaf: field.leaf, kind: field.kind, offered: false });
+      // Then try to change it the way a person would, in the grammar its kind has.
+      if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement) {
+        fireEvent.change(control, { target: { value: '99' } });
+        fireEvent.blur(control);
+      } else {
+        fireEvent.click(control);
+      }
+    }
+    // Not one of those controls wrote anything.
     expect(sent).toEqual([]);
   });
 
