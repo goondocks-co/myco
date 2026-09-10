@@ -51,10 +51,15 @@ export const scheduledTasks: ParityScenario = {
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE task = 'container-smoke'`);
     await leaf('agent.tasks', { 'container-smoke': { schedule: { runIn: ['active', 'idle', 'sleep'], intervalSeconds: 0, maxRunsPerDay: 1 } } });
     expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 1 });
-    expect(await probes(target.projectId)).toEqual([
+    const atCeiling = [
       { status: 'completed', harness: 'record', runContext: JSON.stringify({ timeoutSeconds: 300 }) },
       { status: 'skipped', harness: null, runContext: JSON.stringify({ reason: 'max_runs_per_day' }) },
-    ]);
+    ];
+    expect(await probes(target.projectId)).toEqual(atCeiling);
+    // The ceiling refuses rather than queues, and the refusal is recorded once a
+    // day: a second wake at the ceiling answers the same and leaves the same rows.
+    expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 1 });
+    expect(await probes(target.projectId)).toEqual(atCeiling);
 
     // Off again: the clock leaves both Projects alone.
     await leaf('agent.scheduled_tasks_enabled', false);

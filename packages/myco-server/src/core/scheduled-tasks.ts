@@ -9,6 +9,9 @@
  * launching or queueing as the limits say. Nothing here is held between
  * wakes: every gate reads its answer from the store, so a wake delivered
  * twice schedules nothing twice.
+ *
+ * A dispatch limit and a per-day ceiling answer differently, and the difference
+ * is the point: a limit QUEUES, a ceiling REFUSES (`ceilingSkipId`).
  */
 import type { ServerEnv } from './adapters.js';
 import { AlreadyRunning, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, type LaunchSpec } from './harness.js';
@@ -16,12 +19,31 @@ import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
 import { hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, projectAdmission, recordSkipped, taskEntriesSince } from './runs.js';
 import { leafValues, type ProjectCapability } from './settings.js';
-import { ACCELERATORS, admissionForTask, effectiveIntervalSeconds, PRE_CONDITIONS, resolveSchedule, runTimeoutForTask, scheduledTasks, scheduleOverride, type TaskSchedule } from './task-catalogue.js';
+import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
+import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
 import { listProjects } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 
 const DAY_MS = 86_400_000;
+
+/**
+ * A ceiling REFUSES a dispatch; it never queues one.
+ *
+ * A queue holds work for capacity that is coming back. The day's ceiling is not
+ * capacity — it is the spend an owner capped — and a queued run would launch the
+ * moment the drain reached it, spending exactly what the cap withholds. The next
+ * wake decides again, and the task runs as soon as the trailing day has room.
+ *
+ * The refusal is recorded once per Project per task per day rather than once per
+ * wake: the skipped row's id is derived from those three, so every further wake
+ * inside the same day writes nothing. A Deployment waking every minute at its
+ * ceiling therefore leaves one row naming the cap. `taskEntriesSince` counts no
+ * skipped row, so this record can never be what holds the ceiling shut.
+ */
+const ceilingSkipId = (projectId: string, task: string, now: number): string =>
+  `run_ceiling_${projectId}_${task}_${Math.floor(now / DAY_MS)}`;
+
 /** Who a scheduled run is attributed to: the Deployment's own clock. */
 export const CLOCK_ACTOR = 'clock';
 /** The 1.4 defaults for the recency gates, applied where the leaves are unset. */
@@ -128,7 +150,7 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
     for (const { task, schedule } of tasks) {
       const skip = await decideTask(env, project.projectId, project.lastActivityAt, task, schedule, state, leaves, now);
       if (skip === 'max_runs_per_day') {
-        await recordSkipped(env.db, { projectId: project.projectId }, { id: `run_${crypto.randomUUID()}`, agentId: HARNESS_AGENT_ID, task, reason: skip, at: now });
+        await recordSkipped(env.db, { projectId: project.projectId }, { id: ceilingSkipId(project.projectId, task, now), agentId: HARNESS_AGENT_ID, task, reason: skip, at: now });
         emit({ kind: 'task_skipped', task, projectId: project.projectId, skip });
         report.skipped += 1;
         continue;
@@ -170,4 +192,70 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
     }
   }
   return report;
+}
+
+/** Named preconditions a schedule may name; a task naming one absent here is refused by a gate, never skipped in silence. */
+export const PRE_CONDITIONS: Readonly<Record<string, (args: { projectId: string }) => Promise<boolean>>> = {};
+
+/** Named accelerators: a count of pending work that shortens a task's interval. None yet; the Canopy task brings the first. */
+export const ACCELERATORS: Readonly<Record<string, (args: { projectId: string; limit: number }) => Promise<number>>> = {};
+
+/** The schedule block an owner set for one task, or undefined where they set none. */
+export function scheduleOverride(task: string, overrides: Record<string, unknown>): unknown {
+  const entry = overrides[task];
+  return entry !== null && typeof entry === 'object' && !Array.isArray(entry) ? (entry as Record<string, unknown>).schedule : undefined;
+}
+
+/**
+ * Every task the clock schedules on this wake, with its schedule under the
+ * owner's overrides.
+ *
+ * A declaration switched off is absent rather than visited and skipped: the
+ * clock's list is what the Deployment actually runs, and an owner turns a
+ * declared task on through `agent.tasks.<task>.schedule.enabled`.
+ */
+export function scheduledTasks(overrides: Record<string, unknown> = {}): Array<{ task: string; schedule: TaskSchedule }> {
+  return Object.entries(TASK_SCHEDULE).flatMap(([task, declared]) => {
+    if (declared === null) return [];
+    const schedule = resolveSchedule(declared, scheduleOverride(task, overrides));
+    return schedule.enabled === false ? [] : [{ task, schedule }];
+  });
+}
+
+/**
+ * A Deployment's per-task override laid over the declared schedule, field by
+ * field. The accelerator is replaced whole: a name from one block paired with
+ * thresholds from another would shorten the wrong interval.
+ */
+export function resolveSchedule(declared: TaskSchedule, override: unknown): TaskSchedule {
+  if (override === null || typeof override !== 'object' || Array.isArray(override)) return declared;
+  const o = override as Record<string, unknown>;
+  const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+  const states = (v: unknown): readonly ScheduleState[] | undefined =>
+    (Array.isArray(v) && v.every((s) => s === 'active' || s === 'idle' || s === 'sleep') ? (v as ScheduleState[]) : undefined);
+  const accelerator = (v: unknown): TaskSchedule['accelerator'] | undefined => {
+    if (v === null || typeof v !== 'object') return undefined;
+    const a = v as Record<string, unknown>;
+    const t = a.thresholds as Record<string, unknown> | undefined;
+    if (typeof a.name !== 'string' || t === undefined || num(t.steady) === undefined || num(t.accelerated) === undefined) return undefined;
+    return { name: a.name, thresholds: { steady: num(t.steady)!, accelerated: num(t.accelerated)! } };
+  };
+  return {
+    ...(typeof o.enabled === 'boolean' ? { enabled: o.enabled } : declared.enabled === undefined ? {} : { enabled: declared.enabled }),
+    intervalSeconds: num(o.intervalSeconds) ?? declared.intervalSeconds,
+    runIn: states(o.runIn) ?? declared.runIn,
+    preCondition: typeof o.preCondition === 'string' ? o.preCondition : declared.preCondition,
+    accelerator: accelerator(o.accelerator) ?? declared.accelerator,
+    maxRunsPerDay: num(o.maxRunsPerDay) ?? declared.maxRunsPerDay,
+    runWhenCold: typeof o.runWhenCold === 'boolean' ? o.runWhenCold : declared.runWhenCold,
+    overlap: o.overlap === 'skip' || o.overlap === 'queue' ? o.overlap : declared.overlap,
+  };
+}
+
+/** Tier divisors on the interval under backlog: 1× up to the steady threshold, 4× up to the accelerated one, 12× past it. */
+export function effectiveIntervalSeconds(intervalSeconds: number, count: number | null, thresholds: { steady: number; accelerated: number } | undefined): number {
+  if (count === null || thresholds === undefined) return intervalSeconds;
+  if (count <= thresholds.steady) return intervalSeconds;
+  if (count <= thresholds.accelerated) return Math.floor(intervalSeconds / 4);
+  return Math.floor(intervalSeconds / 12);
 }

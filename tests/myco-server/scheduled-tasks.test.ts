@@ -7,8 +7,9 @@ import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { HARNESS_AGENT_ID } from '@myco-server-worker/core/harness.js';
-import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, decideTask, runScheduledTasks, scheduleFor, scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
-import { effectiveIntervalSeconds, PRE_CONDITIONS, resolveSchedule, scheduledTasks, TASK_ADMISSION, TASK_SCHEDULE, type TaskSchedule } from '@myco-server-worker/core/task-catalogue.js';
+import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, decideTask, effectiveIntervalSeconds, PRE_CONDITIONS, resolveSchedule, runScheduledTasks, scheduledTasks, scheduleFor, scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
+import { TASK_SCHEDULE, type TaskSchedule } from '@myco-server-worker/core/jobs.js';
+import { TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv, withHarness } from './helpers/fixtures.js';
@@ -133,7 +134,7 @@ describe('one wake of the clock', () => {
     expect(f.runs('proj_1')).toHaveLength(1);
   });
 
-  it('records a skipped run when the ceiling is met, and does nothing while the switch is off', async () => {
+  it('refuses at the ceiling rather than queueing, records that refusal once a day, and dispatches again when the day has room', async () => {
     const f = fixture();
     f.receipt('proj_1', NOW - 3_600_000);
     f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 1, maxRunsPerDay: 1 } } });
@@ -144,6 +145,22 @@ describe('one wake of the clock', () => {
     const rows = f.runs('proj_1');
     expect(rows.map((r) => r.status)).toEqual(['completed', 'skipped']);
     expect(JSON.parse(rows[1]!.runContext!)).toEqual({ reason: 'max_runs_per_day' });
+    // A ceiling is not a queue: nothing waits for capacity, and nothing launched.
+    expect(rows.filter((r) => r.status === 'queued')).toEqual([]);
+    expect(f.launches).toHaveLength(1);
+
+    // Two more wakes inside the same day: each answers the ceiling, and the
+    // record of it stays one row rather than one per wake.
+    expect(await runScheduledTasks(f.env, 'sleep', NOW + 60_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
+    expect(await runScheduledTasks(f.env, 'sleep', NOW + 120_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
+    expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped']);
+
+    // The trailing day has room again: the next wake dispatches, with no queue
+    // to drain and nothing owed for the wakes that refused.
+    expect(await runScheduledTasks(f.env, 'sleep', NOW + DAY + 5_000, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
+    expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped', 'pending']);
+    expect(f.launches).toHaveLength(2);
+
     f.setting('agent.scheduled_tasks_enabled', false);
     expect(await runScheduledTasks(f.env, 'sleep', NOW + 2 * DAY, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
   });
