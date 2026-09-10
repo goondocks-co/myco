@@ -118,7 +118,7 @@ describe('the context a claimed run carries', () => {
 
     // What the dispatch decided survives the claim: the run's own budget, and a
     // hash the SERVER filed the ask under rather than one a harness reports.
-    const context = JSON.parse(r.e.sqlite.query(`SELECT run_context AS c FROM agent_runs WHERE id = 'run_x'`).get<{ c: string }>()!.c) as Record<string, unknown>;
+    const context = JSON.parse((r.e.sqlite.query(`SELECT run_context AS c FROM agent_runs WHERE id = 'run_x'`).get() as { c: string }).c) as Record<string, unknown>;
     expect(context.timeoutSeconds).toBe(900);
     expect(typeof context.input_hash).toBe('string');
     expect((context.input_hash as string).length).toBe(64);
