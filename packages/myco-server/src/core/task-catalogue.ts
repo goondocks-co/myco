@@ -20,6 +20,7 @@
  * - **An embedding provider**, per Deployment, for deterministic vector work.
  */
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
+import { declared } from './declared.js';
 import type { RunAdmissionGate } from './runs.js';
 
 /** The task that writes a session's title and summary. */
@@ -102,7 +103,7 @@ export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
 
 /** The tools a task declares, or none for a task this Deployment does not serve. */
 export function taskTools(task: string | null): readonly string[] {
-  return task === null ? [] : TASK_TOOLS[task] ?? [];
+  return task === null ? [] : declared(TASK_TOOLS, task) ?? [];
 }
 
 /**
@@ -123,7 +124,7 @@ export const TASK_RUN_TIMEOUT_SECONDS: Readonly<Record<string, number>> = {
 
 /** The budget one run of this task gets, or null for a task that takes the dispatcher's default. */
 export function runTimeoutForTask(task: string): number | null {
-  return TASK_RUN_TIMEOUT_SECONDS[task] ?? null;
+  return declared(TASK_RUN_TIMEOUT_SECONDS, task) ?? null;
 }
 
 /**
@@ -145,5 +146,5 @@ export const MANUAL_ONLY_TASKS: readonly string[] = [
 
 /** The gate a task runs behind, or null for a name this Deployment does not serve. */
 export function admissionForTask(taskName: string): RunAdmissionGate | null {
-  return TASK_ADMISSION[taskName] ?? null;
+  return declared(TASK_ADMISSION, taskName) ?? null;
 }

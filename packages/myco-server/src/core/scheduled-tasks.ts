@@ -19,7 +19,8 @@ import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
 import { ensureAgent, hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, projectAdmission, recordSkipped, taskEntriesSince } from './runs.js';
 import { leafValues, type ProjectCapability } from './settings.js';
-import { declared, TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
+import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
+import { declared } from './declared.js';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
 import { listProjects } from '../read/sessions.js';
 import { listUnprocessedPrompts } from '../read/prompts.js';
@@ -29,26 +30,13 @@ import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 const DAY_MS = 86_400_000;
 
 /**
- * A ceiling REFUSES a dispatch; it never queues one.
- *
- * A queue holds work for capacity that is coming back. The day's ceiling is not
- * capacity — it is the spend an owner capped — and a queued run would launch the
- * moment the drain reached it, spending exactly what the cap withholds. The next
- * wake decides again, and the task runs as soon as the trailing window has room.
- *
- * The refusal is recorded once per EPISODE rather than once per wake. An episode
- * is one stretch of wakes that the same filled window refuses, and the entry that
- * filled it names it: while the ceiling holds no entry is added, so that instant
- * is fixed, and every wake inside the episode derives the same id and writes
- * nothing new. Keying the id on a clock division instead would split an episode
- * at the division's edge — the window the ceiling counts is a trailing one and
- * belongs to no calendar day — and leave two rows for one refusal.
- *
- * A ceiling of zero is refused with no entry at all to name, and the whole
- * Project-and-task is one episode: the row says once that this task is not to
- * run. `taskEntriesSince` counts no skipped row, so this record can never be
- * what holds the ceiling shut, and the task grammar — a name carries no `_` —
- * keeps the joined id unambiguous.
+ * A ceiling refuses dispatch until the trailing 24-hour window has room.
+ * Refusals share an id keyed by project, task and the window's filling instant.
+ * Separate episodes can fill on the same UTC day; one episode can span midnight.
+ * Replaced entries affect the filling instant but not the count, so a replacement
+ * can produce an additional refusal row during an episode.
+ * A zero ceiling uses one id for a project and task with no prior entry.
+ * Skipped rows are excluded from the ceiling count; task names contain no `_`.
  */
 const NO_ENTRY = 0;
 const ceilingSkipId = (projectId: string, task: string, filledAt: number | null): string =>

@@ -66,11 +66,15 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
 const REPEATING_TIMER = 'packages/myco/src/runner/loop.ts';
 
 /**
- * What names a timer, as a MECHANISM rather than one call form: an alias
- * (`const every = setInterval`), computed access (`globalThis['set' + 'Timeout']`)
- * and a sleep inside a loop all schedule work exactly as a direct call does.
+ * Timer identifiers and sleeps are checked after transpilation.
+ * Plain globalThis.fetch calls are allowed in the member closure. Computed
+ * global access and casts are checked in raw source; transpilation erases casts.
+ * This raw-source check also matches comments containing those access forms.
+ * A two-statement computed access with no cast or timer identifier is outside
+ * this scan's coverage and remains subject to TypeScript's indexing checks.
  */
-const TIMER_MECHANISM = /\b(setInterval|setTimeout|setImmediate)\b|Bun\.sleep|scheduler\.wait|globalThis\b(?:\s+as\b[^[\n]{0,80})?\s*\)?\s*\[/;
+const TIMER_IDENTIFIERS = /\b(setInterval|setTimeout|setImmediate)\b|Bun\.sleep|scheduler\.wait/;
+const GLOBAL_REACH = /globalThis\b\s+as\b|globalThis\b(?:\s+as\b[^[\n]{0,80})?\s*\)?\s*\[/;
 /** Call sites, counted: the identifier applied to arguments. */
 const TIMER_CALL = /\b(setInterval|setTimeout|setImmediate)\s*\(|Bun\.sleep\s*\(|scheduler\.wait\s*\(/g;
 const TIMER_CLEARED = /\b(clearInterval|clearTimeout)\s*\(/g;
@@ -80,7 +84,8 @@ const TIMER_AWAITED = /new Promise[\s\S]{0,160}?(set(Interval|Timeout)|Bun\.slee
 const SCHEDULER_TOKENS: readonly RegExp[] = [/\bPowerManager\b/, /\bJobRunner\b/, /\bPOWER_JOB_NAMES\b/, /\bregisterJob\s*\(/];
 
 const CLOSURE = closureOf(entryFiles(SRC, MEMBER_ENTRIES));
-const CODE = new Map([...CLOSURE.modules].map(([key, file]) => [key, codeOf(fs.readFileSync(file, 'utf-8'), file)]));
+const SOURCE = new Map([...CLOSURE.modules].map(([key, file]) => [key, fs.readFileSync(file, 'utf-8')]));
+const CODE = new Map([...SOURCE].map(([key, source]) => [key, codeOf(source, key)]));
 
 describe('the 2.0 member entry graph', () => {
   it('walks a closure worth gating', () => {
@@ -99,8 +104,13 @@ describe('the 2.0 member entry graph', () => {
   });
 
   it('names a timer in no module but the allowlisted ones, whatever the spelling', () => {
-    const naming = [...CODE].filter(([, code]) => TIMER_MECHANISM.test(code)).map(([key]) => key);
+    const naming = [...CODE].filter(([, code]) => TIMER_IDENTIFIERS.test(code)).map(([key]) => key);
     expect(naming.sort()).toEqual(Object.keys(BOUNDED_TIMERS).sort());
+  });
+
+  it('reaches into the global object for nothing but a plain member, so a name assembled at runtime has nowhere to land', () => {
+    const reaching = [...SOURCE].filter(([, source]) => GLOBAL_REACH.test(source)).map(([key]) => key);
+    expect(reaching).toEqual([]);
   });
 
   it('accounts for every timer call site with a clear or an await, at the count the allowlist declares', () => {

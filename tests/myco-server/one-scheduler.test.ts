@@ -20,8 +20,12 @@ import { describe, expect, it } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { codeOf } from '../helpers/import-closure.ts';
 import { declaredScheduleFor, SERVER_JOBS, DEFERRED_JOBS, TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { ACCELERATORS, PRE_CONDITIONS, scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
+import { admissionForTask, runTimeoutForTask, taskTools } from '@myco-server-worker/core/task-catalogue.js';
+import { prepareDispatch } from '@myco-server-worker/core/harness.js';
+import { sqliteEnv, withHarness } from './helpers/fixtures.js';
 
 const WORKER = fileURLToPath(new URL('../../packages/myco-server/', import.meta.url));
 const SRC = join(WORKER, 'src');
@@ -39,7 +43,9 @@ function files(dir: string): string[] {
 }
 
 const key = (file: string): string => relative(SRC, file).split('\\').join('/');
-const sources = (): Array<{ file: string; text: string }> => files(SRC).map((file) => ({ file: key(file), text: readFileSync(file, 'utf8') }));
+/** Shared source with comments removed and runtime identifiers retained. */
+const sources = (): Array<{ file: string; text: string }> =>
+  files(SRC).map((file) => ({ file: key(file), text: codeOf(readFileSync(file, 'utf8'), file) }));
 
 /**
  * Where each scheduling mechanism may appear. One wake arrives three ways —
@@ -48,12 +54,7 @@ const sources = (): Array<{ file: string; text: string }> => files(SRC).map((fil
  * scheduler.
  */
 const WAKE_MECHANISMS: ReadonlyArray<{ what: string; pattern: RegExp; allowed: readonly string[] }> = [
-  // The MECHANISM, not one call form: a timer aliased to a local name, reached
-  // through computed access on `globalThis`, or spelled as a sleep in a loop is
-  // the same second scheduler as a direct call, so the bare identifiers are what
-  // the scan matches. `globalThis` is matched whole: a name assembled at runtime
-  // (`'set' + 'Timeout'`) carries no identifier to find, and the shared server
-  // source reaches the global object for nothing else.
+  // Shared server code uses no globalThis access or sleep outside the wake loop.
   { what: 'a process timer', pattern: /\b(setInterval|setTimeout|setImmediate|globalThis)\b|Bun\.sleep|scheduler\.wait/, allowed: ['platform/bun/wake-loop.ts'] },
   { what: 'a hosted alarm', pattern: /\b(setAlarm|getAlarm|deleteAlarm)\b/, allowed: ['platform/cloudflare/deployment-clock.ts'] },
   { what: 'a cron handler', pattern: /\bexport async function scheduled\b/, allowed: ['entry/cloudflare.ts'] },
@@ -116,6 +117,31 @@ describe('the registry of scheduled work', () => {
     for (const { task, schedule } of scheduledTasks(Object.fromEntries(Object.keys(TASK_SCHEDULE).map((t) => [t, { schedule: { enabled: true } }])))) {
       expect({ task, cadence: schedule.intervalSeconds > 0, depth: schedule.runIn.length > 0, ceiling: typeof schedule.maxRunsPerDay })
         .toEqual({ task, cadence: true, depth: true, ceiling: 'number' });
+    }
+  });
+});
+
+describe('a task name the Deployment does not serve', () => {
+  // Inherited property names are valid strings in a dispatch body.
+  const inherited = ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__', 'isPrototypeOf'];
+
+  it('refuses a dispatch named after an inherited member at the unknown-task guard', async () => {
+    const e = sqliteEnv();
+    const env = withHarness(() => e.serverEnv, { launch: async () => {} });
+    e.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'p', ?)`, [Date.now()]);
+    for (const name of inherited) {
+      const outcome = await prepareDispatch(env, name, 'proj_1');
+      expect({ name, ok: outcome.ok, refusal: outcome.ok ? null : outcome.refusal }).toEqual({ name, ok: false, refusal: 'unknown_task' });
+    }
+    // Declared tasks pass the unknown-task guard.
+    const served = await prepareDispatch(env, 'container-smoke', 'proj_1');
+    expect(served.ok ? 'admitted' : served.refusal).not.toBe('unknown_task');
+  });
+
+  it('serves no gate, no tools and no budget for one', () => {
+    for (const name of inherited) {
+      expect({ name, gate: admissionForTask(name), tools: taskTools(name), budget: runTimeoutForTask(name) })
+        .toEqual({ name, gate: null, tools: [], budget: null });
     }
   });
 });

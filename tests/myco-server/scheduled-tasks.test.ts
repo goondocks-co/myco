@@ -240,6 +240,34 @@ describe('one wake of the clock', () => {
     expect(await runScheduledTasks(f.env, 'sleep', NOW + 2 * DAY, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
   });
 
+  it('keeps two episodes apart when both fall on one calendar day, a ceiling above one letting them sit minutes apart', async () => {
+    const f = fixture();
+    f.receipt('proj_1', NOW - 3_600_000);
+    f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
+    // Two entries just under a day apart: both sit inside the trailing window
+    // until the older one ages out of it, ten minutes later.
+    const older = NOW + 3_600_000;
+    const newer = older + DAY - 10 * 60_000;
+    for (const [id, at] of [['e_older', older], ['e_newer', newer]] as const) {
+      f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at) VALUES ('proj_1', ?, ?, 'container-smoke', 'completed', ?, ?)`, [id, HARNESS_AGENT_ID, at, at]);
+    }
+    f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 1, maxRunsPerDay: 2 } } });
+
+    // The first episode: both entries in the window, so the ceiling is met.
+    const firstRefusal = newer + 60_000;
+    expect(await runScheduledTasks(f.env, 'sleep', firstRefusal, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
+    expect(f.runs('proj_1').filter((r) => r.status === 'skipped')).toHaveLength(1);
+
+    // The older entry ages out, a run goes through, and the ceiling closes again
+    // — a second episode, on the same calendar day as the first.
+    const freed = older + DAY + 60_000;
+    expect(await runScheduledTasks(f.env, 'sleep', freed, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
+    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE status = 'pending'`, [freed + 1_000]);
+    expect(await runScheduledTasks(f.env, 'sleep', freed + 2_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
+    expect(Math.floor(newer / DAY)).toBe(Math.floor(freed / DAY));
+    expect(f.runs('proj_1').filter((r) => r.status === 'skipped')).toHaveLength(2);
+  });
+
   it('refuses a ceiling of zero with no entry to name, and records that once however many wakes ask', async () => {
     const f = fixture();
     f.receipt('proj_1', NOW - 3_600_000);
