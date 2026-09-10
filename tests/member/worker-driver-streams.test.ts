@@ -79,7 +79,7 @@ describe('the Claude Code driver', () => {
   it('reads a session, a message and a success whose structured output is null', async () => {
     const dir = stubHarness('claude', [
       '{"type":"system","subtype":"init","session_id":"sess_9"}',
-      '{"type":"assistant","message":{"content":"working on it"}}',
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"working on it"}]}}',
       RESULT_SUCCESS,
     ]);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
@@ -101,7 +101,7 @@ describe('the Claude Code driver', () => {
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     const argv = readFileSync(join(dir, 'argv.txt'), 'utf8').split('\n');
-    expect(argv.slice(argv.indexOf('--permission-mode'))).toEqual(['--permission-mode', 'default', '--allowedTools', `mcp__${MCP_SERVER_NAME}`, '']);
+    expect(argv.slice(argv.indexOf('--permission-mode'))).toEqual(['--permission-mode', 'manual', '--permission-prompts', 'none', '--allowedTools', `mcp__${MCP_SERVER_NAME}`, '']);
     expect(argv).toContain('--strict-mcp-config');
   });
 
@@ -118,13 +118,23 @@ describe('the Claude Code driver', () => {
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     expect(events.filter((e) => e.kind === 'message')).toEqual([{ kind: 'message', role: 'assistant', text: 'reading the material' }]);
+    // The harness says a refusal twice, on a system line and on the result; it is one refused call.
     expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
       { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'started' },
       { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'ok' },
       { kind: 'tool_call', name: 'mcp__myco__myco_run', status: 'started' },
       { kind: 'tool_call', name: 'mcp__myco__myco_run', status: 'error' },
-      { kind: 'tool_call', name: 'mcp__myco__myco_run', status: 'error' },
     ]);
+  });
+
+  it('reads a turn the harness calls a success while it refused the run\'s tools as a failure naming them', async () => {
+    const dir = stubHarness('claude', [
+      '{"type":"system","subtype":"init","session_id":"sess_9"}',
+      '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"permission_denials":[{"tool_name":"mcp__myco__myco_run_sessions","tool_use_id":"tu_1","tool_input":{"op":"material"}},{"tool_name":"mcp__myco__myco_run","tool_use_id":"tu_2","tool_input":{"op":"report"}}]}',
+    ]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'permission refused for mcp__myco__myco_run_sessions, mcp__myco__myco_run' });
   });
 
   it('reads an in-band error on a message as the end of the run', async () => {
