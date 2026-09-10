@@ -1,3 +1,4 @@
+import { WorkerUsageSchema, type WorkerUsage } from '@goondocks/myco-shared/worker-usage';
 /**
  * The worker: claim one run, hold it on a lease, drive a harness, end it.
  *
@@ -34,6 +35,7 @@ interface ClaimedRun {
   instructions: string | null;
   harness: string;
   runToken: string;
+  attemptId?: string;
   credentialEnv: Record<string, string>;
   /** The run's own budget, as the Deployment decided it. The worker records it; the Deployment enforces it through the sweep. */
   timeoutSeconds: number;
@@ -160,7 +162,7 @@ const asRun = (value: unknown): ClaimedRun | null => {
  * writes it can see; nothing here reads the harness's own account of its
  * success.
  */
-async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: number): Promise<{ status: 'completed' | 'failed' | 'lost'; error: string | null }> {
+async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: number): Promise<{ status: 'completed' | 'failed' | 'lost'; error: string | null; usage?: WorkerUsage | null }> {
   // A run that fails before its harness starts has no event to log it by, so it is said here.
   const failedBeforeStart = (error: string): { status: 'failed'; error: string } => {
     options.log(`run ${run.id} failed before its harness started: ${error}`);
@@ -225,6 +227,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
   }, heartbeatMs);
 
   const events: RunEvent[] = [];
+  let usage: WorkerUsage | null = null;
   let stream: AsyncIterator<RunEvent> | undefined;
   let checkout: RepositoryCheckout | undefined;
   let failure: string | null = null;
@@ -247,6 +250,11 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
       const step = await Promise.race([stream.next(), overrunReached]);
       if (step === 'overran' || step.done === true) break;
       events.push(step.value);
+      if (step.value.kind === 'usage') {
+        const { kind: _kind, ...reported } = step.value;
+        const parsed = WorkerUsageSchema.parse(reported);
+        usage = Object.values(parsed).every((value) => value == null) ? null : parsed;
+      }
       if (step.value.kind === 'tool_call') options.log(`run ${run.id} called ${step.value.name}: ${step.value.status}`);
       if (step.value.kind === 'ended') options.log(`run ${run.id} ended ${step.value.stop}`);
     }
@@ -271,13 +279,13 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
   // The budget is otherwise the outcome, whatever the harness wrote on its way
   // out: a child stopped for overrunning did not finish its turn, and a stop
   // reason it managed to emit as it died would otherwise read as one.
-  if (overran) return { status: 'failed', error: `the run outlived its budget of ${run.timeoutSeconds}s` };
-  if (failure !== null) return { status: 'failed', error: failure };
+  if (overran) return { status: 'failed', usage, error: `the run outlived its budget of ${run.timeoutSeconds}s` };
+  if (failure !== null) return { status: 'failed', error: failure, usage };
   const last = events.at(-1);
-  if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: 'the harness wrote no ending' };
+  if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: 'the harness wrote no ending', usage };
   return last.stop === 'end_turn'
-    ? { status: 'completed', error: null }
-    : { status: 'failed', error: `the harness stopped: ${last.stop}${last.detail === null ? '' : ` (${last.detail})`}` };
+    ? { status: 'completed', error: null, usage }
+    : { status: 'failed', usage, error: `the harness stopped: ${last.stop}${last.detail === null ? '' : ` (${last.detail})`}` };
 }
 
 /** How a worker's attachment ended: what it drove, and the code it was refused with where a Deployment refused it. */
@@ -350,7 +358,9 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerOutcome> 
     // another's run. The Deployment refuses such a write anyway; not making it
     // is what keeps the two accounts of a run from disagreeing.
     if (outcome.status !== 'lost') {
-      const ended = await post(options, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error });
+      const ended = await post(options, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
+        ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId, usage: outcome.usage ?? null }),
+      });
       if (ended.kind === 'refused') {
         options.log(`the Deployment refused the outcome of ${run.id}: ${ended.code}`);
         return { driven, refused: ended.code };

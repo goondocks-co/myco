@@ -111,3 +111,6 @@ export const INSTRUCTIONS_TEMPLATE_MAX_BYTES = 4096;
 export const WORKER_LEASE_MS = 90_000;
 export const WORKER_HEARTBEAT_MS = 30_000;
 export const WORKER_POLL_IDLE_MS = 2_000;
+
+/** Maximum error detail stored on a run. */
+export const MAX_RUN_ERROR_CHARS = 2000;

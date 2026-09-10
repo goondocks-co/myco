@@ -45,6 +45,10 @@
     "./agent-config": {
       "import": "./dist/agent-config.js",
       "types": "./dist/agent-config.d.ts"
+    },
+    "./worker-usage": {
+      "import": "./dist/worker-usage.js",
+      "types": "./dist/worker-usage.d.ts"
     }
   },
   "files": [
