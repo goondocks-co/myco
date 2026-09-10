@@ -77,7 +77,7 @@ export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
     'vault_unprocessed', 'vault_mark_processed', 'vault_sessions', 'vault_spores', 'vault_spore', 'vault_state', 'vault_set_state',
     'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_resolve_spore', 'vault_report',
   ],
-  [SEEDING_TASK]: ['vault_spores', 'vault_spore', 'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_agents_block', 'vault_report'],
+  [SEEDING_TASK]: ['vault_spores', 'vault_spore', 'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_report'],
   [TITLING_TASK]: ['vault_report', 'vault_session_summary_material', 'vault_unprocessed', 'vault_update_session'],
 };
 
