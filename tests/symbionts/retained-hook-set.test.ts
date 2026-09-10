@@ -28,8 +28,15 @@ const RETAINED: Readonly<Record<string, string>> = {
   'session-end': 'ship the final delta and end the session',
   'subagent-start': 'inject into the delegated agent',
 };
-/** The hooks a transcript-first symbiont wires only when its transcript carries no tool calls. */
+/** The hooks a transcript-first symbiont wires only when its transcript carries no tool calls; the failure hook where the harness has the event. */
 const TOOL_CALL_HOOKS: readonly string[] = ['post-tool-use', 'post-tool-use-failure'];
+/** The hook each injection capability needs wired, or the declaration promises an injection nothing delivers. */
+const INJECTION_HOOKS: Readonly<Record<string, string>> = {
+  sessionStartInjection: 'session-start',
+  subagentStartInjection: 'subagent-start',
+  preToolUseInjection: 'pre-tool-use',
+  postToolUseInjection: 'post-tool-use',
+};
 
 describe('the retained hook set', () => {
   const manifests = loadManifests().filter((m) => m.registration?.hooksTarget && (m.registration.hooksFormat ?? 'json') === 'json');
@@ -41,6 +48,12 @@ describe('the retained hook set', () => {
 
   for (const manifest of manifests) {
     const wired = [...new Set(hookCommands(JSON.parse(fs.readFileSync(path.join(TEMPLATES_DIR, manifest.name, 'hooks.json'), 'utf-8'))).map((c) => hookNameInCommand(c)))].sort();
+    it(`${manifest.name}: every injection capability it declares has its hook wired`, () => {
+      for (const [capability, hook] of Object.entries(INJECTION_HOOKS)) {
+        const declared = (manifest.capabilities as Record<string, unknown> | undefined)?.[capability] === true;
+        if (declared) expect({ capability, wired: wired.includes(hook) }).toEqual({ capability, wired: true });
+      }
+    });
     if (manifest.capabilities?.turnRowSource !== 'transcript') {
       it(`${manifest.name}: its hooks write its turn rows, so the template is not held to the retained set`, () => {
         expect(wired.length).toBeGreaterThan(0);
@@ -56,8 +69,8 @@ describe('the retained hook set', () => {
       expect(wired).toContain('stop');
     });
     if (manifest.capabilities.transcriptFidelity === 'no_tool_results') {
-      it(`${manifest.name}: keeps the tool-call hooks its transcript cannot replace`, () => {
-        for (const hook of TOOL_CALL_HOOKS) expect(wired).toContain(hook);
+      it(`${manifest.name}: keeps the tool-call hook its transcript cannot replace`, () => {
+        expect(wired).toContain('post-tool-use');
       });
     } else {
       it(`${manifest.name}: wires no tool-call hook, since its transcript carries the calls`, () => {

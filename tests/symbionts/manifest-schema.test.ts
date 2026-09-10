@@ -530,13 +530,13 @@ describe('claude-code manifest declares its file-read tool', () => {
   });
 });
 
-describe('codex manifest enables Canopy PreToolUse for Bash reads', () => {
-  it('parses with preToolUseInjection=true and one Bash shell-arg entry', () => {
+describe('codex manifest declares its Bash read tool without a PreToolUse hook', () => {
+  it('parses with preToolUseInjection=false and one Bash shell-arg entry', () => {
     const yamlPath = path.join(MANIFESTS_DIR, 'codex.yaml');
     const raw = YAML.parse(fs.readFileSync(yamlPath, 'utf8'));
     const m = SymbiontManifestSchema.parse(raw);
 
-    expect(m.capabilities?.preToolUseInjection).toBe(true);
+    expect(m.capabilities?.preToolUseInjection).toBe(false);
     expect(m.capabilities?.canopyReadTools).toHaveLength(1);
 
     const entry = m.capabilities!.canopyReadTools![0];
@@ -583,9 +583,10 @@ describe('symbiont turn-row source', () => {
     }
   });
 
-  it('cursor alone declares a transcript without tool calls, and no manifest declares a tool transport', () => {
-    expect(capabilitiesOf('cursor').transcriptFidelity).toBe('no_tool_results');
-    for (const name of ['claude-code', 'codex', 'opencode', 'pi', 'cline', 'copilot', 'antigravity', 'windsurf']) {
+  it('cursor and codex declare a transcript whose tool calls the parse cannot derive, and no manifest declares a tool transport', () => {
+    // Cursor's format carries no tool calls; Codex 0.153 carries them in shapes the parser does not read yet.
+    for (const name of ['cursor', 'codex']) expect({ name, fidelity: capabilitiesOf(name).transcriptFidelity }).toEqual({ name, fidelity: 'no_tool_results' });
+    for (const name of ['claude-code', 'opencode', 'pi', 'cline', 'copilot', 'antigravity', 'windsurf']) {
       expect({ name, fidelity: capabilitiesOf(name).transcriptFidelity }).toEqual({ name, fidelity: 'full' });
     }
     for (const file of fs.readdirSync(MANIFESTS_DIR)) expect(fs.readFileSync(path.join(MANIFESTS_DIR, file), 'utf-8')).not.toContain('toolTransport');

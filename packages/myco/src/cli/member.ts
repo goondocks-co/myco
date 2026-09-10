@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
-import { defaultMycoHome, readHomePin, resolveMycoHome, RUNTIME_HOME_FILENAME } from '../paths/home.js';
+import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from '../member/budget.js';
 import { isProjectId, MEMBER_TOKEN_REFRESH_WINDOW_MS } from '../member/constants.js';
 import { isHttpsUrl, isMemberTokenShape, resolveMemberProjectRoot } from '../member/credential.js';
@@ -171,12 +171,14 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   };
   writeRegistryEntry(entry, { mycoHome });
   const pinned = pinProjectHome(root, mycoHome);
+  const machinePinned = pinMachineHome(mycoHome, deps);
   // The misses this root accumulated while unjoined are answered by the join itself.
   const missed = readMissingMembership(root, mycoHome);
   clearMissingMembership(root, mycoHome);
   pruneMissingMemberships(mycoHome, now());
   out(`joined ${parsed.project} at ${parsed.serverUrl} for ${root}`);
   reportPin(pinned, mycoHome, out, err);
+  reportMachinePin(machinePinned, mycoHome, out);
   if (missed) out(`${missed.count} earlier capture attempt(s) here found no membership; new sessions are captured from now on`);
   out('connect your GitHub account for the dashboard: myco member link-github');
 
@@ -383,6 +385,53 @@ function reportPin(outcome: PinOutcome, mycoHome: string, out: (l: string) => vo
     case 'unwritable':
       err(`myco member join: could not write ${outcome.pinPath}; agents launched with no environment will not find this membership`);
       process.exitCode = 2;
+      return;
+    case 'settled':
+  }
+}
+
+/** What `pinMachineHome` did. */
+type MachinePinOutcome = { kind: 'written'; pinPath: string } | { kind: 'settled' } | { kind: 'held'; pinPath: string; pinned: string } | { kind: 'unwritable'; pinPath: string };
+
+/**
+ * Pin the MACHINE at this membership's home, when the home is not the default
+ * one and no machine pin exists.
+ *
+ * A harness that starts `myco mcp` outside the project — at `/`, at the user's
+ * home — walks no project pin, and a GUI-launched one carries no environment,
+ * so the machine pin (`~/.myco/runtime.home`, read after the project pin and
+ * before the default) is the one thing left that names this home. Written
+ * once: a machine pin naming another home is another install's choice and is
+ * left standing, the way a project pin naming another home is.
+ */
+function pinMachineHome(mycoHome: string, deps: MemberCliDeps): MachinePinOutcome {
+  const home = path.resolve(mycoHome);
+  const defaultHome = defaultMycoHome(deps.env?.HOME && deps.env.HOME.length > 0 ? deps.env.HOME : undefined);
+  if (pathsEquivalentHome(home, defaultHome)) return { kind: 'settled' };
+  const pinPath = path.join(defaultHome, RUNTIME_HOME_FILENAME);
+  const existing = readHomePin(pinPath, { env: deps.env ?? process.env });
+  if (existing === home) return { kind: 'settled' };
+  if (existing !== null) return { kind: 'held', pinPath, pinned: existing };
+  try {
+    fs.mkdirSync(defaultHome, { recursive: true });
+    fs.writeFileSync(pinPath, `${home}\n`, { mode: PIN_FILE_MODE });
+    fs.chmodSync(pinPath, PIN_FILE_MODE);
+    return { kind: 'written', pinPath };
+  } catch {
+    return { kind: 'unwritable', pinPath };
+  }
+}
+
+function reportMachinePin(outcome: MachinePinOutcome, mycoHome: string, out: (l: string) => void): void {
+  switch (outcome.kind) {
+    case 'written':
+      out(`pinned this machine to ${path.resolve(mycoHome)} (${outcome.pinPath}), so an MCP server started outside the project finds it`);
+      return;
+    case 'held':
+      out(`this machine stays pinned to ${outcome.pinned} (${outcome.pinPath}); an MCP server started outside this project resolves that home`);
+      return;
+    case 'unwritable':
+      out(`could not write ${outcome.pinPath}; an MCP server started outside this project resolves the default home`);
       return;
     case 'settled':
   }

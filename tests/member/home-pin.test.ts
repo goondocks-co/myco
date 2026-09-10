@@ -342,6 +342,38 @@ describe('`myco member join` under a non-default home', () => {
     expect(resolveMycoHome({ cwd: project, homeDir, env: {} })).toBe(home);
   });
 
+  it('pins the machine too, once, so an MCP server started outside the project resolves this home; a machine pin naming another home stands', async () => {
+    const home = tempMycoHome();
+    tmpDirs.push(home);
+    const project = joinableProject('myco-join-machine-pin-');
+    const out: string[] = [];
+    const machinePin = path.join(homeDir, '.myco', RUNTIME_HOME_FILENAME);
+    expect(fs.existsSync(machinePin)).toBe(false);
+
+    await runJoin(['https://srv.example', '--project', 'proj_1', '--token-env', 'MYCO_TEST_TOKEN'], joinDeps(project, home, out));
+
+    expect(fs.readFileSync(machinePin, 'utf-8').trim()).toBe(home);
+    expect((fs.statSync(machinePin).mode & 0o777).toString(8)).toBe('644');
+    expect(out.join('\n')).toContain(`pinned this machine to ${home}`);
+    // What an MCP child started at `/` now resolves: the machine pin, not the default home.
+    expect(resolveMycoHome({ cwd: '/', homeDir, env: {} })).toBe(home);
+
+    // A second home joined on the same machine leaves the first machine pin standing and says so.
+    const other = tempMycoHome();
+    tmpDirs.push(other);
+    const second = joinableProject('myco-join-machine-pin-2-');
+    const said: string[] = [];
+    await runJoin(['https://srv.example', '--project', 'proj_2', '--token-env', 'MYCO_TEST_TOKEN'], joinDeps(second, other, said));
+    expect(fs.readFileSync(machinePin, 'utf-8').trim()).toBe(home);
+    expect(said.join('\n')).toContain(`this machine stays pinned to ${home}`);
+
+    // A join into the default home writes no machine pin.
+    fs.rmSync(machinePin);
+    const third = joinableProject('myco-join-default-');
+    await runJoin(['https://srv.example', '--project', 'proj_3', '--token-env', 'MYCO_TEST_TOKEN'], { ...joinDeps(third, defaultMycoHome(homeDir), []), mycoHome: defaultMycoHome(homeDir) });
+    expect(fs.existsSync(machinePin)).toBe(false);
+  });
+
   it('keeps the pin out of git: the vault .gitignore is written before it', async () => {
     const home = tempMycoHome();
     tmpDirs.push(home);

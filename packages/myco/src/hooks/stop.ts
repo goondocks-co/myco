@@ -31,23 +31,42 @@ export interface TranscriptPhase {
   afterDrain: (run: HookRun, until?: number) => Promise<void>;
 }
 
+/** A transcript the member reads plan writes out of: the session's own, or a subagent's beside it. */
+interface ReadTranscript {
+  path: string;
+  pointer: TranscriptPointer;
+  /** Where the pointer lives in session state. */
+  slot: { role: 'primary' } | { role: 'subagent'; path: string };
+}
+
 /**
- * The plan files the transcript delta records a write into, read from disk
+ * The plan files the transcript deltas record a write into, read from disk
  * now. An agent the Deployment parses has nothing else derived here: its
  * prompts, replies and tool calls are the parse's to write, and only the plan
  * file — which an `Edit` record carries as a diff, never whole — is the
- * member's to read. The receipt is the size read to, so a killed hook re-reads
- * the same delta and a finished one never reads it again.
+ * member's to read. A subagent's transcript is read the same way: a plan it
+ * wrote is the session's plan. The receipt is the byte each read stopped at,
+ * so a killed hook re-reads the same delta and a finished one never reads it
+ * again.
  */
-function derivePlanWrites(run: HookRun, transcriptPath: string, state: SessionState, root: string): DerivedCapture & { captured: string[] } {
-  const unread = unreadTranscriptLines(transcriptPath, state);
-  if (unread === null) return { events: [], captured: [], record: () => {} };
-  const written = planFilesWritten(run.ctx, state, run.credential.projectId, root, planWritesInLines(run.agent, unread.lines, root));
+function derivePlanWrites(run: HookRun, transcripts: readonly ReadTranscript[], state: SessionState, root: string): DerivedCapture & { captured: string[] } {
+  const written: string[] = [];
+  const advances: Array<[ReadTranscript, number]> = [];
+  for (const transcript of transcripts) {
+    const unread = unreadTranscriptLines(transcript.path, transcript.pointer);
+    if (unread === null) continue;
+    for (const file of planWritesInLines(run.agent, unread.lines, root)) if (!written.includes(file)) written.push(file);
+    advances.push([transcript, unread.size]);
+  }
+  const plans = planFilesWritten(run.ctx, state, run.credential.projectId, root, written);
   return {
-    ...written,
+    ...plans,
     record: (next) => {
-      written.record(next);
-      if (next.transcript && next.transcript.path === transcriptPath) next.transcript.parsedSize = unread.size;
+      plans.record(next);
+      for (const [transcript, size] of advances) {
+        const stored = transcript.slot.role === 'primary' ? next.transcript : next.siblings[transcript.slot.path];
+        if (stored && stored.transcriptId === transcript.pointer.transcriptId) stored.parsedSize = size;
+      }
     },
   };
 }
@@ -55,7 +74,7 @@ function derivePlanWrites(run: HookRun, transcriptPath: string, state: SessionSt
 /**
  * The transcript phase shared by Stop and SessionEnd: resolve the transcript
  * pointers (the session's own and the subagent transcripts beside it), derive
- * what the member still reads out of the delta, and ship segments after the
+ * what the member still reads out of the deltas, and ship segments after the
  * drain. Nothing is written here — the pointers and the derivation's receipts
  * travel back as `record` so they land with the append, because a receipt
  * written first turns a crash into permanent loss: the rerun skips by hash
@@ -77,21 +96,34 @@ export function transcriptPhase(run: HookRun): TranscriptPhase {
   }
   const current = pointer ? { ...state, transcript: pointer } : state;
   const root = planRootFor(credential.root, typeof input.raw.cwd === 'string' ? input.raw.cwd : undefined);
-  const derived = transcriptWritesTurnRows(agent)
-    ? derivePlanWrites(run, transcriptPath, current, root)
-    : { ...deriveTranscriptCapture(ctx, transcriptPath, current), captured: [] as string[] };
-  // Every plan file this session captured is read again: an edit made outside the write hooks still lands.
-  const backstop = planBackstop(ctx, state, root, run.budget, run.now, derived.captured);
   const siblings = siblingTranscripts(agent, sessionId, transcriptPath)
     .map((file): [string, TranscriptPointer | null] => [file, transcriptPointerFor(file, machineId, state.siblings[file])])
     .filter((entry): entry is [string, TranscriptPointer] => entry[1] !== null);
+  const readable: ReadTranscript[] = [
+    ...(pointer ? [{ path: transcriptPath, pointer, slot: { role: 'primary' as const } }] : []),
+    ...siblings.map(([file, sibling]) => ({ path: file, pointer: sibling, slot: { role: 'subagent' as const, path: file } })),
+  ];
+  const derived = transcriptWritesTurnRows(agent)
+    ? derivePlanWrites(run, readable, current, root)
+    : { ...deriveTranscriptCapture(ctx, transcriptPath, current), captured: [] as string[] };
+  // Every plan file this session captured is read again: an edit made outside the write hooks still lands.
+  const backstop = planBackstop(ctx, state, root, run.budget, run.now, derived.captured);
+  // The pointers this hook READ. A stored pointer that changed underneath —
+  // another hook committed one while this ran — names a transcript that hook
+  // already handled, and is left as it is, the rule `shipTranscriptSegments`
+  // documents for the offset.
+  const readPrimary = state.transcript?.transcriptId;
+  const readSiblings = Object.fromEntries(Object.entries(state.siblings).map(([file, p]) => [file, p.transcriptId]));
   return {
     events: [...derived.events, ...backstop.events],
     lastAssistantText: derived.lastAssistantText,
     record: (next) => {
-      if (pointer) next.transcript = next.transcript && next.transcript.transcriptId === pointer.transcriptId ? { ...next.transcript, headHash: next.transcript.headHash ?? pointer.headHash } : pointer;
+      if (pointer && (next.transcript === undefined || next.transcript.transcriptId === readPrimary)) {
+        next.transcript = next.transcript && next.transcript.transcriptId === pointer.transcriptId ? { ...next.transcript, headHash: next.transcript.headHash ?? pointer.headHash } : pointer;
+      }
       for (const [file, sibling] of siblings) {
         const stored = next.siblings[file];
+        if (stored !== undefined && stored.transcriptId !== readSiblings[file]) continue;
         next.siblings[file] = stored && stored.transcriptId === sibling.transcriptId ? { ...stored, headHash: stored.headHash ?? sibling.headHash } : sibling;
       }
       derived.record(next);

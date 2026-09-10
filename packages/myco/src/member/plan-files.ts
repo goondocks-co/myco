@@ -72,16 +72,29 @@ export function normalizePlanPath(projectRoot: string, absPath: string): string 
 /** The file a keyed path names. */
 export const planFilePath = (projectRoot: string, normalized: string): string => resolvePlanDir(normalized, projectRoot);
 
-/** The file's text, or null when it is absent, unreadable, not a file, or larger than the bound. */
-export function readPlanFile(absPath: string): string | null {
+/** Why a plan file yielded no text. */
+export type PlanFileMiss = 'absent' | 'oversize';
+
+/** The file's text, or the reason there is none: absent (or not a file, or unreadable) or larger than the bound. */
+export function readPlanFileOrMiss(absPath: string): { content: string } | { miss: PlanFileMiss; bytes?: number } {
   try {
     const stat = fs.statSync(absPath);
-    if (!stat.isFile() || stat.size > MAX_PLAN_FILE_BYTES) return null;
-    return fs.readFileSync(absPath, 'utf-8');
+    if (!stat.isFile()) return { miss: 'absent' };
+    if (stat.size > MAX_PLAN_FILE_BYTES) return { miss: 'oversize', bytes: stat.size };
+    return { content: fs.readFileSync(absPath, 'utf-8') };
   } catch {
-    return null;
+    return { miss: 'absent' };
   }
 }
+
+/** The file's text, or null when it is absent, unreadable, not a file, or larger than the bound. */
+export function readPlanFile(absPath: string): string | null {
+  const read = readPlanFileOrMiss(absPath);
+  return 'content' in read ? read.content : null;
+}
+
+/** The receipt recorded for a plan file too large to ship, keyed by the size that was refused so a smaller rewrite ships. */
+const oversizeReceipt = (bytes: number): string => `oversize:${bytes}`;
 
 /** The plan's title: its first heading, else the file's name. */
 export const planTitle = (content: string, filePath: string): string => firstHeading(content) ?? path.basename(filePath, path.extname(filePath));
@@ -101,11 +114,24 @@ export interface PlanFileCapture {
  */
 export function planFileCapture(ctx: EnvelopeContext, state: SessionState, projectId: string, projectRoot: string, absPath: string, promptId?: string): PlanFileCapture {
   const none: PlanFileCapture = { events: [], record: () => {} };
-  const content = readPlanFile(absPath);
-  if (content === null) return none;
-  const hash = sha256Text(content);
   const normalized = normalizePlanPath(projectRoot, absPath);
   const shipped = state.planPaths[normalized];
+  const read = readPlanFileOrMiss(absPath);
+  if ('miss' in read) {
+    // Capture that did not happen has to say so: a plan the turn wrote and
+    // then removed or renamed is not silence, and one past the size bound is
+    // said once, under a receipt the backstop honours until the file changes.
+    if (read.miss === 'absent') {
+      process.stderr.write(`[myco] plan file ${normalized} was written this turn but cannot be read now — not captured\n`);
+      return none;
+    }
+    const receipt = oversizeReceipt(read.bytes ?? 0);
+    if (shipped?.hash === receipt) return none;
+    process.stderr.write(`[myco] plan file ${normalized} is ${read.bytes} bytes, over the ${MAX_PLAN_FILE_BYTES}-byte bound — not captured until it shrinks\n`);
+    return { events: [], record: (next) => { next.planPaths[normalized] = { planKey: shipped?.planKey ?? planKeyForPath(projectId, normalized), hash: receipt }; } };
+  }
+  const content = read.content;
+  const hash = sha256Text(content);
   if (shipped?.hash === hash) return none;
   const planKey = shipped?.planKey ?? planKeyForPath(projectId, normalized);
   return {
@@ -171,10 +197,9 @@ export function planFilesWritten(ctx: EnvelopeContext, state: SessionState, proj
   const captured: string[] = [];
   for (const absPath of absPaths) {
     const capture = planFileCapture(ctx, state, projectId, projectRoot, absPath);
-    if (capture.events.length === 0) continue;
-    events.push(...capture.events);
     records.push(capture.record);
     captured.push(normalizePlanPath(projectRoot, absPath));
+    events.push(...capture.events);
   }
   return { events, captured, record: (next) => { for (const record of records) record(next); } };
 }

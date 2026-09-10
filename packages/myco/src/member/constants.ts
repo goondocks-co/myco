@@ -174,7 +174,9 @@ export const MEMBER_SPOOL_QUARANTINE_PRUNE_MS = 60 * MS_PER_DAY;
  * after a drain that delivered everything. The state holds the transcript
  * pointer and the served-block receipts of a session nothing has written to
  * in weeks; a session that does resume past it re-ships from the offset the
- * Deployment reports and is served its block once more.
+ * Deployment reports, is served its block once more, and counts its
+ * compactions from one again, so the block after its next compaction is
+ * served as a first.
  */
 export const MEMBER_SESSION_STATE_RETENTION_MS = 14 * MS_PER_DAY;
 /**

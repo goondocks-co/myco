@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { type DoctorCheck, checkCaptureFlow, checkMigrationStatus, checkSymbiontEdgeCases, fix, isSymbiontRegistered, isSymbiontRegisteredGlobally, run, runChecks } from '@myco/cli/doctor';
+import { type DoctorCheck, checkCaptureFlow, checkMemberMcpResolution, checkMigrationStatus, checkSymbiontEdgeCases, fix, isSymbiontRegistered, isSymbiontRegisteredGlobally, run, runChecks } from '@myco/cli/doctor';
+import { writeRegistryEntry, REGISTRY_VERSION } from '@myco/member/registry.js';
 import { loadManifests } from '@myco/symbionts/detect';
 import { expandHome } from '@myco/grove/paths';
 import { openDatabase, withDatabase, initDatabase, closeDatabase } from '@myco/db/client.js';
@@ -801,5 +802,65 @@ describe('checkCaptureFlow', () => {
     const check = await checkCaptureFlow(seedVault([30, 45]), testPerUserLockNamespace);
     expect(check.status).toBe('warn');
     expect(check.detail).toContain('No sessions in the last 7 days');
+  });
+});
+
+describe('checkMemberMcpResolution', () => {
+  let savedHome: string | undefined;
+  let savedMycoHome: string | undefined;
+  let homeDir: string;
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+    savedMycoHome = process.env.MYCO_HOME;
+    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-home-'));
+    process.env.HOME = homeDir;
+    delete process.env.MYCO_HOME;
+  });
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedMycoHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedMycoHome;
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  const member = (root: string, mycoHome: string, projectId: string) => writeRegistryEntry({
+    version: REGISTRY_VERSION, projectId, serverUrl: 'https://srv.example', token: 'A'.repeat(43), root, machineId: 'm1', joinedAt: 1, updatedAt: 1,
+  }, { mycoHome });
+
+  it('says nothing for a project that is not a member, and nothing for one membership in the default home with a cwd-carrying Codex entry', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    expect(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).toEqual([]);
+    member(root, path.join(homeDir, '.myco'), 'proj_1');
+    fs.mkdirSync(path.join(root, '.codex'));
+    fs.writeFileSync(path.join(root, '.codex', 'config.toml'), `[mcp_servers.myco]\ncommand = "/opt/myco"\nargs = ["mcp"]\ncwd = "${root}"\n`);
+    fs.mkdirSync(path.join(root, '.cursor'));
+    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { command: '/opt/myco', args: ['mcp'] } } }));
+    expect(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).toEqual([]);
+  });
+
+  it('names the Codex entry without a cwd, the second membership a JSON host cannot tell apart, and the machine pin a non-default home lacks', async () => {
+    const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-other-home-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    fs.writeFileSync(path.join(root, '.myco', 'runtime.home'), `${mycoHome}\n`, { mode: 0o644 });
+    member(root, mycoHome, 'proj_1');
+    member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), mycoHome, 'proj_2');
+    fs.mkdirSync(path.join(root, '.codex'));
+    fs.writeFileSync(path.join(root, '.codex', 'config.toml'), '[mcp_servers.myco]\ncommand = "/opt/myco"\nargs = ["mcp"]\n');
+    fs.mkdirSync(path.join(root, '.cursor'));
+    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { command: '/opt/myco', args: ['mcp'] } } }));
+
+    const checks = await checkMemberMcpResolution(path.join(root, '.myco'), process.env);
+    const details = checks.map((c) => c.detail).join('\n');
+    expect(checks.every((c) => c.name === 'Member MCP resolution' && c.status === 'warn')).toBe(true);
+    expect(details).toContain('machine pin');
+    expect(details).toContain('carries no cwd');
+    expect(details).toContain('holds 2 memberships');
+    // The machine pin settles the home warning and nothing else.
+    fs.mkdirSync(path.join(homeDir, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.myco', 'runtime.home'), `${mycoHome}\n`, { mode: 0o644 });
+    const after = (await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).map((c) => c.detail).join('\n');
+    expect(after).not.toContain('machine pin');
+    expect(after).toContain('carries no cwd');
   });
 });

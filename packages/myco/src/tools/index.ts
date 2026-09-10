@@ -49,13 +49,6 @@ export interface MycoToolsOptions {
    * find it from env/config, matching `resolveCallContext`'s convention.
    */
   mycoHome?: string;
-  /**
-   * Invocation channel of the caller: 'cli' when the request came from
-   * `myco tool call` (declared via the x-myco-tool-transport header), else
-   * 'mcp'. Governs whether instruction-shaped responses carry the CLI
-   * transport directive.
-   */
-  toolCallerTransport?: 'cli' | 'mcp';
 }
 
 interface JsonSchemaProperty {

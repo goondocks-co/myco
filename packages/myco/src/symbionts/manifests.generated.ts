@@ -415,7 +415,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "instructionsFile": "CLAUDE.md"
     },
     "capabilities": {
-      "preToolUseInjection": true,
+      "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
@@ -862,12 +862,12 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsFormat": "toml"
     },
     "capabilities": {
-      "preToolUseInjection": true,
+      "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "turnRowSource": "transcript",
-      "transcriptFidelity": "full",
+      "transcriptFidelity": "no_tool_results",
       "canopyReadTools": [
         {
           "tool": "Bash",

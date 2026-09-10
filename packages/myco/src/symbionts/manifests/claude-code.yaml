@@ -343,11 +343,9 @@ registration:
   globalSettingsTarget: ~/.claude/settings.json
   instructionsFile: CLAUDE.md
 capabilities:
-  # Claude Code threads PreToolUse hookSpecificOutput.additionalContext into
-  # the agent's context window before the tool fires. This unlocks Cortex's
-  # Canopy injection. Other symbionts flip this on as their hook surfaces
-  # gain equivalent pre-call injection.
-  preToolUseInjection: true
+  # No PreToolUse hook is wired: the Deployment parses the transcript and the
+  # retained set injects at session start, prompt submit and subagent start.
+  preToolUseInjection: false
   # Hook template registers a session-start hook that fetches Cortex context
   # and emits it as additional system context.
   sessionStartInjection: true

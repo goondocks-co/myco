@@ -58,6 +58,10 @@ describe('the member MCP server', () => {
     expect(written).toContain('[mcp_servers.other]');
     expect(written).toContain('[mcp_servers.myco]');
     expect(written).toContain(`"${CREDENTIAL_FLAG}", "registry"`);
+    // Codex reads command, args, env and cwd; the JSON hosts' levers are not written, and the child starts in the project.
+    expect(written).toContain(`cwd = "${root}"`);
+    expect(written).not.toContain('alwaysLoad');
+    expect(written).not.toContain('type = ');
     expect(installer.uninstallMemberMcp()).toBe(true);
     const after = fs.readFileSync(target, 'utf8');
     expect(after).not.toContain('[mcp_servers.myco]');

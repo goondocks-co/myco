@@ -147,16 +147,20 @@ export interface DerivedCapture {
 }
 
 /**
- * The bytes of a transcript past what the member has already read, as parsed
- * lines, with the size they were read at. Nothing when the file is unchanged
- * since the last read.
+ * The complete lines of a transcript past what the member has already read,
+ * with the byte the next read starts at: the one after the last newline, so a
+ * record still being written is read whole next time rather than dropped as
+ * an unparsable fragment. Nothing when no complete line has been added.
  */
-export function unreadTranscriptLines(transcriptPath: string, state: SessionState): { lines: Array<Record<string, unknown>>; size: number } | null {
+export function unreadTranscriptLines(transcriptPath: string, pointer: TranscriptPointer | undefined): { lines: Array<Record<string, unknown>>; size: number } | null {
   try {
     const size = fs.statSync(transcriptPath).size;
-    const from = state.transcript && state.transcript.path === transcriptPath ? state.transcript.parsedSize : 0;
+    const from = pointer && pointer.path === transcriptPath ? pointer.parsedSize : 0;
     if (from >= size) return null;
-    return { lines: parseTranscriptLines(readSlice(transcriptPath, from, size - from).toString('utf-8')), size };
+    const bytes = readSlice(transcriptPath, from, size - from);
+    const lastNewline = bytes.lastIndexOf(0x0a);
+    if (lastNewline < 0) return null;
+    return { lines: parseTranscriptLines(bytes.subarray(0, lastNewline + 1).toString('utf-8')), size: from + lastNewline + 1 };
   } catch {
     return null;
   }

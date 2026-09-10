@@ -122,7 +122,7 @@ describe('end-to-end Canopy injection over HTTP', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         sessionId: 'sess-e2e',
-        agent: 'claude-code',
+        agent: 'copilot',
         toolInput: { file_path: 'src/big.ts' },
       }),
     });
@@ -173,7 +173,7 @@ describe('end-to-end Canopy injection over HTTP', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         sessionId: 'sess-e2e',
-        agent: 'claude-code',
+        agent: 'copilot',
         toolInput: { file_path: 'src/big.ts', offset: 100, limit: 50 },
       }),
     });

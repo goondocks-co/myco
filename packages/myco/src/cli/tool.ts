@@ -165,18 +165,13 @@ async function transportFor(vaultDir: string, source: CredentialSource | null): 
   if (source !== null) {
     const upstream = resolveDeploymentUpstream(source, { cwd: process.cwd(), env: process.env, invokedBy: 'tool' });
     if (!upstream) return { ok: false, error: { code: 'credential_unavailable', message: `No member credential resolves for ${CREDENTIAL_FLAG} ${source}; the reason is on stderr.` } };
-    return { ok: true, transport: deploymentTransport(upstream, { 'x-myco-tool-transport': 'cli' }) };
+    return { ok: true, transport: deploymentTransport(upstream) };
   }
   const daemonClient = new DaemonClient(vaultDir);
   const ready = await daemonClient.ensureRunning();
   const info = daemonClient.getInfo();
   if (!ready || !info) return { ok: false, error: { code: 'daemon_unavailable', message: DAEMON_UNAVAILABLE_MESSAGE } };
-  const headers = {
-    ...buildBridgeRequestHeaders(vaultDir, process.env, info.auth_token),
-    // Marks this /mcp caller as shell-CLI so tool responses that carry
-    // transport guidance (myco_cortex op:instructions) render the CLI form.
-    'x-myco-tool-transport': 'cli',
-  };
+  const headers = buildBridgeRequestHeaders(vaultDir, process.env, info.auth_token);
   return { ok: true, transport: new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${info.port}/mcp`), { requestInit: { headers } }) };
 }
 

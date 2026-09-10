@@ -276,11 +276,17 @@ capabilities:
   subagentStartInjection: true
   # The Deployment parses the rollout (`ingest/parsers/codex.ts`): the hooks
   # register the session, ship the transcript delta and inject, and write no
-  # turn row of their own. Tenancy travels as a tool parameter over MCP.
+  # prompt or response row of their own. Tenancy travels as a tool parameter
+  # over MCP.
   turnRowSource: transcript
-  # Emit hookSpecificOutput envelope on PreToolUse so Canopy anatomy reaches
-  # the agent's context.
-  preToolUseInjection: true
+  # Codex 0.153 records tool calls as `local_shell_call`, `custom_tool_call`,
+  # `tool_search_call` and `web_search_call` items with an object output; the
+  # parser derives none of them yet, so the post-tool-use hook ships every tool
+  # call. Flips to `full` with the parser, never before it.
+  transcriptFidelity: no_tool_results
+  # No PreToolUse hook is wired: the Deployment parses the rollout and the
+  # retained set injects at session start, prompt submit and subagent start.
+  preToolUseInjection: false
   # File reads come through Codex's canonical 'Bash' tool with the path
   # embedded in the command string. The resolver shlex-parses and picks the
   # last non-flag positional arg when the command name is in this allowlist.

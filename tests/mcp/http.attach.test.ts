@@ -160,24 +160,6 @@ describe('/mcp attach short-circuit + proxy (chokepoint 2)', () => {
     expect(dbCalls).toBe(0);
   });
 
-  test('the member CLI transport header never crosses the proxy to the host', async () => {
-    // The host would render its own binary path into instruction responses;
-    // the member daemon applies the directive with the member's path instead.
-    const projectId = attach();
-    const res = await fetch(memberUrl(), {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-myco-tool-transport': 'cli',
-        [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
-      },
-      body: mcpBody('myco_search', { type: 'session', query: 'x' }),
-    });
-    expect(res.status).toBe(200);
-    expect(hostHits.length).toBe(1);
-    expect(hostHits[0].headers['x-myco-tool-transport']).toBeUndefined();
-  });
-
   test('a non-attached request falls through to local resolution (never the seam)', async () => {
     const res = await fetch(memberUrl(), {
       method: 'POST',

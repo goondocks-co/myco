@@ -52,7 +52,9 @@ describe('symbiontHasCapability', () => {
     // injection per-tool. The list grows as new symbionts gain
     // PreToolUse contracts (Copilot joined when its 13-event hook
     // surface was wired; see copilot.yaml capabilities block).
-    for (const name of ['claude-code', 'codex', 'copilot']) {
+    // Copilot alone still wires a PreToolUse hook; Claude Code and Codex left
+    // theirs with the retained hook set (#1155).
+    for (const name of ['copilot']) {
       expect(symbiontHasCapability(name, 'preToolUseInjection')).toBe(true);
     }
   });
@@ -62,7 +64,7 @@ describe('symbiontHasCapability', () => {
     // its full hook surface and declared its path-bearing tools — see
     // copilot.yaml `capabilities`. The agents below remain false until
     // their own hook contracts gain an equivalent pre-call injection.
-    for (const name of ['cursor', 'antigravity', 'windsurf']) {
+    for (const name of ['claude-code', 'codex', 'cursor', 'antigravity', 'windsurf']) {
       expect(symbiontHasCapability(name, 'preToolUseInjection')).toBe(false);
     }
   });

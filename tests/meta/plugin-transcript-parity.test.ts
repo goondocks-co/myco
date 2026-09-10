@@ -27,6 +27,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256Hex as sha256HexOf } from '@myco-server-worker/hash.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
+import { hookShipsToolCalls } from '@myco/hooks/turn-rows.js';
 import { deriveTranscriptCapture } from '@myco/member/transcript.js';
 import { emptySessionState } from '@myco/member/session-state.js';
 import { runHook, type HookName } from '../member/helpers/hooks.js';
@@ -182,7 +183,9 @@ describe('the hook path itself, end to end', () => {
     for (const agent of ['claude-code', 'codex']) {
       for (const verb of ['user-prompt-submit', 'stop', 'post-tool-use', 'subagent-start'] as const) {
         const { posted } = await runFor(agent, verb);
-        expect({ agent, verb, posted: posted.filter((k) => ['prompt', 'response', 'tool.use', 'subagent.start'].includes(k)) }).toEqual({ agent, verb, posted: [] });
+        // A symbiont whose transcript carries no tool calls ships them from its hook; the others ship nothing.
+        const silenced = ['prompt', 'response', 'subagent.start', ...(hookShipsToolCalls(agent) ? [] : ['tool.use'])];
+        expect({ agent, verb, posted: posted.filter((k) => silenced.includes(k)) }).toEqual({ agent, verb, posted: [] });
       }
     }
   });

@@ -157,7 +157,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "ultraplan"
     ],
     "capabilities": {
-      "preToolUseInjection": true,
+      "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
@@ -487,6 +487,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       ]
     },
     "hookEvents": {
+      "PostToolUse": {
+        "hook": "post-tool-use",
+        "timeout": 5
+      },
       "SessionStart": {
         "hook": "session-start",
         "timeout": 10
@@ -509,12 +513,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "proposed_plan"
     ],
     "capabilities": {
-      "preToolUseInjection": true,
+      "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "turnRowSource": "transcript",
-      "transcriptFidelity": "full"
+      "transcriptFidelity": "no_tool_results"
     },
     "transcriptDiscovery": {
       "roots": [

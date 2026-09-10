@@ -21,6 +21,17 @@
       ]
     }
   ],
+  "PostToolUse": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook post-tool-use --symbiont codex",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
   "SubagentStart": [
     {
       "hooks": [

@@ -342,7 +342,6 @@ export function createStreamableMcpHttpHandler(
       requestContext,
       resolveDatabase: options.resolveDatabase,
       callContextConstraint,
-      toolCallerTransport: req.headers['x-myco-tool-transport'] === 'cli' ? 'cli' : 'mcp',
     });
     const server = createMcpProtocolServer(tools, {
       logger: options.logger,

@@ -385,6 +385,16 @@ describe('the session-start hook', () => {
     expect(spool.depth(SESSION)).toBe(0);
   });
 
+  it('counts a compaction once: a PreCompact hook a machine still carries advances nothing, the compact start does', async () => {
+    admit();
+    guidance();
+    await runHook('pre-compact', { session_id: SESSION, hook_event_name: 'PreCompact', trigger: 'manual', transcript_path: transcript() }, { fetch: rig.fetch });
+    expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, SESSION).compactionOrdinal).toBe(0);
+    expect((await start(rig.fetch, 'compact')).stdout).toContain('Keep the plan current.');
+    expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, SESSION).compactionOrdinal).toBe(1);
+    expect(delivered()).toEqual(['cortex-compact:1']);
+  });
+
   it('extends existing session state without losing delivered context or capture receipts', async () => {
     admit();
     guidance();

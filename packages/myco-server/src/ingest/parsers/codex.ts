@@ -52,7 +52,12 @@ function argumentsOf(raw: unknown): unknown {
 
 export const codexParser: TranscriptParser = {
   agent: 'codex',
-  fidelity: 'full',
+  // Codex 0.153 records tool calls as `local_shell_call`, `custom_tool_call`,
+  // `tool_search_call` and `web_search_call` items whose output is an object;
+  // this parser reads `function_call` with a string output and derives none
+  // of them, so the member's hooks ship the tool calls and this declaration
+  // says so. It returns to `full` with the parser, never before it.
+  fidelity: 'no_tool_results',
   planTags: ['proposed_plan'],
 
   async parse({ lines, sessionId, now, openPromptId }: ParserInput): Promise<DerivedEvent[]> {

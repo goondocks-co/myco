@@ -167,7 +167,7 @@ describe('POST /canopy/inject — handler', () => {
     });
     const res = await handler({
       requestContext: ctx(),
-      body: { sessionId: 's1', agent: 'claude-code', toolInput: { file_path: 'foo.ts' } },
+      body: { sessionId: 's1', agent: 'copilot', toolInput: { file_path: 'foo.ts' } },
     });
     expect(res.body).toMatchObject({ inject: false, reason: 'capability_off' });
   });
@@ -187,7 +187,7 @@ describe('POST /canopy/inject — handler', () => {
     });
     const res = await handler({
       requestContext: ctx(),
-      body: { sessionId: 's1', agent: 'claude-code', toolInput: { file_path: 'foo.ts' } },
+      body: { sessionId: 's1', agent: 'copilot', toolInput: { file_path: 'foo.ts' } },
     });
     expect(res.body).toMatchObject({ inject: false, reason: 'disabled' });
   });
@@ -203,7 +203,7 @@ describe('POST /canopy/inject — handler', () => {
       requestContext: ctx(),
       body: {
         sessionId: 's1',
-        agent: 'claude-code',
+        agent: 'copilot',
         toolInput: { file_path: 'foo.ts', offset: 100 },
       },
     });
@@ -219,7 +219,7 @@ describe('POST /canopy/inject — handler', () => {
       requestContext: ctx(),
       body: {
         sessionId: 's1',
-        agent: 'claude-code',
+        agent: 'copilot',
         toolInput: { file_path: 'never/scanned.ts' },
       },
     });
@@ -235,7 +235,7 @@ describe('POST /canopy/inject — handler', () => {
     });
     const res = await handler({
       requestContext: ctx(),
-      body: { sessionId: 's1', agent: 'claude-code', toolInput: { file_path: 'tiny.ts' } },
+      body: { sessionId: 's1', agent: 'copilot', toolInput: { file_path: 'tiny.ts' } },
     });
     expect(res.body).toMatchObject({ inject: false, reason: 'small_file' });
   });
@@ -259,7 +259,7 @@ describe('POST /canopy/inject — handler', () => {
       requestContext: ctx(),
       body: {
         sessionId: 's1',
-        agent: 'claude-code',
+        agent: 'copilot',
         toolInput: { file_path: 'src/big.ts' },
       },
     });
@@ -289,7 +289,7 @@ describe('POST /canopy/inject — handler', () => {
       requestContext: ctx(),
       body: {
         sessionId: 's1',
-        agent: 'claude-code',
+        agent: 'copilot',
         toolInput: { file_path: absPath },
       },
     });
@@ -320,7 +320,7 @@ describe('POST /canopy/inject — handler', () => {
       },
       body: {
         sessionId: 's-worktree',
-        agent: 'claude-code',
+        agent: 'copilot',
         toolInput: { file_path: absoluteWorktreePath },
       },
     });
@@ -338,7 +338,7 @@ describe('POST /canopy/inject — handler', () => {
     const { insertBatch } = await import('@myco/db/queries/batches.js');
     const { upsertSession } = await import('@myco/db/queries/sessions.js');
     const NOW_SEC = Math.floor(Date.now() / 1000);
-    upsertSession({ id: 's-canopy-dedup', agent: 'claude-code', started_at: NOW_SEC, created_at: NOW_SEC });
+    upsertSession({ id: 's-canopy-dedup', agent: 'copilot', started_at: NOW_SEC, created_at: NOW_SEC });
     insertBatch({
       session_id: 's-canopy-dedup',
       kind: 'initial',
@@ -356,13 +356,13 @@ describe('POST /canopy/inject — handler', () => {
     });
     const first = await handler({
       requestContext: ctx(),
-      body: { sessionId: 's-canopy-dedup', agent: 'claude-code', toolInput: { file_path: 'src/big.ts' } },
+      body: { sessionId: 's-canopy-dedup', agent: 'copilot', toolInput: { file_path: 'src/big.ts' } },
     });
     expect(first.body).toMatchObject({ inject: true, path: 'src/big.ts' });
 
     const second = await handler({
       requestContext: ctx(),
-      body: { sessionId: 's-canopy-dedup', agent: 'claude-code', toolInput: { file_path: 'src/big.ts' } },
+      body: { sessionId: 's-canopy-dedup', agent: 'copilot', toolInput: { file_path: 'src/big.ts' } },
     });
     expect(second.body).toMatchObject({ inject: false, reason: 'already_injected' });
   });
@@ -371,7 +371,7 @@ describe('POST /canopy/inject — handler', () => {
     const { insertBatch } = await import('@myco/db/queries/batches.js');
     const { upsertSession } = await import('@myco/db/queries/sessions.js');
     const NOW_SEC = Math.floor(Date.now() / 1000);
-    upsertSession({ id: 's-canopy-multi', agent: 'claude-code', started_at: NOW_SEC, created_at: NOW_SEC });
+    upsertSession({ id: 's-canopy-multi', agent: 'copilot', started_at: NOW_SEC, created_at: NOW_SEC });
     insertBatch({
       session_id: 's-canopy-multi',
       kind: 'initial',
@@ -390,8 +390,8 @@ describe('POST /canopy/inject — handler', () => {
       liveConfig: { current: makeConfig() },
       getDatabase,
     });
-    const a = await handler({ requestContext: ctx(), body: { sessionId: 's-canopy-multi', agent: 'claude-code', toolInput: { file_path: 'src/a.ts' } } });
-    const b = await handler({ requestContext: ctx(), body: { sessionId: 's-canopy-multi', agent: 'claude-code', toolInput: { file_path: 'src/b.ts' } } });
+    const a = await handler({ requestContext: ctx(), body: { sessionId: 's-canopy-multi', agent: 'copilot', toolInput: { file_path: 'src/a.ts' } } });
+    const b = await handler({ requestContext: ctx(), body: { sessionId: 's-canopy-multi', agent: 'copilot', toolInput: { file_path: 'src/b.ts' } } });
     expect(a.body).toMatchObject({ inject: true, path: 'src/a.ts' });
     expect(b.body).toMatchObject({ inject: true, path: 'src/b.ts' });
   });
@@ -408,7 +408,7 @@ describe('POST /canopy/inject — handler', () => {
     });
     const res = await handler({
       requestContext: ctx(),
-      body: { sessionId: 's-canopy-no-batch', agent: 'claude-code', toolInput: { file_path: 'src/c.ts' } },
+      body: { sessionId: 's-canopy-no-batch', agent: 'copilot', toolInput: { file_path: 'src/c.ts' } },
     });
     expect(res.body).toMatchObject({ inject: true, path: 'src/c.ts' });
   });
@@ -431,7 +431,7 @@ describe('POST /canopy/inject — handler', () => {
       requestContext: ctx(),
       body: {
         sessionId: 's1',
-        agent: 'claude-code',
+        agent: 'copilot',
         toolInput: { file_path: 'src/big.ts' },
       },
     });
@@ -448,7 +448,7 @@ describe('POST /canopy/inject — handler', () => {
     });
     const res = await handler({
       requestContext: ctx({ groveId: null }),
-      body: { sessionId: 's-no-project', agent: 'claude-code', toolInput: { file_path: 'src/big.ts' } },
+      body: { sessionId: 's-no-project', agent: 'copilot', toolInput: { file_path: 'src/big.ts' } },
     });
     expect(res.body).toEqual({ inject: false, reason: 'unknown_file' });
   });

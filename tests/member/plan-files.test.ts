@@ -69,7 +69,26 @@ describe('plan file capture', () => {
     expect(payload.title).toBe('no-heading');
     const huge = path.join(root, '.claude/plans/huge.md');
     fs.writeFileSync(huge, 'x'.repeat(MAX_PLAN_FILE_BYTES + 1));
-    expect(planFileCapture(ctx(), emptySessionState(), 'proj_1', root, huge).events).toEqual([]);
+    const lines: string[] = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    (process.stderr as unknown as { write: (c: unknown) => boolean }).write = ((c: unknown) => { lines.push(String(c)); return true; }) as never;
+    try {
+      const state = emptySessionState();
+      const first = planFileCapture(ctx(), state, 'proj_1', root, huge);
+      expect(first.events).toEqual([]);
+      first.record(state);
+      expect(state.planPaths['.claude/plans/huge.md']?.hash).toBe(`oversize:${MAX_PLAN_FILE_BYTES + 1}`);
+      expect(lines.join('')).toContain('over the');
+      // Said once: the receipt stands until the file changes size.
+      lines.length = 0;
+      expect(planFileCapture(ctx(), state, 'proj_1', root, huge).events).toEqual([]);
+      expect(lines).toEqual([]);
+      fs.writeFileSync(huge, '# Small now\n');
+      expect(planFileCapture(ctx(), state, 'proj_1', root, huge).events).toHaveLength(1);
+    } finally {
+      (process.stderr as unknown as { write: unknown }).write = origErr;
+      fs.unlinkSync(huge);
+    }
   });
 
   it('re-sends a shipped file whose content changed, once, and nothing for one unchanged or gone', () => {

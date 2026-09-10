@@ -106,6 +106,10 @@ function trimTracked(state: SessionState): void {
   if (pathKeys.length > MAX_TRACKED) {
     for (const key of pathKeys.slice(0, pathKeys.length - MAX_TRACKED)) delete state.planPaths[key];
   }
+  const siblingKeys = Object.keys(state.siblings);
+  if (siblingKeys.length > MAX_TRACKED) {
+    for (const key of siblingKeys.slice(0, siblingKeys.length - MAX_TRACKED)) delete state.siblings[key];
+  }
   if (state.attachmentKeys.length > MAX_TRACKED) state.attachmentKeys = state.attachmentKeys.slice(-MAX_TRACKED);
   if (state.delivered.length > MAX_TRACKED) state.delivered = state.delivered.slice(-MAX_TRACKED);
 }
