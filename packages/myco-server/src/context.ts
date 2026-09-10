@@ -64,6 +64,8 @@ export interface DeploymentContext {
   tokenId: string;
   body: string;
   now: number;
+  /** The server clock for lease checks after asynchronous work. */
+  clock: () => number;
 }
 
 /** Context for a json route reached over a run's credential: the live run the credential dispatched, the run's own Project — the request's, whatever the header named — and the body the pipeline read. Nothing of a person travels here. */

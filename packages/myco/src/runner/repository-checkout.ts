@@ -2,13 +2,13 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { repositoryUrl, repositoryBranch, REPOSITORY_COMMIT_PATTERN as SHA_PATTERN } from '@goondocks/myco-shared/repository';
+import { repositoryUrl, repositoryBranch, REPOSITORY_COMMIT_PATTERN as SHA_PATTERN, MAX_REPOSITORY_HISTORY_DEPTH } from '@goondocks/myco-shared/repository';
 
 export { repositoryUrl } from '@goondocks/myco-shared/repository';
 
 const MAX_GIT_OUTPUT_BYTES = 1_000_000;
 export const MAX_REPOSITORY_BYTES = 256 * 1024 * 1024;
-const CHECKOUT_TIMEOUT_MS = 120_000;
+export const CHECKOUT_TIMEOUT_MS = 120_000;
 const LFS_POINTER_PREFIX = 'version https://git-lfs.github.com/spec/v1';
 
 export interface RepositoryCheckoutRequest {
@@ -23,6 +23,10 @@ export interface RepositoryCheckoutRequest {
   pin: (commit: string) => Promise<string>;
   /** Executable override for runtime packaging and integration fixtures. */
   gitPath?: string;
+  /** A new directory owned by the caller's run; an existing path is refused. */
+  destination?: string;
+  /** Git fetch depth, bounded by the source-reading policy. */
+  historyDepth?: number;
 }
 
 export interface RepositoryCheckout {
@@ -80,11 +84,19 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
   repositoryBranch(request.branch);
   if (request.commit !== undefined && !SHA_PATTERN.test(request.commit)) throw new Error('Invalid repository commit.');
   if (request.compareCommit !== undefined && !SHA_PATTERN.test(request.compareCommit)) throw new Error('Invalid comparison commit.');
+  const depth = request.historyDepth ?? 1;
+  if (!Number.isInteger(depth) || depth < 1 || depth > MAX_REPOSITORY_HISTORY_DEPTH) throw new Error('Invalid repository history depth.');
   const directory = await mkdtemp(join(tmpdir(), 'myco-repository-'));
-  const root = join(directory, 'checkout');
-  const dispose = () => rm(directory, { recursive: true, force: true });
+  const root = request.destination ?? join(directory, 'checkout');
+  let ownsRoot = false;
+  const dispose = async () => {
+    try {
+      if (ownsRoot && request.destination !== undefined) await rm(root, { recursive: true, force: true });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  };
   try {
-    await mkdir(root);
+    await mkdir(root, { mode: 0o700 });
+    ownsRoot = true;
     const askpass = join(directory, 'askpass.sh');
     await writeFile(askpass, '#!/bin/sh\ncase "$1" in\n  *Username*) printf "%s\\n" "$MYCO_GIT_USERNAME" ;;\n  *Password*) printf "%s\\n" "$MYCO_GIT_TOKEN" ;;\n  *) exit 1 ;;\nesac\n', { mode: 0o700 });
     const env: NodeJS.ProcessEnv = {
@@ -107,12 +119,12 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     await run('check-ref-format', `refs/heads/${request.branch}`);
     await run('init', '--quiet', '--template=');
     await run('remote', 'add', 'origin', url);
-    await run('fetch', '--quiet', '--depth=1', '--no-tags', 'origin', request.commit ?? `refs/heads/${request.branch}`);
+    await run('fetch', '--quiet', `--depth=${depth}`, '--no-tags', 'origin', request.commit ?? `refs/heads/${request.branch}`);
     const resolved = (await run('rev-parse', '--verify', 'FETCH_HEAD^{commit}')).trim();
     if (!SHA_PATTERN.test(resolved)) throw new Error('Repository returned an invalid commit.');
     const pinned = await request.pin(resolved);
     if (!SHA_PATTERN.test(pinned)) throw new Error('Repository pin returned an invalid commit.');
-    if (pinned !== resolved) await run('fetch', '--quiet', '--depth=1', '--no-tags', 'origin', pinned);
+    if (pinned !== resolved) await run('fetch', '--quiet', `--depth=${depth}`, '--no-tags', 'origin', pinned);
     let changedPaths: string[] | undefined;
     if (request.compareCommit !== undefined) {
       if (request.compareCommit !== pinned) await run('fetch', '--quiet', '--depth=1', '--no-tags', 'origin', request.compareCommit);

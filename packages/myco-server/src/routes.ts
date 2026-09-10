@@ -50,7 +50,7 @@ import { handleHarnessDispatch } from './api/harness.js';
 import { handleEvents } from './ingest/events.js';
 import { handleImportPlan } from './api/import.js';
 import { handleGrantMcp, handleMcp, handleRunMcp } from './mcp/http.js';
-import { handleWorkerClaim, handleWorkerEnd, handleWorkerLease } from './api/worker.js';
+import { handleWorkerClaim, handleWorkerEnd, handleWorkerLease, handleWorkerRepository } from './api/worker.js';
 
 /** Public handlers receive the request only; they cannot reach storage or bindings. */
 export type PublicHandler = (request: Request) => Promise<Response>;
@@ -143,6 +143,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/worker/claim', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerClaim },
   { method: 'POST', path: '/worker/lease', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerLease },
   { method: 'POST', path: '/worker/end', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerEnd },
+  { method: 'POST', path: '/worker/repository', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerRepository },
   { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', quotaPrecheck: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleLinkGithub },

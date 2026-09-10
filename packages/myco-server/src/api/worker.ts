@@ -19,6 +19,8 @@ import type { DeploymentContext } from '../context.js';
 import { claimNextRun, endLeasedRun, renewLease, type OfferedHarness } from '../core/harness.js';
 import { WORKER_HEARTBEAT_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { ok } from './scope.js';
+import { prepareWorkerRepository } from '../core/worker-repository.js';
+import { RepositoryInputError } from '@goondocks/myco-shared/repository';
 
 const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
 const RUN_ID_SHAPE = /^[A-Za-z0-9._-]{1,128}$/;
@@ -70,6 +72,7 @@ export async function handleWorkerClaim(env: ServerEnv, ctx: DeploymentContext):
     tokenId: ctx.tokenId,
     machineId: ctx.machineId,
     harnesses: offered(asked.harnesses),
+    capabilities: Array.isArray(asked.capabilities) ? asked.capabilities.filter((value): value is string => typeof value === 'string') : [],
     now: ctx.now,
   });
   // The Deployment decides the cadence and says it on every answer: a worker
@@ -103,4 +106,19 @@ export async function handleWorkerEnd(env: ServerEnv, ctx: DeploymentContext): P
     ...run, status, error: typeof asked.error === 'string' ? asked.error : null,
   });
   return ok({ persisted: true, ...outcome });
+}
+
+/** Repository access and commit pinning under the worker's lease. */
+export async function handleWorkerRepository(env: ServerEnv, ctx: DeploymentContext): Promise<Response> {
+  const asked = body(ctx);
+  if (asked === null) return unreadable();
+  const run = named(asked);
+  if (run === null) return ok({ persisted: false, code: 'parse', reason: 'repository names a projectId and a runId' });
+  try {
+    const result = await prepareWorkerRepository(env, { tokenId: ctx.tokenId, clock: ctx.clock }, { ...run, body: asked });
+    return Response.json({ persisted: true, ...result }, { headers: { 'cache-control': 'no-store' } });
+  } catch (error) {
+    if (error instanceof RepositoryInputError) return ok({ persisted: false, code: 'parse', reason: error.message });
+    throw error;
+  }
 }

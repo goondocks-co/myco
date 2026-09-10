@@ -1,7 +1,7 @@
 import type { RepositoryAccess, RepositoryPin } from '@goondocks/myco-shared/repository';
 import type { ServerToolContext } from './server-tools.js';
 import { postRunControl } from './run-store-http.js';
-import { prepareRepositoryCheckout, type RepositoryCheckout } from './repository-checkout.js';
+import { prepareRepositoryCheckout, type RepositoryCheckout } from '@myco/runner/repository-checkout.js';
 
 /** Prepare this run's configured source and persist its commit before exposing files. */
 export async function prepareRunRepository(ctx: ServerToolContext, signal: AbortSignal, gitPath?: string, prior?: RepositoryPin): Promise<RepositoryCheckout> {

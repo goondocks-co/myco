@@ -1,11 +1,11 @@
 import { refused } from '../ingest/events.js';
 import { refusal } from '../telemetry.js';
-import { REPOSITORY_TASKS, REPOSITORY_COMMIT_PATTERN, RepositoryInputError } from '@goondocks/myco-shared/repository';
+import { REPOSITORY_TASKS, RepositoryInputError } from '@goondocks/myco-shared/repository';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
 import { deploymentSecretStore, SecretValueError } from '../core/secrets.js';
 import { projectRepositories, RepositoryConflictError, type RepositoryConnectionWrite } from '../core/repositories.js';
-import { pinRepositoryForRun, repositoryPinOfRun } from '../core/runs.js';
+import { prepareRunRepository } from '../core/run-repository.js';
 import { heldRun } from './run-admission.js';
 import { badRequest, notFound, ok, readJsonObject, parseJsonObject, resolveProjectScope } from './scope.js';
 
@@ -49,27 +49,11 @@ export async function handleRunRepository(env: ServerEnv, ctx: RouteContext): Pr
   const body = parseJsonObject(ctx.body);
   if (body === null || typeof body.runId !== 'string' || !body.runId || body.runId.length > 192) return Response.json(refused(ctx, refusal('runId is required', 'parse')));
   const run = await heldRun(env, ctx, body.runId, REPOSITORY_TASKS);
-  if (run === null) return ok({ persisted: true, held: false });
-  const repositories = capability(env);
-  const current = await repositories.describe(ctx.projectId);
-  if (current === null) return ok({ persisted: true, held: true, repository: null });
-  const pin = repositoryPinOfRun(run);
-  if (pin !== null && (pin.url !== current.url || pin.branch !== current.branch)) {
-    return ok({ persisted: true, held: true, error: 'Repository connection changed. Start a new run.' });
+  if (run === null || run.leaseExpiresAt !== null) return ok({ persisted: true, held: false });
+  try {
+    return Response.json(await prepareRunRepository(env, ctx.projectId, run, body), { headers: { 'cache-control': 'no-store' } });
+  } catch (error) {
+    if (error instanceof RepositoryInputError) return Response.json(refused(ctx, refusal(error.message, 'parse')));
+    throw error;
   }
-  if (body.commit !== undefined) {
-    if (typeof body.commit !== 'string' || !REPOSITORY_COMMIT_PATTERN.test(body.commit)
-      || body.url !== current.url || body.branch !== current.branch) return Response.json(refused(ctx, refusal('Commit and repository identity must match the run connection.', 'parse')));
-    const pinned = await pinRepositoryForRun(env.db, { projectId: ctx.projectId }, run, {
-      url: current.url, branch: current.branch, commit: body.commit,
-    });
-    return ok({ persisted: true, held: pinned !== null, pin: pinned });
-  }
-  const repository = await repositories.access(ctx.projectId);
-  if (repository === null || repository.url !== current.url || repository.branch !== current.branch) {
-    return ok({ persisted: true, held: true, error: 'Repository connection changed. Retry preparation.' });
-  }
-  return Response.json({ persisted: true, held: true, repository: { ...repository, ...(pin === null ? {} : { commit: pin.commit }) } }, {
-    headers: { 'cache-control': 'no-store' },
-  });
 }

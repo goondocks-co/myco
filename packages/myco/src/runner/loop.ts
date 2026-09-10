@@ -19,9 +19,13 @@ import { discardRunDir, writeRunDir } from './mcp-config.js';
 import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import type { RunEvent } from './events.js';
+import { parseRepositoryCheckoutSpec, REPOSITORY_CHECKOUT_CAPABILITY, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { prepareWorkerCheckout } from './repository.js';
+import type { RepositoryCheckout } from './repository-checkout.js';
 
 /** What a claim answers: the run, the harness chosen for it, and what it runs under. */
 interface ClaimedRun {
+  repository?: RepositoryCheckoutSpec;
   projectId: string;
   id: string;
   task: string;
@@ -36,6 +40,8 @@ interface ClaimedRun {
 }
 
 export interface WorkerOptions {
+  /** Git executable override for a controlled checkout environment. */
+  repositoryGitPath?: string;
   serverUrl: string;
   token: string;
   runRoot: string;
@@ -141,7 +147,9 @@ const asRun = (value: unknown): ClaimedRun | null => {
   const run = value as ClaimedRun;
   const named = typeof run.id === 'string' && typeof run.task === 'string' && typeof run.harness === 'string' && typeof run.runToken === 'string';
   if (!named || !(typeof run.instruction === 'string' || run.instruction === null)) return null;
-  return { ...run, instructions: typeof run.instructions === 'string' ? run.instructions : null };
+  let repository: RepositoryCheckoutSpec | undefined;
+  try { repository = run.repository === undefined ? undefined : parseRepositoryCheckoutSpec(run.repository); } catch { return null; }
+  return { ...run, repository, instructions: typeof run.instructions === 'string' ? run.instructions : null };
 };
 
 /**
@@ -174,6 +182,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
   const stopping = new AbortController();
   const onAbort = (): void => { stopping.abort(); };
   options.signal.addEventListener('abort', onAbort, { once: true });
+  if (options.signal.aborted) stopping.abort();
   let lost = false;
   let unreachable = false;
   let overran = false;
@@ -216,13 +225,24 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
   }, heartbeatMs);
 
   const events: RunEvent[] = [];
-  const stream = driver.run({
-    prompt: run.instruction,
-    scratchDir,
-    mcpConfigPath,
-    credentialEnv: run.credentialEnv,
-  }, stopping.signal)[Symbol.asyncIterator]();
+  let stream: AsyncIterator<RunEvent> | undefined;
+  let checkout: RepositoryCheckout | undefined;
+  let failure: string | null = null;
   try {
+    if (run.repository !== undefined) {
+      checkout = await prepareWorkerCheckout(run.repository, scratchDir, stopping.signal, async (input, signal) => {
+        const answer = await post({ ...options, signal }, '/worker/repository', { ...input, projectId: run.projectId, runId: run.id });
+        if (answer.kind !== 'answered') throw new Error(`Repository preparation failed: ${answer.detail}`);
+        if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
+        if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
+        return answer.body;
+      }, options.repositoryGitPath);
+    }
+    stopping.signal.throwIfAborted();
+    stream = driver.run({
+      prompt: run.instruction, scratchDir, mcpConfigPath, credentialEnv: run.credentialEnv,
+      sourceReadOnly: checkout !== undefined,
+    }, stopping.signal)[Symbol.asyncIterator]();
     for (;;) {
       const step = await Promise.race([stream.next(), overrunReached]);
       if (step === 'overran' || step.done === true) break;
@@ -231,7 +251,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
       if (step.value.kind === 'ended') options.log(`run ${run.id} ended ${step.value.stop}`);
     }
   } catch (error) {
-    return { status: 'failed', error: error instanceof Error ? error.message : String(error) };
+    failure = error instanceof Error ? error.message : String(error);
   } finally {
     clearInterval(heartbeat);
     clearTimeout(budget);
@@ -239,8 +259,8 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
     // Closing the stream runs the driver's own cleanup, which stops the child.
     // Not awaited: the driver may be blocked on the very read the budget gave up
     // on, and a worker that waited here would be held by it all over again.
-    void Promise.resolve(stream.return?.()).catch(() => undefined);
-    discardRunDir(scratchDir);
+    void Promise.resolve(stream?.return?.()).catch(() => undefined);
+    try { await checkout?.dispose(); } finally { discardRunDir(scratchDir); }
   }
 
   // A lost lease is decided before anything else, including an overrun: a worker
@@ -252,6 +272,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
   // out: a child stopped for overrunning did not finish its turn, and a stop
   // reason it managed to emit as it died would otherwise read as one.
   if (overran) return { status: 'failed', error: `the run outlived its budget of ${run.timeoutSeconds}s` };
+  if (failure !== null) return { status: 'failed', error: failure };
   const last = events.at(-1);
   if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: 'the harness wrote no ending' };
   return last.stop === 'end_turn'
@@ -289,7 +310,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerOutcome> 
   /** The reason the last claim answered nothing, so a change in it is said once and a repeat is not. */
   let waiting: string | null = null;
   while (!options.signal.aborted) {
-    const answer = await post(options, '/worker/claim', { harnesses });
+    const answer = await post(options, '/worker/claim', { harnesses, capabilities: [REPOSITORY_CHECKOUT_CAPABILITY] });
     if (answer.kind === 'refused') {
       options.log(`the Deployment refused the claim: ${answer.code}${answer.detail === '' ? '' : ` — ${answer.detail}`}`);
       return { driven, refused: answer.code };

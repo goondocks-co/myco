@@ -1,3 +1,4 @@
+import { REPOSITORY_CHECKOUT_CAPABILITY, MAX_REPOSITORY_HISTORY_DEPTH } from '@goondocks/myco-shared/repository';
 /**
  * What a run is told, and what happens to one nobody can instruct.
  *
@@ -19,7 +20,7 @@ import { buildTaskInput, INPUT_BUILDERS, instructionFor, instructionsFileFor, un
 import { buildTitlingInput } from '@myco-server-worker/core/titling-input.js';
 import { buildExtractionInput, EXTRACTION_PAGE, EXTRACTION_RULES } from '@myco-server-worker/core/extraction-input.js';
 import { buildSeedingInput, SEEDING_CHECKOUT_DIR, SEEDING_RULES } from '@myco-server-worker/core/seeding-input.js';
-import { EXTRACTION_TASK, OUTCOME_TASKS, SEEDING_TASK, taskTools, TITLING_TASK, UNLANDED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
+import { EXTRACTION_TASK, OUTCOME_TASKS, SEEDING_TASK, taskTools, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 import { acceptedActions, EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
@@ -46,7 +47,7 @@ async function rig() {
   };
   const row = (id: string) => e.sqlite.query(`SELECT status, error, instruction FROM agent_runs WHERE id = ?`).get(id) as { status: string; error: string | null; instruction: string | null };
   const credentials = () => (e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials`).get() as { n: number }).n;
-  const claim = (now: number) => claimNextRun(e.serverEnv, { tokenId: workerToken, machineId: 'm1', harnesses: OFFERED, now });
+  const claim = (now: number) => claimNextRun(e.serverEnv, { tokenId: workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: [REPOSITORY_CHECKOUT_CAPABILITY], now });
   const endedSession = (sessionId: string) => {
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [sessionId, NOW - 10_000, NOW, NOW - 10_000, NOW]);
     e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', ?, ?, ?, 'add a retry to the runner', 'user', ?, ?, ?, 'tok_1', ?)`, [sessionId, `p_${sessionId}`, `e_${sessionId}`, `h_${sessionId}`, NOW - 5000, NOW - 5000, NOW - 5000]);
@@ -190,15 +191,11 @@ describe('a task the Deployment cannot instruct', () => {
     expect(await prepareDispatch(r.e.serverEnv, EXTRACTION_TASK, 'proj_1')).toMatchObject({ ok: true, prepared: { servedBy: 'worker' } });
   });
 
-  it('refuses an outcome whose worker half has not landed, by name, so an owner cannot queue a run no worker can drive', async () => {
+  it('admits seeding through a worker only when the Project has connected source', async () => {
     const r = await rig();
-    for (const task of UNLANDED_TASKS) {
-      expect({ task, outcome: await prepareDispatch(r.e.serverEnv, task, 'proj_1') }).toEqual({ task, outcome: { ok: false, refusal: 'not_landed' } });
-    }
-    expect(DISPATCH_REFUSAL_MESSAGE.not_landed).toContain('queues no run');
-    // Ahead of anything Settings could fix: a Project with no repository is not sent to connect one for a task refused either way.
+    expect(await prepareDispatch(r.e.serverEnv, SEEDING_TASK, 'proj_1')).toMatchObject({ ok: true, prepared: { servedBy: 'worker' } });
     r.e.sqlite.run(`DELETE FROM project_repositories WHERE project_id = 'proj_1'`);
-    expect(await prepareDispatch(r.e.serverEnv, SEEDING_TASK, 'proj_1')).toEqual({ ok: false, refusal: 'not_landed' });
+    expect(await prepareDispatch(r.e.serverEnv, SEEDING_TASK, 'proj_1')).toEqual({ ok: false, refusal: 'repository_missing' });
   });
 });
 
@@ -237,7 +234,8 @@ describe('what a claim hands out', () => {
     if (!claimed.claimed) return;
     expect(claimed.run.instructions).toBe(SEEDING_RULES);
     expect(claimed.run.instruction).toContain('https://github.com/goondocks-co/myco');
-    expect('repository' in claimed.run).toBe(false);
+    expect(claimed.run.repository).toMatchObject({ historyDepth: MAX_REPOSITORY_HISTORY_DEPTH });
+    expect(claimed.run.repository).not.toHaveProperty('credential');
   });
 
   it('never a stale instruction for a task whose build now answers nothing: the run is ended, not driven about a thing that is gone', async () => {

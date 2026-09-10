@@ -665,6 +665,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/worker/end', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
         wellFormed: (token) => new Request('https://s/worker/end', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent', status: 'failed' }) }),
       },
+      'POST /worker/repository': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/worker/repository', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/worker/repository', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent' }) }),
+      },
       'POST /mcp': {
         shape: 'answered',
         malformed: (token) => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
@@ -786,7 +791,7 @@ describe('gates', () => {
     // and the one dispatcher, which opens a provider credential to hand it to
     // the launched runtime's environment and nothing else. A new file here is
     // the thing to look at.
-    expect(callers.sort()).toEqual([join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts')]);
+    expect(callers.sort()).toEqual([join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts'), join('core', 'run-repository.ts')]);
     const credentialCallers = files(SRC).filter((f) => /\bopenProviderCredential\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1)).sort();
     expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'harness.ts'), join('core', 'provider-credentials.ts')]);
@@ -1072,6 +1077,7 @@ describe('gates', () => {
       'member POST /worker/claim',
       'member POST /worker/end',
       'member POST /worker/lease',
+      'member POST /worker/repository',
       'owner DELETE /api/projects/{projectId}/repository',
       'owner DELETE /api/secrets/{name}',
       'owner GET /api/agents',
