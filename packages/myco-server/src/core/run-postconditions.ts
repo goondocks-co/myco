@@ -36,7 +36,7 @@
  */
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { inputHashOf, listReports, runRecordedWrite, sessionNamedByRun, type RunRow } from './runs.js';
+import { inputHashOf, listReports, runRecordedWrite, sessionNamedByRun, type RunRow, getRun, insertReport, type ReportInsert } from './runs.js';
 import { digestWrittenBy } from './digests.js';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { canopyMapWrittenBy } from './canopy.js';
@@ -128,11 +128,6 @@ export function closeRuleFor(task: string | null): RunCloseRule | undefined {
   return rule === undefined || rule === RUN_CLOSE_NONE ? undefined : rule;
 }
 
-/** The report actions a task's run must have recorded one of, by task. */
-export const RUN_CLOSE_REPORTS: Readonly<Record<string, readonly string[]>> = Object.fromEntries(
-  Object.entries(RUN_CLOSE_RULES).flatMap(([task, rule]) => (rule === RUN_CLOSE_NONE ? [] : [[task, rule.reports]])),
-);
-
 /** How a run that closed without the report its task owes is recorded. */
 export const RUN_CLOSE_ERROR = 'the run ended without its report';
 /** How a run that reported but left no row is recorded. */
@@ -161,4 +156,24 @@ export async function runCloseRefusal(db: RelationalStore, scope: ReadScope, run
 /** How a report under an action a task's rule cannot hear is refused, on either door a run reports through. */
 export function unacceptedActionError(task: string | null, accepted: readonly string[]): string {
   return `a ${task ?? 'run'} run closes with action ${accepted.map((a) => `"${a}"`).join(' or ')}`;
+}
+
+/** What recording a report answered: the row landed, the run is not one this Project holds, or the action is one its task cannot close under. */
+export type ReportOutcome =
+  | { recorded: true }
+  | { recorded: false; reason: 'unheld' }
+  | { recorded: false; reason: 'unaccepted'; error: string };
+
+/**
+ * Record a run's report: the one door every report lands through, on the MCP
+ * surface and the container's route alike (`tests/meta/report-record-chokepoint.test.ts`).
+ * An action the run's task cannot close under is refused here, naming what it
+ * can, and leaves no row; a row the judgment would ignore is never written.
+ */
+export async function recordReport(db: RelationalStore, scope: ReadScope, report: ReportInsert): Promise<ReportOutcome> {
+  const run = await getRun(db, scope, report.runId);
+  if (run === null) return { recorded: false, reason: 'unheld' };
+  const accepted = acceptedActions(run.task);
+  if (accepted !== null && !accepted.includes(report.action)) return { recorded: false, reason: 'unaccepted', error: unacceptedActionError(run.task, accepted) };
+  return (await insertReport(db, scope, report)) ? { recorded: true } : { recorded: false, reason: 'unheld' };
 }

@@ -19,7 +19,7 @@ import { runScheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { dispatchLoad, getRun, upsertCortexInstructions } from '@myco-server-worker/core/runs.js';
 import { listDigests, upsertDigest } from '@myco-server-worker/core/digests.js';
 import { insertSpore } from '@myco-server-worker/core/spores.js';
-import { RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_CLOSE_REPORTS, RUN_CLOSE_RULES } from '@myco-server-worker/core/run-postconditions.js';
+import { acceptedActions, RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_CLOSE_RULES } from '@myco-server-worker/core/run-postconditions.js';
 import { buildTaskInput } from '@myco-server-worker/core/task-inputs.js';
 import {
   DIGEST_FULL_READ_BODY_CHARS, DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT, RUN_SESSION_LABEL_CHARS,
@@ -332,7 +332,7 @@ describe('the digest a run writes', () => {
   });
 
   it('names the reports that close a digest run', () => {
-    expect(RUN_CLOSE_REPORTS[DIGEST_TASK]).toEqual(['digest', 'skip']);
+    expect(acceptedActions(DIGEST_TASK)).toEqual(['digest', 'skip']);
   });
 
   it('closes a run that reported a skip, which owes no row at all', async () => {

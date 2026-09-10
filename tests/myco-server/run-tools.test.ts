@@ -22,7 +22,8 @@ import { readWindowFor } from '@myco-server-worker/core/read-window.js';
 import { SPORE_PREVIEW_CHARS } from '@myco-server-worker/core/spores.js';
 import { RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { GRANT_INSTRUCTIONS, RUN_INSTRUCTIONS, runInstructionsFor, SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_MAX_BYTES } from '@myco-server-worker/mcp/server.js';
-import { acceptedActions, RUN_CLOSE_NONE, RUN_CLOSE_RULES, RUN_SKIP_ACTION, unacceptedActionError } from '@myco-server-worker/core/run-postconditions.js';
+import { acceptedActions, RUN_CLOSE_ERROR, RUN_CLOSE_NONE, RUN_CLOSE_RULES, RUN_SKIP_ACTION, runCloseRefusal, unacceptedActionError } from '@myco-server-worker/core/run-postconditions.js';
+import { getRun } from '@myco-server-worker/core/runs.js';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -259,6 +260,16 @@ describe('a run reports whatever its task declares', () => {
     expect(refused.result).toEqual({ ok: false, error: `a ${MAP_TASK} run closes with action "${MAP_ACTION}" or "${MAP_UNCHANGED_ACTION}"` });
     expect(sqlite.query(`SELECT COUNT(*) AS n FROM agent_reports WHERE run_id = 'run_map'`).get()).toEqual({ n: 0 });
     expect((await call(harness.token, 'myco_run', { op: 'report', action: MAP_UNCHANGED_ACTION, summary: 'nothing changed' })).result).toEqual({ recorded: true, action: MAP_UNCHANGED_ACTION });
+  });
+
+  it('ignores a report row the rule does not list, however it landed: a skip against the canopy map closes nothing', async () => {
+    // The two doors refuse such a row; a row that lands by any other path is
+    // still not evidence, so the judgment reads only what the rule declares.
+    const { db, dispatch, sqlite } = await setup();
+    await dispatch('run_map', MAP_TASK);
+    sqlite.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, details, created_at) VALUES ('proj_1', 'run_map', 'myco-agent', ?, 'nothing changed', NULL, ?)`, [RUN_SKIP_ACTION, NOW]);
+    const run = await getRun(db, { projectId: 'proj_1' }, 'run_map');
+    expect(await runCloseRefusal(db, { projectId: 'proj_1' }, run!)).toBe(RUN_CLOSE_ERROR);
   });
 
   it('accepts exactly the actions each rule declares: the skip where a rule lists it, and any action for a task held to no rule', () => {
