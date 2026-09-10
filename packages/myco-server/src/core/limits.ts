@@ -5,6 +5,10 @@
  * unbounded. A dispatch past a limit is queued and drained as capacity
  * returns — the run is the unit of work, and a constraint changes when it
  * runs, never whether.
+ *
+ * A task's per-day ceiling is the other kind of constraint and answers the other
+ * way: it caps the day's spend rather than naming capacity, so a dispatch past
+ * it is refused and reconsidered at the next wake (`scheduled-tasks.ts`).
  */
 import type { RelationalStore } from './adapters.js';
 import { HELD_BY_WORDS, type HeldBy } from '@goondocks/myco-shared/run-holds';

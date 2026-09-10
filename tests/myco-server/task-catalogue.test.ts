@@ -6,7 +6,9 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { admissionForTask, MANUAL_ONLY_TASKS, RETAINED_TASKS, scheduledTasks, TASK_ADMISSION, TASK_SCHEDULE } from '@myco-server-worker/core/task-catalogue.js';
+import { admissionForTask, MANUAL_ONLY_TASKS, RETAINED_TASKS, TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
+import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
+import { scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { PROJECT_CAPABILITIES } from '@myco-server-worker/core/settings.js';
 import { RUN_CLOSE_NONE, RUN_CLOSE_RULES, RUN_SKIP_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 
