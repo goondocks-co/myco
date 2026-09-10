@@ -15,7 +15,8 @@
  * admitted against a value the caller did not read, never a lost write.
  */
 import { sha256Hex } from '../../hash.js';
-import { getState, insertReport, mutateState } from '../../core/runs.js';
+import { getState, mutateState } from '../../core/runs.js';
+import { recordReport } from '../../core/run-postconditions.js';
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
@@ -52,10 +53,8 @@ export async function handleRun(input: ToolInput, ctx: ToolContext): Promise<unk
     if (action === undefined || summary === undefined) return failure('action and summary are required for op: report');
     const details = input.details === undefined || input.details === null ? null : str(input.details, MAX_DETAILS_CHARS);
     if (details === undefined) return failure(`details is at most ${MAX_DETAILS_CHARS} characters`);
-    const recorded = await insertReport(db, scope, {
-      runId: run.runId, agentId: run.agentId, action, summary, details, createdAt: ctx.now,
-    });
-    if (!recorded) return failure('this run is not one this Project holds');
+    const recorded = await recordReport(db, scope, { runId: run.runId, agentId: run.agentId, action, summary, details, createdAt: ctx.now });
+    if (!recorded.recorded) return failure(recorded.reason === 'unaccepted' ? recorded.error : 'this run is not one this Project holds');
     return { recorded: true, action };
   }
 

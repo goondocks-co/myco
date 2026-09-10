@@ -36,7 +36,7 @@
  */
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { inputHashOf, listReports, runRecordedWrite, sessionNamedByRun, type RunRow } from './runs.js';
+import { inputHashOf, listReports, runRecordedWrite, sessionNamedByRun, type RunRow, getRun, insertReport, type ReportInsert } from './runs.js';
 import { digestWrittenBy } from './digests.js';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { canopyMapWrittenBy } from './canopy.js';
@@ -128,24 +128,52 @@ export function closeRuleFor(task: string | null): RunCloseRule | undefined {
   return rule === undefined || rule === RUN_CLOSE_NONE ? undefined : rule;
 }
 
-/** The report actions a task's run must have recorded one of, by task. */
-export const RUN_CLOSE_REPORTS: Readonly<Record<string, readonly string[]>> = Object.fromEntries(
-  Object.entries(RUN_CLOSE_RULES).flatMap(([task, rule]) => (rule === RUN_CLOSE_NONE ? [] : [[task, rule.reports]])),
-);
-
 /** How a run that closed without the report its task owes is recorded. */
 export const RUN_CLOSE_ERROR = 'the run ended without its report';
 /** How a run that reported but left no row is recorded. */
 export const RUN_CLOSE_ARTIFACT_ERROR = 'the run ended without its artifact';
 
+/**
+ * The report actions a task's run may close with, or null for a task held to
+ * no rule. The one vocabulary the report tool accepts and the judgment reads:
+ * a rule that means to hear a pass with nothing to do lists the skip itself.
+ */
+export function acceptedActions(task: string | null): readonly string[] | null {
+  return closeRuleFor(task)?.reports ?? null;
+}
+
 /** Why this run may not close as completed, or null when it may. */
 export async function runCloseRefusal(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<string | null> {
   const rule = closeRuleFor(run.task);
   if (rule === undefined) return null;
-  const reports = await listReports(db, scope, run.id);
-  const evidence = reports.filter((report) => rule.reports.includes(report.action));
+  const evidence = (await listReports(db, scope, run.id)).filter((report) => rule.reports.includes(report.action));
   if (evidence.length === 0) return RUN_CLOSE_ERROR;
   if (rule.artifact === undefined || run.dryRun === 1) return null;
   if (evidence.every((report) => report.action === RUN_SKIP_ACTION)) return null;
   return (await rule.artifact(db, scope, run)) ? null : RUN_CLOSE_ARTIFACT_ERROR;
+}
+
+/** How a report under an action a task's rule cannot hear is refused, on either door a run reports through. */
+export function unacceptedActionError(task: string | null, accepted: readonly string[]): string {
+  return `a ${task ?? 'run'} run closes with action ${accepted.map((a) => `"${a}"`).join(' or ')}`;
+}
+
+/** What recording a report answered: the row landed, the run is not one this Project holds, or the action is one its task cannot close under. */
+export type ReportOutcome =
+  | { recorded: true }
+  | { recorded: false; reason: 'unheld' }
+  | { recorded: false; reason: 'unaccepted'; error: string };
+
+/**
+ * Record a run's report: the one door every report lands through, on the MCP
+ * surface and the container's route alike (`tests/meta/report-record-chokepoint.test.ts`).
+ * An action the run's task cannot close under is refused here, naming what it
+ * can, and leaves no row; a row the judgment would ignore is never written.
+ */
+export async function recordReport(db: RelationalStore, scope: ReadScope, report: ReportInsert): Promise<ReportOutcome> {
+  const run = await getRun(db, scope, report.runId);
+  if (run === null) return { recorded: false, reason: 'unheld' };
+  const accepted = acceptedActions(run.task);
+  if (accepted !== null && !accepted.includes(report.action)) return { recorded: false, reason: 'unaccepted', error: unacceptedActionError(run.task, accepted) };
+  return (await insertReport(db, scope, report)) ? { recorded: true } : { recorded: false, reason: 'unheld' };
 }

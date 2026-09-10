@@ -25,6 +25,7 @@
  * thrown error as an `isError` result, which drops the code the clients key on.
  */
 import { ProtocolError, Server, SUPPORTED_PROTOCOL_VERSIONS, type Tool } from '@modelcontextprotocol/server';
+import { acceptedActions } from '../core/run-postconditions.js';
 import { isServedTool, isWriteOp, NO_OP, PROJECT_PIVOT, type AnyTool } from '../core/tool-catalogue.js';
 import { emit } from '../telemetry.js';
 import { normalizeRemote, projectForRemote } from '../core/remotes.js';
@@ -64,15 +65,23 @@ export const SERVER_INSTRUCTIONS = [
  * tools, so the member string's tenancy rule and its plan and Cortex guidance
  * are all false here. `tools/list` is the whole of what this run may call.
  */
-export const RUN_INSTRUCTIONS = [
-  'Myco is this project\'s memory. You are one run, working in one project.',
-  '',
-  'Your tools are exactly what `tools/list` answers; there are no others, and the project argument is optional because you may name only your own.',
-  '',
-  'Survey by previews and read a body in full only where you mean to act on it: full reads are counted against this run\'s budget.',
-  '',
-  'Close by filing `myco_run` op "report" with what this pass did. A pass that found nothing to do reports that.',
-].join('\n');
+export const RUN_INSTRUCTIONS = runInstructionsFor(null);
+
+/** The run instructions, naming the actions its task's close rule accepts where the task has one, so the refusal is the backstop rather than the channel. */
+export function runInstructionsFor(accepted: readonly string[] | null): string {
+  const close = accepted === null
+    ? 'Close by filing `myco_run` op "report" with what this pass did. A pass that found nothing to do reports that.'
+    : `Close by filing \`myco_run\` op "report" with what this pass did, under action ${accepted.map((a) => `"${a}"`).join(' or ')}; no other action is accepted.`;
+  return [
+    'Myco is this project\'s memory. You are one run, working in one project.',
+    '',
+    'Your tools are exactly what `tools/list` answers; there are no others, and the project argument is optional because you may name only your own.',
+    '',
+    'Survey by previews and read a body in full only where you mean to act on it: full reads are counted against this run\'s budget.',
+    '',
+    close,
+  ].join('\n');
+}
 
 /**
  * What an External Agent grant is told at `initialize`.
@@ -177,7 +186,7 @@ export function surfaceFor(ctx: ToolContext): Surface {
   }
   if (p.kind === 'run') {
     return {
-      instructions: RUN_INSTRUCTIONS,
+      instructions: runInstructionsFor(acceptedActions(p.task)),
       definitions: runDefinitions(p.allow),
       definitionOf: (name) => definitionOf(name) ?? runDefinitionOf(name),
       opOf: (name, input) => runOpOf(name, input),
