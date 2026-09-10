@@ -171,6 +171,12 @@ async function harnessSplit(db: RelationalStore, since: number | null): Promise<
  * report the refresh interval instead of the time a person waited. A lineage whose
  * sessions have been served nothing yet contributes no row, so the sample counts
  * lineages that reached a first injection rather than every lineage that exists.
+ *
+ * The window selects on when a lineage STARTED, so a trailing window measures the
+ * machines that joined inside it. A span that comes out negative — an injection
+ * stamped ahead of the lineage that produced it, which two clocks can disagree
+ * enough to write — is dropped rather than counted as an instant arrival; the
+ * sample size shrinks with it, which is what the surface renders.
  */
 async function firstInjectionSamples(db: RelationalStore, since: number | null): Promise<number[]> {
   const w = windowClause('c.lineage_started_at', since);
