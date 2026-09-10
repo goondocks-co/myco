@@ -13,13 +13,13 @@
  * A dispatch limit and a per-day ceiling answer differently, and the difference
  * is the point: a limit QUEUES, a ceiling REFUSES (`ceilingSkipId`).
  */
-import type { ServerEnv } from './adapters.js';
+import type { RelationalStore, ServerEnv } from './adapters.js';
 import { AlreadyRunning, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, type LaunchSpec } from './harness.js';
 import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
-import { hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, projectAdmission, recordSkipped, taskEntriesSince } from './runs.js';
+import { ensureAgent, hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, projectAdmission, recordSkipped, taskEntriesSince } from './runs.js';
 import { leafValues, type ProjectCapability } from './settings.js';
-import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
+import { declared, TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
 import { listProjects } from '../read/sessions.js';
 import { listUnprocessedPrompts } from '../read/prompts.js';
@@ -34,16 +34,39 @@ const DAY_MS = 86_400_000;
  * A queue holds work for capacity that is coming back. The day's ceiling is not
  * capacity — it is the spend an owner capped — and a queued run would launch the
  * moment the drain reached it, spending exactly what the cap withholds. The next
- * wake decides again, and the task runs as soon as the trailing day has room.
+ * wake decides again, and the task runs as soon as the trailing window has room.
  *
- * The refusal is recorded once per Project per task per day rather than once per
- * wake: the skipped row's id is derived from those three, so every further wake
- * inside the same day writes nothing. A Deployment waking every minute at its
- * ceiling therefore leaves one row naming the cap. `taskEntriesSince` counts no
- * skipped row, so this record can never be what holds the ceiling shut.
+ * The refusal is recorded once per EPISODE rather than once per wake. An episode
+ * is one stretch of wakes that the same filled window refuses, and the entry that
+ * filled it names it: while the ceiling holds no entry is added, so that instant
+ * is fixed, and every wake inside the episode derives the same id and writes
+ * nothing new. Keying the id on a clock division instead would split an episode
+ * at the division's edge — the window the ceiling counts is a trailing one and
+ * belongs to no calendar day — and leave two rows for one refusal.
+ *
+ * A ceiling of zero is refused with no entry at all to name, and the whole
+ * Project-and-task is one episode: the row says once that this task is not to
+ * run. `taskEntriesSince` counts no skipped row, so this record can never be
+ * what holds the ceiling shut, and the task grammar — a name carries no `_` —
+ * keeps the joined id unambiguous.
  */
-const ceilingSkipId = (projectId: string, task: string, now: number): string =>
-  `run_ceiling_${projectId}_${task}_${Math.floor(now / DAY_MS)}`;
+const NO_ENTRY = 0;
+const ceilingSkipId = (projectId: string, task: string, filledAt: number | null): string =>
+  `run_ceiling_${projectId}_${task}_${filledAt ?? NO_ENTRY}`;
+
+/**
+ * A skip the clock records, carrying the harness identity its row points at.
+ *
+ * A skipped run names the harness agent as every other run does, and that row is
+ * a foreign key. A Deployment that has never dispatched holds no such row —
+ * a ceiling of zero refuses before any dispatch can declare it — so the identity
+ * is declared here where none exists. An owner's own registration of it keeps
+ * every field: this declares, it never edits.
+ */
+async function recordClockSkip(env: ServerEnv, projectId: string, task: string, reason: string, id: string, now: number): Promise<void> {
+  await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: null, model: null, enabled: true }, now);
+  await recordSkipped(env.db, { projectId }, { id, agentId: HARNESS_AGENT_ID, task, reason, at: now });
+}
 
 /** Who a scheduled run is attributed to: the Deployment's own clock. */
 export const CLOCK_ACTOR = 'clock';
@@ -118,9 +141,9 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
   if (gate?.kind === 'capability' && !(await projectAdmission(env.db, scope, gate.capability as ProjectCapability)).admitted) return 'capability_off';
   if (schedule.overlap === 'skip' && (await hasLiveTaskRun(env.db, scope, task))) return 'already_running';
 
-  const accelerator = schedule.accelerator === undefined ? undefined : ACCELERATORS[schedule.accelerator.name];
+  const accelerator = schedule.accelerator === undefined ? undefined : declared(ACCELERATORS, schedule.accelerator.name);
   const count = schedule.accelerator !== undefined && accelerator !== undefined
-    ? await accelerator({ env, projectId, limit: schedule.accelerator.thresholds.accelerated + 1 })
+    ? await accelerator({ db: env.db, projectId, limit: schedule.accelerator.thresholds.accelerated + 1 })
     : null;
   const intervalMs = effectiveIntervalSeconds(schedule.intervalSeconds, count, schedule.accelerator?.thresholds) * 1000;
   const last = await lastTaskEntryAt(env.db, scope, task);
@@ -128,8 +151,8 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
 
   if (!(schedule.runIn as readonly string[]).includes(state)) return 'not_in_state';
   if (schedule.preCondition !== undefined) {
-    const check = PRE_CONDITIONS[schedule.preCondition];
-    if (check === undefined || !(await check({ env, projectId }))) return 'precondition';
+    const check = declared(PRE_CONDITIONS, schedule.preCondition);
+    if (check === undefined || !(await check({ db: env.db, projectId }))) return 'precondition';
   }
   if (schedule.maxRunsPerDay !== undefined && (await taskEntriesSince(env.db, scope, task, now - DAY_MS)) >= schedule.maxRunsPerDay) return 'max_runs_per_day';
   return null;
@@ -151,7 +174,9 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
     for (const { task, schedule } of tasks) {
       const skip = await decideTask(env, project.projectId, project.lastActivityAt, task, schedule, state, leaves, now);
       if (skip === 'max_runs_per_day') {
-        await recordSkipped(env.db, { projectId: project.projectId }, { id: ceilingSkipId(project.projectId, task, now), agentId: HARNESS_AGENT_ID, task, reason: skip, at: now });
+        // The entry that filled the window names the episode; it cannot move while the window stays full.
+        const filledAt = await lastTaskEntryAt(env.db, { projectId: project.projectId }, task);
+        await recordClockSkip(env, project.projectId, task, skip, ceilingSkipId(project.projectId, task, filledAt), now);
         emit({ kind: 'task_skipped', task, projectId: project.projectId, skip });
         report.skipped += 1;
         continue;
@@ -170,7 +195,7 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
       // that, and no model is called.
       const built = await buildTaskInput(env, task, project.projectId, now);
       if (built !== null && built.unchanged) {
-        await recordSkipped(env.db, { projectId: project.projectId }, { id: `run_${crypto.randomUUID()}`, agentId: HARNESS_AGENT_ID, task, reason: INPUT_UNCHANGED, at: now });
+        await recordClockSkip(env, project.projectId, task, INPUT_UNCHANGED, `run_${crypto.randomUUID()}`, now);
         emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: INPUT_UNCHANGED });
         report.skipped += 1;
         continue;
@@ -203,24 +228,29 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
  * session still in flight are not counted — the read's own default — so a live
  * session is extracted once it ends rather than while it is being written.
  */
-export async function hasUnprocessedPrompts(env: ServerEnv, projectId: string): Promise<boolean> {
-  return (await listUnprocessedPrompts(env.db, { projectId }, { limit: 1 })).rows.length > 0;
+export async function hasUnprocessedPrompts(db: RelationalStore, projectId: string): Promise<boolean> {
+  return (await listUnprocessedPrompts(db, { projectId }, { limit: 1 })).rows.length > 0;
 }
 
 /**
  * Named preconditions a schedule may name; a task naming one absent here is
  * refused by a gate, never skipped in silence.
  *
- * A condition is asked with the Deployment it is deciding for: a condition about
- * a Project's data has to read that data, and one that could not would be a
- * condition about nothing.
+ * A condition is asked with the store it is deciding over: a condition about a
+ * Project's data has to read that data, and one that could not would be a
+ * condition about nothing. It is handed the store rather than the Deployment —
+ * deciding whether to run is a read, and the signature says so.
+ *
+ * A name here is owner-settable, so every lookup goes through `declared`: an
+ * inherited member of `Object.prototype` is not a registration, and a schedule
+ * naming one is refused like any other unknown name.
  */
-export const PRE_CONDITIONS: Readonly<Record<string, (args: { env: ServerEnv; projectId: string }) => Promise<boolean>>> = {
-  'has-unprocessed-prompts': ({ env, projectId }) => hasUnprocessedPrompts(env, projectId),
+export const PRE_CONDITIONS: Readonly<Record<string, (args: { db: RelationalStore; projectId: string }) => Promise<boolean>>> = {
+  'has-unprocessed-prompts': ({ db, projectId }) => hasUnprocessedPrompts(db, projectId),
 };
 
-/** Named accelerators: a count of pending work that shortens a task's interval, asked with the Deployment the count is read from. */
-export const ACCELERATORS: Readonly<Record<string, (args: { env: ServerEnv; projectId: string; limit: number }) => Promise<number>>> = {};
+/** Named accelerators: a count of pending work that shortens a task's interval, read over the same store and looked up the same way. */
+export const ACCELERATORS: Readonly<Record<string, (args: { db: RelationalStore; projectId: string; limit: number }) => Promise<number>>> = {};
 
 /** The schedule block an owner set for one task, or undefined where they set none. */
 export function scheduleOverride(task: string, overrides: Record<string, unknown>): unknown {

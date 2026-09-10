@@ -56,8 +56,8 @@ export const scheduledTasks: ParityScenario = {
       { status: 'skipped', harness: null, runContext: JSON.stringify({ reason: 'max_runs_per_day' }) },
     ];
     expect(await probes(target.projectId)).toEqual(atCeiling);
-    // The ceiling refuses rather than queues, and the refusal is recorded once a
-    // day: a second wake at the ceiling answers the same and leaves the same rows.
+    // The ceiling refuses rather than queues, and one episode leaves one row: a
+    // second wake at the ceiling answers the same and leaves the same rows.
     expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 1 });
     expect(await probes(target.projectId)).toEqual(atCeiling);
 

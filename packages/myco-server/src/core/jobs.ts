@@ -166,3 +166,21 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   'review-session': null,
   'title-summary': null,
 };
+
+/**
+ * One entry of a registry keyed by name, or undefined.
+ *
+ * Every name this Deployment looks a registry entry up by — a task in a
+ * dispatch, a precondition in a Settings leaf — arrives from outside the code,
+ * and `Object.prototype` answers several of them: plain indexing hands back
+ * `constructor`, `toString` or `valueOf` as a callable, which a registry read
+ * would take for a declaration. Only an own property is a declaration.
+ */
+export function declared<T>(table: Readonly<Record<string, T>>, name: string): T | undefined {
+  return Object.hasOwn(table, name) ? table[name] : undefined;
+}
+
+/** The schedule this Deployment declares for a task: the block, or null for a task it schedules nothing for and for a name it does not serve. */
+export function declaredScheduleFor(task: string): TaskSchedule | null {
+  return declared(TASK_SCHEDULE, task) ?? null;
+}

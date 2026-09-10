@@ -20,8 +20,8 @@ import { describe, expect, it } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SERVER_JOBS, DEFERRED_JOBS, TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
-import { scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
+import { declaredScheduleFor, SERVER_JOBS, DEFERRED_JOBS, TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
+import { ACCELERATORS, PRE_CONDITIONS, scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 
 const WORKER = fileURLToPath(new URL('../../packages/myco-server/', import.meta.url));
 const SRC = join(WORKER, 'src');
@@ -48,8 +48,14 @@ const sources = (): Array<{ file: string; text: string }> => files(SRC).map((fil
  * scheduler.
  */
 const WAKE_MECHANISMS: ReadonlyArray<{ what: string; pattern: RegExp; allowed: readonly string[] }> = [
-  { what: 'a process timer', pattern: /\b(setInterval|setTimeout|setImmediate)\s*\(/, allowed: ['platform/bun/wake-loop.ts'] },
-  { what: 'a hosted alarm', pattern: /\b(setAlarm|getAlarm|deleteAlarm)\s*\(/, allowed: ['platform/cloudflare/deployment-clock.ts'] },
+  // The MECHANISM, not one call form: a timer aliased to a local name, reached
+  // through computed access on `globalThis`, or spelled as a sleep in a loop is
+  // the same second scheduler as a direct call, so the bare identifiers are what
+  // the scan matches. `globalThis` is matched whole: a name assembled at runtime
+  // (`'set' + 'Timeout'`) carries no identifier to find, and the shared server
+  // source reaches the global object for nothing else.
+  { what: 'a process timer', pattern: /\b(setInterval|setTimeout|setImmediate|globalThis)\b|Bun\.sleep|scheduler\.wait/, allowed: ['platform/bun/wake-loop.ts'] },
+  { what: 'a hosted alarm', pattern: /\b(setAlarm|getAlarm|deleteAlarm)\b/, allowed: ['platform/cloudflare/deployment-clock.ts'] },
   { what: 'a cron handler', pattern: /\bexport async function scheduled\b/, allowed: ['entry/cloudflare.ts'] },
   { what: 'the tick itself', pattern: /\brunTick\s*\(/, allowed: ['core/tick.ts', 'api/wake.ts', 'platform/bun/wake.ts', 'platform/cloudflare/deployment-clock.ts'] },
   { what: "the clock's pass over every Project", pattern: /\brunScheduledTasks\s*\(/, allowed: ['core/tick.ts', 'core/scheduled-tasks.ts'] },
@@ -72,11 +78,38 @@ describe('the registry of scheduled work', () => {
     for (const task of every) expect({ task, declared: declared.includes(task) }).toEqual({ task, declared: true });
     for (const task of declared) {
       const line = new RegExp(`^\\s+(\\[MAP_TASK\\]|'${task}'):`, 'm');
-      expect({ task, inRegistry: line.test(registry) || task === 'canopy-map' }).toEqual({ task, inRegistry: true });
+      expect({ task, inRegistry: line.test(registry) }).toEqual({ task, inRegistry: true });
     }
     for (const job of [...SERVER_JOBS, ...DEFERRED_JOBS]) {
       expect({ job: job.name, inRegistry: registry.includes(`'${job.name}'`) }).toEqual({ job: job.name, inRegistry: true });
     }
+  });
+
+  it('registers every precondition and accelerator a declared schedule names, so a misspelling is refused rather than skipped every wake', () => {
+    for (const [task, schedule] of Object.entries(TASK_SCHEDULE)) {
+      if (schedule === null) continue;
+      if (schedule.preCondition !== undefined) {
+        expect({ task, condition: schedule.preCondition, registered: Object.hasOwn(PRE_CONDITIONS, schedule.preCondition) })
+          .toEqual({ task, condition: schedule.preCondition, registered: true });
+      }
+      if (schedule.accelerator !== undefined) {
+        expect({ task, accelerator: schedule.accelerator.name, registered: Object.hasOwn(ACCELERATORS, schedule.accelerator.name) })
+          .toEqual({ task, accelerator: schedule.accelerator.name, registered: true });
+      }
+    }
+  });
+
+  it('answers no schedule for a name inherited from Object.prototype, so a settings string cannot read as a declaration', () => {
+    for (const name of ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__', 'isPrototypeOf']) {
+      expect({ name, schedule: declaredScheduleFor(name) }).toEqual({ name, schedule: null });
+    }
+  });
+
+  it('names every task in a grammar the ceiling episode id can join on', () => {
+    // The skipped row's id joins the Project, the task and the instant that
+    // filled the window with `_`; a task name carrying one would make that join
+    // ambiguous to read back.
+    for (const task of Object.keys(TASK_SCHEDULE)) expect({ task, named: /^[a-z][a-z0-9-]*$/.test(task) }).toEqual({ task, named: true });
   });
 
   it('gives every scheduled task a cadence and a depth, and a ceiling to every task an owner can ask for again', () => {

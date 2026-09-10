@@ -68,6 +68,32 @@ describe('the schedule envelope', () => {
   });
 });
 
+describe('a schedule naming something the Deployment never registered', () => {
+  const leaves = { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} };
+  const inherited = ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__', 'isPrototypeOf'];
+
+  it('refuses a precondition named after an inherited member, rather than taking it for a registration', async () => {
+    const f = fixture();
+    for (const name of inherited) {
+      const schedule: TaskSchedule = { ...SMOKE, preCondition: name };
+      expect({ name, decided: await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', schedule, 'sleep', leaves, NOW) })
+        .toEqual({ name, decided: 'precondition' });
+    }
+  });
+
+  it('shortens no interval for an accelerator named after an inherited member', async () => {
+    const f = fixture();
+    f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
+    // An entry a day old: inside a day's interval, outside a shortened one.
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'earlier', ?, 'container-smoke', 'completed', ?)`, [HARNESS_AGENT_ID, NOW - 7_200_000]);
+    for (const name of inherited) {
+      const schedule: TaskSchedule = { ...SMOKE, accelerator: { name, thresholds: { steady: 1, accelerated: 2 } } };
+      expect({ name, decided: await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', schedule, 'sleep', leaves, NOW) })
+        .toEqual({ name, decided: 'not_yet' });
+    }
+  });
+});
+
 describe('a named precondition reads the Project it is a condition on', () => {
   const seedSession = (f: ReturnType<typeof fixture>, project: string, session: string, endedAt: number | null) =>
     f.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at) VALUES (?, ?, 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?)`,
@@ -78,25 +104,25 @@ describe('a named precondition reads the Project it is a condition on', () => {
 
   it('answers the backlog: nothing, a prompt already read, a live session, then one waiting', async () => {
     const f = fixture();
-    expect(await hasUnprocessedPrompts(f.env, 'proj_1')).toBe(false);
+    expect(await hasUnprocessedPrompts(f.env.db, 'proj_1')).toBe(false);
     seedSession(f, 'proj_1', 's_done', NOW);
     seedPrompt(f, 'proj_1', 's_done', 'p_read', 1);
-    expect(await hasUnprocessedPrompts(f.env, 'proj_1')).toBe(false);
+    expect(await hasUnprocessedPrompts(f.env.db, 'proj_1')).toBe(false);
     // A prompt of a session still being written is no backlog yet.
     seedSession(f, 'proj_1', 's_live', null);
     seedPrompt(f, 'proj_1', 's_live', 'p_live', 0);
-    expect(await hasUnprocessedPrompts(f.env, 'proj_1')).toBe(false);
+    expect(await hasUnprocessedPrompts(f.env.db, 'proj_1')).toBe(false);
     seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
-    expect(await hasUnprocessedPrompts(f.env, 'proj_1')).toBe(true);
+    expect(await hasUnprocessedPrompts(f.env.db, 'proj_1')).toBe(true);
     // One Project's backlog is not another's.
-    expect(await hasUnprocessedPrompts(f.env, 'proj_2')).toBe(false);
+    expect(await hasUnprocessedPrompts(f.env.db, 'proj_2')).toBe(false);
   });
 
   it('is reached through the registry the clock consults, and holds a task back while the backlog is empty', async () => {
     const f = fixture();
     const check = PRE_CONDITIONS['has-unprocessed-prompts'];
     expect(typeof check).toBe('function');
-    expect(await check!({ env: f.env, projectId: 'proj_1' })).toBe(false);
+    expect(await check!({ db: f.env.db, projectId: 'proj_1' })).toBe(false);
     const gated: TaskSchedule = { ...SMOKE, preCondition: 'has-unprocessed-prompts' };
     expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} }, NOW)).toBe('precondition');
     seedSession(f, 'proj_1', 's_done', NOW);
@@ -171,7 +197,7 @@ describe('one wake of the clock', () => {
     expect(f.runs('proj_1')).toHaveLength(1);
   });
 
-  it('refuses at the ceiling rather than queueing, records that refusal once a day, and dispatches again when the day has room', async () => {
+  it('refuses at the ceiling rather than queueing, records one row per episode however many wakes ask, and dispatches again when the window has room', async () => {
     const f = fixture();
     f.receipt('proj_1', NOW - 3_600_000);
     f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 1, maxRunsPerDay: 1 } } });
@@ -186,10 +212,16 @@ describe('one wake of the clock', () => {
     expect(rows.filter((r) => r.status === 'queued')).toEqual([]);
     expect(f.launches).toHaveLength(1);
 
-    // Two more wakes inside the same day: each answers the ceiling, and the
+    // Two more wakes inside the same episode: each answers the ceiling, and the
     // record of it stays one row rather than one per wake.
     expect(await runScheduledTasks(f.env, 'sleep', NOW + 60_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     expect(await runScheduledTasks(f.env, 'sleep', NOW + 120_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
+    expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped']);
+
+    // An episode is not a calendar day: a wake on the far side of the next UTC
+    // midnight, with the same window still full, adds no second row.
+    const midnight = Math.ceil((NOW + 120_000) / DAY) * DAY;
+    expect(await runScheduledTasks(f.env, 'sleep', midnight + 1_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped']);
 
     // The trailing day has room again: the next wake dispatches, with no queue
@@ -198,8 +230,27 @@ describe('one wake of the clock', () => {
     expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped', 'pending']);
     expect(f.launches).toHaveLength(2);
 
+    // A SECOND episode leaves a second row: the record is once per episode, not
+    // once per Project and task for all time.
+    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE status = 'pending'`, [NOW + DAY + 6_000]);
+    expect(await runScheduledTasks(f.env, 'sleep', NOW + DAY + 10_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
+    expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped', 'completed', 'skipped']);
+
     f.setting('agent.scheduled_tasks_enabled', false);
     expect(await runScheduledTasks(f.env, 'sleep', NOW + 2 * DAY, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
+  });
+
+  it('refuses a ceiling of zero with no entry to name, and records that once however many wakes ask', async () => {
+    const f = fixture();
+    f.receipt('proj_1', NOW - 3_600_000);
+    f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 1, maxRunsPerDay: 0 } } });
+    for (const at of [NOW, NOW + 60_000, NOW + DAY + 60_000]) {
+      expect({ at, report: await runScheduledTasks(f.env, 'sleep', at, ORIGIN) }).toEqual({ at, report: { dispatched: 0, skipped: 1 } });
+    }
+    const rows = f.runs('proj_1');
+    expect(rows.map((r) => r.status)).toEqual(['skipped']);
+    expect(JSON.parse(rows[0]!.runContext!)).toEqual({ reason: 'max_runs_per_day' });
+    expect(f.launches).toHaveLength(0);
   });
 
   it('writes one row for one task when two wakes decide at once: the write refuses beside a live run', async () => {

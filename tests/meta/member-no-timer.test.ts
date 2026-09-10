@@ -32,22 +32,49 @@ const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const MEMBER_ENTRIES: readonly string[] = ['hooks/**', 'member/**', 'runner/**'];
 
 /**
- * The timers the member closure may hold, each with what ENDS it. Every one is
- * bounded by something already running: a request, a hook's own read, a run the
- * worker holds. None survives its caller, and none starts work of its own.
+ * The timers the member closure may hold: how MANY call sites each module has,
+ * and the form that ends them.
  *
- * This list only shrinks. A new entry is a new timer on the machine, and that is
- * the thing this gate exists to make someone argue for.
+ * `cleared` — the module clears every handle it sets, so the timer dies with the
+ * work that armed it. `awaited` — the timer only resolves a promise the caller is
+ * waiting on, so it cannot outlive that await.
+ *
+ * The COUNT is what the gate enforces, and it is the point: prose about what
+ * bounds a timer is not a fact a test can read, while a new call site in an
+ * already-allowlisted module moves a number. Both halves are checked — the count
+ * exactly, and enough clears or awaits to account for every site.
+ *
+ * This list only shrinks. A new module, or a higher count, is a new timer on the
+ * machine, and that is the thing this gate exists to make someone argue for.
  */
-const BOUNDED_TIMERS: Readonly<Record<string, string>> = {
-  'packages/myco/src/hooks/session-start.ts': "one short re-read of a transcript the IDE writes after the hook fires, inside the hook's own budget",
-  'packages/myco/src/member/transport.ts': 'the connect and request budgets that abort one HTTP call',
-  'packages/myco/src/member/join-code.ts': 'the sleep between polls of one join code, injectable by a caller',
-  'packages/myco/src/runner/loop.ts': "one claimed run's budget, its lease heartbeat, and the sleep between empty claims",
+const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' | 'awaited'; bound: string }>> = {
+  'packages/myco/src/hooks/session-start.ts': {
+    calls: 1, form: 'awaited', bound: "one short re-read of a transcript the IDE writes after the hook fires, inside the hook's own budget",
+  },
+  'packages/myco/src/member/transport.ts': {
+    calls: 3, form: 'cleared', bound: 'the connect and request budgets that abort one HTTP call',
+  },
+  'packages/myco/src/member/join-code.ts': {
+    calls: 1, form: 'awaited', bound: 'the sleep between polls of one join code, injectable by a caller',
+  },
+  'packages/myco/src/runner/loop.ts': {
+    calls: 3, form: 'cleared', bound: "one claimed run's budget, its lease heartbeat, and the sleep between empty claims",
+  },
 };
 
 /** A repeating timer is allowed only where a run holds it, and only if the same module ends it. */
 const REPEATING_TIMER = 'packages/myco/src/runner/loop.ts';
+
+/**
+ * What names a timer, as a MECHANISM rather than one call form: an alias
+ * (`const every = setInterval`), computed access (`globalThis['set' + 'Timeout']`)
+ * and a sleep inside a loop all schedule work exactly as a direct call does.
+ */
+const TIMER_MECHANISM = /\b(setInterval|setTimeout|setImmediate)\b|Bun\.sleep|scheduler\.wait|globalThis\b(?:\s+as\b[^[\n]{0,80})?\s*\)?\s*\[/;
+/** Call sites, counted: the identifier applied to arguments. */
+const TIMER_CALL = /\b(setInterval|setTimeout|setImmediate)\s*\(|Bun\.sleep\s*\(|scheduler\.wait\s*\(/g;
+const TIMER_CLEARED = /\b(clearInterval|clearTimeout)\s*\(/g;
+const TIMER_AWAITED = /new Promise[\s\S]{0,160}?(set(Interval|Timeout)|Bun\.sleep)\s*\(/g;
 
 /** What a machine-side scheduler is made of; none of it may be reachable from a member entry. */
 const SCHEDULER_TOKENS: readonly RegExp[] = [/\bPowerManager\b/, /\bJobRunner\b/, /\bPOWER_JOB_NAMES\b/, /\bregisterJob\s*\(/];
@@ -71,9 +98,19 @@ describe('the 2.0 member entry graph', () => {
     expect(naming).toEqual([]);
   });
 
-  it('holds only timers bounded by something already running', () => {
-    const withTimer = [...CODE].filter(([, code]) => /\b(setInterval|setTimeout|setImmediate)\s*\(/.test(code)).map(([key]) => key);
-    expect(withTimer.sort()).toEqual(Object.keys(BOUNDED_TIMERS).sort());
+  it('names a timer in no module but the allowlisted ones, whatever the spelling', () => {
+    const naming = [...CODE].filter(([, code]) => TIMER_MECHANISM.test(code)).map(([key]) => key);
+    expect(naming.sort()).toEqual(Object.keys(BOUNDED_TIMERS).sort());
+  });
+
+  it('accounts for every timer call site with a clear or an await, at the count the allowlist declares', () => {
+    for (const [key, { calls, form }] of Object.entries(BOUNDED_TIMERS)) {
+      const code = CODE.get(key);
+      expect({ key, present: code !== undefined }).toEqual({ key, present: true });
+      const sites = (code!.match(TIMER_CALL) ?? []).length;
+      const accounted = (code!.match(form === 'cleared' ? TIMER_CLEARED : TIMER_AWAITED) ?? []).length;
+      expect({ key, sites, accountedFor: accounted >= sites }).toEqual({ key, sites: calls, accountedFor: true });
+    }
   });
 
   it('repeats a timer only for a run the worker holds, and ends it in the same module', () => {
@@ -90,7 +127,15 @@ describe('the 2.0 member entry graph', () => {
  * runs — a person, the installer, or the setup skill. The verb's OWN edges are
  * read, not its whole closure: a module reachable somewhere under a 230-module
  * CLI graph proves nothing about what the verb does, while the import the verb
- * itself makes and the symbol it names are exactly the work.
+ * itself makes and the symbol it names are the work.
+ *
+ * WHAT THIS HOLDS, exactly: that the verb reaches the work, and that the member
+ * schedules none of these verbs. It does NOT hold that the verb performs it — a
+ * body replaced by an early return leaves both the edge and the symbol in place.
+ * `tests/cli/doctor-agents.test.ts` holds the behaviour for detection, by driving
+ * the verb's check surface over a project tree and reading back the agent it
+ * found. The other two verbs write to the machine or call the network, so they
+ * are held structurally here and behaviourally by whoever owns their rework.
  */
 const SURVIVOR_VERBS: ReadonlyArray<{ need: string; verb: string; imports: string; names: string }> = [
   { need: 'symbiont detection', verb: 'cli/doctor.ts', imports: '../symbionts/detect.js', names: 'detectSymbionts' },
