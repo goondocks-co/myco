@@ -246,6 +246,9 @@ capture:
     interruptMarker: "<turn_aborted>"
 registration:
   hooksTarget: .codex/hooks.json
+  # The 2.0 member scope writes the project's own hooks file: Codex reads it
+  # beside the global one, and no 1.4 project install owns it on a member.
+  memberHooksTarget: .codex/hooks.json
   # Codex hooks live in a dedicated JSON file at both scopes. The plan's
   # original "consolidate hooks + MCP into config.toml" left the installer
   # writing JSON over a TOML file, corrupting the user's mcp_servers /

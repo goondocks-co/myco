@@ -841,6 +841,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".codex/hooks.json",
+      "memberHooksTarget": ".codex/hooks.json",
       "globalHooksTarget": "~/.codex/hooks.json",
       "globalMcpTarget": [
         {
@@ -1269,6 +1270,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".cursor/hooks.json",
+      "memberHooksTarget": ".cursor/hooks.json",
       "globalHooksTarget": "~/.cursor/hooks.json",
       "globalMcpTarget": [
         {

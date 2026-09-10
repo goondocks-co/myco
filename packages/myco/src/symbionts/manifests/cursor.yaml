@@ -41,6 +41,9 @@ capture:
       reason: strip Cursor user_query envelope
 registration:
   hooksTarget: .cursor/hooks.json
+  # The 2.0 member scope writes the project's own hooks file, versioned as
+  # Cursor requires; no 1.4 project install owns it on a member.
+  memberHooksTarget: .cursor/hooks.json
   globalHooksTarget: ~/.cursor/hooks.json
   hooksConfigVersion: 1
   hookResponse:

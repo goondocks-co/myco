@@ -1685,6 +1685,8 @@ export class SymbiontInstaller {
       mergedHooks[event] = [...(mergedHooks[event] ?? []), ...(groups as unknown[])];
     }
     settings.hooks = mergedHooks;
+    const reg = this.manifest.registration;
+    if (reg?.hooksConfigVersion !== undefined) settings.version = reg.hooksConfigVersion;
     const written = writeJsonFile(targetPath, settings);
     this.ensureGitIgnored(targetPath);
     return written;
