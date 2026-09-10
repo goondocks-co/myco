@@ -789,7 +789,7 @@ export class SymbiontInstaller {
   install(): InstallResult {
     if (this.installScope === 'member-project') {
       const hooks = this.installMemberHooks();
-      return { ...emptyInstallResult(), hooks, mcp: hooks && this.installMemberMcp() };
+      return { ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() };
     }
     if (this.deferGlobalSymbiontConfig()) return emptyInstallResult();
     const reg = this.manifest.registration;

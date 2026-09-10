@@ -144,6 +144,8 @@ The machine-side product contains the `myco` binary, hooks, spool, local registr
 
 Home-pin creation during join is exclusive for both project and machine pins. A pin rejected by the trust reader is still an existing file: join preserves its bytes, target and permissions, reports that it could not write the pin, and retains the recorded membership. Pin contents and permissions are written through one open file descriptor.
 
+Member provisioning reconciles hooks and the MCP entry independently. An unchanged hook file does not suppress a missing or changed MCP entry, and the join command reports an unchanged registration as such.
+
 ### 3.5 Cutover
 
 The transition is a **one-time, one-way migration**, not long-term coexistence or dual writing.

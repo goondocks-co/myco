@@ -187,9 +187,9 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
     if (!manifest) return fail(`unknown agent "${parsed.provision}" — the membership is recorded; provision it with \`myco member join --provision <agent>\``);
     const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
     const installed = installer.install();
-    out(installed.hooks
+    out(installed.hooks || installed.mcp
       ? `provisioned ${manifest.displayName} for ${root}${installed.mcp ? ' (hooks and MCP)' : ''}`
-      : `${manifest.displayName} cannot report to a server; nothing provisioned`);
+      : `no registration changes for ${manifest.displayName} at ${root}`);
   }
 
   // #1148: the machine's existing history for this project, once, bounded by

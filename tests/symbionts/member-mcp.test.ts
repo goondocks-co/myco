@@ -37,6 +37,14 @@ describe('memberMcpTemplate', () => {
 });
 
 describe('the member MCP server', () => {
+  it('installs a missing MCP entry when the member hooks are already current', () => {
+    const { installer, root } = memberInstaller('claude-code');
+    expect(installer.installMemberHooks()).toBe(true);
+    const result = installer.install();
+    expect({ hooks: result.hooks, mcp: result.mcp }).toEqual({ hooks: false, mcp: true });
+    expect(JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8')).mcpServers.myco.args).toEqual(['mcp', CREDENTIAL_FLAG, 'registry']);
+  });
+
   it('renders a stdio launcher carrying the flag for every symbiont with an MCP template, and nothing for one without', () => {
     for (const name of ['claude-code', 'codex', 'cursor']) {
       const block = memberInstaller(name).installer.renderMemberMcp('registry') as Record<string, { command: string; args: string[] }>;
