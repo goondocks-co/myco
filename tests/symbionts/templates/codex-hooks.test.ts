@@ -22,11 +22,11 @@ describe('codex hooks.json template', () => {
   const toolCallHooks = manifest.capabilities?.transcriptFidelity === 'no_tool_results' ? ['PostToolUse'] : [];
 
   it('registers exactly the retained lifecycle events, plus the tool-call hook where the manifest declares the parse cannot derive tool calls', () => {
-    expect(Object.keys(tpl).sort()).toEqual(['SessionStart', 'Stop', 'SubagentStart', 'UserPromptSubmit', ...toolCallHooks].sort());
+    expect(Object.keys(tpl).sort()).toEqual(['SessionStart', 'SessionEnd', 'Stop', 'SubagentStart', 'UserPromptSubmit', ...toolCallHooks].sort());
   });
 
   it('every entry invokes its own hook verb with the codex symbiont flag and a declared timeout', () => {
-    const verbs: Record<string, string> = { SessionStart: 'session-start', UserPromptSubmit: 'user-prompt-submit', SubagentStart: 'subagent-start', Stop: 'stop', ...(toolCallHooks.length > 0 ? { PostToolUse: 'post-tool-use' } : {}) };
+    const verbs: Record<string, string> = { SessionStart: 'session-start', SessionEnd: 'session-end', UserPromptSubmit: 'user-prompt-submit', SubagentStart: 'subagent-start', Stop: 'stop', ...(toolCallHooks.length > 0 ? { PostToolUse: 'post-tool-use' } : {}) };
     for (const [event, verb] of Object.entries(verbs)) {
       const groups = tpl[event];
       expect(groups).toHaveLength(1);
@@ -41,5 +41,6 @@ describe('codex hooks.json template', () => {
     expect(tpl.Stop[0].hooks[0].timeout).toBe(30);
     expect(tpl.UserPromptSubmit[0].hooks[0].timeout).toBeLessThanOrEqual(5);
     expect(tpl.SubagentStart[0].hooks[0].timeout).toBeLessThanOrEqual(5);
+    expect(tpl.SessionEnd[0].hooks[0].timeout).toBe(3);
   });
 });

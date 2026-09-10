@@ -788,6 +788,7 @@ export class SymbiontInstaller {
   /** Run all registration steps. */
   install(): InstallResult {
     if (this.installScope === 'member-project') {
+      if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
       const hooks = this.installMemberHooks();
       return { ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() };
     }

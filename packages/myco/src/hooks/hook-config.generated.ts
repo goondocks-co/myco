@@ -491,6 +491,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "hook": "post-tool-use",
         "timeout": 5
       },
+      "SessionEnd": {
+        "hook": "session-end",
+        "timeout": 3
+      },
       "SessionStart": {
         "hook": "session-start",
         "timeout": 10
