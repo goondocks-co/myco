@@ -22,6 +22,14 @@ export function deriveTranscriptId(input: {
   machineId: string;
   transcriptPath: string;
   inode: number | bigint;
+  /**
+   * The digest of the file's first bytes, when the file was long enough to
+   * have one when its pointer was minted. A file truncated and rewritten in
+   * place keeps its path and inode and changes only here, so with it the
+   * replacement mints its own id; without it the id is the pre-digest form,
+   * so a pointer minted before the digest existed keeps its identity.
+   */
+  headHash?: string;
 }): string {
   const h = crypto.createHash('sha256');
   h.update(input.machineId);
@@ -29,5 +37,9 @@ export function deriveTranscriptId(input: {
   h.update(input.transcriptPath);
   h.update('\0');
   h.update(String(input.inode));
+  if (input.headHash !== undefined) {
+    h.update('\0');
+    h.update(input.headHash);
+  }
   return `tx_${h.digest('hex').slice(0, 32)}`;
 }

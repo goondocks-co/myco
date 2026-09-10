@@ -25,7 +25,6 @@ import { isProcessAlive } from './shared.js';
 import { parseStrictFlags } from './args.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
-import { manifestToolTransport } from '../symbionts/capabilities.js';
 import { expandHome, resolveHomeDir, resolveMycoHome } from '../grove/paths.js';
 import type { ServiceStatus } from '../service/types.js';
 import { DOCTOR_FIXERS, type DoctorFixContext, type DoctorFixerId } from './doctor-fixes.js';
@@ -787,18 +786,6 @@ export function isSymbiontRegistered(
   const registration = d.manifest.registration;
   if (!registration) return false;
 
-  // cli-transport symbionts intentionally have no MCP server; their hook
-  // registration is the source of truth (same as Pi/Windsurf, which omit
-  // mcpTarget). Without this, doctor falsely reports "enabled but not
-  // registered" and the suggested `myco update` can't fix it (it correctly
-  // writes no MCP server).
-  if (manifestToolTransport(d.manifest) === 'cli') {
-    if (registration.hooksTarget) {
-      return isHooksRegisteredAt(d, path.join(projectRoot, registration.hooksTarget));
-    }
-    return false;
-  }
-
   // Most symbionts have native MCP registration. For agents like Pi and
   // Windsurf that intentionally omit mcpTarget, treat their hook/plugin
   // registration as the source of truth instead of forcing a false warning.
@@ -825,17 +812,6 @@ export function isSymbiontRegisteredGlobally(
 ): boolean {
   const registration = d.manifest.registration;
   if (!registration) return false;
-  // cli-transport symbionts have no global MCP server either; their global
-  // hook registration is the source of truth. Mirrors the project-scope gate
-  // in isSymbiontRegistered so the global suppression path doesn't fall
-  // through to globalMcpTarget and miss the (correctly absent) MCP server.
-  if (manifestToolTransport(d.manifest) === 'cli') {
-    if (registration.globalHooksTarget
-      && isHooksRegisteredAt(d, expandHome(registration.globalHooksTarget))) {
-      return true;
-    }
-    return false;
-  }
   // globalMcpTarget can be a string or an array of string/object entries;
   // only the simple-string shape is checked here. The global hooks target is
   // the reliable cross-agent signal, so an exotic MCP shape just falls
@@ -1633,6 +1609,67 @@ export async function checkRuntimePin(): Promise<DoctorCheck | null> {
   }
 }
 
+/**
+ * Whether the member MCP servers provisioned for this project resolve a
+ * membership from wherever the harness starts them.
+ *
+ * A hook runs in the project, so its membership resolves from its directory.
+ * A stdio MCP child is started where the harness chooses — Codex's and
+ * Cursor's at `/` or the user's home — so it finds the project only through a
+ * `cwd` the entry carries (the TOML entry does), through the machine pin for
+ * a non-default home, and through the one membership a machine holds. Each
+ * of those is checked here as a fact on disk, and the check says which one is
+ * missing rather than reporting the install healthy.
+ */
+export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.ProcessEnv = process.env): Promise<DoctorCheck[]> {
+  const { resolveProjectRoot } = await import('../project-root.js');
+  const { resolveMycoHome, defaultMycoHome, readMachineHomePin } = await import('../paths/home.js');
+  const { readRegistryEntry, listRegistryEntries } = await import('../member/registry.js');
+  const { loadManifests } = await import('../symbionts/detect.js');
+  const root = resolveProjectRoot(vaultDir);
+  const home = resolveMycoHome({ cwd: root, env });
+  if (readRegistryEntry(root, home) === null) return [];
+  const checks: DoctorCheck[] = [];
+  const memberships = listRegistryEntries(home).length;
+  const homeDir = env.HOME && env.HOME.length > 0 ? env.HOME : undefined;
+  const nonDefaultHome = path.resolve(home) !== path.resolve(defaultMycoHome(homeDir));
+  if (nonDefaultHome && readMachineHomePin({ env: {}, homeDir })?.home !== path.resolve(home)) {
+    checks.push({
+      name: 'Member MCP resolution',
+      status: 'warn',
+      detail: `this project's membership lives in ${home}, but the machine pin (${path.join(defaultMycoHome(homeDir), 'runtime.home')}) does not name it; an MCP server started outside ${root} resolves the default home and finds no membership. Run \`MYCO_HOME=${home} myco member join\` again to pin the machine.`,
+      fixable: false,
+    });
+  }
+  for (const manifest of loadManifests()) {
+    const target = manifest.registration?.mcpTarget;
+    if (!target) continue;
+    const file = path.join(root, target);
+    let raw: string;
+    try { raw = fs.readFileSync(file, 'utf-8'); } catch { continue; }
+    if (!raw.includes(MYCO_MCP_SERVER_NAME)) continue;
+    if (manifest.registration?.mcpFormat === 'toml') {
+      if (/\bcwd\s*=/.test(raw)) continue;
+      checks.push({
+        name: 'Member MCP resolution',
+        status: 'warn',
+        detail: `${manifest.displayName}'s MCP server entry in ${target} carries no cwd, so the server starts wherever ${manifest.displayName} starts it and resolves no membership from there. Re-run \`myco member join --provision ${manifest.name}\`.`,
+        fixable: false,
+      });
+      continue;
+    }
+    if (memberships > 1) {
+      checks.push({
+        name: 'Member MCP resolution',
+        status: 'warn',
+        detail: `${manifest.displayName} starts its MCP server in a directory of its own choosing, and this machine holds ${memberships} memberships, so the server resolves none of them unless ${manifest.displayName} is opened from ${root}.`,
+        fixable: false,
+      });
+    }
+  }
+  return checks;
+}
+
 // --- Public API ---
 
 /** Run all health checks against a vault directory. */
@@ -1673,6 +1710,7 @@ export async function runChecks(
   if (pathBinary) checks.push(pathBinary);
   const runtimePin = await checkRuntimePin();
   if (runtimePin) checks.push(runtimePin);
+  checks.push(...await checkMemberMcpResolution(vaultDir));
   // Leftover per-host networking state lives under the machine's home and team
   // home — nothing about it is project-scoped, and the moment a user is most
   // likely to run `doctor` after upgrading is from their home directory, which

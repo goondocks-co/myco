@@ -24,7 +24,8 @@ import { detectSymbiontInjectionSupport, SESSION_START_SIGNALS } from '@myco/sym
 const EXPECTED_SUPPORT: Record<string, { session: boolean; prompt: boolean }> = {
   'claude-code': { session: true, prompt: true },
   codex: { session: true, prompt: true },
-  cursor: { session: true, prompt: true },
+  // Cursor's prompt hook can only block, so nothing registers one; injection is session start and post-tool-use.
+  cursor: { session: true, prompt: false },
   // Antigravity exposes PreInvocation (per model call, not per user prompt)
   // and Stop. There is no user-prompt-submit equivalent in the live hooks
   // contract at https://antigravity.google/docs/hooks — `prompt: false`.

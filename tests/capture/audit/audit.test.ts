@@ -198,15 +198,15 @@ describe('session closure', () => {
     expect(findings).toEqual([]);
   });
 
-  it('blames the exit hook for an agent that closes via one', () => {
-    seedSession('s1', { agent: 'claude-code', status: 'active', started_at: NOW - 5 * HOUR });
+  it.each(['claude-code', 'codex'])('blames the exit hook when %s remains open', (agent) => {
+    seedSession('s1', { agent, status: 'active', started_at: NOW - 5 * HOUR });
     seedBatch('b1', 's1', { started_at: NOW - 4 * HOUR });
     const { findings } = checkClosure(db, { dbPath }, NOW, { staleThresholdMs });
     expect(findings[0]?.id).toBe('closure-exit-hook-missed');
   });
 
   it('blames the sweep when it ran and left the session open', () => {
-    seedSession('s1', { agent: 'codex', status: 'active', started_at: NOW - 5 * HOUR });
+    seedSession('s1', { agent: 'windsurf', status: 'active', started_at: NOW - 5 * HOUR });
     const { findings } = checkClosure(db, { dbPath }, NOW, {
       staleThresholdMs,
       lastSweepAt: NOW - 60,
@@ -215,7 +215,7 @@ describe('session closure', () => {
   });
 
   it('blames the schedule when no sweep has run — a different root cause entirely', () => {
-    seedSession('s1', { agent: 'codex', status: 'active', started_at: NOW - 5 * HOUR });
+    seedSession('s1', { agent: 'windsurf', status: 'active', started_at: NOW - 5 * HOUR });
     const { findings } = checkClosure(db, { dbPath }, NOW, {
       staleThresholdMs,
       lastSweepAt: NOW - 90 * DAY,
@@ -224,7 +224,7 @@ describe('session closure', () => {
   });
 
   it('reports a coverage gap rather than guessing when the sweep time is unknown', () => {
-    seedSession('s1', { agent: 'codex', status: 'active', started_at: NOW - 5 * HOUR });
+    seedSession('s1', { agent: 'windsurf', status: 'active', started_at: NOW - 5 * HOUR });
     const { findings, coverage } = checkClosure(db, { dbPath }, NOW, { staleThresholdMs });
     expect(findings).toEqual([]);
     expect(coverage[0]?.reason).toContain('cannot be told apart');
@@ -233,8 +233,7 @@ describe('session closure', () => {
   it('derives closure mode from the hook templates rather than a hardcoded list', () => {
     const closing = hookClosingSymbionts();
     expect(closing.has('claude-code')).toBe(true);
-    // Sweep-closing by design per the 2026-06-12 ruling — not a defect.
-    expect(closing.has('codex')).toBe(false);
+    expect(closing.has('codex')).toBe(true);
     expect(closing.has('windsurf')).toBe(false);
   });
 });

@@ -37,13 +37,44 @@ describe('memberMcpTemplate', () => {
 });
 
 describe('the member MCP server', () => {
-  it('renders a stdio launcher carrying the flag for an mcp-transport symbiont, and nothing for a cli-transport one', () => {
-    const { installer } = memberInstaller('claude-code');
-    const block = installer.renderMemberMcp('registry') as Record<string, { command: string; args: string[] }>;
-    expect(Object.keys(block)).toEqual(['myco']);
-    expect(block.myco.args).toEqual(['mcp', CREDENTIAL_FLAG, 'registry']);
-    expect(block.myco.command.includes('{{')).toBe(false);
-    expect(memberInstaller('codex').installer.renderMemberMcp('registry')).toBeNull();
+  it('installs a missing MCP entry when the member hooks are already current', () => {
+    const { installer, root } = memberInstaller('claude-code');
+    expect(installer.installMemberHooks()).toBe(true);
+    const result = installer.install();
+    expect({ hooks: result.hooks, mcp: result.mcp }).toEqual({ hooks: false, mcp: true });
+    expect(JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8')).mcpServers.myco.args).toEqual(['mcp', CREDENTIAL_FLAG, 'registry']);
+  });
+
+  it('renders a stdio launcher carrying the flag for every symbiont with an MCP template, and nothing for one without', () => {
+    for (const name of ['claude-code', 'codex', 'cursor']) {
+      const block = memberInstaller(name).installer.renderMemberMcp('registry') as Record<string, { command: string; args: string[] }>;
+      expect({ name, servers: Object.keys(block) }).toEqual({ name, servers: ['myco'] });
+      expect({ name, args: block.myco.args }).toEqual({ name, args: ['mcp', CREDENTIAL_FLAG, 'registry'] });
+      expect(block.myco.command.includes('{{')).toBe(false);
+    }
+    expect(memberInstaller('pi').installer.renderMemberMcp('registry')).toBeNull();
+  });
+
+  it('writes the server into a TOML server list (codex) beside the keys the agent owns, and removes only its own section', () => {
+    const { installer, root } = memberInstaller('codex');
+    const target = path.join(root, '.codex', 'config.toml');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, 'model = "gpt-5"\n\n[mcp_servers.other]\ncommand = "x"\n');
+    expect(installer.installMemberMcp()).toBe(true);
+    const written = fs.readFileSync(target, 'utf8');
+    expect(written).toContain('model = "gpt-5"');
+    expect(written).toContain('[mcp_servers.other]');
+    expect(written).toContain('[mcp_servers.myco]');
+    expect(written).toContain(`"${CREDENTIAL_FLAG}", "registry"`);
+    // Codex reads command, args, env and cwd; the JSON hosts' levers are not written, and the child starts in the project.
+    expect(written).toContain(`cwd = "${root}"`);
+    expect(written).not.toContain('alwaysLoad');
+    expect(written).not.toContain('type = ');
+    expect(installer.uninstallMemberMcp()).toBe(true);
+    const after = fs.readFileSync(target, 'utf8');
+    expect(after).not.toContain('[mcp_servers.myco]');
+    expect(after).toContain('[mcp_servers.other]');
+    expect(installer.uninstallMemberMcp()).toBe(false);
   });
 
   it('writes the server into the symbiont\'s server list on install beside the hooks, keeps a foreign server, and removes only its own on uninstall', () => {

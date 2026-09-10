@@ -15,12 +15,11 @@ import {
   removeAuditedSettings,
   type JsonSettingsAudit,
 } from './settings-merge.js';
-import { manifestToolTransport } from './capabilities.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, type CredentialSource } from '../member/constants.js';
-import { memberMcpTemplate } from './member-hooks.js';
+import { MEMBER_MCP_LEVERS, memberMcpTemplate } from './member-hooks.js';
 import { runGit } from '../utils/git.js';
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
 import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
@@ -363,6 +362,20 @@ const SCOPE_CAPABILITIES: Record<InstallScope, ScopeCapabilities> = {
     globalLauncher: false, flatSkills: false, detectionGate: false, mcpHomeEnv: false,
   },
 };
+
+/** Keys a JSON MCP host reads and a TOML one (Codex) does not; a TOML entry carries the child's working directory instead. */
+const JSON_ONLY_MCP_KEYS: readonly string[] = ['type', ...Object.keys(MEMBER_MCP_LEVERS)];
+
+/** The member's server block as a TOML host takes it: the JSON-only keys dropped, the project as the child's working directory. */
+export function tomlMemberServers(block: Record<string, unknown>, projectRoot: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [name, def] of Object.entries(block)) {
+    if (!def || typeof def !== 'object') continue;
+    const server = Object.fromEntries(Object.entries(def as Record<string, unknown>).filter(([key]) => !JSON_ONLY_MCP_KEYS.includes(key)));
+    out[name] = { ...server, cwd: projectRoot };
+  }
+  return out;
+}
 
 export class SymbiontInstaller {
   /**
@@ -775,8 +788,9 @@ export class SymbiontInstaller {
   /** Run all registration steps. */
   install(): InstallResult {
     if (this.installScope === 'member-project') {
+      if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
       const hooks = this.installMemberHooks();
-      return { ...emptyInstallResult(), hooks, mcp: hooks && this.installMemberMcp() };
+      return { ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() };
     }
     if (this.deferGlobalSymbiontConfig()) return emptyInstallResult();
     const reg = this.manifest.registration;
@@ -1077,8 +1091,7 @@ export class SymbiontInstaller {
     // server-list keys before writing under the current one, so a
     // shape migration (mcpServersKey rename) doesn't leave behind a
     // duplicate `myco` registration under the legacy key.
-    const provision = this.shouldProvisionMcpServer();
-    const mcpTemplate = reg.mcpTarget && provision ? this.loadMcpTemplate() : null;
+    const mcpTemplate = reg.mcpTarget ? this.loadMcpTemplate() : null;
     if (mcpTemplate) {
       const serversKey = reg.mcpServersKey ?? 'mcpServers';
       for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
@@ -1096,20 +1109,6 @@ export class SymbiontInstaller {
       }
       data[serversKey] = servers;
       mcp = true;
-    } else if (reg.mcpTarget && !provision) {
-      // cli-transport symbionts get NO MCP server here. Sweep any existing
-      // `myco` entry across every known server-list key (mirrors the
-      // installMcp → uninstallMcp sweep) so a JSON-colocated cli symbiont
-      // doesn't silently retain an MCP registration. `mcp` stays false.
-      const serversKey = reg.mcpServersKey ?? 'mcpServers';
-      for (const candidateKey of new Set([serversKey, ...KNOWN_MCP_SERVERS_KEYS])) {
-        const candidate = data[candidateKey];
-        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
-        const bag = candidate as Record<string, unknown>;
-        if (!(MYCO_MCP_SERVER_NAME in bag)) continue;
-        delete bag[MYCO_MCP_SERVER_NAME];
-        if (Object.keys(bag).length === 0) delete data[candidateKey];
-      }
     }
 
     // Apply settings transform with audit-tracking. Same discipline as
@@ -1701,6 +1700,8 @@ export class SymbiontInstaller {
       mergedHooks[event] = [...(mergedHooks[event] ?? []), ...(groups as unknown[])];
     }
     settings.hooks = mergedHooks;
+    const reg = this.manifest.registration;
+    if (reg?.hooksConfigVersion !== undefined) settings.version = reg.hooksConfigVersion;
     const written = writeJsonFile(targetPath, settings);
     this.ensureGitIgnored(targetPath);
     return written;
@@ -1709,11 +1710,12 @@ export class SymbiontInstaller {
   /**
    * The member's MCP server block for `source`: the symbiont's own stdio
    * launcher carrying the credential flag. Null for a symbiont without an MCP
-   * template or one that reaches Myco through the CLI.
+   * template; every Myco tool is reached over MCP, with the Project named as a
+   * tool parameter.
    */
   renderMemberMcp(source: CredentialSource): Record<string, unknown> | null {
     const reg = this.manifest.registration;
-    if (!reg?.mcpTarget || !this.shouldProvisionMcpServer()) return null;
+    if (!reg?.mcpTarget) return null;
     const template = this.loadMcpTemplate();
     return template === null ? null : memberMcpTemplate(template, source);
   }
@@ -1736,6 +1738,12 @@ export class SymbiontInstaller {
     const targetPath = this.memberMcpTargetPath();
     if (block === null || targetPath === null) return false;
     const reg = this.manifest.registration!;
+    // A TOML server list (Codex) is edited section by section; the JSON sweep
+    // below is for the JSON targets. Codex reads `command`, `args`, `env` and
+    // `cwd` and ignores the JSON hosts' levers, so those are not written; `cwd`
+    // starts the stdio child in this project, where its membership resolves
+    // from the directory the way every hook's does.
+    if (reg.mcpFormat === 'toml') return this.installMcpToml(targetPath, tomlMemberServers(block, this.projectRoot));
     const serversKey = reg.mcpServersKey ?? 'mcpServers';
     const data = readJsonFile(targetPath);
     for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
@@ -1757,6 +1765,7 @@ export class SymbiontInstaller {
   uninstallMemberMcp(): boolean {
     const targetPath = this.memberMcpTargetPath();
     if (targetPath === null || !fs.existsSync(targetPath)) return false;
+    if (this.manifest.registration?.mcpFormat === 'toml') return this.uninstallMcpToml(targetPath);
     const data = readJsonFile(targetPath);
     let removed = false;
     for (const key of KNOWN_MCP_SERVERS_KEYS) {
@@ -2182,25 +2191,9 @@ export class SymbiontInstaller {
    * preserves the historical boolean contract used by callers like
    * `runFullInstall()` and `isConfigured()`.
    */
-  /** Whether this symbiont should have a Myco MCP server provisioned. cli-transport
-   *  symbionts call tools via `myco tool call` on their shell and get none. */
-  private shouldProvisionMcpServer(): boolean {
-    return manifestToolTransport(this.manifest) !== 'cli';
-  }
-
   installMcp(): boolean {
     const reg = this.manifest.registration;
     if (!reg) return false;
-
-    // cli-transport symbionts call Myco tools via `myco tool call` on their
-    // shell (which carries tenancy from cwd), so they get NO MCP server. Sweep
-    // any pre-existing [mcp_servers.myco] under the active scope so a `myco
-    // update` (which runs at GLOBAL scope) removes the broken legacy_vault
-    // surface from ~/.codex/config.toml left by older installs.
-    if (!this.shouldProvisionMcpServer()) {
-      this.uninstallMcp();
-      return false;
-    }
 
     const targets = this.resolveAbsoluteMcpTargets();
     if (targets.length === 0) return false;

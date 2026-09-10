@@ -90,10 +90,10 @@ afterEach(() => {
 
 describe('Codex Pre→Post linkage records canopy_injection_tokens', () => {
   it('inject=true and pending registry records under entry path', async () => {
-    // Phase-2 wiring proof: Codex manifest now has preToolUseInjection: true,
-    // so the daemon's capability gate at canopy-inject.ts must accept
-    // agent: 'codex' and produce a compose+pending side-effect identical
-    // to the Claude Code path.
+    // Copilot is the one manifest still declaring preToolUseInjection with a
+    // wired PreToolUse hook, so the daemon's capability gate at
+    // canopy-inject.ts accepts agent: 'copilot' and produces the compose +
+    // pending side-effect.
     seedEntry(tmpProjectId, 'src/example.ts', 4096);
 
     const handler = createCanopyInjectHandler({
@@ -105,7 +105,7 @@ describe('Codex Pre→Post linkage records canopy_injection_tokens', () => {
       requestContext: ctx(),
       body: {
         sessionId: 'codex-sess-1',
-        agent: 'codex',
+        agent: 'copilot',
         toolInput: { file_path: 'src/example.ts' },
       },
     });
@@ -167,7 +167,7 @@ describe('Codex Pre→Post linkage records canopy_injection_tokens', () => {
       requestContext: ctx(),
       body: {
         sessionId: 'codex-sess-2',
-        agent: 'codex',
+        agent: 'copilot',
         toolInput: { file_path: 'src/tiny.ts' },
       },
     });
@@ -188,7 +188,7 @@ describe('Codex Pre→Post linkage records canopy_injection_tokens', () => {
       requestContext: ctx(),
       body: {
         sessionId: 'codex-sess-3',
-        agent: 'codex',
+        agent: 'copilot',
         toolInput: { file_path: 'src/never-scanned.ts' },
       },
     });
@@ -210,7 +210,7 @@ describe('Codex Pre→Post linkage records canopy_injection_tokens', () => {
       requestContext: ctx(),
       body: {
         sessionId: 'codex-sess-cold',
-        agent: 'codex',
+        agent: 'copilot',
         toolInput: { file_path: 'src/cold.ts' },
       },
     });

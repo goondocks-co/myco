@@ -14,10 +14,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BUFFER_QUARANTINE_DIRNAME } from '@myco/capture/buffer.js';
 import { longestDeclaredHookTimeoutMs, unboundedBudget } from '@myco/member/budget.js';
-import { MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS } from '@myco/member/constants.js';
+import { MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS } from '@myco/member/constants.js';
 import { attachmentEvent, mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
-import { applySpoolRetention, lastAckAt, unacknowledgedSince } from '@myco/member/retention.js';
+import { applySpoolRetention, lastAckAt, pruneDeliveredSessionState, unacknowledgedSince } from '@myco/member/retention.js';
 import { MemberSpool } from '@myco/member/spool.js';
+import { readSessionState, sessionStatePath, updateSessionState } from '@myco/member/session-state.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
 
@@ -47,7 +48,7 @@ describe('spool retention', () => {
     const file = path.join(spool.dir, 'sess-old.jsonl');
     const t0 = Date.now();
     // Under the cap: untouched.
-    expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS - DAY)).toEqual({ quarantined: [], pruned: 0, releasedBlobs: 0, prunedTranscripts: 0 });
+    expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS - DAY)).toEqual({ quarantined: [], pruned: 0, prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 });
     expect(fs.existsSync(file)).toBe(true);
     // Past the cap: moved, not deleted; the bytes survive.
     const r = applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY);
@@ -61,7 +62,7 @@ describe('spool retention', () => {
     // Pruning reads the file's own age: age it past 60 days on disk.
     const past = (Date.now() - MEMBER_SPOOL_QUARANTINE_PRUNE_MS - DAY) / 1000;
     fs.utimesSync(quarantined, past, past);
-    expect(applySpoolRetention(spool, Date.now())).toEqual({ quarantined: [], pruned: 1, releasedBlobs: 0, prunedTranscripts: 0 });
+    expect(applySpoolRetention(spool, Date.now())).toEqual({ quarantined: [], pruned: 1, prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 });
     expect(fs.existsSync(quarantined)).toBe(false);
   });
 
@@ -80,11 +81,38 @@ describe('spool retention', () => {
     // One ack lands far in the future, then the pass ends on retry: the state's updatedAt is "now".
     await spool.drainSession('sess-live', client, unboundedBudget(), { now: () => far, force: true });
     expect(spool.depth('sess-live')).toBe(2);
-    expect(applySpoolRetention(spool, far + DAY)).toEqual({ quarantined: [], pruned: 0, releasedBlobs: 0, prunedTranscripts: 0 });
+    expect(applySpoolRetention(spool, far + DAY)).toEqual({ quarantined: [], pruned: 0, prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 });
     expect(fs.existsSync(path.join(spool.dir, 'sess-live.jsonl'))).toBe(true);
     await spool.drainSession('sess-live', client, unboundedBudget(), { now: () => far + DAY, force: true });
     expect(spool.sessionIds()).toEqual([]);
-    expect(applySpoolRetention(spool, far + 2 * DAY)).toEqual({ quarantined: [], pruned: 0, releasedBlobs: 0, prunedTranscripts: 0 });
+    expect(applySpoolRetention(spool, far + 2 * DAY)).toEqual({ quarantined: [], pruned: 0, prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 });
+  });
+
+  it('prunes the state of a session delivered long ago only after a drain that delivered everything, and never one still holding records', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+    const t0 = Date.now();
+    spool.append('sess-done', promptEvent(ctxFor(spool, 'sess-done'), { promptId: mintId(), text: 'done' }));
+    await spool.drainSession('sess-done', client, unboundedBudget(), { now: () => t0, force: true });
+    expect(spool.sessionIds()).toEqual([]);
+    expect(spool.stateSessionIds()).toEqual(['sess-done']);
+    // A session still holding undelivered records keeps its state whatever its age.
+    spool.appendAndRecord('sess-held', [promptEvent(ctxFor(spool, 'sess-held'), { promptId: mintId(), text: 'held' })], undefined, t0);
+    // Inside the window: kept. Past it without a delivering drain: kept. Past it after one: pruned.
+    const late = t0 + MEMBER_SESSION_STATE_RETENTION_MS + DAY;
+    expect(applySpoolRetention(spool, t0 + DAY, { delivered: true }).prunedStates).toBe(0);
+    expect(applySpoolRetention(spool, late).prunedStates).toBe(0);
+    expect(fs.existsSync(sessionStatePath(spool.dir, 'sess-done'))).toBe(true);
+    expect(applySpoolRetention(spool, late, { delivered: true }).prunedStates).toBe(1);
+    expect(fs.existsSync(sessionStatePath(spool.dir, 'sess-done'))).toBe(false);
+    expect(fs.existsSync(sessionStatePath(spool.dir, 'sess-held'))).toBe(true);
+    // A delivered session that was written to inside the window is a live one.
+    spool.append('sess-live', promptEvent(ctxFor(spool, 'sess-live'), { promptId: mintId(), text: 'live' }));
+    await spool.drainSession('sess-live', client, unboundedBudget(), { now: () => late, force: true });
+    updateSessionState(spool.dir, 'sess-live', () => {}, late);
+    expect(pruneDeliveredSessionState(spool, late + DAY)).toBe(0);
+    expect(readSessionState(spool.dir, 'sess-live').updatedAt).toBe(late);
   });
 
   it('measures the acknowledgement, not the file: a session still appending while permanently offline is quarantined', () => {

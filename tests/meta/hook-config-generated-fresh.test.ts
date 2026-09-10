@@ -63,8 +63,8 @@ describe('generated hook config freshness', () => {
 
   it('carries the per-event timeouts the harness templates declare, keyed by harness event name', () => {
     // Spot-pin the Claude Code budget the member derives from (spec §2):
-    // PreToolUse 3 s, UserPromptSubmit 5 s, SessionStart 10 s, Stop 30 s.
-    expect(HOOK_CONFIG['claude-code'].hookEvents.PreToolUse).toEqual({ hook: 'pre-tool-use', timeout: 3 });
+    // UserPromptSubmit 5 s, SessionStart 10 s, Stop 30 s, SessionEnd 10 s.
+    expect(HOOK_CONFIG['claude-code'].hookEvents.SessionEnd).toEqual({ hook: 'session-end', timeout: 10 });
     expect(HOOK_CONFIG['claude-code'].hookEvents.UserPromptSubmit).toEqual({ hook: 'user-prompt-submit', timeout: 5 });
     expect(HOOK_CONFIG['claude-code'].hookEvents.SessionStart).toEqual({ hook: 'session-start', timeout: 10 });
     expect(HOOK_CONFIG['claude-code'].hookEvents.Stop).toEqual({ hook: 'stop', timeout: 30 });

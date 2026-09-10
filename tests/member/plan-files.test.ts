@@ -46,7 +46,7 @@ describe('plan file capture', () => {
   it('reads the file once per content, keys it by its normalized path, names the prompt, and carries no status', () => {
     fs.writeFileSync(file, '# The plan\n\n- [ ] one\n');
     const state = { ...emptySessionState(), promptId: 'prompt-1' };
-    const first = planFileCapture(ctx(), state, 'proj_1', root, file);
+    const first = planFileCapture(ctx(), state, 'proj_1', root, file, state.promptId);
     expect(first.events).toHaveLength(1);
     const payload = first.events[0]!.envelope.payload as Record<string, unknown>;
     expect([payload.planKey, payload.title, payload.originPath, payload.promptId, payload.status, payload.content]).toEqual([planKeyForPath('proj_1', '.claude/plans/p.md'), 'The plan', '.claude/plans/p.md', 'prompt-1', undefined, '# The plan\n\n- [ ] one\n']);
@@ -55,7 +55,7 @@ describe('plan file capture', () => {
     expect(planFileCapture(ctx(), state, 'proj_1', root, file).events).toEqual([]);
     // New content under a captured path keeps the key and names no prompt: the plan belongs to the turn that produced it.
     fs.writeFileSync(file, '# The plan\n\n- [x] one\n');
-    const again = planFileCapture(ctx(), { ...state, promptId: 'prompt-9' }, 'proj_1', root, file);
+    const again = planFileCapture(ctx(), { ...state, promptId: 'prompt-9' }, 'proj_1', root, file, 'prompt-9');
     const againPayload = again.events[0]!.envelope.payload as Record<string, unknown>;
     expect([againPayload.planKey, againPayload.promptId]).toEqual([payload.planKey, undefined]);
     expect(readPlanFile(path.join(root, 'missing.md'))).toBeNull();
@@ -69,7 +69,26 @@ describe('plan file capture', () => {
     expect(payload.title).toBe('no-heading');
     const huge = path.join(root, '.claude/plans/huge.md');
     fs.writeFileSync(huge, 'x'.repeat(MAX_PLAN_FILE_BYTES + 1));
-    expect(planFileCapture(ctx(), emptySessionState(), 'proj_1', root, huge).events).toEqual([]);
+    const lines: string[] = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    (process.stderr as unknown as { write: (c: unknown) => boolean }).write = ((c: unknown) => { lines.push(String(c)); return true; }) as never;
+    try {
+      const state = emptySessionState();
+      const first = planFileCapture(ctx(), state, 'proj_1', root, huge);
+      expect(first.events).toEqual([]);
+      first.record(state);
+      expect(state.planPaths['.claude/plans/huge.md']?.hash).toBe(`oversize:${MAX_PLAN_FILE_BYTES + 1}`);
+      expect(lines.join('')).toContain('over the');
+      // Said once: the receipt stands until the file changes size.
+      lines.length = 0;
+      expect(planFileCapture(ctx(), state, 'proj_1', root, huge).events).toEqual([]);
+      expect(lines).toEqual([]);
+      fs.writeFileSync(huge, '# Small now\n');
+      expect(planFileCapture(ctx(), state, 'proj_1', root, huge).events).toHaveLength(1);
+    } finally {
+      (process.stderr as unknown as { write: unknown }).write = origErr;
+      fs.unlinkSync(huge);
+    }
   });
 
   it('re-sends a shipped file whose content changed, once, and nothing for one unchanged or gone', () => {

@@ -10,7 +10,7 @@ import { resolveProjectRoot, resolveVaultDir } from '../project-root.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, MEMBER_TOKEN_PATTERN, type CredentialSource } from './constants.js';
 import { recordMissingMembership } from './no-membership.js';
-import { readRegistryEntry } from './registry.js';
+import { listRegistryEntries, readRegistryEntry, type RegistryEntry } from './registry.js';
 
 export { CREDENTIAL_FLAG, type CredentialSource };
 
@@ -106,7 +106,7 @@ export function resolveCredential(
   const cwd = opts.cwd ?? process.cwd();
   const root = resolveMemberProjectRoot(cwd);
   const mycoHome = opts.mycoHome ?? resolveMycoHome({ cwd, env: opts.env });
-  const entry = readRegistryEntry(root, mycoHome);
+  const entry = readRegistryEntry(root, mycoHome) ?? soleMembershipForMcp(mycoHome, opts.invokedBy);
   if (!entry) {
     // The hook still exits 0 — a non-zero hook breaks the harness — so the
     // miss is counted under the home this invocation resolved, where
@@ -123,6 +123,30 @@ export function resolveCredential(
     serverUrl: entry.serverUrl, token: entry.token, tokenId: entry.tokenId, projectId: entry.projectId,
     expiresAt: entry.expiresAt, refreshAfter: entry.refreshAfter, refreshTerminal: entry.refreshTerminal, source: 'registry', root,
   };
+}
+
+/**
+ * The one membership a home holds, for an MCP bridge whose harness started it
+ * somewhere other than the project.
+ *
+ * A harness that spawns its stdio server at `/` or at the user's home hands the
+ * bridge no project to look up, and the bridge resolves no credential however
+ * correct the install. Tenancy on the tool surface is a tool parameter, and a
+ * read defaults to the caller's bound Projects, so on a machine that holds one
+ * membership the membership is not in doubt. Two memberships are: the bridge
+ * then says which project it needs to be started in. A hook never takes this
+ * path — a hook that fires in an unjoined project must find no membership, or
+ * one project's sessions land in another's.
+ */
+function soleMembershipForMcp(mycoHome: string, invokedBy: string | undefined): RegistryEntry | null {
+  if (invokedBy !== 'mcp') return null;
+  const entries = listRegistryEntries(mycoHome);
+  if (entries.length !== 1) {
+    if (entries.length > 1) stderr(`this directory is in none of the ${entries.length} joined projects — start the MCP server inside the project it should serve`);
+    return null;
+  }
+  stderr(`this directory is not a joined project; serving the one membership this machine holds (${entries[0].root})`);
+  return entries[0];
 }
 
 function envCredential(env: NodeJS.ProcessEnv): CredentialRecord | null {

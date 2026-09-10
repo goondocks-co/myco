@@ -28,7 +28,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BUFFER_QUARANTINE_DIRNAME, pruneQuarantinedBuffers, quarantineBufferFile } from '../capture/buffer.js';
 import { longestDeclaredHookTimeoutMs } from './budget.js';
-import { MEMBER_DIR_MODE, MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS, MEMBER_TRANSCRIPT_RETENTION_MS } from './constants.js';
+import { MEMBER_DIR_MODE, MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS, MEMBER_TRANSCRIPT_RETENTION_MS } from './constants.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
 import { expandRoot } from '../symbionts/transcript-discovery.js';
@@ -38,6 +38,8 @@ import { BLOBS_DIRNAME, type MemberSpool } from './spool.js';
 export interface RetentionResult {
   quarantined: string[];
   pruned: number;
+  /** State files of fully delivered sessions untouched past the retention window, removed after a drain that delivered everything. */
+  prunedStates: number;
   /** Staged blob files deleted because no live spool record references them. */
   releasedBlobs: number;
   /** Plugin-written transcripts deleted because they aged past the member window. */
@@ -230,9 +232,30 @@ function pruneQuarantinedStagedBlobs(spool: MemberSpool): number {
   return pruned;
 }
 
-/** Quarantine every session spool unacknowledged past the cap, prune quarantined files past the prune cap, and release staged bytes nothing references. */
-export function applySpoolRetention(spool: MemberSpool, now: number = Date.now()): RetentionResult {
-  const result: RetentionResult = { quarantined: [], pruned: 0, releasedBlobs: 0, prunedTranscripts: 0 };
+/**
+ * Remove the state files of sessions whose spool is fully delivered and gone,
+ * untouched for the retention window. Only after a drain that delivered
+ * everything: a state whose spool still holds records, or whose session was
+ * written to inside the window, is a live session's and stays. The session's
+ * staging directory goes with it when nothing is left in it.
+ */
+export function pruneDeliveredSessionState(spool: MemberSpool, now: number = Date.now()): number {
+  let pruned = 0;
+  const live = new Set(spool.sessionIds());
+  for (const sessionId of spool.stateSessionIds()) {
+    if (live.has(sessionId)) continue;
+    const state = readSessionState(spool.dir, sessionId);
+    if (state.highWater > 0 || now - state.updatedAt < MEMBER_SESSION_STATE_RETENTION_MS) continue;
+    removeSessionState(spool.dir, sessionId);
+    try { fs.rmdirSync(spool.blobsDirFor(sessionId)); } catch { /* absent, or still holding bytes the blob sweep owns */ }
+    pruned += 1;
+  }
+  return pruned;
+}
+
+/** Quarantine every session spool unacknowledged past the cap, prune quarantined files past the prune cap, release staged bytes nothing references, and after a drain that delivered everything, prune the state of sessions long since delivered. */
+export function applySpoolRetention(spool: MemberSpool, now: number = Date.now(), opts: { delivered?: boolean } = {}): RetentionResult {
+  const result: RetentionResult = { quarantined: [], pruned: 0, prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 };
   for (const sessionId of spool.sessionIds()) {
     if (spool.depth(sessionId) === 0) continue;
     if (now - unacknowledgedSince(spool, sessionId) < MEMBER_SPOOL_QUARANTINE_MS) continue;
@@ -248,6 +271,7 @@ export function applySpoolRetention(spool: MemberSpool, now: number = Date.now()
   // After the prune, whatever no quarantined spool still names goes with it.
   pruneQuarantinedStagedBlobs(spool);
   result.releasedBlobs = sweepStagedBlobs(spool, spool.sessionIds(), now);
+  if (opts.delivered === true) result.prunedStates = pruneDeliveredSessionState(spool, now);
   // The spool's OWN home: a hook resolving a project pin must not age the
   // claims and transcripts of whatever home the process's environment names.
   result.prunedTranscripts = prunePluginTranscripts(now, process.env, spool.mycoHome);

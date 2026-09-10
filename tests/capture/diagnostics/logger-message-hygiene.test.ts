@@ -34,14 +34,14 @@ const RISKY_NAME = /(prompt|content|text|body|message)/i;
 /**
  * Confirmed-safe false positives, as `<path relative to SRC>:<line>`.
  *
- * - `daemon/api/context.ts:644` — `${promptTokens}` is an integer token
- *   COUNT (`estimateTokens(text)`, context.ts:641), not prompt text; the
+ * - `daemon/api/context.ts:621` — `${promptTokens}` is an integer token
+ *   COUNT (`estimateTokens(text)`, context.ts:618), not prompt text; the
  *   identifier merely contains the substring "prompt". The message also
  *   interpolates spore titles (`${titles.join(', ')}`), which the risky-name
  *   regex doesn't match and this gate doesn't police — spore titles are
  *   already-published metadata, not raw prompt/session content.
  */
-const ALLOWLIST = new Set<string>(['daemon/api/context.ts:644']);
+const ALLOWLIST = new Set<string>(['daemon/api/context.ts:621']);
 
 function walk(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {

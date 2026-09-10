@@ -16,6 +16,7 @@ import { ENV_JOIN_CODE } from '@myco/member/constants.js';
 import { ensureJoinedFromCode, exchangeJoinCode, parseJoinCode, JOIN_CODE_REFUSALS } from '@myco/member/join-code.js';
 import { readDeploymentMembership, readRegistryEntry } from '@myco/member/registry.js';
 import { tempMycoHome, unjoinedRig } from './helpers/server.js';
+import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { runHook } from './helpers/hooks.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
@@ -206,6 +207,8 @@ describe('a hook on a machine holding only a join code', () => {
 
     await runHook('session-start', { session_id: session, transcript_path: tx, cwd: '/work/repo' }, { fetch: rig.fetch });
     await runHook('stop', { session_id: session, transcript_path: tx, last_assistant_message: '' }, { fetch: rig.fetch });
+    // The segment the hook shipped is read by the Deployment's parse, which writes the plan.
+    for (let pass = 0; pass < 20 && (await parseTranscripts(rig.env.serverEnv, Date.now())) > 0; pass += 1) { /* until nothing is pending */ }
 
     expect(rig.env.sqlite.query(`SELECT project_id FROM sessions WHERE session_id = ?`).get(session)).toEqual({ project_id: 'proj_1' });
     expect(rig.env.sqlite.query(`SELECT title, content FROM plans`).get()).toEqual({ title: 'Sandbox Plan', content: '# Sandbox Plan\n\nstep one' });

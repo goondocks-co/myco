@@ -65,7 +65,7 @@ Myco captures project memory and serves it back through context injection, MCP t
 Myco installs once at the per-user/global level for every symbiont; project-local files are an opt-in override, not the default.
 
 - All symbionts install at the agent's global config location (e.g. `~/.claude/settings.json`, `~/.codex/config.toml`). Per-project `.agents/` folders are no longer required.
-- Hooks invoke the `myco` binary directly by absolute path, written by the installer. MCP is remote HTTP served by the Deployment; there is no local launcher or bridge process.
+- Hooks invoke the `myco` binary directly by absolute path, written by the installer; `launcher.cjs` and `myco-run.cjs` are gone. A harness the Deployment parses wires only the retained set — session start, turn end (`Stop`/`SessionEnd`), prompt submit for injection, subagent start — and writes no turn row; see `docs/architecture/myco-2.0.md` §3.4. MCP is remote HTTP served by the Deployment; there is no local launcher or bridge process.
 - Settings-merge for shared agent config files is required: Myco's hook/MCP/skills entries are upserted; user-pre-existing keys (e.g. Codex `[features].hooks`) must be preserved across install/uninstall cycles. Use audit-tracked TOML writes for Codex; atomic writes for every other agent.
 - Per-project overrides live in the dashboard's **Symbionts** page, not in CLI flags or hand-edited config.
 - Capture buffer lives under `~/.myco/buffer/<grove>/`. Do not reintroduce `.agents/myco-buffer/`; the migration walker archives any residue.

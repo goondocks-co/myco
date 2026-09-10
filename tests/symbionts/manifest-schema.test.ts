@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'bun:test';
 import { SymbiontManifestSchema } from '@myco/symbionts/manifest-schema.js';
-import { symbiontToolTransport } from '@myco/symbionts/capabilities.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -531,13 +530,13 @@ describe('claude-code manifest declares its file-read tool', () => {
   });
 });
 
-describe('codex manifest enables Canopy PreToolUse for Bash reads', () => {
-  it('parses with preToolUseInjection=true and one Bash shell-arg entry', () => {
+describe('codex manifest declares its Bash read tool without a PreToolUse hook', () => {
+  it('parses with preToolUseInjection=false and one Bash shell-arg entry', () => {
     const yamlPath = path.join(MANIFESTS_DIR, 'codex.yaml');
     const raw = YAML.parse(fs.readFileSync(yamlPath, 'utf8'));
     const m = SymbiontManifestSchema.parse(raw);
 
-    expect(m.capabilities?.preToolUseInjection).toBe(true);
+    expect(m.capabilities?.preToolUseInjection).toBe(false);
     expect(m.capabilities?.canopyReadTools).toHaveLength(1);
 
     const entry = m.capabilities!.canopyReadTools![0];
@@ -569,25 +568,27 @@ describe('codex manifest enables Canopy PreToolUse for Bash reads', () => {
   });
 });
 
-describe('symbiont tool transport', () => {
-  it('cli-transport symbionts cannot carry tenancy over MCP', () => {
-    // These agents' MCP child spawns at a non-workspace cwd with no
-    // project-dir env and no usable roots — the shell carries tenancy
-    // via `myco tool call` instead.
-    expect(symbiontToolTransport('codex')).toBe('cli');
-    expect(symbiontToolTransport('cursor')).toBe('cli');
-    expect(symbiontToolTransport('windsurf')).toBe('cli');
-    expect(symbiontToolTransport('antigravity')).toBe('cli');
+describe('symbiont turn-row source', () => {
+  const capabilitiesOf = (name: string) => SymbiontManifestSchema.parse(YAML.parse(fs.readFileSync(path.join(MANIFESTS_DIR, `${name}.yaml`), 'utf-8'))).capabilities!;
+
+  it('the agents the Deployment parses declare the transcript as the writer of their turn rows', () => {
+    for (const name of ['claude-code', 'codex', 'cursor', 'opencode', 'pi', 'cline']) {
+      expect({ name, source: capabilitiesOf(name).turnRowSource }).toEqual({ name, source: 'transcript' });
+    }
   });
 
-  it('mcp-transport symbionts resolve the project from the stdio bridge cwd', () => {
-    expect(symbiontToolTransport('claude-code')).toBe('mcp');
-    expect(symbiontToolTransport('copilot')).toBe('mcp');
-    expect(symbiontToolTransport('opencode')).toBe('mcp');
+  it('the agents the Deployment does not parse keep their hooks as the writer', () => {
+    for (const name of ['copilot', 'antigravity', 'windsurf']) {
+      expect({ name, source: capabilitiesOf(name).turnRowSource }).toEqual({ name, source: 'hook' });
+    }
   });
 
-  it('unknown / undefined names default to mcp', () => {
-    expect(symbiontToolTransport('does-not-exist')).toBe('mcp');
-    expect(symbiontToolTransport(undefined)).toBe('mcp');
+  it('cursor and codex declare a transcript whose tool calls the parse cannot derive, and no manifest declares a tool transport', () => {
+    // Cursor's format carries no tool calls; Codex 0.153 carries them in shapes the parser does not read yet.
+    for (const name of ['cursor', 'codex']) expect({ name, fidelity: capabilitiesOf(name).transcriptFidelity }).toEqual({ name, fidelity: 'no_tool_results' });
+    for (const name of ['claude-code', 'opencode', 'pi', 'cline', 'copilot', 'antigravity', 'windsurf']) {
+      expect({ name, fidelity: capabilitiesOf(name).transcriptFidelity }).toEqual({ name, fidelity: 'full' });
+    }
+    for (const file of fs.readdirSync(MANIFESTS_DIR)) expect(fs.readFileSync(path.join(MANIFESTS_DIR, file), 'utf-8')).not.toContain('toolTransport');
   });
 });

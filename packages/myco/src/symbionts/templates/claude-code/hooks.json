@@ -23,42 +23,6 @@
       ]
     }
   ],
-  "PreToolUse": [
-    {
-      "matcher": "",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "{{mycoLauncher}} hook pre-tool-use --symbiont claude-code",
-          "timeout": 3
-        }
-      ]
-    }
-  ],
-  "PostToolUse": [
-    {
-      "matcher": "",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "{{mycoLauncher}} hook post-tool-use --symbiont claude-code",
-          "timeout": 5
-        }
-      ]
-    }
-  ],
-  "PostToolUseFailure": [
-    {
-      "matcher": "",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "{{mycoLauncher}} hook post-tool-use-failure --symbiont claude-code",
-          "timeout": 5
-        }
-      ]
-    }
-  ],
   "Stop": [
     {
       "matcher": "",
@@ -90,66 +54,6 @@
         {
           "type": "command",
           "command": "{{mycoLauncher}} hook subagent-start --symbiont claude-code",
-          "timeout": 5
-        }
-      ]
-    }
-  ],
-  "SubagentStop": [
-    {
-      "matcher": "",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "{{mycoLauncher}} hook subagent-stop --symbiont claude-code",
-          "timeout": 10
-        }
-      ]
-    }
-  ],
-  "StopFailure": [
-    {
-      "matcher": "",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "{{mycoLauncher}} hook stop-failure --symbiont claude-code",
-          "timeout": 10
-        }
-      ]
-    }
-  ],
-  "TaskCompleted": [
-    {
-      "matcher": "",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "{{mycoLauncher}} hook task-completed --symbiont claude-code",
-          "timeout": 5
-        }
-      ]
-    }
-  ],
-  "PreCompact": [
-    {
-      "matcher": "",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "{{mycoLauncher}} hook pre-compact --symbiont claude-code",
-          "timeout": 5
-        }
-      ]
-    }
-  ],
-  "PostCompact": [
-    {
-      "matcher": "",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "{{mycoLauncher}} hook post-compact --symbiont claude-code",
           "timeout": 5
         }
       ]

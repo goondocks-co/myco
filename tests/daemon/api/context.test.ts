@@ -135,31 +135,6 @@ describe('createSessionContextHandler', () => {
     expect(body.text).toBe('');
   });
 
-  it('injects the CLI tool-transport directive for a cli-transport agent (codex) but not for an mcp-transport agent', async () => {
-    upsertCortexInstructions({
-      agent_id: DEFAULT_AGENT_ID,
-      content: 'Use `myco_cortex` before major changes.',
-      input_hash: 'hash-cli-transport',
-      generated_at: NOW,
-      project_id: TEST_REQUEST_CONTEXT.projectId,
-    });
-    const handler = createSessionContextHandler(makeDeps());
-
-    // codex declares toolTransport: cli — the directive teaching it to call
-    // tools via `myco tool call` on its shell must ride along.
-    const codex = await handler(makeReq({ session_id: 'sess-cli-codex', agent: 'codex' }));
-    const codexText = (codex.body as { text: string }).text;
-    expect(codexText).toContain('tool call');
-    // The composing process is not guaranteed to be the myco binary, so the
-    // resolver must never name `process.execPath`.
-    expect(codexText).not.toContain(process.execPath);
-
-    // claude-code is mcp-transport — no CLI directive. (Different session id so
-    // the per-session dedup gate doesn't suppress the second serve.)
-    const claude = await handler(makeReq({ session_id: 'sess-cli-claude', agent: 'claude-code' }));
-    expect((claude.body as { text: string }).text).not.toContain('myco tool call');
-  });
-
   it('returns empty when session-start injection is disabled', async () => {
     const handler = createSessionContextHandler(makeDeps({
       config: makeConfig({ cortex_enabled: false }),

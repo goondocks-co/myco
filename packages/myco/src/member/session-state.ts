@@ -17,9 +17,11 @@ export interface TranscriptPointer {
   path: string;
   transcriptId: string;
   inode: number;
+  /** The digest of the file's first bytes, once it has enough of them; sent on every segment as the Deployment's integrity gate. */
+  headHash?: string;
   /** The next byte offset to ship; the server's held size after an ack. */
   nextOffset: number;
-  /** Bytes of the transcript already parsed for transcript-derived capture. */
+  /** Bytes of the transcript the member has already read for its own derivations: plan-file writes, and for an agent whose hooks write its turn rows, prompts, plans and images. */
   parsedSize: number;
 }
 
@@ -32,6 +34,8 @@ export interface SessionState {
   /** sha256(text) → promptId for every prompt this session has captured. */
   prompts: Record<string, string>;
   transcript?: TranscriptPointer;
+  /** The subagent transcripts found beside the session's own, keyed by path; each ships under its own pointer with role `subagent`. */
+  siblings: Record<string, TranscriptPointer>;
   /** sha256(content) → planKey for every plan this session has emitted. */
   planHashes: Record<string, string>;
   planTagCount: number;
@@ -46,7 +50,7 @@ export interface SessionState {
    * on every invocation spends the budget once.
    */
   delivered: string[];
-  /** PreCompact events appended for this session; synchronous capture advances it before compact recall. */
+  /** Compactions this session has been through, advanced by the hook that observes one before it asks for the block served after it. */
   compactionOrdinal: number;
   /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */
   startedAt?: number;
@@ -56,7 +60,7 @@ export interface SessionState {
 }
 
 export function emptySessionState(now: number = Date.now()): SessionState {
-  return { version: SESSION_STATE_VERSION, highWater: 0, prompts: {}, planHashes: {}, planTagCount: 0, planPaths: {}, attachmentKeys: [], delivered: [], compactionOrdinal: 0, updatedAt: now };
+  return { version: SESSION_STATE_VERSION, highWater: 0, prompts: {}, siblings: {}, planHashes: {}, planTagCount: 0, planPaths: {}, attachmentKeys: [], delivered: [], compactionOrdinal: 0, updatedAt: now };
 }
 
 export function sessionStatePath(spoolDir: string, sessionId: string): string {
@@ -101,6 +105,10 @@ function trimTracked(state: SessionState): void {
   const pathKeys = Object.keys(state.planPaths);
   if (pathKeys.length > MAX_TRACKED) {
     for (const key of pathKeys.slice(0, pathKeys.length - MAX_TRACKED)) delete state.planPaths[key];
+  }
+  const siblingKeys = Object.keys(state.siblings);
+  if (siblingKeys.length > MAX_TRACKED) {
+    for (const key of siblingKeys.slice(0, siblingKeys.length - MAX_TRACKED)) delete state.siblings[key];
   }
   if (state.attachmentKeys.length > MAX_TRACKED) state.attachmentKeys = state.attachmentKeys.slice(-MAX_TRACKED);
   if (state.delivered.length > MAX_TRACKED) state.delivered = state.delivered.slice(-MAX_TRACKED);

@@ -41,6 +41,9 @@ capture:
       reason: strip Cursor user_query envelope
 registration:
   hooksTarget: .cursor/hooks.json
+  # The 2.0 member scope writes the project's own hooks file, versioned as
+  # Cursor requires; no 1.4 project install owns it on a member.
+  memberHooksTarget: .cursor/hooks.json
   globalHooksTarget: ~/.cursor/hooks.json
   hooksConfigVersion: 1
   hookResponse:
@@ -67,12 +70,16 @@ registration:
   # finding C9.
   globalSettingsTarget: ~/.cursor/hooks.json
 capabilities:
-  # MCP stdio spawns at cwd=/ (not workspace) and `${workspaceFolder}` only
-  # resolves in project-local config (which Myco does not use); roots are
-  # advertised but `roots/list` returns method-not-found. Shell carries tenancy.
-  toolTransport: cli
   sessionStartInjection: true
   preToolUseInjection: false
+  # The prompt hook can only block, so the session block gets its second
+  # chance to land from a post-tool-use response.
+  postToolUseInjection: true
+  # The Deployment parses the transcript (`ingest/parsers/cursor.ts`), which
+  # carries prompts and replies and no tool calls at all: the hooks ship the
+  # tool calls and plan files and write no prompt or response row.
+  turnRowSource: transcript
+  transcriptFidelity: no_tool_results
   # Cursor currently exposes subagentStart for lifecycle allow/deny, not
   # proven child model-context injection.
   subagentStartInjection: false

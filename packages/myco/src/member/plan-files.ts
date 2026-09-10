@@ -1,8 +1,11 @@
 /**
  * Plan files as the member captures them: a write tool landing inside a
- * runtime's plan directory is the plan itself. The hook reads the file at once
- * and ships it keyed by its path, named after the prompt that wrote it; Stop
- * re-reads every path the session has shipped and sends what changed since.
+ * runtime's plan directory is the plan itself. A post-tool-use hook reads the
+ * file at once and ships it keyed by its path; for an agent whose hooks do not
+ * see tool calls, the turn-end hook finds the writes in the transcript delta
+ * and reads the files then — an `Edit` record carries only a diff, never the
+ * file. Either way Stop re-reads every path the session has shipped and sends
+ * what changed since.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,7 +19,7 @@ import type { SessionState } from './session-state.js';
 import { firstHeading, sha256Text } from './text.js';
 
 /** The tools that write a file, as each runtime names them. */
-const FILE_WRITE_TOOLS = new Set(['Write', 'Edit', 'Create', 'write', 'edit', 'patch', 'create']);
+const FILE_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Create', 'write', 'edit', 'patch', 'create']);
 /** The extensions a plan file carries. */
 export const PLAN_FILE_EXTENSIONS: readonly string[] = ['.md'];
 /** The largest plan file read into an event; a larger one is left alone. */
@@ -69,16 +72,29 @@ export function normalizePlanPath(projectRoot: string, absPath: string): string 
 /** The file a keyed path names. */
 export const planFilePath = (projectRoot: string, normalized: string): string => resolvePlanDir(normalized, projectRoot);
 
-/** The file's text, or null when it is absent, unreadable, not a file, or larger than the bound. */
-export function readPlanFile(absPath: string): string | null {
+/** Why a plan file yielded no text. */
+export type PlanFileMiss = 'absent' | 'oversize';
+
+/** The file's text, or the reason there is none: absent (or not a file, or unreadable) or larger than the bound. */
+export function readPlanFileOrMiss(absPath: string): { content: string } | { miss: PlanFileMiss; bytes?: number } {
   try {
     const stat = fs.statSync(absPath);
-    if (!stat.isFile() || stat.size > MAX_PLAN_FILE_BYTES) return null;
-    return fs.readFileSync(absPath, 'utf-8');
+    if (!stat.isFile()) return { miss: 'absent' };
+    if (stat.size > MAX_PLAN_FILE_BYTES) return { miss: 'oversize', bytes: stat.size };
+    return { content: fs.readFileSync(absPath, 'utf-8') };
   } catch {
-    return null;
+    return { miss: 'absent' };
   }
 }
+
+/** The file's text, or null when it is absent, unreadable, not a file, or larger than the bound. */
+export function readPlanFile(absPath: string): string | null {
+  const read = readPlanFileOrMiss(absPath);
+  return 'content' in read ? read.content : null;
+}
+
+/** The receipt recorded for a plan file too large to ship, keyed by the size that was refused so a smaller rewrite ships. */
+const oversizeReceipt = (bytes: number): string => `oversize:${bytes}`;
 
 /** The plan's title: its first heading, else the file's name. */
 export const planTitle = (content: string, filePath: string): string => firstHeading(content) ?? path.basename(filePath, path.extname(filePath));
@@ -89,27 +105,111 @@ export interface PlanFileCapture {
   record: (state: SessionState) => void;
 }
 
-/** The plan event for a file just written, or none when this path last shipped the same content. The prompt is named on the file's first capture only: a plan belongs to the turn that produced it. */
-export function planFileCapture(ctx: EnvelopeContext, state: SessionState, projectId: string, projectRoot: string, absPath: string): PlanFileCapture {
+/**
+ * The plan event for a file just written, or none when this path last shipped
+ * the same content. `promptId` names the turn on the file's first capture
+ * only — a plan belongs to the turn that produced it — and is passed by a
+ * caller whose hooks mint the turn's id; an agent whose turns the Deployment
+ * parses has no id the member could name.
+ */
+export function planFileCapture(ctx: EnvelopeContext, state: SessionState, projectId: string, projectRoot: string, absPath: string, promptId?: string): PlanFileCapture {
   const none: PlanFileCapture = { events: [], record: () => {} };
-  const content = readPlanFile(absPath);
-  if (content === null) return none;
-  const hash = sha256Text(content);
   const normalized = normalizePlanPath(projectRoot, absPath);
   const shipped = state.planPaths[normalized];
+  const read = readPlanFileOrMiss(absPath);
+  if ('miss' in read) {
+    // Capture that did not happen has to say so: a plan the turn wrote and
+    // then removed or renamed is not silence, and one past the size bound is
+    // said once, under a receipt the backstop honours until the file changes.
+    if (read.miss === 'absent') {
+      process.stderr.write(`[myco] plan file ${normalized} was written this turn but cannot be read now — not captured\n`);
+      return none;
+    }
+    const receipt = oversizeReceipt(read.bytes ?? 0);
+    if (shipped?.hash === receipt) return none;
+    process.stderr.write(`[myco] plan file ${normalized} is ${read.bytes} bytes, over the ${MAX_PLAN_FILE_BYTES}-byte bound — not captured until it shrinks\n`);
+    return { events: [], record: (next) => { next.planPaths[normalized] = { planKey: shipped?.planKey ?? planKeyForPath(projectId, normalized), hash: receipt }; } };
+  }
+  const content = read.content;
+  const hash = sha256Text(content);
   if (shipped?.hash === hash) return none;
   const planKey = shipped?.planKey ?? planKeyForPath(projectId, normalized);
   return {
-    events: [planEvent(ctx, { planKey, content, title: planTitle(content, absPath), originPath: normalized, promptId: shipped === undefined ? state.promptId : undefined })],
+    events: [planEvent(ctx, { planKey, content, title: planTitle(content, absPath), originPath: normalized, promptId: shipped === undefined ? promptId : undefined })],
     record: (next) => { next.planPaths[normalized] = { planKey, hash }; },
   };
 }
 
-/** Every plan file this session has shipped, re-read inside the hook's budget: the ones whose content changed since are sent again under their key. */
-export function planBackstop(ctx: EnvelopeContext, state: SessionState, projectRoot: string, budget?: HookBudget, now: () => number = Date.now): PlanFileCapture {
+/** A tool call as a transcript line records it: the tool's name and its arguments. */
+interface RecordedToolCall {
+  name: string;
+  input: unknown;
+}
+
+/** The arguments of a call a runtime serialized as a JSON string (Codex), or the value as it stands. */
+function callArguments(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw;
+  try { return JSON.parse(raw) as unknown; } catch { return { arguments: raw }; }
+}
+
+/**
+ * The tool calls one transcript line records, in the three shapes the
+ * transcripts the member ships carry them in: Claude Code's `tool_use` blocks
+ * inside an assistant message, Codex's `function_call` response items, and the
+ * `tool` line Myco's own plugins write.
+ */
+export function toolCallsInLine(line: Record<string, unknown>): RecordedToolCall[] {
+  const calls: RecordedToolCall[] = [];
+  const message = line.message;
+  const content = message && typeof message === 'object' ? (message as Record<string, unknown>).content : undefined;
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const b = block as Record<string, unknown>;
+      if (b.type === 'tool_use' && typeof b.name === 'string') calls.push({ name: b.name, input: b.input });
+    }
+  }
+  const payload = line.payload;
+  if (payload && typeof payload === 'object') {
+    const p = payload as Record<string, unknown>;
+    if (p.type === 'function_call' && typeof p.name === 'string') calls.push({ name: p.name, input: callArguments(p.arguments) });
+  }
+  if (line.type === 'tool' && typeof line.name === 'string') calls.push({ name: line.name, input: line.input });
+  return calls;
+}
+
+/** The plan files the given transcript lines record a write into, each once, in first-write order. */
+export function planWritesInLines(agent: string, lines: ReadonlyArray<Record<string, unknown>>, projectRoot: string): string[] {
+  const paths: string[] = [];
+  for (const line of lines) {
+    for (const call of toolCallsInLine(line)) {
+      const written = planWritePath(agent, call.name, call.input, projectRoot);
+      if (written !== null && !paths.includes(written)) paths.push(written);
+    }
+  }
+  return paths;
+}
+
+/** The plan events for every plan file the lines record a write into, read now from disk; one event per file whose content differs from what last shipped. */
+export function planFilesWritten(ctx: EnvelopeContext, state: SessionState, projectId: string, projectRoot: string, absPaths: readonly string[]): PlanFileCapture & { captured: string[] } {
+  const events: OutboundEvent[] = [];
+  const records: Array<(state: SessionState) => void> = [];
+  const captured: string[] = [];
+  for (const absPath of absPaths) {
+    const capture = planFileCapture(ctx, state, projectId, projectRoot, absPath);
+    records.push(capture.record);
+    captured.push(normalizePlanPath(projectRoot, absPath));
+    events.push(...capture.events);
+  }
+  return { events, captured, record: (next) => { for (const record of records) record(next); } };
+}
+
+/** Every plan file this session has shipped, re-read inside the hook's budget: the ones whose content changed since are sent again under their key. Paths in `skip` were read by the same hook already. */
+export function planBackstop(ctx: EnvelopeContext, state: SessionState, projectRoot: string, budget?: HookBudget, now: () => number = Date.now, skip: readonly string[] = []): PlanFileCapture {
   const events: OutboundEvent[] = [];
   const receipts: Array<[string, string, string]> = [];
   for (const [normalized, shipped] of Object.entries(state.planPaths)) {
+    if (skip.includes(normalized)) continue;
     if (budget !== undefined && remainingMs(budget, now()) < budget.requestTimeoutMs) break;
     const content = readPlanFile(planFilePath(projectRoot, normalized));
     if (content === null) continue;

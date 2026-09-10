@@ -109,7 +109,7 @@ describe('POST /canopy/inject — per-project capability gate', () => {
       }),
       body: {
         sessionId: 's1',
-        agent: 'claude-code',
+        agent: 'copilot',
         toolInput: {}, // no file_path -> the decision layer's own no-op reason, never capability_off
       },
     });

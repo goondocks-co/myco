@@ -4,7 +4,6 @@
  */
 
 import { createHash } from 'node:crypto';
-import { resolveBinary } from '@myco/runtime/binary-resolution.js';
 import { z } from 'zod';
 import { hydrateSearchResults } from '@myco/db/queries/search.js';
 import { getSession } from '@myco/db/queries/sessions.js';
@@ -26,8 +25,8 @@ import { capabilityEnabled } from '@myco/config/capabilities.js';
 import { composeCortexInstructionInjection } from '@myco/context/cortex-injection-context.js';
 import { shouldInjectSessionStartDigest } from '@myco/context/session-start-digest.js';
 import { composeSessionStartContext } from '@myco/context/session-start-context.js';
-import { isHostServedRequest, projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
-import { symbiontHasCapability, symbiontToolTransport } from '@myco/symbionts/capabilities.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
+import { symbiontHasCapability } from '@myco/symbionts/capabilities.js';
 import { getCortexInstructionsSnapshot } from '../cortex.js';
 import { resolveTenantConfig } from '../request-config.js';
 import { recordInjectionAndShouldSuppress, getSessionInjectedSporeIds } from '../injection-records.js';
@@ -96,20 +95,6 @@ const SubagentContextBody = z.object({
   agent_type: z.string().optional(),
 });
 
-/**
- * The invocation the CLI transport directive names for this request, or
- * undefined (rendered as the bare name). Host-served responses cross the Team
- * Host overlay to another machine, so they never carry this host's path.
- */
-function resolveDirectiveInvocation(
-  cliToolTransport: boolean,
-  requestContext: RouteRequest['requestContext'],
-): string | undefined {
-  if (!cliToolTransport) return undefined;
-  if (isHostServedRequest(requestContext)) return undefined;
-  return resolveBinary('instruction', { kind: 'machine' }).path;
-}
-
 // ---------------------------------------------------------------------------
 // Session-start context handler
 // ---------------------------------------------------------------------------
@@ -158,11 +143,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
         }
       }
 
-      const cliToolTransport = symbiontToolTransport(agent) === 'cli';
-      const composed = composeSessionStartContext(config, cortexContent, requestScope, {
-        cliToolTransport,
-        mycoBinary: resolveDirectiveInvocation(cliToolTransport, req.requestContext),
-      });
+      const composed = composeSessionStartContext(config, cortexContent, requestScope);
       const textParts: string[] = composed.parts.map((p) => p.text);
       const sourceParts: string[] = composed.parts.map((p) =>
         p.kind === 'cortex' ? 'cortex' : `digest:${p.tier ?? config.cortex.digest.tier}`,
@@ -307,11 +288,7 @@ export function createSubagentContextHandler(deps: ContextDeps) {
         ? { kind: 'project', id: requestProjectId }
         : { kind: 'global' };
       const snapshot = getCortexInstructionsSnapshot(config, requestScope);
-      const subagentCliTransport = symbiontToolTransport(agent) === 'cli';
-      const composed = composeCortexInstructionInjection(snapshot.content, 'subagent-start', {
-        cliToolTransport: subagentCliTransport,
-        mycoBinary: resolveDirectiveInvocation(subagentCliTransport, req.requestContext),
-      });
+      const composed = composeCortexInstructionInjection(snapshot.content, 'subagent-start');
       if (!composed) {
         logger.info(LOG_KINDS.CONTEXT_SESSION, 'Subagent context skipped — no stored Cortex instructions', {
           session_id,

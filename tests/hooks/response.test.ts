@@ -65,14 +65,9 @@ describe('writeHookResponse (manifest-driven)', () => {
       expect(captured).toBe('inject this');
     });
 
-    it('emits Claude Code PreToolUse context in hookSpecificOutput JSON', () => {
+    it('emits no PreToolUse envelope for Claude Code, which wires no PreToolUse hook', () => {
       writeHookResponse('claude-code', 'pre-tool-use', { additionalContext: 'inject this' });
-      expect(JSON.parse(captured)).toEqual({
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          additionalContext: 'inject this',
-        },
-      });
+      expect(captured).not.toContain('hookSpecificOutput');
     });
 
     it('emits nothing when the response has no additionalContext', () => {
@@ -95,8 +90,8 @@ describe('writeHookResponse (manifest-driven)', () => {
   });
 
   describe('pre-tool-use envelope is capability-driven', () => {
-    it('codex pre-tool-use emits the hookSpecificOutput envelope (preToolUseInjection enabled)', () => {
-      writeHookResponse('codex', 'pre-tool-use', { additionalContext: 'BLOB' });
+    it('copilot pre-tool-use emits the hookSpecificOutput envelope (preToolUseInjection enabled)', () => {
+      writeHookResponse('copilot', 'pre-tool-use', { additionalContext: 'BLOB' });
       expect(JSON.parse(captured)).toEqual({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
