@@ -20,6 +20,7 @@
  * - **An embedding provider**, per Deployment, for deterministic vector work.
  */
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
+import { declared } from './declared.js';
 import type { RunAdmissionGate } from './runs.js';
 
 /** The task that writes a session's title and summary. */
@@ -102,66 +103,8 @@ export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
 
 /** The tools a task declares, or none for a task this Deployment does not serve. */
 export function taskTools(task: string | null): readonly string[] {
-  return task === null ? [] : TASK_TOOLS[task] ?? [];
+  return task === null ? [] : declared(TASK_TOOLS, task) ?? [];
 }
-
-/** The states a scheduled task may run in, in the words the 1.4 task files use. */
-export type ScheduleState = 'active' | 'idle' | 'sleep';
-
-/**
- * When the clock runs a task. The shape is the 1.4 task file's `schedule`
- * block, carried field for field: interval, the states it runs in, a named
- * precondition, an accelerator that shortens the interval under backlog, a
- * per-day ceiling, and whether a cold Project still gets it. `overlap` is
- * the Deployment's own: a `skip` task never runs twice at once in a Project;
- * a `queue` task is dispatched and the queue holds it.
- */
-export interface TaskSchedule {
-  /** A schedule declared but switched off; absent means on. */
-  enabled?: boolean;
-  intervalSeconds: number;
-  runIn: readonly ScheduleState[];
-  preCondition?: string;
-  accelerator?: { name: string; thresholds: { steady: number; accelerated: number } };
-  maxRunsPerDay?: number;
-  runWhenCold?: boolean;
-  overlap: 'skip' | 'queue';
-}
-
-/**
- * What the Deployment schedules, by task. A task is scheduled here only once
- * the Deployment serves its tool surface; every other retained task is null
- * until its child turns it on, and copies the task file's block when it does.
- * `container-smoke` is the harness health probe the 1.4 daemon ran daily as
- * `harness-health`: one call, one report, proof the runtime still works.
- */
-export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
-  [MAP_TASK]: { enabled: false, intervalSeconds: 21_600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 4 },
-  'embedding-reconcile': null,
-  'container-smoke': { intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 },
-  // Declared and switched off. 1.4 ran this every 8 hours against a local
-  // model-agnostic vault; a Deployment run is a container and a frontier model,
-  // so the cadence is daily and an owner turns it on after one measured run.
-  // A dispatch whose input matches the artifact already written costs nothing,
-  // which is what makes a daily interval safe once it is on.
-  'cortex-prompt-builder': null,
-  // Declared and switched off, for the ceiling rather than the clock. A digest
-  // run is the dearest thing this Deployment starts — three tiers rewritten by a
-  // frontier model — and a task with no schedule has no per-day cap, so an
-  // owner's button could spend it again and again in an afternoon. The block
-  // gives the button its one-a-day ceiling and gives the owner the same override
-  // to lift it, while the clock runs nothing until they turn it on.
-  'digest-only': { enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 },
-  'skill-survey': null,
-  'skill-generate': null,
-  'skill-evolve': null,
-  'vault-evolve': null,
-  'vault-seed': null,
-  'supersession-sweep': null,
-  'extract-only': null,
-  'review-session': null,
-  'title-summary': null,
-};
 
 /**
  * How long one run of a task may take, by task.
@@ -181,14 +124,8 @@ export const TASK_RUN_TIMEOUT_SECONDS: Readonly<Record<string, number>> = {
 
 /** The budget one run of this task gets, or null for a task that takes the dispatcher's default. */
 export function runTimeoutForTask(task: string): number | null {
-  return TASK_RUN_TIMEOUT_SECONDS[task] ?? null;
+  return declared(TASK_RUN_TIMEOUT_SECONDS, task) ?? null;
 }
-
-/** Named preconditions a schedule may name; a task naming one absent here is refused by a gate, never skipped in silence. */
-export const PRE_CONDITIONS: Readonly<Record<string, (args: { projectId: string }) => Promise<boolean>>> = {};
-
-/** Named accelerators: a count of pending work that shortens a task's interval. None yet; the Canopy task brings the first. */
-export const ACCELERATORS: Readonly<Record<string, (args: { projectId: string; limit: number }) => Promise<number>>> = {};
 
 /**
  * The tasks a person asks for one at a time: they carry no schedule, and a
@@ -207,67 +144,7 @@ export const MANUAL_ONLY_TASKS: readonly string[] = [
   'cortex-prompt-builder',
 ];
 
-/** The schedule block an owner set for one task, or undefined where they set none. */
-export function scheduleOverride(task: string, overrides: Record<string, unknown>): unknown {
-  const entry = overrides[task];
-  return entry !== null && typeof entry === 'object' && !Array.isArray(entry) ? (entry as Record<string, unknown>).schedule : undefined;
-}
-
-/**
- * Every task the clock schedules on this wake, with its schedule under the
- * owner's overrides.
- *
- * A declaration switched off is absent rather than visited and skipped: the
- * clock's list is what the Deployment actually runs, and an owner turns a
- * declared task on through `agent.tasks.<task>.schedule.enabled`.
- */
-export function scheduledTasks(overrides: Record<string, unknown> = {}): Array<{ task: string; schedule: TaskSchedule }> {
-  return Object.entries(TASK_SCHEDULE).flatMap(([task, declared]) => {
-    if (declared === null) return [];
-    const schedule = resolveSchedule(declared, scheduleOverride(task, overrides));
-    return schedule.enabled === false ? [] : [{ task, schedule }];
-  });
-}
-
-/**
- * A Deployment's per-task override laid over the declared schedule, field by
- * field. The accelerator is replaced whole: a name from one block paired with
- * thresholds from another would shorten the wrong interval.
- */
-export function resolveSchedule(declared: TaskSchedule, override: unknown): TaskSchedule {
-  if (override === null || typeof override !== 'object' || Array.isArray(override)) return declared;
-  const o = override as Record<string, unknown>;
-  const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
-  const states = (v: unknown): readonly ScheduleState[] | undefined =>
-    (Array.isArray(v) && v.every((s) => s === 'active' || s === 'idle' || s === 'sleep') ? (v as ScheduleState[]) : undefined);
-  const accelerator = (v: unknown): TaskSchedule['accelerator'] | undefined => {
-    if (v === null || typeof v !== 'object') return undefined;
-    const a = v as Record<string, unknown>;
-    const t = a.thresholds as Record<string, unknown> | undefined;
-    if (typeof a.name !== 'string' || t === undefined || num(t.steady) === undefined || num(t.accelerated) === undefined) return undefined;
-    return { name: a.name, thresholds: { steady: num(t.steady)!, accelerated: num(t.accelerated)! } };
-  };
-  return {
-    ...(typeof o.enabled === 'boolean' ? { enabled: o.enabled } : declared.enabled === undefined ? {} : { enabled: declared.enabled }),
-    intervalSeconds: num(o.intervalSeconds) ?? declared.intervalSeconds,
-    runIn: states(o.runIn) ?? declared.runIn,
-    preCondition: typeof o.preCondition === 'string' ? o.preCondition : declared.preCondition,
-    accelerator: accelerator(o.accelerator) ?? declared.accelerator,
-    maxRunsPerDay: num(o.maxRunsPerDay) ?? declared.maxRunsPerDay,
-    runWhenCold: typeof o.runWhenCold === 'boolean' ? o.runWhenCold : declared.runWhenCold,
-    overlap: o.overlap === 'skip' || o.overlap === 'queue' ? o.overlap : declared.overlap,
-  };
-}
-
-/** Tier divisors on the interval under backlog: 1× up to the steady threshold, 4× up to the accelerated one, 12× past it. */
-export function effectiveIntervalSeconds(intervalSeconds: number, count: number | null, thresholds: { steady: number; accelerated: number } | undefined): number {
-  if (count === null || thresholds === undefined) return intervalSeconds;
-  if (count <= thresholds.steady) return intervalSeconds;
-  if (count <= thresholds.accelerated) return Math.floor(intervalSeconds / 4);
-  return Math.floor(intervalSeconds / 12);
-}
-
 /** The gate a task runs behind, or null for a name this Deployment does not serve. */
 export function admissionForTask(taskName: string): RunAdmissionGate | null {
-  return TASK_ADMISSION[taskName] ?? null;
+  return declared(TASK_ADMISSION, taskName) ?? null;
 }

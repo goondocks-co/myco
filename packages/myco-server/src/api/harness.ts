@@ -14,7 +14,8 @@ import type { OwnerContext } from '../context.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, DISPATCH_REFUSAL_MESSAGE, dispatchTask, RUNTIME_SERVED_TASKS } from '../core/harness.js';
 import { emit } from '../telemetry.js';
 import { taskEntriesSince } from '../core/runs.js';
-import { runTimeoutForTask, TASK_SCHEDULE } from '../core/task-catalogue.js';
+import { declaredScheduleFor } from '../core/jobs.js';
+import { runTimeoutForTask } from '../core/task-catalogue.js';
 import { scheduleFor, scheduleLeaves } from '../core/scheduled-tasks.js';
 import { buildTaskInput } from '../core/task-inputs.js';
 import { badRequest, ok, readJsonObject } from './scope.js';
@@ -56,8 +57,8 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   // the owner's own override, so a Deployment that lifts the cap for a day —
   // after a run that spent its money and produced nothing — is answered by the
   // number it set rather than the one shipped.
-  const declared = TASK_SCHEDULE[task];
-  const ceiling = declared === null || declared === undefined
+  const declared = declaredScheduleFor(task);
+  const ceiling = declared === null
     ? undefined
     : scheduleFor(task, declared, (await scheduleLeaves(env)).overrides).maxRunsPerDay;
   if (ceiling !== undefined && (await taskEntriesSince(env.db, { projectId }, task, ctx.now - 86_400_000)) >= ceiling) {

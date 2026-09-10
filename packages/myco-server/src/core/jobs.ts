@@ -1,11 +1,17 @@
 /**
- * The scheduled work a Deployment runs, and the state each waits for.
+ * Everything a Deployment schedules, in one place.
+ *
+ * Two kinds of scheduled work live here, and nothing schedules work anywhere
+ * else: the tick's own jobs (`SERVER_JOBS`, implemented in `jobs-run.ts`) and
+ * the tasks the clock dispatches to the harness (`TASK_SCHEDULE`, decided in
+ * `scheduled-tasks.ts`). One wake — `tick.ts` — runs both. The timer that
+ * delivers a wake is the only per-target part, and it lives behind
+ * `WakeScheduler` (#913, #914); `tests/myco-server/one-scheduler.test.ts` holds
+ * this registry to that: a task not declared here is a task nothing runs, and a
+ * timer outside the wake path fails the gate by name.
  *
  * `power.ts` decides WHEN the Deployment is awake; this says WHAT runs at each
- * depth. Both are shared policy — the timer that delivers a wake is the only
- * per-target part, and it lives behind `WakeScheduler` (#913, #914).
- *
- * A job names the deepest state it still runs at. Housekeeping that costs
+ * depth. A job names the deepest state it still runs at. Housekeeping that costs
  * nothing but a query runs even while sleeping; anything that calls a model or
  * moves real volume waits for a Deployment that is actually in use.
  *
@@ -15,6 +21,8 @@
  * "bring the world to this state" rather than "apply this change", which is
  * what makes a second delivery a no-op instead of a second effect.
  */
+import { MAP_TASK } from '@goondocks/myco-shared/canopy';
+import { declared } from './declared.js';
 import type { PowerState } from './power.js';
 import { POWER_STATE_DEPTH } from './power.js';
 
@@ -100,4 +108,67 @@ export function jobRunsAt(jobName: string, state: PowerState): boolean {
 /** Every job due at this state, in declaration order. */
 export function jobsDueAt(state: PowerState): readonly ServerJob[] {
   return SERVER_JOBS.filter((j) => jobRunsAt(j.name, state));
+}
+
+/** The states a scheduled task may run in, in the words the 1.4 task files use. */
+export type ScheduleState = 'active' | 'idle' | 'sleep';
+
+/**
+ * When the clock runs a task. The shape is the 1.4 task file's `schedule`
+ * block, carried field for field: interval, the states it runs in, a named
+ * precondition, an accelerator that shortens the interval under backlog, a
+ * per-day ceiling, and whether a cold Project still gets it. `overlap` is
+ * the Deployment's own: a `skip` task never runs twice at once in a Project;
+ * a `queue` task is dispatched and the queue holds it.
+ */
+export interface TaskSchedule {
+  /** A schedule declared but switched off; absent means on. */
+  enabled?: boolean;
+  intervalSeconds: number;
+  runIn: readonly ScheduleState[];
+  preCondition?: string;
+  accelerator?: { name: string; thresholds: { steady: number; accelerated: number } };
+  maxRunsPerDay?: number;
+  runWhenCold?: boolean;
+  overlap: 'skip' | 'queue';
+}
+
+/**
+ * What the Deployment schedules, by task. A task is scheduled here only once
+ * the Deployment serves its tool surface; every other retained task is null
+ * until its child turns it on, and copies the task file's block when it does.
+ * `container-smoke` is the harness health probe the 1.4 daemon ran daily as
+ * `harness-health`: one call, one report, proof the runtime still works.
+ */
+export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
+  [MAP_TASK]: { enabled: false, intervalSeconds: 21_600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 4 },
+  'embedding-reconcile': null,
+  'container-smoke': { intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 },
+  // Declared and switched off. 1.4 ran this every 8 hours against a local
+  // model-agnostic vault; a Deployment run is a container and a frontier model,
+  // so the cadence is daily and an owner turns it on after one measured run.
+  // A dispatch whose input matches the artifact already written costs nothing,
+  // which is what makes a daily interval safe once it is on.
+  'cortex-prompt-builder': null,
+  // Declared and switched off, for the ceiling rather than the clock. A digest
+  // run is the dearest thing this Deployment starts — three tiers rewritten by a
+  // frontier model — and a task with no schedule has no per-day cap, so an
+  // owner's button could spend it again and again in an afternoon. The block
+  // gives the button its one-a-day ceiling and gives the owner the same override
+  // to lift it, while the clock runs nothing until they turn it on.
+  'digest-only': { enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 },
+  'skill-survey': null,
+  'skill-generate': null,
+  'skill-evolve': null,
+  'vault-evolve': null,
+  'vault-seed': null,
+  'supersession-sweep': null,
+  'extract-only': null,
+  'review-session': null,
+  'title-summary': null,
+};
+
+/** The schedule this Deployment declares for a task: the block, or null for a task it schedules nothing for and for a name it does not serve. */
+export function declaredScheduleFor(task: string): TaskSchedule | null {
+  return declared(TASK_SCHEDULE, task) ?? null;
 }
