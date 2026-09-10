@@ -26,7 +26,7 @@ function run(r: ReturnType<typeof rig>) {
   const now = Date.now();
   const tokenId = seedCredential(r.sqlite, { memberId: HARNESS_MEMBER_ID, machineId: 'harness', issuedAt: now, expiresAt: now + 60_000 });
   r.sqlite.query("INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('myco','Myco','built-in',1,?)").run(now);
-  r.sqlite.query("INSERT INTO agent_runs (project_id,id,agent_id,status,task,started_at,dispatched_by,run_context) VALUES ('proj_1','run_1','myco','running','skill-generate',?,?,?)")
+  r.sqlite.query("INSERT INTO agent_runs (project_id,id,agent_id,status,task,started_at,dispatched_by,run_context) VALUES ('proj_1','run_1','myco','running','vault-seed',?,?,?)")
     .run(now, tokenId, JSON.stringify({ input_hash: 'keep', timeoutSeconds: 300 }));
   return { projectId: 'proj_1', memberId: HARNESS_MEMBER_ID, tokenId, now, body: JSON.stringify({ runId: 'run_1' }) } as RouteContext;
 }

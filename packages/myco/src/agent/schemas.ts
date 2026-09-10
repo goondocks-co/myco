@@ -8,7 +8,13 @@
 import { z } from 'zod/v4';
 import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 import { ThinkingBudgetValueSchema, EffortValueSchema } from './reasoning-tier-schemas.js';
+import {
+  AcceleratorConfigSchema, AcceleratorNameSchema, HarnessIdSchema, ReasoningLevelSchema,
+  type AcceleratorConfig, type AcceleratorName,
+} from '@goondocks/myco-shared/agent-config';
 import { ALL_VAULT_TOOL_NAMES } from './tool-names.js';
+
+export { AcceleratorConfigSchema, AcceleratorNameSchema, HarnessIdSchema, ReasoningLevelSchema, type AcceleratorConfig, type AcceleratorName };
 
 // ---------------------------------------------------------------------------
 // Schema version
@@ -17,8 +23,6 @@ import { ALL_VAULT_TOOL_NAMES } from './tool-names.js';
 /** Current schema version for task config structures. */
 export const CURRENT_TASK_SCHEMA_VERSION = 1;
 
-export const HarnessIdSchema = z.string().min(1);
-export const ReasoningLevelSchema = z.enum(['low', 'default', 'high']);
 
 // ---------------------------------------------------------------------------
 // Shared sub-schemas
@@ -119,34 +123,6 @@ export const PreConditionSchema = z.enum([
 ]);
 export type PreCondition = z.infer<typeof PreConditionSchema>;
 
-/**
- * Accelerator names dispatch into domain-owned count functions in
- * daemon/task-scheduling.ts. Naming convention: `<domain>-<entity>`.
- * Adding a new accelerator: register a count function in the domain
- * package, add to the dispatch table, add the name here.
- */
-export const AcceleratorNameSchema = z.enum([
-  'canopy-pending-describe',
-  'unprocessed-settled-batches',
-]);
-export type AcceleratorName = z.infer<typeof AcceleratorNameSchema>;
-
-/**
- * Adaptive accelerator config. Tier divisors are 1× / 4× / 12×
- * applied to intervalSeconds; PowerManager's tick rate is the real
- * lower bound on actual fire rate, so effective intervals below the
- * tick just mean "gate clears every tick." Thresholds live in YAML
- * per-task because work-unit semantics differ (50 canopy rows ≪ 50
- * unprocessed prompt batches in real cost).
- */
-export const AcceleratorConfigSchema = z.object({
-  name: AcceleratorNameSchema,
-  thresholds: z.object({
-    steady: z.number().int().nonnegative(),
-    accelerated: z.number().int().nonnegative(),
-  }),
-});
-export type AcceleratorConfig = z.infer<typeof AcceleratorConfigSchema>;
 
 /** Schedule configuration for automatic task execution via PowerManager. */
 export const TaskScheduleSchema = z.object({

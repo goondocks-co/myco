@@ -589,7 +589,7 @@ describe('POST /mcp over an External Agent grant', () => {
  * the run-control plane, and every write it makes names the run as author.
  */
 const RUN_NOW = 1_700_000_000_000;
-const SWEEP = 'supersession-sweep';
+const SWEEP = 'extract-curate';
 
 async function runSetup() {
   const e = sqliteEnv();
@@ -717,7 +717,7 @@ describe('POST /mcp over a run credential', () => {
     expect(listed.status).toBe(200);
     const expected = runDefinitions(runAllowlist(TASK_TOOLS[SWEEP], { dryRun: false }));
     expect(listed.body.result.tools).toEqual(expected.map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema, annotations: d.annotations })));
-    expect(listed.body.result.tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_spores', 'myco_spores']);
+    expect(listed.body.result.tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_prompts', 'myco_run_sessions', 'myco_run_spores', 'myco_search', 'myco_spores']);
     const spores = listed.body.result.tools.find((t: any) => t.name === 'myco_spores');
     expect(spores.inputSchema.properties.op.enum.sort()).toEqual(['consolidate', 'obsolete', 'save', 'supersede']);
 
@@ -739,7 +739,7 @@ describe('POST /mcp over a run credential', () => {
     const allow = runAllowlist(TASK_TOOLS[SWEEP], { dryRun: false });
     const outside = everyRegistryCall().filter(({ tool, op }) => !(allow.get(tool as any)?.has(op) ?? false));
     expect(outside.length).toBeGreaterThan(10);
-    expect(outside.map((c) => `${c.tool}:${c.op}`)).toEqual(expect.arrayContaining(['myco_plans:save', 'myco_cortex:instructions', 'myco_agent:runs', 'myco_search:*', 'myco_sessions:list']));
+    expect(outside.map((c) => `${c.tool}:${c.op}`)).toEqual(expect.arrayContaining(['myco_plans:save', 'myco_cortex:instructions', 'myco_agent:runs', 'myco_sessions:list', 'myco_spores:list']));
     const from = executed.length;
     for (const { tool, op, args } of outside) {
       const answered = await call(harness.token, tool, args);
@@ -809,8 +809,9 @@ describe('POST /mcp over a run credential', () => {
     const { harness, dispatch, call, list } = await runSetup();
     await dispatch(harness, 'run_1', SWEEP, { dryRun: true });
     const tools = (await list(harness.token)).body.result.tools;
-    expect(tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_spores']);
+    expect(tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_prompts', 'myco_run_sessions', 'myco_run_spores', 'myco_search']);
     expect(tools.find((t: any) => t.name === 'myco_run_spores').inputSchema.properties.op.enum.sort()).toEqual(['get', 'list']);
+    expect(tools.find((t: any) => t.name === 'myco_run_prompts').inputSchema.properties.op.enum).toEqual(['unprocessed']);
     expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x' })).error.data.code).toBe('unknown_tool');
     expect((await call(harness.token, 'myco_run_spores', { op: 'list' })).result).toMatchObject({ total: 0 });
   });

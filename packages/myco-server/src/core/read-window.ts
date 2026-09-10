@@ -3,20 +3,12 @@
  *
  * A run surveys by previews and pulls bodies only for what it means to act on,
  * so the size of a Project sets the cost of a pass over it rather than the size
- * of its writing. The bounds are per task: a digest run reads its material once
- * and writes every tier from it, so its pages and bodies are the tier window's
- * share rather than a sweep's own.
- *
- * One place names which bounds apply to which task. The run tools read a window
- * and never a task name, so a handler cannot grow a second opinion about what a
- * task may read.
+ * of its writing. One window serves every retained task: the run tools read a
+ * window and never a task name, so a handler cannot grow a second opinion about
+ * what a task may read, and a task that needs a window of its own names it here.
  */
 import { SPORE_BODY_CHARS, SPORE_FULL_READ_BUDGET, SPORE_PREVIEW_CHARS, MAX_SPORE_LIMIT } from './spores.js';
-import {
-  DIGEST_FULL_READ_BODY_CHARS, DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT,
-  RUN_SESSION_LABEL_CHARS, RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS, RUN_SESSIONS_MAX_LIMIT,
-} from './cortex-input.js';
-import { DIGEST_TASK } from './task-inputs.js';
+import { RUN_SESSION_LABEL_CHARS, RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS, RUN_SESSIONS_MAX_LIMIT } from './run-material.js';
 
 /** The default page of unprocessed prompts, matching the page the extraction outcome reads at a time. */
 export const PROMPT_PAGE_LIMIT = 50;
@@ -52,14 +44,7 @@ const SWEEP: ReadWindow = {
   promptPage: PROMPT_PAGE_LIMIT,
 };
 
-const DIGEST: ReadWindow = {
-  ...SWEEP,
-  sporePage: DIGEST_SPORE_PAGE_LIMIT,
-  sporeBodyChars: DIGEST_FULL_READ_BODY_CHARS,
-  sessionPage: DIGEST_SESSION_PAGE_LIMIT,
-};
-
 /** The window a run of this task reads inside. */
-export function readWindowFor(task: string | null): ReadWindow {
-  return task === DIGEST_TASK ? DIGEST : SWEEP;
+export function readWindowFor(_task: string | null): ReadWindow {
+  return SWEEP;
 }

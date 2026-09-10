@@ -201,6 +201,12 @@ export async function countSpores(db: RelationalStore, scope: ReadScope, o: List
   return row?.c ?? 0;
 }
 
+/** Whether this author — a run id, a member id or a grant id — wrote at least one spore in this Project. */
+export async function sporeAuthoredBy(db: RelationalStore, scope: ReadScope, author: string): Promise<boolean> {
+  const row = await db.prepare(`SELECT 1 AS one FROM spores WHERE project_id = ? AND author = ? LIMIT 1`).bind(scope.projectId, author).first<{ one: number }>();
+  return row !== null;
+}
+
 export interface ResolutionEventInsert {
   id: string;
   agentId: string;

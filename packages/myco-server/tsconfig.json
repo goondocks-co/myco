@@ -11,7 +11,9 @@
       "@goondocks/myco-shared/skills": ["../myco-shared/src/skills.generated.ts"],
       "@goondocks/myco-shared/run-holds": ["../myco-shared/src/run-holds.ts"],
       "@goondocks/myco-shared/harness-providers": ["../myco-shared/src/harness-providers.ts"],
-      "@goondocks/myco-shared/skill-candidates": ["../myco-shared/src/skill-candidates.ts"]
+      "@goondocks/myco-shared/skill-candidates": ["../myco-shared/src/skill-candidates.ts"],
+      "@goondocks/myco-shared/agent-config": ["../myco-shared/src/agent-config.ts"],
+      "@goondocks/myco-shared/agents-block": ["../myco-shared/src/agents-block.ts"]
     },
     "lib": [
       "ES2022",

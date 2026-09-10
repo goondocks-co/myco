@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { HARNESSES } from '@myco/runner/harnesses.js';
 import { DRIVERS, driverFor } from '@myco/runner/drivers/registry.js';
 import { reachedEnd, type RunEvent } from '@myco/runner/events.js';
-import { discardRunDir, mcpConfigOf, MCP_SERVER_NAME, writeRunDir } from '@myco/runner/mcp-config.js';
+import { discardRunDir, mcpConfigOf, MCP_SERVER_NAME, RUN_INSTRUCTIONS_FILES, writeRunDir } from '@myco/runner/mcp-config.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 
@@ -82,8 +82,22 @@ describe('the run credential', () => {
         },
       },
     });
+    // A claim that hands no standing rules leaves no instructions file behind.
+    for (const name of RUN_INSTRUCTIONS_FILES) expect(existsSync(join(scratchDir, name))).toBe(false);
     discardRunDir(scratchDir);
     expect(existsSync(scratchDir)).toBe(false);
+  });
+
+  it('writes the standing rules the claim handed as the run\'s instructions file, under every name a harness reads one by', () => {
+    const root = mkdtempSync(join(tmpdir(), 'myco-worker-'));
+    const { scratchDir } = writeRunDir(root, 'run_2', CONNECTION, '# Myco extraction run\n\nSearch before every write.');
+    expect(RUN_INSTRUCTIONS_FILES).toEqual(['AGENTS.md', 'CLAUDE.md']);
+    for (const name of RUN_INSTRUCTIONS_FILES) expect(readFileSync(join(scratchDir, name), 'utf8')).toBe('# Myco extraction run\n\nSearch before every write.');
+    // Blank rules are no rules: nothing is written for a harness to read as guidance.
+    const { scratchDir: bare } = writeRunDir(root, 'run_3', CONNECTION, '   ');
+    for (const name of RUN_INSTRUCTIONS_FILES) expect(existsSync(join(bare, name))).toBe(false);
+    discardRunDir(scratchDir);
+    discardRunDir(bare);
   });
 
   it('names the Deployment\'s MCP surface and the three headers it requires', () => {

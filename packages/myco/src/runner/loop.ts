@@ -26,6 +26,8 @@ interface ClaimedRun {
   id: string;
   task: string;
   instruction: string | null;
+  /** The standing rules the Deployment handed beside the prompt, written as the run's instructions file; null where the prompt is the whole instruction. */
+  instructions: string | null;
   harness: string;
   runToken: string;
   credentialEnv: Record<string, string>;
@@ -138,7 +140,8 @@ const asRun = (value: unknown): ClaimedRun | null => {
   if (value === null || typeof value !== 'object') return null;
   const run = value as ClaimedRun;
   const named = typeof run.id === 'string' && typeof run.task === 'string' && typeof run.harness === 'string' && typeof run.runToken === 'string';
-  return named && (typeof run.instruction === 'string' || run.instruction === null) ? run : null;
+  if (!named || !(typeof run.instruction === 'string' || run.instruction === null)) return null;
+  return { ...run, instructions: typeof run.instructions === 'string' ? run.instructions : null };
 };
 
 /**
@@ -166,7 +169,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
   mkdirSync(options.runRoot, { recursive: true, mode: 0o700 });
   const { scratchDir, mcpConfigPath } = writeRunDir(options.runRoot, run.id, {
     serverUrl: options.serverUrl, projectId: run.projectId, runToken: run.runToken,
-  });
+  }, run.instructions);
 
   const stopping = new AbortController();
   const onAbort = (): void => { stopping.abort(); };

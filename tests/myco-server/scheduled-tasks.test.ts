@@ -39,8 +39,8 @@ function fixture(opts: { bound?: boolean } = {}) {
 }
 
 describe('the schedule envelope', () => {
-  it('schedules the harness health probe daily while sleeping and nothing else yet, every scheduled task being catalogued', () => {
-    expect(scheduledTasks().map((t) => t.task)).toEqual(['container-smoke']);
+  it('catalogues every schedule and its precondition, including the daily harness health probe', () => {
+    expect(scheduledTasks().map((t) => t.task)).toEqual(['container-smoke', 'extract-curate']);
     expect(SMOKE).toEqual({ intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 });
     for (const task of Object.keys(TASK_SCHEDULE)) expect({ task, catalogued: task in TASK_ADMISSION }).toEqual({ task, catalogued: true });
     for (const task of Object.keys(TASK_ADMISSION)) expect({ task, scheduled: task in TASK_SCHEDULE }).toEqual({ task, scheduled: true });
@@ -128,6 +128,19 @@ describe('a named precondition reads the Project it is a condition on', () => {
     seedSession(f, 'proj_1', 's_done', NOW);
     seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
     expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} }, NOW)).toBeNull();
+  });
+
+  it('queues extraction from its declared schedule only after an ended session has unread prompts', async () => {
+    const f = fixture();
+    f.capability('proj_1', 'vault_evolution', true);
+    f.setting('agent.tasks', { 'container-smoke': { schedule: { enabled: false } } });
+    seedSession(f, 'proj_1', 's_done', NOW);
+    expect(await runScheduledTasks(f.env, 'idle', NOW, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
+    seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
+    expect(await runScheduledTasks(f.env, 'idle', NOW, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
+    expect(f.runs('proj_1')).toMatchObject([{ task: 'extract-curate', status: 'queued' }]);
+    expect(f.launches).toEqual([]);
+    expect(await runScheduledTasks(f.env, 'idle', NOW + 1, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
   });
 });
 
@@ -305,9 +318,9 @@ describe('one wake of the clock', () => {
     f.receipt('proj_1', NOW - 3_600_000);
     f.setting('agent.limits.concurrent_runs', 1);
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'busy', ?, 'digest-only', 'running', ?)`, [HARNESS_AGENT_ID, NOW]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'busy', ?, 'extract-curate', 'running', ?)`, [HARNESS_AGENT_ID, NOW]);
     expect(await runScheduledTasks(f.env, 'sleep', NOW, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
-    expect(f.runs('proj_1').map((r) => [r.task, r.status])).toEqual([['digest-only', 'running'], ['container-smoke', 'queued']]);
+    expect(f.runs('proj_1').map((r) => [r.task, r.status])).toEqual([['extract-curate', 'running'], ['container-smoke', 'queued']]);
     expect(f.launches).toHaveLength(0);
   });
 });

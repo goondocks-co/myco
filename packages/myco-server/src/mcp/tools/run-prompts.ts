@@ -10,6 +10,8 @@
  * it reads no bodies at all, and grouping a session's prompts costs nothing.
  */
 import { listUnprocessedPrompts, markPromptProcessed } from '../../read/prompts.js';
+import { recordRunWrite } from '../../core/runs.js';
+import { PROMPT_MARK_TOOL } from '../../core/tool-catalogue.js';
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
@@ -28,7 +30,12 @@ export async function handleRunPrompts(input: ToolInput, ctx: ToolContext): Prom
   if (input.op === 'mark_processed') {
     const promptId = str(input.prompt_id, MAX_ID_CHARS);
     if (promptId === undefined) return failure('prompt_id is required for op: mark_processed');
-    return { prompt_id: promptId, marked: await markPromptProcessed(db, scope, promptId) };
+    const marked = await markPromptProcessed(db, scope, promptId);
+    // A mark that took is the run's own record of having read the prompt, and
+    // the row the close rule holds an extraction pass to. A mark of a prompt the
+    // Project does not hold moves nothing and records nothing.
+    if (marked) await recordRunWrite(db, scope, { runId: run.runId, toolName: PROMPT_MARK_TOOL, op: 'mark_processed', recordedAt: ctx.now, detail: { prompt_id: promptId } });
+    return { prompt_id: promptId, marked };
   }
 
   const cursor = input.cursor === undefined ? undefined : str(input.cursor, MAX_CURSOR_CHARS);
@@ -46,7 +53,7 @@ export async function handleRunPrompts(input: ToolInput, ctx: ToolContext): Prom
       session_id: row.sessionId,
       created_at: row.createdAt,
       ended_at: row.endedAt,
-      ...(row.text === undefined ? {} : { text: row.text }),
+      ...(row.text === undefined ? {} : { text: row.text, response: row.response ?? null }),
     })),
     next_cursor: page.cursor,
   };

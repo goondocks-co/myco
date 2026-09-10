@@ -19,6 +19,7 @@
 import { consolidateSpores, countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore, type ResolutionAction, type SporeProvenance, type SporeRow, type SporeStatus } from '../../core/spores.js';
 import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags } from '../../core/spore-writes.js';
 import { latestPromptId } from '../../read/sessions.js';
+import { AGENT_LINE_MAX_CHARS } from '../../core/injection.js';
 import type { ReadScope } from '../../read/scope.js';
 import { failure, scopeOf, sessionOf, writerOf, type ToolContext, type ToolFailure } from '../context.js';
 import { snake } from '../shape.js';
@@ -37,6 +38,17 @@ const str = (v: unknown): string | undefined => (typeof v === 'string' && v.leng
 const int = (v: unknown): number | undefined => (typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined);
 
 const PROVENANCE_KINDS: ReadonlySet<string> = new Set(['pr', 'commit']);
+/** One refusal for an agent line past the bound the injection renders. */
+const AGENT_LINE_REASON = `agent_line is at most ${AGENT_LINE_MAX_CHARS} characters`;
+
+/** The agent line a write carries, null where it carries none, or the one thing wrong with it. */
+function agentLineOf(input: ToolInput): { ok: true; agentLine: string | null } | ToolFailure {
+  const line = str(input.agent_line);
+  if (line === undefined) return { ok: true, agentLine: null };
+  const oneLine = line.replace(/\s+/g, ' ').trim();
+  if (oneLine.length === 0 || oneLine.length > AGENT_LINE_MAX_CHARS) return failure(AGENT_LINE_REASON);
+  return { ok: true, agentLine: oneLine };
+}
 const COMMIT_REF = /^[0-9a-f]{7,40}$/;
 const PROVENANCE_REF_MAX = 512;
 /** One refusal for every malformed citation, so a caller learns the shape and nothing about the store. */
@@ -91,13 +103,15 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
     const by = writerOf(ctx, TOOL);
     const cited = provenanceOf(input);
     if (!cited.ok) return cited;
+    const lined = agentLineOf(input);
+    if (!lined.ok) return lined;
     const session = await sessionOf(ctx, scope, input, TOOL);
     if (!session.ok) return session;
     const promptId = session.sessionId === null ? null : await latestPromptId(db, scope, session.sessionId);
     const spore = await insertSpore(db, scope, {
       id: mintSporeId(type), agentId: by.agentId, sessionId: session.sessionId, promptId, observationType: type,
       content, context: null, filePath: null, tags: sporeTags(input.tags), contentHash: null, properties: null,
-      author: by.author, provenance: cited.provenance, createdAt: ctx.now,
+      author: by.author, provenance: cited.provenance, agentLine: lined.agentLine, createdAt: ctx.now,
     });
     if (spore === null) return failure('Spore was not recorded');
     return { id: spore.id, observation_type: spore.observationType, status: spore.status, created_at: spore.createdAt };
@@ -141,13 +155,15 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
     const by = writerOf(ctx, TOOL);
     const cited = provenanceOf(input);
     if (!cited.ok) return cited;
+    const lined = agentLineOf(input);
+    if (!lined.ok) return lined;
     const session = await sessionOf(ctx, scope, input, TOOL);
     if (!session.ok) return session;
     const promptId = session.sessionId === null ? null : await latestPromptId(db, scope, session.sessionId);
     const { wisdom, consolidated } = await consolidateSpores(db, scope, {
       id: mintSporeId(plan.observationType), agentId: by.agentId, sessionId: session.sessionId, promptId, observationType: plan.observationType,
       content: plan.content, context: null, filePath: null, tags: sporeTags(input.tags), contentHash: null, properties: null,
-      author: by.author, provenance: cited.provenance, createdAt: ctx.now,
+      author: by.author, provenance: cited.provenance, agentLine: lined.agentLine, createdAt: ctx.now,
     }, plan.sources, { agentId: by.agentId, author: by.author, reason: plan.reason, sessionId: session.sessionId, provenance: cited.provenance, createdAt: ctx.now }, ctx.now);
     if (wisdom === null) return failure('Consolidated spore was not recorded');
     return { new_spore_id: wisdom.id, sources_consolidated: consolidated, status: 'consolidated', created_at: wisdom.createdAt };

@@ -28,6 +28,8 @@
       "@goondocks/myco-shared/run-holds": ["./packages/myco-shared/src/run-holds.ts"],
       "@goondocks/myco-shared/harness-providers": ["./packages/myco-shared/src/harness-providers.ts"],
       "@goondocks/myco-shared/skill-candidates": ["./packages/myco-shared/src/skill-candidates.ts"],
+      "@goondocks/myco-shared/agent-config": ["./packages/myco-shared/src/agent-config.ts"],
+      "@goondocks/myco-shared/agents-block": ["./packages/myco-shared/src/agents-block.ts"],
       "react": ["./node_modules/react"],
       "react-dom": ["./node_modules/react-dom"],
       "react/jsx-runtime": ["./node_modules/react/jsx-runtime.js"],

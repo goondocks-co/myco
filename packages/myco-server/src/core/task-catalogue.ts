@@ -18,6 +18,12 @@
  *   whether there is a model to call — resolved task-first then default, as
  *   `hasConfiguredProvider` resolves it locally.
  * - **An embedding provider**, per Deployment, for deterministic vector work.
+ *
+ * Three of the retained tasks are the run outcomes of plan §2.5: one prompt
+ * each, built by the Deployment, with declared expected evidence
+ * (`core/run-postconditions.ts`). `OUTCOME_TASKS` names them, and
+ * `tests/myco-server/task-catalogue.test.ts` holds the close rules, the input
+ * builders and this list to one another.
  */
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { declared } from './declared.js';
@@ -25,80 +31,54 @@ import type { RunAdmissionGate } from './runs.js';
 
 /** The task that writes a session's title and summary. */
 export const TITLING_TASK = 'title-summary';
+/** The task that reads the prompts nobody has read, writes what they taught, and retires what they replaced. */
+export const EXTRACTION_TASK = 'extract-curate';
+/** The task that seeds a Project from a checkout of its code and git history. */
+export const SEEDING_TASK = 'vault-seed';
+
+/** The three run outcomes: every worker-served task with a prompt of its own. */
+export const OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK];
+
+/**
+ * Outcomes whose server half stands and whose worker half has not landed: the
+ * seeding run's prompt names a checkout no worker creates yet. A dispatch of one
+ * is refused by name (`not_landed`) rather than queued for a claim that would
+ * drive a prompt about a directory that is not there.
+ */
+export const UNLANDED_TASKS: readonly string[] = [SEEDING_TASK];
 
 /** Every retained task, with the gate it runs behind. */
 export const TASK_ADMISSION: Readonly<Record<string, RunAdmissionGate>> = {
   [MAP_TASK]: { kind: 'capability', capability: 'canopy' },
   'embedding-reconcile': { kind: 'embedding' },
   'container-smoke': { kind: 'capability', capability: 'cortex' },
-  'cortex-prompt-builder': { kind: 'capability', capability: 'cortex' },
-  'digest-only': { kind: 'capability', capability: 'cortex' },
-
-  'skill-survey': { kind: 'capability', capability: 'skills' },
-  'skill-generate': { kind: 'capability', capability: 'skills' },
-  'skill-evolve': { kind: 'capability', capability: 'skills' },
-
-  'vault-evolve': { kind: 'capability', capability: 'vault_evolution' },
-  'vault-seed': { kind: 'capability', capability: 'vault_evolution' },
-  'supersession-sweep': { kind: 'capability', capability: 'vault_evolution' },
-  'extract-only': { kind: 'capability', capability: 'vault_evolution' },
-  'review-session': { kind: 'capability', capability: 'vault_evolution' },
-
+  [EXTRACTION_TASK]: { kind: 'capability', capability: 'vault_evolution' },
+  [SEEDING_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [TITLING_TASK]: { kind: 'provider' },
 };
 
 export const RETAINED_TASKS = Object.keys(TASK_ADMISSION);
 
 /**
- * The tools each retained task DECLARES, in the task file's own vocabulary.
+ * The tools each retained task DECLARES, in the run-surface source vocabulary.
  *
- * A run's MCP surface is built from this list (`mcp/run-surface.ts`): the
- * task's `toolOverrides`, or the union of its phases' `tools` and
- * `deferredTools`, and nothing a task inherits — a task that declares no tools
- * of its own has an empty surface, so the health probe never holds the agent's
- * whole default set. The task files live under
- * `packages/myco/src/agent/definitions/tasks/` until #1170 deletes them;
- * `tests/myco-server/task-tools.test.ts` holds this table equal to them, both
- * ways, until then. #1152 re-homes the outcome tasks here with their tools.
+ * A run's MCP surface is built from this list (`mcp/run-surface.ts`): each name
+ * maps onto the `(tool, op)` pairs the run may call, and a task that declares no
+ * tools of its own has an empty surface. The names are the 1.4 task files' own
+ * vocabulary; `tests/myco-server/task-tools.test.ts` holds a task that still
+ * has a file under `packages/myco/src/agent/definitions/tasks/` equal to it,
+ * and holds every name here to one `RUN_TOOL_MAP` entry.
  */
 export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
   [MAP_TASK]: ['code_grep', 'fs_list', 'fs_read', 'fs_tree', 'vault_report'],
   'embedding-reconcile': [],
   'container-smoke': [],
-  'cortex-prompt-builder': ['vault_read_digest', 'vault_report', 'vault_search_fts', 'vault_search_semantic', 'vault_sessions', 'vault_skill_records', 'vault_spores'],
-  'digest-only': ['vault_read_digest', 'vault_report', 'vault_sessions', 'vault_spore', 'vault_spores', 'vault_write_digest'],
-
-  'skill-survey': [
-    'vault_report', 'vault_search_fts', 'vault_search_semantic', 'vault_sessions', 'vault_skill_candidates', 'vault_skill_records',
-    'vault_skill_survey_apply_reconciliation', 'vault_skill_survey_bundle_decisions', 'vault_skill_survey_prepare',
-    'vault_skill_survey_reconciliation_plan', 'vault_spores', 'vault_state',
+  [EXTRACTION_TASK]: [
+    'vault_unprocessed', 'vault_mark_processed', 'vault_sessions', 'vault_spores', 'vault_spore', 'vault_state', 'vault_set_state',
+    'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_resolve_spore', 'vault_report',
   ],
-  'skill-generate': ['code_grep', 'fs_read', 'vault_finalize_skill', 'vault_report', 'vault_skill_candidates', 'vault_skill_records', 'vault_spores', 'vault_stage_skill'],
-  'skill-evolve': [
-    'code_grep', 'fs_read', 'vault_edit_skill', 'vault_report', 'vault_scan_skill_contamination', 'vault_search_fts', 'vault_set_state',
-    'vault_skill_candidates', 'vault_skill_records', 'vault_spores', 'vault_write_skill',
-  ],
-
-  'vault-evolve': [
-    'phase_emit_metadata', 'vault_create_spore', 'vault_mark_processed', 'vault_read_digest', 'vault_release_state', 'vault_report',
-    'vault_resolve_spore', 'vault_search_fts', 'vault_search_semantic', 'vault_sessions', 'vault_set_state', 'vault_spores', 'vault_state',
-    'vault_unprocessed', 'vault_update_session', 'vault_write_digest',
-  ],
-  'vault-seed': [
-    'code_grep', 'fs_list', 'fs_read', 'fs_tree', 'phase_emit_metadata', 'vault_create_spore', 'vault_read_digest', 'vault_release_state',
-    'vault_report', 'vault_search_semantic', 'vault_spores', 'vault_write_digest',
-  ],
-  'supersession-sweep': ['vault_create_spore', 'vault_report', 'vault_resolve_spore', 'vault_spore', 'vault_spores'],
-  'extract-only': [
-    'vault_create_spore', 'vault_mark_processed', 'vault_report', 'vault_resolve_spore', 'vault_search_fts', 'vault_search_semantic',
-    'vault_sessions', 'vault_set_state', 'vault_spores', 'vault_state', 'vault_unprocessed', 'vault_update_session',
-  ],
-  'review-session': [
-    'vault_create_spore', 'vault_mark_processed', 'vault_report', 'vault_resolve_spore', 'vault_search_fts', 'vault_search_semantic',
-    'vault_sessions', 'vault_set_state', 'vault_spores', 'vault_state', 'vault_unprocessed', 'vault_update_session',
-  ],
-
-  'title-summary': ['vault_report', 'vault_session_summary_material', 'vault_unprocessed', 'vault_update_session'],
+  [SEEDING_TASK]: ['vault_spores', 'vault_spore', 'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_agents_block', 'vault_report'],
+  [TITLING_TASK]: ['vault_report', 'vault_session_summary_material', 'vault_unprocessed', 'vault_update_session'],
 };
 
 /** The tools a task declares, or none for a task this Deployment does not serve. */
@@ -110,16 +90,17 @@ export function taskTools(task: string | null): readonly string[] {
  * How long one run of a task may take, by task.
  *
  * The dispatcher's flat default is a titling run's shape: a handful of turns at
- * low reasoning, done in seconds. A Cortex run is a dozen turns of a frontier
- * model over a payload the server assembled, and a digest run rewrites three
- * tiers from a whole vault; both take minutes, and a run aborted mid-work has
- * spent its money and left nothing. A task named here carries its own budget
- * into the run's context, which is also the window the run's own routes admit it
- * inside and the point past which the stale sweep gives up on it.
+ * low reasoning, done in seconds. An extraction pass reads a page of prompts
+ * and searches before each write; a seeding run explores a whole checkout. Both
+ * take minutes, and a run aborted mid-work has spent its money and left only
+ * what it had written. A task named here carries its own budget into the run's
+ * context, which is also the window the run's own routes admit it inside and
+ * the point past which the stale sweep gives up on it.
  */
 export const TASK_RUN_TIMEOUT_SECONDS: Readonly<Record<string, number>> = {
   [MAP_TASK]: 900,
-  'digest-only': 1800,
+  [EXTRACTION_TASK]: 900,
+  [SEEDING_TASK]: 3600,
 };
 
 /** The budget one run of this task gets, or null for a task that takes the dispatcher's default. */
@@ -132,17 +113,10 @@ export function runTimeoutForTask(task: string): number | null {
  * schedule appearing on one is a cost the Deployment would pay on the clock
  * without anyone deciding it should.
  *
- * `digest-only` is not among them any more: it carries a declared schedule that
- * ships switched off, which is what gives an owner's ask a per-day ceiling and
- * an override to lift it.
+ * Seeding is the one: it reads a whole checkout and writes a Project's first
+ * spores, and a second pass over an already-seeded Project is a person's call.
  */
-export const MANUAL_ONLY_TASKS: readonly string[] = [
-  'vault-seed',
-  'extract-only',
-  'supersession-sweep',
-  'review-session',
-  'cortex-prompt-builder',
-];
+export const MANUAL_ONLY_TASKS: readonly string[] = [SEEDING_TASK];
 
 /** The gate a task runs behind, or null for a name this Deployment does not serve. */
 export function admissionForTask(taskName: string): RunAdmissionGate | null {

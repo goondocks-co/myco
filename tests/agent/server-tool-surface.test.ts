@@ -119,7 +119,9 @@ describe('the served tool surface', () => {
    * smaller bound is what a local run gets, and what a reader believes.
    */
   it('gives each task one run budget: the catalogue\'s and the definition\'s agree', () => {
+    // An outcome the catalogue alone defines has no file to agree with.
     for (const [task, seconds] of Object.entries(TASK_RUN_TIMEOUT_SECONDS)) {
+      if (!tasks.has(task)) continue;
       expect({ task, timeoutSeconds: tasks.get(task)?.timeoutSeconds }).toEqual({ task, timeoutSeconds: seconds });
     }
   });

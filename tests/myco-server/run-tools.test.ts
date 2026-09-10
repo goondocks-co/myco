@@ -22,7 +22,7 @@ import { readWindowFor } from '@myco-server-worker/core/read-window.js';
 import { SPORE_PREVIEW_CHARS } from '@myco-server-worker/core/spores.js';
 import { RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { GRANT_INSTRUCTIONS, RUN_INSTRUCTIONS, runInstructionsFor, SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_MAX_BYTES } from '@myco-server-worker/mcp/server.js';
-import { acceptedActions, RUN_CLOSE_ERROR, RUN_CLOSE_NONE, RUN_CLOSE_RULES, RUN_SKIP_ACTION, runCloseRefusal, unacceptedActionError } from '@myco-server-worker/core/run-postconditions.js';
+import { acceptedActions, RUN_CLOSE_ERROR, RUN_CLOSE_RULES, RUN_SKIP_ACTION, runCloseRefusal, unacceptedActionError } from '@myco-server-worker/core/run-postconditions.js';
 import { getRun } from '@myco-server-worker/core/runs.js';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { ROUTES } from '@myco-server-worker/routes.js';
@@ -31,8 +31,7 @@ import { join } from 'node:path';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 
 const NOW = Date.now();
-const SWEEP = 'supersession-sweep';
-const DIGEST = 'digest-only';
+const SWEEP = 'extract-curate';
 const TITLING = 'title-summary';
 const SMOKE = 'container-smoke';
 
@@ -96,7 +95,7 @@ describe('the run surface and the member surface do not overlap', () => {
     const grant = await issueExternalGrant(db, { projectId: 'proj_1' }, 'copilot', 'owner', NOW);
 
     const forRun = await list(harness.token);
-    expect(forRun.filter((n) => RUN_TOOLS.includes(n as never)).sort()).toEqual(['myco_run', 'myco_run_spores']);
+    expect(forRun.filter((n) => RUN_TOOLS.includes(n as never)).sort()).toEqual(['myco_run', 'myco_run_prompts', 'myco_run_sessions', 'myco_run_spores']);
     expect((await list(member.token)).filter((n) => RUN_TOOLS.includes(n as never))).toEqual([]);
 
     const res = await worker.fetch(grantRequest(grant.key, rpc('tools/list')), env);
@@ -139,8 +138,7 @@ describe('the run surface and the member surface do not overlap', () => {
     const RUN_ROUTE_REASONS: Record<string, { tool: string; op: string; until: string } | null> = {
       '/runs/claim': null, '/runs/get': null, '/runs/update': null, '/runs/failed': null,
       '/runs/resume-admission': null, '/runs/supersede': null, '/runs/reports': null,
-      '/runs/events': null, '/runs/instruction': null, '/runs/embedding-step': null,
-      '/runs/digest': null, '/runs/digest-write': null, '/runs/repository': null, '/runs/canopy-map': null,
+      '/runs/events': null, '/runs/embedding-step': null, '/runs/repository': null, '/runs/canopy-map': null,
       '/runs/report': { tool: 'myco_run', op: 'report', until: '#1170' },
     };
     const present = ROUTES.filter((r) => r.path.startsWith('/runs/')).map((r) => r.path).sort();
@@ -188,7 +186,7 @@ describe('the surface decision stays in one place', () => {
     expect(files.length).toBeGreaterThan(0);
     for (const f of files) {
       const source = readFileSync(join(dir, f), 'utf8');
-      expect({ file: f, names: /DIGEST_TASK|TITLING_TASK|'(digest-only|title-summary|supersession-sweep|container-smoke|embedding-reconcile|extract-only|vault-evolve|vault-seed|review-session)'/.test(source) })
+      expect({ file: f, names: /EXTRACTION_TASK|SEEDING_TASK|TITLING_TASK|'(extract-curate|title-summary|container-smoke|embedding-reconcile|vault-seed|canopy-map)'/.test(source) })
         .toEqual({ file: f, names: false });
     }
   });
@@ -203,7 +201,7 @@ describe('the handshake is the principal\'s', () => {
     expect(await initialize(member.token)).toBe(SERVER_INSTRUCTIONS);
     // A run is told the actions its task's close rule accepts, so the refusal is the backstop rather than the channel.
     expect(await initialize(harness.token)).toBe(runInstructionsFor(acceptedActions(SWEEP)));
-    expect(await initialize(harness.token)).toContain('under action "supersession"; no other action is accepted');
+    expect(await initialize(harness.token)).toContain('under action "extract" or "skip"; no other action is accepted');
     const res = await worker.fetch(grantRequest(grant.key, rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } })), env);
     expect((await res.json() as any).result.instructions).toBe(GRANT_INSTRUCTIONS);
 
@@ -272,14 +270,14 @@ describe('a run reports whatever its task declares', () => {
     expect(await runCloseRefusal(db, { projectId: 'proj_1' }, run!)).toBe(RUN_CLOSE_ERROR);
   });
 
-  it('accepts exactly the actions each rule declares: the skip where a rule lists it, and any action for a task held to no rule', () => {
+  it('accepts exactly the actions each rule declares: the skip where a rule lists it, and any action for a task this Deployment does not serve', () => {
     for (const [task, rule] of Object.entries(RUN_CLOSE_RULES)) {
-      expect({ task, accepted: acceptedActions(task) }).toEqual({ task, accepted: rule === RUN_CLOSE_NONE ? null : rule.reports });
+      expect({ task, accepted: acceptedActions(task) }).toEqual({ task, accepted: rule.reports });
     }
     expect(acceptedActions('not-a-task')).toBeNull();
     // A pass with nothing to do is a designed outcome of these tasks and no other; the canopy map says it with its own action.
-    const skipping = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule !== RUN_CLOSE_NONE && rule.reports.includes(RUN_SKIP_ACTION)).map(([task]) => task).sort();
-    expect(skipping).toEqual(['digest-only', 'title-summary']);
+    const skipping = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule.reports.includes(RUN_SKIP_ACTION)).map(([task]) => task).sort();
+    expect(skipping).toEqual(['extract-curate', 'title-summary', 'vault-seed']);
     expect(unacceptedActionError(MAP_TASK, [MAP_ACTION, MAP_UNCHANGED_ACTION])).toBe(`a ${MAP_TASK} run closes with action "${MAP_ACTION}" or "${MAP_UNCHANGED_ACTION}"`);
   });
 
@@ -294,8 +292,8 @@ describe('a run reports whatever its task declares', () => {
     const { harness, dispatch, call, list } = await setup();
     await dispatch('run_dry', SWEEP, { dryRun: true });
     expect(await list(harness.token)).toContain('myco_run');
-    expect((await call(harness.token, 'myco_run', { op: 'report', action: 'supersession', summary: 'nothing to do' })).result)
-      .toEqual({ recorded: true, action: 'supersession' });
+    expect((await call(harness.token, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'nothing to do' })).result)
+      .toEqual({ recorded: true, action: RUN_SKIP_ACTION });
     expect((await call(harness.token, 'myco_spores', { op: 'save', content: 'x', type: 'gotcha' })).error.data.code).toBe('unknown_tool');
   });
 });
@@ -325,24 +323,19 @@ describe('the read window binds on the MCP path', () => {
     expect((await call(harness.token, 'myco_run_spores', { op: 'get', id: 'sp_0' }) as any).result).toEqual({ spore: null, budget: 'spent' });
   });
 
-  it('cuts a body past the window and says so, and gives a digest run the tier window rather than a sweep\'s', async () => {
+  it('cuts a body past the window and says so', async () => {
     const sweep = readWindowFor(SWEEP);
-    const digest = readWindowFor(DIGEST);
-    expect(digest.sporeBodyChars).toBeLessThan(sweep.sporeBodyChars);
-    expect(digest.sporePage).toBeLessThan(sweep.sporePage);
-    expect(digest.sessionPage).toBeLessThan(sweep.sessionPage);
-
     const { harness, dispatch, call, spore } = await setup();
-    await dispatch('run_d', DIGEST);
+    await dispatch('run_s', SWEEP);
     spore('sp_big', 'y'.repeat(sweep.sporeBodyChars + 10));
     const answered = await call(harness.token, 'myco_run_spores', { op: 'get', id: 'sp_big' }) as any;
     expect(answered.result.truncated).toBe(true);
-    expect(answered.result.spore.content.length).toBe(digest.sporeBodyChars);
+    expect(answered.result.spore.content.length).toBe(sweep.sporeBodyChars);
   });
 
   it('reads material at full fidelity, so a degraded transcript is not material a run reasons over', async () => {
     const { harness, member, dispatch, call, sqlite } = await setup();
-    await dispatch('run_d', DIGEST);
+    await dispatch('run_s', SWEEP);
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at, ended_at)
                 VALUES ('proj_1', 'sess_degraded', 'm1', 'tok_1', ?, ?, ?, ?)`, [NOW - 5_000, NOW, NOW - 5_000, NOW]);
     sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, first_received_at, last_received_at, token_id, fidelity)
@@ -358,8 +351,8 @@ describe('the read window binds on the MCP path', () => {
 describe('the session page a run reads', () => {
   it('serves settled sessions only, within a clamped page, cutting every part of a row to its own bound', async () => {
     const { harness, dispatch, call, sqlite } = await setup();
-    await dispatch('run_d', DIGEST);
-    const window = readWindowFor(DIGEST);
+    await dispatch('run_s', SWEEP);
+    const window = readWindowFor(SWEEP);
     for (let i = 0; i < 4; i += 1) {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at, title, summary)
                   VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?, ?, ?)`,
@@ -382,8 +375,8 @@ describe('the session page a run reads', () => {
 
   it('caps the session page at the window even when the Project holds more', async () => {
     const { harness, dispatch, call, sqlite } = await setup();
-    await dispatch('run_d', DIGEST);
-    const cap = readWindowFor(DIGEST).sessionPage;
+    await dispatch('run_s', SWEEP);
+    const cap = readWindowFor(SWEEP).sessionPage;
     for (let i = 0; i < cap + 3; i += 1) {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at, ended_at)
                   VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?, ?, ?)`, [`c${i}`, NOW - 5_000 + i, NOW, NOW - 5_000 + i, NOW]);
@@ -391,38 +384,12 @@ describe('the session page a run reads', () => {
     const served = (await call(harness.token, 'myco_run_sessions', { op: 'list', limit: 9999 }) as any).result.sessions;
     expect(served.length).toBe(cap);
   });
-
-  it('leaves a sweep its own body bound, wider than a digest run\'s', async () => {
-    const { harness, dispatch, call, spore } = await setup();
-    await dispatch('run_s', SWEEP);
-    const sweep = readWindowFor(SWEEP);
-    spore('sp_long', 'z'.repeat(sweep.sporeBodyChars + 500));
-    const answered = (await call(harness.token, 'myco_run_spores', { op: 'get', id: 'sp_long' }) as any).result;
-    expect(answered.spore.content.length).toBe(sweep.sporeBodyChars);
-    expect(answered.truncated).toBe(true);
-  });
-
-  it('hands a digest run its tier window rather than the page a sweep may ask for', async () => {
-    const sweep = readWindowFor(SWEEP);
-    const digest = readWindowFor(DIGEST);
-
-    const d = await setup();
-    await d.dispatch('run_d', DIGEST);
-    for (let i = 0; i < digest.sporePage + 1; i += 1) d.spore(`sp_${i}`, `spore ${i}`);
-    expect(((await d.call(d.harness.token, 'myco_run_spores', { op: 'list', limit: 200 }) as any).result.spores).length).toBe(digest.sporePage);
-
-    const w = await setup();
-    await w.dispatch('run_s', SWEEP);
-    for (let i = 0; i < digest.sporePage + 1; i += 1) w.spore(`sp_${i}`, `spore ${i}`);
-    expect(((await w.call(w.harness.token, 'myco_run_spores', { op: 'list', limit: 200 }) as any).result.spores).length).toBe(digest.sporePage + 1);
-    expect(sweep.sporePage).toBeGreaterThan(digest.sporePage);
-  });
 });
 
 describe('a run\'s state is a compare-and-set', () => {
   it('carries a read-modify-write, refuses the write whose version is stale, and lets the loser retry from a fresh read', async () => {
     const { harness, dispatch, call } = await setup();
-    await dispatch('run_e', 'extract-only');
+    await dispatch('run_e', SWEEP);
 
     expect((await call(harness.token, 'myco_run', { op: 'state_get', key: 'k' }) as any).result)
       .toEqual({ key: 'k', value: null, updated_at: null });
@@ -445,7 +412,7 @@ describe('a run\'s state is a compare-and-set', () => {
 
   it('keeps state under the run\'s own agent and its own Project, and loses state_set on a dry run', async () => {
     const { harness, dispatch, call, sqlite, list } = await setup();
-    await dispatch('run_e', 'extract-only');
+    await dispatch('run_e', SWEEP);
     await call(harness.token, 'myco_run', { op: 'state_set', key: 'shared', value: 'one' });
     expect(sqlite.query(`SELECT agent_id AS a, value AS v FROM agent_state WHERE project_id = 'proj_1' AND key = 'shared'`).all())
       .toEqual([{ a: 'myco-agent', v: 'one' }]);
@@ -454,7 +421,7 @@ describe('a run\'s state is a compare-and-set', () => {
     const other = await setup();
     other.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_2', 'proj_2', ?)`, [NOW]);
     other.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at, dispatched_by, run_context)
-                      VALUES ('proj_2', 'run_o', 'myco-agent', 'extract-only', 'running', 0, ?, ?, '{"timeoutSeconds":300}')`, [NOW, other.harness.tokenId]);
+                      VALUES ('proj_2', 'run_o', 'myco-agent', ?, 'running', 0, ?, ?, '{"timeoutSeconds":300}')`, [SWEEP, NOW, other.harness.tokenId]);
     const res = await worker.fetch(new Request('https://s/mcp', {
       method: 'POST',
       headers: { ...memberHeaders(other.harness.token), 'x-myco-project': 'proj_2' },
@@ -465,7 +432,7 @@ describe('a run\'s state is a compare-and-set', () => {
       .toEqual([{ p: 'proj_2', v: 'two' }]);
 
     const dry = await setup();
-    await dry.dispatch('run_dry', 'extract-only', { dryRun: true });
+    await dry.dispatch('run_dry', SWEEP, { dryRun: true });
     const ops = (await dry.list(dry.harness.token)).includes('myco_run');
     expect(ops).toBe(true);
     expect((await dry.call(dry.harness.token, 'myco_run', { op: 'state_set', key: 'k', value: 'v' })).error.data.code).toBe('unknown_tool');
@@ -476,7 +443,7 @@ describe('a run\'s state is a compare-and-set', () => {
 describe('the extraction cursor', () => {
   it('pages forward without repeating, drops a marked prompt, and reads no body unless asked', async () => {
     const { harness, dispatch, call, prompt } = await setup();
-    await dispatch('run_e', 'extract-only');
+    await dispatch('run_e', SWEEP);
     for (let i = 0; i < 3; i += 1) prompt(`p_${i}`, { createdAt: NOW - 3_000 + i });
 
     const first = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', limit: 2 }) as any).result;
@@ -497,7 +464,7 @@ describe('the extraction cursor', () => {
 
   it('reads the origins a person speaks through and skips the rest, and hides an in-flight session unless asked', async () => {
     const { harness, dispatch, call, prompt, sqlite } = await setup();
-    await dispatch('run_e', 'extract-only');
+    await dispatch('run_e', SWEEP);
     prompt('p_user', { origin: 'user', createdAt: NOW - 3_000 });
     prompt('p_unknown', { origin: 'unknown', createdAt: NOW - 2_900 });
     prompt('p_system', { origin: 'system', createdAt: NOW - 2_800 });

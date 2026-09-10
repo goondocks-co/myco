@@ -32,7 +32,6 @@ import {
   handleRegisterAgent,
   handleRunReports, handleWriteReport, handleRecordRunEvents, handleSupersedeRuns, handleUpdateRun,
 } from './api/runs.js';
-import { handleDigestWrite, handleRunDigest, handleRunInstruction } from './api/cortex-tasks.js';
 import { handleEmbeddingStep } from './api/embedding-task.js';
 import {
   handleCredentialActivity, handleCredentials, handleInvitations, handleMembers, handleMintInvitation,
@@ -120,14 +119,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/runs/reports', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunReports },
   { method: 'POST', path: '/runs/report', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteReport },
   { method: 'POST', path: '/runs/events', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRecordRunEvents },
-  // What a Cortex run reads and writes: the prompt the server built for it, the
-  // Project's settled sessions and its digest, and what it owes — the instructions
-  // artifact, or one digest extract per tier — admitted only to the harness
-  // credential that dispatched a live run of such a task.
-  { method: 'POST', path: '/runs/instruction', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunInstruction },
   { method: 'POST', path: '/runs/embedding-step', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleEmbeddingStep },
-  { method: 'POST', path: '/runs/digest', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunDigest },
-  { method: 'POST', path: '/runs/digest-write', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleDigestWrite },
   { method: 'POST', path: '/spores/save', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSaveSpore },
   { method: 'POST', path: '/spores/list', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleListSpores },
   { method: 'POST', path: '/spores/get', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleGetSpore },
@@ -226,11 +218,13 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/auth/logout', auth: 'owner', handler: async () => new Response(null, { status: 204, headers: { 'set-cookie': clearCookie() } }) },
 ];
 
-/** A 1.4.x wire route the server does not serve; each names the event kinds (or the blob route) that carry the same capture in 2.0. A retired path is unmatched and answers 401 like any other absent path. */
+/** A 1.4.x wire route the server does not serve; each names the event kinds (or the blob route) that carry the same capture in 2.0, or says what it carried is gone. A retired path is unmatched and answers 401 like any other absent path. */
 export interface RetiredRoute {
   method: string;
   path: string;
   replacedBy: readonly string[];
+  /** What the route carried is dropped rather than replaced, and by which child. */
+  dropped?: string;
 }
 
 export const RETIRED_ROUTES: readonly RetiredRoute[] = [
@@ -241,7 +235,10 @@ export const RETIRED_ROUTES: readonly RetiredRoute[] = [
   { method: 'POST', path: '/routed-capture/transcript', replacedBy: ['POST /blobs/{sha256}', 'transcript.segment'] },
   { method: 'POST', path: '/routed-capture/plan', replacedBy: ['plan'] },
   { method: 'POST', path: '/context/subagent', replacedBy: ['subagent.start'] },
-  { method: 'POST', path: '/runs/cortex-instructions', replacedBy: ['POST /runs/digest-write'] },
+  { method: 'POST', path: '/runs/cortex-instructions', replacedBy: ['PUT /api/settings/{leaf}'] },
+  { method: 'POST', path: '/runs/instruction', replacedBy: ['POST /worker/claim'] },
+  { method: 'POST', path: '/runs/digest', replacedBy: ['GET /api/projects/{projectId}/digests'] },
+  { method: 'POST', path: '/runs/digest-write', replacedBy: [], dropped: 'the generated digest goes (plan §3 D2, #1152); stored digests stay readable until #1170 drops the table' },
 ];
 
 /**

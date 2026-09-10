@@ -13,7 +13,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { HARNESS_CLAUDE_SDK, HARNESS_OPENAI_AGENTS } from '@myco/agent/types.js';
+import { HARNESS_CLAUDE_SDK, HARNESS_OPENAI_AGENTS } from '@goondocks/myco-shared/agent-config';
 
 export interface Migration {
   version: number;

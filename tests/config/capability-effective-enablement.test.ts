@@ -16,11 +16,8 @@
 
 import { describe, expect, it } from 'bun:test';
 import { MycoConfigSchema } from '../../packages/myco/src/config/schema';
-import {
-  effectiveTaskScheduleEnabled,
-  governingCapability,
-  taskHasExplicitProvider,
-} from '../../packages/myco/src/config/capabilities';
+import { governingCapability } from '../../packages/myco/src/config/capabilities';
+import { effectiveTaskScheduleEnabled, taskHasExplicitProvider } from '../../packages/myco/src/agent/schedule-gates';
 
 function cfg(input: Record<string, unknown>) {
   return MycoConfigSchema.parse({ version: 3, ...input });

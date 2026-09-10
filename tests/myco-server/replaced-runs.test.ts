@@ -111,16 +111,16 @@ describe('the run that stands in for a replaced one', () => {
   });
 
 
-  it('builds a digest successor from the material alone when the run it stands in for asked for that', async () => {
+  it('builds an extraction successor afresh, carrying the bound and the from-scratch ask of the run it stands in for', async () => {
     const f = fixture();
-    await dispatched(f, 'run_a', 'digest-only', { timeoutSeconds: 1800, fresh: true });
+    await dispatched(f, 'run_a', 'extract-curate', { timeoutSeconds: 900, fresh: true });
     await markRunReplaced(f.db, SCOPE, 'run_a');
     const outcome = await requeueReplaced(f.env, { run: (await getRun(f.db, SCOPE, 'run_a'))!, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 1);
     expect(outcome).toMatchObject({ requeued: true });
     const successor = (outcome as { runId: string }).runId;
     const built = f.sqlite.query(`SELECT instruction, run_context c FROM agent_runs WHERE id = ?`).get(successor) as { instruction: string | null; c: string };
-    expect(built.instruction).toContain('write every tier from the material alone');
-    expect(JSON.parse(built.c) as Record<string, unknown>).toMatchObject({ fresh: true, timeoutSeconds: 1800, replaces: 'run_a' });
+    expect(built.instruction).toContain('Read the prompts nobody has read yet');
+    expect(JSON.parse(built.c) as Record<string, unknown>).toMatchObject({ fresh: true, timeoutSeconds: 900, replaces: 'run_a' });
     expect(String((JSON.parse(built.c) as { input_hash?: string }).input_hash)).toHaveLength(64);
   });
 

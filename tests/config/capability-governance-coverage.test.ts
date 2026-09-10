@@ -16,11 +16,8 @@
 
 import { describe, expect, it } from 'bun:test';
 import { MycoConfigSchema } from '../../packages/myco/src/config/schema';
-import {
-  CAPABILITIES,
-  effectiveTaskScheduleEnabled,
-  governingCapability,
-} from '../../packages/myco/src/config/capabilities';
+import { CAPABILITIES, governingCapability } from '../../packages/myco/src/config/capabilities';
+import { effectiveTaskScheduleEnabled } from '../../packages/myco/src/agent/schedule-gates';
 import { setAtPath } from '../../packages/myco/src/utils/dot-path';
 
 describe('capability scheduled-task governance coverage', () => {

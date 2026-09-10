@@ -31,7 +31,7 @@ async function fixture() {
   const secrets = deploymentSecretStore(env.db, env.wrappingKey);
   const queue = (id: string) => e.sqlite.run(
     `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-     VALUES ('proj_1', ?, 'myco-agent', 'title-summary', 'queued', ?, 'worker', ?, ?, 'do it')`,
+     VALUES ('proj_1', ?, 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'do it')`,
     [id, NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
   );
   /** What a claim hands the worker for this harness, against whatever secrets the Deployment holds. */

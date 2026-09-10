@@ -32,7 +32,8 @@ const ADDED: Record<string, readonly string[]> = {
   // A Deployment holds many Projects; the member's run history has one vault and takes no tenancy argument.
   myco_agent: [PROJECT_PIVOT],
   // #1149: what a grant's write cites in place of the session it has none of.
-  myco_spores: ['provenance_kind', 'provenance_ref'],
+  // #1152: the agent-line projection, written at extraction; the member side's 1.4 dispatcher is not edited before the sweep.
+  myco_spores: ['provenance_kind', 'provenance_ref', 'agent_line'],
 };
 
 /**
@@ -265,14 +266,19 @@ describe('tool parity', () => {
       }
     }
 
-    const sweep = runAllowlist(TASK_TOOLS['supersession-sweep'], { dryRun: false });
-    expect([...sweep.entries()].map(([tool, ops]) => [tool, [...ops].sort()]).sort())
-      .toEqual([['myco_run', ['report']], ['myco_run_spores', ['get', 'list']], ['myco_spores', ['consolidate', 'obsolete', 'save', 'supersede']]]);
+    const extraction = runAllowlist(TASK_TOOLS['extract-curate'], { dryRun: false });
+    expect([...extraction.entries()].map(([tool, ops]) => [tool, [...ops].sort()]).sort())
+      .toEqual([
+        ['myco_run', ['report', 'state_get', 'state_set']], ['myco_run_prompts', ['mark_processed', 'unprocessed']],
+        ['myco_run_sessions', ['list']], ['myco_run_spores', ['get', 'list']],
+        ['myco_search', [NO_OP]], ['myco_spores', ['consolidate', 'obsolete', 'save', 'supersede']],
+      ]);
     // A dry run keeps every read and loses every write, and keeps `report`,
     // which the close gate reads whether or not the run wrote anything.
-    const dry = runAllowlist(TASK_TOOLS['supersession-sweep'], { dryRun: true });
+    const dry = runAllowlist(TASK_TOOLS['extract-curate'], { dryRun: true });
     expect([...dry.get('myco_spores') ?? []]).toEqual([]);
-    expect([...dry.get('myco_run')!]).toEqual([ALWAYS_ALLOWED.op]);
+    expect([...dry.get('myco_run_prompts')!]).toEqual(['unprocessed']);
+    expect([...dry.get('myco_run')!].sort()).toEqual([ALWAYS_ALLOWED.op, 'state_get']);
     // A task declaring no tools of its own still closes.
     const bare = runAllowlist(TASK_TOOLS['container-smoke'], { dryRun: false });
     expect([...bare.entries()].map(([tool, ops]) => [tool, [...ops]])).toEqual([['myco_run', ['report']]]);
