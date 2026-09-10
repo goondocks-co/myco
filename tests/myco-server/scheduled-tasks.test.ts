@@ -7,7 +7,7 @@ import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { HARNESS_AGENT_ID } from '@myco-server-worker/core/harness.js';
-import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, decideTask, effectiveIntervalSeconds, PRE_CONDITIONS, resolveSchedule, runScheduledTasks, scheduledTasks, scheduleFor, scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
+import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, decideTask, effectiveIntervalSeconds, hasUnprocessedPrompts, PRE_CONDITIONS, resolveSchedule, runScheduledTasks, scheduledTasks, scheduleFor, scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
 import { TASK_SCHEDULE, type TaskSchedule } from '@myco-server-worker/core/jobs.js';
 import { TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
@@ -65,6 +65,43 @@ describe('the schedule envelope', () => {
     expect(effectiveIntervalSeconds(1200, 51, t)).toBe(300);
     expect(effectiveIntervalSeconds(1200, 501, t)).toBe(100);
     expect(effectiveIntervalSeconds(1200, 999, undefined)).toBe(1200);
+  });
+});
+
+describe('a named precondition reads the Project it is a condition on', () => {
+  const seedSession = (f: ReturnType<typeof fixture>, project: string, session: string, endedAt: number | null) =>
+    f.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at) VALUES (?, ?, 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?)`,
+      [project, session, NOW - 10_000, NOW, NOW - 10_000, endedAt]);
+  const seedPrompt = (f: ReturnType<typeof fixture>, project: string, session: string, prompt: string, processed: number) =>
+    f.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at, processed) VALUES (?, ?, ?, ?, 'hello there', 'user', ?, ?, ?, 'tok_1', ?, ?)`,
+      [project, session, prompt, `e_${prompt}`, `h_${prompt}`, NOW - 5_000, NOW - 5_000, NOW - 5_000, processed]);
+
+  it('answers the backlog: nothing, a prompt already read, a live session, then one waiting', async () => {
+    const f = fixture();
+    expect(await hasUnprocessedPrompts(f.env, 'proj_1')).toBe(false);
+    seedSession(f, 'proj_1', 's_done', NOW);
+    seedPrompt(f, 'proj_1', 's_done', 'p_read', 1);
+    expect(await hasUnprocessedPrompts(f.env, 'proj_1')).toBe(false);
+    // A prompt of a session still being written is no backlog yet.
+    seedSession(f, 'proj_1', 's_live', null);
+    seedPrompt(f, 'proj_1', 's_live', 'p_live', 0);
+    expect(await hasUnprocessedPrompts(f.env, 'proj_1')).toBe(false);
+    seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
+    expect(await hasUnprocessedPrompts(f.env, 'proj_1')).toBe(true);
+    // One Project's backlog is not another's.
+    expect(await hasUnprocessedPrompts(f.env, 'proj_2')).toBe(false);
+  });
+
+  it('is reached through the registry the clock consults, and holds a task back while the backlog is empty', async () => {
+    const f = fixture();
+    const check = PRE_CONDITIONS['has-unprocessed-prompts'];
+    expect(typeof check).toBe('function');
+    expect(await check!({ env: f.env, projectId: 'proj_1' })).toBe(false);
+    const gated: TaskSchedule = { ...SMOKE, preCondition: 'has-unprocessed-prompts' };
+    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} }, NOW)).toBe('precondition');
+    seedSession(f, 'proj_1', 's_done', NOW);
+    seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
+    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} }, NOW)).toBeNull();
   });
 });
 

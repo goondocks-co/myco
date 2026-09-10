@@ -22,6 +22,7 @@ import { leafValues, type ProjectCapability } from './settings.js';
 import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
 import { listProjects } from '../read/sessions.js';
+import { listUnprocessedPrompts } from '../read/prompts.js';
 import { emit } from '../telemetry.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 
@@ -119,7 +120,7 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
 
   const accelerator = schedule.accelerator === undefined ? undefined : ACCELERATORS[schedule.accelerator.name];
   const count = schedule.accelerator !== undefined && accelerator !== undefined
-    ? await accelerator({ projectId, limit: schedule.accelerator.thresholds.accelerated + 1 })
+    ? await accelerator({ env, projectId, limit: schedule.accelerator.thresholds.accelerated + 1 })
     : null;
   const intervalMs = effectiveIntervalSeconds(schedule.intervalSeconds, count, schedule.accelerator?.thresholds) * 1000;
   const last = await lastTaskEntryAt(env.db, scope, task);
@@ -128,7 +129,7 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
   if (!(schedule.runIn as readonly string[]).includes(state)) return 'not_in_state';
   if (schedule.preCondition !== undefined) {
     const check = PRE_CONDITIONS[schedule.preCondition];
-    if (check === undefined || !(await check({ projectId }))) return 'precondition';
+    if (check === undefined || !(await check({ env, projectId }))) return 'precondition';
   }
   if (schedule.maxRunsPerDay !== undefined && (await taskEntriesSince(env.db, scope, task, now - DAY_MS)) >= schedule.maxRunsPerDay) return 'max_runs_per_day';
   return null;
@@ -194,11 +195,32 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
   return report;
 }
 
-/** Named preconditions a schedule may name; a task naming one absent here is refused by a gate, never skipped in silence. */
-export const PRE_CONDITIONS: Readonly<Record<string, (args: { projectId: string }) => Promise<boolean>>> = {};
+/**
+ * Whether the Project holds a prompt extraction has not read yet.
+ *
+ * One row decides it: a task whose work is a backlog asks whether the backlog is
+ * empty, and a page of one answers that without reading the rest. Prompts of a
+ * session still in flight are not counted — the read's own default — so a live
+ * session is extracted once it ends rather than while it is being written.
+ */
+export async function hasUnprocessedPrompts(env: ServerEnv, projectId: string): Promise<boolean> {
+  return (await listUnprocessedPrompts(env.db, { projectId }, { limit: 1 })).rows.length > 0;
+}
 
-/** Named accelerators: a count of pending work that shortens a task's interval. None yet; the Canopy task brings the first. */
-export const ACCELERATORS: Readonly<Record<string, (args: { projectId: string; limit: number }) => Promise<number>>> = {};
+/**
+ * Named preconditions a schedule may name; a task naming one absent here is
+ * refused by a gate, never skipped in silence.
+ *
+ * A condition is asked with the Deployment it is deciding for: a condition about
+ * a Project's data has to read that data, and one that could not would be a
+ * condition about nothing.
+ */
+export const PRE_CONDITIONS: Readonly<Record<string, (args: { env: ServerEnv; projectId: string }) => Promise<boolean>>> = {
+  'has-unprocessed-prompts': ({ env, projectId }) => hasUnprocessedPrompts(env, projectId),
+};
+
+/** Named accelerators: a count of pending work that shortens a task's interval, asked with the Deployment the count is read from. */
+export const ACCELERATORS: Readonly<Record<string, (args: { env: ServerEnv; projectId: string; limit: number }) => Promise<number>>> = {};
 
 /** The schedule block an owner set for one task, or undefined where they set none. */
 export function scheduleOverride(task: string, overrides: Record<string, unknown>): unknown {
