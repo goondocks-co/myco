@@ -19,7 +19,7 @@ import { runScheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { dispatchLoad, getRun, upsertCortexInstructions } from '@myco-server-worker/core/runs.js';
 import { listDigests, upsertDigest } from '@myco-server-worker/core/digests.js';
 import { insertSpore } from '@myco-server-worker/core/spores.js';
-import { RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_CLOSE_REPORTS, RUN_CLOSE_RULES } from '@myco-server-worker/core/run-postconditions.js';
+import { acceptedActions, RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_CLOSE_RULES } from '@myco-server-worker/core/run-postconditions.js';
 import { buildTaskInput } from '@myco-server-worker/core/task-inputs.js';
 import {
   DIGEST_FULL_READ_BODY_CHARS, DIGEST_SESSION_PAGE_LIMIT, DIGEST_SPORE_PAGE_LIMIT, RUN_SESSION_LABEL_CHARS,
@@ -332,12 +332,15 @@ describe('the digest a run writes', () => {
   });
 
   it('names the reports that close a digest run', () => {
-    expect(RUN_CLOSE_REPORTS[DIGEST_TASK]).toEqual(['digest', 'skip']);
+    expect(acceptedActions(DIGEST_TASK)).toEqual(['digest', 'skip']);
   });
 
   it('closes a run that reported a skip, which owes no row at all', async () => {
     const f = await fixture();
     f.liveRun('run_skipped', DIGEST_TASK, { input_hash: 'h' });
+    // The container's door refuses what the run tool refuses: an action the digest's rule cannot hear.
+    expect(await f.answered('/runs/report', { runId: 'run_skipped', agentId: HARNESS_AGENT_ID, action: 'title', summary: 'already current' }))
+      .toMatchObject({ persisted: false, code: 'parse', reason: 'a digest-only run closes with action "digest" or "skip"' });
     await f.answered('/runs/report', { runId: 'run_skipped', agentId: HARNESS_AGENT_ID, action: 'skip', summary: 'already current' });
     expect(await f.close('run_skipped')).toMatchObject({ persisted: true, changed: 1 });
     expect((await getRun(f.db, SCOPE, 'run_skipped'))?.status).toBe('completed');
