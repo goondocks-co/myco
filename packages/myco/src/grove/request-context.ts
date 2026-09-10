@@ -876,7 +876,7 @@ export function rowProjectIdFromRequestContext(
   context: MycoRequestContext,
 ): GroveProjectId | null;
 export function rowProjectIdFromRequestContext(
-  context?: MycoRequestContext,
+  context: MycoRequestContext | undefined,
 ): GroveProjectId | null | undefined;
 export function rowProjectIdFromRequestContext(
   context?: MycoRequestContext,
@@ -914,7 +914,7 @@ export function mutationScopeFromRequestContext(
 }
 
 export function projectScopeFromRequestContext(
-  context?: MycoRequestContext,
+  context: MycoRequestContext | undefined,
 ): ProjectScope {
   if (!context) {
     throw new Error(

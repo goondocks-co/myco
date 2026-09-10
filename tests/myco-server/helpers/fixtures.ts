@@ -69,9 +69,10 @@ export interface MemoryBlobStore extends BlobStore {
   failNextPut: string | null;
   /**
    * Record an object as already stored, without a put. `head` answers with the
-   * declared `size` and `get` streams `bytes`; a declared size with no bytes
-   * stands for an object too large to hold here, which is what a route that
-   * trusts the store's reported size is driven with.
+   * declared `size` and `get` streams `bytes`, which default to none: a
+   * declared size with no bytes stands for an object too large to hold here,
+   * and drives a route that trusts the store's reported size. A case that also
+   * reads the object back passes the bytes.
    */
   seed(key: string, object: { size: number; contentType?: string; bytes?: Uint8Array }): void;
 }

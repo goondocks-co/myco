@@ -109,7 +109,9 @@ describe('tool parity', () => {
     ];
     expect(narrowed.length).toBeGreaterThan(0);
     for (const d of narrowed) {
-      expect({ tool: d.name, properties: Object.keys(d.inputSchema.properties).sort() }).toEqual({ tool: d.name, properties: full.get(d.name) ?? [] });
+      const declared = full.get(String(d.name));
+      expect({ tool: String(d.name), declared: declared !== undefined }).toEqual({ tool: String(d.name), declared: true });
+      expect({ tool: String(d.name), properties: Object.keys(d.inputSchema.properties).sort() }).toEqual({ tool: String(d.name), properties: declared! });
     }
   });
 

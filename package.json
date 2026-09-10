@@ -16,6 +16,7 @@
     "build:types": "tsc",
     "check:workers": "npm run check --prefix packages/myco-team/worker && npm run check -w @goondocks/myco-server",
     "typecheck:ui": "npm run typecheck:ui -w @goondocks/myco",
+    "pretypecheck:tests": "tsx packages/myco/scripts/gen-worker-bundle.ts",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
     "prelint": "tsx packages/myco/scripts/gen-worker-bundle.ts",
     "pretest": "tsx packages/myco/scripts/gen-worker-bundle.ts",
@@ -50,6 +51,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.20.2",
+    "@cloudflare/workers-types": "^5.20260731.1",
     "@tanstack/react-query": "^5.101.4",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.0",

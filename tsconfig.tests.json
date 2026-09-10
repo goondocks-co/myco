@@ -5,7 +5,6 @@
     "declaration": false,
     "declarationMap": false,
     "sourceMap": false,
-    "jsx": "react-jsx",
     "allowImportingTsExtensions": true,
     "types": [
       "bun",
@@ -23,6 +22,15 @@
     "packages/myco-shared/src/**/*",
     "packages/myco-deploy/src/**/*",
     "tests/**/*.ts"
+  ],
+  "files": [
+    "tests/cli/import.test.ts",
+    "tests/cli/login.test.ts",
+    "tests/agent/run-store-http.test.ts",
+    "tests/agent/server-runner.test.ts",
+    "tests/agent/server-tool-surface.test.ts",
+    "tests/agent/server-tools.test.ts",
+    "tests/agent/supervisor-policy.test.ts"
   ],
   "exclude": [
     "node_modules",

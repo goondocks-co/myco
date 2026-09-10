@@ -112,7 +112,7 @@ describe('native plugin transcripts land one row per fact', () => {
     sqlite.run(`UPDATE transcripts SET parsed_offset = 0 WHERE project_id = ?`, [PROJECT]);
     await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-      tokenId, agent: 'opencode', size: new TextEncoder().encode(TRANSCRIPT_TEXT).length,
+      tokenId, agent: 'opencode', size: utf8(TRANSCRIPT_TEXT).length,
       parsedOffset: 0, fidelity: null, openPromptId: null,
     }, NOW);
     expect(count(sqlite, 'events')).toBe(before);
