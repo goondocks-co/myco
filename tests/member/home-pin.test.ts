@@ -175,7 +175,7 @@ describe('a hook launched with no MYCO_HOME', () => {
     const result = await runHook(
       'post-tool-use',
       { session_id: 'sess-pinned', cwd: project, tool_name: 'Read', tool_input: { file_path: '/a' } },
-      { fetch, credential: 'registry' },
+      { fetch, credential: 'registry', symbiont: 'copilot' },
     );
 
     expect(result.stderr).not.toContain('no registry entry');
@@ -199,7 +199,7 @@ describe('a hook launched with no MYCO_HOME', () => {
     const result = await runHook(
       'post-tool-use',
       { session_id: 'sess-untrusted', cwd: project, tool_name: 'Read', tool_input: { file_path: '/a' } },
-      { fetch, credential: 'registry' },
+      { fetch, credential: 'registry', symbiont: 'copilot' },
     );
 
     expect(result.stderr).toContain('pin file mode 0664 is writable by group/other');
@@ -243,7 +243,7 @@ describe('hooks that find no membership', () => {
       await runHook(
         'post-tool-use',
         { session_id: sessionId, cwd: project, tool_name: 'Read', tool_input: { file_path: '/a' } },
-        { fetch, credential: 'registry' },
+        { fetch, credential: 'registry', symbiont: 'copilot' },
       );
     }
     expect(requests).toEqual([]);
@@ -341,6 +341,67 @@ describe('`myco member join` under a non-default home', () => {
     // And the pin is what a hook with no environment now resolves.
     expect(resolveMycoHome({ cwd: project, homeDir, env: {} })).toBe(home);
   });
+
+  it('pins the machine too, once, so an MCP server started outside the project resolves this home; a machine pin naming another home stands', async () => {
+    const home = tempMycoHome();
+    tmpDirs.push(home);
+    const project = joinableProject('myco-join-machine-pin-');
+    const out: string[] = [];
+    const machinePin = path.join(homeDir, '.myco', RUNTIME_HOME_FILENAME);
+    expect(fs.existsSync(machinePin)).toBe(false);
+
+    await runJoin(['https://srv.example', '--project', 'proj_1', '--token-env', 'MYCO_TEST_TOKEN'], joinDeps(project, home, out));
+
+    expect(fs.readFileSync(machinePin, 'utf-8').trim()).toBe(home);
+    expect((fs.statSync(machinePin).mode & 0o777).toString(8)).toBe('644');
+    expect(out.join('\n')).toContain(`pinned this machine to ${home}`);
+    // What an MCP child started at `/` now resolves: the machine pin, not the default home.
+    expect(resolveMycoHome({ cwd: '/', homeDir, env: {} })).toBe(home);
+
+    // A second home joined on the same machine leaves the first machine pin standing and says so.
+    const other = tempMycoHome();
+    tmpDirs.push(other);
+    const second = joinableProject('myco-join-machine-pin-2-');
+    const said: string[] = [];
+    await runJoin(['https://srv.example', '--project', 'proj_2', '--token-env', 'MYCO_TEST_TOKEN'], joinDeps(second, other, said));
+    expect(fs.readFileSync(machinePin, 'utf-8').trim()).toBe(home);
+    expect(said.join('\n')).toContain(`this machine stays pinned to ${home}`);
+
+    // A join into the default home writes no machine pin.
+    fs.rmSync(machinePin);
+    const third = joinableProject('myco-join-default-');
+    await runJoin(['https://srv.example', '--project', 'proj_3', '--token-env', 'MYCO_TEST_TOKEN'], { ...joinDeps(third, defaultMycoHome(homeDir), []), mycoHome: defaultMycoHome(homeDir) });
+    expect(fs.existsSync(machinePin)).toBe(false);
+  });
+
+  for (const scope of ['machine', 'project'] as const) {
+    for (const form of ['symlink', 'invalid-file'] as const) {
+      it(`does not overwrite an existing ${scope} pin: ${form}`, async () => {
+        const home = tempMycoHome();
+        tmpDirs.push(home);
+        const project = joinableProject('myco-join-existing-pin-');
+        const pin = path.join(scope === 'machine' ? path.join(homeDir, '.myco') : path.join(project, '.myco'), RUNTIME_HOME_FILENAME);
+        const victim = path.join(homeDir, 'existing-settings');
+        const original = 'existing settings\n';
+        fs.mkdirSync(path.dirname(pin), { recursive: true });
+        fs.writeFileSync(victim, original, { mode: 0o600 });
+        if (form === 'symlink') fs.symlinkSync(victim, pin);
+        else fs.writeFileSync(pin, original, { mode: 0o600 });
+        const output: string[] = [];
+        const previousExit = process.exitCode;
+        try {
+          await runJoin(['https://srv.example', '--project', 'proj_1', '--token-env', 'MYCO_TEST_TOKEN'], joinDeps(project, home, output));
+          expect(fs.lstatSync(pin).isSymbolicLink()).toBe(form === 'symlink');
+          expect(fs.readFileSync(victim, 'utf8')).toBe(original);
+          expect(fs.readFileSync(pin, 'utf8')).toBe(original);
+          expect(fs.statSync(pin).mode & 0o777).toBe(0o600);
+          expect(output.join('\n')).toContain(`could not write ${pin}`);
+        } finally {
+          process.exitCode = previousExit;
+        }
+      });
+    }
+  }
 
   it('keeps the pin out of git: the vault .gitignore is written before it', async () => {
     const home = tempMycoHome();

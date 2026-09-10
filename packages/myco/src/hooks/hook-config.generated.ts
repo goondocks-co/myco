@@ -27,8 +27,11 @@ export interface HookCapabilities {
   preToolUseInjection: boolean;
   sessionStartInjection: boolean;
   subagentStartInjection: boolean;
+  postToolUseInjection: boolean;
   /** Which side writes this symbiont's turn rows; see the manifest schema. */
   turnRowSource: 'hook' | 'transcript';
+  /** What the transcript carries, as the Deployment's parser declares it; see the manifest schema. */
+  transcriptFidelity: 'full' | 'no_tool_results';
 }
 
 export interface HookConfigEntry {
@@ -41,6 +44,8 @@ export interface HookConfigEntry {
   planTags: string[];
   capabilities: HookCapabilities;
   transcriptDiscovery?: TranscriptDiscovery;
+  /** Glob, relative to the session transcript's directory, of the subagent transcripts a session writes beside it. */
+  subagentTranscripts?: string;
   hookResponse?: NonNullable<SymbiontRegistration['hookResponse']>;
   capturePrompts?: CapturePrompts;
   captureRules?: CaptureRule[];
@@ -88,7 +93,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
-      "turnRowSource": "hook"
+      "postToolUseInjection": false,
+      "turnRowSource": "hook",
+      "transcriptFidelity": "full"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -121,26 +128,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       ]
     },
     "hookEvents": {
-      "PostCompact": {
-        "hook": "post-compact",
-        "timeout": 5
-      },
-      "PostToolUse": {
-        "hook": "post-tool-use",
-        "timeout": 5
-      },
-      "PostToolUseFailure": {
-        "hook": "post-tool-use-failure",
-        "timeout": 5
-      },
-      "PreCompact": {
-        "hook": "pre-compact",
-        "timeout": 5
-      },
-      "PreToolUse": {
-        "hook": "pre-tool-use",
-        "timeout": 3
-      },
       "SessionEnd": {
         "hook": "session-end",
         "timeout": 10
@@ -153,20 +140,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "hook": "stop",
         "timeout": 30
       },
-      "StopFailure": {
-        "hook": "stop-failure",
-        "timeout": 10
-      },
       "SubagentStart": {
         "hook": "subagent-start",
-        "timeout": 5
-      },
-      "SubagentStop": {
-        "hook": "subagent-stop",
-        "timeout": 10
-      },
-      "TaskCompleted": {
-        "hook": "task-completed",
         "timeout": 5
       },
       "UserPromptSubmit": {
@@ -182,10 +157,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "ultraplan"
     ],
     "capabilities": {
-      "preToolUseInjection": true,
+      "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
-      "turnRowSource": "hook"
+      "postToolUseInjection": false,
+      "turnRowSource": "transcript",
+      "transcriptFidelity": "full"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -197,6 +174,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptCwdPath": "cwd",
       "retention": "harness"
     },
+    "subagentTranscripts": "{sessionId}/subagents/*.jsonl",
     "capturePrompts": {
       "shapes": [
         {
@@ -441,7 +419,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
-      "turnRowSource": "transcript"
+      "postToolUseInjection": false,
+      "turnRowSource": "transcript",
+      "transcriptFidelity": "full"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -511,8 +491,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "hook": "post-tool-use",
         "timeout": 5
       },
-      "PreToolUse": {
-        "hook": "pre-tool-use",
+      "SessionEnd": {
+        "hook": "session-end",
         "timeout": 3
       },
       "SessionStart": {
@@ -537,10 +517,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "proposed_plan"
     ],
     "capabilities": {
-      "preToolUseInjection": true,
+      "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
-      "turnRowSource": "hook"
+      "postToolUseInjection": false,
+      "turnRowSource": "transcript",
+      "transcriptFidelity": "no_tool_results"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -790,7 +772,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "preToolUseInjection": true,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
-      "turnRowSource": "hook"
+      "postToolUseInjection": false,
+      "turnRowSource": "hook",
+      "transcriptFidelity": "full"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -821,20 +805,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       ]
     },
     "hookEvents": {
-      "beforeSubmitPrompt": {
-        "hook": "user-prompt-submit",
-        "timeout": 5
-      },
       "postToolUse": {
         "hook": "post-tool-use",
         "timeout": 5
       },
       "postToolUseFailure": {
         "hook": "post-tool-use-failure",
-        "timeout": 5
-      },
-      "preCompact": {
-        "hook": "pre-compact",
         "timeout": 5
       },
       "sessionEnd": {
@@ -848,14 +824,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "stop": {
         "hook": "stop",
         "timeout": 30
-      },
-      "subagentStart": {
-        "hook": "subagent-start",
-        "timeout": 5
-      },
-      "subagentStop": {
-        "hook": "subagent-stop",
-        "timeout": 10
       }
     },
     "planDirs": [
@@ -867,7 +835,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
-      "turnRowSource": "hook"
+      "postToolUseInjection": true,
+      "turnRowSource": "transcript",
+      "transcriptFidelity": "no_tool_results"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -931,7 +901,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
-      "turnRowSource": "transcript"
+      "postToolUseInjection": false,
+      "turnRowSource": "transcript",
+      "transcriptFidelity": "full"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -975,7 +947,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
-      "turnRowSource": "transcript"
+      "postToolUseInjection": false,
+      "turnRowSource": "transcript",
+      "transcriptFidelity": "full"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -1036,7 +1010,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "preToolUseInjection": false,
       "sessionStartInjection": false,
       "subagentStartInjection": false,
-      "turnRowSource": "hook"
+      "postToolUseInjection": false,
+      "turnRowSource": "hook",
+      "transcriptFidelity": "full"
     },
     "transcriptDiscovery": {
       "roots": [

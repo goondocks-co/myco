@@ -3,6 +3,9 @@
  * whose fetch ignores abort) is SIGKILLed at its declared timeout — the event
  * is already in the spool and the next probing hook delivers it. A hook whose
  * server refuses the connection spools, latches, and exits inside its budget.
+ *
+ * Driven on Copilot, whose hooks ship its turn rows: the property under test
+ * is the spool's, and a hook that ships nothing has nothing to spool.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'node:child_process';
@@ -18,6 +21,7 @@ import { registerTestMember, recordingFetch, runHook } from './helpers/hooks.js'
 let mycoHome: string;
 let rig: MemberRig;
 let transcriptPath: string;
+const SYMBIONT = 'copilot';
 const savedHome = process.env.MYCO_HOME;
 beforeEach(async () => {
   mycoHome = tempMycoHome();
@@ -34,7 +38,7 @@ afterEach(() => {
 });
 
 function runHookProcess(hook: string, input: Record<string, unknown>, env: Record<string, string>, timeoutMs: number) {
-  return spawnSync(process.execPath, [path.resolve('tests/member/helpers/hook-process.ts'), hook, '--symbiont', 'claude-code', '--credential', 'registry'], {
+  return spawnSync(process.execPath, [path.resolve('tests/member/helpers/hook-process.ts'), hook, '--symbiont', SYMBIONT, '--credential', 'registry'], {
     cwd: process.cwd(),
     env: { ...process.env, MYCO_HOME: mycoHome, ...env },
     input: JSON.stringify({ transcript_path: transcriptPath, ...input }),
@@ -46,7 +50,7 @@ function runHookProcess(hook: string, input: Record<string, unknown>, env: Recor
 
 describe('write-ahead under a harness kill', () => {
   it('a PostToolUse whose server never answers is killed at its declared timeout; the event is in the spool and the next probing hook delivers it', async () => {
-    const declared = HOOK_CONFIG['claude-code'].hookEvents.PostToolUse.timeout! * 1000;
+    const declared = HOOK_CONFIG[SYMBIONT].hookEvents.PostToolUse.timeout! * 1000;
     const result = runHookProcess('post-tool-use', { session_id: 'sess-kill', hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: { file_path: '/k' } }, { MYCO_TEST_HANG_FETCH: '1' }, declared);
     expect(result.stderr).not.toContain('no capture');
     expect(result.signal).toBe('SIGKILL');
@@ -56,7 +60,7 @@ describe('write-ahead under a harness kill', () => {
 
     // The next hook of the session (Stop always probes) drains the spooled event first, then its own.
     const { fetch, requests } = recordingFetch(rig.fetch);
-    await runHook('stop', { session_id: 'sess-kill', hook_event_name: 'Stop', transcript_path: transcriptPath, last_assistant_message: 'done' }, { fetch });
+    await runHook('stop', { session_id: 'sess-kill', hook_event_name: 'Stop', transcript_path: transcriptPath, last_assistant_message: 'done' }, { fetch, symbiont: SYMBIONT });
     expect(requests.filter((r) => r.path === '/events').length).toBeGreaterThanOrEqual(2);
     expect(rig.rows('tool_calls')).toBe(1);
     expect(rig.rows('responses')).toBe(1);

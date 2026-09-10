@@ -103,6 +103,8 @@ export function deriveId(...parts: string[]): string {
 export const subagentIdFor = (sessionId: string, agentId: string): string => deriveId('subagent', sessionId, agentId);
 export const planKeyForPath = (projectId: string, planPath: string): string => deriveId('plan', projectId, planPath);
 export const planKeyForTag = (sessionId: string, tag: string, position: number): string => deriveId('plan-tag', sessionId, tag, String(position));
+/** A plan a person pasted inside a tag envelope in a prompt, keyed by the prompt: the Deployment's parse counts positions over assistant text only, so this key never meets one it derives. */
+export const planKeyForPromptTag = (sessionId: string, tag: string, promptId: string): string => deriveId('plan-tag', sessionId, tag, 'prompt', promptId);
 export const queuedPromptIdFor = (sessionId: string, attachmentUuid: string): string => deriveId('queued-prompt', sessionId, attachmentUuid);
 
 // ---------------------------------------------------------------------------
@@ -404,8 +406,11 @@ export function attachmentEvent(ctx: EnvelopeContext, facts: {
 }
 
 /** One slice of a transcript: the bytes are read from the transcript file itself at drain time. */
+/** What a transcript is to its session: the session's own, or a delegated agent's written beside it. */
+export type TranscriptRole = 'primary' | 'subagent';
+
 export function transcriptSegmentEvent(ctx: EnvelopeContext, facts: {
-  transcriptId: string; baseOffset: number; blobSource: BlobSource; originPath?: string; headHash?: string;
+  transcriptId: string; baseOffset: number; blobSource: BlobSource; originPath?: string; headHash?: string; role?: TranscriptRole;
 }): OutboundEvent {
   if (facts.blobSource.size < 1) throw new Error('transcriptSegmentEvent: a segment carries at least one byte');
   return envelope(ctx, 'transcript.segment', {
@@ -415,6 +420,7 @@ export function transcriptSegmentEvent(ctx: EnvelopeContext, facts: {
     blob: facts.blobSource.sha256,
     originPath: facts.originPath === undefined ? undefined : trunc(homeRelativePath(facts.originPath), BOUNDS.originPath),
     agent: trunc(ctx.agent, BOUNDS.agent),
+    role: facts.role,
     // The digest of the file's first bytes. Until it is sent the Deployment's
     // integrity gate has nothing to compare, and a file truncated and rewritten
     // in place keeps its path and inode and so keeps its identity: its bytes

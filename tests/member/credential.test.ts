@@ -35,6 +35,35 @@ const captureStderr = () => {
   (process.stderr as unknown as { write: (c: unknown) => boolean }).write = ((c: unknown) => { stderrLines.push(String(c)); return true; }) as never;
 };
 
+describe('the MCP bridge started outside the project', () => {
+  it('resolves the one membership the home holds, says so, and never does this for a hook', () => {
+    captureStderr();
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-not-a-project-'));
+    const root = path.join(mycoHome, 'the-project');
+    fs.mkdirSync(root, { recursive: true });
+    registerTestMember({ mycoHome, token: mintMemberToken(), projectId: 'proj_only', root });
+    const bridge = resolveCredential('registry', { cwd: elsewhere, mycoHome, invokedBy: 'mcp' });
+    expect(bridge?.projectId).toBe('proj_only');
+    expect(stderrLines.join('')).toContain(`serving the one membership this machine holds (${root})`);
+    // A hook in an unjoined directory finds nothing: its session must not land in another project.
+    stderrLines.length = 0;
+    expect(resolveCredential('registry', { cwd: elsewhere, mycoHome, invokedBy: 'hook stop' })).toBeNull();
+    expect(stderrLines.join('')).toContain('no registry entry');
+  });
+
+  it('resolves nothing when the home holds two memberships, and says which directory to start in', () => {
+    captureStderr();
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-not-a-project-'));
+    for (const name of ['a', 'b']) {
+      const root = path.join(mycoHome, name);
+      fs.mkdirSync(root, { recursive: true });
+      registerTestMember({ mycoHome, token: mintMemberToken(), projectId: `proj_${name}`, root });
+    }
+    expect(resolveCredential('registry', { cwd: elsewhere, mycoHome, invokedBy: 'mcp' })).toBeNull();
+    expect(stderrLines.join('')).toContain('none of the 2 joined projects');
+  });
+});
+
 describe('credential source', () => {
   it('parses the declared source from the hook command and refuses unknown values', () => {
     expect(parseCredentialFlag(['hook', 'stop', '--credential', 'registry'])).toBe('registry');
@@ -104,12 +133,12 @@ describe('credential source', () => {
     process.env[ENV_PROJECT] = 'proj_1';
     const rig = await memberRig();
     const { fetch, requests } = recordingFetch(rig.fetch);
-    const result = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { fetch, credential: 'registry' });
+    const result = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { fetch, credential: 'registry', symbiont: 'copilot' });
     expect(requests).toEqual([]);
     expect(result.stderr).toContain('no registry entry');
     expect(rig.rows('events')).toBe(0);
     // The same hook declared `env` would dial the env URL — the source is the command's to declare.
-    const envRun = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { fetch, credential: 'env' });
+    const envRun = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { fetch, credential: 'env', symbiont: 'copilot' });
     expect(requests.map((r) => r.path)).toEqual(['/events']);
     expect(envRun.stderr).not.toContain('no registry entry');
   });

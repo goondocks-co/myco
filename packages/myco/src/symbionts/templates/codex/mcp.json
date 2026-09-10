@@ -1,0 +1,8 @@
+{
+  "myco": {
+    "command": "{{mycoBinary}}",
+    "args": [
+      "mcp"
+    ]
+  }
+}

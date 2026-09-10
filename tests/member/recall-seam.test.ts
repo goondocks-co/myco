@@ -231,7 +231,7 @@ describe('the served block, per symbiont', () => {
 });
 
 describe('the prompt hook', () => {
-  it('dials recall once per prompt, after the events are spooled, and keeps the `Session::` line when nothing is served', async () => {
+  it('dials recall once per prompt, writes no prompt row for an agent the Deployment parses, and keeps the `Session::` line when nothing is served', async () => {
     const spy = recordingFetch(rig.fetch);
     const out = await runHook(
       'user-prompt-submit',
@@ -240,9 +240,8 @@ describe('the prompt hook', () => {
     );
 
     const paths = spy.requests.map((r) => r.path);
-    expect(paths.filter((p) => p === '/context/prompt')).toHaveLength(1);
-    // The prompt event is on the wire before recall is asked for anything.
-    expect(paths.indexOf('/context/prompt')).toBeLessThan(paths.indexOf('/events'));
+    // Injection only: the prompt row is the parse's, so nothing is shipped here.
+    expect(paths).toEqual(['/context/prompt']);
     const body = JSON.parse(spy.requests.find((r) => r.path === '/context/prompt')!.body!);
     expect(body.sessionId).toBe(SESSION);
     expect(body.text).toBe('let us write the implementation plan');
@@ -251,7 +250,8 @@ describe('the prompt hook', () => {
     // The Project is not admitted to `cortex`, so the answer is an empty block.
     expect(out.stderr).toBe('');
     expect(out.stdout).toBe(`Session:: \`${SESSION}\``);
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows('prompt_batches')).toBe(0);
+    expect(new MemberSpool('proj_1', { mycoHome }).sessionIds()).toEqual([]);
   });
 
   it('serves the composed block into the response once the Project is admitted', async () => {
@@ -267,7 +267,7 @@ describe('the prompt hook', () => {
     expect(rig.env.sqlite.query(`SELECT kind FROM session_injections`).all()).toEqual([{ kind: 'plan-nudge' }]);
   });
 
-  it('latches the dark Deployment, keeps the `Session::` line, and leaves the event for the next probe', async () => {
+  it('latches the dark Deployment, keeps the `Session::` line, and the next hook past the latch clears it', async () => {
     const failing: FetchLike = async (input, init) => {
       const req = new Request(input, init);
       if (new URL(req.url).pathname === '/context/prompt') throw new Error('connection refused');
@@ -286,17 +286,15 @@ describe('the prompt hook', () => {
     // second connect timeout on the same dark server.
     const spool = new MemberSpool('proj_1', { mycoHome });
     expect(spool.readLatch()).not.toBeNull();
-    expect(spool.depth(SESSION)).toBe(1);
     expect(rig.rows('prompt_batches')).toBe(0);
 
-    // The next hook past the latch delivers what was held, and a served answer clears it.
+    // The next hook past the latch is served, and a served answer clears it.
     spool.clearLatch();
     await runHook(
       'user-prompt-submit',
       { session_id: SESSION, hook_event_name: 'UserPromptSubmit', transcript_path: transcript(), prompt: 'a second prompt' },
       { fetch: rig.fetch },
     );
-    expect(rig.rows('prompt_batches')).toBe(2);
     expect(spool.readLatch()).toBeNull();
   });
 
@@ -353,20 +351,15 @@ describe('the session-start hook', () => {
     { fetch: fetchImpl },
   );
 
-  const compact = (fetchImpl: FetchLike) => runHook('pre-compact', {
-    session_id: SESSION, hook_event_name: 'PreCompact', trigger: 'manual', transcript_path: transcript(),
-  }, { fetch: fetchImpl });
-
-  it('restores context once for each compaction and retains ordinary start deduplication', async () => {
+  it('restores context once for each compaction: the start the harness fires after compacting advances the ordinal itself', async () => {
     admit();
     guidance();
     const spy = recordingFetch(rig.fetch);
     expect((await start(spy.fetch)).stdout).toContain('Keep the plan current.');
     for (const ordinal of [1, 2]) {
-      await compact(spy.fetch);
       expect((await start(spy.fetch, 'compact')).stdout).toContain('Keep the plan current.');
-      expect((await start(spy.fetch, 'compact')).stdout).toBe('');
       expect(delivered()).toContain(`cortex-compact:${ordinal}`);
+      expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, SESSION).compactionOrdinal).toBe(ordinal);
     }
     for (const source of ['startup', 'resume', 'clear', 'fork']) expect((await start(spy.fetch, source)).stdout).toBe('');
     expect(spy.requests.filter((r) => r.path === '/context/session').map((r) => askedBody(r.body!)))
@@ -376,32 +369,30 @@ describe('the session-start hook', () => {
     expect(new MemberSpool('proj_1', { mycoHome }).depth(SESSION)).toBe(0);
   });
 
-  it('reports an unrecorded compaction without suppressing its capture or inventing an identity', async () => {
-    admit();
-    guidance();
-    const spy = recordingFetch(rig.fetch);
-    const out = await start(spy.fetch, 'compact');
-    expect(out.stdout).toBe('');
-    expect(out.stderr).toContain('no recorded PreCompact ordinal');
-    expect(spy.requests.filter((r) => r.path === '/context/session')).toHaveLength(0);
-    expect(rig.rows('sessions')).toBe(1);
-    await compact(spy.fetch);
-    expect((await start(spy.fetch, 'compact')).stdout).toContain('Keep the plan current.');
-  });
-
-  it('records the compaction ordinal while offline and serves it after connectivity returns', async () => {
+  it('records the compaction while offline and serves its block after connectivity returns', async () => {
     admit();
     guidance();
     const spool = new MemberSpool('proj_1', { mycoHome });
     spool.markOffline(Date.now());
     const spy = recordingFetch(rig.fetch);
-    await compact(spy.fetch);
+    expect((await start(spy.fetch, 'compact')).stdout).toBe('');
     expect(spy.requests).toHaveLength(0);
     expect(readSessionState(spool.dir, SESSION).compactionOrdinal).toBe(1);
-    expect(spool.depth(SESSION)).toBe(1);
+    // The ordinal is the compaction's record, so the next start asks for the block of a second compaction, not this one again.
     spool.clearLatch();
     expect((await start(spy.fetch, 'compact')).stdout).toContain('Keep the plan current.');
+    expect(delivered()).toEqual(['cortex-compact:2']);
     expect(spool.depth(SESSION)).toBe(0);
+  });
+
+  it('counts a compaction once: a PreCompact hook a machine still carries advances nothing, the compact start does', async () => {
+    admit();
+    guidance();
+    await runHook('pre-compact', { session_id: SESSION, hook_event_name: 'PreCompact', trigger: 'manual', transcript_path: transcript() }, { fetch: rig.fetch });
+    expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, SESSION).compactionOrdinal).toBe(0);
+    expect((await start(rig.fetch, 'compact')).stdout).toContain('Keep the plan current.');
+    expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, SESSION).compactionOrdinal).toBe(1);
+    expect(delivered()).toEqual(['cortex-compact:1']);
   });
 
   it('extends existing session state without losing delivered context or capture receipts', async () => {
@@ -414,7 +405,6 @@ describe('the session-start hook', () => {
     delete existing.compactionOrdinal;
     existing.prompts.retained = 'retained-prompt';
     fs.writeFileSync(file, JSON.stringify(existing));
-    await compact(rig.fetch);
     expect((await start(rig.fetch, 'compact')).stdout).toContain('Keep the plan current.');
     const state = readSessionState(spool.dir, SESSION);
     expect(state.prompts.retained).toBe('retained-prompt');
@@ -612,8 +602,8 @@ describe('the subagent-start hook', () => {
     const out = await delegate(spy.fetch, {}, 'cursor');
     expect(spy.requests.map((r) => r.path).filter((p) => p === '/context/session')).toEqual([]);
     expect(out.stdout).toBe('');
-    // The event itself still travels.
-    expect(spy.requests.map((r) => r.path)).toContain('/events');
+    // Nothing travels either: a transcript-first symbiont's delegations are the parse's to record.
+    expect(spy.requests.map((r) => r.path)).toEqual([]);
   });
 
   it('is not called at all while the offline latch holds', async () => {

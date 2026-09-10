@@ -177,7 +177,8 @@ export class MemberSpool {
     const lock = bufferLockPath(this.dir, sessionId);
     const file = this.spoolFile(sessionId);
     ensurePrivateFile(lock);
-    ensurePrivateFile(file);
+    // A receipt with nothing to append leaves no spool file behind: an empty file would read as a session with records to drain.
+    if (events.length > 0) ensurePrivateFile(file);
     withFileLockSync(lock, () => {
       for (const out of events) {
         const line: SpoolRecord & { timestamp: string } = {

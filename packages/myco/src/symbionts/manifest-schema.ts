@@ -262,6 +262,15 @@ const CaptureManifestSchema = z.object({
    */
   transcriptDiscovery: TranscriptDiscoverySchema.optional(),
   /**
+   * Where this agent writes the transcripts of the subagents a session
+   * delegates to, as a glob relative to the directory holding the session's
+   * own transcript. `{sessionId}` is substituted; `*` matches one path
+   * segment. The turn-end hooks ship every file it matches as a transcript of
+   * its own under the session, with role `subagent`. Absent means the agent
+   * keeps no sibling transcripts, or keeps them where nothing can find them.
+   */
+  subagentTranscripts: z.string().optional(),
+  /**
    * Dot-path (relative to the transcript's session_meta payload, the same
    * object `transcript_meta_field_exists` reads) to the sub-agent's PARENT
    * thread/session id. Present only on transcripts spawned as a sub-agent
@@ -585,32 +594,40 @@ const CapabilitiesSchema = z.object({
    */
   subagentStartInjection: z.boolean().default(false),
   /**
-   * The transport on which this symbiont can make FULL-TENANCY Myco tool calls.
-   *  - 'mcp' (default): the daemon's MCP endpoint, with project tenancy injected
-   *    by the stdio bridge (claude-code) — the Myco-controlled default.
-   *  - 'cli': the `myco tool call` CLI on the symbiont's shell. Used by hosts
-   *    whose HTTP MCP cannot carry per-project tenancy (Codex: global config, no
-   *    per-request project signal, MCP child cwd=/). Their shell runs in the
-   *    workspace, so `myco tool call` resolves tenancy from cwd. The installer
-   *    writes no MCP server for these; session-start adds a CLI directive.
+   * Whether a post-tool-use hook response places model-visible context in
+   * front of this symbiont. The one injection point for a harness whose
+   * prompt hook can only block, so its session block has a second chance to
+   * land after a session start the Deployment could not answer.
    */
-  toolTransport: z.enum(['mcp', 'cli']).default('mcp'),
+  postToolUseInjection: z.boolean().default(false),
   /**
    * Which side writes this symbiont's turn rows.
    *
    *  - 'hook' (default): the prompt-submit hook ships the `prompt` event and
    *    the tool, response and subagent hooks ship rows keyed to the id it
-   *    minted.
-   *  - 'transcript': the transcript is the only writer. The hook still mints
-   *    the prompt id, returns it for the runtime to stamp on its transcript
-   *    lines, and injects — but ships no `prompt`, so one prompt is one row.
+   *    minted. The Deployment parses no transcript for this symbiont.
+   *  - 'transcript': the Deployment's parser for this symbiont is the only
+   *    writer of its prompts, responses, tool calls and subagent starts. The
+   *    hooks register the session, ship the transcript delta and plan files,
+   *    and inject; the prompt hook still mints an id and returns it for a
+   *    runtime that stamps its own transcript lines.
    *
    * Declaring 'hook' where the transcript is also parsed writes each turn
    * twice: the hook's id is minted per invocation and the parse derives its
    * own, so the two never meet on the raw insert and only the projection key
-   * hides the second write.
+   * hides the second write. `tests/meta/parser-manifest-parity.test.ts` holds
+   * this equal to the presence of a server parser.
    */
   turnRowSource: z.enum(['hook', 'transcript']).default('hook'),
+  /**
+   * What this symbiont's transcript carries, as the Deployment's parser
+   * declares it. `no_tool_results` names a format with no tool calls in it,
+   * so a transcript-first symbiont with that fidelity still ships `tool.use`
+   * and `tool.failure` from its post-tool-use hooks: silencing them would lose
+   * the rows rather than de-duplicate them. Held equal to the parser by
+   * `tests/meta/parser-manifest-parity.test.ts`.
+   */
+  transcriptFidelity: z.enum(['full', 'no_tool_results']).default('full'),
   /**
    * Declarations of tool calls that Canopy should treat as file reads. The
    * PreToolUse resolver consults this list to decide whether to inject context
@@ -633,8 +650,9 @@ const CapabilitiesSchema = z.object({
   preToolUseInjection: false,
   sessionStartInjection: false,
   subagentStartInjection: false,
-  toolTransport: 'mcp' as const,
+  postToolUseInjection: false,
   turnRowSource: 'hook' as const,
+  transcriptFidelity: 'full' as const,
   canopyReadTools: [],
   pathBearingTools: [],
 }));

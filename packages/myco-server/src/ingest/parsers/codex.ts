@@ -52,7 +52,9 @@ function argumentsOf(raw: unknown): unknown {
 
 export const codexParser: TranscriptParser = {
   agent: 'codex',
-  fidelity: 'full',
+  // This parser reads function_call items with string outputs.
+  // Other tool-call shapes require the member's PostToolUse capture.
+  fidelity: 'no_tool_results',
   planTags: ['proposed_plan'],
 
   async parse({ lines, sessionId, now, openPromptId }: ParserInput): Promise<DerivedEvent[]> {

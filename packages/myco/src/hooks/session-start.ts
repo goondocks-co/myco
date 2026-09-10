@@ -6,7 +6,7 @@ import { runGit } from '../utils/git.js';
 import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { deriveId, promptEvent, sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
 import { servedOnce } from '../member/recall.js';
-import { sessionContextRequest } from '../member/compaction.js';
+import { compactionStart, recordCompaction, sessionContextRequest } from '../member/compaction.js';
 import { readSessionState } from '../member/session-state.js';
 import { sessionLineage } from '../member/transcript.js';
 import { sha256Text } from '../member/text.js';
@@ -104,12 +104,17 @@ export async function main(opts: HookMainOptions = {}) {
         events.push(promptEvent(ctx, { promptId, text }));
       });
     }
+    // A start the harness fires after compacting is the compaction's own
+    // record: the ordinal moves here, under the append lock, before the block
+    // for this compaction is asked for.
+    const compacted = compactionStart(run);
     return {
       events,
       // A symbiont whose harness discards a SessionStart answer is asked for
       // nothing: the call would spend the hook's budget on a block nobody reads.
       context: HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true ? recall(sessionId, branch, remote) : undefined,
-      record: captured.length === 0 ? undefined : (state) => {
+      record: captured.length === 0 && !compacted ? undefined : (state) => {
+        if (compacted) recordCompaction(state);
         for (const [hash, promptId] of captured) {
           state.prompts[hash] = promptId;
           state.promptId = promptId;

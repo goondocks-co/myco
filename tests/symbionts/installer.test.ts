@@ -45,18 +45,6 @@ const CURSOR_MANIFEST: SymbiontManifest = {
   },
 };
 
-/**
- * Cursor's real-world transport: `cli`. Its MCP child spawns at a
- * non-workspace cwd with no project-dir env and no usable roots, so the
- * stdio bridge can't carry tenancy — `installMcp()` must skip the server
- * and sweep any stale `myco` entry. Kept distinct from CURSOR_MANIFEST so
- * the mcp-path tests above still exercise a generic mcp-transport agent.
- */
-const CURSOR_CLI_MANIFEST: SymbiontManifest = {
-  ...CURSOR_MANIFEST,
-  capabilities: { toolTransport: 'cli' },
-};
-
 /** Minimal manifest with no hooks — used to test skip-guard behavior. */
 const NO_HOOKS_MANIFEST: SymbiontManifest = {
   name: 'no-hooks-agent',
@@ -90,33 +78,6 @@ const CODEX_MANIFEST: SymbiontManifest = {
   },
 };
 
-/**
- * Synthetic cli-transport symbiont whose hooks, MCP, and settings all resolve
- * to one shared JSON file (`mcpFormat: 'json'`) — the `shouldBatchJsonTargets`
- * condition. Exercises the batched-JSON write path's transport gate: a future
- * JSON-colocated cli symbiont must NOT get an MCP server written, and any
- * pre-existing `myco` entry must be swept.
- */
-const CLI_BATCHED_MANIFEST: SymbiontManifest = {
-  name: 'cli-batched',
-  displayName: 'CLI Batched',
-  binary: 'clibatched',
-  configDir: '.clibatched',
-  pluginRootEnvVar: 'CLIBATCHED_PLUGIN_ROOT',
-  settingsPath: '.clibatched/config.json',
-  hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
-  registration: {
-    hooksTarget: '.clibatched/config.json',
-    mcpTarget: '.clibatched/config.json',
-    mcpFormat: 'json',
-    settingsTarget: '.clibatched/config.json',
-    skillsTarget: '.agents/skills',
-  },
-  capabilities: {
-    toolTransport: 'cli',
-  },
-};
-
 // Like cli-batched but MCP-transport: hooks + MCP server + settings all land in
 // ONE JSON file, so install goes through `installBatchedJson` AND writes the MCP
 // server — the shape of claude-code's global ~/.claude/settings.json. Used to
@@ -134,6 +95,24 @@ const MCP_BATCHED_MANIFEST: SymbiontManifest = {
     mcpTarget: '.mcpbatched/config.json',
     mcpFormat: 'json',
     settingsTarget: '.mcpbatched/config.json',
+    skillsTarget: '.agents/skills',
+  },
+};
+
+/** A symbiont whose hooks, MCP server and settings share one JSON file, for the batched merge site. */
+const COLOCATED_MANIFEST: SymbiontManifest = {
+  name: 'cli-batched',
+  displayName: 'Colocated',
+  binary: 'clibatched',
+  configDir: '.clibatched',
+  pluginRootEnvVar: 'CLIBATCHED_PLUGIN_ROOT',
+  settingsPath: '.clibatched/config.json',
+  hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
+  registration: {
+    hooksTarget: '.clibatched/config.json',
+    mcpTarget: '.clibatched/config.json',
+    mcpFormat: 'json',
+    settingsTarget: '.clibatched/config.json',
     skillsTarget: '.agents/skills',
   },
 };
@@ -874,37 +853,6 @@ describe('installMcp', () => {
     expect(fs.readFileSync(mcpPath, 'utf-8')).toBe(agentStyled); // verbatim
   });
 
-  it('skips the MCP server for a cli-transport symbiont (cursor) and writes nothing', () => {
-    const installer = new SymbiontInstaller(CURSOR_CLI_MANIFEST, projectRoot, packageRoot);
-    const result = installer.installMcp();
-
-    // cli transport: the stdio bridge can't carry tenancy, so no server.
-    expect(result).toBe(false);
-    expect(fs.existsSync(path.join(projectRoot, '.cursor/mcp.json'))).toBe(false);
-  });
-
-  it('sweeps a stale myco MCP server for a cli-transport symbiont (cursor)', () => {
-    const mcpPath = path.join(projectRoot, '.cursor/mcp.json');
-    // Pre-existing state: a stale myco entry from a prior mcp-transport era,
-    // alongside a user's own server.
-    writeJson(mcpPath, {
-      mcpServers: {
-        myco: { type: 'stdio', command: 'myco-run', args: ['mcp'] },
-        'other-tool': { type: 'stdio', command: 'other-tool', args: ['serve'] },
-      },
-    });
-
-    const installer = new SymbiontInstaller(CURSOR_CLI_MANIFEST, projectRoot, packageRoot);
-    const result = installer.installMcp();
-
-    expect(result).toBe(false);
-    const config = readJson(mcpPath);
-    const servers = config.mcpServers as Record<string, unknown> | undefined;
-    // Stale myco entry swept; the user's own server preserved.
-    expect(servers?.myco).toBeUndefined();
-    expect(servers?.['other-tool']).toBeDefined();
-  });
-
   it('writes the stdio bridge for mcp-transport Copilot (resolved binary, no url)', () => {
     const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     const result = installer.installMcp();
@@ -940,46 +888,6 @@ describe('installMcp', () => {
   });
 });
 
-describe('installBatchedJson transport gate', () => {
-  /** Plant the cli-batched templates the batched-JSON path reads. */
-  function setupCliBatchedTemplates(): void {
-    const dir = path.join(packageRoot, 'src/symbionts/templates/cli-batched');
-    fs.mkdirSync(dir, { recursive: true });
-    writeJson(path.join(dir, 'hooks.json'), {
-      Stop: [{ hooks: [{ type: 'command', command: '{{mycoLauncher}} hook stop --symbiont cli-batched', timeout: 30 }] }],
-    });
-    writeJson(path.join(dir, 'mcp.json'), MCP_TEMPLATE);
-    writeJson(path.join(dir, 'settings.json'), { features: { capture: true } });
-  }
-
-  it('omits the MCP server for a cli-transport symbiont and sweeps any existing myco entry', () => {
-    setupCliBatchedTemplates();
-    const sharedFile = path.join(projectRoot, '.clibatched/config.json');
-    // Pre-existing state: a stale myco MCP server alongside a user's own.
-    writeJson(sharedFile, {
-      mcpServers: {
-        myco: { type: 'stdio', command: 'myco-run', args: ['mcp'] },
-        'other-tool': { type: 'stdio', command: 'other-tool', args: ['serve'] },
-      },
-    });
-
-    const installer = new SymbiontInstaller(CLI_BATCHED_MANIFEST, projectRoot, packageRoot);
-    const result = installer.install();
-
-    // Batched path reports no MCP write for the cli-transport symbiont.
-    expect(result.mcp).toBe(false);
-    // Hooks still installed (shared file) — the symbiont remains captured.
-    expect(result.hooks).toBe(true);
-
-    const config = readJson(sharedFile);
-    const servers = config.mcpServers as Record<string, unknown> | undefined;
-    // The stale myco entry is swept; the user's own server is preserved.
-    expect(servers?.myco).toBeUndefined();
-    expect(servers?.['other-tool']).toBeDefined();
-    // Hooks block landed in the same file.
-    expect(config.hooks).toBeDefined();
-  });
-});
 
 // =====================
 // installSkills
@@ -1508,55 +1416,8 @@ describe('installMcp (TOML)', () => {
 // installMcp — per-symbiont tool transport
 // =====================
 
-describe('installMcp tool transport', () => {
-  it('cli-transport symbiont: installMcp writes nothing and sweeps the existing block (project scope)', () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cli-tr-'));
-    const cliCodex = {
-      ...CODEX_MANIFEST,
-      capabilities: { ...(CODEX_MANIFEST.capabilities ?? {}), toolTransport: 'cli' as const },
-    };
-    const installer = new SymbiontInstaller(cliCodex, projectRoot, packageRoot); // default 'project' scope
-    const cfg = path.join(projectRoot, '.codex', 'config.toml'); // codex mcpTarget
-    fs.mkdirSync(path.dirname(cfg), { recursive: true });
-    fs.writeFileSync(cfg, '[mcp_servers.myco]\nurl = "http://127.0.0.1:20915/mcp"\n');
-    expect(installer.installMcp()).toBe(false);
-    const after = fs.existsSync(cfg) ? fs.readFileSync(cfg, 'utf-8') : '';
-    expect(after).not.toContain('[mcp_servers.myco]');
-  });
-
-  it('cli-transport symbiont: installMcp sweeps the GLOBAL config (production path)', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
-    const origHome = process.env.HOME;
-    const origSandbox = process.env.MYCO_SANDBOX_ROOT;
-    process.env.HOME = home;
-    process.env.MYCO_SANDBOX_ROOT = home; // satisfy assertSandboxedHome — HOME must resolve inside the sandbox root
-    try {
-      const cliCodex = {
-        ...CODEX_MANIFEST,
-        // Global scope reads reg.globalMcpTarget; the production codex manifest
-        // declares ~/.codex/config.toml. The test fixture omits it, so add the
-        // normalized array shape the installer iterates.
-        registration: {
-          ...CODEX_MANIFEST.registration,
-          globalMcpTarget: [{ path: '~/.codex/config.toml' }],
-        },
-        capabilities: { ...(CODEX_MANIFEST.capabilities ?? {}), toolTransport: 'cli' as const },
-      };
-      // installScope 'global' is the 7th constructor arg (see bootstrap.ts:92-93).
-      const installer = new SymbiontInstaller(cliCodex, '/', packageRoot, false, undefined, null, 'global');
-      const cfg = path.join(home, '.codex', 'config.toml'); // codex globalMcpTarget = ~/.codex/config.toml
-      fs.mkdirSync(path.dirname(cfg), { recursive: true });
-      fs.writeFileSync(cfg, '[mcp_servers.myco]\nurl = "http://127.0.0.1:20915/mcp"\n');
-      expect(installer.installMcp()).toBe(false);
-      const after = fs.existsSync(cfg) ? fs.readFileSync(cfg, 'utf-8') : '';
-      expect(after).not.toContain('[mcp_servers.myco]');
-    } finally {
-      if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
-      if (origSandbox === undefined) delete process.env.MYCO_SANDBOX_ROOT; else process.env.MYCO_SANDBOX_ROOT = origSandbox;
-    }
-  });
-
-  it('mcp-transport symbiont: installMcp still writes the server', () => {
+describe('installMcp writes the server for every symbiont with an MCP template', () => {
+  it('codex: installMcp writes the server', () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mcp-tr-'));
     const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot); // mcp by default
     expect(installer.installMcp()).toBe(true);
@@ -3167,9 +3028,9 @@ describe('Windows backslash hook entries collapse on merge (both merge sites)', 
   });
 
   it('batched merge site (installBatchedJson): collapses 6 backslash duplicates to 1, preserves the user hook', () => {
-    // CLI_BATCHED_MANIFEST colocates hooks/mcp/settings into one JSON file, so
-    // install() routes through installBatchedJson() — the batched merge site
-    // (~878). Plant the templates that path reads.
+    // COLOCATED_MANIFEST colocates hooks/mcp/settings into one JSON file, so
+    // install() routes through installBatchedJson() — the batched merge site.
+    // Plant the templates that path reads.
     const dir = path.join(packageRoot, 'src/symbionts/templates/cli-batched');
     fs.mkdirSync(dir, { recursive: true });
     writeJson(path.join(dir, 'hooks.json'), {
@@ -3186,7 +3047,7 @@ describe('Windows backslash hook entries collapse on merge (both merge sites)', 
       },
     });
 
-    const installer = new SymbiontInstaller(CLI_BATCHED_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COLOCATED_MANIFEST, projectRoot, packageRoot);
     installer.install();
 
     const config = readJson(sharedFile);

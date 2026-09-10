@@ -63,8 +63,9 @@ const transcriptFile = (): string => {
   return file;
 };
 
+/** Copilot's prompt hook ships the prompt row, so each prompt is a live send the rotation can ride. */
 const prompt = (fetchImpl: FetchLike, text: string) =>
-  runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: text }, { fetch: fetchImpl });
+  runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: text }, { fetch: fetchImpl, symbiont: 'copilot' });
 
 const budget = () => ({ connectTimeoutMs: 2_000, requestTimeoutMs: 10_000 });
 
@@ -101,7 +102,7 @@ describe('member token rotation', () => {
     process.env[ENV_PROJECT] = PROJECT;
     const spy = recordingFetch(rig.fetch);
 
-    const out = await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { fetch: spy.fetch, credential: 'env' });
+    const out = await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
 
     expect(out.stderr).toBe('');
     expect(rig.rows('prompt_batches')).toBe(1);

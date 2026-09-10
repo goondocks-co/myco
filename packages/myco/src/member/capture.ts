@@ -183,10 +183,12 @@ export async function runMemberHook(
         onUnauthorized: async (): Promise<ClientRecord | null> => rotatedCredential(root, credential, mycoHome),
         clientFor: (record: ClientRecord) => new ServerClient(record, fetchImpl),
       };
-      await spool.drainSession(sessionId, client, budget, { force: outcome.probe, now, ...recovery });
+      const drained = await spool.drainSession(sessionId, client, budget, { force: outcome.probe, now, ...recovery });
       if (outcome.afterDrain) await outcome.afterDrain(run);
-      // Probing hooks (Stop/SessionEnd) also apply spool retention for the project.
-      if (outcome.probe) applySpoolRetention(spool, now());
+      // Probing hooks (Stop/SessionEnd) also apply spool retention for the
+      // project; a drain that delivered everything also lets go of the state
+      // of sessions delivered long ago.
+      if (outcome.probe) applySpoolRetention(spool, now(), { delivered: drained.skipped === undefined && drained.endedBy === 'drained' && drained.remaining === 0 });
       // Registry-sourced credentials rotate after the hook's main work, inside what remains of the budget; env-sourced ones never do.
       if (root !== null && refreshDue(credential, now()) && canStartRequest(budget, now())) {
         await refreshMemberCredential(root, { mycoHome, fetch: fetchImpl, now, budget: clippedRequestBudget(budget, now()) });

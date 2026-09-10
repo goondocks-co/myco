@@ -62,9 +62,12 @@ interface HookConfigEntry {
     preToolUseInjection: boolean;
     sessionStartInjection: boolean;
     subagentStartInjection: boolean;
+    postToolUseInjection: boolean;
     turnRowSource: 'hook' | 'transcript';
+    transcriptFidelity: 'full' | 'no_tool_results';
   };
   transcriptDiscovery?: unknown;
+  subagentTranscripts?: string;
   hookResponse?: unknown;
   capturePrompts?: unknown;
   captureRules?: unknown;
@@ -158,12 +161,15 @@ function hookConfigEntryFor(manifest: SymbiontManifest): HookConfigEntry {
       preToolUseInjection: manifest.capabilities?.preToolUseInjection === true,
       sessionStartInjection: manifest.capabilities?.sessionStartInjection === true,
       subagentStartInjection: manifest.capabilities?.subagentStartInjection === true,
+      postToolUseInjection: manifest.capabilities?.postToolUseInjection === true,
       turnRowSource: manifest.capabilities?.turnRowSource ?? 'hook',
+      transcriptFidelity: manifest.capabilities?.transcriptFidelity ?? 'full',
     },
   };
   if (manifest.capture?.transcriptDiscovery) {
     entry.transcriptDiscovery = manifest.capture.transcriptDiscovery;
   }
+  if (manifest.capture?.subagentTranscripts) entry.subagentTranscripts = manifest.capture.subagentTranscripts;
   const hookResponse = manifest.registration?.hookResponse;
   if (hookResponse) entry.hookResponse = hookResponse;
   const capturePrompts = manifest.capture?.prompts;
@@ -224,8 +230,11 @@ export interface HookCapabilities {
   preToolUseInjection: boolean;
   sessionStartInjection: boolean;
   subagentStartInjection: boolean;
+  postToolUseInjection: boolean;
   /** Which side writes this symbiont's turn rows; see the manifest schema. */
   turnRowSource: 'hook' | 'transcript';
+  /** What the transcript carries, as the Deployment's parser declares it; see the manifest schema. */
+  transcriptFidelity: 'full' | 'no_tool_results';
 }
 
 export interface HookConfigEntry {
@@ -238,6 +247,8 @@ export interface HookConfigEntry {
   planTags: string[];
   capabilities: HookCapabilities;
   transcriptDiscovery?: TranscriptDiscovery;
+  /** Glob, relative to the session transcript's directory, of the subagent transcripts a session writes beside it. */
+  subagentTranscripts?: string;
   hookResponse?: NonNullable<SymbiontRegistration['hookResponse']>;
   capturePrompts?: CapturePrompts;
   captureRules?: CaptureRule[];

@@ -163,7 +163,7 @@ describe('a v1 entry still captures', () => {
     expect(fs.existsSync(deploymentsDir(mycoHome))).toBe(false);
 
     const { fetch, requests } = recordingFetch(rig.fetch);
-    const result = await runHook('post-tool-use', { session_id: 'sess-v1', tool_name: 'Read', tool_input: { file_path: '/a' } }, { fetch, credential: 'registry' });
+    const result = await runHook('post-tool-use', { session_id: 'sess-v1', tool_name: 'Read', tool_input: { file_path: '/a' } }, { fetch, credential: 'registry', symbiont: 'copilot' });
 
     expect(result.stderr).not.toContain('no registry entry');
     expect(requests.map((r) => r.path)).toEqual(['/events']);

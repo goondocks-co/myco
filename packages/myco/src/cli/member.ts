@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
-import { defaultMycoHome, readHomePin, resolveMycoHome, RUNTIME_HOME_FILENAME } from '../paths/home.js';
+import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from '../member/budget.js';
 import { isProjectId, MEMBER_TOKEN_REFRESH_WINDOW_MS } from '../member/constants.js';
 import { isHttpsUrl, isMemberTokenShape, resolveMemberProjectRoot } from '../member/credential.js';
@@ -171,12 +171,14 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   };
   writeRegistryEntry(entry, { mycoHome });
   const pinned = pinProjectHome(root, mycoHome);
+  const machinePinned = pinMachineHome(mycoHome, deps);
   // The misses this root accumulated while unjoined are answered by the join itself.
   const missed = readMissingMembership(root, mycoHome);
   clearMissingMembership(root, mycoHome);
   pruneMissingMemberships(mycoHome, now());
   out(`joined ${parsed.project} at ${parsed.serverUrl} for ${root}`);
   reportPin(pinned, mycoHome, out, err);
+  reportMachinePin(machinePinned, mycoHome, out);
   if (missed) out(`${missed.count} earlier capture attempt(s) here found no membership; new sessions are captured from now on`);
   out('connect your GitHub account for the dashboard: myco member link-github');
 
@@ -185,9 +187,9 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
     if (!manifest) return fail(`unknown agent "${parsed.provision}" — the membership is recorded; provision it with \`myco member join --provision <agent>\``);
     const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
     const installed = installer.install();
-    out(installed.hooks
+    out(installed.hooks || installed.mcp
       ? `provisioned ${manifest.displayName} for ${root}${installed.mcp ? ' (hooks and MCP)' : ''}`
-      : `${manifest.displayName} cannot report to a server; nothing provisioned`);
+      : `no registration changes for ${manifest.displayName} at ${root}`);
   }
 
   // #1148: the machine's existing history for this project, once, bounded by
@@ -355,8 +357,7 @@ function pinProjectHome(root: string, mycoHome: string): PinOutcome {
   try {
     fs.mkdirSync(path.dirname(pinPath), { recursive: true });
     ensureVaultGitignoreCurrent(path.dirname(pinPath));
-    fs.writeFileSync(pinPath, `${home}\n`, { mode: PIN_FILE_MODE });
-    fs.chmodSync(pinPath, PIN_FILE_MODE);
+    createHomePin(pinPath, home);
     return { kind: 'written', pinPath };
   } catch {
     // A read-only checkout still holds the membership; only the pin is missing.
@@ -388,6 +389,52 @@ function reportPin(outcome: PinOutcome, mycoHome: string, out: (l: string) => vo
   }
 }
 
+/** What `pinMachineHome` did. */
+type MachinePinOutcome = { kind: 'written'; pinPath: string } | { kind: 'settled' } | { kind: 'held'; pinPath: string; pinned: string } | { kind: 'unwritable'; pinPath: string };
+
+/**
+ * Pin the MACHINE at this membership's home, when the home is not the default
+ * one and no machine pin exists.
+ *
+ * A harness that starts `myco mcp` outside the project — at `/`, at the user's
+ * home — walks no project pin, and a GUI-launched one carries no environment,
+ * so the machine pin (`~/.myco/runtime.home`, read after the project pin and
+ * before the default) is the one thing left that names this home. Written
+ * once: a machine pin naming another home is another install's choice and is
+ * left standing, the way a project pin naming another home is.
+ */
+function pinMachineHome(mycoHome: string, deps: MemberCliDeps): MachinePinOutcome {
+  const home = path.resolve(mycoHome);
+  const defaultHome = defaultMycoHome(deps.env?.HOME && deps.env.HOME.length > 0 ? deps.env.HOME : undefined);
+  if (pathsEquivalentHome(home, defaultHome)) return { kind: 'settled' };
+  const pinPath = path.join(defaultHome, RUNTIME_HOME_FILENAME);
+  const existing = readHomePin(pinPath, { env: deps.env ?? process.env });
+  if (existing === home) return { kind: 'settled' };
+  if (existing !== null) return { kind: 'held', pinPath, pinned: existing };
+  try {
+    fs.mkdirSync(defaultHome, { recursive: true });
+    createHomePin(pinPath, home);
+    return { kind: 'written', pinPath };
+  } catch {
+    return { kind: 'unwritable', pinPath };
+  }
+}
+
+function reportMachinePin(outcome: MachinePinOutcome, mycoHome: string, out: (l: string) => void): void {
+  switch (outcome.kind) {
+    case 'written':
+      out(`pinned this machine to ${path.resolve(mycoHome)} (${outcome.pinPath}), so an MCP server started outside the project finds it`);
+      return;
+    case 'held':
+      out(`this machine stays pinned to ${outcome.pinned} (${outcome.pinPath}); an MCP server started outside this project resolves that home`);
+      return;
+    case 'unwritable':
+      out(`could not write ${outcome.pinPath}; an MCP server started outside this project resolves the default home`);
+      return;
+    case 'settled':
+  }
+}
+
 /** Remove a pin this home wrote. A pin naming another home belongs to that one. */
 function unpinProjectHome(root: string, mycoHome: string): boolean {
   const pinPath = path.join(root, '.myco', RUNTIME_HOME_FILENAME);
@@ -404,6 +451,17 @@ const pathsEquivalentHome = (a: string, b: string): boolean => path.resolve(a) =
 
 /** A pin is read by every launcher and must not be writable by anyone else. */
 const PIN_FILE_MODE = 0o644;
+
+/** Create an absent pin exclusively; contents and mode use the same open file. */
+function createHomePin(pinPath: string, home: string): void {
+  const file = fs.openSync(pinPath, 'wx', PIN_FILE_MODE);
+  try {
+    fs.writeFileSync(file, `${home}\n`);
+    fs.fchmodSync(file, PIN_FILE_MODE);
+  } finally {
+    fs.closeSync(file);
+  }
+}
 
 export async function runRefresh(args: readonly string[], deps: MemberCliDeps = {}): Promise<RefreshReport[]> {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));

@@ -246,6 +246,9 @@ capture:
     interruptMarker: "<turn_aborted>"
 registration:
   hooksTarget: .codex/hooks.json
+  # The 2.0 member scope writes the project's own hooks file: Codex reads it
+  # beside the global one, and no 1.4 project install owns it on a member.
+  memberHooksTarget: .codex/hooks.json
   # Codex hooks live in a dedicated JSON file at both scopes. The plan's
   # original "consolidate hooks + MCP into config.toml" left the installer
   # writing JSON over a TOML file, corrupting the user's mcp_servers /
@@ -271,16 +274,16 @@ capabilities:
   # SubagentStart can inject additionalContext as extra developer context for
   # the child agent.
   subagentStartInjection: true
-  # HTTP MCP cannot carry per-project tenancy for Codex: its MCP config is global
-  # (one entry, many projects), it sends no tenancy headers and no MCP `roots`,
-  # and its MCP child runs at cwd=/ on Desktop — zero per-request project signal.
-  # Its SHELL tool DOES run in the workspace, so `myco tool call` resolves full
-  # tenancy from cwd. Declare the shell/CLI as Codex's tenancy-capable transport;
-  # the installer writes no MCP server and session-start injects a CLI directive.
-  toolTransport: cli
-  # Emit hookSpecificOutput envelope on PreToolUse so Canopy anatomy reaches
-  # the agent's context.
-  preToolUseInjection: true
+  # The Deployment parses the rollout (`ingest/parsers/codex.ts`): the hooks
+  # register the session, ship the transcript delta and inject, and write no
+  # prompt or response row of their own. Tenancy travels as a tool parameter
+  # over MCP.
+  turnRowSource: transcript
+  # PostToolUse supplies tool-call records absent from the parser's output.
+  transcriptFidelity: no_tool_results
+  # No PreToolUse hook is wired: the Deployment parses the rollout and the
+  # retained set injects at session start, prompt submit and subagent start.
+  preToolUseInjection: false
   # File reads come through Codex's canonical 'Bash' tool with the path
   # embedded in the command string. The resolver shlex-parses and picks the
   # last non-flag positional arg when the command name is in this allowlist.

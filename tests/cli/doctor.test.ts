@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { type DoctorCheck, checkCaptureFlow, checkMigrationStatus, checkSymbiontEdgeCases, fix, isSymbiontRegistered, isSymbiontRegisteredGlobally, run, runChecks } from '@myco/cli/doctor';
+import { type DoctorCheck, checkCaptureFlow, checkMemberMcpResolution, checkMigrationStatus, checkSymbiontEdgeCases, fix, isSymbiontRegistered, isSymbiontRegisteredGlobally, run, runChecks } from '@myco/cli/doctor';
+import { writeRegistryEntry, REGISTRY_VERSION } from '@myco/member/registry.js';
 import { loadManifests } from '@myco/symbionts/detect';
-import { manifestToolTransport } from '@myco/symbionts/capabilities';
 import { expandHome } from '@myco/grove/paths';
 import { openDatabase, withDatabase, initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
@@ -597,40 +597,28 @@ describe('isSymbiontRegistered', () => {
     }
   });
 
-  it('treats a cli-transport symbiont (codex) as registered via hooks, ignoring its (absent) MCP server', () => {
+  it('treats codex as registered once its MCP server is in config.toml, like every other symbiont', () => {
     const manifest = findManifest('codex');
-    expect(manifestToolTransport(manifest)).toBe('cli');
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-codex-'));
     try {
-      // Install codex's hooks but write NO `[mcp_servers.myco]` into its
-      // config.toml — the post-feature steady state for a cli-transport
-      // symbiont. Registration must be decided by hooks, not MCP.
       const hooksPath = path.join(projectRoot, manifest.registration!.hooksTarget!);
       fs.mkdirSync(path.dirname(hooksPath), { recursive: true });
-      fs.writeFileSync(hooksPath, JSON.stringify({
-        hooks: {
-          Stop: [
-            { command: 'node .agents/myco-run.cjs hook stop --symbiont codex' },
-          ],
-        },
-      }), 'utf-8');
+      fs.writeFileSync(hooksPath, JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: '/opt/myco hook stop --symbiont codex --myco-managed' }] }] } }), 'utf-8');
       const mcpPath = path.join(projectRoot, manifest.registration!.mcpTarget!);
       fs.mkdirSync(path.dirname(mcpPath), { recursive: true });
-      fs.writeFileSync(mcpPath, 'model = "gpt-5"\n', 'utf-8'); // TOML, no [mcp_servers.myco]
-
-      expect(isSymbiontRegistered({
-        manifest,
-        binaryFound: false,
-        configDirFound: true,
-      }, projectRoot)).toBe(true);
+      fs.writeFileSync(mcpPath, 'model = "gpt-5"\n', 'utf-8');
+      const detected = { manifest, binaryFound: false, configDirFound: true };
+      // Hooks alone do not register a symbiont that declares an MCP target.
+      expect(isSymbiontRegistered(detected, projectRoot)).toBe(false);
+      fs.appendFileSync(mcpPath, '\n[mcp_servers.myco]\ncommand = "/opt/myco"\nargs = ["mcp"]\n');
+      expect(isSymbiontRegistered(detected, projectRoot)).toBe(true);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
 
-  it('leaves an mcp-transport symbiont (claude-code) deciding on its MCP server', () => {
+  it('leaves claude-code deciding on its MCP server', () => {
     const manifest = findManifest('claude-code');
-    expect(manifestToolTransport(manifest)).toBe('mcp');
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-claude-'));
     try {
       // Hooks installed, but no MCP server: an mcp-transport symbiont keys
@@ -707,27 +695,14 @@ describe('isSymbiontRegisteredGlobally', () => {
     })).toBe(false);
   });
 
-  it('treats a cli-transport symbiont (codex) as globally registered via hooks, not MCP', () => {
+  it('treats codex as globally registered through its global MCP server, and through its global hooks where the server is absent', () => {
     const manifest = findManifest('codex');
-    expect(manifestToolTransport(manifest)).toBe('cli');
     const target = manifest.registration!.globalHooksTarget;
     expect(target, 'codex should declare a globalHooksTarget').toBeTruthy();
     const file = expandHome(target!);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({
-      hooks: {
-        Stop: [
-          { command: 'node /Users/test/.myco/launcher.cjs hook stop --symbiont codex' },
-        ],
-      },
-    }), 'utf-8');
-    // No global config.toml MCP server written — the cli-transport steady
-    // state. Global registration is decided by hooks.
-    expect(isSymbiontRegisteredGlobally({
-      manifest,
-      binaryFound: false,
-      configDirFound: true,
-    })).toBe(true);
+    fs.writeFileSync(file, JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: '/opt/myco hook stop --symbiont codex --myco-managed' }] }] } }), 'utf-8');
+    expect(isSymbiontRegisteredGlobally({ manifest, binaryFound: false, configDirFound: true })).toBe(true);
   });
 
   it('returns true when the global hooks file carries a Myco hook group', () => {
@@ -827,5 +802,65 @@ describe('checkCaptureFlow', () => {
     const check = await checkCaptureFlow(seedVault([30, 45]), testPerUserLockNamespace);
     expect(check.status).toBe('warn');
     expect(check.detail).toContain('No sessions in the last 7 days');
+  });
+});
+
+describe('checkMemberMcpResolution', () => {
+  let savedHome: string | undefined;
+  let savedMycoHome: string | undefined;
+  let homeDir: string;
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+    savedMycoHome = process.env.MYCO_HOME;
+    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-home-'));
+    process.env.HOME = homeDir;
+    delete process.env.MYCO_HOME;
+  });
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedMycoHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedMycoHome;
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  const member = (root: string, mycoHome: string, projectId: string) => writeRegistryEntry({
+    version: REGISTRY_VERSION, projectId, serverUrl: 'https://srv.example', token: 'A'.repeat(43), root, machineId: 'm1', joinedAt: 1, updatedAt: 1,
+  }, { mycoHome });
+
+  it('says nothing for a project that is not a member, and nothing for one membership in the default home with a cwd-carrying Codex entry', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    expect(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).toEqual([]);
+    member(root, path.join(homeDir, '.myco'), 'proj_1');
+    fs.mkdirSync(path.join(root, '.codex'));
+    fs.writeFileSync(path.join(root, '.codex', 'config.toml'), `[mcp_servers.myco]\ncommand = "/opt/myco"\nargs = ["mcp"]\ncwd = "${root}"\n`);
+    fs.mkdirSync(path.join(root, '.cursor'));
+    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { command: '/opt/myco', args: ['mcp'] } } }));
+    expect(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).toEqual([]);
+  });
+
+  it('names the Codex entry without a cwd, the second membership a JSON host cannot tell apart, and the machine pin a non-default home lacks', async () => {
+    const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-other-home-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    fs.writeFileSync(path.join(root, '.myco', 'runtime.home'), `${mycoHome}\n`, { mode: 0o644 });
+    member(root, mycoHome, 'proj_1');
+    member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), mycoHome, 'proj_2');
+    fs.mkdirSync(path.join(root, '.codex'));
+    fs.writeFileSync(path.join(root, '.codex', 'config.toml'), '[mcp_servers.myco]\ncommand = "/opt/myco"\nargs = ["mcp"]\n');
+    fs.mkdirSync(path.join(root, '.cursor'));
+    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { command: '/opt/myco', args: ['mcp'] } } }));
+
+    const checks = await checkMemberMcpResolution(path.join(root, '.myco'), process.env);
+    const details = checks.map((c) => c.detail).join('\n');
+    expect(checks.every((c) => c.name === 'Member MCP resolution' && c.status === 'warn')).toBe(true);
+    expect(details).toContain('machine pin');
+    expect(details).toContain('carries no cwd');
+    expect(details).toContain('holds 2 memberships');
+    // The machine pin settles the home warning and nothing else.
+    fs.mkdirSync(path.join(homeDir, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.myco', 'runtime.home'), `${mycoHome}\n`, { mode: 0o644 });
+    const after = (await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).map((c) => c.detail).join('\n');
+    expect(after).not.toContain('machine pin');
+    expect(after).toContain('carries no cwd');
   });
 });
