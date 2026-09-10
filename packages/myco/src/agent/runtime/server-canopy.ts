@@ -7,7 +7,7 @@ import {
 import { gatherMapSource, mapSourceAdmission } from '@myco/canopy/map/source.js';
 import { createExplorationTools } from '@myco/agent/tools/exploration-tools.js';
 import type { ServerToolContext, RunReportArgs } from '@myco/agent/runtime/server-tools.js';
-import type { RepositoryCheckout } from '@myco/agent/runtime/repository-checkout.js';
+import type { RepositoryCheckout } from '@myco/runner/repository-checkout.js';
 import type { MycoToolDefinition } from '@myco/agent/tools/types.js';
 import { postRunControl, postRunReport } from '@myco/agent/runtime/run-store-http.js';
 

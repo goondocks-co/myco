@@ -1,4 +1,4 @@
-import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
+import { REPOSITORY_TASKS, REPOSITORY_CHECKOUT_CAPABILITY, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { repositoryIdentity } from './repositories.js';
 /**
  * The one dispatcher: every agent task a Deployment runs goes through here,
@@ -807,6 +807,7 @@ export interface OfferedHarness {
 
 /** What a claim answers a worker: the run, the harness chosen for it, the credentials it runs under, and what the worker lays out in the run's directory. */
 export interface ClaimedRun extends ClaimedRunRow {
+  repository?: RepositoryCheckoutSpec;
   harness: string;
   runToken: string;
   credentialEnv: Record<string, string>;
@@ -892,9 +893,11 @@ async function harnessCredentialEnv(env: ServerEnv, harness: string): Promise<Re
  */
 export async function claimNextRun(
   env: ServerEnv,
-  worker: { tokenId: string; machineId: string; harnesses: readonly OfferedHarness[]; now: number },
+  worker: { tokenId: string; machineId: string; harnesses: readonly OfferedHarness[]; capabilities?: readonly string[]; now: number },
 ): Promise<ClaimOutcome> {
-  const candidate = await nextClaimable(env.db, RUNTIME_SERVED_TASKS);
+  const excluded = worker.capabilities?.includes(REPOSITORY_CHECKOUT_CAPABILITY)
+    ? RUNTIME_SERVED_TASKS : [...new Set([...RUNTIME_SERVED_TASKS, ...REPOSITORY_TASKS])];
+  const candidate = await nextClaimable(env.db, excluded);
   if (candidate === null) return { claimed: false, reason: 'no_work' };
 
   const preference = await harnessPreference(env, candidate.task);
@@ -944,7 +947,7 @@ export async function claimNextRun(
     await recordQueueHolder(env.db, scope, candidate.id, held);
     return { claimed: false, reason: 'at_limit' };
   }
-  if (built !== null && !built.unchanged) await recordClaimedInput(env.db, scope, row.id, built.input);
+  if (built !== null && !built.unchanged) await recordClaimedInput(env.db, scope, row.id, minted.tokenId, built.input);
 
   emit({ kind: 'worker_claimed', runId: row.id, task: row.task, projectId: row.projectId, harness, tokenId: worker.tokenId });
   return {
@@ -953,6 +956,7 @@ export async function claimNextRun(
       ...row,
       instruction,
       instructions: instructionsFileFor(built),
+      ...(built !== null && !built.unchanged && built.input.repository !== undefined ? { repository: built.input.repository } : {}),
       harness,
       runToken: minted.token,
       credentialEnv: await harnessCredentialEnv(env, harness),

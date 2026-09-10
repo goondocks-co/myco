@@ -20,7 +20,7 @@ import { materializeRunMap, prepareRunMap } from './server-canopy.js';
 import { createExplorationTools } from '../tools/exploration-tools.js';
 import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { prepareRunRepository } from './server-repository.js';
-import type { RepositoryCheckout } from './repository-checkout.js';
+import type { RepositoryCheckout } from '@myco/runner/repository-checkout.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import type { RequestBudget } from '@myco/member/budget.js';
 import type { ServerClient } from '@myco/member/transport.js';

@@ -19,7 +19,7 @@
  * ask. The agent protocol carries user prompts alone, which is why the rules
  * travel as a file rather than as a second message.
  */
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { memberHeaders } from '../member/constants.js';
 
@@ -57,15 +57,20 @@ export function mcpConfigOf(connection: RunConnection): Record<string, unknown> 
  * the run ends, whatever the run's outcome.
  */
 export function writeRunDir(root: string, runId: string, connection: RunConnection, instructions: string | null = null): { scratchDir: string; mcpConfigPath: string } {
-  const scratchDir = join(root, runId);
-  mkdirSync(scratchDir, { recursive: true, mode: 0o700 });
-  const mcpConfigPath = join(scratchDir, 'mcp.json');
-  writeFileSync(mcpConfigPath, JSON.stringify(mcpConfigOf(connection), null, 2), { mode: 0o600 });
-  chmodSync(mcpConfigPath, 0o600);
-  if (instructions !== null && instructions.trim() !== '') {
-    for (const name of RUN_INSTRUCTIONS_FILES) writeFileSync(join(scratchDir, name), instructions, { mode: 0o600 });
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(runId)) throw new Error('Invalid run directory identity.');
+  const scratchDir = mkdtempSync(join(root, `${runId}-`));
+  try {
+    const mcpConfigPath = join(scratchDir, 'mcp.json');
+    writeFileSync(mcpConfigPath, JSON.stringify(mcpConfigOf(connection), null, 2), { mode: 0o600 });
+    chmodSync(mcpConfigPath, 0o600);
+    if (instructions !== null && instructions.trim() !== '') {
+      for (const name of RUN_INSTRUCTIONS_FILES) writeFileSync(join(scratchDir, name), instructions, { mode: 0o600 });
+    }
+    return { scratchDir, mcpConfigPath };
+  } catch (error) {
+    discardRunDir(scratchDir);
+    throw error;
   }
-  return { scratchDir, mcpConfigPath };
 }
 
 /** Remove a run's directory and the credential it holds. */

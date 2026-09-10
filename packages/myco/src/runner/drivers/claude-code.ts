@@ -14,9 +14,12 @@
  * with an `error` field while the process exits non-zero and still writes a
  * well-formed `result`; both are read.
  */
+import { realpathSync } from 'node:fs';
+import { join } from 'node:path';
 import { harnessById } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
+import { RUN_REPOSITORY_DIR, SOURCE_GIT_READ_COMMANDS } from '@goondocks/myco-shared/repository';
 import { jsonLines, numberOf, recordOf, startHarness, stringOf } from './stream.js';
 
 const STOP: Readonly<Record<string, StopReason>> = {
@@ -33,10 +36,18 @@ const STOP: Readonly<Record<string, StopReason>> = {
  * There is nobody at a terminal to answer a permission prompt, so nobody is
  * declared to answer one and every tool that would have asked is refused. The
  * run's own server is allowed whole; the mode is the asking one, so the
- * machine's own `bypassPermissions` or `auto` does not reach a run queued from
- * elsewhere, and everything outside the run's server is refused.
+ * machine's own `bypassPermissions` or `auto` does not reach a queued run.
+ * Source runs additionally allow file reads and bounded Git history commands.
  */
 export const RUN_PERMISSIONS: readonly string[] = ['--permission-mode', 'manual', '--permission-prompts', 'none', '--allowedTools', `mcp__${MCP_SERVER_NAME}`];
+
+/** Source runs can inspect files and repository history without approving writes. */
+function sourceReadTools(scratchDir: string): string[] {
+  const root = join(scratchDir, RUN_REPOSITORY_DIR);
+  const paths = [...new Set([RUN_REPOSITORY_DIR, root, realpathSync(root)])];
+  const prefixes = ['git', ...paths.map((path) => `git -C ${path}`)];
+  return ['Read', 'Glob', 'Grep', ...prefixes.flatMap((prefix) => SOURCE_GIT_READ_COMMANDS.map((command) => `Bash(${prefix} ${command}:*)`))];
+}
 
 /** A message's content blocks. */
 function blocksOf(message: Record<string, unknown> | null): Record<string, unknown>[] {
@@ -62,6 +73,7 @@ export const claudeCodeDriver: Driver = {
       '--mcp-config', spec.mcpConfigPath,
       ...isolation,
       ...RUN_PERMISSIONS,
+      ...(spec.sourceReadOnly === true ? sourceReadTools(spec.scratchDir) : []),
     ], { cwd: spec.scratchDir, env: spec.credentialEnv, signal });
 
     let ended = false;

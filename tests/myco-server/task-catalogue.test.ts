@@ -119,7 +119,7 @@ describe('what each task owes before it closes', () => {
 describe('the three run outcomes', () => {
   it('name which of them a worker cannot drive yet, and only among themselves', () => {
     for (const task of UNLANDED_TASKS) expect({ task, outcome: OUTCOME_TASKS.includes(task) }).toEqual({ task, outcome: true });
-    expect(UNLANDED_TASKS).toEqual([SEEDING_TASK]);
+    expect(UNLANDED_TASKS).not.toContain(SEEDING_TASK);
   });
 
   it('are exactly the worker-served tasks, each with a prompt the Deployment builds', () => {

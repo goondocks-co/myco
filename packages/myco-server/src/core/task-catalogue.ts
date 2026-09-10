@@ -39,13 +39,8 @@ export const SEEDING_TASK = 'vault-seed';
 /** The three run outcomes: every worker-served task with a prompt of its own. */
 export const OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK];
 
-/**
- * Outcomes whose server half stands and whose worker half has not landed: the
- * seeding run's prompt names a checkout no worker creates yet. A dispatch of one
- * is refused by name (`not_landed`) rather than queued for a claim that would
- * drive a prompt about a directory that is not there.
- */
-export const UNLANDED_TASKS: readonly string[] = [SEEDING_TASK];
+/** Tasks whose required worker capability is not available for dispatch. */
+export const UNLANDED_TASKS: readonly string[] = [];
 
 /** Every retained task, with the gate it runs behind. */
 export const TASK_ADMISSION: Readonly<Record<string, RunAdmissionGate>> = {

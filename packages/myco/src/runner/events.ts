@@ -31,6 +31,8 @@ export interface RunSpec {
   mcpConfigPath: string;
   /** The Deployment's harness credential, where it holds one; empty where the harness uses its own login. */
   credentialEnv: Record<string, string>;
+  /** The run has prepared source for file and Git inspection, without repository writes. */
+  sourceReadOnly?: boolean;
 }
 
 /**

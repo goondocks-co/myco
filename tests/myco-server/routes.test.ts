@@ -35,7 +35,7 @@ describe('route table', () => {
     '/import/plan',           // advice on what to ship; stores nothing
     '/spores/save', '/spores/list', '/spores/get', '/spores/resolve',  // the member's own spore surface
     '/context/prompt', '/context/session',                              // injection reads
-    '/worker/claim', '/worker/lease', '/worker/end',                    // the Deployment's own work, scoped to no Project
+    '/worker/claim', '/worker/lease', '/worker/end', '/worker/repository',                    // the Deployment's own work, scoped to no Project
   ]);
   const quotaExempt = (r: { path: string; legacyRunRoute?: true }): boolean =>
     r.legacyRunRoute === true || NON_RUN_EXEMPT.has(r.path);
@@ -52,7 +52,7 @@ describe('route table', () => {
         expect({ path: r.path, quotaPrecheck: r.quotaPrecheck }).toEqual({ path: r.path, quotaPrecheck: quotaExempt(r) ? false : undefined });
       }
     }
-    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /import/plan', 'POST /runs/claim', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/report', 'POST /runs/events', 'POST /runs/embedding-step', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /context/prompt', 'POST /context/session', 'POST /runs/repository', 'POST /runs/canopy-map', 'POST /worker/claim', 'POST /worker/lease', 'POST /worker/end', 'POST /mcp', 'POST /members/link-github']);
+    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /import/plan', 'POST /runs/claim', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/report', 'POST /runs/events', 'POST /runs/embedding-step', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /context/prompt', 'POST /context/session', 'POST /runs/repository', 'POST /runs/canopy-map', 'POST /worker/claim', 'POST /worker/lease', 'POST /worker/end', 'POST /worker/repository', 'POST /mcp', 'POST /members/link-github']);
   });
 
   it('admits a run credential as a member on the run-control plane alone: every /runs/ route is flagged legacy, no other route is, and /mcp is the one route that serves the run principal', () => {
