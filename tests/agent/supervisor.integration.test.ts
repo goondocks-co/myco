@@ -32,15 +32,20 @@ const TOKEN = 'supervisor-token';
  * given, and then holds until the supervisor asks it to stop.
  */
 const STAND_IN = `
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, renameSync, writeFileSync } from 'node:fs';
+async function publish(path, value) {
+  const temporary = path + '.tmp';
+  await Bun.write(temporary, value);
+  renameSync(temporary, path);
+}
 const out = process.env.STANDIN_OUT;
 if (out !== undefined && out !== '') {
-  await Bun.write(out, JSON.stringify({ env: { ...process.env }, cwd: process.cwd() }));
+  await publish(out, JSON.stringify({ env: { ...process.env }, cwd: process.cwd() }));
 }
 if (process.env.STANDIN_EXIT_CODE !== undefined) process.exit(Number(process.env.STANDIN_EXIT_CODE));
 if (process.env.STANDIN_GRANDCHILD !== undefined) {
   const kid = Bun.spawn(['sleep', '300'], { stdout: 'ignore', stderr: 'ignore', stdin: 'ignore' });
-  await Bun.write(process.env.STANDIN_GRANDCHILD, String(kid.pid));
+  await publish(process.env.STANDIN_GRANDCHILD, String(kid.pid));
 }
 if (process.env.STANDIN_EXIT_MS !== undefined) {
   setTimeout(() => { process.exit(0); }, Number(process.env.STANDIN_EXIT_MS));
