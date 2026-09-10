@@ -75,10 +75,8 @@ function derivePlanWrites(run: HookRun, transcripts: readonly ReadTranscript[], 
  * The transcript phase shared by Stop and SessionEnd: resolve the transcript
  * pointers (the session's own and the subagent transcripts beside it), derive
  * what the member still reads out of the deltas, and ship segments after the
- * drain. Nothing is written here — the pointers and the derivation's receipts
- * travel back as `record` so they land with the append, because a receipt
- * written first turns a crash into permanent loss: the rerun skips by hash
- * and by parsed size.
+ * drain. Pointers and derivation receipts are committed with the spool append
+ * through `record`.
  */
 export function transcriptPhase(run: HookRun): TranscriptPhase {
   const { input, sessionId, ctx, spool, credential, agent } = run;

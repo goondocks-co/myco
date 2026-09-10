@@ -376,7 +376,7 @@ describe('`myco member join` under a non-default home', () => {
 
   for (const scope of ['machine', 'project'] as const) {
     for (const form of ['symlink', 'invalid-file'] as const) {
-      it(`preserves an existing ${scope} pin that is an ${form}`, async () => {
+      it(`does not overwrite an existing ${scope} pin: ${form}`, async () => {
         const home = tempMycoHome();
         tmpDirs.push(home);
         const project = joinableProject('myco-join-existing-pin-');

@@ -279,10 +279,7 @@ capabilities:
   # prompt or response row of their own. Tenancy travels as a tool parameter
   # over MCP.
   turnRowSource: transcript
-  # Codex 0.153 records tool calls as `local_shell_call`, `custom_tool_call`,
-  # `tool_search_call` and `web_search_call` items with an object output; the
-  # parser derives none of them yet, so the post-tool-use hook ships every tool
-  # call. Flips to `full` with the parser, never before it.
+  # PostToolUse supplies tool-call records absent from the parser's output.
   transcriptFidelity: no_tool_results
   # No PreToolUse hook is wired: the Deployment parses the rollout and the
   # retained set injects at session start, prompt submit and subagent start.
