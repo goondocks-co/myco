@@ -11,7 +11,7 @@
  */
 import { objectAt } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
@@ -104,6 +104,23 @@ describe('the Claude Code driver', () => {
     const argv = readFileSync(join(dir, 'argv.txt'), 'utf8').split('\n');
     expect(argv.slice(argv.indexOf('--permission-mode'))).toEqual(['--permission-mode', 'manual', '--permission-prompts', 'none', '--allowedTools', `mcp__${MCP_SERVER_NAME}`, '']);
     expect(argv).toContain('--strict-mcp-config');
+  });
+
+  it('allows source history commands with relative, absolute and current-directory paths', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-stub-'));
+    writeFileSync(join(dir, 'claude'), `#!/bin/sh\nprintf '%s\\n' "$@" > "$(dirname "$0")/argv.txt"\nprintf '%s\\n' '${RESULT_SUCCESS}'\n`, { mode: 0o755 });
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const run = runDir();
+    const repo = join(run.scratchDir, 'repo');
+    mkdirSync(repo);
+    await collect(claudeCodeDriver.run({ ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, new AbortController().signal));
+    const argv = readFileSync(join(dir, 'argv.txt'), 'utf8').split('\n');
+    expect(argv).toContain('Bash(git log:*)');
+    expect(argv).toContain('Bash(git -C repo rev-list:*)');
+    expect(argv).toContain(`Bash(git -C ${repo} log:*)`);
+    expect(argv).toContain(`Bash(git -C ${realpathSync(repo)} log:*)`);
+    expect(argv).not.toContain('Bash');
+    expect(argv.some((value) => value.startsWith('Bash(') && /(?:push|commit|checkout)/.test(value))).toBe(false);
   });
 
   it('reads the stream the harness actually writes: content blocks, each tool call and its result, and a denial', async () => {
