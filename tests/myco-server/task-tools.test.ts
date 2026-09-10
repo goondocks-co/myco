@@ -68,7 +68,7 @@ describe('the task tool table', () => {
     // The seeding outcome is one prompt over a checkout the harness explores
     // with its own tools, so its surface is the vault writes alone and not the
     // phased file's source tools.
-    expect([...TASK_TOOLS['vault-seed']].sort()).toEqual(['vault_agents_block', 'vault_create_spore', 'vault_report', 'vault_search_fts', 'vault_search_semantic', 'vault_spore', 'vault_spores']);
+    expect([...TASK_TOOLS['vault-seed']].sort()).toEqual(['vault_create_spore', 'vault_report', 'vault_search_fts', 'vault_search_semantic', 'vault_spore', 'vault_spores']);
   });
 
   it('answers nothing for a task it does not serve or for no task', () => {

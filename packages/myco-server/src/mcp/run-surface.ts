@@ -40,7 +40,6 @@ export const RUN_TOOL_MAP: Readonly<Record<string, readonly RunSurfaceTarget[]>>
   vault_report: [ALWAYS_ALLOWED],
   vault_state: [{ tool: 'myco_run', op: 'state_get' }],
   vault_set_state: [{ tool: 'myco_run', op: 'state_set' }],
-  vault_agents_block: [{ tool: 'myco_run', op: 'agents_block' }],
   vault_spores: [{ tool: 'myco_run_spores', op: 'list' }],
   vault_spore: [{ tool: 'myco_run_spores', op: 'get' }],
   vault_sessions: [{ tool: 'myco_run_sessions', op: 'list' }],
@@ -60,7 +59,7 @@ export const RUN_TOOL_MAP: Readonly<Record<string, readonly RunSurfaceTarget[]>>
 
 /** The handlers for the run-only tools, keyed as the served registry is. */
 export const RUN_TOOL_REGISTRY: Record<string, { defaultOp: string; ops: Record<string, RegistryEntry> }> = {
-  myco_run: { defaultOp: 'report', ops: { report: { handler: handleRun }, state_get: { handler: handleRun }, state_set: { handler: handleRun }, agents_block: { handler: handleRun } } },
+  myco_run: { defaultOp: 'report', ops: { report: { handler: handleRun }, state_get: { handler: handleRun }, state_set: { handler: handleRun } } },
   myco_run_spores: { defaultOp: 'list', ops: { list: { handler: handleRunSpores }, get: { handler: handleRunSpores } } },
   myco_run_sessions: { defaultOp: 'list', ops: { list: { handler: handleRunSessions }, material: { handler: handleRunSessions }, title: { handler: handleRunSessions } } },
   myco_run_prompts: { defaultOp: 'unprocessed', ops: { unprocessed: { handler: handleRunPrompts }, mark_processed: { handler: handleRunPrompts } } },

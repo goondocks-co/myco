@@ -45,10 +45,6 @@
     "./agent-config": {
       "import": "./dist/agent-config.js",
       "types": "./dist/agent-config.d.ts"
-    },
-    "./agents-block": {
-      "import": "./dist/agents-block.js",
-      "types": "./dist/agents-block.d.ts"
     }
   },
   "files": [

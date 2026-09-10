@@ -14,7 +14,6 @@
  * Every Myco tool the text names is one the run's MCP surface serves under that
  * name (`tests/myco-server/task-inputs.test.ts`).
  */
-import { AGENTS_BLOCK_MAX_CHARS } from '@goondocks/myco-shared/agents-block';
 import { sha256Hex } from '../hash.js';
 import type { ServerEnv } from './adapters.js';
 import { repositoryIdentity } from './repositories.js';
@@ -63,8 +62,7 @@ export async function buildSeedingInput(env: ServerEnv, projectId: string): Prom
     `2. Orient, in about ten tool calls: the README, the primary manifest, the top-level layout, the docs directory if there is one, and the git history as the rules describe. Name three to eight themes worth drilling into: architectural layers, cross-cutting concepts, integration points, conventions.`,
     '3. Drill into each theme with searches and targeted reads of the two to four most informative files. Collect concrete observations anchored to paths, symbols or commits. Prefer cross-cutting modules over leaf files.',
     `4. For each observation, call \`myco_search\` with \`type\` "spore" first; a Project being seeded is rarely empty of an earlier pass. Then \`myco_spores\` op "save" with \`content\`, \`type\` and \`tags\`. Write between ten and ${SEEDING_SPORE_CEILING} spores; past the ceiling, keep the most load-bearing and drop the rest.`,
-    `5. Compose the managed guidance block: at most ${AGENTS_BLOCK_MAX_CHARS} characters of Markdown that an agent opening this repository must know before touching it — one line naming that the project's memory is in Myco and how to reach it, then three to five project-specific lines, the conventions an agent breaks most easily. Hand it over whole with \`myco_run\` op "agents_block" and \`block\`. Do not write it into the checkout.`,
-    `6. Close by calling \`myco_run\` op "report": action "${SEEDING_REPORT_ACTION}" with a one-line \`summary\` and \`details\` as a serialized JSON object string such as "{\\"spores\\":24,\\"themes\\":6,\\"thin_coverage\\":[\\"deploy\\"]}", where thin_coverage names the themes that yielded fewer than three observations. Stop after the report.`,
+    `5. Close by calling \`myco_run\` op "report": action "${SEEDING_REPORT_ACTION}" with a one-line \`summary\` and \`details\` as a serialized JSON object string such as "{\\"spores\\":24,\\"themes\\":6,\\"thin_coverage\\":[\\"deploy\\"]}", where thin_coverage names the themes that yielded fewer than three observations. Stop after the report.`,
     '',
     'Partial work stands: every spore saved before you run out of budget is kept.',
   ].join('\n');

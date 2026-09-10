@@ -42,7 +42,7 @@ import { canopyMapWrittenBy } from './canopy.js';
 import { sessionCarriesTitle } from '../read/sessions.js';
 import { countSpores, sporeAuthoredBy } from './spores.js';
 import { listUnprocessedPrompts } from '../read/prompts.js';
-import { BLOCK_WRITE_TOOL, PROMPT_MARK_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
+import { PROMPT_MARK_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
 
@@ -114,16 +114,6 @@ export async function sporesWrittenBy(db: RelationalStore, scope: ReadScope, run
   return sporeAuthoredBy(db, scope, run.id);
 }
 
-/** Whether THIS run handed over the managed block: the `run_write` row the `agents_block` op lands. */
-export async function blockWrittenBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
-  return runRecordedWrite(db, scope, run.id, BLOCK_WRITE_TOOL);
-}
-
-/** A seeding run owes both: a spore it authored and the block it handed over. */
-export async function seedingWrittenBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
-  return (await sporesWrittenBy(db, scope, run)) && (await blockWrittenBy(db, scope, run));
-}
-
 /** An extraction skip holds when no settled prompt is left unread. */
 export async function nothingUnread(db: RelationalStore, scope: ReadScope): Promise<boolean> {
   return (await listUnprocessedPrompts(db, scope, { limit: 1 })).rows.length === 0;
@@ -151,9 +141,8 @@ export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
   // An extraction pass owes the cursor move: a prompt it read, marked read under
   // its own credential. The skip is a pass that found no unread prompt.
   [EXTRACTION_TASK]: { reports: [EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION], artifact: promptsMarkedBy, skipHolds: (db, scope) => nothingUnread(db, scope) },
-  // A seeding run owes the Project's first spores, authored by the run, and the
-  // managed block it handed over. The skip is a pass that found the Project seeded.
-  [SEEDING_TASK]: { reports: [SEEDING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: seedingWrittenBy, skipHolds: (db, scope) => alreadySeeded(db, scope) },
+  // Seeding owes spores authored by the run, or a skip supported by the Project's active spores.
+  [SEEDING_TASK]: { reports: [SEEDING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: sporesWrittenBy, skipHolds: (db, scope) => alreadySeeded(db, scope) },
   // The probe's product is the one report it files, which is what it proves.
   'container-smoke': { reports: ['container-smoke'] },
 };
