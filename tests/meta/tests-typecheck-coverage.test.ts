@@ -53,20 +53,9 @@ const AWAITING_THE_1_4_SWEEP = [
 ] as const;
 
 /**
- * The 2.0 suites inside those trees, typed today because they outlive the
- * sweep. `tests/cli` loses `join`, `leave`, `attach`, `detach` and `host`, so
- * `login` and `import` stay. In `tests/agent`, the line is what a file's
- * subject imports: these six cover `agent/runtime/` modules that #1151 and
- * #1152 re-home before the agent tree goes — `repository-checkout` among them,
- * reached by `server-runner`, `server-repository` and `server-canopy` — while
- * the ~111 files around them cover the tasks, tools and executor that go with
- * it. Naming the survivors rather than those files is the same information at
- * a size a reader can check.
- *
- * Adding a tree to the deferred list is a list edit a reviewer reads, not a
- * gate failure: the lists are what the gate holds, so deferring a live 2.0
- * tree would pass here. A reader checking this list against #1170's scope is
- * the control on that, which is why each entry carries its reason.
+ * Explicitly typechecked 2.0 suites inside deferred trees: login, import,
+ * repository checkout, server run adapters, and supervisor policy.
+ * This gate checks list equality; it does not classify runtime ownership.
  */
 const TYPED_INSIDE_A_DEFERRED_TREE = [
   path.join('cli', 'import.test.ts'),
