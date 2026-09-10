@@ -14,7 +14,7 @@
  * member must still be told to ship. Refusing both would drop the later half of
  * every rotated session, permanently and without saying so.
  */
-import { jsonBody } from '../helpers/json-body.js';
+import { jsonBody, objectAt } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import { handleImportPlan } from '@myco-server-worker/api/import.js';
 import { IMPORT_MAX_SESSIONS_DEFAULT, IMPORT_WINDOW_DAYS_DEFAULT } from '@myco-server-worker/core/import-policy.js';
@@ -88,13 +88,6 @@ async function rig() {
 
   return { sqlite, serverEnv, hold, tombstone, leaf, spend, plan, answers, tokenId: issued.tokenId };
 }
-
-/** An object under `key` of a JSON body, whose values a body read answers as unknown. */
-const tableOf = (body: Record<string, unknown>, key: string): Record<string, unknown> => {
-  const value = body[key];
-  if (value === null || typeof value !== 'object') throw new Error(`${key} is not an object`);
-  return value as Record<string, unknown>;
-};
 
 describe('the import plan', () => {
   it('refuses a tombstoned session, and still refuses it once the session has been captured live', async () => {
@@ -237,6 +230,6 @@ describe('the import plan', () => {
     const r = await rig();
     expect((await r.plan([])).policy).toEqual({ enabled: true, windowDays: IMPORT_WINDOW_DAYS_DEFAULT, maxPerAgent: IMPORT_MAX_SESSIONS_DEFAULT });
     await r.leaf('import.window_days', 7);
-    expect((tableOf(await r.plan([]), 'policy')).windowDays).toBe(7);
+    expect((objectAt(await r.plan([]), 'policy')).windowDays).toBe(7);
   });
 });

@@ -34,3 +34,22 @@ export async function jsonBody<T = unknown>(
 ): Promise<NoInfer<T>> {
   return (await response.json()) as NoInfer<T>;
 }
+
+/**
+ * The object under `key` of a parsed document, validated rather than asserted.
+ *
+ * A JSON body read through `jsonBody` and a TOML document read through a parser
+ * both answer their values as `unknown`. This is the one place that checks a
+ * value is an object before a case reads fields off it, so a shape that changed
+ * fails naming the key instead of on a property of `undefined`.
+ */
+export function objectAt(
+  document: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> {
+  const value = document[key];
+  if (value === null || typeof value !== 'object') {
+    throw new Error(`${key} is not an object: ${JSON.stringify(value)}`);
+  }
+  return value as Record<string, unknown>;
+}

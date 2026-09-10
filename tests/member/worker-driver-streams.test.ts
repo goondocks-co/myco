@@ -9,6 +9,7 @@
  * writes recorded bytes exercises the whole path; the protocol driver speaks to
  * a peer over pipes, so a peer written here answers it.
  */
+import { objectAt } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -49,13 +50,6 @@ async function collect(events: AsyncIterable<RunEvent>): Promise<RunEvent[]> {
 function runDir(): { scratchDir: string; mcpConfigPath: string } {
   return writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
 }
-
-/** A table under `key` of a parsed TOML document, whose values the parse answers as unknown. */
-const tableOf = (doc: Record<string, unknown>, key: string): Record<string, unknown> => {
-  const value = doc[key];
-  if (value === null || typeof value !== 'object') throw new Error(`${key} is not a table`);
-  return value as Record<string, unknown>;
-};
 
 describe('reading a harness stream into run events', () => {
   it('reads whole lines from a stream that arrives in pieces, and skips what is not an object', async () => {
@@ -320,7 +314,7 @@ describe('the Codex driver', () => {
       // The run's server is the only server, whether the machine declared its
       // own under a header or at the root — and no header a machine's server
       // carries reaches the run's directory.
-      const servers = tableOf(read, 'mcp_servers');
+      const servers = objectAt(read, 'mcp_servers');
       expect(Object.keys(servers)).toEqual([MCP_SERVER_NAME]);
       expect(servers[MCP_SERVER_NAME]).toEqual({
         url: 'https://deployment.example/mcp',
