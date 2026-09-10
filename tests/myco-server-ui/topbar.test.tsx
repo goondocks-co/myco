@@ -5,19 +5,21 @@ import { projectRouteSuffix } from '../../packages/myco-server/ui/src/components
 describe('the breadcrumb', () => {
   it('names every page under a project and every server page, and says not found for the rest', () => {
     expect([
-      titleOf('/p/x'), titleOf('/p/x/'), titleOf('/p/x/sessions'), titleOf('/p/x/sessions/abc'), titleOf('/p/x/cortex'),
-      titleOf('/p/x/spores'), titleOf('/p/x/spores/sp1'), titleOf('/p/x/skills/sk1'), titleOf('/p/x/runs/r1'), titleOf('/p/x/access'), titleOf('/p/x/nope'),
-      titleOf('/projects'), titleOf('/status'), titleOf('/access'), titleOf('/settings'), titleOf('/operations'), titleOf('/notifications'), titleOf('/nope'),
+      titleOf('/p/x'), titleOf('/p/x/'), titleOf('/p/x/sessions'), titleOf('/p/x/sessions/abc'), titleOf('/p/x/plans'),
+      titleOf('/p/x/spores'), titleOf('/p/x/spores/sp1'), titleOf('/p/x/runs/r1'), titleOf('/p/x/access'),
+      titleOf('/p/x/cortex'), titleOf('/p/x/skills/sk1'), titleOf('/p/x/nope'),
+      titleOf('/projects'), titleOf('/status'), titleOf('/measures'), titleOf('/access'), titleOf('/settings'), titleOf('/operations'), titleOf('/notifications'), titleOf('/nope'),
     ]).toEqual([
-      'Overview', 'Overview', 'Sessions', 'Sessions', 'Cortex',
-      'Spores', 'Spores', 'Skills', 'Agent runs', 'Access', 'Not found',
-      'Projects', 'Status', 'Access', 'Settings', 'Operations', 'Notifications', 'Not found',
+      'Overview', 'Overview', 'Sessions', 'Sessions', 'Plans',
+      'Spores', 'Spores', 'Agent runs', 'Access',
+      'Not found', 'Not found', 'Not found',
+      'Projects', 'Status', 'Measures', 'Members', 'Settings', 'Operations', 'Notifications', 'Not found',
     ]);
     expect([scopeOf('/p/x/sessions'), scopeOf('/settings')]).toEqual(['project', 'server']);
   });
 
   it('keeps the page, not the record, when switching projects', () => {
-    expect([projectRouteSuffix('/p/x'), projectRouteSuffix('/p/x/'), projectRouteSuffix('/p/x/sessions/abc'), projectRouteSuffix('/p/x/runs/r1'), projectRouteSuffix('/p/x/skills/sk1'), projectRouteSuffix('/projects')])
-      .toEqual(['', '', '/sessions', '/runs', '/skills', '']);
+    expect([projectRouteSuffix('/p/x'), projectRouteSuffix('/p/x/'), projectRouteSuffix('/p/x/sessions/abc'), projectRouteSuffix('/p/x/runs/r1'), projectRouteSuffix('/p/x/plans'), projectRouteSuffix('/projects')])
+      .toEqual(['', '', '/sessions', '/runs', '/plans', '']);
   });
 });

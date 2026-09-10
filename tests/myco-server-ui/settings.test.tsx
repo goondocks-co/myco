@@ -155,6 +155,67 @@ describe('Deployment Settings', () => {
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.digest.tier', body: { value: 5000 } });
   });
 
+  /**
+   * The 2.0 Settings leaves, each written on its own and each leaving its siblings
+   * alone.
+   *
+   * The classic silent-data-loss shape is a form that POSTs a whole settings
+   * document: one field edited, every sibling overwritten with whatever the form
+   * held. This asserts the write cannot take that shape — each edit produces
+   * exactly one request, naming exactly its own leaf, carrying exactly its own
+   * value — and that every other leaf still reads back what the server holds after
+   * the write.
+   */
+  it('writes each 2.0 leaf on its own and leaves every sibling reading what the server holds', async () => {
+    const CONFIGURED: Record<string, unknown> = {
+      'instructions.template': '# House rules',
+      'worker.harness': 'claude-code',
+      'retention.transcripts': 30,
+      'import.window_days': 45,
+      'import.max_sessions_per_harness': 25,
+      'agent.limits.task_runs_per_hour': 6,
+    };
+    const held = { ...CONFIGURED };
+    const { sent } = server(base({
+      '/api/settings': () => Response.json({
+        leaves: LEAF_FIELDS.map((f) => ({
+          leaf: f.leaf, configured: f.leaf in held, value: held[f.leaf] ?? null,
+          updatedAt: f.leaf in held ? NOW : null, updatedBy: f.leaf in held ? 'mem_1' : null,
+        })),
+      }),
+      '/api/settings/retention.transcripts': (init) => {
+        held['retention.transcripts'] = JSON.parse(String(init!.body)).value;
+        return Response.json({ applied: true });
+      },
+    }));
+    mount('/settings?tab=records');
+
+    const window = await screen.findByLabelText('Keep raw transcripts for');
+    expect((window as HTMLInputElement).value).toBe('30');
+    fireEvent.change(window, { target: { value: '0' } });
+    fireEvent.blur(window);
+    await waitFor(() => expect(sent).toHaveLength(1));
+
+    // One request, one leaf, one value: nothing else could have been overwritten.
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/retention.transcripts', body: { value: 0 } });
+    expect(Object.keys(sent[0]!.body as object)).toEqual(['value']);
+
+    // Every sibling still reads back what the server holds for it.
+    await waitFor(() => expect((screen.getByLabelText('Keep raw transcripts for') as HTMLInputElement).value).toBe('0'));
+    for (const [tabLabel, label, leaf] of [
+      ['Cortex', 'Session-start instructions', 'instructions.template'],
+      ['Workers', 'Preferred harness', 'worker.harness'],
+      ['Importing past sessions', 'Reach back at most', 'import.window_days'],
+      ['Importing past sessions', 'At most, per agent', 'import.max_sessions_per_harness'],
+      ['Limits', 'Runs of one task per hour', 'agent.limits.task_runs_per_hour'],
+    ] as const) {
+      await tab(tabLabel);
+      const field = await screen.findByLabelText(label);
+      expect({ leaf, value: (field as HTMLInputElement).value }).toEqual({ leaf, value: String(CONFIGURED[leaf]) });
+    }
+    expect(sent).toHaveLength(1);
+  });
+
   it('toggles a project capability through the project route', async () => {
     const { sent } = server(base({ '/api/projects/x/capabilities/cortex': () => Response.json({ applied: true }) }));
     mount('/settings');

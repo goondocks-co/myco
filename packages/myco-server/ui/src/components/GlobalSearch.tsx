@@ -6,7 +6,8 @@ import { SEARCH_DEBOUNCE_MS, SEARCH_MIN_CHARS, searchResultPath, useSearch } fro
 import { OBSERVATION_TYPES, formatLabel } from './spores/labels';
 import { SEARCH_TYPES } from '../../../src/read/search-types';
 
-const TYPES = ['all', ...SEARCH_TYPES];
+/** The types the filter offers. `skill` is left out: skills are read from the catalogue Myco ships, not from a page here. */
+const TYPES = ['all', ...SEARCH_TYPES.filter((t) => t !== 'skill')];
 const DAY_SECONDS = 86_400;
 const control = 'rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 font-sans text-sm text-on-surface';
 
@@ -73,7 +74,7 @@ export function GlobalSearch({ projectId, projectName }: { projectId: string; pr
             : search.isError ? <p role="alert">Search failed. <button type="button" className="underline" onClick={() => void search.refetch()}>Try again</button></p>
             : search.data && <>
               {mode !== 'fts' && search.data.provider_unavailable && <p role="status">Semantic search is unavailable.{search.data.mode === 'fts' ? ' Showing full-text results.' : ' Choose full text to search by words.'}</p>}
-              {search.data.mode === 'semantic' && !search.data.provider_unavailable && <p className="text-sm text-on-surface-variant">Searching summaries, decisions, plans and skills. Choose full text for captured prompt and response bodies.</p>}
+              {search.data.mode === 'semantic' && !search.data.provider_unavailable && <p className="text-sm text-on-surface-variant">Searching summaries, decisions and plans. Choose full text for captured prompt and response bodies.</p>}
               {search.data.results.length === 0 && !(search.data.mode === 'semantic' && search.data.provider_unavailable) && <p>No results match this search.</p>}
               <ul ref={results} aria-label="Search results" className="space-y-1" onKeyDown={(event) => {
                 if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
@@ -83,12 +84,18 @@ export function GlobalSearch({ projectId, projectName }: { projectId: string; pr
                 const next = index + (event.key === 'ArrowDown' ? 1 : -1);
                 if (next < 0) input.current?.focus(); else links[Math.min(next, links.length - 1)]?.focus();
               }}>
-                {search.data.results.map((hit) => <li key={`${hit.type}:${hit.id}`}>
-                  <Link to={searchResultPath(projectId, hit)} onClick={() => setOpen(false)} className="block rounded-md p-3 hover:bg-surface-container focus:bg-surface-container focus:outline-2 focus:outline-primary">
+                {search.data.results.map((hit) => {
+                  const to = searchResultPath(projectId, hit);
+                  const body = <>
                     <span className="mr-2 font-mono text-xs uppercase text-on-surface-variant">{hit.type}</span><span className="font-sans font-medium">{hit.title}</span>
                     <p className="mt-1 break-words text-sm text-on-surface-variant">{hit.preview}</p>
-                  </Link>
-                </li>)}
+                  </>;
+                  return <li key={`${hit.type}:${hit.id}`}>
+                    {to === null
+                      ? <div className="block rounded-md p-3">{body}</div>
+                      : <Link to={to} onClick={() => setOpen(false)} className="block rounded-md p-3 hover:bg-surface-container focus:bg-surface-container focus:outline-2 focus:outline-primary">{body}</Link>}
+                  </li>;
+                })}
               </ul>
               {search.data.coverage.pending_blobs > 0 && <p role="status" className="mt-3 text-sm text-on-surface-variant">Indexing {search.data.coverage.pending_blobs} captured bodies. More results will become available.</p>}
             </>}

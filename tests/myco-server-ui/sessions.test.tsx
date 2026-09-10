@@ -676,7 +676,7 @@ describe('Project home', () => {
     expect(screen.getByTestId('capture-health').textContent).toBe('Capturing now');
   });
 
-  it('composes the home in the 1.4 shape: the open sessions with their activity, recent runs running first, recently evolved skills', async () => {
+  it('composes the home in the 1.4 shape: the open sessions with their activity, recent runs running first, the plans still open', async () => {
     server(base({
       '/api/projects/x/activity': () => Response.json({ items: [], stats: { sessions: 3, openSessions: 1, sessionsLast7d: 3, prompts: 9, toolCalls: 40, plans: 0, attachments: 0, lastActivityAt: NOW - 1000 } }),
       '/api/projects/x/sessions?limit=50&state=open': () => page([session({ label: 'Wave-based executor', promptCount: 12, toolCallCount: 40, activityBuckets: [1, 2, 0, 0, 3, 0, 0, 1] })]),
@@ -685,9 +685,10 @@ describe('Project home', () => {
         { id: 'run-older-running', agentId: 'a', task: 'title-summary', status: 'running', provider: null, model: null, startedAt: NOW - 20_000, resumedAt: null, completedAt: null, tokensUsed: null, costUsd: null, costSource: null, dryRun: true, resumable: false, resumeStatus: null, failed: false },
       ]),
       '/api/settings': () => Response.json({ leaves: [{ leaf: 'agent.provider.type', configured: true, value: 'anthropic', updatedAt: NOW, updatedBy: 'mem_1' }] }),
-      '/api/projects/x/skills?limit=200': () => Response.json({ skills: [
-        { id: 'sk1', agentId: 'a', name: 'ship-it', displayName: 'Ship it', description: 'd', status: 'active', generation: 3, sourceIds: '[]', usageCount: 2, lastUsedAt: null, createdAt: NOW - 5000, updatedAt: NOW - 1000 },
-      ] }),
+      '/api/projects/x/plans?limit=100': () => Response.json({ plans: [
+        { planKey: 'plan_done', sessionId: 's1', promptId: null, title: 'Shipped already', status: 'completed', content: null, blobKey: null, originPath: null, progress: 'N/A', updatedBy: null, createdAt: NOW - 9000, updatedAt: NOW - 500, tags: [] },
+        { planKey: 'plan_open', sessionId: 's1', promptId: null, title: 'Rebuild the cache', status: 'in_progress', content: '- [x] a\n- [ ] b', blobKey: null, originPath: null, progress: '1/2', updatedBy: null, createdAt: NOW - 5000, updatedAt: NOW - 1000, tags: [] },
+      ], maxPage: 200 }),
     }));
     mount('/p/x');
     const hero = await screen.findByRole('list', { name: 'Open sessions' });
@@ -700,27 +701,28 @@ describe('Project home', () => {
     expect(runs.map((r) => r.textContent)).toEqual([expect.stringContaining('title-summary'), expect.stringContaining('digest')]);
     expect(runs[0]!.textContent).toContain('dry');
     expect(runs[1]!.textContent).toContain('12.0k tok');
-    const skills = within(screen.getByRole('list', { name: 'Recent skills' })).getAllByRole('listitem');
-    expect(skills[0]!.textContent).toContain('Ship it');
-    expect(skills[0]!.textContent).toContain('gen 3');
-    expect(within(skills[0]!).getByRole('link').getAttribute('href')).toBe('/p/x/skills/sk1');
+    // A plan still open stands ahead of one already shipped, whatever their edit stamps say.
+    const plans = within(screen.getByRole('list', { name: 'Recent plans' })).getAllByRole('listitem');
+    expect(plans.map((p) => p.textContent)).toEqual([expect.stringContaining('Rebuild the cache'), expect.stringContaining('Shipped already')]);
+    expect(plans[0]!.textContent).toContain('1/2');
+    expect(within(plans[0]!).getByRole('link').getAttribute('href')).toBe('/p/x/plans');
     expect(screen.getByRole('link', { name: /All sessions/ }).getAttribute('href')).toBe('/p/x/sessions');
   });
 
-  it('keeps the name and the archived banner above the activity read, says why runs and skills are empty without a provider, and says when a panel could not load', async () => {
+  it('keeps the name and the archived banner above the activity read, says why runs are empty without a provider, and says when a panel could not load', async () => {
     server(base({
       '/api/projects': () => Response.json({ projects: [{ ...PROJECTS.projects[0], archivedAt: NOW - 500, archivedBy: 'mem_1' }] }),
       '/api/projects/x/activity': () => Response.json({ items: [], stats: { sessions: 1, openSessions: 0, sessionsLast7d: 0, prompts: 0, toolCalls: 0, plans: 0, attachments: 0, lastActivityAt: NOW - 1000 } }),
       '/api/projects/x/sessions?limit=50&state=open': () => page([]),
       '/api/projects/x/runs?limit=50': () => page([]),
-      '/api/projects/x/skills?limit=200': () => new Response(null, { status: 500 }),
+      '/api/projects/x/plans?limit=100': () => new Response(null, { status: 500 }),
       '/api/settings': () => Response.json({ leaves: [{ leaf: 'agent.provider.type', configured: false, value: null, updatedAt: null, updatedBy: null }] }),
     }));
     mount('/p/x');
     expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Project X');
     expect(await screen.findByTestId('archived-banner')).toBeTruthy();
     expect((await screen.findByText(/No runs yet — no provider is configured/)).textContent).toContain('Configure one in Settings');
-    expect(await screen.findByText('Could not load the skills.')).toBeTruthy();
+    expect(await screen.findByText('Could not load the plans.')).toBeTruthy();
   });
 
   it('says the capture has gone quiet when the last session landed over a week ago', async () => {

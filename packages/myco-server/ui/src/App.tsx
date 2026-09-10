@@ -5,7 +5,6 @@ import { readPendingLink } from './lib/pending-link';
 import { readLastProject } from './lib/project-memory';
 import { Access } from './pages/Access';
 import { AgentRuns } from './pages/AgentRuns';
-import { Cortex } from './pages/Cortex';
 import { LinkPage } from './pages/Link';
 import { ProjectAccess } from './pages/ProjectAccess';
 import { NotFound } from './pages/NotFound';
@@ -14,8 +13,9 @@ import { Operations } from './pages/Operations';
 import { Settings } from './pages/Settings';
 import { ProjectHome } from './pages/ProjectHome';
 import { Projects } from './pages/Projects';
+import { Measures } from './pages/Measures';
+import { Plans } from './pages/Plans';
 import { Sessions } from './pages/Sessions';
-import { Skills } from './pages/Skills';
 import { Spores } from './pages/Spores';
 import { Status } from './pages/Status';
 
@@ -37,9 +37,7 @@ export default function App() {
         <Route path="/p/:projectId" element={<ProjectHome />} />
         <Route path="/p/:projectId/sessions" element={<Sessions />} />
         <Route path="/p/:projectId/sessions/:sessionId" element={<Sessions />} />
-        <Route path="/p/:projectId/cortex" element={<Cortex />} />
-        <Route path="/p/:projectId/skills" element={<Skills />} />
-        <Route path="/p/:projectId/skills/:skillId" element={<Skills />} />
+        <Route path="/p/:projectId/plans" element={<Plans />} />
         <Route path="/p/:projectId/spores" element={<Spores />} />
         <Route path="/p/:projectId/spores/:sporeId" element={<Spores />} />
         <Route path="/p/:projectId/runs" element={<AgentRuns />} />
@@ -47,6 +45,7 @@ export default function App() {
         <Route path="/p/:projectId/access" element={<ProjectAccess />} />
         <Route path="/access" element={<Access />} />
         <Route path="/status" element={<Status />} />
+        <Route path="/measures" element={<Measures />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/operations" element={<Operations />} />
         <Route path="/notifications" element={<Notifications />} />

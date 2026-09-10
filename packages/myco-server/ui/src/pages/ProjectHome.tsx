@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, Sparkles } from 'lucide-react';
+import { ArrowRight, ListChecks } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { AccentSurface } from '../components/ui/accent-surface';
 import { Eyebrow } from '../components/ui/eyebrow';
@@ -10,7 +10,8 @@ import { Panel } from '../components/ui/panel';
 import { Skeleton } from '../components/ui/skeleton';
 import { ActivitySparkline } from '../components/ui/sparkline';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
-import { useRuns, useSkills, type RunListRow, type SkillRecord } from '../hooks/use-intelligence';
+import { useRuns, type RunListRow } from '../hooks/use-intelligence';
+import { useProjectPlans, type ProjectPlanRow } from '../hooks/use-plans';
 import { useProjectActions, useProjects } from '../hooks/use-projects';
 import { useSettings, type LeafRow } from '../hooks/use-settings';
 import { refusalText } from '../hooks/use-access';
@@ -24,7 +25,7 @@ import { NotFound } from './NotFound';
 const TYPE_LABEL: Record<FeedItem['type'], string> = { session: 'Session', run: 'Run', spore: 'Spore' };
 const OPEN_SESSIONS_SHOWN = 6;
 const RUNS_SHOWN = 6;
-const SKILLS_SHOWN = 6;
+const PLANS_SHOWN = 6;
 /** How long after the last capture the project still counts as capturing. */
 const CAPTURE_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -74,7 +75,7 @@ export function captureHealth(stats: ProjectStats, nowMs: number): { tone: Statu
 /** The Settings leaf the dispatcher resolves a provider from; the home reads the same leaf so its empty panels agree with what a dispatch would do. */
 const PROVIDER_LEAF = 'agent.provider.type';
 
-/** Runs and skills come from the Deployment's agent tasks; until Settings names a provider, an empty panel says why. Unknown until the leaves are read. */
+/** Runs come from the Deployment's agent tasks; until Settings names a provider, an empty panel says why. Unknown until the leaves are read. */
 export function noProviderYet(leaves: readonly LeafRow[] | undefined): boolean {
   if (leaves === undefined) return false;
   const leaf = leaves.find((l) => l.leaf === PROVIDER_LEAF);
@@ -85,7 +86,7 @@ function Home({ project }: { project: ProjectSummary }) {
   const activity = useActivity(project.projectId);
   const open = useSessions(project.projectId, { state: 'open' });
   const runs = useRuns(project.projectId, null);
-  const skills = useSkills(project.projectId);
+  const plans = useProjectPlans(project.projectId, 'all');
   const settings = useSettings();
   const base = `/p/${encodeURIComponent(project.projectId)}`;
   const runningRuns = runs.rows.filter((r) => r.status === 'running').length;
@@ -111,7 +112,7 @@ function Home({ project }: { project: ProjectSummary }) {
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <AgentRunsPanel base={base} runs={runs.rows} pending={runs.isPending} error={runs.error} unconfigured={unconfigured} />
               <div className="flex flex-col gap-6">
-                <SkillsPanel base={base} skills={skills.data?.skills ?? []} pending={skills.isPending} error={skills.error} unconfigured={unconfigured} />
+                <PlansPanel base={base} plans={plans.data?.plans ?? []} pending={plans.isPending} error={plans.error} />
                 <ActivityFeed base={base} items={activity.data.items} />
               </div>
             </div>
@@ -267,27 +268,39 @@ function AgentRunsPanel({ base, runs, pending, error, unconfigured }: { base: st
   );
 }
 
-function SkillsPanel({ base, skills, pending, error, unconfigured }: { base: string; skills: SkillRecord[]; pending: boolean; error: Error | null; unconfigured: boolean }) {
-  const sorted = [...skills].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, SKILLS_SHOWN);
+/** The statuses that read as still open, in the order the panel shows them. */
+const OPEN_PLAN_STATUSES = ['in_progress', 'active'];
+
+/** Plans still open first, then the most recently edited. */
+export function orderPlans(plans: readonly ProjectPlanRow[]): ProjectPlanRow[] {
+  const rank = (status: string) => {
+    const at = OPEN_PLAN_STATUSES.indexOf(status);
+    return at === -1 ? OPEN_PLAN_STATUSES.length : at;
+  };
+  return [...plans].sort((a, b) => rank(a.status) - rank(b.status) || b.updatedAt - a.updatedAt);
+}
+
+function PlansPanel({ base, plans, pending, error }: { base: string; plans: ProjectPlanRow[]; pending: boolean; error: Error | null }) {
+  const sorted = orderPlans(plans).slice(0, PLANS_SHOWN);
   return (
-    <Panel tone="sage" eyebrow="Skills" title="Recently evolved" actions={<Link to={`${base}/skills`} className="inline-flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface">All skills <ArrowRight className="h-3 w-3" /></Link>}>
+    <Panel tone="sage" eyebrow="Plans" title="Still open" actions={<Link to={`${base}/plans`} className="inline-flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface">All plans <ArrowRight className="h-3 w-3" /></Link>}>
       {pending ? (
         <Skeleton className="h-12 w-full rounded-md" />
       ) : error ? (
-        <PanelError what="the skills" />
+        <PanelError what="the plans" />
       ) : sorted.length === 0 ? (
-        unconfigured ? <NoProviderNote what="skills" /> : <p className="m-0 font-sans text-sm text-on-surface-variant">No skills yet. Skills appear here as this project's memory produces them.</p>
+        <p className="m-0 font-sans text-sm text-on-surface-variant">No plans yet. A plan appears here when a session writes one.</p>
       ) : (
-        <ul className="m-0 grid list-none grid-cols-1 gap-2 p-0 sm:grid-cols-2" aria-label="Recent skills">
-          {sorted.map((skill) => (
-            <li key={skill.id}>
-              <Link to={`${base}/skills/${encodeURIComponent(skill.id)}`} className="block rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest px-3 py-2 no-underline transition-colors hover:bg-surface-container">
+        <ul className="m-0 grid list-none grid-cols-1 gap-2 p-0" aria-label="Recent plans">
+          {sorted.map((plan) => (
+            <li key={plan.planKey}>
+              <Link to={`${base}/plans`} className="block rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest px-3 py-2 no-underline transition-colors hover:bg-surface-container">
                 <div className="flex items-center gap-1.5">
-                  <Sparkles className="h-3 w-3 shrink-0 text-sage" />
-                  <span className="truncate font-sans text-xs font-medium text-on-surface" title={skill.displayName}>{skill.displayName || skill.name}</span>
-                  <span className="ml-auto shrink-0 rounded bg-ochre/10 px-1.5 font-mono text-[9px] uppercase tracking-wider text-ochre">gen {skill.generation}</span>
+                  <ListChecks className="h-3 w-3 shrink-0 text-sage" />
+                  <span className="truncate font-sans text-xs font-medium text-on-surface" title={plan.title ?? plan.planKey}>{plan.title ?? plan.planKey}</span>
+                  <span className="ml-auto shrink-0 rounded bg-ochre/10 px-1.5 font-mono text-[9px] uppercase tracking-wider text-ochre">{plan.progress === 'N/A' ? plan.status.replace('_', ' ') : plan.progress}</span>
                 </div>
-                <div className="mt-1 font-mono text-[10px] text-outline">{formatRelative(skill.updatedAt)}</div>
+                <div className="mt-1 font-mono text-[10px] text-outline">{formatRelative(plan.updatedAt)}</div>
               </Link>
             </li>
           ))}
