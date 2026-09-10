@@ -762,8 +762,9 @@ describe('WindowsTaskServiceManager', () => {
       },
       withExternalMcpContainment: async (terminate) => {
         events.push('contain:start');
-        await terminate();
+        const outcome = await terminate();
         events.push('contain:end');
+        return outcome;
       },
     });
     await mgr.restart('co.goondocks.myco-dev');

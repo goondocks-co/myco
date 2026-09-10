@@ -25,6 +25,7 @@
  * Real HTTP against the real listener (`ExternalMcpListener`), never a
  * hand-rolled request object — mirrors `tests/mcp/http.test.ts`'s pattern.
  */
+import { firstJson } from '../helpers/mcp-result.js';
 import { afterEach, beforeEach, describe, expect, it, test } from 'bun:test';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -659,7 +660,7 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     expect(names).toEqual(['myco_cortex', 'myco_plans', 'myco_search', 'myco_sessions', 'myco_skills', 'myco_spores']);
 
     const served = await client.callTool({ name: 'myco_cortex', arguments: { op: 'instructions' } });
-    expect(JSON.parse((served.content[0] as { text: string }).text).content).toContain('external instructions');
+    expect(firstJson<{ content: string }>(served).content).toContain('external instructions');
     expect(capturedGets.some((c) => c.endpoint === '/api/cortex/instructions')).toBe(true);
 
     const plans = await client.callTool({ name: 'myco_plans', arguments: { op: 'list' } });
@@ -731,13 +732,13 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     await firstListener.unbind();
 
     listener = newListener();
-    const offPorts: number[] = [];
+    const offTargets: (number | string)[] = [];
     const containment = new ExternalMcpContainmentAuthority({
       mycoHome,
       stateDir: path.join(mycoHome, 'service'),
       listener,
       runFunnelOff: async (target) => {
-        offPorts.push(target.kind === 'port' ? target.port : target.path);
+        offTargets.push(target.kind === 'port' ? target.port : target.path);
         return { ok: true, detail: `off ${String(target.kind === 'port' ? target.port : target.path)}` };
       },
       lockNamespace: testPerUserLockNamespace,
@@ -746,7 +747,7 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
 
     await containment.contain('retire');
 
-    expect(offPorts).toEqual([boundPort]);
+    expect(offTargets).toEqual([boundPort]);
     expect(listener.isBound).toBe(false);
     expect(loadMachineConfig(mycoHome).daemon.external_mcp)
       .toEqual({ enabled: false, port: boundPort });
@@ -1024,7 +1025,7 @@ describe('ExternalMcpListener — real HTTP against the real listener', () => {
     ]);
 
     const served = await client.callTool({ name: 'myco_cortex', arguments: { op: 'instructions' } });
-    expect(JSON.parse((served.content[0] as { text: string }).text).content).toContain('external instructions');
+    expect(firstJson<{ content: string }>(served).content).toContain('external instructions');
 
     // The served Grove was resolved WITHOUT a caller-supplied grove_id — the
     // internal loopback call (`/api/cortex/instructions`) carries the derived grove_id

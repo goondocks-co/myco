@@ -77,7 +77,7 @@ describe('spores through the product surface', () => {
     await insertSpore(db, scope, spore('new'));
     await resolveSpore(db, scope, 'superseded', {
       id: 're1', agentId: AGENT, sporeId: 'old', action: 'supersede',
-      newSporeId: 'new', reason: null, sessionId: null, createdAt: NOW,
+      newSporeId: 'new', reason: null, sessionId: null, author: null, createdAt: NOW,
     }, NOW);
 
     const { body } = await get('/api/projects/proj_1/spores/old');

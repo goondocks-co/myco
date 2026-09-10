@@ -1,3 +1,4 @@
+import type { OutboundFetch } from './core/adapters.js';
 import type { RuntimeClaims } from './auth/tokens.js';
 import type { HeldRun } from './core/runs.js';
 import type { OwnerConfig } from './auth/owner/config.js';
@@ -7,7 +8,7 @@ import type { DashboardMember } from './auth/identity-link.js';
 /** Context for a credential-free auth route: the owner configuration and outbound fetch, and deliberately no bindings. */
 export interface AuthContext {
   config: OwnerConfig;
-  fetchImpl: typeof fetch;
+  fetchImpl: OutboundFetch;
   now: number;
   /** The request's own origin, the OAuth redirect URI is built from it so one deployment never redirects to another. */
   origin: string;

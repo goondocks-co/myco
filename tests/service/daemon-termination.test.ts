@@ -27,8 +27,9 @@ describe('terminateDaemonProcess', () => {
         platform: 'win32',
         withExternalMcpContainment: async (terminate) => {
           lifecycle.push('contain:start');
-          await terminate();
+          const outcome = await terminate();
           lifecycle.push('contain:end');
+          return outcome;
         },
         kill: (pid, sentSignal) => {
           lifecycle.push(`kill:${pid}:${sentSignal}`);
@@ -59,7 +60,7 @@ describe('terminateDaemonProcess', () => {
     // returns immediately instead. No stub — the real function runs.
     await terminateDaemonProcess(process.pid, 'SIGTERM', {
       platform: 'win32',
-      withExternalMcpContainment: async (terminate) => { await terminate(); },
+      withExternalMcpContainment: async (terminate) => terminate(),
       kill: () => {},
     });
   });
@@ -72,7 +73,7 @@ describe('terminateDaemonProcess', () => {
     // the first place.
     await expect(terminateDaemonProcess(4242, 'SIGKILL', {
       platform: 'win32',
-      withExternalMcpContainment: async (terminate) => { await terminate(); },
+      withExternalMcpContainment: async (terminate) => terminate(),
       kill: () => {},
       confirmTermination: async (pid) => { throw new DaemonTerminationUnconfirmedError(pid); },
     })).rejects.toThrow(/remained alive after hard termination/);
@@ -101,8 +102,9 @@ describe('terminateDaemonProcess', () => {
       platform: 'win32',
       withExternalMcpContainment: async (terminate) => {
         lifecycle.push('contain:start');
-        await terminate();
+        const outcome = await terminate();
         lifecycle.push('contain:end');
+        return outcome;
       },
       kill: () => {
         lifecycle.push('kill');
@@ -125,8 +127,9 @@ describe('terminateDaemonProcess', () => {
 
     await terminateDaemonProcess(4242, 'SIGTERM', {
       platform: 'darwin',
-      withExternalMcpContainment: async () => {
+      withExternalMcpContainment: async (terminate) => {
         lifecycle.push('contain');
+        return terminate();
       },
       kill: () => {
         lifecycle.push('kill');

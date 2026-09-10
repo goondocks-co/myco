@@ -1,3 +1,4 @@
+import { testProjectId } from '../helpers/request-context.js';
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -41,7 +42,7 @@ function makeVaultDir(): { vaultDir: string; machineId: string; projectId: Grove
 function requestContext(vaultDir: string, projectId: string) {
   return resolveLegacyRequestContext(vaultDir, {
     projectRoot: path.dirname(vaultDir),
-    projectId,
+    projectId: testProjectId(projectId),
     groveId: 'grove-test',
     machineId: 'test-machine',
     source: 'explicit',

@@ -7,11 +7,11 @@ import { classifyR2BlobFailure } from '@myco-server-worker/platform/cloudflare/e
 import { classifyBlobStore } from '@myco-server-worker/telemetry.js';
 import { canonicalMediaType, MAX_MEDIA_TYPE_CHARS } from '@myco-server-worker/ingest/blobs.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
-import { blobPost, bytesWritten, count, envelope, memberHeaders, memberPost, sqliteEnv } from './helpers/fixtures.js';
+import { blobPost, bytesWritten, count, envelope, memberHeaders, memberPost, noOutboundFetch, sqliteEnv } from './helpers/fixtures.js';
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
 const bytes = utf8('hello blob');
-const keyOf = (b: Uint8Array) => sha256HexOf(b);
+const keyOf = (b: Uint8Array<ArrayBuffer>) => sha256HexOf(b);
 const blobRow = (e: ReturnType<typeof sqliteEnv>, key: string) => e.sqlite.query(`SELECT size, media_type, token_id FROM blobs WHERE key = ?`).get(key);
 /** Leaves `remaining` bytes of the token's quota unspent by recording a stored blob of the rest, charging the token for it as the store path would. */
 const fillQuota = (e: ReturnType<typeof sqliteEnv>, tokenId: string, remaining: number) => {
@@ -108,7 +108,7 @@ describe('blob route', () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const key = await keyOf(bytes);
-    e.bucket.objects.set(`proj_1/${key}`, { size: bytes.byteLength, contentType: 'text/plain; charset=utf-8' });
+    e.bucket.seed(`proj_1/${key}`, { size: bytes.byteLength, contentType: 'text/plain; charset=utf-8', bytes });
     const res = await worker.fetch(new Request(`https://s/blobs/${key}`, {
       method: 'POST',
       headers: memberHeaders(t.token, { 'content-type': 'text/plain; charset=utf-8', 'content-length': '1' }),
@@ -133,7 +133,7 @@ describe('blob route', () => {
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const key = await keyOf(bytes);
     racedKey = key;
-    e.bucket.objects.set(`proj_1/${key}`, { size: bytes.byteLength, contentType: 'text/plain; charset=utf-8' });
+    e.bucket.seed(`proj_1/${key}`, { size: bytes.byteLength, contentType: 'text/plain; charset=utf-8', bytes });
     const res = await worker.fetch(new Request(`https://s/blobs/${key}`, {
       method: 'POST',
       headers: memberHeaders(t.token, { 'content-type': 'text/plain; charset=utf-8', 'content-length': '1' }),
@@ -147,7 +147,7 @@ describe('blob route', () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const key = await keyOf(bytes);
-    e.bucket.objects.set(`proj_1/${key}`, { size: bytes.byteLength, contentType: 'text/plain; charset=utf-8' });
+    e.bucket.seed(`proj_1/${key}`, { size: bytes.byteLength, contentType: 'text/plain; charset=utf-8', bytes });
     fillQuota(e, t.tokenId, bytes.byteLength - 1);
     const res = await worker.fetch(new Request(`https://s/blobs/${key}`, {
       method: 'POST',
@@ -188,14 +188,16 @@ describe('blob route', () => {
     const eventBytes = utf8(JSON.stringify(event)).byteLength;
     fillQuotaFromEvents(e, t.tokenId, bytes.byteLength + eventBytes - 1);
     const key = await keyOf(bytes);
-    let interleaved: Record<string, unknown> | null = null;
+    // Held behind a property: the answer lands inside the store's own call, and
+    // a bare binding reads as its initializer at every site after it.
+    const interleaved: { answer: Record<string, unknown> | null } = { answer: null };
     const head = e.bucket.head.bind(e.bucket);
     e.bucket.head = async (objectKey) => {
-      if (interleaved === null) interleaved = await json(await worker.fetch(memberPost(t.token, event), e.env));
+      if (interleaved.answer === null) interleaved.answer = await json(await worker.fetch(memberPost(t.token, event), e.env));
       return head(objectKey);
     };
     const upload = await json(await worker.fetch(blobPost(t.token, key, bytes), e.env));
-    expect(interleaved).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
+    expect(interleaved.answer).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(upload).toEqual({ stored: true, duplicate: false, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' });
     expect(count(e.sqlite, 'events')).toBe(0);
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(MEMBER_TOKEN_BYTE_QUOTA - eventBytes + 1);
@@ -213,8 +215,10 @@ describe('blob route', () => {
     const other = utf8('other blob');
     fillQuotaFromEvents(e, t.tokenId, bytes.byteLength + other.byteLength - 1);
     const key = await keyOf(bytes);
-    e.bucket.objects.set(`proj_1/${key}`, { size: bytes.byteLength, contentType: 'text/plain; charset=utf-8' });
-    let second: Record<string, unknown> | null = null;
+    e.bucket.seed(`proj_1/${key}`, { size: bytes.byteLength, contentType: 'text/plain; charset=utf-8', bytes });
+    // Held behind a property: the answer lands inside the statement double, and
+    // a bare binding reads as its initializer at every site after it.
+    const inflight: { answer: Record<string, unknown> | null } = { answer: null };
     let fired = false;
     const db = e.env.MYCO_DB;
     e.env.MYCO_DB = {
@@ -226,7 +230,7 @@ describe('blob route', () => {
           ...statement,
           bind: (...params: unknown[]) => {
             const bound = statement.bind(...params);
-            return { ...bound, run: async () => { const moved = await bound.run(); if (!fired) { fired = true; second = await json(await worker.fetch(blobPost(t.token, await keyOf(other), other), e.env)); } return moved; } };
+            return { ...bound, run: async () => { const moved = await bound.run(); if (!fired) { fired = true; inflight.answer = await json(await worker.fetch(blobPost(t.token, await keyOf(other), other), e.env)); } return moved; } };
           },
         };
       },
@@ -236,7 +240,7 @@ describe('blob route', () => {
       headers: memberHeaders(t.token, { 'content-type': 'text/plain; charset=utf-8', 'content-length': '1' }),
       body: 'x',
     }), e.env));
-    expect(second).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
+    expect(inflight.answer).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(first).toEqual({ stored: true, duplicate: false, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' });
     expect(e.bucket.puts).toEqual([]);
     expect(count(e.sqlite, 'blobs')).toBe(1);
@@ -250,21 +254,23 @@ describe('blob route', () => {
     // leaves an object without a row.
     const e = sqliteEnv();
     let now = 10_000;
-    const server = createServer({ now: () => now, sourceOf: () => '1.2.3.4' });
+    const server = createServer({ now: () => now, sourceOf: () => '1.2.3.4', fetchImpl: noOutboundFetch });
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
     const key = await keyOf(bytes);
     const event = envelope();
     const eventBytes = utf8(JSON.stringify(event)).byteLength;
     fillQuotaFromEvents(e, t.tokenId, bytes.byteLength + eventBytes - 1);
-    let during: Record<string, unknown> | null = null;
+    // Held behind a property: the answer lands inside the double the route calls,
+    // and a bare binding reads as its initializer at every site after it.
+    const during: { answer: Record<string, unknown> | null } = { answer: null };
     const putReal = e.bucket.put.bind(e.bucket);
     e.bucket.put = async (k, v, o) => {
       now += BLOB_RESERVATION_TTL_MS + 1;
-      during = await json(await server.handleRequest(memberPost(t.token, event), e.serverEnv));
+      during.answer = await json(await server.handleRequest(memberPost(t.token, event), e.serverEnv));
       return putReal(k, v, o);
     };
     const res = await json(await server.handleRequest(blobPost(t.token, key, bytes), e.serverEnv));
-    expect(during).toEqual({ persisted: true, projected: true });
+    expect(during.answer).toEqual({ persisted: true, projected: true });
     expect(res).toEqual({ stored: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(e.bucket.objects.has(`proj_1/${key}`)).toBe(false);
     expect(e.bucket.deletes).toEqual([`proj_1/${key}`]);
@@ -276,7 +282,7 @@ describe('blob route', () => {
   it('holds a reconciled reservation for a fresh TTL: an event arriving after the original expiry is refused against it, and the upload lands', async () => {
     const e = sqliteEnv();
     let now = 10_000;
-    const server = createServer({ now: () => now, sourceOf: () => '1.2.3.4' });
+    const server = createServer({ now: () => now, sourceOf: () => '1.2.3.4', fetchImpl: noOutboundFetch });
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
     const key = await keyOf(bytes);
     const event = envelope();
@@ -284,7 +290,9 @@ describe('blob route', () => {
     fillQuotaFromEvents(e, t.tokenId, bytes.byteLength + eventBytes - 1);
     const putReal = e.bucket.put.bind(e.bucket);
     e.bucket.put = async (k, v, o) => { now += BLOB_RESERVATION_TTL_MS + 1; return putReal(k, v, o); };
-    let during: Record<string, unknown> | null = null;
+    // Held behind a property: the answer lands inside the double the route calls,
+    // and a bare binding reads as its initializer at every site after it.
+    const during: { answer: Record<string, unknown> | null } = { answer: null };
     let fired = false;
     const db = e.env.MYCO_DB;
     e.env.MYCO_DB = {
@@ -296,13 +304,13 @@ describe('blob route', () => {
           ...statement,
           bind: (...params: unknown[]) => {
             const bound = statement.bind(...params);
-            return { ...bound, run: async () => { const moved = await bound.run(); if (!fired) { fired = true; during = await json(await server.handleRequest(memberPost(t.token, event), e.serverEnv)); } return moved; } };
+            return { ...bound, run: async () => { const moved = await bound.run(); if (!fired) { fired = true; during.answer = await json(await server.handleRequest(memberPost(t.token, event), e.serverEnv)); } return moved; } };
           },
         };
       },
     };
     const res = await json(await server.handleRequest(blobPost(t.token, key, bytes), e.serverEnv));
-    expect(during).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
+    expect(during.answer).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(res).toEqual({ stored: true, duplicate: false, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' });
     expect(count(e.sqlite, 'events')).toBe(0);
     expect(count(e.sqlite, 'blobs')).toBe(1);
@@ -393,7 +401,7 @@ describe('blob route', () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const key = await keyOf(bytes);
-    e.bucket.objects.set(`proj_1/${key}`, { size: MAX_BLOB_BYTES + 1, contentType: 'text/plain; charset=utf-8' });
+    e.bucket.seed(`proj_1/${key}`, { size: MAX_BLOB_BYTES + 1, contentType: 'text/plain; charset=utf-8' });
     const res = await worker.fetch(new Request(`https://s/blobs/${key}`, {
       method: 'POST',
       headers: memberHeaders(t.token, { 'content-type': 'text/plain; charset=utf-8', 'content-length': '1' }),
@@ -439,7 +447,7 @@ describe('blob route', () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const key = await keyOf(bytes);
-    e.bucket.objects.set(`proj_1/${key}`, { size: bytes.byteLength, contentType: 'text/plain; charset=utf-8' });
+    e.bucket.seed(`proj_1/${key}`, { size: bytes.byteLength, contentType: 'text/plain; charset=utf-8', bytes });
     const res = await worker.fetch(blobPost(t.token, key, bytes), e.env);
     expect(await json(res)).toEqual({ stored: true, duplicate: false, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' });
     expect(e.bucket.puts).toEqual([]);

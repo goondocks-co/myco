@@ -9,10 +9,12 @@
  *   resolveMycoPackageCheck(...)  — fetch GitHub Releases + derive PackageCheckResult for myco
  */
 
+import type { FetchLike } from '../utils/instrumented-fetch.js';
 import {
   mycoReleasesApiUrl,
   resolveMycoVersions,
   githubHeaders,
+  type GitHubRelease,
 } from './release-assets.js';
 import type { ReleaseChannel, UpdatePackageId } from '../constants/update.js';
 import { NPM_PACKAGE_NAME } from '../constants/update.js';
@@ -86,7 +88,7 @@ export async function resolveMycoPackageCheck(
   currentVersion: string,
   channel: ReleaseChannel,
   installedVersion: string | null,
-  fetchFn: typeof fetch = globalThis.fetch,
+  fetchFn: FetchLike = globalThis.fetch,
 ): Promise<PackageCheckResult> {
   const response = await fetchFn(mycoReleasesApiUrl(), {
     headers: githubHeaders(),
@@ -97,7 +99,7 @@ export async function resolveMycoPackageCheck(
     throw new Error(`@goondocks/myco: GitHub releases responded with ${response.status}`);
   }
 
-  const releases = await response.json();
+  const releases = await response.json() as GitHubRelease[];
   const { latest_stable, latest_beta } = resolveMycoVersions(releases);
 
   // Determine the target version for the active channel

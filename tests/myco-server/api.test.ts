@@ -1,3 +1,4 @@
+import { jsonBody } from '../helpers/json-body.js';
 import { describe, it, expect } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { resolveProjectScope } from '@myco-server-worker/api/scope.js';
@@ -68,7 +69,7 @@ describe('sessions', () => {
     for (const path of ['/api/projects/proj_1/sessions/nope', '/api/projects/proj_missing/sessions/s1']) {
       const res = await worker.fetch(await asOwner(path), { ...e.env, ...OWNER_ENV });
       expect({ path, status: res.status }).toEqual({ path, status: 404 });
-      expect(await res.json()).toEqual({ error: 'not_found' });
+      expect(await jsonBody(res)).toEqual({ error: 'not_found' });
     }
   });
 
@@ -226,10 +227,10 @@ describe('credentials', () => {
     expect((await activity.json() as { rows: { eventId: string; projectId: string }[] }).rows.map((r) => `${r.projectId}:${r.eventId}`)).toEqual(['proj_2:ev2', 'proj_1:ev1']);
 
     const revoked = await worker.fetch(await asOwnerPost(`/api/credentials/${first.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
-    expect(await revoked.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
+    expect(await jsonBody(revoked)).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
     expect(e.sqlite.query(`SELECT revoked_by FROM member_credentials WHERE id = ?`).get(first.tokenId)).toEqual({ revoked_by: PRINCIPAL.id });
     const again = await worker.fetch(await asOwnerPost(`/api/credentials/${first.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
-    expect(await again.json()).toEqual({ revoked: false, revokedBy: PRINCIPAL.id });
+    expect(await jsonBody(again)).toEqual({ revoked: false, revokedBy: PRINCIPAL.id });
   });
 
   it('denial of enrollment is attributable, not prevented: one member can revoke another\'s credential, and the record names who did', async () => {
@@ -237,7 +238,7 @@ describe('credentials', () => {
     const { issueMemberToken } = await import('@myco-server-worker/auth/tokens.js');
     const theirs = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, 1_000);
     const revoked = await worker.fetch(await asOwnerPost(`/api/credentials/${theirs.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
-    expect(await revoked.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
+    expect(await jsonBody(revoked)).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
     expect(e.sqlite.query(`SELECT member_id, revoked_by FROM member_credentials WHERE id = ?`).get(theirs.tokenId))
       .toEqual({ member_id: 'mem_machine_2', revoked_by: PRINCIPAL.id });
   });
@@ -248,7 +249,7 @@ describe('blob bytes', () => {
     const e = sqliteEnv();
     const key = 'a'.repeat(64);
     e.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES ('proj_2','${key}',5,'text/plain; charset=utf-8','t1',1)`);
-    e.bucket.objects.set(`proj_2/${key}`, { size: 5, contentType: 'text/plain; charset=utf-8' });
+    e.bucket.seed(`proj_2/${key}`, { size: 5, contentType: 'text/plain; charset=utf-8' });
 
     const wrong = await worker.fetch(await asOwner(`/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
     expect(wrong.status).toBe(404);
@@ -314,7 +315,7 @@ describe('project creation', () => {
 describe('blob bytes are never executable on the owner origin', () => {
   const store = (e: ReturnType<typeof sqliteEnv>, key: string, mediaType: string) => {
     e.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES ('proj_1','${key}',5,'${mediaType}','t1',1)`);
-    e.bucket.objects.set(`proj_1/${key}`, { size: 5, contentType: mediaType });
+    e.bucket.seed(`proj_1/${key}`, { size: 5, contentType: mediaType });
   };
 
   it('refuses to reflect a member-chosen html type', async () => {

@@ -10,6 +10,7 @@
  * - !response.ok throws so callers can collect the error
  */
 
+import type { FetchLike } from '@myco/utils/instrumented-fetch.js';
 import { describe, it, expect } from 'bun:test';
 import { resolveMycoPackageCheck } from '@myco/upgrade/checker.js';
 import { mycoReleasesApiUrl } from '@myco/upgrade/release-assets.js';
@@ -30,7 +31,7 @@ function makeRelease(tagName: string, prerelease: boolean): FakeRelease {
 
 const GITHUB_URL = mycoReleasesApiUrl();
 
-function makeFetchFn(releases: FakeRelease[], status = 200): typeof fetch {
+function makeFetchFn(releases: FakeRelease[], status = 200): FetchLike {
   return async (url: string | URL | Request) => {
     const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
     if (urlStr === GITHUB_URL) {
@@ -262,7 +263,7 @@ describe('resolveMycoPackageCheck() — error handling', () => {
     };
 
     await expect(
-      resolveMycoPackageCheck('1.0.0', 'stable', '1.0.0', failingFetch as typeof fetch),
+      resolveMycoPackageCheck('1.0.0', 'stable', '1.0.0', failingFetch),
     ).rejects.toThrow('network error');
   });
 });

@@ -1,3 +1,5 @@
+import type { OutboundFetch } from '@myco-server-worker/core/adapters.js';
+import { jsonBody } from '../helpers/json-body.js';
 import { afterEach, expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { settingsWriter } from '../../packages/myco-server/src/core/settings.js';
@@ -39,13 +41,13 @@ test('self-hosted Ollama and OpenAI-compatible endpoints use their configured pr
     await f.configure(provider, base);
     await f.secrets.put('openai', 'fixed-provider-credential', 'operator', 1);
     let request: Request | undefined;
-    const outbound = (async (url: string, init: RequestInit) => { request = new Request(url, init); return Response.json(response); }) as typeof fetch;
+    const outbound = ((url, init) => { request = new Request(url as string, init as RequestInit); return Promise.resolve(Response.json(response)); }) as OutboundFetch;
     const client = (await configuredEmbeddingProvider(f.db, f.key, outbound))!;
     expect(await client.embed('project architecture')).toEqual([1, 0]);
     expect(request!.url).toBe(endpoint);
     expect(request!.headers.get('authorization')).toBeNull();
     expect(request!.redirect).toBe('error');
-    expect(await request!.json()).toEqual({ model: 'bge-m3', input: ['project architecture'] });
+    expect(await jsonBody(request!)).toEqual({ model: 'bge-m3', input: ['project architecture'] });
   }
 });
 
@@ -67,7 +69,7 @@ test('a fixed provider requires its own sealed credential and does not send it t
 test('provider outages allow fallback while malformed successful replies remain errors', async () => {
   const f = fixture(); await f.configure('ollama');
   for (const response of [new Response(null, { status: 503 }), Response.json({ embeddings: [[NaN]] }), Response.json({ embeddings: [[0, 0]] })]) {
-    const client = (await configuredEmbeddingProvider(f.db, f.key, (async () => response) as typeof fetch))!;
+    const client = (await configuredEmbeddingProvider(f.db, f.key, (async () => response) as OutboundFetch))!;
     if (response.status === 503) await expect(client.embed('query')).rejects.toBeInstanceOf(EmbeddingUnavailable);
     else await expect(client.embed('query')).rejects.not.toBeInstanceOf(EmbeddingUnavailable);
   }
@@ -84,5 +86,5 @@ test('OpenRouter preserves its existing default model and opens only its own cre
   await provider.embed('query');
   expect(request!.url).toBe('https://openrouter.ai/api/v1/embeddings');
   expect(request!.headers.get('authorization')).toBe('Bearer router-credential');
-  expect((await request!.json()).model).toBe('openai/text-embedding-3-small');
+  expect((await jsonBody<{ model: string }>(request!)).model).toBe('openai/text-embedding-3-small');
 });

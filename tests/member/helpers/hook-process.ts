@@ -6,6 +6,7 @@
  * argv. The parent kills it at the declared timeout.
  */
 import type { HookMainOptions } from '@myco/member/capture.js';
+import type { FetchLike } from '@myco/member/transport.js';
 import { parseCredentialFlag } from '@myco/member/credential.js';
 
 const hookName = process.argv[2];
@@ -17,8 +18,8 @@ const loaders: Record<string, () => Promise<{ main: (opts?: HookMainOptions) => 
 const loader = loaders[hookName];
 if (!loader) process.exit(64);
 
-const hanging: typeof fetch = (() => new Promise<Response>(() => { /* never answers, ignores abort: the hook hangs until the harness kills it */ })) as typeof fetch;
-const refusing: typeof fetch = (async () => { throw new Error('ECONNREFUSED'); }) as typeof fetch;
+const hanging: FetchLike = () => new Promise<Response>(() => { /* never answers, ignores abort: the hook hangs until the harness kills it */ });
+const refusing: FetchLike = async () => { throw new Error('ECONNREFUSED'); };
 
 const fetchImpl = process.env.MYCO_TEST_HANG_FETCH === '1' ? hanging : process.env.MYCO_TEST_REFUSE_FETCH === '1' ? refusing : globalThis.fetch;
 const mod = await loader();

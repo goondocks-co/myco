@@ -89,7 +89,7 @@ async function rig(cwds: readonly string[], perCwd = 2) {
   cwds.forEach((cwd, i) => {
     const projectId = i === 0 ? 'proj_1' : `proj_${i + 1}`;
     projectOf.set(cwd, projectId);
-    env.env.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`, projectId, projectId, Date.now());
+    env.env.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`, [projectId, projectId, Date.now()]);
     registerTestMember({ mycoHome, token: env.token, tokenId: env.tokenId, projectId, serverUrl: 'https://member-test.invalid', root: cwd });
   });
 

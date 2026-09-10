@@ -112,7 +112,7 @@ describe('handler arguments', () => {
 
     for (const { what, registry, definitions, source } of SURFACES) {
       const modules = handlerModules(source);
-      const declared = new Map(definitions.map((d) => [d.name, new Set(Object.keys(d.inputSchema.properties))]));
+      const declared = new Map<string, Set<string>>(definitions.map((d) => [String(d.name), new Set(Object.keys(d.inputSchema.properties))]));
 
       for (const [tool, entry] of Object.entries(registry)) {
         const handlers = new Set(Object.values(entry.ops).flatMap((op) => ('handler' in (op as object) ? [(op as { handler: { name: string } }).handler.name] : [])));

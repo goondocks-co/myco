@@ -12,6 +12,7 @@
  * These drive `planEventWrite` directly rather than the route, so the admission
  * is observed where it is decided.
  */
+import type { Database } from 'bun:sqlite';
 import { describe, expect, it } from 'bun:test';
 import { ingestEvent, planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { count, envelope, sqliteEnv, bytesWritten, uuid } from './helpers/fixtures.js';
@@ -31,8 +32,8 @@ const ctxFor = (tokenId: string, writeOrigin?: 'member' | 'server') =>
 
 const start = (n: number) => envelope({ eventId: uuid(n), kind: 'session.start', payload: { agent: 'claude-code', startedAt: NOW - 1 } });
 
-const revoke = (sqlite: { run: (sql: string, ...a: unknown[]) => unknown }, tokenId: string): void => {
-  sqlite.run(`UPDATE member_credentials SET revoked_at = ? WHERE id = ?`, NOW, tokenId);
+const revoke = (sqlite: Database, tokenId: string): void => {
+  sqlite.run(`UPDATE member_credentials SET revoked_at = ? WHERE id = ?`, [NOW, tokenId]);
 };
 
 describe('write origin', () => {
@@ -86,7 +87,7 @@ describe('write origin', () => {
     const { sqlite, db, tokenId } = await rig();
     const old = NOW - 30 * 86_400_000;
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-                VALUES (?, 'old', 'machine_1', ?, ?, ?)`, PROJECT, tokenId, old, old);
+                VALUES (?, 'old', 'machine_1', ?, ?, ?)`, [PROJECT, tokenId, old, old]);
     await ingestEvent(db, ctxFor(tokenId, 'server'), envelope({ eventId: uuid(20), sessionId: 'old', kind: 'prompt', payload: { promptId: uuid(21), text: 'derived', origin: 'user' } }));
     const row = sqlite.query(`SELECT last_received_at FROM sessions WHERE session_id = 'old'`).get() as { last_received_at: number };
     expect(row.last_received_at).toBe(old);
@@ -97,7 +98,7 @@ describe('write origin', () => {
     const { sqlite, db, tokenId } = await rig();
     const old = NOW - 30 * 86_400_000;
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-                VALUES (?, 'old', 'machine_1', ?, ?, ?)`, PROJECT, tokenId, old, old);
+                VALUES (?, 'old', 'machine_1', ?, ?, ?)`, [PROJECT, tokenId, old, old]);
     await ingestEvent(db, ctxFor(tokenId), envelope({ eventId: uuid(22), sessionId: 'old', kind: 'prompt', payload: { promptId: uuid(23), text: 'shipped', origin: 'user' } }));
     const row = sqlite.query(`SELECT last_received_at FROM sessions WHERE session_id = 'old'`).get() as { last_received_at: number };
     expect(row.last_received_at).toBe(NOW);
@@ -112,7 +113,7 @@ describe('write origin', () => {
 
   it('holds every other admission for a server write: an archived Project still refuses it', async () => {
     const { sqlite, db, tokenId } = await rig();
-    sqlite.run(`UPDATE projects SET archived_at = ? WHERE project_id = ?`, NOW, PROJECT);
+    sqlite.run(`UPDATE projects SET archived_at = ? WHERE project_id = ?`, [NOW, PROJECT]);
     const result = await ingestEvent(db, ctxFor(tokenId, 'server'), start(7));
     expect(result.persisted).toBe(false);
     expect(count(sqlite, 'events')).toBe(0);

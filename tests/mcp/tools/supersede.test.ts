@@ -6,6 +6,7 @@
  * recorded.
  */
 
+import { testProjectId } from '../../helpers/request-context.js';
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleMycoSpores } from '@myco/tools/spores.js';
@@ -40,7 +41,7 @@ function seedSpore(id: string, agentId = 'user', projectId: string | null = null
 function requestContext(projectId: string) {
   return resolveLegacyRequestContext('/tmp/myco-spore-supersede-test/.myco', {
     projectRoot: `/workspace/${projectId}`,
-    projectId,
+    projectId: testProjectId(projectId),
     groveId: 'grove-test',
     machineId: 'machine-test',
     source: 'explicit',

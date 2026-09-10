@@ -17,6 +17,7 @@
  * session imported and then continued live is live work again. Asserting only
  * that an import sets the lane would pin the opposite.
  */
+import { refused } from './helpers/outcomes.js';
 import { describe, expect, it } from 'bun:test';
 import { parseTranscripts, pendingImportedTranscripts, pendingTranscriptBytes, TRANSCRIPT_PARSE_CALLS_PER_PASS } from '@myco-server-worker/ingest/parse.js';
 import { engineAssertions } from '@myco-server-worker/core/tick.js';
@@ -62,7 +63,7 @@ async function rig() {
     const key = await sha256HexOf(bytes);
     await serverEnv.blobs.put(`${PROJECT}/${key}`, new Blob([bytes]).stream());
     sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (project_id, key) DO NOTHING`, PROJECT, key, bytes.length, 'text/plain', issued.tokenId, NOW);
+                ON CONFLICT (project_id, key) DO NOTHING`, [PROJECT, key, bytes.length, 'text/plain', issued.tokenId, NOW]);
     return ingestEvent(serverEnv.db, { projectId: PROJECT, machineId: MACHINE, tokenId: issued.tokenId, bodyBytes: 200, now: at }, {
       eventId: nextId(),
       sessionId, kind: 'transcript.segment', createdAt: at, channel,
@@ -76,7 +77,7 @@ async function rig() {
     const key = await sha256HexOf(bytes);
     await rig.serverEnv.blobs.put(`${PROJECT}/${key}`, new Blob([bytes]).stream());
     rig.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (project_id, key) DO NOTHING`, PROJECT, key, bytes.length, 'text/plain', issued.tokenId, NOW);
+                    ON CONFLICT (project_id, key) DO NOTHING`, [PROJECT, key, bytes.length, 'text/plain', issued.tokenId, NOW]);
     return ingestEvent(rig.serverEnv.db, { projectId: PROJECT, machineId: MACHINE, tokenId: issued.tokenId, bodyBytes: 200, now: at }, {
       eventId: nextId(), sessionId, kind: 'transcript.segment', createdAt: at, channel,
       producer: { adapter: 'claude-code', version: '1' },
@@ -221,8 +222,8 @@ describe('an imported transcript in the store', () => {
     // it keeps its identity, and only the head digest says it is a different
     // file. With the digest on the wire the Deployment refuses it; with none,
     // its bytes join the record of the file it replaced and nothing shows it.
-    const refused = await shipWithHead(tx('hh'), body(2), NOW + 1, new TextEncoder().encode(first).length, 'b'.repeat(64));
-    expect({ persisted: refused.persisted, code: refused.code }).toEqual({ persisted: false, code: 'transcript_replaced' });
+    const outcome = await shipWithHead(tx('hh'), body(2), NOW + 1, new TextEncoder().encode(first).length, 'b'.repeat(64));
+    expect(refused(outcome).code).toBe('transcript_replaced');
   });
 
   it('excludes an imported reduced-fidelity session from extraction, and shows it to a reader', async () => {
@@ -231,7 +232,7 @@ describe('an imported transcript in the store', () => {
     // declaration, so an imported Cursor session inherits the rule rather than
     // needing the import to apply it. Asserted rather than assumed.
     await r.ship('s-cursor', tx('cursor'), body(1), 'import', NOW);
-    r.sqlite.run(`UPDATE transcripts SET agent = 'cursor', fidelity = 'no_tool_results' WHERE transcript_id = ?`, tx('cursor'));
+    r.sqlite.run(`UPDATE transcripts SET agent = 'cursor', fidelity = 'no_tool_results' WHERE transcript_id = ?`, [tx('cursor')]);
 
     const extraction = await listSessions(r.serverEnv.db, { projectId: PROJECT }, {});
     expect(extraction.rows.map((x) => x.sessionId)).toEqual([]);
@@ -269,7 +270,7 @@ describe('an imported transcript in the store', () => {
     ];
     for (const row of rows) {
       r.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at, ended_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`, PROJECT, row.id, MACHINE, r.tokenId, row.recv, row.recv, row.started);
+                    VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`, [PROJECT, row.id, MACHINE, r.tokenId, row.recv, row.recv, row.started]);
     }
 
     const seen: string[] = [];

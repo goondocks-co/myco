@@ -98,8 +98,9 @@ function selfSignedCert(): SelfSignedCert {
  * the entire reason the team surface mounts at root.
  */
 function stripMount(requestPath: string): string {
-  if (TEAM_FUNNEL_MOUNT === '/') return requestPath;
-  const prefix = TEAM_FUNNEL_MOUNT.replace(/\/$/, '');
+  const mount: string = TEAM_FUNNEL_MOUNT;
+  if (mount === '/') return requestPath;
+  const prefix = mount.replace(/\/$/, '');
   if (requestPath === prefix) return '/';
   if (requestPath.startsWith(`${prefix}/`)) return requestPath.slice(prefix.length);
   return requestPath;

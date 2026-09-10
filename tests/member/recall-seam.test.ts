@@ -79,7 +79,7 @@ async function drive(
 const outcomeFor = (run: HookRun, context: HookOutcome['context']): HookOutcome => {
   const promptId = mintId();
   return {
-    events: [promptEvent(run.ctx, { promptId, text: 'a typed prompt', origin: 'user' })],
+    events: [promptEvent(run.ctx, { promptId, text: 'a typed prompt', origin: 'human' })],
     record: (state) => { state.promptId = promptId; state.prompts.typed = promptId; },
     response: { additionalContext: `Session:: \`${run.sessionId}\`` },
     context,

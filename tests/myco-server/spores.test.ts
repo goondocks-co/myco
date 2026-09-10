@@ -124,7 +124,7 @@ describe('the terminal-session gate', () => {
 describe('resolution', () => {
   const event = (id: string, sporeId: string, over: Record<string, unknown> = {}) => ({
     id, agentId: AGENT, sporeId, action: 'supersede' as const,
-    newSporeId: 'sp2', reason: null, sessionId: null, createdAt: NOW, ...over,
+    newSporeId: 'sp2', reason: null, sessionId: null, author: null, createdAt: NOW, ...over,
   });
 
   it('moves the status and records the event as one write', async () => {

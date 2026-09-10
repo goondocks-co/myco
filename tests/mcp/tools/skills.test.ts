@@ -4,6 +4,7 @@
  * The handler proxies through DaemonClient to /api/skill-records.
  */
 
+import { testProjectId } from '../../helpers/request-context.js';
 import { describe, it, expect, vi } from 'vitest';
 import { handleMycoSkills } from '@myco/tools/skills.js';
 import { DaemonClient } from '@myco/daemon/client.js';
@@ -45,13 +46,15 @@ describe('myco_skills', () => {
     const client = mockClient({ records });
     const context: MycoRequestContext = {
       projectRoot: '/workspace/project-a',
-      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      callerRoot: null,
+      projectId: testProjectId('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
       groveId: 'grove-a',
       machineId: 'machine-a',
       sessionId: 'sess-a',
       projectVaultDir: '/workspace/project-a/.myco',
       databasePath: '/tmp/grove-a/myco.db',
       source: 'headers',
+      tenancySource: 'caller',
     };
 
     await handleMycoSkills({}, client, context);

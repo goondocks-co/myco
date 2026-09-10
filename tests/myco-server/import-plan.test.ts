@@ -14,6 +14,7 @@
  * member must still be told to ship. Refusing both would drop the later half of
  * every rotated session, permanently and without saying so.
  */
+import { jsonBody, objectAt } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import { handleImportPlan } from '@myco-server-worker/api/import.js';
 import { IMPORT_MAX_SESSIONS_DEFAULT, IMPORT_WINDOW_DAYS_DEFAULT } from '@myco-server-worker/core/import-policy.js';
@@ -44,16 +45,16 @@ async function rig() {
   /** A transcript the Deployment already holds. */
   const hold = (sessionId: string, transcriptId: string, size: number, headHash: string | null, role = 'primary') => {
     sqlite.run(`INSERT OR IGNORE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-                VALUES (?, ?, ?, ?, ?, ?)`, PROJECT, sessionId, MACHINE, issued.tokenId, NOW, NOW);
+                VALUES (?, ?, ?, ?, ?, ?)`, [PROJECT, sessionId, MACHINE, issued.tokenId, NOW, NOW]);
     sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id)
                 VALUES (?, ?, ?, ?, 'claude-code', ?, ?, ?, 1, ?, ?, ?)`,
-               PROJECT, transcriptId, sessionId, MACHINE, role, headHash, size, NOW, NOW, issued.tokenId);
+               [PROJECT, transcriptId, sessionId, MACHINE, role, headHash, size, NOW, NOW, issued.tokenId]);
   };
 
   const tombstone = (sessionId: string) => {
     sqlite.run(`INSERT OR IGNORE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-                VALUES (?, ?, ?, ?, ?, ?)`, PROJECT, sessionId, MACHINE, issued.tokenId, NOW, NOW);
-    sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, ?, NULL, ?, 'mem_machine_1')`, PROJECT, sessionId, NOW);
+                VALUES (?, ?, ?, ?, ?, ?)`, [PROJECT, sessionId, MACHINE, issued.tokenId, NOW, NOW]);
+    sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, ?, NULL, ?, 'mem_machine_1')`, [PROJECT, sessionId, NOW]);
   };
 
   // Through the settings writer, not a hand-rolled INSERT: what the admission
@@ -64,7 +65,7 @@ async function rig() {
 
   /** Charge the credential so only `room` bytes are left. */
   const spend = (room: number) =>
-    sqlite.run(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`, MEMBER_TOKEN_BYTE_QUOTA - room, issued.tokenId);
+    sqlite.run(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`, [MEMBER_TOKEN_BYTE_QUOTA - room, issued.tokenId]);
 
   const plan = async (offers: readonly Offer[], over: Record<string, unknown> = {}) => {
     const body = JSON.stringify({
@@ -75,7 +76,7 @@ async function rig() {
       })),
     });
     const ctx = { projectId: PROJECT, machineId: MACHINE, tokenId: issued.tokenId, bodyBytes: body.length, now: NOW, body, origin: null } as never;
-    return await (await handleImportPlan(serverEnv, ctx)).json() as Record<string, never>;
+    return await jsonBody<Record<string, unknown>>(await handleImportPlan(serverEnv, ctx));
   };
 
   /** Every candidate's answer, keyed by identity, so an assertion names the transcript rather than a position. */
@@ -161,8 +162,8 @@ describe('the import plan', () => {
     expect(capped.get('tx_2')?.reason).toBe('cap');
 
     await r.leaf('import.enabled', false);
-    const refused = await r.plan([{ sessionId: 's1', transcriptId: 'tx_a' }]);
-    expect({ persisted: refused.persisted, code: refused.code }).toEqual({ persisted: false, code: 'import_disabled' });
+    const outcome = await r.plan([{ sessionId: 's1', transcriptId: 'tx_a' }]);
+    expect({ persisted: outcome.persisted, code: outcome.code }).toEqual({ persisted: false, code: 'import_disabled' });
     // Even a caller asking for a wider window is refused while the switch is off.
     expect((await r.plan([{ sessionId: 's1', transcriptId: 'tx_a' }], { windowDays: 90 })).code).toBe('import_disabled');
   });
@@ -227,8 +228,8 @@ describe('the import plan', () => {
 
   it('answers the bounds it ran under, defaulting to the anchor’s window and cap', async () => {
     const r = await rig();
-    expect((await r.plan([])).policy).toEqual({ enabled: true, windowDays: IMPORT_WINDOW_DAYS_DEFAULT, maxPerAgent: IMPORT_MAX_SESSIONS_DEFAULT } as never);
+    expect((await r.plan([])).policy).toEqual({ enabled: true, windowDays: IMPORT_WINDOW_DAYS_DEFAULT, maxPerAgent: IMPORT_MAX_SESSIONS_DEFAULT });
     await r.leaf('import.window_days', 7);
-    expect(((await r.plan([])).policy as unknown as { windowDays: number }).windowDays).toBe(7);
+    expect((objectAt(await r.plan([]), 'policy')).windowDays).toBe(7);
   });
 });

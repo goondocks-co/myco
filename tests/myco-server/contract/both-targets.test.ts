@@ -286,7 +286,7 @@ describe('one server product, two deployment targets', () => {
 });
 
 import { authenticateServerMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { authenticateGrant, issueExternalGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
+import { authenticateGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 

@@ -46,14 +46,14 @@ process.env.MYCO_TEAM_HOME = teamHome;
 const {
   attachProject,
   persistEnrollmentMembership,
-  reserveHostProxyPort,
+  reserveHostEnrollment,
 } = createHostRegistryOperations(createPerUserLockNamespace(() => lockRoot));
 const operation = JSON.parse(fs.readFileSync(payloadPath, 'utf-8')) as RegistryOperation;
 fs.writeFileSync(startedPath, 'started\n');
 
 try {
   if (operation.mode === 'enroll') {
-    const reservation = reserveHostProxyPort(operation.record.host_id);
+    const reservation = reserveHostEnrollment(operation.record.host_id);
     persistEnrollmentMembership(operation.record, operation.bearer, reservation);
   } else {
     attachProject(operation.hostId, operation.ref);

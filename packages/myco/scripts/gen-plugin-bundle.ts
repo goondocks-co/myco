@@ -49,6 +49,7 @@ import {
   PLUGIN_LICENSE,
   PLUGIN_NAME,
   ACCESS_KEY_COSTS,
+  type PluginConfigKey,
 } from '../src/plugins/spec.js';
 
 const LABEL = 'gen-plugin-bundle';

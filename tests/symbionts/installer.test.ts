@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { ensureManagedSkills } from '@myco/symbionts/managed-skills.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
+import { symbiontManifest, deriveSymbiontManifest } from '../helpers/symbiont-manifest.js';
 import { derivePort } from '@myco/daemon/port.js';
 import { isMycoHookCommand, MYCO_MANAGED_MARKER } from '@myco/symbionts/install-helpers.js';
 import { readSymbiontFlag } from '@myco/hooks/normalize.js';
@@ -11,7 +12,7 @@ import os from 'node:os';
 
 // --- Test manifests ---
 
-const CLAUDE_MANIFEST: SymbiontManifest = {
+const CLAUDE_MANIFEST = symbiontManifest({
   name: 'claude-code',
   displayName: 'Claude Code',
   binary: 'claude',
@@ -26,9 +27,9 @@ const CLAUDE_MANIFEST: SymbiontManifest = {
     settingsTarget: '.claude/settings.json',
     instructionsFile: 'CLAUDE.md',
   },
-};
+});
 
-const CURSOR_MANIFEST: SymbiontManifest = {
+const CURSOR_MANIFEST = symbiontManifest({
   name: 'cursor',
   displayName: 'Cursor',
   binary: 'cursor',
@@ -43,10 +44,10 @@ const CURSOR_MANIFEST: SymbiontManifest = {
     skillsTarget: '.cursor/skills',
     settingsTarget: '.cursor/settings.json',
   },
-};
+});
 
 /** Minimal manifest with no hooks — used to test skip-guard behavior. */
-const NO_HOOKS_MANIFEST: SymbiontManifest = {
+const NO_HOOKS_MANIFEST = symbiontManifest({
   name: 'no-hooks-agent',
   displayName: 'No Hooks Agent',
   binary: 'nohooks',
@@ -58,9 +59,9 @@ const NO_HOOKS_MANIFEST: SymbiontManifest = {
     mcpTarget: '.nohooks/mcp.json',
     skillsTarget: '.nohooks/skills',
   },
-};
+});
 
-const CODEX_MANIFEST: SymbiontManifest = {
+const CODEX_MANIFEST = symbiontManifest({
   name: 'codex',
   displayName: 'Codex',
   binary: 'codex',
@@ -76,13 +77,13 @@ const CODEX_MANIFEST: SymbiontManifest = {
     settingsTarget: '.codex/config.toml',
     settingsFormat: 'toml',
   },
-};
+});
 
 // Like cli-batched but MCP-transport: hooks + MCP server + settings all land in
 // ONE JSON file, so install goes through `installBatchedJson` AND writes the MCP
 // server — the shape of claude-code's global ~/.claude/settings.json. Used to
 // pin batched-path idempotency.
-const MCP_BATCHED_MANIFEST: SymbiontManifest = {
+const MCP_BATCHED_MANIFEST = symbiontManifest({
   name: 'mcp-batched',
   displayName: 'MCP Batched',
   binary: 'mcpbatched',
@@ -97,10 +98,10 @@ const MCP_BATCHED_MANIFEST: SymbiontManifest = {
     settingsTarget: '.mcpbatched/config.json',
     skillsTarget: '.agents/skills',
   },
-};
+});
 
 /** A symbiont whose hooks, MCP server and settings share one JSON file, for the batched merge site. */
-const COLOCATED_MANIFEST: SymbiontManifest = {
+const COLOCATED_MANIFEST = symbiontManifest({
   name: 'cli-batched',
   displayName: 'Colocated',
   binary: 'clibatched',
@@ -115,9 +116,9 @@ const COLOCATED_MANIFEST: SymbiontManifest = {
     settingsTarget: '.clibatched/config.json',
     skillsTarget: '.agents/skills',
   },
-};
+});
 
-const GEMINI_MANIFEST: SymbiontManifest = {
+const GEMINI_MANIFEST = symbiontManifest({
   name: 'gemini',
   displayName: 'Gemini CLI',
   binary: 'gemini',
@@ -131,9 +132,9 @@ const GEMINI_MANIFEST: SymbiontManifest = {
     settingsTarget: '.gemini/settings.json',
     instructionsFile: 'GEMINI.md',
   },
-};
+});
 
-const COPILOT_MANIFEST: SymbiontManifest = {
+const COPILOT_MANIFEST = symbiontManifest({
   name: 'copilot',
   displayName: 'GitHub Copilot',
   binary: 'copilot',
@@ -147,9 +148,9 @@ const COPILOT_MANIFEST: SymbiontManifest = {
     settingsTarget: '.vscode/settings.json',
     instructionsFile: '.github/copilot-instructions.md',
   },
-};
+});
 
-const WINDSURF_MANIFEST: SymbiontManifest = {
+const WINDSURF_MANIFEST = symbiontManifest({
   name: 'windsurf',
   displayName: 'Windsurf',
   binary: 'windsurf',
@@ -161,9 +162,9 @@ const WINDSURF_MANIFEST: SymbiontManifest = {
     skillsTarget: '.agents/skills',
     settingsTarget: '.windsurf/settings.json',
   },
-};
+});
 
-const OPENCODE_MANIFEST: SymbiontManifest = {
+const OPENCODE_MANIFEST = symbiontManifest({
   name: 'opencode',
   displayName: 'OpenCode',
   binary: 'opencode',
@@ -179,7 +180,7 @@ const OPENCODE_MANIFEST: SymbiontManifest = {
     settingsTarget: 'opencode.json',
     skillsTarget: '.agents/skills',
   },
-};
+});
 
 /** Fixture content written as the opencode plugin.ts template in tests. */
 const OPENCODE_PLUGIN_TEMPLATE_CONTENT = `// Managed by Myco. Regenerated on \`myco update\`.
@@ -253,6 +254,12 @@ function writeJson(filePath: string, data: unknown): void {
 
 function readJson(filePath: string): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+}
+
+/** The `mcpServers` map of an MCP config file, keyed by server name. */
+function readMcpServers(filePath: string): Record<string, unknown> {
+  const config = readJson(filePath);
+  return (config.mcpServers ?? {}) as Record<string, unknown>;
 }
 
 /**
@@ -954,10 +961,9 @@ describe('installSkills', () => {
   });
 
   it('returns false when no skillsTarget in manifest', () => {
-    const noSkillsManifest: SymbiontManifest = {
-      ...CLAUDE_MANIFEST,
+    const noSkillsManifest = deriveSymbiontManifest(CLAUDE_MANIFEST, {
       registration: { hooksTarget: '.claude/settings.json', mcpTarget: '.mcp.json' },
-    };
+    });
     const installer = new SymbiontInstaller(noSkillsManifest, projectRoot, packageRoot);
     const result = installer.installSkills();
     expect(result).toBe(false);
@@ -1085,10 +1091,9 @@ describe('installSettings', () => {
   });
 
   it('returns false when no settingsTarget in manifest', () => {
-    const noSettingsManifest: SymbiontManifest = {
-      ...CODEX_MANIFEST,
+    const noSettingsManifest = deriveSymbiontManifest(CODEX_MANIFEST, {
       registration: { ...CODEX_MANIFEST.registration, settingsTarget: undefined },
-    };
+    });
     const installer = new SymbiontInstaller(noSettingsManifest, projectRoot, packageRoot);
     const result = installer.installSettings();
     expect(result).toBe(false);
@@ -1848,9 +1853,9 @@ describe('uninstall', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.uninstallMcp();
 
-    const config = readJson(path.join(projectRoot, '.mcp.json'));
-    expect(config.mcpServers.other).toBeDefined();
-    expect(config.mcpServers.myco).toBeUndefined();
+    const servers = readMcpServers(path.join(projectRoot, '.mcp.json'));
+    expect(servers.other).toBeDefined();
+    expect(servers.myco).toBeUndefined();
   });
 
   it('removes MCP server from TOML config', () => {
@@ -2933,13 +2938,12 @@ describe('RC-14 — global-scope (flatSkills) uninstall symmetry', () => {
     process.env.MYCO_HOME = path.join(home, '.myco');
     try {
       ensureManagedSkills(process.env.MYCO_HOME);
-      const globalClaude = {
-        ...CLAUDE_MANIFEST,
+      const globalClaude = deriveSymbiontManifest(CLAUDE_MANIFEST, {
         registration: {
           ...CLAUDE_MANIFEST.registration,
           globalSkillsTarget: '~/.claude/skills',
         },
-      };
+      });
       const installer = new SymbiontInstaller(globalClaude, '/', packageRoot, false, undefined, null, 'global');
       expect(installer.installSkills()).toBe(true);
 
@@ -3168,7 +3172,7 @@ describe('direct-binary hook commands', () => {
 
   it('antigravity: plugin-file JSON template emits direct-binary commands with the marker', () => {
     pinRuntimeBinary(PINNED_BINARY);
-    const antigravity: SymbiontManifest = {
+    const antigravity = symbiontManifest({
       name: 'antigravity',
       displayName: 'Antigravity',
       binary: 'antigravity',
@@ -3181,7 +3185,7 @@ describe('direct-binary hook commands', () => {
         hooksTemplateFile: 'hooks.json',
         skillsTarget: '.agents/skills',
       },
-    };
+    });
     // Antigravity's real template nests events under a `myco` wrapper key and
     // mixes flat (`{ command }`) and nested (`{ hooks: [{ command }] }`) shapes.
     const dir = path.join(packageRoot, 'src/symbionts/templates/antigravity');

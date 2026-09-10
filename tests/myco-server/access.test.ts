@@ -3,6 +3,8 @@
  * every revocation names who; revoking a member is one transaction that ends
  * everything live that is theirs and never leaves the Deployment empty.
  */
+import type { InvitationRow } from '@myco-server-worker/auth/enrollment.js';
+import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueEnrollmentAuthority, spendEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
@@ -129,11 +131,11 @@ describe('members and invitations', () => {
     }
 
     const listed = await worker.fetch(await asOwner('/api/enrollment'), env);
-    const { invitations } = await listed.json() as { invitations: { id: string; memberId: string | null; createdBy: string }[] };
+    const { invitations } = await jsonBody<{ invitations: InvitationRow[] }>(listed);
     expect(invitations).toEqual([{ id: body.id, memberId: 'mem_machine_2', createdBy: PRINCIPAL.id, createdAt: expect.any(Number), expiresAt: body.expiresAt, role: 'member', projectId: null }]);
 
     const revoked = await worker.fetch(await asOwnerPost(`/api/enrollment/${body.id}/revoke`), env);
-    expect(await revoked.json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
+    expect(await jsonBody(revoked)).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
     expect(e.sqlite.query(`SELECT revoked_by FROM enrollment_authorities WHERE id = ?`).get(body.id)).toEqual({ revoked_by: PRINCIPAL.id });
     expect((await (await worker.fetch(await asOwner('/api/enrollment'), env)).json() as { invitations: unknown[] }).invitations).toEqual([]);
   });

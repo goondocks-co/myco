@@ -12,6 +12,8 @@ import { MOVE_TERMINAL_PHASES } from '@myco/grove/lease-evidence.js';
 
 describe('move terminal-phase parity', () => {
   test('the hand-copied sets are identical', () => {
-    expect([...TERMINAL_PHASES].sort()).toEqual([...MOVE_TERMINAL_PHASES].sort());
+    const phases: string[] = [...TERMINAL_PHASES];
+    const copied: string[] = [...MOVE_TERMINAL_PHASES];
+    expect(phases.sort()).toEqual(copied.sort());
   });
 });

@@ -14,6 +14,7 @@
  * the carrier genuinely cannot carry fails here at build time instead of
  * surfacing as silent data loss in a detach.
  */
+import { testProjectId } from '../helpers/request-context.js';
 import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -29,7 +30,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { setupTestDb, teardownTestDb } from '../helpers/db';
 
-const PROJ = 'proj_cccccccccccccccccccccccccccccccc';
+const PROJ = testProjectId('proj_cccccccccccccccccccccccccccccccc');
 
 /**
  * Every table the attach push must carry — the project-scoped set plus

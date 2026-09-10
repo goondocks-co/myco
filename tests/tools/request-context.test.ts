@@ -353,7 +353,10 @@ describe('tool request context', () => {
       groveId: 'grove-a',
     });
 
-    expect(rowProjectIdFromRequestContext()).toBeUndefined();
+    // Called with no argument at all, which the signature requires and a
+    // production caller cannot reach: the reader answers undefined for a
+    // caller that has no context, and this is the only place that drives it.
+    expect((rowProjectIdFromRequestContext as () => GroveProjectId | null | undefined)()).toBeUndefined();
     expect(rowProjectIdFromRequestContext(nonGrove)).toBeNull();
     expect(rowProjectIdFromRequestContext(grove)).toBe(projectId);
   });
@@ -471,7 +474,7 @@ describe('tool request context', () => {
       // Post-D5: missing context is a programming error, not a silent
       // widen to {kind:'all'}. Production middleware always supplies
       // a request context; this assertion locks the new contract.
-      expect(() => projectScopeFromRequestContext()).toThrow();
+      expect(() => (projectScopeFromRequestContext as () => unknown)()).toThrow();
       expect(() => projectScopeFromRequestContext(undefined)).toThrow();
     });
 

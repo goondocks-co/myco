@@ -56,7 +56,7 @@ describe('member ↔ worker pins', () => {
 
   it('the member code list is exactly the worker classifiers plus unavailable', () => {
     expect(new Set(MEMBER_CODES)).toEqual(new Set([...CLASSIFIERS, UNAVAILABLE]));
-    expect(MEMBER_CODES.length).toBe(CLASSIFIERS.length + 1);
+    expect(MEMBER_CODES).toHaveLength(CLASSIFIERS.length + 1);
   });
 
   it('agrees on the channels an envelope may carry, and on the candidates one import plan holds', () => {

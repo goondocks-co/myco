@@ -164,7 +164,8 @@ describe('the prompt a claim hands a worker', () => {
     if (!claimed.claimed) return;
     expect(claimed.run.instruction).not.toBe('a prompt from the dispatch');
     const row = f.e.sqlite.query(`SELECT instruction, run_context AS runContext FROM agent_runs WHERE id = 'run_1'`).get() as { instruction: string; runContext: string };
-    expect(row.instruction).toBe(claimed.run.instruction);
+    expect(claimed.run.instruction).not.toBeNull();
+    expect(row.instruction).toBe(claimed.run.instruction!);
     expect(JSON.parse(row.runContext).input_hash).toEqual(expect.any(String));
   });
 });

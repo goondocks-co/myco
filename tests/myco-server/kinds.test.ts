@@ -2,7 +2,7 @@ import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { KINDS, kindSpec, parsePayload, blobFields, promptReferenceFields, orderingFields, idFields, PROMPT_ORIGINS, PLAN_STATUSES, MAX_ARRAY_ITEMS, MAX_TIME_MS, PROMPT_REFERENCE_COLUMNS, type Bound } from '@myco-server-worker/ingest/kinds.js';
+import { KINDS, kindSpec, parsePayload, blobFields, promptReferenceFields, orderingFields, idFields, PROMPT_ORIGINS, PLAN_STATUSES, MAX_ARRAY_ITEMS, MAX_TIME_MS, PROMPT_REFERENCE_COLUMNS, type Bound, type IdRole } from '@myco-server-worker/ingest/kinds.js';
 import { basenameOf, planKind, RAW_ROW_GATE, type WriteContext } from '@myco-server-worker/ingest/projections.js';
 import { MAX_PAYLOAD_BYTES, PAYLOAD_CAP_REASON } from '@myco-server-worker/ingest/envelope.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
@@ -57,7 +57,7 @@ async function member(env: ReturnType<typeof sqliteEnv>, project = 'proj_1', mac
 }
 
 /** Uploads bytes as a blob for the token and returns the key. */
-async function upload(env: ReturnType<typeof sqliteEnv>, token: string, bytes: Uint8Array, mediaType = TEXT_MEDIA_TYPE): Promise<string> {
+async function upload(env: ReturnType<typeof sqliteEnv>, token: string, bytes: Uint8Array<ArrayBuffer>, mediaType = TEXT_MEDIA_TYPE): Promise<string> {
   const key = await sha256HexOf(bytes);
   const res = await worker.fetch(blobPost(token, key, bytes, mediaType), env.env);
   expect((await json(res)).stored).toBe(true);
@@ -84,6 +84,9 @@ const ID_ROLES = { key: 7, prompt: 9, group: 1 };
 const ORDERING_FIELDS = 2;
 /** The projection families whose identity row carries `machine_id` are owned by that row; every other keyed table routes ownership through its session. Pinned from the catalogue's projection family, independent of the plan's own `owner`, so a flipped owner is caught by name. */
 const ROW_OWNED_PROJECTIONS = new Set(['plans', 'transcript_segments']);
+
+/** One row identity a kind's projection plan names: the column, the value under it, and who owns the row. */
+interface Identity { keyColumn: string; key: unknown; owner: string }
 
 describe('kind catalogue', () => {
   it('has a fixture, a schema, a finite ceiling on every column-mapped field, a marker on every prompt reference, and a projection for every kind', () => {
@@ -117,7 +120,8 @@ describe('kind catalogue', () => {
     }
     expect(marked).toBe(PROMPT_REFERENCE_MARKERS);
     expect(roles).toEqual(ID_ROLES);
-    expect(idFields(kindSpec('prompt')!).sort()).toEqual([['parentPromptId', 'prompt'], ['promptId', 'prompt'], ['threadId', 'group']].sort());
+    const promptIdFields: [string, IdRole | undefined][] = [['parentPromptId', 'prompt'], ['promptId', 'prompt'], ['threadId', 'group']];
+    expect(idFields(kindSpec('prompt')!).sort()).toEqual(promptIdFields.sort());
     expect(ordering).toBe(ORDERING_FIELDS);
     expect(orderingFields(kindSpec('session.start')!)).toEqual(['startedAt']);
     expect(orderingFields(kindSpec('session.end')!)).toEqual(['endedAt']);
@@ -439,10 +443,10 @@ describe('kind catalogue', () => {
       const owner = ROW_OWNED_PROJECTIONS.has(spec.projection) ? 'row' : 'session';
       const keyed = Object.entries(spec.fields)
         .filter(([, f]) => ((f.bound.type === 'id' && f.role === 'key') || f.bound.type === 'transcriptId') && f.column !== undefined)
-        .map(([field, f]) => ({ keyColumn: f.column as string, key: payload[field], owner }));
-      const expected = spec.projection === 'raw' || SHARED_ROW_PROJECTIONS.has(spec.projection) ? [] : keyed;
-      expect({ kind: spec.name, identities: plan.identities.map(({ keyColumn, key, owner }) => ({ keyColumn, key, owner })) })
-        .toEqual({ kind: spec.name, identities: expected });
+        .map(([field, f]): Identity => ({ keyColumn: f.column as string, key: (payload as Record<string, unknown>)[field], owner }));
+      const expected: Identity[] = spec.projection === 'raw' || SHARED_ROW_PROJECTIONS.has(spec.projection) ? [] : keyed;
+      const planned: Identity[] = plan.identities.map(({ keyColumn, key, owner }) => ({ keyColumn, key, owner }));
+      expect({ kind: spec.name, identities: planned }).toEqual({ kind: spec.name, identities: expected });
     }
   });
 
@@ -737,7 +741,7 @@ describe('kind catalogue', () => {
     const absent = 'e'.repeat(64);
     const now = Date.now();
     const post = (over: Record<string, unknown>) => memberPost(t1.token, envelope({ eventId: uuid(1101), ...over }));
-    const blob = (over: Record<string, string>, body: Uint8Array = seg, key = segKey) => new Request(`https://s/blobs/${key}`, { method: 'POST', headers: memberHeaders(t1.token, { 'content-type': TEXT_MEDIA_TYPE, 'content-length': String(body.byteLength), ...over }), body });
+    const blob = (over: Record<string, string>, body: Uint8Array<ArrayBuffer> = seg, key = segKey) => new Request(`https://s/blobs/${key}`, { method: 'POST', headers: memberHeaders(t1.token, { 'content-type': TEXT_MEDIA_TYPE, 'content-length': String(body.byteLength), ...over }), body });
     const table: { name: string; request: () => Request; kind: 'ingest_refused' | 'blob_refused'; reason: string; classifier: string }[] = [
       { name: 'unknown kind', request: () => post({ kind: 'made.up', payload: {} }), kind: 'ingest_refused', reason: 'unknown kind made.up', classifier: 'unknown_kind' },
       { name: 'unknown envelope field', request: () => post({ machineId: 'x' }), kind: 'ingest_refused', reason: 'unknown field machineId', classifier: 'unknown_field' },
@@ -811,7 +815,7 @@ describe('kind catalogue', () => {
     await worker.fetch(blobPost(t.token, await sha256HexOf(utf8('dup-bytes')), utf8('dup-bytes')), e.env);
 
     const adopted = await sha256HexOf(utf8('adopted-bytes'));
-    e.bucket.objects.set(`proj_1/${adopted}`, { size: utf8('adopted-bytes').byteLength, contentType: TEXT_MEDIA_TYPE });
+    e.bucket.seed(`proj_1/${adopted}`, { size: utf8('adopted-bytes').byteLength, contentType: TEXT_MEDIA_TYPE, bytes: utf8('adopted-bytes') });
     e.sqlite.query(`INSERT INTO blob_reservations (reservation_id, project_id, key, token_id, size, expires_at) VALUES ('expired', 'proj_1', ?, ?, 1, 1)`).run(adopted, t.tokenId);
     await worker.fetch(new Request(`https://s/blobs/${adopted}`, {
       method: 'POST',
@@ -820,7 +824,7 @@ describe('kind catalogue', () => {
     }), e.env);
 
     const oversize = await sha256HexOf(utf8('oversize-bytes'));
-    e.bucket.objects.set(`proj_1/${oversize}`, { size: MAX_BLOB_BYTES + 1, contentType: TEXT_MEDIA_TYPE });
+    e.bucket.seed(`proj_1/${oversize}`, { size: MAX_BLOB_BYTES + 1, contentType: TEXT_MEDIA_TYPE });
     await worker.fetch(new Request(`https://s/blobs/${oversize}`, {
       method: 'POST',
       headers: memberHeaders(t.token, { 'content-type': TEXT_MEDIA_TYPE, 'content-length': '1' }),

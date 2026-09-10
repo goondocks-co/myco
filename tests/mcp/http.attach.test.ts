@@ -16,6 +16,7 @@
  * is a tmpdir with no manifest (so the local path resolves the daemon anchor),
  * and `MYCO_DAEMON_AUTH` is cleared so the bearer gate is disabled for the test.
  */
+import { jsonBody } from '../helpers/json-body.js';
 import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import http from 'node:http';
@@ -153,7 +154,7 @@ describe('/mcp attach short-circuit + proxy (chokepoint 2)', () => {
       headers: { 'content-type': 'application/json', [REQUEST_CONTEXT_HEADERS.projectId]: projectId },
       body: mcpBody('myco_cortex', { op: 'canopy_map' }),
     });
-    const parsed = await res.json();
+    const parsed = await jsonBody<{ error: { code: number; data: { code: string } } }>(res);
     expect(parsed.error.code).toBe(-32004);
     expect(parsed.error.data.code).toBe('capability_unavailable_hosted');
     expect(hostHits).toHaveLength(0);
@@ -166,7 +167,7 @@ describe('/mcp attach short-circuit + proxy (chokepoint 2)', () => {
       headers: { 'content-type': 'application/json' },
       body: mcpBody('myco_search', { type: 'session' }),
     });
-    const body = await res.json();
+    const body = await jsonBody<{ error?: { data?: { code?: string } } }>(res);
     const code = body.error?.data?.code ?? body.error;
     expect(code).not.toBe('host_proxy_not_implemented');
     expect(code).toBe('legacy_vault');

@@ -1,3 +1,4 @@
+import { thrownBy, type SpawnFailure } from '../helpers/thrown-by.js';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -185,17 +186,16 @@ describe('bin/myco-run launcher', () => {
       writeRuntimeCommand(fixture, 'myco-dev');
       createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "boom" >&2\nexit 42');
 
-      try {
+      const err = thrownBy<SpawnFailure>(() => {
         execFileSync(
           process.execPath,
           [fixture.launcherCopy, 'mcp'],
           { cwd: fixture.projectDir, env: baseEnv(fixture), stdio: 'pipe', timeout: 5000 },
         );
-        expect.fail('Should have exited non-zero');
-      } catch (err: any) {
-        expect(err.status).toBe(42);
-        expect(err.stderr.toString()).toContain('boom');
-      }
+      });
+      expect(err).not.toBeNull();
+      expect(err!.status).toBe(42);
+      expect(err!.stderr.toString()).toContain('boom');
     });
   });
 

@@ -435,9 +435,11 @@ describe('atomicWriteFileSync mode option', () => {
     const content = 'TOKEN=complete-secret\n';
     const originalWrite = fs.writeSync.bind(fs);
     const writeSpy = spyOn(fs, 'writeSync').mockImplementation(
-      ((fd: number, buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset) => (
-        originalWrite(fd, buffer, offset, Math.min(length, 3), null)
-      )) as typeof fs.writeSync,
+      ((fd: number, buffer: Uint8Array, offset?: number | null, length?: number | null) => {
+        const from = offset ?? 0;
+        const take = length ?? buffer.byteLength - from;
+        return originalWrite(fd, buffer, from, Math.min(take, 3), null);
+      }) as typeof fs.writeSync,
     );
     let writeCalls = 0;
 

@@ -857,6 +857,21 @@ export const MycoConfigSchema = z.preprocess(
 );
 
 export type MycoConfig = z.output<typeof MycoConfigSchema>;
+
+/**
+ * A config value whose nested blocks may be incomplete, the shape the
+ * deep-merging writers accept: a patch names only the leaves it sets and the
+ * merge supplies the rest from the tier it writes into. Arrays are carried
+ * whole, matching how the merge replaces them.
+ */
+export type DeepPartialConfig<T> = T extends readonly unknown[]
+  ? T
+  : T extends object
+    ? { [K in keyof T]?: DeepPartialConfig<T[K]> }
+    : T;
+
+/** A deep-merge patch against the full config. */
+export type MycoConfigPatch = DeepPartialConfig<MycoConfig>;
 export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderSchema>;
 export type ReleaseProvenanceConfig = z.infer<typeof ReleaseProvenanceSchema>;
 export type TaskProviderOverride = z.infer<typeof TaskProviderOverrideSchema>;

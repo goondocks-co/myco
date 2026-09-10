@@ -112,13 +112,12 @@ function setHomedir(v: () => string) {
   catch { Object.defineProperty(os, 'homedir', { value: v, configurable: true }); }
 }
 setHomedir(() => SANDBOX_HOME);
-const origUserInfo = os.userInfo.bind(os);
-try {
-  (os as { userInfo: typeof os.userInfo }).userInfo = ((opts?: unknown) => ({
-    ...(origUserInfo as (o?: unknown) => Record<string, unknown>)(opts),
-    homedir: SANDBOX_HOME,
-  })) as typeof os.userInfo;
-} catch { /* best-effort */ }
+const origUserInfo = os.userInfo.bind(os) as unknown as (opts?: unknown) => Record<string, unknown>;
+function setUserInfo(v: (opts?: unknown) => Record<string, unknown>) {
+  try { (os as unknown as { userInfo: unknown }).userInfo = v; }
+  catch { Object.defineProperty(os, 'userInfo', { value: v, configurable: true }); }
+}
+setUserInfo((opts?: unknown) => ({ ...origUserInfo(opts), homedir: SANDBOX_HOME }));
 process.env.HOME = SANDBOX_HOME;
 process.env.USERPROFILE = SANDBOX_HOME;
 

@@ -29,9 +29,8 @@ import { initTeamContext } from '@myco/team/context.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
-import { makeTestRequestContext } from '../../helpers/request-context.js';
+import { makeTestRequestContext, testProjectId } from '../../helpers/request-context.js';
 import { sandboxMycoHome } from '../../helpers/myco-home-sandbox.js';
-import { testPerUserLockNamespace } from '../../helpers/per-user-lock-namespace.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
@@ -128,7 +127,7 @@ describe('myco_plans op: list / get (in-process)', () => {
   });
 
   it('op:get resolves pre-migration plan ids through the import journal in Grove scope', async () => {
-    const projectId = 'proj_current';
+    const projectId = testProjectId('proj_' + 'c'.repeat(32));
     const groveId = 'grove_current';
     const content = '# Migrated Plan\n\nPreserved after rekey.';
     seedPlan({
@@ -153,6 +152,7 @@ describe('myco_plans op: list / get (in-process)', () => {
 
     const result = await handleMycoPlans({ op: 'get', id: 'old-plan' }, mockClient(), {
       projectRoot: '/legacy/project',
+      callerRoot: null,
       projectId,
       groveId,
       machineId: 'machine',
@@ -388,6 +388,9 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
       vaultDir,
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+      reconciler: { clearSession: vi.fn() },
+      registry: { unregister: vi.fn(), getSession: () => undefined },
+      transcriptMiner: { mineForCompletion: vi.fn() } as never,
     });
     server.registerRoute('DELETE', '/api/plans/:id', sessionMut.handleDeletePlan);
 

@@ -13,7 +13,7 @@ import { DaemonClient } from '@myco/daemon/client.js';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
-import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context.js';
+import { TEST_REQUEST_CONTEXT, testProjectId } from '../../helpers/request-context.js';
 import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
@@ -33,7 +33,7 @@ interface SporeSaveResult {
 function requestContext(projectId: string) {
   return resolveLegacyRequestContext('/tmp/myco-spore-save-test/.myco', {
     projectRoot: `/workspace/${projectId}`,
-    projectId,
+    projectId: testProjectId(projectId),
     groveId: 'grove-test',
     machineId: 'machine-test',
     source: 'explicit',

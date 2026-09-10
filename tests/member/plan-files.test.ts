@@ -12,7 +12,7 @@ import { emptySessionState } from '@myco/member/session-state.js';
 import { sha256Text } from '@myco/member/text.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-files-'));
-const ctx = (): EnvelopeContext => ({ agent: 'claude-code', sessionId: 'sess_1', version: '2.0.0-test', stage: (bytes, mediaType) => ({ sha256: sha256Text(bytes.toString('utf-8')), mediaType, size: bytes.byteLength, path: '/dev/null' }) }) as unknown as EnvelopeContext;
+const ctx = (): EnvelopeContext => ({ agent: 'claude-code', sessionId: 'sess_1', version: '2.0.0-test', stage: (bytes: Buffer, mediaType: string) => ({ sha256: sha256Text(bytes.toString('utf-8')), mediaType, size: bytes.byteLength, path: '/dev/null' }) }) as unknown as EnvelopeContext;
 
 describe('plan write classification', () => {
   it('matches a write tool into a manifest plan directory on a directory boundary, with a plan extension, under any runtime\'s casing', () => {
@@ -51,7 +51,7 @@ describe('plan file capture', () => {
     const payload = first.events[0]!.envelope.payload as Record<string, unknown>;
     expect([payload.planKey, payload.title, payload.originPath, payload.promptId, payload.status, payload.content]).toEqual([planKeyForPath('proj_1', '.claude/plans/p.md'), 'The plan', '.claude/plans/p.md', 'prompt-1', undefined, '# The plan\n\n- [ ] one\n']);
     first.record(state);
-    expect(state.planPaths).toEqual({ '.claude/plans/p.md': { planKey: payload.planKey, hash: sha256Text('# The plan\n\n- [ ] one\n') } });
+    expect(state.planPaths).toEqual({ '.claude/plans/p.md': { planKey: planKeyForPath('proj_1', '.claude/plans/p.md'), hash: sha256Text('# The plan\n\n- [ ] one\n') } });
     expect(planFileCapture(ctx(), state, 'proj_1', root, file).events).toEqual([]);
     // New content under a captured path keeps the key and names no prompt: the plan belongs to the turn that produced it.
     fs.writeFileSync(file, '# The plan\n\n- [x] one\n');

@@ -259,7 +259,7 @@ function divergentChildEnvironment(scratch: string, name: string): NodeJS.Proces
   const poison = path.win32.join(scratch, `environment-${name}`);
   const temp = path.win32.join(poison, 'Temp');
   fs.mkdirSync(path.win32.toNamespacedPath(temp), { recursive: true });
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: path.win32.join(poison, 'Home'),
     USERPROFILE: path.win32.join(poison, 'UserProfile'),

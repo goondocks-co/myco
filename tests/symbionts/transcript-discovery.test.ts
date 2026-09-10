@@ -1,3 +1,4 @@
+import { transcriptDiscovery } from '../helpers/symbiont-manifest.js';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,11 +27,11 @@ describe('transcript discovery — lookup', () => {
 
   /** Codex layout: sessions/YYYY/MM/DD/rollout-<ts>-<sessionId>.jsonl */
   function codexDiscovery() {
-    return {
+    return transcriptDiscovery({
       roots: [path.join(tmpDir, 'sessions')],
       patterns: ['*/*/*/rollout-*-{sessionId}.jsonl'],
       sessionIdPattern: '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
-    };
+    });
   }
 
   function plantCodex(sessionId: string, y = '2026', m = '04', d = '12'): string {
@@ -58,7 +59,7 @@ describe('transcript discovery — lookup', () => {
   });
 
   it('returns null when the root directory does not exist', () => {
-    const discovery = { roots: [path.join(tmpDir, 'absent')], patterns: ['{sessionId}.jsonl'] };
+    const discovery = transcriptDiscovery({ roots: [path.join(tmpDir, 'absent')], patterns: ['{sessionId}.jsonl'] });
     expect(resolveTranscriptPath(discovery, 'some-session')).toBeNull();
   });
 
@@ -73,14 +74,14 @@ describe('transcript discovery — lookup', () => {
 
   /** Antigravity layout: <surface>/brain/<id>/.system_generated/logs/transcript_full.jsonl */
   function antigravityDiscovery() {
-    return {
+    return transcriptDiscovery({
       roots: [
         path.join(tmpDir, 'antigravity-cli'),
         path.join(tmpDir, 'antigravity'),
         path.join(tmpDir, 'antigravity-ide'),
       ],
       patterns: ['brain/{sessionId}/.system_generated/logs/transcript_full.jsonl'],
-    };
+    });
   }
 
   function plantAntigravity(surface: string, id: string, content = '{}'): string {
@@ -115,17 +116,17 @@ describe('transcript discovery — lookup', () => {
     fs.writeFileSync(legacy, 'user: hi');
     fs.writeFileSync(path.join(dir, id, `${id}.jsonl`), '{}');
 
-    const discovery = {
+    const discovery = transcriptDiscovery({
       roots: [path.join(tmpDir, 'projects')],
       patterns: ['*/agent-transcripts/{sessionId}.txt', '*/agent-transcripts/{sessionId}/{sessionId}.jsonl'],
-    };
+    });
     expect(resolveTranscriptPath(discovery, id)).toBe(legacy);
   });
 
   it('does not mistake a directory named like a transcript for the transcript', () => {
     const id = 'dir-not-file';
     fs.mkdirSync(path.join(tmpDir, 'flat', `${id}.jsonl`), { recursive: true });
-    const discovery = { roots: [path.join(tmpDir, 'flat')], patterns: ['{sessionId}.jsonl'] };
+    const discovery = transcriptDiscovery({ roots: [path.join(tmpDir, 'flat')], patterns: ['{sessionId}.jsonl'] });
     expect(resolveTranscriptPath(discovery, id)).toBeNull();
   });
 
@@ -164,10 +165,10 @@ describe('transcript discovery — lookup', () => {
       fs.writeFileSync(path.join(dir, `${id}.txt`), 'user: hi');
       fs.writeFileSync(path.join(dir, id, `${id}.jsonl`), '{}');
 
-      const discovery = {
+      const discovery = transcriptDiscovery({
         roots: [path.join(tmpDir, 'projects')],
         patterns: ['*/agent-transcripts/{sessionId}.txt', '*/agent-transcripts/{sessionId}/{sessionId}.jsonl'],
-      };
+      });
       expect(enumerateTranscripts(discovery)).toHaveLength(1);
     });
   });

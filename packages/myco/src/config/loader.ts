@@ -12,6 +12,7 @@ import {
   PROJECT_TIER_LEGACY_FIELDS,
   GROVE_TIER_FIELDS,
   type MycoConfig,
+  type MycoConfigPatch,
   type MachineConfig,
   type ExternalMcpConfig,
   type GroveConfig,
@@ -1196,7 +1197,7 @@ export function getEnabledSymbiontNames(config: MycoConfig): Set<string> | null 
  * each migration's `appliesToLocal` flag so a sparse local.yaml stays
  * sparse. The file is written back when migrations modified it.
  */
-export function loadLocalConfig(vaultDir: string): Partial<MycoConfig> {
+export function loadLocalConfig(vaultDir: string): MycoConfigPatch {
   const filePath = localConfigPath(vaultDir);
   if (!fs.existsSync(filePath)) return {};
   const raw = fs.readFileSync(filePath, 'utf-8').trim();
@@ -1629,10 +1630,10 @@ function writeLocalYamlIfChanged<T>(vaultDir: string, current: T, next: T): T {
   return next;
 }
 
-/** Write a partial to <vaultDir>/local.yaml, deep-merging with existing local content. */
-export function saveLocalConfig(vaultDir: string, patch: Partial<MycoConfig>): Partial<MycoConfig> {
+/** Write a patch to <vaultDir>/local.yaml, deep-merging with existing local content. */
+export function saveLocalConfig(vaultDir: string, patch: MycoConfigPatch): MycoConfigPatch {
   const existing = loadLocalConfig(vaultDir);
-  const next = deepMergeConfig(existing as Record<string, unknown>, patch as Record<string, unknown>) as Partial<MycoConfig>;
+  const next = deepMergeConfig(existing as Record<string, unknown>, patch as Record<string, unknown>) as MycoConfigPatch;
   return writeLocalYamlIfChanged(vaultDir, existing, next);
 }
 
@@ -1644,8 +1645,8 @@ export function saveLocalConfig(vaultDir: string, patch: Partial<MycoConfig>): P
  */
 export function updateLocalConfig(
   vaultDir: string,
-  fn: (local: Partial<MycoConfig>) => Partial<MycoConfig>,
-): Partial<MycoConfig> {
+  fn: (local: MycoConfigPatch) => MycoConfigPatch,
+): MycoConfigPatch {
   const current = loadLocalConfig(vaultDir);
   return writeLocalYamlIfChanged(vaultDir, current, fn(current));
 }

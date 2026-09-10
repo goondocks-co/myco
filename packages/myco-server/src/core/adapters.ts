@@ -70,6 +70,16 @@ export interface BlobStore {
 // Source identity and rate limiting
 // ---------------------------------------------------------------------------
 
+/**
+ * The call the Deployment makes outward.
+ *
+ * Named as the call signature of `fetch` rather than `typeof fetch`: a
+ * platform's declaration of the global carries members beyond the call — Bun's
+ * adds `preconnect` — and nothing here reaches for them, so a double that only
+ * answers requests satisfies this.
+ */
+export type OutboundFetch = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
+
 export interface RateLimiter {
   limit(options: { key: string }): Promise<{ success: boolean }>;
 }
@@ -237,5 +247,5 @@ export interface ServerEnv {
   /** Starts `work` to finish after the answer has been sent. The work settles its own failures; nothing in the request awaits it. */
   afterResponse(work: () => Promise<void>): void;
   /** The Deployment's outbound HTTP, for a call the core makes on its own behalf. */
-  outbound: typeof fetch;
+  outbound: OutboundFetch;
 }
