@@ -374,6 +374,35 @@ describe('`myco member join` under a non-default home', () => {
     expect(fs.existsSync(machinePin)).toBe(false);
   });
 
+  for (const scope of ['machine', 'project'] as const) {
+    for (const form of ['symlink', 'invalid-file'] as const) {
+      it(`preserves an existing ${scope} pin that is an ${form}`, async () => {
+        const home = tempMycoHome();
+        tmpDirs.push(home);
+        const project = joinableProject('myco-join-existing-pin-');
+        const pin = path.join(scope === 'machine' ? path.join(homeDir, '.myco') : path.join(project, '.myco'), RUNTIME_HOME_FILENAME);
+        const victim = path.join(homeDir, 'existing-settings');
+        const original = 'existing settings\n';
+        fs.mkdirSync(path.dirname(pin), { recursive: true });
+        fs.writeFileSync(victim, original, { mode: 0o600 });
+        if (form === 'symlink') fs.symlinkSync(victim, pin);
+        else fs.writeFileSync(pin, original, { mode: 0o600 });
+        const output: string[] = [];
+        const previousExit = process.exitCode;
+        try {
+          await runJoin(['https://srv.example', '--project', 'proj_1', '--token-env', 'MYCO_TEST_TOKEN'], joinDeps(project, home, output));
+          expect(fs.lstatSync(pin).isSymbolicLink()).toBe(form === 'symlink');
+          expect(fs.readFileSync(victim, 'utf8')).toBe(original);
+          expect(fs.readFileSync(pin, 'utf8')).toBe(original);
+          expect(fs.statSync(pin).mode & 0o777).toBe(0o600);
+          expect(output.join('\n')).toContain(`could not write ${pin}`);
+        } finally {
+          process.exitCode = previousExit;
+        }
+      });
+    }
+  }
+
   it('keeps the pin out of git: the vault .gitignore is written before it', async () => {
     const home = tempMycoHome();
     tmpDirs.push(home);

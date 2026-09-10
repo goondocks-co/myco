@@ -142,6 +142,8 @@ The machine-side product contains the `myco` binary, hooks, spool, local registr
 
 **Tenancy is a tool parameter, not a transport** (plan §3 D1). Every Myco tool accepts `project` — a git remote or a project id — and the server resolves remote → project by the Project Resolution rule (§3.1). Reads default to the member's bound projects; **writes require an explicit project**. Session-start injection tells the agent its project id where hooks are installed, and the `myco` skill tells it to pass the repo remote where they are not. The 1.4 CLI transport for tenancy-blind harnesses retires; `myco tool call` remains as a CLI surface onto the same server code path.
 
+Home-pin creation during join is exclusive for both project and machine pins. A pin rejected by the trust reader is still an existing file: join preserves its bytes, target and permissions, reports that it could not write the pin, and retains the recorded membership. Pin contents and permissions are written through one open file descriptor.
+
 ### 3.5 Cutover
 
 The transition is a **one-time, one-way migration**, not long-term coexistence or dual writing.

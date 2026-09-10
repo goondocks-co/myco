@@ -357,8 +357,7 @@ function pinProjectHome(root: string, mycoHome: string): PinOutcome {
   try {
     fs.mkdirSync(path.dirname(pinPath), { recursive: true });
     ensureVaultGitignoreCurrent(path.dirname(pinPath));
-    fs.writeFileSync(pinPath, `${home}\n`, { mode: PIN_FILE_MODE });
-    fs.chmodSync(pinPath, PIN_FILE_MODE);
+    createHomePin(pinPath, home);
     return { kind: 'written', pinPath };
   } catch {
     // A read-only checkout still holds the membership; only the pin is missing.
@@ -414,8 +413,7 @@ function pinMachineHome(mycoHome: string, deps: MemberCliDeps): MachinePinOutcom
   if (existing !== null) return { kind: 'held', pinPath, pinned: existing };
   try {
     fs.mkdirSync(defaultHome, { recursive: true });
-    fs.writeFileSync(pinPath, `${home}\n`, { mode: PIN_FILE_MODE });
-    fs.chmodSync(pinPath, PIN_FILE_MODE);
+    createHomePin(pinPath, home);
     return { kind: 'written', pinPath };
   } catch {
     return { kind: 'unwritable', pinPath };
@@ -453,6 +451,17 @@ const pathsEquivalentHome = (a: string, b: string): boolean => path.resolve(a) =
 
 /** A pin is read by every launcher and must not be writable by anyone else. */
 const PIN_FILE_MODE = 0o644;
+
+/** Create an absent pin exclusively; contents and mode use the same open file. */
+function createHomePin(pinPath: string, home: string): void {
+  const file = fs.openSync(pinPath, 'wx', PIN_FILE_MODE);
+  try {
+    fs.writeFileSync(file, `${home}\n`);
+    fs.fchmodSync(file, PIN_FILE_MODE);
+  } finally {
+    fs.closeSync(file);
+  }
+}
 
 export async function runRefresh(args: readonly string[], deps: MemberCliDeps = {}): Promise<RefreshReport[]> {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
