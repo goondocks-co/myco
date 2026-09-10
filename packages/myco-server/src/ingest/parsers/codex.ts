@@ -3,8 +3,8 @@
  *
  *   payload.type = 'message'        role `user` carries `input_text` blocks,
  *                                   role `assistant` carries `output_text`.
- *   payload.type = 'function_call'  a tool call; `call_id` names the
- *                                   `function_call_output` that answers it.
+ *   payload.type = 'function_call' or 'custom_tool_call': `call_id` links
+ *                  the call to its corresponding output item.
  *
  * `session_meta`, `event_msg`, `turn_context` and `reasoning` records carry no
  * row and are skipped. Codex declares no plan tags, so this parser derives no
@@ -52,7 +52,7 @@ function argumentsOf(raw: unknown): unknown {
 
 export const codexParser: TranscriptParser = {
   agent: 'codex',
-  // This parser reads function_call items with string outputs.
+  // This parser reads function and custom calls with string or content-array outputs.
   // Other tool-call shapes require the member's PostToolUse capture.
   fidelity: 'no_tool_results',
   planTags: ['proposed_plan'],
@@ -101,14 +101,14 @@ export const codexParser: TranscriptParser = {
         continue;
       }
 
-      if (kind === 'function_call') {
+      if (kind === 'function_call' || kind === 'custom_tool_call') {
         const callId = str(payload.call_id) ?? str(payload.id);
         const name = str(payload.name);
         if (callId === undefined || name === undefined) continue;
         pending.set(callId, {
           toolCallId: await toolCallIdFor(sessionId, callId),
           toolName: name.slice(0, TOOL_NAME_CHARS),
-          input: argumentsOf(payload.arguments),
+          input: kind === 'function_call' ? argumentsOf(payload.arguments) : payload.input,
           promptId,
           createdAt,
           offset,
@@ -116,7 +116,7 @@ export const codexParser: TranscriptParser = {
         continue;
       }
 
-      if (kind === 'function_call_output') {
+      if (kind === 'function_call_output' || kind === 'custom_tool_call_output') {
         const callId = str(payload.call_id);
         const call = callId === undefined ? undefined : pending.get(callId);
         if (call === undefined || callId === undefined) continue;
