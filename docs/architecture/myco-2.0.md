@@ -430,6 +430,8 @@ Every tool is served over remote HTTP MCP by the Deployment, and every tool take
 | `canopy-describe` | DROP | — | Blk | Per-file descriptions and entry embeddings go with the map (plan §1) | #1170 |
 | `harness-health` | DROP | — | Blk | A worker inspects its own harnesses and files findings into the notifications domain the 1.4 consumer owned; the local half is a `doctor` check (plan §2.5, §5) | #1170 |
 
+The managed-block renderer preserves examples inside backtick and tilde fences, including shorter or different delimiters within an example. It scans fence state and marker offsets together. An unclosed fence is refused, including when the file has no managed markers, so an appended block cannot become part of an unfinished example.
+
 ### 7.5 Scheduled jobs — `packages/myco/src/constants/power-jobs.ts`
 
 **The server-side wake tick is the only scheduler, and it schedules Deployment work only** (plan §2.5). The member binary registers no timers: the machine-side needs that survive 1.4's JobRunner — upgrade check, symbiont detection, managed-files reconcile — become the on-demand verbs `myco update` and `myco doctor`, run by the setup skill and the installer. PowerManager, its four power states and its ~24 machine-side jobs retire with the daemon (plan §5).

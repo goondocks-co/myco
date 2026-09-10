@@ -45,44 +45,41 @@ export function lineEndingOf(text: string): '\n' | '\r\n' {
   return text.includes('\r\n') ? '\r\n' : '\n';
 }
 
-/** Every index at which `marker` occurs in `text` outside a fenced code block. */
-function markerIndexes(text: string, marker: string): number[] {
-  const found: number[] = [];
-  let fenced = false;
+/** Managed marker offsets outside closed backtick or tilde fences. */
+function managedMarkerIndexes(text: string): { starts: number[]; ends: number[] } {
+  const starts: number[] = [];
+  const ends: number[] = [];
+  const markers = [[AGENTS_MANAGED_START, starts], [AGENTS_MANAGED_END, ends]] as const;
+  let fence: string | null = null;
   let offset = 0;
   for (const line of text.split(/\r?\n/)) {
-    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
-    else if (!fenced) {
-      let at = line.indexOf(marker);
-      while (at !== -1) { found.push(offset + at); at = line.indexOf(marker, at + marker.length); }
+    const delimiter = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence !== null) {
+      if (delimiter !== null && delimiter[1]![0] === fence[0] && delimiter[1]!.length >= fence.length && /^[ \t]*$/.test(delimiter[2]!)) {
+        fence = null;
+      }
+    } else if (delimiter !== null && (delimiter[1]![0] === '~' || !delimiter[2]!.includes('`'))) {
+      fence = delimiter[1]!;
+    } else {
+      for (const [marker, found] of markers) {
+        let at = line.indexOf(marker);
+        while (at !== -1) { found.push(offset + at); at = line.indexOf(marker, at + marker.length); }
+      }
     }
     offset += line.length + (text.startsWith('\r\n', offset + line.length) ? 2 : 1);
   }
-  return found;
-}
-
-/** Every index at which `marker` occurs in `text`, fenced or not. */
-function allIndexes(text: string, marker: string): number[] {
-  const found: number[] = [];
-  let at = text.indexOf(marker);
-  while (at !== -1) { found.push(at); at = text.indexOf(marker, at + marker.length); }
-  return found;
+  if (fence !== null) throw new ManagedBlockError('the file ends inside an unclosed code fence');
+  return { starts, ends };
 }
 
 /**
  * Where the file's managed block stands, null where it holds none, or a
  * refusal where the file holds markers this will not guess about: more than
- * one of either, a close before the open, or a marker whose fencing is
- * ambiguous. A marker inside a fenced code example is not a marker, and a file
- * whose fences do not pair — so that a marker reads as fenced one way and open
- * another — is refused rather than read either way.
+ * one of either, a close before the open, or an unclosed code fence.
+ * Markers inside a fenced code example are excluded.
  */
 export function locateManagedBlock(text: string): { start: number; end: number } | null {
-  const starts = markerIndexes(text, AGENTS_MANAGED_START);
-  const ends = markerIndexes(text, AGENTS_MANAGED_END);
-  const fenceLines = text.split(/\r?\n/).filter((line) => /^\s*(```|~~~)/.test(line)).length;
-  const hidden = allIndexes(text, AGENTS_MANAGED_START).length - starts.length + allIndexes(text, AGENTS_MANAGED_END).length - ends.length;
-  if (hidden > 0 && fenceLines % 2 === 1) throw new ManagedBlockError('the file holds a managed block marker inside an unclosed code fence');
+  const { starts, ends } = managedMarkerIndexes(text);
   if (starts.length === 0 && ends.length === 0) return null;
   if (starts.length > 1 || ends.length > 1) throw new ManagedBlockError('the file holds more than one managed block marker pair');
   if (starts.length !== ends.length) throw new ManagedBlockError('the file holds an unmatched managed block marker');

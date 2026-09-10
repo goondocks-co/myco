@@ -64,6 +64,23 @@ describe('replacing the managed block', () => {
     expect(managedBlockOf(balanced)).toBe('- old guidance');
   });
 
+  it('preserves examples containing shorter or different fence delimiters', () => {
+    for (const [opening, inner, closing] of [['````markdown', '```', '````'], ['~~~markdown', '```', '~~~~'], ['```markdown', '~~~', '```']]) {
+      const example = [PROJECT_TEXT, opening, inner, AGENTS_MANAGED_START, 'Example text', AGENTS_MANAGED_END, inner, closing, ''].join('\n');
+      const appended = replaceManagedBlock(example, '- new');
+      expect(appended.startsWith(example)).toBe(true);
+      expect(managedBlockOf(appended)).toBe('- new');
+      const replaced = replaceManagedBlock(`${example}\n${OLD}`, '- new');
+      expect(replaced.startsWith(example)).toBe(true);
+      expect(managedBlockOf(replaced)).toBe('- new');
+    }
+  });
+
+  it('refuses an unclosed fence even when the file has no managed markers', () => {
+    expect(() => replaceManagedBlock('# Rules\n```md\nExample\n', '- new')).toThrow(ManagedBlockError);
+    expect(() => replaceManagedBlock(`# Rules\n\`\`\`md\n~~~\n${OLD}`, '- new')).toThrow(ManagedBlockError);
+  });
+
   it('keeps the file\'s own line endings', () => {
     const crlf = `# Rules\r\n\r\n${AGENTS_MANAGED_START}\r\n- old\r\n${AGENTS_MANAGED_END}\r\n## Tail\r\n`;
     const next = replaceManagedBlock(crlf, '- new\n- lines');
