@@ -41,6 +41,8 @@ import {
 import { handleGrants, handleMintGrant, handleRevokeGrant, handleRotateGrant } from './api/grants.js';
 import { CHILD_SEGMENTS, handleProjectActivity, handleProjectSessions, handleSession, handleSessionChildren, handleSessionTurn, handleSessionTurnToolCalls, handleSessionTurns, handleSetPlanStatus, handleTitleSession, handleTombstoneSession, handleTranscript } from './api/sessions.js';
 import { handleProjectRun, handleProjectRuns } from './api/agent-runs.js';
+import { handleProjectPlans } from './api/plans.js';
+import { handleKpis } from './api/kpis.js';
 import { MAX_BLOB_BYTES, MEMBER_ID_SEGMENT } from './constants.js';
 import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
@@ -191,6 +193,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/projects/{projectId}/runs', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs$/, auth: 'owner', handler: handleProjectRuns },
   { method: 'GET', path: '/api/projects/{projectId}/runs/{runId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})$/, auth: 'owner', handler: handleProjectRun },
   { method: 'GET', path: '/api/projects/{projectId}/cortex/instructions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/cortex\/instructions$/, auth: 'owner', handler: handleProjectInstructions },
+  { method: 'GET', path: '/api/projects/{projectId}/plans', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/plans$/, auth: 'owner', handler: handleProjectPlans },
   { method: 'GET', path: '/api/projects/{projectId}/spores', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores$/, auth: 'owner', handler: handleProjectSpores },
   { method: 'GET', path: '/api/projects/{projectId}/spores/{sporeId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores\/(?<sporeId>[^/]{1,192})$/, auth: 'owner', handler: handleProjectSpore },
   { method: 'GET', path: '/api/projects/{projectId}/skills', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skills$/, auth: 'owner', handler: handleProjectSkills },
@@ -207,6 +210,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/api/backups/{backupId}/pin', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/pin$/, auth: 'owner', handler: handlePinBackup },
   { method: 'GET', path: '/api/backups/{backupId}/artifact', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/artifact$/, auth: 'owner', handler: handleBackupArtifact },
   { method: 'POST', path: '/api/backups/restore-upload', auth: 'owner', maxBodyBytes: MAX_UPLOAD_BODY_BYTES, handler: handleRestoreUpload },
+  { method: 'GET', path: '/api/kpis', auth: 'owner', handler: handleKpis },
   { method: 'GET', path: '/api/settings', auth: 'owner', handler: handleSettings },
   { method: 'PUT', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'owner', handler: handleSetSetting },
   { method: 'GET', path: '/api/secrets', auth: 'owner', handler: handleSecrets },

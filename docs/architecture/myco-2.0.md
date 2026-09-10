@@ -347,10 +347,10 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/g/:groveSlug/p/:projectSlug` | REPLACE | UI | Blk | Project dashboard at a Deployment-relative project path; the Grove segment goes | #918 |
 | `sessions` | KEEP | UI, Core | Blk | Read API shipped (#904); UI in #918 | #918 |
 | `sessions/:id` | KEEP | UI, Core | Blk | Session detail — facts, children, transcript | #918 |
-| `cortex` | KEEP | UI, Core | Blk | Digest, instructions and the map today. **Planned DROP in #1170 (sweep)** per plan §1 and §4 E1: the page does not port, instructions become the `instructions.template` Settings field, and the digest and the map go with their losses recorded | #1162 |
-| `skills` | KEEP | UI, Core | Blk | Needs the server-side skills tables. **Planned DROP in #1170 (sweep)** per plan §2.4 D3: with the generation pipeline deleted and skills hand-written in the plugins, the page has nothing to curate | #1162 |
-| `agent` | KEEP | UI, Core | Blk | `agent_runs` is rows, not files. **Planned REPLACE by #1162**: the runs view — one row per run outcome with its close evidence; the 1.4 page is not ported (plan §2.8) | #1162 |
-| `agent/:id` | KEEP | UI, Core | Blk | Run detail with phases and write intents. **Planned REPLACE by #1162**: the prompt, the worker that claimed it, and the evidence the server verified; phases and write intents go with the executor (plan §2.5) | #1162 |
+| `cortex` | DROP | — | Blk | **Dropped by #1162**: the page does not port. Its one surviving control is the `instructions.template` Settings field (§7.8); the digest and the code map keep their artifacts and their server routes until #1170 sweeps them, with both losses recorded there | #1162 |
+| `skills` | DROP | — | Blk | **Dropped by #1162**: with the generation pipeline going and skills hand-written in the plugins, the page has nothing to curate, and `myco_skills` answers from the catalogue Myco ships rather than from rows (#1156). A search hit of type `skill` therefore has no page and is rendered without a link. The candidate queue and the skills tables go with the pipeline in #1170 | #1162 |
+| `agent` | REPLACE | UI, Core | Blk | `agent_runs` is rows, not files. **Replaced by #1162** at `/p/:projectId/runs`: one row per run outcome with its close evidence; the 1.4 page is not ported (plan §2.8) | #1162 |
+| `agent/:id` | REPLACE | UI, Core | Blk | Run detail with phases and write intents. **Replaced by #1162** at `/p/:projectId/runs/:runId`: the task, the credential that dispatched it, the calls it made back to the Deployment, and its reports; phases and write intents go with the executor (plan §2.5) | #1162 |
 | `/settings` | REPLACE | UI, Core | Blk | Rebuilt against Deployment Settings + Member Settings; the four-tier scoped model does not survive | #915 |
 | `/logs` | REPLACE | UI, Core | Blk | Server logs from emitted telemetry. 1.4's **local** Logs page does not port — local logs are CLI-only (**M**) | #922 |
 | `/g/:groveSlug/operations` | REPLACE | UI, W, C | Blk | Backup/diagnostics/update, per-target mechanism | #923 |
@@ -379,7 +379,15 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/operations` | DROP | — | Blk | Legacy unscoped redirect | #925 |
 | `*` | KEEP | UI | Blk | Catch-all redirect | #918 |
 
-**Planned additions.** Two routes land with the 2.0 dashboard and take rows then: a members-and-invites page — issue, revoke, and the grants external agents hold (plan §2.8, **#1162**, **#1158**); and a KPI page showing the six measures with n — prompts with any Myco context present (primary), spore serve rate, Myco calls per prompt per harness, plan reads per session, install-to-first-injection time, eval pass rates (plan §2.8, **#1162**, **#1154**).
+**The 2.0 dashboard's own routes.** The rows above dispose of the 1.4 surface. These are the routes the 2.0 dashboard registers in `packages/myco-server/ui/src/App.tsx`; the completeness gate scans the 1.4 file, so these rows are the record rather than the gate.
+
+| Route | Disposition | Surface | Blk | What it serves | Owner |
+|---|---|---|---|---|---|
+| `/p/:projectId/plans` | NEW | UI, Core | Blk | Every plan a Project holds, newest edit first, filtered by status. The card is the session timeline's own, and a status change writes through `POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status` — the one route that owns a plan's status. Read over `GET /api/projects/{projectId}/plans` (**#1162**) | #1162 |
+| `/measures` | NEW | UI, Core | Blk | The KPI page: six measures, each rendered with its sample size — prompts that arrived with any Myco context (primary), prompts served an observation, Myco calls per prompt with a per-harness split, plan reads per session, the median wait from a credential lineage starting to its first served context, and the evaluation pass rate. Computed Deployment-wide at read time from `prompt_batches`, `spore_injections`, `session_injections`, `tool_calls`, `sessions`, `transcripts.agent` and `member_credentials` over `GET /api/kpis` (`read/kpis.ts`). The evaluation measure has **no feed** until **#1154** and renders `n = 0` with "no evaluations recorded" rather than a figure (plan §2.8, **#1162**) | #1162 |
+| `/access` | KEEP | UI, Core | Blk | Members, invitations and the runtimes that write here, titled **Members**. Issue and withdraw an invitation, remove a member, stop a runtime, and read one runtime's activity. The grants an External Agent holds are per Project at `/p/:projectId/access` (**#1149**); sign-in and identity are **#1158**/**#1086** (plan §2.8, **#1162**) | #1162 |
+
+**Still not ported, and that is a decision.** The 1.4 Agent, Cortex, Skills, Team and Canopy pages do not appear in the 2.0 dashboard, and the list above is the whole of what replaced them. The rows for `cortex` and `skills` are DROP, not deferral: nothing is waiting to build them.
 
 ### 7.3 MCP tools — `packages/myco/src/tools/definitions.ts`
 
@@ -748,6 +756,20 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `appearance.density` | KEEP | Member | M | Per-viewer dashboard density | #918 |
 
 **Planned additions.** None: the leaf registry (`core/settings.ts`) and this table are held equal in both directions, so a leaf named here before it exists would refuse every write. `worker.harness` and `worker.harness_fallback` (**#1151**) and `import.enabled`, `import.window_days` and `import.max_sessions_per_harness` (**#1148**) have all landed and take their rows above.
+
+**What the dashboard exposes, and how (#1162).** Every Deployment leaf above has a control on `/settings`, grouped by the catalogue in `packages/myco-server/ui/src/settings/catalogue.ts`, and a gate holds that catalogue equal to `DEPLOYMENT_LEAVES` so a leaf cannot exist on one side alone. The five the 2.0 dashboard is judged on (plan §2.8) sit on these tabs:
+
+| Leaf | Tab | Control |
+|---|---|---|
+| `instructions.template` | Cortex | The session-start Markdown, bounded at 4 KB of UTF-8 and refused above it at the write |
+| `worker.harness`, `worker.harness_fallback` | Workers | The harness a worker prefers, and the ordered fallback as a JSON array |
+| `retention.transcripts` | Records | The transcript window in days, 0 for indefinitely |
+| `import.enabled`, `import.window_days`, `import.max_sessions_per_harness` | Importing past sessions | Whether a joining machine brings history, how far back, and at most how many per agent |
+| `agent.limits.concurrent_runs`, `agent.limits.task_concurrent_runs`, `agent.limits.task_runs_per_hour` | Limits | The per-task and Deployment-wide run ceilings |
+
+**There is no document write, so there are no siblings to drop.** A change on the page is one `PUT /api/settings/{leaf}` carrying one `value`, applied by the single validated operation in `core/settings.ts`. The form holds no copy of the Deployment's settings to write back, which is what makes the classic silent-data-loss shape — one field edited, every sibling overwritten with whatever the form happened to hold — unreachable rather than merely avoided. Held by `tests/myco-server/settings-leaves-round-trip.test.ts` (each leaf written in turn over the route, every sibling read back intact, a refused value changing nothing) and by `tests/myco-server-ui/settings.test.tsx` (one edit, one request, one leaf, one key in the body).
+
+**Leaves whose page is gone are not leaves that are gone.** #1162 drops the Cortex and Skills **pages** (§7.2). Their leaves keep their rows and their controls: `cortex.digest.tier` still sizes the artifact a scheduled run writes, `cortex.canopy.*` still governs the map refresh, and `skills.confidence_threshold` and `skills.usage_stale_days` are still held by the server. Each is already marked **Planned DROP in #1170 (sweep)** above, and a leaf's disposition changes in the pull request that removes the code reading it, never in one that only removes a page. `cortex.digest.inject_on_session_start` is the one leaf the dashboard shows and refuses to offer: the control is disabled, because a switch that changes nothing reads worse than one that cannot be thrown.
 
 **Project-tier `release_provenance.*` has no store yet, and that is a deferral rather than an oversight.** Step 6 builds `project_capabilities`, keyed on the four capability ids, and nothing else per Project — so the eight repo-specific `release_provenance` leaves are classified but not writable, and `setLeaf` refuses them. They are per-repository settings for a feature (#922 owns release provenance) whose per-Project store lands with the surface that configures it. The same rule as the two blocks below: a tier without a mechanism is recorded as such rather than assigned quietly.
 

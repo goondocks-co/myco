@@ -51,7 +51,7 @@ export function Access() {
 
   return (
     <PageContainer>
-      <PageHeader title="Access" subtitle="Members, invitations and runtimes of this server. Everything here is open to every member, and every change names who made it." />
+      <PageHeader title="Members" subtitle="Who is a member of this server, who has been invited, and which runtimes write here. Everything is open to every member, and every change names who made it." />
       <PageLoading isLoading={members.isPending} error={members.error ?? invitations.error ?? credentials.error}>
         <div className="flex flex-col gap-4">
           <Panel padded title="Members" actions={<button type="button" className={primary} onClick={() => { setInvited(null); setInviteError(null); setInviteFor(''); setInviteOpen(true); }}>Invite</button>}>

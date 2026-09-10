@@ -92,8 +92,8 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   },
   {
     id: 'cortex',
-    label: 'Cortex',
-    note: 'What each session receives at start and on every prompt.',
+    label: 'What sessions receive',
+    note: 'What each session is handed at start, and what each prompt is served.',
     leaves: [
       { leaf: 'instructions.template', label: 'Session-start instructions', kind: 'textarea', maxLength: 4096, note: 'Markdown every session is handed at start, beside its project id. Up to 4 KB of UTF-8; anything longer is refused when you save.' },
       { leaf: 'cortex.instructions.inject_on_session_start', label: 'Instructions at session start', kind: 'toggle' },
@@ -130,10 +130,10 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   {
     id: 'skills',
     label: 'Skills',
-    note: 'When a discovered skill is promoted, and when an unused one goes stale.',
+    note: 'Thresholds the server still holds for skills. Nothing reads them: skills ship with Myco rather than being discovered here, and these go with the pipeline that scored them.',
     leaves: [
-      { leaf: 'skills.confidence_threshold', label: 'Promote at confidence', kind: 'number', min: 0, max: 1, step: 0.05 },
-      { leaf: 'skills.usage_stale_days', label: 'Stale after', kind: 'number', min: 1, unit: 'days' },
+      { leaf: 'skills.confidence_threshold', label: 'Promote at confidence', kind: 'number', min: 0, max: 1, step: 0.05, readOnly: true, note: 'Scored candidates, of which there are none. Shown so a value an older deployment stored is visible; it changes nothing.' },
+      { leaf: 'skills.usage_stale_days', label: 'Stale after', kind: 'number', min: 1, unit: 'days', readOnly: true, note: 'Aged a generated skill, of which there are none. Shown so a stored value is visible; it changes nothing.' },
     ],
   },
   {

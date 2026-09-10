@@ -7,7 +7,8 @@ import { cn } from '../lib/cn';
 const SERVER_PAGES: Record<string, string> = {
   '/projects': 'Projects',
   '/status': 'Status',
-  '/access': 'Access',
+  '/measures': 'Measures',
+  '/access': 'Members',
   '/settings': 'Settings',
   '/operations': 'Operations',
   '/notifications': 'Notifications',
@@ -17,9 +18,8 @@ const SERVER_PAGES: Record<string, string> = {
 const PROJECT_PAGES: Record<string, string> = {
   '': 'Overview',
   sessions: 'Sessions',
-  cortex: 'Cortex',
+  plans: 'Plans',
   spores: 'Spores',
-  skills: 'Skills',
   runs: 'Agent runs',
   access: 'Access',
 };

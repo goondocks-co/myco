@@ -1,25 +1,6 @@
-import { type UseQueryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, fetchJson, postJson } from '../lib/api';
+import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
+import { fetchJson } from '../lib/api';
 import { usePaged } from './use-paged';
-import { MAP_TASK, type StoredMap } from '@goondocks/myco-shared/canopy';
-
-export function useCanopyMap(projectId: string) {
-  return useQuery({ queryKey: ['canopy-map', projectId], queryFn: ({ signal }) => fetchJson<{ map: StoredMap | null }>(`${project(projectId)}/canopy-map`, signal) });
-}
-
-export function useRefreshMap(projectId: string) {
-  const client = useQueryClient();
-  return useMutation({ mutationFn: (ask: DispatchAsk = {}) => askForArtifact(MAP_TASK, projectId, ask),
-    onSuccess: () => client.invalidateQueries({ queryKey: ['canopy-map', projectId] }) });
-}
-
-export function mapRefusalText(error: unknown): string {
-  return refusalTextFrom(error, {
-    repository_missing: 'Connect this project’s repository in Settings → Projects first.',
-    max_runs_per_day: 'The code map has reached today’s run limit. Adjust task limits in Settings or try tomorrow.',
-    harness_unavailable: 'This deployment has no available harness runtime.',
-  }, 'The code map could not be refreshed. Check the project capability and provider settings.');
-}
 
 export interface RunListRow {
   id: string;
@@ -110,46 +91,6 @@ export interface AgentRow {
   enabled: boolean;
 }
 
-export interface SkillRecord {
-  id: string;
-  agentId: string;
-  name: string;
-  displayName: string;
-  description: string;
-  status: string;
-  generation: number;
-  sourceIds: string;
-  usageCount: number;
-  lastUsedAt: number | null;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface LineageRow {
-  id: string;
-  skillId: string;
-  generation: number;
-  action: string;
-  rationale: string;
-  sourceIdsAdded: string;
-  contentSnapshot: string;
-  createdAt: number;
-}
-
-export interface ReleaseStateRow {
-  id: string;
-  namespace: string;
-  recordId: string;
-  state: string;
-  confidence: string;
-  basisKind: string | null;
-  basisRef: string | null;
-  basisSha: string | null;
-  releasePrNumber: number | null;
-  reason: string | null;
-  checkedAt: number;
-}
-
 export interface SporeRow {
   id: string;
   agentId: string;
@@ -183,42 +124,6 @@ export interface SporeResponse {
   supersedes: string[];
 }
 
-export interface DigestRow {
-  id: string;
-  agentId: string;
-  tier: number;
-  content: string;
-  substrateHash: string | null;
-  generatedAt: number;
-}
-
-export interface DigestRevisionRow {
-  id: number;
-  tier: number;
-  content: string;
-  metadata: string | null;
-  runId: string | null;
-  parentRevisionId: number | null;
-  createdAt: number;
-}
-
-export interface InstructionsCounts {
-  sessions: number;
-  spores: number;
-  plans: number;
-}
-
-export interface InstructionsRow {
-  id: string;
-  agentId: string;
-  content: string;
-  inputHash: string;
-  sourceRunId: string | null;
-  generatedAt: number;
-  /** What the run that wrote these read; null when the run recorded no counts. */
-  counts: InstructionsCounts | null;
-}
-
 const seg = (value: string) => encodeURIComponent(value);
 const project = (projectId: string) => `/api/projects/${seg(projectId)}`;
 
@@ -234,21 +139,6 @@ export function useRun(projectId: string, runId: string, options: Pick<UseQueryO
 
 export function useAgents() {
   return useQuery({ queryKey: ['agents'], queryFn: ({ signal }) => fetchJson<{ agents: AgentRow[] }>('/api/agents', signal) });
-}
-
-export function useSkills(projectId: string, options: { enabled?: boolean } = {}) {
-  return useQuery({ queryKey: ['skills', projectId], enabled: options.enabled, queryFn: ({ signal }) => fetchJson<{ skills: SkillRecord[] }>(`${project(projectId)}/skills?limit=200`, signal) });
-}
-
-export function useSkill(projectId: string, skillId: string) {
-  return useQuery({ queryKey: ['skill', projectId, skillId], queryFn: ({ signal }) => fetchJson<{ content: string | null; lineage: LineageRow[] }>(`${project(projectId)}/skills/${seg(skillId)}`, signal) });
-}
-
-export function useSkillReleaseStates(projectId: string) {
-  return useQuery({
-    queryKey: ['release-states', projectId, 'skill'],
-    queryFn: ({ signal }) => fetchJson<{ releaseStates: ReleaseStateRow[] }>(`${project(projectId)}/release-states?namespace=skill&limit=200`, signal),
-  });
 }
 
 /** How many spores one page of the rail holds. */
@@ -293,104 +183,5 @@ export function useSpore(projectId: string, sporeId: string) {
   return useQuery({
     queryKey: ['spore', projectId, sporeId],
     queryFn: ({ signal }) => fetchJson<SporeResponse>(`${project(projectId)}/spores/${seg(sporeId)}`, signal),
-  });
-}
-
-export function useDigests(projectId: string) {
-  return useQuery({ queryKey: ['digests', projectId], queryFn: ({ signal }) => fetchJson<{ digests: DigestRow[] }>(`${project(projectId)}/digests`, signal) });
-}
-
-export function useDigestRevisions(projectId: string, agentId: string, tier: number) {
-  return useQuery({ queryKey: ['digest-revisions', projectId, agentId, tier], queryFn: ({ signal }) => fetchJson<{ revisions: DigestRevisionRow[] }>(`${project(projectId)}/digests/${tier}/revisions?agentId=${seg(agentId)}`, signal) });
-}
-
-export function useInstructions(projectId: string) {
-  return useQuery({ queryKey: ['instructions', projectId], queryFn: ({ signal }) => fetchJson<{ instructions: InstructionsRow[] }>(`${project(projectId)}/cortex/instructions`, signal) });
-}
-
-/** The task that writes a project's digest at every tier. */
-export const DIGEST_TASK = 'digest-only';
-
-/** What the server answers when asked to write one of these again: a run started, a run waiting, or nothing to do. */
-export type DispatchOutcome = 'running' | 'queued' | 'unchanged';
-
-/**
- * What the server answers when asked to write the digest again. There is no
- * `unchanged`: the digest is never deduped at the dispatch, so an ask always
- * starts a run and the run itself says which tiers it left alone.
- */
-export type DigestOutcome = Exclude<DispatchOutcome, 'unchanged'>;
-
-export const DIGEST_OUTCOME_TEXT: Record<DigestOutcome, string> = {
-  running: 'Writing the digest — it lands in a few minutes',
-  queued: 'Waiting for a runtime — this starts as one frees up',
-};
-
-/** Why the ask went nowhere, in the reader's words. */
-export const INSTRUCTIONS_REFUSAL_TEXT: Record<string, string> = {
-  max_runs_per_day: 'These have already been written once today — ask again tomorrow',
-  harness_unavailable: 'This deployment has no way to write instructions yet',
-};
-
-export const INSTRUCTIONS_REFUSAL_FALLBACK = 'The instructions could not be written right now';
-
-export const DIGEST_REFUSAL_TEXT: Record<string, string> = {
-  max_runs_per_day: 'The digest has already been written once today — ask again tomorrow',
-  harness_unavailable: 'This deployment has no way to write the digest yet',
-};
-
-export const DIGEST_REFUSAL_FALLBACK = 'The digest could not be written right now';
-
-export interface DispatchAnswer {
-  outcome: DispatchOutcome;
-  /** The run writing it, on `running` and `queued`. */
-  runId?: string;
-}
-
-export interface DigestAnswer {
-  outcome: DigestOutcome;
-  runId?: string;
-}
-
-/** What one ask carries beyond the task itself. */
-export interface DispatchAsk {
-  /** Write from the project's material alone rather than carrying the current text forward. */
-  fresh?: boolean;
-}
-
-/** The message for a refused ask, read off whatever the server answered. */
-function refusalTextFrom(error: unknown, words: Record<string, string>, fallback: string): string {
-  const named = error instanceof ApiError && typeof (error.body as { error?: unknown } | null)?.error === 'string'
-    ? (error.body as { error: string }).error
-    : null;
-  return named === null ? fallback : words[named] ?? fallback;
-}
-
-export function refusalText(error: unknown): string {
-  return refusalTextFrom(error, INSTRUCTIONS_REFUSAL_TEXT, INSTRUCTIONS_REFUSAL_FALLBACK);
-}
-
-export function digestRefusalText(error: unknown): string {
-  return refusalTextFrom(error, DIGEST_REFUSAL_TEXT, DIGEST_REFUSAL_FALLBACK);
-}
-
-/** Asks the server to write one of this project's generated artifacts again. */
-async function askForArtifact(task: string, projectId: string, ask: DispatchAsk): Promise<DispatchAnswer> {
-  const answered = await postJson<{ outcome?: string; runId?: string; queued?: boolean }>('/api/harness/dispatch', {
-    task, projectId, ...(ask.fresh === true ? { fresh: true } : {}),
-  });
-  if (answered.outcome === 'unchanged') return { outcome: 'unchanged' };
-  return { outcome: answered.queued === true ? 'queued' : 'running', ...(answered.runId === undefined ? {} : { runId: answered.runId }) };
-}
-
-/** Asks for this project's digest again; on an answer, the stored digests are read again. */
-export function useRegenerateDigest(projectId: string) {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: async (ask: DispatchAsk = {}): Promise<DigestAnswer> => {
-      const answered = await askForArtifact(DIGEST_TASK, projectId, ask);
-      return { ...answered, outcome: answered.outcome === 'queued' ? 'queued' : 'running' };
-    },
-    onSuccess: () => client.invalidateQueries({ queryKey: ['digests', projectId] }),
   });
 }
