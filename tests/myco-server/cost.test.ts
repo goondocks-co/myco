@@ -21,6 +21,13 @@ describe('which resolver prices a run', () => {
 });
 
 describe('resolveCost', () => {
+  it('keeps a harness estimate distinct from an actual charge, including known zero', async () => {
+    for (const cost of [0, 0.25]) {
+      expect(await resolveCost({ harness: 'claude-code', model: '', usage: { estimatedCostUsd: cost } }))
+        .toMatchObject({ source: 'estimated', costUsd: cost, actualCostUsd: null, estimatedCostUsd: cost });
+    }
+  });
+
   it('takes the figure the harness reported over any estimate', async () => {
     const result = await resolveCost({
       harness: 'claude-code', model: 'claude-sonnet-4-6', provider: { type: 'anthropic' },

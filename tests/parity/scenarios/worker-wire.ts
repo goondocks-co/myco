@@ -132,6 +132,10 @@ export const workerWire: ParityScenario = {
 
       // `/worker/end` is what moves the row off running, and the credential the
       // claim minted for THIS run is retired as the row stops naming it.
+      expect(await target.sql(`SELECT tokens_used, cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, usage_data
+        FROM agent_runs WHERE id = ${lit(runId)}`)).toEqual([{
+        tokens_used: null, cost_usd: null, actual_cost_usd: null, estimated_cost_usd: null, cost_source: 'unavailable', usage_data: null,
+      }]);
       const finalRow = await row();
       expect(`${target.name} ended: ${finalRow.status} — ${finalRow.error ?? 'no error'}`)
         .toBe(`${target.name} ended: failed — ${RUN_CLOSE_ERROR}`);

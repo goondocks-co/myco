@@ -38,7 +38,8 @@ if (process.argv.includes('status')) process.exit(0);
   if (!saved.id) throw new Error('No spore was saved');
   await call('myco_run', { op: 'report', action: ${JSON.stringify(SEEDING_REPORT_ACTION)}, summary: 'Read two commits and saved one observation.' });
   fs.writeFileSync(${JSON.stringify(evidence)}, JSON.stringify(observed));
-  console.log(JSON.stringify({ type: 'result', stop_reason: 'end_turn', is_error: false, permission_denials: [] }));
+  console.log(JSON.stringify({ type: 'result', stop_reason: 'end_turn', total_cost_usd: 0.05 }));
+  console.log(JSON.stringify({ type: 'result', stop_reason: 'end_turn', is_error: false, permission_denials: [], total_cost_usd: 0.125, modelUsage: { model: { inputTokens: 10, outputTokens: 3, cacheReadInputTokens: 20, cacheCreationInputTokens: 5 } } }));
 })().catch(error => { console.error(error.message); process.exitCode = 1; });
 `;
 
@@ -75,6 +76,11 @@ describe('worker repository checkout over the Deployment wire', () => {
           repositoryGitPath: source.gitPath, pollIdleMs: 10, signal: AbortSignal.timeout(20_000), log: (line) => { lines.push(line); } });
         expect(outcome).toEqual({ driven: 1, refused: null });
         const row = e.sqlite.query(`SELECT status,error,run_context AS context FROM agent_runs WHERE id='run_seed'`).get() as { status: string; error: string | null; context: string };
+        if (access !== 'invalid') {
+          const accounting = e.sqlite.query(`SELECT tokens_used, cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, usage_data FROM agent_runs WHERE id='run_seed'`).get() as Record<string, unknown>;
+          expect(accounting).toMatchObject({ tokens_used: 38, cost_usd: 0.125, actual_cost_usd: null, estimated_cost_usd: 0.125, cost_source: 'estimated' });
+          expect(JSON.parse(String(accounting.usage_data))).toEqual({ inputTokens: 35, outputTokens: 3, cachedTokens: 20, cacheCreationTokens: 5, costUsd: null, estimatedCostUsd: 0.125 });
+        }
         if (access === 'invalid') {
           expect(row.status).toBe('failed');
           expect(row.error).toContain('Git operation failed');

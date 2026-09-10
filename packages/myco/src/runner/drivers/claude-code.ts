@@ -1,3 +1,4 @@
+import { claudeUsage } from './usage.js';
 /**
  * Claude Code, driven natively.
  *
@@ -20,7 +21,7 @@ import { harnessById } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
 import { RUN_REPOSITORY_DIR, SOURCE_GIT_READ_COMMANDS } from '@goondocks/myco-shared/repository';
-import { jsonLines, numberOf, recordOf, startHarness, stringOf } from './stream.js';
+import { jsonLines, recordOf, startHarness, stringOf } from './stream.js';
 
 const STOP: Readonly<Record<string, StopReason>> = {
   end_turn: 'end_turn',
@@ -77,6 +78,7 @@ export const claudeCodeDriver: Driver = {
     ], { cwd: spec.scratchDir, env: spec.credentialEnv, signal });
 
     let ended = false;
+    let failure: string | null = null;
     /** The tool each call id named, so a result can be read back as that call's outcome. */
     const calls = new Map<string, string>();
     /** Calls already reported as refused: the harness says so twice, on a system line and on the result. */
@@ -90,8 +92,7 @@ export const claudeCodeDriver: Driver = {
         if (id !== null) denied.add(id);
         yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error' };
       } else if (type === 'assistant') {
-        const failure = stringOf(line.error);
-        if (failure !== null) { ended = true; yield { kind: 'ended', stop: 'error', detail: failure }; break; }
+        failure ??= stringOf(line.error);
         for (const block of blocksOf(recordOf(line.message))) {
           const kind = stringOf(block.type);
           if (kind === 'text') {
@@ -112,23 +113,17 @@ export const claudeCodeDriver: Driver = {
           yield { kind: 'tool_call', name: calls.get(id) ?? 'tool', status: block.is_error === true ? 'error' : 'ok' };
         }
       } else if (type === 'result') {
-        const usage = recordOf(line.usage);
-        yield {
-          kind: 'usage',
-          inputTokens: usage === null ? null : numberOf(usage.input_tokens),
-          outputTokens: usage === null ? null : numberOf(usage.output_tokens),
-          costUsd: numberOf(line.total_cost_usd),
-        };
+        yield { kind: 'usage', ...claudeUsage(line) };
         ended = true;
         // A turn the harness calls a success while it refused the run's own
         // tools is the run doing nothing; the refusals are its outcome.
         const refused = deniedTools(line);
         if (refused.length > 0) { yield { kind: 'ended', stop: 'error', detail: `permission refused for ${[...new Set(refused)].join(', ')}` }; break; }
-        const stop = line.is_error === true ? 'error' : STOP[stringOf(line.stop_reason) ?? ''] ?? 'error';
-        yield { kind: 'ended', stop, detail: stop === 'error' ? stringOf(line.terminal_reason) ?? stringOf(line.subtype) : null };
+        const stop = failure !== null || line.is_error === true ? 'error' : STOP[stringOf(line.stop_reason) ?? ''] ?? 'error';
+        yield { kind: 'ended', stop, detail: stop === 'error' ? failure ?? stringOf(line.terminal_reason) ?? stringOf(line.subtype) : null };
       }
     }
     const code = await started.exit;
-    if (!ended) yield { kind: 'ended', stop: 'error', detail: `the harness wrote no result and exited ${code}: ${started.errorText().slice(0, 2000)}` };
+    if (!ended) yield { kind: 'ended', stop: 'error', detail: failure ?? `the harness wrote no result and exited ${code}: ${started.errorText().slice(0, 2000)}` };
   },
 };

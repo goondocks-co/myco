@@ -7,6 +7,7 @@
       "@goondocks/myco-shared/relevance": ["../myco-shared/src/relevance.ts"],
       "@goondocks/myco-shared/recall": ["../myco-shared/src/recall.ts"],
       "@goondocks/myco-shared/repository": ["../myco-shared/src/repository.ts"],
+      "@goondocks/myco-shared/worker-usage": ["../myco-shared/src/worker-usage.ts"],
       "@goondocks/myco-shared/canopy": ["../myco-shared/src/canopy.ts"],
       "@goondocks/myco-shared/skills": ["../myco-shared/src/skills.generated.ts"],
       "@goondocks/myco-shared/run-holds": ["../myco-shared/src/run-holds.ts"],

@@ -23,6 +23,7 @@
       "@goondocks/myco-shared/relevance": ["./packages/myco-shared/src/relevance.ts"],
       "@goondocks/myco-shared/recall": ["./packages/myco-shared/src/recall.ts"],
       "@goondocks/myco-shared/repository": ["./packages/myco-shared/src/repository.ts"],
+      "@goondocks/myco-shared/worker-usage": ["./packages/myco-shared/src/worker-usage.ts"],
       "@goondocks/myco-shared/canopy": ["./packages/myco-shared/src/canopy.ts"],
       "@goondocks/myco-shared/skills": ["./packages/myco-shared/src/skills.generated.ts"],
       "@goondocks/myco-shared/run-holds": ["./packages/myco-shared/src/run-holds.ts"],

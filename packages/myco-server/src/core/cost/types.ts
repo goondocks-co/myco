@@ -1,12 +1,6 @@
-/**
- * What a run's spend resolves to.
- *
- * A harness reports what it can: Claude Code a dollar figure, Codex and the
- * protocol harnesses token counts alone. The resolution carries the counts in
- * every case and a figure where one is known or can be priced, and says which.
- */
+/** Run accounting with explicit actual, estimated and unavailable cost provenance. */
 
-/** Where the figure came from: the harness said it, a price table derived it, or nobody knows. */
+/** Whether the figure is an actual charge, an estimate or unavailable. */
 export type CostSource = 'actual' | 'estimated' | 'unavailable';
 
 /** The token counts a harness reported for one run, every field optional. */
@@ -19,6 +13,7 @@ export interface RunUsage {
   cachedTokens?: number;
   durationMs?: number;
   costUsd?: number | null;
+  estimatedCostUsd?: number | null;
 }
 
 export interface CostBreakdown {

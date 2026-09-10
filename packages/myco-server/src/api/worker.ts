@@ -1,3 +1,4 @@
+import { parseWorkerAccounting, WorkerUsageError } from '@goondocks/myco-shared/worker-usage';
 /**
  * The worker control plane: claim, lease, end.
  *
@@ -102,10 +103,15 @@ export async function handleWorkerEnd(env: ServerEnv, ctx: DeploymentContext): P
   if (run === null) return ok({ persisted: true, ended: false, reason: 'end names a projectId and a runId' });
   const status = asked.status === 'completed' || asked.status === 'failed' ? asked.status : null;
   if (status === null) return ok({ persisted: true, ended: false, reason: 'end names a status of completed or failed' });
-  const outcome = await endLeasedRun(env, { tokenId: ctx.tokenId, now: ctx.now }, {
-    ...run, status, error: typeof asked.error === 'string' ? asked.error : null,
-  });
-  return ok({ persisted: true, ...outcome });
+  try {
+    const outcome = await endLeasedRun(env, { tokenId: ctx.tokenId, now: ctx.now, clock: ctx.clock }, {
+      ...run, status, ...parseWorkerAccounting(asked), error: typeof asked.error === 'string' ? asked.error : null,
+    });
+    return ok({ persisted: true, ...outcome });
+  } catch (error) {
+    if (error instanceof WorkerUsageError) return ok({ persisted: false, code: 'parse', reason: error.message });
+    throw error;
+  }
 }
 
 /** Repository access and commit pinning under the worker's lease. */

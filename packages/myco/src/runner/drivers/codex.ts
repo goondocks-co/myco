@@ -149,6 +149,7 @@ export const codexDriver: Driver = {
           kind: 'usage',
           inputTokens: usage === null ? null : numberOf(usage.input_tokens),
           outputTokens: usage === null ? null : numberOf(usage.output_tokens),
+          cachedTokens: usage === null ? null : numberOf(usage.cached_input_tokens),
           costUsd: null,
         };
         ended = true;
