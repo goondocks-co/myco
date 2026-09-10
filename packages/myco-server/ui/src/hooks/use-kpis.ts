@@ -13,8 +13,10 @@ export interface Measure {
   sampleSize: number;
 }
 
+/** One agent's rate, with the call count behind it so the split's parts account for the whole. */
 export interface HarnessMeasure extends Measure {
   harness: string;
+  calls: number;
 }
 
 export interface KpiReport {

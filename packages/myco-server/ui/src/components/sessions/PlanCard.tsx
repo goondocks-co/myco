@@ -90,7 +90,16 @@ export interface PlanCardProps {
   meta?: ReactNode;
 }
 
-/** A captured plan: its status, title, key, timing, who last set its status, the turn it came from, and its task-list progress; open, its markdown. Only the title row toggles, so the controls never sit inside the toggle. */
+/**
+ * A captured plan: its status, title, key, timing, who last set its status, the
+ * turn it came from, and its task-list progress; open, its markdown. Only the
+ * title row toggles, so the controls never sit inside the toggle.
+ *
+ * The turn link names the session path in full rather than riding the current
+ * one. A relative `?turn=` resolves against whatever page is showing the card, so
+ * it worked on the session timeline and was inert everywhere else; naming the
+ * path makes the card carry its own destination.
+ */
 export function PlanCard({ projectId, sessionId, plan, defaultOpen = false, inTurn = false, meta }: PlanCardProps) {
   const [open, setOpen] = useState(defaultOpen);
   const checklist = progressParts(plan.progress);
@@ -112,7 +121,12 @@ export function PlanCard({ projectId, sessionId, plan, defaultOpen = false, inTu
           <span title={formatDateTime(plan.createdAt)}>Created {formatRelative(plan.createdAt)}</span>
           {plan.updatedAt !== plan.createdAt && <span title={formatDateTime(plan.updatedAt)}>Updated {formatRelative(plan.updatedAt)}</span>}
           {!inTurn && plan.promptId !== null && (
-            <Link to={`?turn=${encodeURIComponent(plan.promptId)}`} className="text-primary underline">From its turn</Link>
+            <Link
+              to={`/p/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}?turn=${encodeURIComponent(plan.promptId)}`}
+              className="text-primary underline"
+            >
+              From its turn
+            </Link>
           )}
           {meta}
         </div>

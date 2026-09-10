@@ -74,7 +74,7 @@ describe('Deployment Settings', () => {
       }
     }
     expect(controls).toBe(LEAF_FIELDS.length);
-    await tab('Cortex');
+    await tab('What sessions receive');
     expect(screen.getByTestId('saved-cortex.digest.inject_on_session_start').textContent).toMatch(/Saved · by chris/);
     expect(screen.getByTestId('saved-cortex.digest.tier').textContent).toBe('Server default');
   });
@@ -82,7 +82,7 @@ describe('Deployment Settings', () => {
   it('saves a toggle on change and a text leaf on blur, each to its own leaf', async () => {
     const { sent } = server(base({ '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: true }), '/api/settings/agent.provider.model': () => Response.json({ applied: true }) }));
     mount('/settings');
-    await tab('Cortex');
+    await tab('What sessions receive');
     // A setting the Deployment no longer reads is shown and not offered: an
     // enabled switch that changes nothing is worse than a disabled one.
     expect(await screen.findByRole('switch', { name: 'Digest at session start' })).toBeDisabled();
@@ -116,7 +116,7 @@ describe('Deployment Settings', () => {
       '/api/settings/embedding.model': () => Response.json({ error: 'nope' }, { status: 503 }),
     }));
     mount('/settings');
-    await tab('Cortex');
+    await tab('What sessions receive');
     fireEvent.change(await screen.findByLabelText('Digest size'), { target: { value: '5000' } });
     expect((await screen.findByTestId('saved-cortex.digest.tier')).textContent).toBe('That setting is not held by the server.');
     await tab('Embedding');
@@ -203,7 +203,7 @@ describe('Deployment Settings', () => {
     // Every sibling still reads back what the server holds for it.
     await waitFor(() => expect((screen.getByLabelText('Keep raw transcripts for') as HTMLInputElement).value).toBe('0'));
     for (const [tabLabel, label, leaf] of [
-      ['Cortex', 'Session-start instructions', 'instructions.template'],
+      ['What sessions receive', 'Session-start instructions', 'instructions.template'],
       ['Workers', 'Preferred harness', 'worker.harness'],
       ['Importing past sessions', 'Reach back at most', 'import.window_days'],
       ['Importing past sessions', 'At most, per agent', 'import.max_sessions_per_harness'],
@@ -216,11 +216,30 @@ describe('Deployment Settings', () => {
     expect(sent).toHaveLength(1);
   });
 
+  /**
+   * A setting nothing reads is shown and not offered.
+   *
+   * The same treatment the unread digest switch already gets: a control that
+   * changes nothing reads worse than one that cannot be moved, and hiding the
+   * field would lose sight of a value an older deployment stored. The number
+   * kind honours `readOnly` here for the first time, so this is its gate.
+   */
+  it('shows a setting nothing reads without offering it, and writes nothing when one is typed into', async () => {
+    const { sent } = server(base({ '/api/settings': () => Response.json(leaves({ 'skills.usage_stale_days': { value: 45, updatedBy: 'mem_1', updatedAt: NOW } })) }));
+    mount('/settings?tab=skills');
+    const stale = await screen.findByLabelText('Stale after');
+    expect((stale as HTMLInputElement).readOnly).toBe(true);
+    expect((stale as HTMLInputElement).value).toBe('45');
+    fireEvent.change(stale, { target: { value: '90' } });
+    fireEvent.blur(stale);
+    expect(sent).toEqual([]);
+  });
+
   it('toggles a project capability through the project route', async () => {
     const { sent } = server(base({ '/api/projects/x/capabilities/cortex': () => Response.json({ applied: true }) }));
     mount('/settings');
     await tab('Projects');
-    fireEvent.click(await screen.findByRole('switch', { name: 'Cortex: digests and instructions for Project X' }));
+    fireEvent.click(await screen.findByRole('switch', { name: 'Context at session start and on prompts for Project X' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/projects/x/capabilities/cortex', body: { enabled: false } });
   });

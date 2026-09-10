@@ -701,11 +701,13 @@ describe('Project home', () => {
     expect(runs.map((r) => r.textContent)).toEqual([expect.stringContaining('title-summary'), expect.stringContaining('digest')]);
     expect(runs[0]!.textContent).toContain('dry');
     expect(runs[1]!.textContent).toContain('12.0k tok');
-    // A plan still open stands ahead of one already shipped, whatever their edit stamps say.
-    const plans = within(screen.getByRole('list', { name: 'Recent plans' })).getAllByRole('listitem');
-    expect(plans.map((p) => p.textContent)).toEqual([expect.stringContaining('Rebuild the cache'), expect.stringContaining('Shipped already')]);
+    // The panel is titled "Still open", so a finished plan is not in it, and each
+    // item opens its own plan rather than the whole list.
+    const plans = within(screen.getByRole('list', { name: 'Plans still open' })).getAllByRole('listitem');
+    expect(plans.map((p) => p.textContent)).toEqual([expect.stringContaining('Rebuild the cache')]);
     expect(plans[0]!.textContent).toContain('1/2');
-    expect(within(plans[0]!).getByRole('link').getAttribute('href')).toBe('/p/x/plans');
+    expect(within(plans[0]!).getByRole('link').getAttribute('href'))
+      .toBe('/p/x/sessions/s1?tab=plans&plan=plan_open');
     expect(screen.getByRole('link', { name: /All sessions/ }).getAttribute('href')).toBe('/p/x/sessions');
   });
 

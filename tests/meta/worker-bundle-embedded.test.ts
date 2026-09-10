@@ -22,12 +22,17 @@ import { BUNDLED_WORKER, BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.gen
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /**
- * Set from the measured bundle (1,203,929 bytes) with room for ordinary growth.
- * The ceiling is a tripwire, not a budget: a bundler that starts carrying files
- * it does not belong to shows up here rather than as a deploy that quietly
- * exceeds a platform limit. The staged-directory sweep that carried 31 extra
- * modules cost 65 KiB, and the headroom stays under that, so a sweep of that
- * shape still trips this while a page's worth of new server code does not.
+ * Set from the bundle measured AFTER #1162 — 1,203,929 bytes decoded, 260,181
+ * gzipped — with room for ordinary growth. The figure before that work was
+ * 1,196,848, only 3,152 under the previous 1,200,000 ceiling, which is why a
+ * page's worth of new server code tripped it.
+ *
+ * The ceiling is a tripwire, not a platform budget: Cloudflare enforces 64 MiB
+ * uncompressed on every plan, so this exists to catch a bundler that starts
+ * carrying files it does not belong to, rather than to keep a deploy legal. The
+ * staged-directory sweep that carried 31 extra modules cost 65 KiB, and the
+ * headroom stays under that, so a sweep of that shape still trips this while
+ * ordinary growth does not.
  */
 const SIZE_CEILING_BYTES = 1_260_000;
 

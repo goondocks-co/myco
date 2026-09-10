@@ -28,9 +28,18 @@ export interface Measure {
   sampleSize: number;
 }
 
-/** One harness's diagnostic rate, named by the harness the session's transcript reports. */
+/**
+ * One harness's diagnostic rate, named by the harness the session's transcript
+ * reports, carrying the call count as well as the rate.
+ *
+ * The count travels with the rate so the parts account for the whole. A harness
+ * whose calls land inside the window while its prompts land outside it has a rate
+ * of nothing and a call count of several, and a reader adding up rates alone would
+ * come up short against the figure the split sits under.
+ */
 export interface HarnessMeasure extends Measure {
   harness: string;
+  calls: number;
 }
 
 export interface KpiReport {
@@ -103,23 +112,43 @@ const countOf = async (db: RelationalStore, sql: string, params: readonly unknow
 /**
  * Prompts the Deployment served context for.
  *
- * A prompt counts when either record of having served it exists: a
- * `spore_injections` row naming the prompt, or a `session_injections` row for its
- * session stamped no later than the prompt. Both records are written only when
- * something actually reached the agent, which is what makes them evidence of
- * presence rather than of intent.
+ * Two records answer this, and they are counted differently on purpose.
+ *
+ * `spore_injections` names the prompt it served, so it credits that prompt and no
+ * other. `session_injections` is at-most-once per (project, session, kind) — a
+ * session start burns its record once and every later prompt of the session finds
+ * it. Counting a session record against every prompt after it would make the
+ * measure saturate: a Deployment serving instructions at session start would read
+ * near 100% and one serving nothing near 0%, whatever happened at each prompt,
+ * which is a configuration flag wearing a percentage.
+ *
+ * A session record therefore credits ONE prompt: the earliest in that session
+ * stamped at or after the record. That is the prompt the block actually reached;
+ * the prompts after it were served nothing by that record and are counted as
+ * such, so the measure moves with what each prompt received.
  */
 const SERVED_PROMPTS = `
   EXISTS (SELECT 1 FROM spore_injections i
            WHERE i.project_id = p.project_id AND i.session_id = p.session_id AND i.prompt_id = p.prompt_id)
   OR EXISTS (SELECT 1 FROM session_injections s
-              WHERE s.project_id = p.project_id AND s.session_id = p.session_id AND s.created_at <= p.created_at)`;
+              WHERE s.project_id = p.project_id AND s.session_id = p.session_id AND s.created_at <= p.created_at
+                AND p.created_at = (SELECT MIN(f.created_at) FROM prompt_batches f
+                                     WHERE f.project_id = s.project_id AND f.session_id = s.session_id
+                                       AND f.created_at >= s.created_at))`;
 
 /** The tool calls that count as reaching Myco at all. */
 const MYCO_CALL = `c.myco_tool IS NOT NULL`;
 
-/** The plan calls that read rather than write. `myco_plans` writes under `save`; every other op reads. */
-const PLAN_READ = `c.myco_tool = 'myco_plans' AND (c.myco_op IS NULL OR c.myco_op <> 'save')`;
+/**
+ * The plan calls that read.
+ *
+ * An allow-list, not a deny-list. `myco_plans` today reads under `list` and `get`
+ * and writes under `save` and `delete`; naming what reads means a write op added
+ * later is counted by nobody, where naming what writes would have every new op
+ * counted as a read until someone remembered this line. The absent op is the
+ * tool's own default, which is `list`.
+ */
+const PLAN_READ = `c.myco_tool = 'myco_plans' AND (c.myco_op IS NULL OR c.myco_op IN ('list', 'get'))`;
 
 /** Prompts and the served share of them. */
 async function promptMeasures(db: RelationalStore, since: number | null): Promise<{ prompts: number; served: number; withSpores: number }> {
@@ -158,8 +187,8 @@ async function harnessSplit(db: RelationalStore, since: number | null): Promise<
   const promptsBy = new Map(promptRows.results.map((r) => [r.harness, r.n]));
   const callsBy = new Map(callRows.results.map((r) => [r.harness, r.n]));
   return [...new Set([...promptsBy.keys(), ...callsBy.keys()])]
-    .map((harness) => ({ harness, ...rate(callsBy.get(harness) ?? 0, promptsBy.get(harness) ?? 0) }))
-    .sort((a, b) => b.sampleSize - a.sampleSize || a.harness.localeCompare(b.harness));
+    .map((harness) => ({ harness, calls: callsBy.get(harness) ?? 0, ...rate(callsBy.get(harness) ?? 0, promptsBy.get(harness) ?? 0) }))
+    .sort((a, b) => b.sampleSize - a.sampleSize || b.calls - a.calls || a.harness.localeCompare(b.harness));
 }
 
 /**

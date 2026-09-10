@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
-import { orderPlans } from '../../packages/myco-server/ui/src/pages/ProjectHome';
+import { orderPlans, planPath } from '../../packages/myco-server/ui/src/pages/ProjectHome';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
 const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 1, lastActivityAt: null, archivedAt: null, archivedBy: null }] };
@@ -107,7 +107,7 @@ describe('the plans page', () => {
 });
 
 describe('the project overview\'s plan panel', () => {
-  it('puts the plans still open first, then the most recently edited', async () => {
+  it('keeps only the plans still open, in progress ahead of active, then the most recently edited', () => {
     const rows = [
       plan({ planKey: 'a', status: 'completed', updatedAt: 500 }),
       plan({ planKey: 'b', status: 'active', updatedAt: 100 }),
@@ -115,6 +115,24 @@ describe('the project overview\'s plan panel', () => {
       plan({ planKey: 'd', status: 'abandoned', updatedAt: 900 }),
       plan({ planKey: 'e', status: 'in_progress', updatedAt: 400 }),
     ];
-    expect(orderPlans(rows).map((p) => p.planKey)).toEqual(['e', 'c', 'b', 'd', 'a']);
+    // A finished or abandoned plan is not still open, whatever its edit stamp says.
+    expect(orderPlans(rows).map((p) => p.planKey)).toEqual(['e', 'c', 'b']);
+  });
+
+  it('opens one plan at its own session rather than at the whole list', () => {
+    expect(planPath('a/b', plan({ planKey: 'p&1', sessionId: 's 1' })))
+      .toBe('/p/a%2Fb/sessions/s%201?tab=plans&plan=p%261');
+  });
+});
+
+describe('a plan card anywhere', () => {
+  it('links back to the turn that wrote it by naming the session path, not by riding the current one', async () => {
+    server(base({ '/api/projects/x/plans?limit=100': () => Response.json({ plans: [plan({ promptId: 'turn_9' })], maxPage: 200 }) }));
+    mount('/p/x/plans');
+    const list = await screen.findByLabelText('Plans');
+    // On /p/x/plans a relative `?turn=` would resolve against a page that reads no
+    // turn, so the link has to carry the session it belongs to.
+    expect(within(list).getByRole('link', { name: 'From its turn' }).getAttribute('href'))
+      .toBe('/p/x/sessions/sess_1?turn=turn_9');
   });
 });

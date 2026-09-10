@@ -112,7 +112,7 @@ function Home({ project }: { project: ProjectSummary }) {
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <AgentRunsPanel base={base} runs={runs.rows} pending={runs.isPending} error={runs.error} unconfigured={unconfigured} />
               <div className="flex flex-col gap-6">
-                <PlansPanel base={base} plans={plans.data?.plans ?? []} pending={plans.isPending} error={plans.error} />
+                <PlansPanel projectId={project.projectId} base={base} plans={plans.data?.plans ?? []} pending={plans.isPending} error={plans.error} />
                 <ActivityFeed base={base} items={activity.data.items} />
               </div>
             </div>
@@ -271,30 +271,39 @@ function AgentRunsPanel({ base, runs, pending, error, unconfigured }: { base: st
 /** The statuses that read as still open, in the order the panel shows them. */
 const OPEN_PLAN_STATUSES = ['in_progress', 'active'];
 
-/** Plans still open first, then the most recently edited. */
+/** The plans still open, in progress ahead of merely active, then the most recently edited. */
 export function orderPlans(plans: readonly ProjectPlanRow[]): ProjectPlanRow[] {
-  const rank = (status: string) => {
-    const at = OPEN_PLAN_STATUSES.indexOf(status);
-    return at === -1 ? OPEN_PLAN_STATUSES.length : at;
-  };
-  return [...plans].sort((a, b) => rank(a.status) - rank(b.status) || b.updatedAt - a.updatedAt);
+  const rank = (status: string) => OPEN_PLAN_STATUSES.indexOf(status);
+  return plans
+    .filter((p) => OPEN_PLAN_STATUSES.includes(p.status))
+    .sort((a, b) => rank(a.status) - rank(b.status) || b.updatedAt - a.updatedAt);
 }
 
-function PlansPanel({ base, plans, pending, error }: { base: string; plans: ProjectPlanRow[]; pending: boolean; error: Error | null }) {
-  const sorted = orderPlans(plans).slice(0, PLANS_SHOWN);
+/** Where one plan opens: its own session's plans, with the plan named — the destination a plan search hit already uses. */
+export function planPath(projectId: string, plan: Pick<ProjectPlanRow, 'planKey' | 'sessionId'>): string {
+  const search = new URLSearchParams({ tab: 'plans', plan: plan.planKey });
+  return `/p/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(plan.sessionId)}?${search}`;
+}
+
+function PlansPanel({ projectId, base, plans, pending, error }: { projectId: string; base: string; plans: ProjectPlanRow[]; pending: boolean; error: Error | null }) {
+  const open = orderPlans(plans).slice(0, PLANS_SHOWN);
   return (
     <Panel tone="sage" eyebrow="Plans" title="Still open" actions={<Link to={`${base}/plans`} className="inline-flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface">All plans <ArrowRight className="h-3 w-3" /></Link>}>
       {pending ? (
         <Skeleton className="h-12 w-full rounded-md" />
       ) : error ? (
         <PanelError what="the plans" />
-      ) : sorted.length === 0 ? (
-        <p className="m-0 font-sans text-sm text-on-surface-variant">No plans yet. A plan appears here when a session writes one.</p>
+      ) : open.length === 0 ? (
+        <p className="m-0 font-sans text-sm text-on-surface-variant">
+          {plans.length === 0
+            ? 'No plans yet. A plan appears here when a session writes one.'
+            : 'Nothing open. Every plan this project holds is finished or abandoned.'}
+        </p>
       ) : (
-        <ul className="m-0 grid list-none grid-cols-1 gap-2 p-0" aria-label="Recent plans">
-          {sorted.map((plan) => (
+        <ul className="m-0 grid list-none grid-cols-1 gap-2 p-0" aria-label="Plans still open">
+          {open.map((plan) => (
             <li key={plan.planKey}>
-              <Link to={`${base}/plans`} className="block rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest px-3 py-2 no-underline transition-colors hover:bg-surface-container">
+              <Link to={planPath(projectId, plan)} className="block rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest px-3 py-2 no-underline transition-colors hover:bg-surface-container">
                 <div className="flex items-center gap-1.5">
                   <ListChecks className="h-3 w-3 shrink-0 text-sage" />
                   <span className="truncate font-sans text-xs font-medium text-on-surface" title={plan.title ?? plan.planKey}>{plan.title ?? plan.planKey}</span>

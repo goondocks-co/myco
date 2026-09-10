@@ -57,15 +57,38 @@ function mount(path: string) {
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
 }
 
+/**
+ * Whether an element is actually on the screen, not merely in the document.
+ *
+ * `textContent` reads straight through `hidden`, `display: none` and a
+ * screen-reader-only class, so a gate written on text alone is satisfied by a
+ * sample nobody can see — which is the same failure as no sample at all. This
+ * walks the ancestors so a hidden wrapper counts too.
+ */
+function onScreen(el: Element | null | undefined): boolean {
+  if (el == null) return false;
+  for (let node: Element | null = el; node !== null; node = node.parentElement) {
+    if (node instanceof HTMLElement && node.hidden) return false;
+    const style = globalThis.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    if (node.className.toString().split(/\s+/).includes('sr-only')) return false;
+  }
+  return true;
+}
+
 /** Every measure the page rendered, as the reader sees it: the figure, the sample line, and whether it said there was no sample. */
-async function tiles(): Promise<Array<{ label: string; value: string | null; sample: string; noSample: boolean }>> {
+async function tiles(): Promise<Array<{ label: string; value: string | null; sample: string; sampleVisible: boolean; noSample: boolean }>> {
   await screen.findAllByTestId('measure-tile');
-  return screen.getAllByTestId('measure-tile').map((tile) => ({
-    label: tile.getAttribute('aria-label') ?? '',
-    value: within(tile).queryByTestId('measure-value')?.textContent ?? null,
-    sample: within(tile).getByTestId('measure-sample').textContent ?? '',
-    noSample: within(tile).queryByTestId('measure-no-sample') !== null,
-  }));
+  return screen.getAllByTestId('measure-tile').map((tile) => {
+    const sample = within(tile).getByTestId('measure-sample');
+    return {
+      label: tile.getAttribute('aria-label') ?? '',
+      value: within(tile).queryByTestId('measure-value')?.textContent ?? null,
+      sample: sample.textContent ?? '',
+      sampleVisible: onScreen(sample),
+      noSample: within(tile).queryByTestId('measure-no-sample') !== null,
+    };
+  });
 }
 
 describe('the measures page', () => {
@@ -75,7 +98,7 @@ describe('the measures page', () => {
         contextPresent: { value: 0.625, sampleSize: 8 },
         sporeServeRate: { value: 0.25, sampleSize: 8 },
         callsPerPrompt: { value: 1.5, sampleSize: 8 },
-        callsPerPromptByHarness: [{ harness: 'claude-code', value: 1.5, sampleSize: 8 }],
+        callsPerPromptByHarness: [{ harness: 'claude-code', value: 1.5, sampleSize: 8, calls: 12 }],
         planReadsPerSession: { value: 0.5, sampleSize: 4 },
         firstInjectionMs: { value: 90_000, sampleSize: 2 },
       })),
@@ -83,10 +106,11 @@ describe('the measures page', () => {
     mount('/measures');
     const rendered = await tiles();
 
-    // Six measures, and every one of them carries a sample line.
+    // Six measures, and every one of them carries a sample line the reader can see.
     expect(rendered).toHaveLength(6);
     for (const tile of rendered) {
-      expect({ label: tile.label, hasSample: /^n = [\d,]+ \w+s?$/.test(tile.sample) }).toEqual({ label: tile.label, hasSample: true });
+      expect({ label: tile.label, hasSample: /^n = [\d,]+ \w+s?$/.test(tile.sample), visible: tile.sampleVisible })
+        .toEqual({ label: tile.label, hasSample: true, visible: true });
       // A figure and an absent-sample note are mutually exclusive on every path.
       expect({ label: tile.label, exclusive: (tile.value !== null) !== tile.noSample }).toEqual({ label: tile.label, exclusive: true });
     }
@@ -105,10 +129,10 @@ describe('the measures page', () => {
     mount('/measures');
     const byLabel = new Map((await tiles()).map((t) => [t.label, t]));
     expect(byLabel.get('Prompts that arrived with context')).toEqual({
-      label: 'Prompts that arrived with context', value: '63%', sample: 'n = 8 prompts', noSample: false,
+      label: 'Prompts that arrived with context', value: '63%', sample: 'n = 8 prompts', sampleVisible: true, noSample: false,
     });
     expect(byLabel.get('Time to first context')).toEqual({
-      label: 'Time to first context', value: '1m 30s', sample: 'n = 1 machine', noSample: false,
+      label: 'Time to first context', value: '1m 30s', sample: 'n = 1 machine', sampleVisible: true, noSample: false,
     });
     expect(byLabel.get('Plan reads per session')!.value).toBe('0.50');
   });
@@ -118,8 +142,8 @@ describe('the measures page', () => {
     mount('/measures');
     const byLabel = new Map((await tiles()).map((t) => [t.label, t]));
     const evals = byLabel.get('Evaluation pass rate')!;
-    expect({ value: evals.value, sample: evals.sample, noSample: evals.noSample })
-      .toEqual({ value: null, sample: 'n = 0 checks', noSample: true });
+    expect({ value: evals.value, sample: evals.sample, visible: evals.sampleVisible, noSample: evals.noSample })
+      .toEqual({ value: null, sample: 'n = 0 checks', visible: true, noSample: true });
     expect(screen.getByText(/No evaluations recorded/)).toBeTruthy();
   });
 
@@ -128,20 +152,21 @@ describe('the measures page', () => {
       '/api/kpis?window=30': () => Response.json(report({
         callsPerPrompt: { value: 1, sampleSize: 3 },
         callsPerPromptByHarness: [
-          { harness: 'claude-code', value: 1.5, sampleSize: 2 },
-          { harness: 'unrecorded', value: 0, sampleSize: 1 },
-          { harness: 'codex', value: null, sampleSize: 0 },
+          { harness: 'claude-code', value: 1.5, sampleSize: 2, calls: 3 },
+          { harness: 'unrecorded', value: 0, sampleSize: 1, calls: 0 },
+          { harness: 'codex', value: null, sampleSize: 0, calls: 4 },
         ],
       })),
     }));
     mount('/measures');
     const body = await screen.findByLabelText('Calls per prompt by agent');
     const rows = [...body.querySelectorAll('tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent));
-    // A split with no prompts behind it shows no figure, the same rule the tiles follow.
+    // A split with no prompts behind it shows no rate, the same rule the tiles
+    // follow — and still names the calls it made, so the parts add up to the whole.
     expect(rows).toEqual([
-      ['Claude Code', '1.50', 'n = 2 prompts'],
-      ['Agent not recorded', '0.00', 'n = 1 prompts'],
-      ['Codex', '—', 'n = 0 prompts'],
+      ['Claude Code', '3', '1.50', 'n = 2 prompts'],
+      ['Agent not recorded', '0', '0.00', 'n = 1 prompt'],
+      ['Codex', '4', '—', 'n = 0 prompts'],
     ]);
   });
 

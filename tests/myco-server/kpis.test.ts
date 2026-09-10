@@ -109,24 +109,37 @@ describe('the measures', () => {
     });
   });
 
-  it('counts a prompt as carrying context when either record of having served it exists, and the sample as every prompt', async () => {
+  it('credits a session record to one prompt rather than to every prompt after it', async () => {
     const r = rig();
     r.session('s1');
-    r.prompt('p1', 's1');
-    r.prompt('p2', 's1');
-    r.prompt('p3', 's1');
-    r.prompt('p4', 's1');
-    // p1 gets an observation; the session holds a nudge record stamped before
-    // every prompt of it.
-    r.sporeInjection('s1', 'p1', ['sp1']);
-    r.sessionInjection('s1', 'plan-intent-nudge', { at: NOW - 1 });
+    r.prompt('p1', 's1', { at: NOW + 1 });
+    r.prompt('p2', 's1', { at: NOW + 2 });
+    r.prompt('p3', 's1', { at: NOW + 3 });
+    r.prompt('p4', 's1', { at: NOW + 4 });
+    // One session-start record, stamped before every prompt of the session. It
+    // reached p1 and nothing else, so a measure that credited all four would
+    // saturate to 1.0 on any configured Deployment.
+    r.sessionInjection('s1', 'cortex', { at: NOW });
     const report = await all(r.db);
-    // Every prompt of s1 sits after the session record, so all four read as served.
-    expect(report.contextPresent).toEqual({ value: 1, sampleSize: 4 });
+    expect(report.contextPresent).toEqual({ value: 0.25, sampleSize: 4 });
+  });
+
+  it('counts a prompt served an observation on its own, beside the one the session record reached', async () => {
+    const r = rig();
+    r.session('s1');
+    r.prompt('p1', 's1', { at: NOW + 1 });
+    r.prompt('p2', 's1', { at: NOW + 2 });
+    r.prompt('p3', 's1', { at: NOW + 3 });
+    r.prompt('p4', 's1', { at: NOW + 4 });
+    r.sessionInjection('s1', 'cortex', { at: NOW });
+    // p3 receives spores of its own, so two of the four prompts got something.
+    r.sporeInjection('s1', 'p3', ['sp1']);
+    const report = await all(r.db);
+    expect(report.contextPresent).toEqual({ value: 0.5, sampleSize: 4 });
     expect(report.sporeServeRate).toEqual({ value: 0.25, sampleSize: 4 });
   });
 
-  it('does not credit a prompt with a session record stamped after it', async () => {
+  it('does not credit a prompt with a session record stamped after it, and credits the first prompt that follows it', async () => {
     const r = rig();
     r.session('s1');
     r.prompt('p1', 's1', { at: NOW - 10_000 });
@@ -176,9 +189,9 @@ describe('the measures', () => {
     const report = await all(r.db);
     expect(report.callsPerPrompt).toEqual({ value: 1, sampleSize: 4 });
     expect(report.callsPerPromptByHarness).toEqual([
-      { harness: 'claude-code', value: 1.5, sampleSize: 2 },
-      { harness: 'codex', value: 1, sampleSize: 1 },
-      { harness: 'unrecorded', value: 0, sampleSize: 1 },
+      { harness: 'claude-code', value: 1.5, sampleSize: 2, calls: 3 },
+      { harness: 'codex', value: 1, sampleSize: 1, calls: 1 },
+      { harness: 'unrecorded', value: 0, sampleSize: 1, calls: 0 },
     ]);
   });
 
@@ -194,22 +207,29 @@ describe('the measures', () => {
     r.call('c2', 'old', { at: NOW - DAY });
     const week = await readKpis(r.db, { windowDays: 7, now: NOW });
     expect(week.callsPerPrompt).toEqual({ value: 2, sampleSize: 1 });
+    // The call counts add up to the whole above them: 1 + 1 = 2.
     expect(week.callsPerPromptByHarness).toEqual([
-      { harness: 'claude-code', value: 1, sampleSize: 1 },
-      { harness: 'codex', value: null, sampleSize: 0 },
+      { harness: 'claude-code', value: 1, sampleSize: 1, calls: 1 },
+      { harness: 'codex', value: null, sampleSize: 0, calls: 1 },
     ]);
+    expect(week.callsPerPromptByHarness.reduce((n, r) => n + r.calls, 0)).toBe(2);
   });
 
-  it('counts plan reads per session and leaves a plan write out of the count', async () => {
+  it('counts plan reads per session and leaves every plan write out of the count', async () => {
     const r = rig();
     r.session('s1');
     r.session('s2');
     r.call('c1', 's1', { tool: 'myco_plans', op: 'list' });
     r.call('c2', 's1', { tool: 'myco_plans', op: 'get' });
-    r.call('c3', 's1', { tool: 'myco_plans', op: 'save' });
-    r.call('c4', 's2', { tool: 'myco_search', op: 'search' });
+    // The absent op is the tool's own default, which is `list`.
+    r.call('c3', 's1', { tool: 'myco_plans', op: null });
+    r.call('c4', 's1', { tool: 'myco_plans', op: 'save' });
+    // A deletion is a write. An op the allow-list does not name is never a read.
+    r.call('c5', 's1', { tool: 'myco_plans', op: 'delete' });
+    r.call('c6', 's1', { tool: 'myco_plans', op: 'some_op_added_later' });
+    r.call('c7', 's2', { tool: 'myco_search', op: 'search' });
     const report = await all(r.db);
-    expect(report.planReadsPerSession).toEqual({ value: 1, sampleSize: 2 });
+    expect(report.planReadsPerSession).toEqual({ value: 1.5, sampleSize: 2 });
   });
 
   it('measures the wait to a first served context per credential lineage, taking the middle of the samples', async () => {

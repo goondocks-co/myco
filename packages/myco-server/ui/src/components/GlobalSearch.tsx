@@ -49,7 +49,7 @@ export function GlobalSearch({ projectId, projectName }: { projectId: string; pr
       </DialogTrigger>
       <DialogContent className="max-w-2xl" onOpenAutoFocus={(event) => { event.preventDefault(); input.current?.focus(); }}>
         <DialogTitle>Search {projectName}</DialogTitle>
-        <DialogDescription>Find decisions, plans, skills and captured conversations.</DialogDescription>
+        <DialogDescription>Find decisions, plans and captured conversations.</DialogDescription>
         <input ref={input} type="search" aria-label="Search project" placeholder="Search project memory…" maxLength={512}
           className={control} value={text} onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); results.current?.querySelector('a')?.focus(); } }} />
