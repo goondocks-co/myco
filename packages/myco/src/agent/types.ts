@@ -340,8 +340,8 @@ export interface ContextQuery {
  * config migration, provider→harness map, and test fixture should import
  * from here so a future rename happens in one place.
  */
-export const HARNESS_CLAUDE_SDK = 'claude-sdk' as const;
-export const HARNESS_OPENAI_AGENTS = 'openai-agents' as const;
+import { HARNESS_CLAUDE_SDK, HARNESS_OPENAI_AGENTS } from '@goondocks/myco-shared/agent-config';
+export { HARNESS_CLAUDE_SDK, HARNESS_OPENAI_AGENTS };
 export const BUILTIN_HARNESS_IDS = [HARNESS_CLAUDE_SDK, HARNESS_OPENAI_AGENTS] as const;
 export type BuiltinHarnessId = typeof BUILTIN_HARNESS_IDS[number];
 export type HarnessId = string;

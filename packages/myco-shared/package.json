@@ -41,6 +41,14 @@
     "./skills": {
       "import": "./dist/skills.generated.js",
       "types": "./dist/skills.generated.d.ts"
+    },
+    "./agent-config": {
+      "import": "./dist/agent-config.js",
+      "types": "./dist/agent-config.d.ts"
+    },
+    "./agents-block": {
+      "import": "./dist/agents-block.js",
+      "types": "./dist/agents-block.d.ts"
     }
   },
   "files": [
@@ -69,6 +77,9 @@
     "build": "bun scripts/build.mjs && tsc --emitDeclarationOnly --declaration --declarationMap false --outDir dist",
     "lint": "tsc --noEmit",
     "test": "echo 'myco-shared tests run from repo root'"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",

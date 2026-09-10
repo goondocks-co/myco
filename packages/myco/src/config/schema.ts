@@ -1,8 +1,7 @@
 import { CANOPY_DEFAULT_EXCLUDE_PATTERNS } from '@goondocks/myco-shared/canopy';
 import { z } from 'zod';
 import { EXTERNAL_MCP_DEFAULT_PORT, SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
-import { AcceleratorConfigSchema, ReasoningLevelSchema, HarnessIdSchema } from '@myco/agent/schemas.js';
-import { ThinkingBudgetValueSchema, EffortValueSchema } from '@myco/agent/reasoning-tier-schemas.js';
+import { AcceleratorConfigSchema, EffortValueSchema, HarnessIdSchema, ReasoningLevelSchema, ThinkingBudgetValueSchema } from '@goondocks/myco-shared/agent-config';
 
 function rejectLegacyRuntimeKey<T extends z.ZodTypeAny>(schema: T) {
   return z.unknown().superRefine((value, ctx) => {

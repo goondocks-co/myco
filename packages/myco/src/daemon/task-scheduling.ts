@@ -48,7 +48,8 @@ import { HARNESS_HEALTH_TASK_NAME, notifyHarnessHealthFindings } from '@myco/not
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { DEFAULT_AGENT_ID, MS_PER_DAY } from '@myco/constants.js';
 import { errorMessage } from '@myco/utils/error-message.js';
-import { bundledTaskScheduleDefaults, effectiveTaskScheduleEnabled, isCaptureOnly, type TaskScheduleGateOptions } from '@myco/config/capabilities.js';
+import { isCaptureOnly } from '@myco/config/capabilities.js';
+import { bundledTaskScheduleDefaults, effectiveTaskScheduleEnabled, type TaskScheduleGateOptions } from '@myco/agent/schedule-gates.js';
 import {
   forEachGrove,
   forEachRegisteredProject,
