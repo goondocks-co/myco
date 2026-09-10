@@ -1170,19 +1170,6 @@ export async function claimQueuedRun(
   return results[0] ?? null;
 }
 
-/**
- * Release the lease a finished run held.
- *
- * Separate from the terminal write, and deliberately not a run-update column: a
- * run writes its own outcome through that surface and must not be able to hand
- * its lease to nobody. The lease is the worker's and the release is the
- * Deployment's.
- */
-export async function clearLease(db: RelationalStore, scope: ReadScope, runId: string): Promise<void> {
-  await db.prepare(`UPDATE agent_runs SET leased_by = NULL, lease_expires_at = NULL WHERE project_id = ? AND id = ?`)
-    .bind(scope.projectId, runId).run();
-}
-
 /** Record what holds a queued run, so an operator reads the wait on the run rather than inferring it. */
 export async function recordQueueHolder(db: RelationalStore, scope: ReadScope, runId: string, heldBy: string): Promise<void> {
   await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE project_id = ? AND id = ? AND status = 'queued'`)
