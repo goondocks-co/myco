@@ -42,9 +42,10 @@ describe('Tier dispatch', () => {
   });
 
   it('saveMachineConfig writes ~/.myco/config.yaml', () => {
+    const machineBase = loadMachineConfig();
     saveMachineConfig({
-      ...loadMachineConfig(),
-      daemon: { log_level: 'debug', log_retention_days: 14, update_channel: 'stable' },
+      ...machineBase,
+      daemon: { ...machineBase.daemon, log_level: 'debug', log_retention_days: 14, update_channel: 'stable' },
     });
 
     const expected = resolveGlobalConfigPath();
@@ -57,9 +58,10 @@ describe('Tier dispatch', () => {
   });
 
   it('saveMachineConfig does NOT write to a Grove config file', () => {
+    const machineBase = loadMachineConfig();
     saveMachineConfig({
-      ...loadMachineConfig(),
-      daemon: { log_level: 'info', log_retention_days: 7, update_channel: 'stable' },
+      ...machineBase,
+      daemon: { ...machineBase.daemon, log_level: 'info', log_retention_days: 7, update_channel: 'stable' },
     });
 
     const grovePath = resolveGroveConfigPath('grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
@@ -68,9 +70,10 @@ describe('Tier dispatch', () => {
 
   it('saveGroveConfig writes ~/.myco/groves/<id>/grove.yaml', () => {
     const groveId = 'grove_1111111111111111111111111111aaaa';
+    const groveBase = loadGroveConfig(groveId);
     saveGroveConfig(groveId, {
-      ...loadGroveConfig(groveId),
-      backup: { dir: '/tmp/grove-backup', retention_days: 30 },
+      ...groveBase,
+      backup: { ...groveBase.backup, dir: '/tmp/grove-backup' },
     });
 
     const expected = resolveGroveConfigPath(groveId);
@@ -82,9 +85,10 @@ describe('Tier dispatch', () => {
   });
 
   it('saveGroveConfig does NOT write to the machine config file', () => {
+    const groveBase = loadGroveConfig('grove_2222222222222222222222222222aaaa');
     saveGroveConfig('grove_2222222222222222222222222222aaaa', {
-      ...loadGroveConfig('grove_2222222222222222222222222222aaaa'),
-      backup: { dir: '/tmp/x', retention_days: 7 },
+      ...groveBase,
+      backup: { ...groveBase.backup, dir: '/tmp/x' },
     });
 
     const machinePath = resolveGlobalConfigPath();
@@ -96,10 +100,11 @@ describe('Tier dispatch', () => {
   });
 
   it('save{Machine,Grove}Config write to distinct files for distinct daemon fields', () => {
+    const machineBase = loadMachineConfig();
     saveMachineConfig({
-      ...loadMachineConfig(),
+      ...machineBase,
       // Machine tier owns daemon.log_level / log_retention_days / update_channel.
-      daemon: { log_level: 'info', log_retention_days: 7, update_channel: 'beta' },
+      daemon: { ...machineBase.daemon, log_level: 'info', log_retention_days: 7, update_channel: 'beta' },
     });
     saveGroveConfig('grove_3333333333333333333333333333aaaa', {
       ...loadGroveConfig('grove_3333333333333333333333333333aaaa'),
@@ -128,13 +133,17 @@ describe('Tier dispatch', () => {
       fs.writeFileSync(path.join(projectDir, 'myco.yaml'), seedYaml, 'utf-8');
 
       const config = loadConfig(projectDir);
-      saveConfig(projectDir, {
+      // The value fed here is deliberately not a `MycoConfig`: `backup` names
+      // `retention_days`, which the schema does not declare, and omits
+      // `retention` and `auto_interval_hours`, which it requires. Both are the
+      // subject of the assertions below — the unknown key is stripped and the
+      // declared ones survive — so the value reaches `saveConfig` as written.
+      const malformedGroveTier = {
         ...config,
-        // Grove tier — retained until a Grove binds. Unknown keys
-        // (retention_days, …) are still stripped by the schema.
         backup: { dir: '/tmp/bad', retention_days: 30 },
         appearance: { theme: 'plum', mode: 'light', font: 'jetbrains-mono', density: 'compact' },
-      } as MycoConfig);
+      } as unknown as MycoConfig;
+      saveConfig(projectDir, malformedGroveTier);
 
       const persisted = YAML.parse(fs.readFileSync(path.join(projectDir, 'myco.yaml'), 'utf-8'));
       expect(persisted.backup?.dir).toBe('/tmp/bad');
@@ -150,13 +159,15 @@ describe('Tier dispatch', () => {
   });
 
   it('loadMachineConfig and loadGroveConfig read from their own tier files only', () => {
+    const machineBase = loadMachineConfig();
     saveMachineConfig({
-      ...loadMachineConfig(),
-      daemon: { log_level: 'info', log_retention_days: 7, update_channel: 'beta' },
+      ...machineBase,
+      daemon: { ...machineBase.daemon, log_level: 'info', log_retention_days: 7, update_channel: 'beta' },
     });
+    const groveReadback = loadGroveConfig('grove_4444444444444444444444444444aaaa');
     saveGroveConfig('grove_4444444444444444444444444444aaaa', {
-      ...loadGroveConfig('grove_4444444444444444444444444444aaaa'),
-      backup: { dir: '/tmp/readback', retention_days: 21 },
+      ...groveReadback,
+      backup: { ...groveReadback.backup, dir: '/tmp/readback' },
     });
 
     const machine = loadMachineConfig();

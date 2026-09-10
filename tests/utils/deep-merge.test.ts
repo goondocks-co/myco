@@ -1,19 +1,31 @@
 import { describe, it, expect } from 'bun:test';
 import { deepMerge, isPlainObject } from '@myco/utils/deep-merge';
 
+/**
+ * `deepMerge` over bare records, which is the shape it walks. The exported
+ * signature narrows `source` to a patch of the target for its config callers;
+ * the cases here drive keys the target does not declare and values of another
+ * type, which that narrowing refuses.
+ */
+const merge = (
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  options: Parameters<typeof deepMerge>[2],
+): Record<string, unknown> => deepMerge(target, source, options);
+
 describe('deepMerge', () => {
   it('merges nested objects at the leaf', () => {
     const target = { a: { x: 1, y: 2 } };
     const source = { a: { y: 20, z: 30 } };
-    expect(deepMerge(target, source, { arrayStrategy: 'replace' })).toEqual({ a: { x: 1, y: 20, z: 30 } });
+    expect(merge(target, source, { arrayStrategy: 'replace' })).toEqual({ a: { x: 1, y: 20, z: 30 } });
   });
 
   it('source overwrites primitives and nulls', () => {
-    expect(deepMerge({ a: 1, b: null }, { a: 2, b: 'ok' } as any, { arrayStrategy: 'replace' })).toEqual({ a: 2, b: 'ok' });
+    expect(merge({ a: 1, b: null }, { a: 2, b: 'ok' }, { arrayStrategy: 'replace' })).toEqual({ a: 2, b: 'ok' });
   });
 
   it('skips undefined values in source', () => {
-    expect(deepMerge({ a: 1 }, { a: undefined as any }, { arrayStrategy: 'replace' })).toEqual({ a: 1 });
+    expect(merge({ a: 1 }, { a: undefined }, { arrayStrategy: 'replace' })).toEqual({ a: 1 });
   });
 
   it('arrayStrategy=replace overwrites arrays', () => {
@@ -25,8 +37,8 @@ describe('deepMerge', () => {
   });
 
   it('treats null differently from object to avoid typeof-null bug', () => {
-    expect(deepMerge({ a: { x: 1 } }, { a: null as any }, { arrayStrategy: 'replace' })).toEqual({ a: null });
-    expect(deepMerge({ a: null as any }, { a: { x: 1 } }, { arrayStrategy: 'replace' })).toEqual({ a: { x: 1 } });
+    expect(merge({ a: { x: 1 } }, { a: null }, { arrayStrategy: 'replace' })).toEqual({ a: null });
+    expect(merge({ a: null }, { a: { x: 1 } }, { arrayStrategy: 'replace' })).toEqual({ a: { x: 1 } });
   });
 
   it('isPlainObject rejects arrays, null, primitives', () => {

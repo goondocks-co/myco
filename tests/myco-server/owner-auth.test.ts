@@ -1,3 +1,4 @@
+import type { OutboundFetch } from '@myco-server-worker/core/adapters.js';
 import { describe, it, expect } from 'bun:test';
 import { clearCookie, readCookie, SESSION_COOKIE, setCookie, signSession, verifySession } from '@myco-server-worker/auth/owner/cookie.js';
 
@@ -43,11 +44,11 @@ describe('github oauth', () => {
 
   it('exchanges a code for an access token', async () => {
     const calls: Request[] = [];
-    const fetchImpl = async (input: RequestInfo) => {
+    const fetchImpl: OutboundFetch = async (input) => {
       calls.push(input as Request);
       return Response.json({ access_token: 'gho_test', token_type: 'bearer' });
     };
-    expect(await exchangeCode(fetchImpl as typeof fetch, CONFIG, 'https://s/auth/callback', 'the-code')).toBe('gho_test');
+    expect(await exchangeCode(fetchImpl, CONFIG, 'https://s/auth/callback', 'the-code')).toBe('gho_test');
     expect(new URL(String((calls[0] as unknown as Request).url ?? calls[0])).host).toBe('github.com');
   });
 
@@ -138,7 +139,7 @@ describe('owner route dispatch', () => {
 import { OAUTH_STATE_COOKIE } from '@myco-server-worker/auth/owner/github.js';
 
 /** Drives the worker with a supplied outbound fetch, the way the entry supplies the real one. */
-const withFetch = (request: Request, env: unknown, fetchImpl: typeof fetch) =>
+const withFetch = (request: Request, env: unknown, fetchImpl: OutboundFetch) =>
   createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf, fetchImpl })
     .handleRequest(request, serverEnvFromBindings(env as never));
 
@@ -167,9 +168,9 @@ describe('sign-in', () => {
     const env = { ...e.env, ...OWNER_ENV };
     const login = await worker.fetch(new Request('https://s/auth/login', { headers: { 'cf-connecting-ip': '1.2.3.4' } }), env);
     const state = cookieValue(login.headers.get('set-cookie')!, OAUTH_STATE_COOKIE)!;
-    const res = await createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf, fetchImpl: (async (input: RequestInfo) => (String((input as Request).url ?? input).includes('api.github.com')
+    const res = await createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf, fetchImpl: (async (input) => (String((input as Request).url ?? input).includes('api.github.com')
           ? Response.json({ id: 583231, login: 'octocat' })
-          : Response.json({ access_token: 'gho_test' }))) as unknown as typeof fetch }).handleRequest(
+          : Response.json({ access_token: 'gho_test' }))) as OutboundFetch }).handleRequest(
       new Request(`https://s/auth/callback?code=the-code&state=${state}`, { headers: { 'cf-connecting-ip': '1.2.3.4', cookie: `${OAUTH_STATE_COOKIE}=${state}` } }),
       serverEnvFromBindings(env as never)
     );
@@ -184,9 +185,9 @@ describe('sign-in', () => {
     const env = { ...e.env, ...OWNER_ENV };
     const login = await worker.fetch(new Request('https://s/auth/login', { headers: { 'cf-connecting-ip': '1.2.3.4' } }), env);
     const state = cookieValue(login.headers.get('set-cookie')!, OAUTH_STATE_COOKIE)!;
-    const res = await createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf, fetchImpl: (async (input: RequestInfo) => (String((input as Request).url ?? input).includes('api.github.com')
+    const res = await createServer({ now: () => Date.now(), sourceOf: cloudflareSourceOf, fetchImpl: (async (input) => (String((input as Request).url ?? input).includes('api.github.com')
           ? Response.json({ id: 999999, login: 'octocat' })
-          : Response.json({ access_token: 'gho_test' }))) as unknown as typeof fetch }).handleRequest(
+          : Response.json({ access_token: 'gho_test' }))) as OutboundFetch }).handleRequest(
       new Request(`https://s/auth/callback?code=c&state=${state}`, { headers: { 'cf-connecting-ip': '1.2.3.4', cookie: `${OAUTH_STATE_COOKIE}=${state}` } }),
       serverEnvFromBindings(env as never)
     );
@@ -221,28 +222,28 @@ describe('sign-in', () => {
 describe('owner session cookie', () => {
   it('refuses a payload signed for another purpose with the same key', async () => {
     const { signPayload } = await import('@myco-server-worker/auth/owner/cookie.js');
-    const foreign = await signPayload(SECRET, 'oauth_state', { sub: '1234567', iat: 1_000, exp: 9_000 } as never);
+    const foreign = await signPayload(SECRET, 'oauth_state', { sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 } as never);
     expect(await verifySession(SECRET, foreign, 5_000)).toBeNull();
   });
 
   it('round-trips a session', async () => {
-    const signed = await signSession(SECRET, { sub: '1234567', iat: 1_000, exp: 9_000 });
-    expect(await verifySession(SECRET, signed, 5_000)).toMatchObject({ sub: '1234567', iat: 1_000, exp: 9_000 });
+    const signed = await signSession(SECRET, { sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
+    expect(await verifySession(SECRET, signed, 5_000)).toMatchObject({ sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
   });
 
   it('refuses a session signed with another secret', async () => {
-    const signed = await signSession(SECRET, { sub: '1234567', iat: 1_000, exp: 9_000 });
+    const signed = await signSession(SECRET, { sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
     expect(await verifySession('a-different-secret-entirely', signed, 5_000)).toBeNull();
   });
 
   it('refuses a tampered payload', async () => {
-    const signed = await signSession(SECRET, { sub: '1234567', iat: 1_000, exp: 9_000 });
-    const forged = `${btoa(JSON.stringify({ sub: '9999999', iat: 1_000, exp: 9_000 })).replace(/=+$/, '')}.${signed.split('.')[1]}`;
+    const signed = await signSession(SECRET, { sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
+    const forged = `${btoa(JSON.stringify({ sub: '9999999', login: 'octocat', iat: 1_000, exp: 9_000 })).replace(/=+$/, '')}.${signed.split('.')[1]}`;
     expect(await verifySession(SECRET, forged, 5_000)).toBeNull();
   });
 
   it('refuses an expired session', async () => {
-    const signed = await signSession(SECRET, { sub: '1234567', iat: 1_000, exp: 9_000 });
+    const signed = await signSession(SECRET, { sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
     expect(await verifySession(SECRET, signed, 9_001)).toBeNull();
   });
 
@@ -377,7 +378,7 @@ describe('the session cookie a browser actually receives', () => {
         headers: { 'cf-connecting-ip': '1.2.3.4', cookie: `${OAUTH_STATE_COOKIE}=${state}` },
       }),
       env,
-      async (input: RequestInfo) => (String((input as Request).url ?? input).includes('api.github.com')
+      async (input) => (String((input as Request).url ?? input).includes('api.github.com')
         ? Response.json({ id: 583231, login: 'octocat' })
         : Response.json({ access_token: 'gho_test' }))
     );

@@ -4,13 +4,13 @@
  * `data.code` the member-side CLI classifies; every result the shape the
  * member-side tool answers.
  */
+import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import { SHIPPED_SKILLS } from '@goondocks/myco-shared/skills';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { isServedTool, isWriteOp, PROJECT_PIVOT } from '@myco-server-worker/core/tool-catalogue.js';
-import { opOf } from '@myco-server-worker/mcp/registry.js';
 import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';
 import { archiveProject } from '@myco-server-worker/read/sessions.js';
 import { upsertDigest } from '@myco-server-worker/core/digests.js';
@@ -229,7 +229,7 @@ describe('POST /mcp', () => {
     expect(row).toEqual({ machine_id: 'machine_1', session_id: 'sess_a', token_id: t1.tokenId, updated_by: t2Member, status: 'abandoned' });
 
     const foreign = await worker.fetch(new Request('https://s/events', { method: 'POST', headers: memberHeaders(t2.token), body: JSON.stringify(envelope({ sessionId: 'sess_a' })) }), env);
-    expect(await foreign.json()).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
+    expect(await jsonBody(foreign)).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
   });
 
   it('projects a same-millisecond status update as the newer write, whatever the event-id tiebreak says', async () => {
@@ -835,13 +835,13 @@ describe('POST /mcp over a run credential', () => {
       expect({ path, status: answered.status, body: answered.body }).toEqual({ path, status: 200, body: { [shape]: false, code: 'run_scope', reason: RUN_SCOPE } });
     }
     const blob = await worker.fetch(new Request(`https://s/blobs/${'a'.repeat(64)}`, { method: 'POST', headers: memberHeaders(harness.token, { 'content-type': 'text/plain; charset=utf-8', 'content-length': '1' }), body: new Uint8Array([1]) }), env);
-    expect(await blob.json()).toEqual({ stored: false, code: 'run_scope', reason: RUN_SCOPE });
+    expect(await jsonBody(blob)).toEqual({ stored: false, code: 'run_scope', reason: RUN_SCOPE });
     expect(writes(from)).toEqual([]);
     expect((await asJson(member.token, '/spores/list', {})).body.persisted).toBe(true);
 
     const idle = await runSetup();
     const idleAnswer = await worker.fetch(new Request('https://s/spores/list', { method: 'POST', headers: memberHeaders(idle.harness.token), body: '{}' }), idle.env);
-    expect(await idleAnswer.json()).toEqual({ persisted: false, code: 'run_scope', reason: RUN_SCOPE });
+    expect(await jsonBody(idleAnswer)).toEqual({ persisted: false, code: 'run_scope', reason: RUN_SCOPE });
   });
 });
 

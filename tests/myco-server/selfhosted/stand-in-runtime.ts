@@ -15,6 +15,11 @@
 import { ServerClient } from '@myco/member/transport.js';
 import { createHttpRunStore, postRunReport } from '@myco/agent/runtime/run-store-http.js';
 import { CAPTURE_DRIVEN_ADMISSION, HARNESS_AGENT_ID } from '@myco-server-worker/core/harness.js';
+import { PROVIDER_TYPES, type ProviderType } from '@myco/agent/types.js';
+
+/** The provider named on the environment, in the run row's own vocabulary; an unnamed or unknown one is recorded as none. */
+const providerOf = (named: string | undefined): ProviderType | null =>
+  (PROVIDER_TYPES as readonly string[]).includes(named ?? '') ? named as ProviderType : null;
 
 const env = (name: string): string | undefined => {
   const value = process.env[name];
@@ -56,7 +61,7 @@ const claim = await store.claimRun(
     task: taskName,
     status: 'running',
     harness: 'stand-in',
-    provider: env('MYCO_PROVIDER') ?? null,
+    provider: providerOf(env('MYCO_PROVIDER')),
     model: env('MYCO_MODEL') ?? null,
     run_context: null,
   },

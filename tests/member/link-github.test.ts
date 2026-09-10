@@ -43,7 +43,7 @@ describe('myco member link-github', () => {
     const url = await runLinkGithub([], { mycoHome, cwd: root, fetch, stdout: (l) => out.push(l), stderr: () => {}, openBrowser: (u) => opened.push(u) });
 
     expect(url).toBe(`${SERVER_URL}/link#${KEY}`);
-    expect(out.filter((l) => l.includes(KEY))).toEqual([url]);
+    expect(out.filter((l) => l.includes(KEY))).toEqual([`${SERVER_URL}/link#${KEY}`]);
     expect(opened).toEqual([]);
     expect(requests).toHaveLength(1);
     expect({ method: requests[0]!.method, path: requests[0]!.path, body: requests[0]!.body }).toEqual({ method: 'POST', path: '/members/link-github', body: '{}' });

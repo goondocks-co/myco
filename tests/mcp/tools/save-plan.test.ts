@@ -6,6 +6,7 @@
  * envelope echoes the persisted shape.
  */
 
+import { testProjectId } from '../../helpers/request-context.js';
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import os from 'node:os';
 import path from 'node:path';
@@ -273,7 +274,7 @@ describe('myco_plans op: save (in-process)', () => {
     seedSession('sess-b', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
     const contextA = resolveLegacyRequestContext(vaultDir, {
       projectRoot: '/workspace/project-a',
-      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      projectId: testProjectId('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
       groveId: 'grove-a',
       machineId: 'machine-a',
       source: 'explicit',
@@ -281,7 +282,7 @@ describe('myco_plans op: save (in-process)', () => {
     });
     const contextB = resolveLegacyRequestContext(vaultDir, {
       projectRoot: '/workspace/project-b',
-      projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      projectId: testProjectId('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),
       groveId: 'grove-a',
       machineId: 'machine-b',
       source: 'explicit',
@@ -323,7 +324,7 @@ describe('myco_plans op: save (in-process)', () => {
     const context = resolveLegacyRequestContext(vaultDir, {
       projectRoot: '/workspace/project-c',
       callerRoot: worktreeRoot,
-      projectId: 'proj_cccccccccccccccccccccccccccccccc',
+      projectId: testProjectId('proj_cccccccccccccccccccccccccccccccc'),
       groveId: 'grove-c',
       machineId: 'machine-c',
       source: 'explicit',
@@ -345,7 +346,7 @@ describe('myco_plans op: save (in-process)', () => {
     seedSession('sess-combo', 'proj_dddddddddddddddddddddddddddddddd');
     const context = resolveLegacyRequestContext(vaultDir, {
       projectRoot: '/workspace/project-d',
-      projectId: 'proj_dddddddddddddddddddddddddddddddd',
+      projectId: testProjectId('proj_dddddddddddddddddddddddddddddddd'),
       groveId: 'grove-d',
       machineId: 'machine-d',
       source: 'explicit',

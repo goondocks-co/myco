@@ -9,6 +9,14 @@ import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.j
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch } from '@myco/db/queries/batches.js';
+import { releaseProvenanceConfig, type ReleaseProvenanceRuntimeConfig } from '@myco/release-provenance/config.js';
+import { MycoConfigSchema } from '@myco/config/schema.js';
+
+/** A runtime config through the builder the daemon uses, with the fields a case drives overridden. */
+const releaseConfig = (over: Partial<ReleaseProvenanceRuntimeConfig> = {}): ReleaseProvenanceRuntimeConfig => ({
+  ...releaseProvenanceConfig(MycoConfigSchema.parse({ version: 3 })),
+  ...over,
+});
 
 const NOW = 1_800_000_000;
 
@@ -41,7 +49,7 @@ function makeRepo(): { repo: string; first: string; second: string } {
   return { repo, first, second };
 }
 
-function insertPromptProvenance(headSha: string, overrides: Partial<Parameters<typeof insertGitProvenance>[0]> = {}): number {
+function insertPromptProvenance(headSha: string, overrides: Partial<Parameters<typeof insertGitProvenance>[0]> = {}): string {
   upsertSession({
     id: 'session-reconcile',
     agent: 'codex',
@@ -86,12 +94,12 @@ describe('reconcileReleaseProvenance', () => {
       const result = await reconcileReleaseProvenance({
         projectRoot: repo,
         scope: ALL_PROJECTS_SCOPE,
-        config: {
+        config: releaseConfig({
           enabled: true,
           production_refs: ['prod'],
           integration_refs: [],
           reconcile_interval_minutes: 15,
-        },
+        }),
         now: NOW + 1,
       });
 
@@ -113,12 +121,12 @@ describe('reconcileReleaseProvenance', () => {
       await reconcileReleaseProvenance({
         projectRoot: repo,
         scope: ALL_PROJECTS_SCOPE,
-        config: {
+        config: releaseConfig({
           enabled: true,
           production_refs: ['refs/tags/pro*'],
           integration_refs: [],
           reconcile_interval_minutes: 15,
-        },
+        }),
         now: NOW + 1,
       });
 
@@ -139,12 +147,12 @@ describe('reconcileReleaseProvenance', () => {
       await reconcileReleaseProvenance({
         projectRoot: repo,
         scope: ALL_PROJECTS_SCOPE,
-        config: {
+        config: releaseConfig({
           enabled: true,
           production_refs: [],
           integration_refs: [],
           reconcile_interval_minutes: 15,
-        },
+        }),
         now: NOW + 1,
       });
 
@@ -164,12 +172,12 @@ describe('reconcileReleaseProvenance', () => {
       await reconcileReleaseProvenance({
         projectRoot: repo,
         scope: ALL_PROJECTS_SCOPE,
-        config: {
+        config: releaseConfig({
           enabled: true,
           production_refs: ['prod'],
           integration_refs: [],
           reconcile_interval_minutes: 15,
-        },
+        }),
         now: NOW + 1,
       });
 
@@ -220,12 +228,12 @@ describe('reconcileReleaseProvenance', () => {
       await reconcileReleaseProvenance({
         projectRoot: repo,
         scope: ALL_PROJECTS_SCOPE,
-        config: {
+        config: releaseConfig({
           enabled: true,
           production_refs: ['prod-squash'],
           integration_refs: [],
           reconcile_interval_minutes: 15,
-        },
+        }),
         now: NOW + 1,
       });
 

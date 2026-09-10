@@ -1,3 +1,4 @@
+import { jsonBody } from '../../helpers/json-body.js';
 import { expect } from 'bun:test';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { REPLACED_REQUEUES_PER_DAY } from '@myco-server-worker/core/harness.js';
@@ -90,7 +91,7 @@ export const replacedRun: ParityScenario = {
         }),
       });
       expect(`/runs/update: ${res.status}`).toBe('/runs/update: 200');
-      expect(await res.json()).toEqual({ persisted: true, changed: 1, applied: true });
+      expect(await jsonBody(res)).toEqual({ persisted: true, changed: 1, applied: true });
     };
 
     // A first ask launches; a second meets the day's ceiling of one.

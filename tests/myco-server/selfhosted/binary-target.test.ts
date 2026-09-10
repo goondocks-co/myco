@@ -16,6 +16,7 @@
  * start unchanged; the two together are what "one core, two option sources"
  * means for this target.
  */
+import { jsonBody } from '../../helpers/json-body.js';
 import { afterAll, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createRequire } from 'node:module';
@@ -184,7 +185,7 @@ describe('the deployment a compiled binary runs', () => {
 
       const request = memberPost(token, envelope());
       request.headers.set('x-forwarded-for', '203.0.113.7');
-      expect(await (await handler.fetch(request)).json()).toEqual({ persisted: true, projected: true });
+      expect(await jsonBody((await handler.fetch(request)))).toEqual({ persisted: true, projected: true });
     } finally {
       await handler.close();
     }

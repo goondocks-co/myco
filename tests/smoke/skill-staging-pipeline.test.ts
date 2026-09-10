@@ -7,6 +7,7 @@
  * realpathSync on the tmp path so downstream assertions are stable.
  */
 
+import { firstJson } from '../helpers/mcp-result.js';
 import { describe, it, expect, beforeAll, afterAll, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
@@ -58,8 +59,8 @@ function findTool(tools: ReturnType<typeof createVaultTools>, name: string) {
   return t as SdkMcpToolDefinition<any>;
 }
 
-function parseResult(result: { content: Array<{ type: string; text: string }> }): unknown {
-  return JSON.parse(result.content[0].text);
+function parseResult(result: Record<string, unknown>): unknown {
+  return firstJson(result);
 }
 
 function seedCandidateQualityEvidence(candidateId: string, now: number) {

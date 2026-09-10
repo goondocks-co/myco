@@ -61,19 +61,19 @@ async function rig(text: string, sliceBytes = 1 << 20, opts: { agent?: string } 
   const bytes = new TextEncoder().encode(text);
 
   sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-              VALUES (?, ?, ?, ?, ?, ?)`, PROJECT, SESSION, MACHINE, issued.tokenId, NOW, NOW);
+              VALUES (?, ?, ?, ?, ?, ?)`, [PROJECT, SESSION, MACHINE, issued.tokenId, NOW, NOW]);
   sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-             PROJECT, TRANSCRIPT, SESSION, MACHINE, opts.agent ?? 'claude-code', bytes.length, 1, NOW, NOW, issued.tokenId);
+             [PROJECT, TRANSCRIPT, SESSION, MACHINE, opts.agent ?? 'claude-code', bytes.length, 1, NOW, NOW, issued.tokenId]);
 
   for (let at = 0; at < bytes.length; at += sliceBytes) {
     const slice = bytes.subarray(at, Math.min(at + sliceBytes, bytes.length));
     const key = await sha256HexOf(slice);
     await serverEnv.blobs.put(`${PROJECT}/${key}`, new Blob([slice]).stream());
     sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (project_id, key) DO NOTHING`, PROJECT, key, slice.length, 'text/plain', issued.tokenId, NOW);
+                ON CONFLICT (project_id, key) DO NOTHING`, [PROJECT, key, slice.length, 'text/plain', issued.tokenId, NOW]);
     sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, PROJECT, TRANSCRIPT, at, slice.length, key, `e${at}`, NOW, NOW, issued.tokenId);
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [PROJECT, TRANSCRIPT, at, slice.length, key, `e${at}`, NOW, NOW, issued.tokenId]);
   }
   return { sqlite, env: { db: serverEnv.db, blobs: serverEnv.blobs }, serverEnv, tokenId: issued.tokenId };
 }
@@ -230,7 +230,7 @@ describe('parsing a held transcript', () => {
     const { sqlite, env } = await rig(body(2));
     // An archived Project refuses every write, so no derived event lands. The
     // cursor stays where it stood and the transcript records the failure.
-    sqlite.run(`UPDATE projects SET archived_at = ? WHERE project_id = ?`, NOW, PROJECT);
+    sqlite.run(`UPDATE projects SET archived_at = ? WHERE project_id = ?`, [NOW, PROJECT]);
     await drain(env, sqlite);
     expect(target(sqlite).parse_error).toBe('parse');
     expect(target(sqlite).parsed_offset).toBe(0);
@@ -281,7 +281,7 @@ describe('parsing a held transcript', () => {
     // tail to it.
     sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, text, content_hash, created_at, updated_at, token_id, received_at)
                 VALUES (?, ?, ?, 'hook-event', 'user', 'a later prompt', 'h', ?, ?, ?, ?)`,
-               PROJECT, uuid(999), SESSION, NOW + 10_000, NOW + 10_000, tokenId, NOW + 10_000);
+               [PROJECT, uuid(999), SESSION, NOW + 10_000, NOW + 10_000, tokenId, NOW + 10_000]);
 
     await drain(env, sqlite, 400);
     expect(target(sqlite).parse_error).toBeNull();
@@ -370,7 +370,7 @@ describe('parsing a held transcript', () => {
 
   it('skips a transcript belonging to a deleted session', async () => {
     const { sqlite, env, serverEnv } = await rig(body(1));
-    sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, ?, NULL, ?, 'm')`, PROJECT, SESSION, NOW);
+    sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, ?, NULL, ?, 'm')`, [PROJECT, SESSION, NOW]);
     expect(await parseTranscripts(serverEnv, NOW)).toBe(0);
     expect(count(sqlite, 'prompt_batches')).toBe(0);
     void env;
@@ -396,7 +396,7 @@ describe('both jobs on a Deployment holding no transcripts', () => {
     const { sqlite, serverEnv } = sqliteEnv();
     const issued = await issueMemberToken(serverEnv.db, { memberId: 'mem_machine_1', machineId: MACHINE }, NOW);
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-                VALUES (?, 'awake', ?, ?, ?, ?)`, PROJECT, MACHINE, issued.tokenId, NOW - 60_000, NOW - 60_000);
+                VALUES (?, 'awake', ?, ?, ?, ?)`, [PROJECT, MACHINE, issued.tokenId, NOW - 60_000, NOW - 60_000]);
     return { sqlite, serverEnv };
   };
 
@@ -461,7 +461,7 @@ describe('fidelity decides what extraction may read', () => {
     await drain(env, sqlite);
     sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, role, fidelity, size, segment_count, parsed_offset, first_received_at, last_received_at, token_id)
                 VALUES (?, 'tx_sibling', ?, ?, 'cursor', 'subagent', 'no_tool_results', 0, 0, 0, ?, ?, ?)`,
-               PROJECT, SESSION, MACHINE, NOW, NOW, tokenId);
+               [PROJECT, SESSION, MACHINE, NOW, NOW, tokenId]);
     expect((await listSessions(env.db as never, { projectId: PROJECT })).rows).toEqual([]);
   });
 });
@@ -486,7 +486,7 @@ describe('transcript retention', () => {
   it('prunes nothing and says so when the window is unreadable, rather than pruning on a rule nobody wrote', async () => {
     const { sqlite, env, serverEnv } = await rig(body(2));
     await drain(env, sqlite);
-    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '"thirty"', ?, 'm')`, NOW);
+    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '"thirty"', ?, 'm')`, [NOW]);
     expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
     expect(count(sqlite, 'transcript_segments')).toBeGreaterThan(0);
   });
@@ -495,8 +495,8 @@ describe('transcript retention', () => {
     const { sqlite, env, serverEnv } = await rig(body(2));
     await drain(env, sqlite);
     const derived = count(sqlite, 'prompt_batches');
-    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, NOW);
-    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, NOW - 5 * 86_400_000);
+    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, [NOW]);
+    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, [NOW - 5 * 86_400_000]);
 
     expect(await transcriptRetention(serverEnv, NOW)).toBeGreaterThan(0);
     expect(count(sqlite, 'transcript_segments')).toBe(0);
@@ -506,8 +506,8 @@ describe('transcript retention', () => {
 
   it('keeps a segment the parse has not read, whatever its age', async () => {
     const { sqlite, serverEnv } = await rig(body(2));
-    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, NOW);
-    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, NOW - 5 * 86_400_000);
+    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, [NOW]);
+    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, [NOW - 5 * 86_400_000]);
     expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
     expect(count(sqlite, 'transcript_segments')).toBeGreaterThan(0);
   });
@@ -516,8 +516,8 @@ describe('transcript retention', () => {
     // Many small segments, each its own blob: more than one pass can free.
     const { sqlite, serverEnv, env } = await rig(body(20), 96);
     await drain(env, sqlite);
-    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, NOW);
-    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, NOW - 5 * 86_400_000);
+    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, [NOW]);
+    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, [NOW - 5 * 86_400_000]);
     const before = count(sqlite, 'transcript_segments');
 
     await transcriptRetention(serverEnv, NOW);
@@ -536,8 +536,8 @@ describe('transcript retention', () => {
   it('drains a large backlog across ticks rather than in one', async () => {
     const { sqlite, serverEnv, env } = await rig(body(20), 96);
     await drain(env, sqlite);
-    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, NOW);
-    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, NOW - 5 * 86_400_000);
+    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, [NOW]);
+    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, [NOW - 5 * 86_400_000]);
     let ticks = 0;
     while (count(sqlite, 'transcript_segments') > 0 && ticks < 200) { await transcriptRetention(serverEnv, NOW); ticks += 1; }
     expect(ticks).toBeGreaterThan(1);
@@ -548,18 +548,18 @@ describe('transcript retention', () => {
   it('collects a blob a deletion left behind, which nothing else can reach', async () => {
     const { sqlite, serverEnv } = await rig(body(1));
     // A blob no row names: what a deletion leaves once its page fills.
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, PROJECT, 'f'.repeat(64), NOW);
+    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, [PROJECT, 'f'.repeat(64), NOW]);
     expect(await freeOrphanedBlobs(serverEnv)).toBe(1);
     expect((sqlite.query(`SELECT COUNT(*) c FROM blobs WHERE key = ?`).get('f'.repeat(64)) as { c: number }).c).toBe(0);
   });
 
   /** A deletion, which is the only thing that leaves a blob behind. */
   const deleted = (sqlite: Database, at = NOW) =>
-    sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, 'gone', NULL, ?, 'm')`, PROJECT, at);
+    sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, 'gone', NULL, ?, 'm')`, [PROJECT, at]);
 
   it('collects orphans whether or not a retention window is set', async () => {
     const { sqlite, serverEnv } = await rig(body(1));
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, PROJECT, 'e'.repeat(64), NOW);
+    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, [PROJECT, 'e'.repeat(64), NOW]);
     deleted(sqlite);
     // No window: raw segments are kept forever, and bytes nothing references
     // are still not kept.
@@ -569,7 +569,7 @@ describe('transcript retention', () => {
 
   it('does not go looking for orphans on a Deployment where nothing was deleted', async () => {
     const { sqlite, serverEnv } = await rig(body(1));
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, PROJECT, 'd'.repeat(64), NOW);
+    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, [PROJECT, 'd'.repeat(64), NOW]);
     // The steady state: the scan is the expensive half and nothing could have
     // made an orphan, so it is not run and the row stands until one is.
     expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
@@ -578,7 +578,7 @@ describe('transcript retention', () => {
 
   it('stops looking once a deletion is old enough to have drained', async () => {
     const { sqlite, serverEnv } = await rig(body(1));
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, PROJECT, 'c'.repeat(64), NOW);
+    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, [PROJECT, 'c'.repeat(64), NOW]);
     deleted(sqlite, NOW - TOMBSTONE_SWEEP_GRACE_MS - 1);
     expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
   });
@@ -594,8 +594,8 @@ describe('transcript retention', () => {
   it('is idempotent: a second run finds nothing left to prune', async () => {
     const { sqlite, env, serverEnv } = await rig(body(2));
     await drain(env, sqlite);
-    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, NOW);
-    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, NOW - 5 * 86_400_000);
+    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, [NOW]);
+    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, [NOW - 5 * 86_400_000]);
     await transcriptRetention(serverEnv, NOW);
     expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
   });

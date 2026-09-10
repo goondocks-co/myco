@@ -321,6 +321,7 @@ describe('member hooks through the worker: retention and plan files', () => {
     // Another process holds this session's drain lease: the Stop's drain is skipped, and skipped is not delivered.
     const lease = LifecycleLock.acquire(path.join(spool.dir, `.${session}.drain.lock`), { command: 'test' });
     expect(lease.acquired).toBe(true);
+    if (!lease.acquired) throw new Error('the test session drain lease was not acquired');
     try {
       await run('stop', { transcript_path: tx, last_assistant_message: '' });
       expect(fs.existsSync(sessionStatePath(spool.dir, old))).toBe(true);

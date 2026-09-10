@@ -75,6 +75,7 @@ function makeDeps(opts: { npmOk?: boolean; healthVersion?: string | null } = {})
       rec.fanoutCalls.push({ bin, logPath });
     }),
     probeHealth: vi.fn(async () => (rec.healthVersion === null ? null : { version: rec.healthVersion })),
+    probeDaemonState: vi.fn(() => (rec.healthVersion === null ? null : { version: rec.healthVersion })),
     // No real waiting in tests.
     sleep: vi.fn(async () => {}),
   };

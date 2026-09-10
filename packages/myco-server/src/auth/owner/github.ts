@@ -1,3 +1,4 @@
+import type { OutboundFetch } from '../../core/adapters.js';
 import type { OwnerConfig } from './config.js';
 
 /** The payload type an OAuth state carries inside its signature. */
@@ -31,7 +32,7 @@ export function authorizeUrl(config: OwnerConfig, redirectUri: string, state: st
 }
 
 /** The access token for a callback code, or null on any failure. */
-export async function exchangeCode(fetchImpl: typeof fetch, config: OwnerConfig, redirectUri: string, code: string): Promise<string | null> {
+export async function exchangeCode(fetchImpl: OutboundFetch, config: OwnerConfig, redirectUri: string, code: string): Promise<string | null> {
   const response = await fetchImpl(ACCESS_TOKEN, {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -43,7 +44,7 @@ export async function exchangeCode(fetchImpl: typeof fetch, config: OwnerConfig,
 }
 
 /** The authenticated GitHub identity, or null. */
-export async function fetchIdentity(fetchImpl: typeof fetch, accessToken: string): Promise<{ id: string; login: string } | null> {
+export async function fetchIdentity(fetchImpl: OutboundFetch, accessToken: string): Promise<{ id: string; login: string } | null> {
   const response = await fetchImpl(USER, {
     headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${accessToken}`, 'user-agent': 'myco-server' },
   });

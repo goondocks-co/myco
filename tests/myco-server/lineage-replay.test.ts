@@ -5,6 +5,8 @@
  * request on the predecessor answers 401 exactly like an expired or operator-revoked
  * one. The audit record is the only thing that separates them.
  */
+import { refreshed } from './helpers/outcomes.js';
+import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { activateSuccessor, issueMemberToken, refreshMemberToken, revokeMemberLineage } from '@myco-server-worker/auth/tokens.js';
@@ -54,7 +56,7 @@ describe('superseded credential', () => {
       lineageRoot: root.tokenId, successorId: successor.tokenId,
     });
     // The answer carries nothing the record carries: a holder learns only that it failed.
-    expect(await res.json()).toEqual({ error: 'unauthorized' });
+    expect(await jsonBody(res)).toEqual({ error: 'unauthorized' });
   });
 
   it('marks a request inside the hook race as explained and one past the grace as not, on the same lineage', async () => {
@@ -121,13 +123,13 @@ describe('superseded credential', () => {
     const e = sqliteEnv();
     const root = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now, null,
       { runtimeLabel: 'laptop', runtimeKind: 'persistent' });
-    const refreshed = await refreshMemberToken(e.db, {
+    const outcome = await refreshMemberToken(e.db, {
       memberId: 'mem_machine_1', tokenId: root.tokenId, machineId: 'machine_1',
       expiresAt: root.expiresAt, lineageRoot: root.tokenId, lineageStartedAt: now,
       runtime: { runtimeLabel: 'laptop', runtimeKind: 'persistent' },
     }, root.expiresAt - 1_000);
-    expect(refreshed.refreshed).toBe(true);
-    expect(e.sqlite.query(`SELECT runtime_label, runtime_kind, machine_id FROM member_credentials WHERE id = ?`).get(refreshed.tokenId!))
+    expect(outcome.refreshed).toBe(true);
+    expect(e.sqlite.query(`SELECT runtime_label, runtime_kind, machine_id FROM member_credentials WHERE id = ?`).get(refreshed(outcome).tokenId))
       .toEqual({ runtime_label: 'laptop', runtime_kind: 'persistent', machine_id: 'machine_1' });
   });
 

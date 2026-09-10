@@ -143,7 +143,7 @@ describe('code task runner', () => {
     let workspace = '';
     const result = await runServerTask({
       client, budget: { connectTimeoutMs: 1000, requestTimeoutMs: 5000 }, runId: 'code-run', taskName: 'skill-generate', admission: 'skills', repositoryGitPath: gitPath,
-      harness: { execute: async (input) => {
+      harness: { id: 'stand-in', execute: async (input) => {
         workspace = input.toolSurface.projectRoot!;
         expect(workspace).toBeTruthy();
         expect(input.prompt).toContain(second);
@@ -152,8 +152,8 @@ describe('code task runner', () => {
         const rules = await read.handler({ path: 'AGENTS.md' }, {});
         expect(JSON.parse(rules.content[0].text).content).toBe('Second committed rules.');
         await expect(read.handler({ path: '.git/config' }, {})).rejects.toThrow();
-        return { finalText: 'inspected', turnsUsed: 1 };
-      }, supports: () => false } as import('@myco/agent/harness/types.js').AgentHarness,
+        return { finalText: 'inspected', turnsUsed: 1, usage: {} };
+      }, supports: () => false } satisfies import('@myco/agent/harness/types.js').AgentHarness,
     });
     expect(result.status).toBe('completed');
     await expect(access(workspace)).rejects.toThrow();

@@ -30,6 +30,7 @@ async function collect(child: ReturnType<typeof spawn>) {
   let stdout = '';
   let stderr = '';
 
+  if (!child.stdout || !child.stderr) throw new Error('the child was spawned without piped output');
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk) => { stdout += chunk; });

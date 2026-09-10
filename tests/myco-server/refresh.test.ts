@@ -9,7 +9,7 @@ import {
 } from '@myco-server-worker/auth/tokens.js';
 import { BLOB_RESERVATION_TTL_MS, MEMBER_TOKEN_BYTE_QUOTA, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
-import { blobPost, bytesWritten, count, envelope, memberHeaders, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { blobPost, bytesWritten, count, envelope, memberHeaders, memberPost, noOutboundFetch, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
 const T0 = 1_700_000_000_000;
@@ -19,7 +19,7 @@ const WINDOW_OPENS = T0 + MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS;
 async function rig(opts: Parameters<typeof sqliteEnv>[0] = {}) {
   const e = sqliteEnv(opts);
   const clock = { now: T0 };
-  const server = createServer({ now: () => clock.now, sourceOf: cloudflareSourceOf });
+  const server = createServer({ now: () => clock.now, sourceOf: cloudflareSourceOf, fetchImpl: noOutboundFetch });
   const root = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, T0);
   const fetch = (req: Request) => server.handleRequest(req, e.serverEnv);
   const refresh = (token: string, body = '{}') => fetch(memberPost(token, body, '/tokens/refresh'));

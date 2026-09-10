@@ -357,7 +357,7 @@ describe('read/credentials', () => {
     const { db, sqlite, env } = sqliteEnv();
     const { issueMemberToken } = await import('@myco-server-worker/auth/tokens.js');
     await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 1_000);
-    const { rows } = await listCredentials(db);
+    const { rows } = await listCredentials(db, 1_000);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ machineId: 'machine_1', bytesWritten: 0, revokedAt: null });
     expect(rows[0].lineageRoot).toBe(rows[0].id);

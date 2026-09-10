@@ -6,6 +6,7 @@
  * working deployment from a mounted volume, refuses to serve an unusable one, and
  * takes source identity only from a header its operator declared.
  */
+import { jsonBody } from '../../helpers/json-body.js';
 import { describe, it, expect, afterAll } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -74,7 +75,7 @@ describe('the self-hosted entry point', () => {
     const token = (await issueMemberToken(sqliteRelationalStore(sqlite), { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now())).token;
     const request = memberPost(token, envelope());
     request.headers.set('x-forwarded-for', '203.0.113.7');
-    expect(await (await handler.fetch(request)).json()).toEqual({ persisted: true, projected: true });
+    expect(await jsonBody((await handler.fetch(request)))).toEqual({ persisted: true, projected: true });
     sqlite.close();
     handler.close();
   });

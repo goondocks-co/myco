@@ -1,3 +1,5 @@
+import { firstJson } from '../helpers/mcp-result.js';
+import { testProjectId } from '../helpers/request-context.js';
 import { describe, it, expect, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -91,7 +93,7 @@ describe('streamable HTTP MCP', () => {
 
     expect(names).toContain('myco_cortex');
     expect(names).toContain('myco_spores');
-    expect(JSON.parse((called.content[0] as { text: string }).text).content).toContain('HTTP MCP instructions');
+    expect(firstJson<{ content: string }>(called).content).toContain('HTTP MCP instructions');
 
     await client.close();
   });
@@ -203,7 +205,7 @@ describe('streamable HTTP MCP', () => {
     });
     const requestContext = resolveLegacyRequestContext(vaultDir, {
       projectRoot,
-      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      projectId: testProjectId('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
       groveId: grove.id,
       machineId: 'machine-a',
       sessionId: 'sess-a',

@@ -3,6 +3,7 @@
  * linked to its account, decided on every request. The link is minted by the
  * member's credential and spent by the signed-in account that confirms it.
  */
+import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -41,7 +42,7 @@ describe('member sign-in', () => {
 
     expect((await worker.fetch(await get('/api/projects', '9001'), env)).status).toBe(200);
     const me = await worker.fetch(await get('/auth/me', '9001'), env);
-    expect(await me.json()).toEqual({ sub: '9001', login: 'octocat', member: { id: 'mem_machine_2', label: 'machine_2', role: 'admin' } });
+    expect(await jsonBody(me)).toEqual({ sub: '9001', login: 'octocat', member: { id: 'mem_machine_2', label: 'machine_2', role: 'admin' } });
   });
 
   it('is flat: two linked members see the same projects', async () => {

@@ -146,7 +146,7 @@ describe('DaemonClient.restart — stuck-shutdown recovery', () => {
       },
       withExternalMcpContainment: async (terminate) => {
         lifecycle.push('contain');
-        await terminate();
+        return terminate();
       },
       terminate: (_pid: number, signal: NodeJS.Signals) => {
         lifecycle.push(`terminate:${signal}`);
@@ -223,12 +223,13 @@ describe('DaemonClient.restart — stuck-shutdown recovery', () => {
       },
       withExternalMcpContainment: async (terminate) => {
         lifecycle.push('contain');
-        await terminate();
+        const outcome = await terminate();
         healthResponds = true;
         fs.writeFileSync(
           statePath,
           JSON.stringify({ pid: FAKE_PID + 1, port: healthPort }),
         );
+        return outcome;
       },
       terminate: (_pid: number, signal: NodeJS.Signals) => {
         lifecycle.push(`terminate:${signal}`);

@@ -14,7 +14,7 @@ import {
   attachmentEvent, compactionEvent, deriveId, errorEvent, homeRelativePath, mintId, notificationEvent, planEvent, planKeyForTag,
   promptEvent, queuedPromptIdFor, responseEvent, sessionEndEvent, sessionStartEvent, stopFailureEvent, subagentIdFor,
   subagentStartEvent, subagentStopEvent, taskCompletedEvent, toolFailureEvent, toolUseEvent, transcriptSegmentEvent, wireOrigin,
-  type EnvelopeContext, type OutboundEvent,
+  type EnvelopeContext, type MemberKind, type OutboundEvent,
 } from '@myco/member/envelope.js';
 import { MEMBER_INLINE_TEXT_MAX_BYTES } from '@myco/member/constants.js';
 import { TOOL_OUTPUT_CAPTURE_CHARS } from '@myco/constants.js';
@@ -52,7 +52,7 @@ const PROJECTION_TABLE: Record<string, string> = {
 describe('member envelope — every kind through the worker', () => {
   const promptId = mintId();
 
-  const cases: Array<{ kind: string; build: () => OutboundEvent }> = [
+  const cases: Array<{ kind: MemberKind; build: () => OutboundEvent }> = [
     { kind: 'session.start', build: () => sessionStartEvent(ctx(), { branch: 'main', startedAt: Date.now(), originPath: '/work/repo', parentSessionId: 'sess-parent', parentReason: 'resume' }) },
     { kind: 'prompt', build: () => promptEvent(ctx(), { promptId, text: 'hello', origin: 'human' }) },
     { kind: 'tool.use', build: () => toolUseEvent(ctx(), input({ tool_name: 'Read', tool_input: { file_path: '/work/repo/a.ts' }, tool_output: 'x'.repeat(500) }), { promptId }) },
@@ -73,7 +73,9 @@ describe('member envelope — every kind through the worker', () => {
   ];
 
   it('covers every kind of the server catalogue exactly once', () => {
-    expect(cases.map((c) => c.kind).sort()).toEqual(KINDS.map((k) => k.name).sort());
+    const built: string[] = cases.map((c) => c.kind);
+    const declared: string[] = KINDS.map((k) => k.name);
+    expect(built.sort()).toEqual(declared.sort());
   });
 
   it('lands every kind persisted:true with its projected row, in hook order', async () => {

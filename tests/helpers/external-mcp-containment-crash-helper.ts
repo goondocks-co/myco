@@ -16,10 +16,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import {
-  ExternalMcpContainmentAuthority,
-  externalMcpContainmentIntentPath,
-} from '@myco/daemon/external-mcp-containment.js';
+import { ExternalMcpContainmentAuthority, externalMcpContainmentIntentPath, type ExternalMcpListenerControl } from '@myco/daemon/external-mcp-containment.js';
 import { createPerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 const home = process.env.MYCO_TEST_HOME;
@@ -44,12 +41,18 @@ fs.renameSync = ((source, destination) => {
   if (crashAt === 'journal_clear' && String(source) === intentPath) crash();
 }) as typeof fs.renameSync;
 
-const listener = {
+const LISTENER_PORT = 8743;
+
+const listener: ExternalMcpListenerControl = {
   get isBound() {
     return fs.readFileSync(listenerStatePath, 'utf-8').trim() === 'bound';
   },
-  get port() {
-    return this.isBound ? 8743 : 0;
+  get boundTarget() {
+    return this.isBound ? { kind: 'loopback' as const, port: LISTENER_PORT } : null;
+  },
+  async bind(target) {
+    fs.writeFileSync(listenerStatePath, 'bound\n');
+    return { ok: true, target };
   },
   async unbind() {
     fs.writeFileSync(listenerStatePath, 'unbound\n');

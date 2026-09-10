@@ -1,0 +1,61 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "allowImportingTsExtensions": true,
+    "types": [
+      "bun",
+      "@cloudflare/workers-types/experimental"
+    ],
+    "lib": [
+      "ES2024",
+      "DOM",
+      "DOM.Iterable"
+    ]
+  },
+  "include": [
+    "packages/myco/src/**/*",
+    "packages/myco-team/src/**/*",
+    "packages/myco-shared/src/**/*",
+    "packages/myco-deploy/src/**/*",
+    "tests/**/*.ts"
+  ],
+  "files": [
+    "tests/agent/repository-checkout.test.ts",
+    "tests/agent/run-store-http.test.ts",
+    "tests/agent/server-runner.test.ts",
+    "tests/agent/server-tool-surface.test.ts",
+    "tests/agent/server-tools.test.ts",
+    "tests/agent/supervisor-policy.test.ts",
+    "tests/cli/import.test.ts",
+    "tests/cli/login.test.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "packages/myco/ui",
+    "packages/myco-server/ui",
+    "packages/myco/src/worker",
+    "packages/myco/src/symbionts/templates",
+    "packages/myco/src/entries/cli.*.ts",
+    "tests/ui",
+    "tests/myco-server-ui",
+    "tests/setup/jsdom.ts",
+    "tests/setup/vitest.ts",
+    "tests/agent",
+    "tests/canopy",
+    "tests/capture",
+    "tests/cli",
+    "tests/daemon",
+    "tests/db",
+    "tests/grove",
+    "tests/host",
+    "tests/integration",
+    "tests/team-host",
+    "tests/vault",
+    "tests/worker"
+  ]
+}

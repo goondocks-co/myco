@@ -16,7 +16,7 @@ import { SKIP_REASONS } from '@myco-server-worker/api/import.js';
 const report = (over: Partial<ImportReport> = {}): ImportReport => ({
   projects: [{
     projectId: 'proj_1', root: '/w/repo',
-    agents: [{ agent: 'claude-code', found: 7, imported: 3, trimmed: 0, skipped: { held: 4 } }],
+    agents: [{ agent: 'claude-code', found: 7, imported: 3, vanished: 0, trimmed: 0, skipped: { held: 4 } }],
   }],
   unbound: 0, unattributable: 0, active: 0, ...over,
 });
@@ -80,7 +80,7 @@ describe('the import verb', () => {
       '  claude-code: 7 found, 3 imported (4 already here)',
     ]);
     expect(reportLines(report(), true)[1]).toContain('would import');
-    expect(reportLines({ projects: [], unbound: 0, unattributable: 0 }, false)).toEqual(['Nothing to import.']);
+    expect(reportLines({ projects: [], unbound: 0, unattributable: 0, active: 0 }, false)).toEqual(['Nothing to import.']);
   });
 
   it('names what it left alone rather than passing over it in silence', () => {
@@ -97,7 +97,7 @@ describe('the import verb', () => {
 
   it('says when the offer limit cut the tail, so a partial import does not read as a complete one', () => {
     const trimmed = report({ projects: [{ projectId: 'proj_1', root: '/w/repo',
-      agents: [{ agent: 'claude-code', found: 1573, imported: 1000, trimmed: 573, skipped: {} }] }] });
+      agents: [{ agent: 'claude-code', found: 1573, imported: 1000, vanished: 0, trimmed: 573, skipped: {} }] }] });
     expect(reportLines(trimmed, false)[1]).toBe('  claude-code: 1573 found, 1000 imported (573 past the offer limit)');
   });
 
@@ -108,7 +108,7 @@ describe('the import verb', () => {
     const reasons: readonly string[] = SKIP_REASONS;
     const skipped = Object.fromEntries(reasons.map((r) => [r, 1]));
     const lines = reportLines(report({ projects: [{ projectId: 'proj_1', root: '/w/repo',
-      agents: [{ agent: 'claude-code', found: 9, imported: 2, trimmed: 0, skipped }] }] }), false).join('\n');
+      agents: [{ agent: 'claude-code', found: 9, imported: 2, vanished: 0, trimmed: 0, skipped }] }] }), false).join('\n');
     for (const reason of reasons) {
       expect({ reason, leaked: new RegExp(`\\b${reason}\\b`).test(lines) }).toEqual({ reason, leaked: false });
     }

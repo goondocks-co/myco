@@ -102,14 +102,16 @@ describe('tool parity', () => {
    * key sets equal keeps the schema a caller reads the schema its call is judged by.
    */
   it('narrows ops and the tenancy description only: every served schema declares the full definition\'s property set', () => {
-    const full = new Map([...TOOL_DEFINITIONS, ...RUN_DEFINITIONS].map((d) => [d.name, Object.keys(d.inputSchema.properties).sort()]));
+    const full = new Map<string, string[]>([...TOOL_DEFINITIONS, ...RUN_DEFINITIONS].map((d) => [String(d.name), Object.keys(d.inputSchema.properties).sort()]));
     const narrowed = [
       ...externalDefinitions(),
       ...Object.keys(TASK_TOOLS).flatMap((task) => runDefinitions(runAllowlist(TASK_TOOLS[task], { dryRun: false }))),
     ];
     expect(narrowed.length).toBeGreaterThan(0);
     for (const d of narrowed) {
-      expect({ tool: d.name, properties: Object.keys(d.inputSchema.properties).sort() }).toEqual({ tool: d.name, properties: full.get(d.name) });
+      const declared = full.get(String(d.name));
+      expect({ tool: String(d.name), declared: declared !== undefined }).toEqual({ tool: String(d.name), declared: true });
+      expect({ tool: String(d.name), properties: Object.keys(d.inputSchema.properties).sort() }).toEqual({ tool: String(d.name), properties: declared! });
     }
   });
 
@@ -148,7 +150,7 @@ describe('tool parity', () => {
   it('serves each definition as the member side declares it, minus the Grove pivot, with the tenancy description as the only worded difference', () => {
     const member = byName(MEMBER_DEFINITIONS);
     for (const server of TOOL_DEFINITIONS) {
-      expect({ tool: server.name, definition: server }).toEqual({ tool: server.name, definition: expected(member.get(server.name)!, server) });
+      expect({ tool: String(server.name), definition: server as object }).toEqual({ tool: String(server.name), definition: expected(member.get(server.name)!, server) as object });
       expect({ tool: server.name, retired: RETIRED in server.inputSchema.properties }).toEqual({ tool: server.name, retired: false });
     }
   });
@@ -206,11 +208,12 @@ describe('tool parity', () => {
       const pivot = d.inputSchema.properties[EXCEPTED] as { description?: string } | undefined;
       expect({ tool: d.name, declared: pivot !== undefined, pivot: pivot?.description ?? null })
         .toEqual({ tool: d.name, declared: true, pivot: EXTERNAL_PROJECT_DESCRIPTION });
-      const rest = (def: (typeof TOOL_DEFINITIONS)[number]) => {
-        const { op: _op, [EXCEPTED]: _pivot, ...properties } = def.inputSchema.properties as Record<string, unknown>;
+      // Every definition, served or member-side, carries the schema this reads.
+      const rest = (def: { inputSchema: { properties: Record<string, unknown> } }): object => {
+        const { op: _op, [EXCEPTED]: _pivot, ...properties } = def.inputSchema.properties;
         return { ...def, inputSchema: { ...def.inputSchema, properties } };
       };
-      expect({ tool: d.name, rest: rest(d) }).toEqual({ tool: d.name, rest: rest(served.get(d.name)!) });
+      expect({ tool: String(d.name), rest: rest(d) }).toEqual({ tool: String(d.name), rest: rest(served.get(d.name)!) });
     }
   });
 

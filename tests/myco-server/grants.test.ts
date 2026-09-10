@@ -4,6 +4,7 @@
  * nothing a caller sends widens it. Every grant carries an expiry and an
  * `agents` row, and neither the row nor the agent is ever deleted.
  */
+import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import {
@@ -122,8 +123,8 @@ describe('external grants', () => {
     expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM external_grants`).get()).toEqual({ c: 1 });
     expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM agents WHERE source = ?`).get(GRANT_AGENT_SOURCE)).toEqual({ c: 1 });
     expect(await authenticateGrant(e.db, await sha256Hex(grant.key), NOW)).not.toBeNull();
-    expect(await (await worker.fetch(await asOwnerPost(`/api/projects/proj_2/grants/${grant.id}/revoke`), env)).json()).toEqual({ revoked: false, revokedBy: PRINCIPAL.id });
-    expect(await (await worker.fetch(await asOwnerPost(`/api/projects/proj_1/grants/${grant.id}/revoke`), env)).json()).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
+    expect(await jsonBody((await worker.fetch(await asOwnerPost(`/api/projects/proj_2/grants/${grant.id}/revoke`), env)))).toEqual({ revoked: false, revokedBy: PRINCIPAL.id });
+    expect(await jsonBody((await worker.fetch(await asOwnerPost(`/api/projects/proj_1/grants/${grant.id}/revoke`), env)))).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
     expect(await authenticateGrant(e.db, await sha256Hex(grant.key), NOW)).toBeNull();
     expect(await rotateExternalGrant(e.db, { projectId: 'proj_1' }, grant.id, 'mem_machine_1', NOW)).toBeNull();
   });
