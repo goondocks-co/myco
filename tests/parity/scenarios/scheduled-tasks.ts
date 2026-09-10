@@ -37,7 +37,7 @@ export const scheduledTasks: ParityScenario = {
     const probes = (projectId: string) => target.sql(`SELECT status, harness, run_context AS runContext FROM agent_runs WHERE project_id = ${lit(projectId)} AND task = 'container-smoke' ORDER BY COALESCE(queued_at, started_at), id`);
 
     // The live Project's receipts are minutes old: the Deployment is in use or idle, and the probe runs only while asleep.
-    await leaf('agent.tasks', { 'container-smoke': { schedule: { runIn: ['active', 'idle', 'sleep'] } } });
+    await leaf('agent.tasks', { 'container-smoke': { schedule: { runIn: ['active', 'idle', 'sleep'] } }, 'extract-curate': { schedule: { enabled: false } } });
     const first = await wake();
     expect(first.scheduled).toEqual({ dispatched: 1, skipped: 0 });
     expect(await probes(target.projectId)).toEqual([{ status: 'pending', harness: 'record', runContext: JSON.stringify({ timeoutSeconds: 300 }) }]);
@@ -49,7 +49,7 @@ export const scheduledTasks: ParityScenario = {
 
     // The ceiling: one a day, the interval past — a skipped row names it.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE task = 'container-smoke'`);
-    await leaf('agent.tasks', { 'container-smoke': { schedule: { runIn: ['active', 'idle', 'sleep'], intervalSeconds: 0, maxRunsPerDay: 1 } } });
+    await leaf('agent.tasks', { 'container-smoke': { schedule: { runIn: ['active', 'idle', 'sleep'], intervalSeconds: 0, maxRunsPerDay: 1 } }, 'extract-curate': { schedule: { enabled: false } } });
     expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 1 });
     const atCeiling = [
       { status: 'completed', harness: 'record', runContext: JSON.stringify({ timeoutSeconds: 300 }) },

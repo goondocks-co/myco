@@ -61,19 +61,20 @@ describe('the task catalogue', () => {
 });
 
 describe('what the clock runs', () => {
-  it('runs the probe alone: no outcome carries a schedule until its scheduler child declares one', () => {
-    expect(scheduledTasks().map((t) => t.task)).toEqual(['container-smoke']);
-    for (const task of OUTCOME_TASKS) expect({ task, schedule: TASK_SCHEDULE[task] }).toEqual({ task, schedule: null });
+  it('schedules extraction with its unread-prompt guard and keeps seeding and titling off the clock', () => {
+    expect(scheduledTasks().map((t) => t.task)).toEqual(['container-smoke', EXTRACTION_TASK]);
+    expect(TASK_SCHEDULE[EXTRACTION_TASK]).toEqual({ intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12, preCondition: 'has-unprocessed-prompts' });
+    for (const task of [SEEDING_TASK, TITLING_TASK]) expect({ task, schedule: TASK_SCHEDULE[task] }).toEqual({ task, schedule: null });
   });
 
   it('makes a declared, switched-off schedule live when an owner switches it on', () => {
     const live = scheduledTasks({ 'canopy-map': { schedule: { enabled: true } } });
-    expect(live.map((t) => t.task).sort()).toEqual(['canopy-map', 'container-smoke']);
+    expect(live.map((t) => t.task).sort()).toEqual(['canopy-map', 'container-smoke', EXTRACTION_TASK]);
     expect(live.find((t) => t.task === 'canopy-map')!.schedule).toMatchObject({ enabled: true, intervalSeconds: 21_600, maxRunsPerDay: 4, overlap: 'skip' });
   });
 
   it('takes a switched-off override away from a task the Deployment otherwise runs', () => {
-    expect(scheduledTasks({ 'container-smoke': { schedule: { enabled: false } } })).toEqual([]);
+    expect(scheduledTasks({ 'container-smoke': { schedule: { enabled: false } } }).map((t) => t.task)).toEqual([EXTRACTION_TASK]);
   });
 });
 
