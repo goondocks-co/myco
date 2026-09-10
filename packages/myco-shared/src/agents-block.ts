@@ -61,15 +61,28 @@ function markerIndexes(text: string, marker: string): number[] {
   return found;
 }
 
+/** Every index at which `marker` occurs in `text`, fenced or not. */
+function allIndexes(text: string, marker: string): number[] {
+  const found: number[] = [];
+  let at = text.indexOf(marker);
+  while (at !== -1) { found.push(at); at = text.indexOf(marker, at + marker.length); }
+  return found;
+}
+
 /**
  * Where the file's managed block stands, null where it holds none, or a
  * refusal where the file holds markers this will not guess about: more than
- * one of either, or a close before the open. A marker inside a fenced code
- * example is not a marker.
+ * one of either, a close before the open, or a marker whose fencing is
+ * ambiguous. A marker inside a fenced code example is not a marker, and a file
+ * whose fences do not pair — so that a marker reads as fenced one way and open
+ * another — is refused rather than read either way.
  */
 export function locateManagedBlock(text: string): { start: number; end: number } | null {
   const starts = markerIndexes(text, AGENTS_MANAGED_START);
   const ends = markerIndexes(text, AGENTS_MANAGED_END);
+  const fenceLines = text.split(/\r?\n/).filter((line) => /^\s*(```|~~~)/.test(line)).length;
+  const hidden = allIndexes(text, AGENTS_MANAGED_START).length - starts.length + allIndexes(text, AGENTS_MANAGED_END).length - ends.length;
+  if (hidden > 0 && fenceLines % 2 === 1) throw new ManagedBlockError('the file holds a managed block marker inside an unclosed code fence');
   if (starts.length === 0 && ends.length === 0) return null;
   if (starts.length > 1 || ends.length > 1) throw new ManagedBlockError('the file holds more than one managed block marker pair');
   if (starts.length !== ends.length) throw new ManagedBlockError('the file holds an unmatched managed block marker');

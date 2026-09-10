@@ -196,6 +196,9 @@ describe('a task the Deployment cannot instruct', () => {
       expect({ task, outcome: await prepareDispatch(r.e.serverEnv, task, 'proj_1') }).toEqual({ task, outcome: { ok: false, refusal: 'not_landed' } });
     }
     expect(DISPATCH_REFUSAL_MESSAGE.not_landed).toContain('queues no run');
+    // Ahead of anything Settings could fix: a Project with no repository is not sent to connect one for a task refused either way.
+    r.e.sqlite.run(`DELETE FROM project_repositories WHERE project_id = 'proj_1'`);
+    expect(await prepareDispatch(r.e.serverEnv, SEEDING_TASK, 'proj_1')).toEqual({ ok: false, refusal: 'not_landed' });
   });
 });
 

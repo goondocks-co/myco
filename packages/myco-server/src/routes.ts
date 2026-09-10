@@ -218,11 +218,13 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/auth/logout', auth: 'owner', handler: async () => new Response(null, { status: 204, headers: { 'set-cookie': clearCookie() } }) },
 ];
 
-/** A 1.4.x wire route the server does not serve; each names the event kinds (or the blob route) that carry the same capture in 2.0. A retired path is unmatched and answers 401 like any other absent path. */
+/** A 1.4.x wire route the server does not serve; each names the event kinds (or the blob route) that carry the same capture in 2.0, or says what it carried is gone. A retired path is unmatched and answers 401 like any other absent path. */
 export interface RetiredRoute {
   method: string;
   path: string;
   replacedBy: readonly string[];
+  /** What the route carried is dropped rather than replaced, and by which child. */
+  dropped?: string;
 }
 
 export const RETIRED_ROUTES: readonly RetiredRoute[] = [
@@ -236,7 +238,7 @@ export const RETIRED_ROUTES: readonly RetiredRoute[] = [
   { method: 'POST', path: '/runs/cortex-instructions', replacedBy: ['PUT /api/settings/{leaf}'] },
   { method: 'POST', path: '/runs/instruction', replacedBy: ['POST /worker/claim'] },
   { method: 'POST', path: '/runs/digest', replacedBy: ['GET /api/projects/{projectId}/digests'] },
-  { method: 'POST', path: '/runs/digest-write', replacedBy: ['PUT /api/settings/{leaf}'] },
+  { method: 'POST', path: '/runs/digest-write', replacedBy: [], dropped: 'the generated digest goes (plan §3 D2, #1152); stored digests stay readable until #1170 drops the table' },
 ];
 
 /**

@@ -8,7 +8,7 @@
  * temporary — and the test reads the target back after it.
  */
 import { describe, expect, it } from 'bun:test';
-import { chmodSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AGENTS_BLOCK_MAX_CHARS, AGENTS_MANAGED_END, AGENTS_MANAGED_START, ManagedBlockError, managedBlockBodyProblem, managedBlockOf, renderManagedBlock, replaceManagedBlock } from '@goondocks/myco-shared/agents-block';
@@ -53,6 +53,15 @@ describe('replacing the managed block', () => {
     const next = replaceManagedBlock(both, '- new');
     expect(next.startsWith(example)).toBe(true);
     expect(managedBlockOf(next)).toBe('- new');
+  });
+
+  it('refuses a marker whose fencing is ambiguous: one unbalanced fence would hide the real block', () => {
+    const unbalanced = `${PROJECT_TEXT}\n\`\`\`\nan example that never closes\n\n${OLD}`;
+    expect(() => replaceManagedBlock(unbalanced, '- new')).toThrow(ManagedBlockError);
+    expect(() => managedBlockOf(unbalanced)).toThrow(ManagedBlockError);
+    // A balanced fence with no marker inside leaves a real block readable.
+    const balanced = `${PROJECT_TEXT}\n\`\`\`\nan example\n\`\`\`\n\n${OLD}`;
+    expect(managedBlockOf(balanced)).toBe('- old guidance');
   });
 
   it('keeps the file\'s own line endings', () => {
@@ -109,6 +118,23 @@ describe('writing the managed block to disk', () => {
     expect(statSync(target).mode & 0o777).toBe(0o600);
   });
 
+  it('refuses a symlink that leaves the repository root, and leaves the file it names untouched', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'myco-agents-block-repo-'));
+    const elsewhere = mkdtempSync(join(tmpdir(), 'myco-agents-block-elsewhere-'));
+    const victim = join(elsewhere, 'VICTIM.md');
+    writeFileSync(victim, '# Not yours\n');
+    symlinkSync(victim, join(repo, 'AGENTS.md'));
+    expect(() => writeManagedBlock(join(repo, 'AGENTS.md'), '- new')).toThrow(ManagedBlockError);
+    expect(() => writeManagedBlock(join(repo, 'AGENTS.md'), '- new', { root: repo })).toThrow(ManagedBlockError);
+    expect(readFileSync(victim, 'utf8')).toBe('# Not yours\n');
+    // A link that stays inside the root is followed, with the root named explicitly.
+    const inside = join(repo, 'docs'); mkdirSync(inside);
+    writeFileSync(join(inside, 'CLAUDE.md'), '# In repo\n');
+    symlinkSync(join('docs', 'CLAUDE.md'), join(repo, 'CLAUDE.md'));
+    expect(writeManagedBlock(join(repo, 'CLAUDE.md'), '- new', { root: repo })).toEqual({ changed: true });
+    expect(managedBlockOf(readFileSync(join(inside, 'CLAUDE.md'), 'utf8'))).toBe('- new');
+  });
+
   it('refuses a file it will not guess about and leaves it untouched', () => {
     const dir = mkdtempSync(join(tmpdir(), 'myco-agents-block-'));
     const path = join(dir, 'AGENTS.md');
@@ -129,7 +155,7 @@ describe('writing the managed block to disk', () => {
       writeFileSync(file, text.slice(0, Math.floor(text.length / 2)), 'utf8');
       throw new Error('ENOSPC: no space left on device');
     };
-    expect(() => writeManagedBlock(path, '- new guidance', halfWrite)).toThrow('ENOSPC');
+    expect(() => writeManagedBlock(path, '- new guidance', { write: halfWrite })).toThrow('ENOSPC');
     expect(readFileSync(path, 'utf8')).toBe(original);
     expect(readdirSync(dir)).toEqual(['AGENTS.md']);
     expect(existsSync(join(dir, 'AGENTS.md'))).toBe(true);

@@ -21,12 +21,9 @@ import { repositoryIdentity } from './repositories.js';
 import { RUN_SKIP_ACTION, SEEDING_REPORT_ACTION } from './run-postconditions.js';
 import type { TaskInput } from './task-inputs.js';
 
-/** Where, under the run's working directory, the worker places the checkout. */
-export const SEEDING_CHECKOUT_DIR = 'repo';
-/** An inventory at or past this many active spores is a Project already seeded. */
-export const SEEDED_SPORE_FLOOR = 20;
-/** How many spores one seeding pass writes, at most. */
-export const SEEDING_SPORE_CEILING = 40;
+import { SEEDED_SPORE_FLOOR, SEEDING_CHECKOUT_DIR, SEEDING_SPORE_CEILING } from './seeding-params.js';
+
+export { SEEDED_SPORE_FLOOR, SEEDING_CHECKOUT_DIR, SEEDING_SPORE_CEILING };
 
 /** The standing rules every seeding run works under, as the run's instructions file. */
 export const SEEDING_RULES = [

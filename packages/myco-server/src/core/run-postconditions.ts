@@ -44,7 +44,7 @@ import { countSpores, sporeAuthoredBy } from './spores.js';
 import { listUnprocessedPrompts } from '../read/prompts.js';
 import { BLOCK_WRITE_TOOL, PROMPT_MARK_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
-import { SEEDED_SPORE_FLOOR } from './seeding-input.js';
+import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
 
 /** The report a run records to say it found nothing to write. */
 export const RUN_SKIP_ACTION = 'skip';

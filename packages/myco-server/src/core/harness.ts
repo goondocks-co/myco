@@ -493,6 +493,10 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   if (gate === null) return { ok: false, refusal: 'unknown_task' };
   if (!(await projectExists(env.db, projectId))) return { ok: false, refusal: 'unknown_project' };
 
+  // A task no worker can drive yet is refused as that, ahead of anything the
+  // owner could fix in Settings: a repository-less Project asked to connect one
+  // for a task refused either way would be sent on an errand.
+  if (UNLANDED_TASKS.includes(task)) return { ok: false, refusal: 'not_landed' };
   if (REPOSITORY_TASKS.includes(task) && await repositoryIdentity(env.db, { projectId }) === null) {
     return { ok: false, refusal: 'repository_missing' };
   }
@@ -506,7 +510,6 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   // ever hand out.
   if (!RUNTIME_SERVED_TASKS.includes(task)) {
     if (inputBuilderFor(task) === null) return { ok: false, refusal: 'no_instruction' };
-    if (UNLANDED_TASKS.includes(task)) return { ok: false, refusal: 'not_landed' };
     const admission = gate.kind === 'provider' ? CAPTURE_DRIVEN_ADMISSION : gate.kind === 'embedding' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
     return { ok: true, prepared: { task, projectId, servedBy: 'worker', providerType: null, model: null, provider: {}, credentialEnv: {}, admission } };
   }

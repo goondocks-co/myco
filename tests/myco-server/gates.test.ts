@@ -170,11 +170,11 @@ describe('gates', () => {
     }
   });
 
-  it('serves no retired 1.4.x route, and every retired route names a catalogued kind or a served route as its replacement', async () => {
+  it('serves no retired 1.4.x route, and every retired route names a catalogued kind or a served route as its replacement, or says what it carried is dropped', async () => {
     const served = new Set(ROUTES.map((r) => `${r.method} ${r.path}`));
     for (const r of RETIRED_ROUTES) {
       expect(served.has(`${r.method} ${r.path}`)).toBe(false);
-      expect(r.replacedBy.length).toBeGreaterThan(0);
+      expect({ path: r.path, answered: r.replacedBy.length > 0 || (r.dropped !== undefined && r.dropped.length > 0) }).toEqual({ path: r.path, answered: true });
       for (const target of r.replacedBy) expect({ target, known: served.has(target) || kindSpec(target) !== null }).toEqual({ target, known: true });
       const anonymous = await worker.fetch(withSource(r.path, { method: r.method, body: '{}' }), env());
       expect({ path: r.path, status: anonymous.status }).toEqual({ path: r.path, status: 401 });
