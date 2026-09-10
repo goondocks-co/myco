@@ -92,9 +92,9 @@ describe('the blobs a deletion leaves', () => {
     // More attachments than one call frees, each its own blob.
     for (let i = 0; i < TOMBSTONE_BLOBS_PER_CALL + 4; i += 1) {
       const key = String(i).padStart(64, 'a');
-      sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'image/png', 't', ?)`, SCOPE.projectId, key, NOW);
+      sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'image/png', 't', ?)`, [SCOPE.projectId, key, NOW]);
       sqlite.run(`INSERT INTO attachments (project_id, attachment_id, session_id, event_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
-                  VALUES (?, ?, ?, 'e', ?, 'image/png', 1, ?, 't', ?)`, SCOPE.projectId, `att-${i}`, SESSION, key, NOW, NOW);
+                  VALUES (?, ?, ?, 'e', ?, 'image/png', 1, ?, 't', ?)`, [SCOPE.projectId, `att-${i}`, SESSION, key, NOW, NOW]);
     }
     const outcome = await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
     expect(outcome.blobsFreed).toBe(TOMBSTONE_BLOBS_PER_CALL);
@@ -106,9 +106,9 @@ describe('the blobs a deletion leaves', () => {
     await populate(send);
     for (let i = 0; i < TOMBSTONE_BLOBS_PER_CALL + 4; i += 1) {
       const key = String(i).padStart(64, 'b');
-      sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'image/png', 't', ?)`, SCOPE.projectId, key, NOW);
+      sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'image/png', 't', ?)`, [SCOPE.projectId, key, NOW]);
       sqlite.run(`INSERT INTO attachments (project_id, attachment_id, session_id, event_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
-                  VALUES (?, ?, ?, 'e', ?, 'image/png', 1, ?, 't', ?)`, SCOPE.projectId, `att-${i}`, SESSION, key, NOW, NOW);
+                  VALUES (?, ?, ?, 'e', ?, 'image/png', 1, ?, 't', ?)`, [SCOPE.projectId, `att-${i}`, SESSION, key, NOW, NOW]);
     }
     await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
     let ticks = 0;
@@ -150,7 +150,7 @@ describe('a deleted session is absent from every read', () => {
     const { sqlite, env, send } = await rig();
     await populate(send);
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-                VALUES ('proj_2', ?, ?, 't', ?, ?)`, SESSION, MACHINE, NOW, NOW);
+                VALUES ('proj_2', ?, ?, 't', ?, ?)`, [SESSION, MACHINE, NOW, NOW]);
     await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
     expect(await sessionInScope(env.db, { projectId: 'proj_2' }, SESSION)).toBe(true);
   });

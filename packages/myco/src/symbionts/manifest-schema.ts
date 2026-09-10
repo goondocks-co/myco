@@ -173,7 +173,7 @@ export type MatchExpression = z.infer<typeof MatchExpressionSchema>;
  * substitute `{sessionId}` to look one up, capture it to enumerate them all —
  * so lookup and enumeration cannot drift apart.
  */
-const TranscriptDiscoverySchema = z.object({
+export const TranscriptDiscoverySchema = z.object({
   /**
    * Directory roots to search, `~` expanded. More than one when an agent
    * splits transcripts across surfaces (Antigravity's cli/ide/default).

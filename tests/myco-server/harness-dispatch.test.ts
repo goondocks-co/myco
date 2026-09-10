@@ -2,6 +2,7 @@
  * The harness dispatch route: what it refuses, and the whole environment a
  * dispatch carries to the runtime it hands the run to.
  */
+import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -47,7 +48,7 @@ describe('POST /api/harness/dispatch', () => {
   it('launches with the whole dispatch as environment: a minted member credential that actually claims, the subscription token under its own variable, and the provider config', async () => {
     const { env, sqlite, db } = setup();
     seedProvider(sqlite, { 'agent.provider.type': 'anthropic', 'agent.provider.model': 'claude-opus-5' });
-    await deploymentSecretStore(db, wrappingKeyFromText(async () => WRAP_KEY)).put('anthropic', 'sk-ant-oat-test-token', 'test', 1);
+    await deploymentSecretStore(db, wrappingKeyFromText(async () => WRAP_KEY, 'test')).put('anthropic', 'sk-ant-oat-test-token', 'test', 1);
 
     // The environment is read off the dispatcher: no target hands a runtime to
     // the entry, so a launch is observable only where the dispatcher makes it.
@@ -64,8 +65,9 @@ describe('POST /api/harness/dispatch', () => {
     const spec = launches[0]!;
     expect(spec.timeoutSeconds).toBe(240);
     const vars = spec.envVars;
-    expect({ url: vars.MYCO_SERVER_URL, project: vars.MYCO_PROJECT, task: vars.MYCO_TASK, run: vars.MYCO_RUN_ID, oat: vars.CLAUDE_CODE_OAUTH_TOKEN, apiKey: vars.ANTHROPIC_API_KEY, model: vars.MYCO_MODEL, admission: vars.MYCO_TASK_ADMISSION, params: vars.MYCO_TASK_PARAMS })
-      .toEqual({ url: 'https://s', project: 'proj_1', task: 'container-smoke', run: spec.runId, oat: 'sk-ant-oat-test-token', apiKey: undefined, model: 'claude-opus-5', admission: 'cortex', params: JSON.stringify({ timeoutSeconds: 240 }) });
+    expect({ url: vars.MYCO_SERVER_URL, project: vars.MYCO_PROJECT, task: vars.MYCO_TASK, run: vars.MYCO_RUN_ID, oat: vars.CLAUDE_CODE_OAUTH_TOKEN, model: vars.MYCO_MODEL, admission: vars.MYCO_TASK_ADMISSION, params: vars.MYCO_TASK_PARAMS })
+      .toEqual({ url: 'https://s', project: 'proj_1', task: 'container-smoke', run: spec.runId, oat: 'sk-ant-oat-test-token', model: 'claude-opus-5', admission: 'cortex', params: JSON.stringify({ timeoutSeconds: 240 }) });
+    expect(vars.ANTHROPIC_API_KEY).toBeUndefined();
     expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic', model: 'claude-opus-5' });
 
     // The dispatch wrote the run's row before the launch; the minted credential is real and claims exactly that row over the member surface.
@@ -76,7 +78,7 @@ describe('POST /api/harness/dispatch', () => {
       headers: memberHeaders(vars.MYCO_MEMBER_TOKEN!),
       body: JSON.stringify({ id: spec.runId, agentId: 'user', task: 'container-smoke', capability: 'cortex' }),
     }), bound);
-    expect(await claim.json()).toEqual({ persisted: true, claimed: true, runId: spec.runId });
+    expect(await jsonBody(claim)).toEqual({ persisted: true, claimed: true, runId: spec.runId });
     expect(sqlite.query(`SELECT status, agent_id FROM agent_runs WHERE id = ?`).get(spec.runId)).toEqual({ status: 'running', agent_id: 'myco-agent' });
     // A run the server never dispatched cannot be minted by that credential.
     const foreign = await worker.fetch(new Request('https://s/runs/claim', {
@@ -84,13 +86,13 @@ describe('POST /api/harness/dispatch', () => {
       headers: memberHeaders(vars.MYCO_MEMBER_TOKEN!),
       body: JSON.stringify({ id: 'run_self_minted', agentId: 'user', task: 'container-smoke', capability: 'cortex' }),
     }), bound);
-    expect(await foreign.json()).toEqual({ persisted: true, claimed: false, running: null });
+    expect(await jsonBody(foreign)).toEqual({ persisted: true, claimed: false, running: null });
   });
 
   it('ensures the runtime agent row on dispatch, and never edits one an owner registered', async () => {
     const { env, sqlite, db } = setup();
     seedProvider(sqlite, { 'agent.provider.type': 'anthropic', 'agent.provider.model': 'claude-opus-5' });
-    await deploymentSecretStore(db, wrappingKeyFromText(async () => WRAP_KEY)).put('anthropic', 'sk-ant-oat-test-token', 'test', 1);
+    await deploymentSecretStore(db, wrappingKeyFromText(async () => WRAP_KEY, 'test')).put('anthropic', 'sk-ant-oat-test-token', 'test', 1);
     const bound = { ...env, HARNESS_LAUNCH_MODE: 'record' };
 
     const first = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);

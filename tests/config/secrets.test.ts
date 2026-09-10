@@ -412,8 +412,7 @@ describe('secrets', () => {
       fs.writeFileSync(secretsPath, content, { mode: 0o600 });
 
       expect(() => readSecrets(testDir)).toThrow(InvalidSecretValueError);
-      expect(() => loadSecrets(testDir, Object.create(null) as NodeJS.ProcessEnv))
-        .toThrow(InvalidSecretValueError);
+      expect(() => loadSecrets(testDir)).toThrow(InvalidSecretValueError);
       expect(fs.readFileSync(secretsPath, 'utf-8')).toBe(content);
     });
 
@@ -949,7 +948,9 @@ describe('secrets', () => {
         fs.writeFileSync(secretsPath, 'UNTRUSTED=value\n', { mode: 0o644 });
         const originalLstat = fs.lstatSync.bind(fs);
         const lstat = vi.spyOn(fs, 'lstatSync').mockImplementation(((target, options) => {
-          const stat = originalLstat(target, options);
+          // A pass-through of an overloaded signature: the options arrive as the
+          // union of every overload's shape, which no single overload accepts.
+          const stat = (originalLstat as (t: typeof target, o: typeof options) => object)(target, options);
           if (path.resolve(String(target)) !== path.resolve(secretsPath)) return stat;
           return new Proxy(stat, {
             get(actual, property, receiver) {

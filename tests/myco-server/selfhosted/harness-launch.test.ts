@@ -248,8 +248,9 @@ describe('a dispatch that starts a real runtime', () => {
     expect(child.MYCO_TASK_ADMISSION).toBe('cortex');
     expect(child.MYCO_RUNTIME_PORT).toBe('none');
     // The supervisor's own configuration stayed with the supervisor.
-    expect({ tokenFile: child.MYCO_HARNESS_TOKEN_FILE, port: child.MYCO_SUPERVISOR_PORT, work: child.MYCO_WORK_DIR })
-      .toEqual({ tokenFile: undefined, port: undefined, work: undefined });
+    for (const name of ['MYCO_HARNESS_TOKEN_FILE', 'MYCO_SUPERVISOR_PORT', 'MYCO_WORK_DIR']) {
+      expect(child[name]).toBeUndefined();
+    }
 
     // The supervisor holds nothing once the child has gone — which is after the
     // run's own ending lands, not with it.

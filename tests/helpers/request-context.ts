@@ -17,9 +17,18 @@
 
 import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
+import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
 
 const TEST_VAULT_DIR = '/tmp/myco-test/.myco';
-const TEST_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const;
+
+/**
+ * A project id carrying the brand every `project_id` writer takes, minted
+ * through the one site that validates the grammar. A fixture that names an id
+ * goes through here rather than asserting the brand on a bare string.
+ */
+export const testProjectId = (value: string): GroveProjectId => assertGroveProjectId(value);
+
+const TEST_PROJECT_ID = testProjectId('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
 /**
  * Static, LEGACY (non-Grove) request context used as the default for handler
@@ -62,7 +71,7 @@ export function makeTestRequestContext(
   }> = {},
 ): MycoRequestContext {
   return resolveLegacyRequestContext(overrides.vaultDir ?? TEST_VAULT_DIR, {
-    projectId: (overrides.projectId ?? TEST_PROJECT_ID) as MycoRequestContext['projectId'],
+    projectId: overrides.projectId === undefined ? TEST_PROJECT_ID : testProjectId(overrides.projectId),
     groveId: overrides.groveId ?? null,
     machineId: overrides.machineId ?? 'test-machine',
     sessionId: overrides.sessionId ?? null,

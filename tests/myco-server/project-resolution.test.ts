@@ -5,6 +5,7 @@
  * never seen is ordinary. The bound is what keeps that from being a way to fill a
  * table the byte quota does not cover.
  */
+import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -90,7 +91,7 @@ describe('project resolution', () => {
     const before = r.count();
 
     const res = await worker.fetch(post(r.token, 'proj_quota_refused', 9), r.e.env);
-    expect(await res.json()).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
+    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
     expect(r.count()).toBe(before);
     expect(r.e.sqlite.query(`SELECT 1 FROM projects WHERE project_id = 'proj_quota_refused'`).get()).toBeNull();
   });

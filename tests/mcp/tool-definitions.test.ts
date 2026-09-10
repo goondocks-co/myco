@@ -103,7 +103,7 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
     for (const tool of TOOL_DEFINITIONS) {
       for (const key of forbidden) {
         expect(
-          (tool.inputSchema as Record<string, unknown>)[key],
+          (tool.inputSchema as unknown as Record<string, unknown>)[key],
           `Tool ${tool.name} has forbidden top-level schema key '${key}'`,
         ).toBeUndefined();
       }

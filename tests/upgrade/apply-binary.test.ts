@@ -14,6 +14,7 @@
  * binaries.
  */
 
+import { globalFetchDouble } from '../helpers/global-fetch.js';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
@@ -749,7 +750,7 @@ describe('download() — byte-cap DoS guard (E1)', () => {
     // 1 MiB of data — well under 256 MiB.
     const oneMiB = 1024 * 1024;
     const chunk = new Uint8Array(oneMiB).fill(0xab);
-    globalThis.fetch = mock(async () => fakeResponse([chunk]));
+    globalThis.fetch = globalFetchDouble(mock(async () => fakeResponse([chunk])));
 
     await DEFAULT_BINARY_UPDATE_DEPS.download('https://example.test/asset', destPath);
 
@@ -764,7 +765,7 @@ describe('download() — byte-cap DoS guard (E1)', () => {
     const halfCap = Math.floor(MAX_DOWNLOAD_BYTES / 2) + 1;
     const chunk1 = new Uint8Array(halfCap).fill(0xcc);
     const chunk2 = new Uint8Array(halfCap).fill(0xdd);
-    globalThis.fetch = mock(async () => fakeResponse([chunk1, chunk2]));
+    globalThis.fetch = globalFetchDouble(mock(async () => fakeResponse([chunk1, chunk2])));
 
     await expect(
       DEFAULT_BINARY_UPDATE_DEPS.download('https://example.test/asset', destPath),
@@ -779,9 +780,9 @@ describe('download() — byte-cap DoS guard (E1)', () => {
     const halfCap = Math.floor(MAX_DOWNLOAD_BYTES / 2) + 1;
     const chunk1 = new Uint8Array(halfCap).fill(0xee);
     const chunk2 = new Uint8Array(halfCap).fill(0xff);
-    globalThis.fetch = mock(async () =>
+    globalThis.fetch = globalFetchDouble(mock(async () =>
       fakeResponse([chunk1, chunk2], { 'content-length': '1' }),
-    );
+    ));
 
     await expect(
       DEFAULT_BINARY_UPDATE_DEPS.download('https://example.test/asset', destPath),

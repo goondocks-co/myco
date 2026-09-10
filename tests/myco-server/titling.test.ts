@@ -113,7 +113,8 @@ describe('titleSession', () => {
     h.setting('agent.tasks', { 'container-smoke': { provider: 'anthropic', model: 'claude-for-titles' } });
     expect(await dispatchTask(h.env, 'container-smoke', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW)).toMatchObject({ dispatched: true, queued: false });
     const vars = h.launches[0]!.envVars;
-    expect({ apiKey: vars.ANTHROPIC_API_KEY, oat: vars.CLAUDE_CODE_OAUTH_TOKEN, model: vars.MYCO_MODEL }).toEqual({ apiKey: KEY, oat: undefined, model: 'claude-for-titles' });
+    expect({ apiKey: vars.ANTHROPIC_API_KEY, model: vars.MYCO_MODEL }).toEqual({ apiKey: KEY, model: 'claude-for-titles' });
+    expect(vars.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic', model: 'claude-for-titles' });
     expect(logged.join('\n')).not.toContain(KEY);
 

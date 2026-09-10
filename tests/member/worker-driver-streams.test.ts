@@ -50,6 +50,13 @@ function runDir(): { scratchDir: string; mcpConfigPath: string } {
   return writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
 }
 
+/** A table under `key` of a parsed TOML document, whose values the parse answers as unknown. */
+const tableOf = (doc: Record<string, unknown>, key: string): Record<string, unknown> => {
+  const value = doc[key];
+  if (value === null || typeof value !== 'object') throw new Error(`${key} is not a table`);
+  return value as Record<string, unknown>;
+};
+
 describe('reading a harness stream into run events', () => {
   it('reads whole lines from a stream that arrives in pieces, and skips what is not an object', async () => {
     async function* chunks(): AsyncIterable<string> {
@@ -298,7 +305,7 @@ describe('the Codex driver', () => {
       // What the operator set is what the run behaves under, whatever shape they
       // wrote it in — a multi-line string that reads like a server declaration
       // among it, which is a value and not a declaration.
-      const read = parse(merged) as Record<string, Record<string, unknown>>;
+      const read = parse(merged) as Record<string, unknown>;
       expect(read.model).toBe('gpt-machine');
       expect(read.features).toEqual({
         web_search: true,
@@ -313,8 +320,9 @@ describe('the Codex driver', () => {
       // The run's server is the only server, whether the machine declared its
       // own under a header or at the root — and no header a machine's server
       // carries reaches the run's directory.
-      expect(Object.keys(read.mcp_servers)).toEqual([MCP_SERVER_NAME]);
-      expect(read.mcp_servers[MCP_SERVER_NAME]).toEqual({
+      const servers = tableOf(read, 'mcp_servers');
+      expect(Object.keys(servers)).toEqual([MCP_SERVER_NAME]);
+      expect(servers[MCP_SERVER_NAME]).toEqual({
         url: 'https://deployment.example/mcp',
         http_headers: { authorization: `Bearer ${CONNECTION.runToken}`, [PROTOCOL_HEADER]: '1', [PROJECT_HEADER]: 'proj_1' },
       });
@@ -356,7 +364,7 @@ describe('the Codex driver', () => {
       await collect(codexDriver.run({ ...run, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
       // The manifest is where this path changes, so a driver naming it a second
       // time carries the old one the moment the manifest moves.
-      expect(readlinkSync(join(run.scratchDir, 'codex-home', 'auth.json'))).toBe(credentialFile(harnessById('codex')!));
+      expect(readlinkSync(join(run.scratchDir, 'codex-home', 'auth.json'))).toBe(credentialFile(harnessById('codex')!)!);
     } finally { machine.remove(); }
   });
 
@@ -544,7 +552,9 @@ describe('the cadence a worker keeps', () => {
     process.env.PATH = `${slowHarness(RUN_MS)}:${process.env.PATH ?? ''}`;
     const stopping = new AbortController();
     let renewals = 0;
-    let ended: Record<string, unknown> | null = null;
+    // Held behind a property: the body lands inside the fetch double, and a bare
+    // binding reads as its initializer at every site after it.
+    const end: { body: Record<string, unknown> | null } = { body: null };
     let claims = 0;
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
@@ -559,7 +569,7 @@ describe('the cadence a worker keeps', () => {
         }), { status: 200 });
       }
       if (url.endsWith('/worker/lease')) { renewals += 1; return new Response(JSON.stringify({ persisted: true, held: true, expiresAt: 0 }), { status: 200 }); }
-      if (url.endsWith('/worker/end')) { ended = JSON.parse(String(init?.body)) as Record<string, unknown>; return new Response(JSON.stringify({ persisted: true, ended: true }), { status: 200 }); }
+      if (url.endsWith('/worker/end')) { end.body = JSON.parse(String(init?.body)) as Record<string, unknown>; return new Response(JSON.stringify({ persisted: true, ended: true }), { status: 200 }); }
       return new Response(JSON.stringify({ persisted: true }), { status: 200 });
     }) as unknown as typeof fetch;
 
@@ -571,7 +581,7 @@ describe('the cadence a worker keeps', () => {
 
     // A run driven for RUN_MS is renewed at the answered cadence. A worker
     // keeping a cadence of its own renews once or not at all across that span.
-    expect({ claims, renewed: renewals >= 2, ended }).toEqual({
+    expect({ claims, renewed: renewals >= 2, ended: end.body }).toEqual({
       claims: 1, renewed: true,
       ended: { projectId: 'proj_1', runId: 'run_1', status: 'completed', error: null },
     });
@@ -586,7 +596,9 @@ describe('the budget a run is held to', () => {
     // driving a run that no longer belongs to it.
     expect(stubAcpHarness({ turnDelayMs: 3_600_000 })).toEqual(STUB_DETECTED);
     const stopping = new AbortController();
-    let ended: Record<string, unknown> | null = null;
+    // Held behind a property: the body lands inside the fetch double, and a bare
+    // binding reads as its initializer at every site after it.
+    const end: { body: Record<string, unknown> | null } = { body: null };
     const lines: string[] = [];
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
@@ -602,7 +614,7 @@ describe('the budget a run is held to', () => {
         }), { status: 200 });
       }
       if (url.endsWith('/worker/lease')) return new Response(JSON.stringify({ persisted: true, held: true, expiresAt: 0 }), { status: 200 });
-      if (url.endsWith('/worker/end')) { ended = JSON.parse(String(init?.body)) as Record<string, unknown>; return new Response(JSON.stringify({ persisted: true, ended: true }), { status: 200 }); }
+      if (url.endsWith('/worker/end')) { end.body = JSON.parse(String(init?.body)) as Record<string, unknown>; return new Response(JSON.stringify({ persisted: true, ended: true }), { status: 200 }); }
       return new Response(JSON.stringify({ persisted: true }), { status: 200 });
     }) as unknown as typeof fetch;
 
@@ -634,7 +646,7 @@ describe('the budget a run is held to', () => {
     // hour for a harness that was never going to finish.
     const { driven, refused } = settled;
     expect({ driven, refused }).toEqual({ driven: 1, refused: null });
-    expect(ended).toEqual({ projectId: 'proj_1', runId: 'run_overrun', status: 'failed', error: 'the run outlived its budget of 0s' });
+    expect(end.body).toEqual({ projectId: 'proj_1', runId: 'run_overrun', status: 'failed', error: 'the run outlived its budget of 0s' });
     expect(lines.some((l) => l.includes('outlived its budget'))).toBe(true);
   }, 40_000);
 });

@@ -36,7 +36,7 @@ async function rig() {
   const windowed = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2));
   const fetch = (req: Request) => worker.fetch(req, e.env);
   const post = (token: string, over: Record<string, unknown>) => fetch(memberPost(token, envelope(over)));
-  const upload = async (bytes: Uint8Array) => {
+  const upload = async (bytes: Uint8Array<ArrayBuffer>) => {
     const key = await sha256HexOf(bytes);
     expect((await json(await fetch(blobPost(t1.token, key, bytes)))).stored).toBe(true);
     return key;

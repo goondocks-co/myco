@@ -6,6 +6,7 @@
  * Deployment is refused before anything is minted, and a run's own credential
  * reaches none of these routes.
  */
+import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -80,7 +81,7 @@ describe('the worker control plane', () => {
     const r = await rig();
     const admin = await r.member('mem_admin', 'admin');
     const unreadable = await worker.fetch(new Request('https://s/worker/lease', { method: 'POST', headers: memberHeaders(admin), body: 'not json' }), r.e.env);
-    expect(await unreadable.json()).toEqual({ persisted: false, code: 'parse', reason: expect.any(String) });
+    expect(await jsonBody(unreadable)).toEqual({ persisted: false, code: 'parse', reason: expect.any(String) });
 
     expect(await r.json(post(admin, '/worker/lease', { projectId: 'proj_1', runId: 'run_absent' })))
       .toEqual({ status: 200, body: { persisted: true, held: false, reason: expect.any(String) } });

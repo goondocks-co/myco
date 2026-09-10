@@ -1,10 +1,10 @@
-import type { RelationalStore, SecretWrappingKey } from '../adapters.js';
+import type { OutboundFetch, RelationalStore, SecretWrappingKey } from '../adapters.js';
 import { leafValues } from '../settings.js';
 import { openProviderCredential } from '../provider-credentials.js';
 import { embeddingText, embeddingValues, EmbeddingUnavailable, EMBEDDING_TIMEOUT_MS, type EmbeddingProvider } from './provider.js';
 
 /** Custom endpoints receive no credential from a fixed provider's secret slot. */
-export async function configuredEmbeddingProvider(db: RelationalStore, wrappingKey: SecretWrappingKey, outbound: typeof fetch): Promise<EmbeddingProvider | null> {
+export async function configuredEmbeddingProvider(db: RelationalStore, wrappingKey: SecretWrappingKey, outbound: OutboundFetch): Promise<EmbeddingProvider | null> {
   const leaves = await leafValues(db, ['embedding.provider', 'embedding.model', 'embedding.base_url']);
   const read = (name: string): string | undefined => {
     const raw = leaves.get(`embedding.${name}`);

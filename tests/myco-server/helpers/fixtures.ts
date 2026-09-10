@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite';
-import type { BlobStore, ServerEnv, StoredObject } from '@myco-server-worker/core/adapters.js';
+import type { BlobStore, OutboundFetch, ServerEnv, StoredObject } from '@myco-server-worker/core/adapters.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
@@ -12,6 +12,15 @@ export const TEXT_MEDIA_TYPE = 'text/plain; charset=utf-8';
 export const uuid = (n: number): string => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 export const PRODUCER = { adapter: 'claude-code', version: '2.0.0-test' };
 export const PROTOCOL = { [PROTOCOL_HEADER]: String(SERVER_PROTOCOL) };
+
+/**
+ * The outbound fetch a server built for a test that drives no OAuth exchange
+ * gets. Reaching it throws, naming the request it received, so a path that
+ * starts calling outward fails on the call rather than on the network.
+ */
+export const noOutboundFetch: OutboundFetch = (input) => {
+  throw new Error(`outbound fetch: ${String(input instanceof Request ? input.url : input)}`);
+};
 
 /** A well-formed `prompt` envelope; every field can be overridden. */
 export function envelope(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -37,7 +46,7 @@ export function memberPost(token: string, body: unknown, path = '/events', extra
 }
 
 /** A member blob upload: bytes to `/blobs/{key}` with content-type and content-length. */
-export function blobPost(token: string, key: string, bytes: Uint8Array, mediaType = 'text/plain; charset=utf-8', extra: Record<string, string> = {}): Request {
+export function blobPost(token: string, key: string, bytes: Uint8Array<ArrayBuffer>, mediaType = 'text/plain; charset=utf-8', extra: Record<string, string> = {}): Request {
   return new Request(`https://s/blobs/${key}`, {
     method: 'POST',
     headers: memberHeaders(token, { 'content-type': mediaType, 'content-length': String(bytes.byteLength), ...extra }),
@@ -58,6 +67,13 @@ export interface MemoryBlobStore extends BlobStore {
   deletes: string[];
   /** When set, the next put throws an error with this message. */
   failNextPut: string | null;
+  /**
+   * Record an object as already stored, without a put. `head` answers with the
+   * declared `size` and `get` streams `bytes`; a declared size with no bytes
+   * stands for an object too large to hold here, which is what a route that
+   * trusts the store's reported size is driven with.
+   */
+  seed(key: string, object: { size: number; contentType?: string; bytes?: Uint8Array }): void;
 }
 
 /** An in-memory blob store: `put` reads the stream to its end, verifies the declared digest and length like R2, and records the object; `head` answers from memory; `delete` removes the object. */
@@ -99,6 +115,9 @@ export function memoryBlobStore(): MemoryBlobStore {
     async delete(key) {
       store.deletes.push(key);
       store.objects.delete(key);
+    },
+    seed(key, object) {
+      store.objects.set(key, { size: object.size, contentType: object.contentType, bytes: object.bytes ?? new Uint8Array(0) });
     },
   };
   return store;

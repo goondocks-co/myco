@@ -1,3 +1,4 @@
+import { jsonBody } from '../helpers/json-body.js';
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -240,11 +241,11 @@ describe('gates', () => {
         headers: memberHeaders(token, { 'x-myco-project': project, 'x-myco-machine': 'machine_1', 'x-myco-token': t1.tokenId }),
         body: JSON.stringify(fixture(spoof)),
       });
-    expect(await (await worker.fetch(post(t1.token, 'proj_1', {}), e)).json()).toEqual({ persisted: true, projected: true });
-    expect(await (await worker.fetch(post(t2.token, 'proj_2', {}), e)).json()).toEqual({ persisted: true, projected: true });
+    expect(await jsonBody((await worker.fetch(post(t1.token, 'proj_1', {}), e)))).toEqual({ persisted: true, projected: true });
+    expect(await jsonBody((await worker.fetch(post(t2.token, 'proj_2', {}), e)))).toEqual({ persisted: true, projected: true });
     for (const spoof of [{ projectId: 'proj_1' }, { tokenId: t1.tokenId }, { machineId: 'machine_1' }]) {
       const res = await worker.fetch(post(t2.token, 'proj_2', { ...spoof, eventId: uuid(99) }), e);
-      expect(await res.json()).toEqual({ persisted: false, code: 'unknown_field', reason: `unknown field ${Object.keys(spoof)[0]}` });
+      expect(await jsonBody(res)).toEqual({ persisted: false, code: 'unknown_field', reason: `unknown field ${Object.keys(spoof)[0]}` });
     }
     const sessions = sqlite.query(`SELECT project_id, machine_id, created_by_token_id FROM sessions ORDER BY project_id`).all();
     expect(sessions).toEqual([
@@ -259,11 +260,11 @@ describe('gates', () => {
     const { env: e, db, sqlite } = sqliteEnv();
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const t3 = await issueMemberToken(db, { memberId: 'mem_machine_3', machineId: 'machine_3' }, Date.now());
-    expect(await (await worker.fetch(memberPost(t1.token, envelope()), e)).json()).toEqual({ persisted: true, projected: true });
+    expect(await jsonBody((await worker.fetch(memberPost(t1.token, envelope()), e)))).toEqual({ persisted: true, projected: true });
     const before = sqlite.query(`SELECT * FROM sessions`).all();
-    expect(await (await worker.fetch(memberPost(t3.token, envelope({ createdAt: 0, payload: { promptId: uuid(2), text: 'squat', origin: 'user' } })), e)).json()).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
-    expect(await (await worker.fetch(memberPost(t3.token, envelope({ sessionId: 'sess_new', payload: { promptId: uuid(2), text: 'squat', origin: 'user' } })), e)).json()).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
-    expect(await (await worker.fetch(memberPost(t3.token, envelope()), e)).json()).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
+    expect(await jsonBody((await worker.fetch(memberPost(t3.token, envelope({ createdAt: 0, payload: { promptId: uuid(2), text: 'squat', origin: 'user' } })), e)))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
+    expect(await jsonBody((await worker.fetch(memberPost(t3.token, envelope({ sessionId: 'sess_new', payload: { promptId: uuid(2), text: 'squat', origin: 'user' } })), e)))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
+    expect(await jsonBody((await worker.fetch(memberPost(t3.token, envelope()), e)))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     expect(sqlite.query(`SELECT * FROM sessions`).all()).toEqual(before);
     expect((sqlite.query(`SELECT COUNT(*) c FROM sessions`).get() as any).c).toBe(1);
   });
@@ -358,7 +359,7 @@ describe('gates', () => {
     const body = envelope({ payload: { promptId: uuid(2), text: 'x'.repeat(200), origin: 'user' } });
     const res = await worker.fetch(withSource('/events', { method: 'POST', headers: { authorization: `Bearer ${t1.token}`, [PROJECT_HEADER]: 'proj_1', ...PROTOCOL }, body }), e);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
+    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c).toBe(0);
     expect((sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(t1.tokenId) as any).b).toBe(MEMBER_TOKEN_BYTE_QUOTA - 100);
   });
@@ -368,11 +369,11 @@ describe('gates', () => {
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const t3 = await issueMemberToken(db, { memberId: 'mem_machine_3', machineId: 'machine_3' }, Date.now());
     const body = envelope();
-    expect(await (await worker.fetch(memberPost(t1.token, body), e)).json()).toEqual({ persisted: true, projected: true });
+    expect(await jsonBody((await worker.fetch(memberPost(t1.token, body), e)))).toEqual({ persisted: true, projected: true });
     const charged = (sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(t1.tokenId) as any).b;
     expect(charged).toBe(new TextEncoder().encode(body).byteLength);
-    expect(await (await worker.fetch(memberPost(t1.token, body), e)).json()).toEqual({ persisted: true, duplicate: true });
-    expect(await (await worker.fetch(memberPost(t3.token, body), e)).json()).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
+    expect(await jsonBody((await worker.fetch(memberPost(t1.token, body), e)))).toEqual({ persisted: true, duplicate: true });
+    expect(await jsonBody((await worker.fetch(memberPost(t3.token, body), e)))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
     expect((sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(t1.tokenId) as any).b).toBe(charged);
     expect((sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(t3.tokenId) as any).b).toBe(0);
     expect((sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c).toBe(1);
@@ -381,10 +382,10 @@ describe('gates', () => {
   it('refuses a reused event id whose payload differs, keeping the stored event', async () => {
     const { env: e, db, sqlite } = sqliteEnv();
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-    expect(await (await worker.fetch(memberPost(t1.token, envelope()), e)).json()).toEqual({ persisted: true, projected: true });
+    expect(await jsonBody((await worker.fetch(memberPost(t1.token, envelope()), e)))).toEqual({ persisted: true, projected: true });
     const res = await worker.fetch(memberPost(t1.token, envelope({ payload: { promptId: uuid(2), text: 'other', origin: 'user' } })), e);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ persisted: false, code: 'event_id_conflict', reason: 'event id conflict' });
+    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'event_id_conflict', reason: 'event id conflict' });
     expect((sqlite.query(`SELECT payload FROM events`).get() as any).payload).toBe(JSON.stringify(fixture().payload));
   });
 
@@ -394,7 +395,7 @@ describe('gates', () => {
     sqlite.query(`UPDATE schema_meta SET value = ? WHERE key = 'version'`).run(String(SERVER_SCHEMA_VERSION + 1));
     const res = await worker.fetch(memberPost(t1.token, envelope()), e);
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
+    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c).toBe(0);
     const blob = await worker.fetch(new Request(`https://s/blobs/${'a'.repeat(64)}`, {
       method: 'POST',
@@ -402,7 +403,7 @@ describe('gates', () => {
       body: 'x',
     }), e);
     expect(blob.status).toBe(503);
-    expect(await blob.json()).toEqual({ stored: false, code: 'unavailable', reason: 'unavailable' });
+    expect(await jsonBody(blob)).toEqual({ stored: false, code: 'unavailable', reason: 'unavailable' });
     sqlite.query(`DELETE FROM schema_meta`).run();
     expect((await worker.fetch(memberPost(t1.token, envelope()), e)).status).toBe(503);
   });
@@ -414,7 +415,7 @@ describe('gates', () => {
     const res = await worker.fetch(memberPost(t1.token, envelope()), e);
     expect(res.status).toBe(503);
     expect(res.headers.get('retry-after')).toBe(String(RETRY_AFTER_SECONDS));
-    expect(await res.json()).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
+    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
   });
 
   it('advertises the rate-limit window it is configured with', () => {
@@ -929,10 +930,10 @@ describe('gates', () => {
     const { env: e, db, sqlite } = sqliteEnv();
     const first = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const second = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-    expect(await (await worker.fetch(memberPost(first.token, envelope()), e)).json()).toEqual({ persisted: true, projected: true });
+    expect(await jsonBody((await worker.fetch(memberPost(first.token, envelope()), e)))).toEqual({ persisted: true, projected: true });
     const before = sqlite.query(`SELECT machine_id, created_by_token_id, first_received_at FROM sessions`).get();
     expect(before).toEqual({ machine_id: 'machine_1', created_by_token_id: first.tokenId, first_received_at: expect.any(Number) });
-    expect(await (await worker.fetch(memberPost(second.token, envelope({ eventId: uuid(70), payload: { promptId: uuid(71), text: 'next', origin: 'user' } })), e)).json()).toEqual({ persisted: true, projected: true });
+    expect(await jsonBody((await worker.fetch(memberPost(second.token, envelope({ eventId: uuid(70), payload: { promptId: uuid(71), text: 'next', origin: 'user' } })), e)))).toEqual({ persisted: true, projected: true });
     expect(sqlite.query(`SELECT machine_id, created_by_token_id, first_received_at FROM sessions`).get()).toEqual(before);
   });
 

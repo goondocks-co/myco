@@ -1,3 +1,4 @@
+import { testProjectId } from '../helpers/request-context.js';
 import { describe, it, expect, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -138,7 +139,7 @@ describe('MCP transport parity', () => {
     const httpUrl = await startDaemonStub(vaultDir, mcpHandler);
     const requestContext = resolveLegacyRequestContext(vaultDir, {
       projectRoot,
-      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      projectId: testProjectId('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
       groveId: grove.id,
       machineId: 'machine-a',
       sessionId: 'sess-a',

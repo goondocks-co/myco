@@ -6,6 +6,7 @@ describe('formatLogLine', () => {
     const line = formatLogLine({
       timestamp: '2026-03-14T14:23:39.000Z',
       level: 'info',
+      kind: 'hooks.stop',
       component: 'hooks',
       message: 'Stop received',
     });
@@ -18,6 +19,7 @@ describe('formatLogLine', () => {
     const line = formatLogLine({
       timestamp: '2026-03-14T14:23:39.000Z',
       level: 'warn',
+      kind: 'processor.batch',
       component: 'processor',
       message: 'Failed',
       session_id: 'abc123',
@@ -30,6 +32,7 @@ describe('formatLogLine', () => {
     const line = formatLogLine({
       timestamp: '2026-03-14T14:23:39.000Z',
       level: 'info',
+      kind: 'd.test',
       component: 'd',
       message: 'test',
       data: longValue,
@@ -39,8 +42,8 @@ describe('formatLogLine', () => {
   });
 
   it('pads level to 5 chars for alignment', () => {
-    const info = formatLogLine({ timestamp: '2026-03-14T14:00:00Z', level: 'info', component: 'd', message: 'x' });
-    const warn = formatLogLine({ timestamp: '2026-03-14T14:00:00Z', level: 'warn', component: 'd', message: 'x' });
+    const info = formatLogLine({ timestamp: '2026-03-14T14:00:00Z', level: 'info', kind: 'd.pad', component: 'd', message: 'x' });
+    const warn = formatLogLine({ timestamp: '2026-03-14T14:00:00Z', level: 'warn', kind: 'd.pad', component: 'd', message: 'x' });
     expect(info).toMatch(/INFO\s/);
     expect(warn).toMatch(/WARN\s/);
   });

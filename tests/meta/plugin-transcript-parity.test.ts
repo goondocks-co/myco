@@ -24,7 +24,7 @@ import { describe, expect, it } from 'bun:test';
 import { parseOnce } from '@myco-server-worker/ingest/parse.js';
 import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { sha256Hex as sha256HexOf } from '@myco-server-worker/hash.js';
+import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
 import { hookShipsToolCalls } from '@myco/hooks/turn-rows.js';
@@ -54,22 +54,22 @@ async function rig() {
   const { sqlite, serverEnv } = sqliteEnv();
   const issued = await issueMemberToken(serverEnv.db, { memberId: 'mem_machine_1', machineId: MACHINE }, NOW);
   sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-              VALUES (?, ?, ?, ?, ?, ?)`, PROJECT, SESSION, MACHINE, issued.tokenId, NOW, NOW);
+              VALUES (?, ?, ?, ?, ?, ?)`, [PROJECT, SESSION, MACHINE, issued.tokenId, NOW, NOW]);
   return { sqlite, env: { db: serverEnv.db, blobs: serverEnv.blobs }, tokenId: issued.tokenId };
 }
 
 /** Store the bytes as one segment and run the parse over them, as a shipped transcript would be. */
 async function parseArm(sqlite: Database, env: { db: unknown; blobs: { put: (k: string, v: ReadableStream) => Promise<unknown> } }, tokenId: string, agent: string, text: string): Promise<void> {
-  const bytes = new TextEncoder().encode(text);
+  const bytes = utf8(text);
   const key = await sha256HexOf(bytes);
   await env.blobs.put(`${PROJECT}/${key}`, new Blob([bytes]).stream());
   sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?)`,
-             PROJECT, key, bytes.length, 'text/plain', tokenId, NOW);
+             [PROJECT, key, bytes.length, 'text/plain', tokenId, NOW]);
   sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id)
               VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
-             PROJECT, TRANSCRIPT, SESSION, MACHINE, agent, bytes.length, NOW, NOW, tokenId);
+             [PROJECT, TRANSCRIPT, SESSION, MACHINE, agent, bytes.length, NOW, NOW, tokenId]);
   sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
-              VALUES (?, ?, 0, ?, ?, 'seg', ?, ?, ?)`, PROJECT, TRANSCRIPT, bytes.length, key, NOW, NOW, tokenId);
+              VALUES (?, ?, 0, ?, ?, 'seg', ?, ?, ?)`, [PROJECT, TRANSCRIPT, bytes.length, key, NOW, NOW, tokenId]);
 
   await parseOnce(env as never, {
     projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
@@ -109,7 +109,7 @@ describe('native plugin transcripts land one row per fact', () => {
     const { sqlite, env, tokenId } = await rig();
     await parseArm(sqlite, env as never, tokenId, 'opencode', TRANSCRIPT_TEXT);
     const before = count(sqlite, 'events');
-    sqlite.run(`UPDATE transcripts SET parsed_offset = 0 WHERE project_id = ?`, PROJECT);
+    sqlite.run(`UPDATE transcripts SET parsed_offset = 0 WHERE project_id = ?`, [PROJECT]);
     await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
       tokenId, agent: 'opencode', size: new TextEncoder().encode(TRANSCRIPT_TEXT).length,

@@ -677,7 +677,8 @@ describe('migrateTeamsHomeIfNeeded', () => {
       fs.mkdirSync(legacyTeams);
       recreatedInode = fs.lstatSync(legacyTeams, { bigint: true }).ino;
     }
-    expect(fs.lstatSync(legacyTeams, { bigint: true }).ino).toBe(recreatedInode);
+    expect(recreatedInode).not.toBeUndefined();
+    expect(fs.lstatSync(legacyTeams, { bigint: true }).ino).toBe(recreatedInode!);
     expect(rollbackAttempted).toBe(false);
     expect(fs.readdirSync(legacyTeams)).toEqual([]);
     expect(JSON.parse(fs.readFileSync(
@@ -755,7 +756,9 @@ describe('migrateTeamsHomeIfNeeded', () => {
         recreated = true;
         writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'recreated', projects: [] });
       }
-      return readdirSync(target, options);
+      // A pass-through of an overloaded signature: the options arrive as the
+      // union of every overload's shape, which no single overload accepts.
+      return (readdirSync as (t: typeof target, o: typeof options) => unknown)(target, options);
     }) as typeof fs.readdirSync);
 
     expect(() => migrateTeamsHomeIfNeeded([legacy])).toThrow();

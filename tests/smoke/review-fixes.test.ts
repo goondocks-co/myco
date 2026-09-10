@@ -3,6 +3,7 @@
  *
  * Verifies the behavioral changes from the 28-finding review are correct.
  */
+import { testProjectId } from '../helpers/request-context.js';
 import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 
@@ -60,7 +61,7 @@ describe('P1 #2: Concurrency guard query helpers', () => {
   it('getRunningRunForTask returns the running run ref', () => {
     insertRun({
       id: 'run-1', agent_id: AGENT_ID, task: 'vault-evolve',
-      status: STATUS_RUNNING, started_at: now, created_at: now,
+      status: STATUS_RUNNING, started_at: now,
     });
 
     const result = getRunningRunForTask(AGENT_ID, 'vault-evolve', ALL_PROJECTS_SCOPE);
@@ -70,7 +71,7 @@ describe('P1 #2: Concurrency guard query helpers', () => {
   it('getRunningRunForTask returns null for different task', () => {
     insertRun({
       id: 'run-1', agent_id: AGENT_ID, task: 'vault-evolve',
-      status: STATUS_RUNNING, started_at: now, created_at: now,
+      status: STATUS_RUNNING, started_at: now,
     });
 
     expect(getRunningRunForTask(AGENT_ID, 'skill-generate', ALL_PROJECTS_SCOPE)).toBeNull();
@@ -123,6 +124,7 @@ describe('P1 #4: Scheduler retry behavior', () => {
       projectId: PROJECT_ID,
       projectRoot: '',
       projectVaultDir: '',
+      treeAvailable: true,
       requestContext: {} as never,
     };
   }
@@ -143,7 +145,7 @@ describe('P1 #4: Scheduler retry behavior', () => {
 
     const { jobs } = buildScheduledJobs(tasks, ctx);
 
-    await jobs[0].fn();
+    await jobs[0].fn({ sliceBudget: { maxItems: 0, softDeadlineMs: 2_000 } });
     await new Promise((r) => setImmediate(r));
     expect(runTask).toHaveBeenCalledTimes(1);
 
@@ -151,7 +153,7 @@ describe('P1 #4: Scheduler retry behavior', () => {
     // first run rejected. lastRun is stamped before dispatch so a
     // failing run can't induce a tight retry loop.
     runTask.mockClear();
-    await jobs[0].fn();
+    await jobs[0].fn({ sliceBudget: { maxItems: 0, softDeadlineMs: 2_000 } });
     await new Promise((r) => setImmediate(r));
     expect(runTask).not.toHaveBeenCalled();
   });
@@ -182,7 +184,7 @@ describe('P1 #4: Scheduler retry behavior', () => {
 
     // Simulate task 'a' running for the (grove, project); task 'b' must still dispatch.
     runningTasks.add(taskKey(GROVE_ID, PROJECT_ID, 'a'));
-    await jobs[0].fn();
+    await jobs[0].fn({ sliceBudget: { maxItems: 0, softDeadlineMs: 2_000 } });
     await new Promise((r) => setImmediate(r));
     expect(ctx.runTask).toHaveBeenCalledTimes(1);
     expect(((ctx.runTask as ReturnType<typeof vi.fn>).mock.calls[0][1])).toBe('b');
@@ -201,7 +203,7 @@ describe('P1 #4: Scheduler retry behavior', () => {
     };
 
     const { jobs } = buildScheduledJobs(tasks, ctx);
-    await jobs[0].fn();
+    await jobs[0].fn({ sliceBudget: { maxItems: 0, softDeadlineMs: 2_000 } });
     await new Promise((r) => setImmediate(r));
     expect(ctx.runTask).not.toHaveBeenCalled();
   });
@@ -290,6 +292,7 @@ describe('Delete operations', () => {
     });
     insertSkillUsage({
       id: 'usage-1', skill_id: 'skill-del', session_id: 'sess-1', detected_at: now,
+      project_id: testProjectId('proj_' + 'a'.repeat(32)),
     });
 
     const result = deleteSkillRecordCascade('skill-del', ALL_PROJECTS_SCOPE);

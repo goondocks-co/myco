@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'bun:test';
-import { ROUTES, matchRoute } from '@myco-server-worker/routes.js';
+import { ROUTES, matchRoute, type Route } from '@myco-server-worker/routes.js';
 import { MAX_BLOB_BYTES } from '@myco-server-worker/constants.js';
 
 const KEY = 'a'.repeat(64);
+
+/** The body mode a route declares; the variants reached without a body declare none. */
+const bodyModeOf = (route: Route): string | undefined => ('bodyMode' in route ? route.bodyMode : undefined);
 
 describe('route table', () => {
   /**
@@ -74,12 +77,12 @@ describe('route table', () => {
   it('matches on method and path together, and captures the blob key from the pattern route', () => {
     expect(matchRoute('GET', '/health')?.route.path).toBe('/health');
     expect(matchRoute('POST', '/health')).toBeNull();
-    expect(matchRoute('POST', '/events')?.route.bodyMode).toBe('json');
-    expect(matchRoute('POST', '/tokens/refresh')?.route.bodyMode).toBe('json');
+    expect(bodyModeOf(matchRoute('POST', '/events')!.route)).toBe('json');
+    expect(bodyModeOf(matchRoute('POST', '/tokens/refresh')!.route)).toBe('json');
     expect(matchRoute('GET', '/tokens/refresh')).toBeNull();
     expect(matchRoute('POST', '/tokens/refresh/')).toBeNull();
     const blob = matchRoute('POST', `/blobs/${KEY}`);
-    expect(blob?.route.bodyMode).toBe('stream');
+    expect(bodyModeOf(blob!.route)).toBe('stream');
     expect(blob?.params).toEqual({ key: KEY });
     for (const path of ['/blobs', '/blobs/', `/blobs/${KEY.toUpperCase()}`, `/blobs/${'a'.repeat(63)}`, `/blobs/${KEY}/x`, `/blobs/${'g'.repeat(64)}`]) {
       expect(matchRoute('POST', path)).toBeNull();

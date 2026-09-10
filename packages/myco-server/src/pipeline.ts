@@ -1,4 +1,4 @@
-import type { ErrorClassifier, ServerEnv } from './core/adapters.js';
+import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.js';
 import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
@@ -34,7 +34,7 @@ export interface ServerDeps {
   now: () => number;
   sourceOf: (request: Request) => string | null;
   /** Outbound fetch for the OAuth exchange; injected rather than taken from the global so the dance is testable, matching how `now` and `sourceOf` are supplied. */
-  fetchImpl: typeof fetch;
+  fetchImpl: OutboundFetch;
 }
 
 const SECURITY_HEADERS: Record<string, string> = {

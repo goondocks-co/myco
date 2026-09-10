@@ -76,6 +76,7 @@ describe('a command pointed at a directory that is not there', () => {
     const refused = await systemRunner().run('npx', ['--version'], { cwd: absent }).catch((err: unknown) => err as Error);
 
     expect(refused).toBeInstanceOf(WorkingDirectoryMissing);
+    if (!(refused instanceof Error)) throw new Error('the run resolved instead of refusing');
     // The platform reports this as ENOENT against `npx`, which sends whoever
     // reads it hunting for a program that is installed.
     expect(refused.message).toContain(absent);

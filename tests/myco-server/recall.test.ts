@@ -13,7 +13,7 @@ import {
   composePromptContext, composeSessionContext, detectsPlanIntent, partsWithinBound, projectLine,
   PLAN_INTENT_NUDGE, PROMPT_CONTEXT_MAX_CHARS, recallLeaves, recordSessionInjection,
   SESSION_CONTEXT_MAX_CHARS, sessionInjectionKind, SUBAGENT_CORTEX_GUIDANCE,
-  type RecallLeaves, type RecallSkip, type SessionContextKind,
+  type Contribution, type RecallLeaves, type RecallSkip, type SessionContextKind,
 } from '@myco-server-worker/core/recall.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.js';
@@ -188,7 +188,7 @@ describe('the composed block', () => {
 
   it('names the record\'s own gate when the pool still holds a spore the prompt content already spent', async () => {
     const { db } = store();
-    const one: RecallLeaves = { injection: { enabled: true, maxPerPrompt: 1 }, planNudge: true };
+    const one: RecallLeaves = { ...ON, injection: { enabled: true, maxPerPrompt: 1 }, planNudge: true };
     await insertSpore(db, SCOPE, spore('a', { createdAt: NOW - 1 }));
     await insertSpore(db, SCOPE, spore('b', { createdAt: NOW - 2 }));
     expect((await compose(db, { leaves: one, promptId: 'p1' })).parts).toEqual([{ kind: 'spores', sporeIds: ['a'], planIds: [] }]);
@@ -214,8 +214,9 @@ describe('the composed block', () => {
 
 describe('the bound', () => {
   it('drops a whole part rather than cutting one mid-line', () => {
-    const block = { part: { kind: 'spores' as const, sporeIds: ['a'] }, text: 'x'.repeat(PROMPT_CONTEXT_MAX_CHARS) };
-    const nudge = { part: { kind: 'plan-nudge' as const }, text: PLAN_INTENT_NUDGE };
+    type Part = { kind: 'spores'; sporeIds: string[] } | { kind: 'plan-nudge' };
+    const block: Contribution<Part> = { part: { kind: 'spores', sporeIds: ['a'] }, text: 'x'.repeat(PROMPT_CONTEXT_MAX_CHARS) };
+    const nudge: Contribution<Part> = { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
 
     // The nudge stands first, so the block that would cross the bound is the one dropped.
     expect(partsWithinBound([nudge, block])).toEqual([nudge]);
@@ -401,7 +402,7 @@ describe('POST /context/prompt', () => {
     const { e, token } = await member();
     admit(e);
     await insertSpore(e.db, { projectId: 'proj_1' }, spore('sp_route', { observationType: 'decision', content: 'the hook answers first' }));
-    e.env.AI = { run: async (_model, input) => ({ data: [input.text[0].includes('background') ? [0, 1] : [1, 0]] }) };
+    e.env.AI = { run: async (_model: string, input: { text: string[] }) => ({ data: [input.text[0]!.includes('background') ? [0, 1] : [1, 0]] }) };
     e.env.VECTORIZE = indexFixture();
     for (let i = 0; i < 3; i++) await insertSpore(e.db, { projectId: 'proj_1' }, spore(`background-${i}`));
     const semantic = (await resolveSemanticSearch(e.serverEnv))!;

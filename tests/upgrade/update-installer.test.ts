@@ -33,8 +33,7 @@ mock.module('node:child_process', () => ({
 }));
 
 const writtenFiles = new Map<string, string>();
-import * as fsActual__ns from 'node:fs';
-const fsActual = fsActual__ns.default ?? fsActual__ns;
+import * as fsActual from 'node:fs';
 const fsStub = {
   ...fsActual,
   mkdirSync: vi.fn(() => undefined),

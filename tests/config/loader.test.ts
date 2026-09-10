@@ -1,3 +1,4 @@
+import { MycoConfigSchema } from '@myco/config/schema.js';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { loadConfig, loadConfigOptional, saveConfig, updateConfig } from '@myco/config/loader';
 import {
@@ -242,13 +243,13 @@ okf:
   });
 
   it('saves v3 config with validation', () => {
-    const config = {
-      version: 3 as const,
+    const config = MycoConfigSchema.parse({
+      version: 3,
       config_version: 0,
-      embedding: { provider: 'ollama' as const, model: 'bge-m3' },
+      embedding: { provider: 'ollama', model: 'bge-m3' },
       capture: { transcript_paths: [], plan_dirs: [], artifact_extensions: ['.md'], buffer_max_events: 500 },
-      daemon: { port: null, log_level: 'info' as const },
-    };
+      daemon: { port: null, log_level: 'info' },
+    });
     saveConfig(tmpDir, config);
     const loaded = loadConfig(tmpDir);
     expect(loaded.embedding.provider).toBe('ollama');

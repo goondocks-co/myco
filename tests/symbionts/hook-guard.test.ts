@@ -1,3 +1,4 @@
+import { thrownBy, type SpawnFailure } from '../helpers/thrown-by.js';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -80,16 +81,17 @@ describe('myco-run.cjs', () => {
     });
 
     it('returns a JSON runtime error for tool calls when default `myco` is not on PATH', () => {
-      try {
+      const err = thrownBy<SpawnFailure>(() => {
         execFileSync(process.execPath, [fixture.guardCopy, 'tool', 'call', 'canopy_map', '--json', '--input', '{}'], {
           env: envForFixture(fixture),
           stdio: 'pipe',
           timeout: 5000,
         });
-        expect.fail('Should have thrown');
-      } catch (err: any) {
-        const envelope = JSON.parse(err.stdout.toString());
-        expect(err.status).toBe(1);
+      });
+      expect(err).not.toBeNull();
+      {
+        const envelope = JSON.parse(err!.stdout.toString());
+        expect(err!.status).toBe(1);
         expect(envelope).toEqual({
           ok: false,
           tool: 'canopy_map',
@@ -168,16 +170,17 @@ describe('myco-run.cjs', () => {
 
     it('returns a JSON runtime error for tool calls when the aliased binary is not on PATH', () => {
       writeAlias(fixture, 'myco-dev');
-      try {
+      const err = thrownBy<SpawnFailure>(() => {
         execFileSync(process.execPath, [fixture.guardCopy, 'tool', 'list', '--json'], {
           env: envForFixture(fixture),
           stdio: 'pipe',
           timeout: 5000,
         });
-        expect.fail('Should have thrown');
-      } catch (err: any) {
-        const envelope = JSON.parse(err.stdout.toString());
-        expect(err.status).toBe(1);
+      });
+      expect(err).not.toBeNull();
+      {
+        const envelope = JSON.parse(err!.stdout.toString());
+        expect(err!.status).toBe(1);
         expect(envelope.ok).toBe(false);
         expect(envelope.error.code).toBe('runtime_unavailable');
         expect(envelope.error.message).toContain("'myco-dev'");
@@ -225,17 +228,16 @@ describe('myco-run.cjs', () => {
     it('surfaces real non-ENOENT errors from the resolved binary', () => {
       writeAlias(fixture, 'myco-dev');
       createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "vault not initialized" >&2\nexit 1');
-      try {
+      const err = thrownBy<SpawnFailure>(() => {
         execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'session-start'], {
           env: envForFixture(fixture),
           stdio: 'pipe',
           timeout: 5000,
         });
-        expect.fail('Should have thrown');
-      } catch (err: any) {
-        expect(err.status).toBe(1);
-        expect(err.stderr.toString()).toContain('vault not initialized');
-      }
+      });
+      expect(err).not.toBeNull();
+      expect(err!.status).toBe(1);
+      expect(err!.stderr.toString()).toContain('vault not initialized');
     });
   });
 

@@ -1,3 +1,4 @@
+import { jsonBody } from '../helpers/json-body.js';
 import { describe, it, expect } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import worker from '@myco-server-worker/index.js';
@@ -7,7 +8,7 @@ import { MAX_BLOB_BYTES, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PR
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { createIngestThrottle } from './helpers/throttle.js';
 import { authRow, noMemberRow } from './helpers/rows.js';
-import { blobPost, envelope, memoryBlobStore, PROTOCOL } from './helpers/fixtures.js';
+import { PROTOCOL, blobPost, envelope, memoryBlobStore, noOutboundFetch } from './helpers/fixtures.js';
 
 interface EnvOpts {
   sourceLimit?: number;
@@ -197,7 +198,7 @@ describe('pipeline (via the deployed entry)', () => {
     const res = await worker.fetch(post(token), await envFor(token, { writeThrows: true }));
     expect(res.status).toBe(503);
     expect(res.headers.get('retry-after')).toBe(String(RETRY_AFTER_SECONDS));
-    expect(await res.json()).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
+    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
   });
 
   it('turns a post-auth body stream failure into a retryable 503 with a reason', async () => {
@@ -206,7 +207,7 @@ describe('pipeline (via the deployed entry)', () => {
     const req = new Request('https://s/events', { method: 'POST', body, headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', ...PROTOCOL }, duplex: 'half' } as any);
     const res = await worker.fetch(req, await envFor(token));
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
+    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
   });
 
   it('answers 503 when the database schema version is not this build\'s, before any write and before any token decision', async () => {
@@ -268,7 +269,7 @@ describe('pipeline (via the deployed entry)', () => {
     const token = mintMemberToken();
     const res = await worker.fetch(post(token), await envFor(token, { bytesWritten: MEMBER_TOKEN_BYTE_QUOTA - 1, writeThrows: true }));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
+    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
   });
 
   it('stamps security headers on 200, 401, 429, and 503', async () => {
@@ -293,7 +294,7 @@ describe('pipeline (via the deployed entry)', () => {
     for (const bad of [null, '', '0', String(SERVER_PROTOCOL + 1), '1.5', 'one', '1a', '+1']) {
       const res = await worker.fetch(post(token, { protocol: bad }), env);
       expect({ bad, status: res.status }).toEqual({ bad, status: 409 });
-      expect(await res.json()).toEqual({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL });
+      expect(await jsonBody(res)).toEqual({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL });
       expect(res.headers.get(PROTOCOL_HEADER)).toBe(String(SERVER_PROTOCOL));
     }
     expect((await worker.fetch(post(undefined, { protocol: null }), env)).status).toBe(401);
@@ -325,14 +326,14 @@ describe('pipeline (via the deployed entry)', () => {
     const body = new ReadableStream({ pull(c) { c.enqueue(new Uint8Array([1])); c.close(); } });
     const noLength = new Request(`https://s/blobs/${key}`, { method: 'POST', body, headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', 'content-type': 'text/plain', ...PROTOCOL }, duplex: 'half' } as any);
     const res = await worker.fetch(noLength, env);
-    expect(await res.json()).toEqual({ stored: false, code: 'content_length', reason: 'content-length required' });
+    expect(await jsonBody(res)).toEqual({ stored: false, code: 'content_length', reason: 'content-length required' });
     expect(res.headers.get(PROTOCOL_HEADER)).toBe(String(SERVER_PROTOCOL));
     expect({ used: noLength.bodyUsed, locked: noLength.body?.locked }).toEqual({ used: false, locked: false });
     const big = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', 'content-type': 'text/plain', 'content-length': String(MAX_BLOB_BYTES + 1), ...PROTOCOL } });
-    expect(await (await worker.fetch(big, env)).json()).toEqual({ stored: false, code: 'blob_cap', reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
+    expect(await jsonBody((await worker.fetch(big, env)))).toEqual({ stored: false, code: 'blob_cap', reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
     for (const bad of ['-1', '1.5', 'x']) {
       const req = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', 'content-type': 'text/plain', 'content-length': bad, ...PROTOCOL } });
-      expect(await (await worker.fetch(req, env)).json()).toEqual({ stored: false, code: 'content_length', reason: 'content-length required' });
+      expect(await jsonBody((await worker.fetch(req, env)))).toEqual({ stored: false, code: 'content_length', reason: 'content-length required' });
     }
   });
 
@@ -349,7 +350,7 @@ describe('pipeline (via the deployed entry)', () => {
   });
 
   it('takes source identity from the injected adapter', async () => {
-    const server = createServer({ now: () => Date.now(), sourceOf: () => 'shared' });
+    const server = createServer({ now: () => Date.now(), sourceOf: () => 'shared', fetchImpl: noOutboundFetch });
     const env = await envFor(mintMemberToken(), { sourceLimit: 1 });
     await server.handleRequest(post(mintMemberToken(), { source: '1.1.1.1' }), serverEnvFromBindings(env as never));
     const res = await server.handleRequest(post(mintMemberToken(), { source: '2.2.2.2' }), serverEnvFromBindings(env as never));

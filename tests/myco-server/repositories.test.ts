@@ -1,3 +1,4 @@
+import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { projectRepositories, RepositoryConflictError } from '@myco-server-worker/core/repositories.js';
@@ -107,10 +108,10 @@ describe('held run repository access', () => {
     expect((await answer.json() as any).repository.credential.token).toBe(TOKEN);
     for (const changed of [{ memberId: 'mem_machine_1' }, { tokenId: 'another' }, { projectId: 'proj_2' }, { now: ctx.now + 3_600_000 }]) {
       const denied = await handleRunRepository(r.serverEnv, { ...ctx, ...changed });
-      expect(await denied.json()).toEqual({ persisted: true, held: false });
+      expect(await jsonBody(denied)).toEqual({ persisted: true, held: false });
     }
     r.sqlite.query("UPDATE agent_runs SET task = 'title-summary'").run();
-    expect(await (await handleRunRepository(r.serverEnv, ctx)).json()).toEqual({ persisted: true, held: false });
+    expect(await jsonBody((await handleRunRepository(r.serverEnv, ctx)))).toEqual({ persisted: true, held: false });
   });
 
   it('pins once, preserves other run context and refuses a changed repository', async () => {
@@ -126,6 +127,6 @@ describe('held run repository access', () => {
     await r.repositories.save('proj_1', { url: URL, branch: 'changed', revision: connection.revision }, 'mem_machine_1', 2);
     expect((await (await handleRunRepository(r.serverEnv, ctx)).json() as any).error).toContain('changed');
     r.sqlite.query("UPDATE agent_runs SET status = 'completed'").run();
-    expect(await (await handleRunRepository(r.serverEnv, ctx)).json()).toEqual({ persisted: true, held: false });
+    expect(await jsonBody((await handleRunRepository(r.serverEnv, ctx)))).toEqual({ persisted: true, held: false });
   });
 });
