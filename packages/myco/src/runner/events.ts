@@ -1,3 +1,5 @@
+import type { WorkerUsage } from '@goondocks/myco-shared/worker-usage';
+
 /**
  * One run-event model, behind every driver.
  *
@@ -18,7 +20,7 @@ export type RunEvent =
   | { kind: 'started'; harness: string; sessionId: string | null }
   | { kind: 'message'; role: 'assistant' | 'thought'; text: string }
   | { kind: 'tool_call'; name: string; status: 'started' | 'ok' | 'error' }
-  | { kind: 'usage'; inputTokens: number | null; outputTokens: number | null; costUsd: number | null }
+  | ({ kind: 'usage' } & WorkerUsage)
   | { kind: 'ended'; stop: StopReason; detail: string | null };
 
 /** What every driver is given, and the only thing it needs to start a harness. */

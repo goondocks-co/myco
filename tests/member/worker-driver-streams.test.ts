@@ -75,7 +75,7 @@ describe('reading a harness stream into run events', () => {
 });
 
 describe('the Claude Code driver', () => {
-  const RESULT_SUCCESS = '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","structured_output":null,"total_cost_usd":0.5,"usage":{"input_tokens":10,"output_tokens":2}}';
+  const RESULT_SUCCESS = '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","structured_output":null,"total_cost_usd":0.5,"usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}';
 
   it('reads a session, a message and a success whose structured output is null', async () => {
     const dir = stubHarness('claude', [
@@ -89,7 +89,7 @@ describe('the Claude Code driver', () => {
     expect(events[0]).toEqual({ kind: 'started', harness: 'claude-code', sessionId: 'sess_9' });
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
     // A present-but-null structured output is a success, read by value.
-    expect(events[2]).toEqual({ kind: 'usage', inputTokens: 10, outputTokens: 2, costUsd: 0.5 });
+    expect(events[2]).toEqual({ kind: 'usage', inputTokens: 10, outputTokens: 2, cachedTokens: 0, cacheCreationTokens: 0, costUsd: null, estimatedCostUsd: 0.5 });
   });
 
   it('pins the run\'s permissions on the command line: the asking mode, with the run\'s own server allowed whole', async () => {
@@ -167,6 +167,17 @@ describe('the Claude Code driver', () => {
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'authentication_failed' });
   });
 
+  it('keeps terminal usage after an in-band failure', async () => {
+    const dir = stubHarness('claude', [
+      '{"type":"assistant","error":"rate_limit","message":{"content":[]}}',
+      RESULT_SUCCESS,
+    ], 1);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.find((event) => event.kind === 'usage')).toMatchObject({ estimatedCostUsd: 0.5 });
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'rate_limit' });
+  });
+
   it('reads a harness that wrote no result at all as a failure, never as a success', async () => {
     const dir = stubHarness('claude', ['{"type":"system","subtype":"init","session_id":"s"}'], 3);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
@@ -183,14 +194,14 @@ describe('the Codex driver', () => {
       '{"type":"thread.started","thread_id":"t1"}',
       '{"type":"item.completed","item":{"id":"i0","type":"error","message":"a tool was unavailable"}}',
       '{"type":"item.completed","item":{"id":"i3","type":"agent_message","text":"done"}}',
-      '{"type":"turn.completed","usage":{"input_tokens":28,"output_tokens":5}}',
+      '{"type":"turn.completed","usage":{"input_tokens":28,"output_tokens":5,"cached_input_tokens":14}}',
     ]);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(codexDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     // The error item does not end the turn and does not fail the run.
     expect(events.filter((e) => e.kind === 'tool_call')).toHaveLength(1);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
-    expect(events.find((e) => e.kind === 'usage')).toEqual({ kind: 'usage', inputTokens: 28, outputTokens: 5, costUsd: null });
+    expect(events.find((e) => e.kind === 'usage')).toEqual({ kind: 'usage', inputTokens: 28, outputTokens: 5, cachedTokens: 14, costUsd: null });
   });
 
   it('reads each MCP tool call as a call, with the tool\'s name and how it ended', async () => {

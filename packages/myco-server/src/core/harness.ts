@@ -1,3 +1,5 @@
+import { prepareWorkerEnd } from './worker-end.js';
+import type { WorkerUsage } from '@goondocks/myco-shared/worker-usage';
 import { REPOSITORY_TASKS, REPOSITORY_CHECKOUT_CAPABILITY, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { repositoryIdentity } from './repositories.js';
 /**
@@ -23,16 +25,15 @@ import type { ServerEnv } from './adapters.js';
 import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
-import { WORKER_LEASE_MS } from '../constants.js';
+import { WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
 import { emit } from '../telemetry.js';
-import { claimQueuedRun, clearLease, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, renewRunLease, requeueLapsedLease, type ClaimedRunRow } from './runs.js';
+import { claimQueuedRun, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, renewRunLease, requeueLapsedLease, type ClaimedRunRow } from './runs.js';
 import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openProviderCredential } from './provider-credentials.js';
 import { leafValues } from './settings.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { admissionForTask, runTimeoutForTask, UNLANDED_TASKS } from './task-catalogue.js';
-import { runCloseRefusal } from './run-postconditions.js';
 import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, uninstructedError } from './task-inputs.js';
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
@@ -46,8 +47,7 @@ const SUBSCRIPTION_TOKEN_PREFIX = 'sk-ant-oat';
 export const DEFAULT_DISPATCH_TIMEOUT_SECONDS = 300;
 /** How long a run may outlive its own bound before the Deployment treats its runtime as gone: the hosted hold releases the container at this margin, and the sweep fails the run at the same one. */
 export const RUN_OVERRUN_MARGIN_MS = 120_000;
-/** How much of a runtime's refusal rides the run row; the runtime bounds its own failures at the same length (`MAX_RUN_ERROR_CHARS` in packages/myco/src/agent/runtime/server-runner.ts). */
-export const MAX_RUN_ERROR_CHARS = 2000;
+export { MAX_RUN_ERROR_CHARS } from '../constants.js';
 /** What a run whose runtime would not start carries, before the refusal's own word. */
 export const LAUNCH_REFUSED_ERROR = 'the runtime refused to start';
 /** The admission a capture-driven task carries into its container, in place of a capability name. */
@@ -810,6 +810,7 @@ export interface ClaimedRun extends ClaimedRunRow {
   repository?: RepositoryCheckoutSpec;
   harness: string;
   runToken: string;
+  attemptId: string;
   credentialEnv: Record<string, string>;
   leaseExpiresAt: number;
   timeoutSeconds: number;
@@ -959,6 +960,7 @@ export async function claimNextRun(
       ...(built !== null && !built.unchanged && built.input.repository !== undefined ? { repository: built.input.repository } : {}),
       harness,
       runToken: minted.token,
+      attemptId: minted.tokenId,
       credentialEnv: await harnessCredentialEnv(env, harness),
       leaseExpiresAt: worker.now + WORKER_LEASE_MS,
       timeoutSeconds: runTimeoutForTask(row.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
@@ -994,27 +996,19 @@ export async function renewLease(env: ServerEnv, worker: { tokenId: string; now:
  */
 export async function endLeasedRun(
   env: ServerEnv,
-  worker: { tokenId: string; now: number },
-  run: { projectId: string; runId: string; status: 'completed' | 'failed'; error?: string | null },
+  worker: { tokenId: string; now: number; clock?: () => number },
+  run: { projectId: string; runId: string; status: 'completed' | 'failed'; error?: string | null; usage?: WorkerUsage | null; attemptId?: string },
 ): Promise<{ ended: boolean; reason?: string; status?: 'completed' | 'failed' }> {
-  const scope = { projectId: run.projectId };
-  const row = await getRun(env.db, scope, run.runId);
-  if (row === null) return { ended: false, reason: 'no run of that id' };
-  if (row.dispatchedBy === null || row.status !== 'running') return { ended: false, reason: 'the run is not running' };
-  if (!(await renewRunLease(env.db, scope, run.runId, worker.tokenId, worker.now + WORKER_LEASE_MS, worker.now))) {
-    return { ended: false, reason: 'the lease is no longer held' };
-  }
-  const unmet = run.status === 'completed' ? await runCloseRefusal(env.db, scope, row) : null;
-  const status = unmet === null ? run.status : 'failed';
-  const error = unmet ?? (run.error === undefined || run.error === null ? null : run.error.slice(0, MAX_RUN_ERROR_CHARS));
-  const changed = await applyRunUpdate(env.db, scope, run.runId, {
-    status, completed_at: worker.now, ...(error === null ? {} : { error }),
-  });
-  if (changed === 0) return { ended: false, reason: 'the run had already ended' };
-  // The lease goes with the run: a worker that has finished holds nothing, and
-  // a lease left behind reports it busy until the lease would have lapsed.
-  await clearLease(env.db, scope, run.runId);
-  await retireDispatchCredential(env, row.dispatchedBy, worker.now);
+  const clock = worker.clock ?? (() => worker.now);
+  const prepared = await prepareWorkerEnd(env, { tokenId: worker.tokenId, clock }, run);
+  if ('held' in prepared) return { ended: false, reason: prepared.reason };
+  const { row, unmet, status, update } = prepared;
+  const now = clock();
+  const changed = await applyRunUpdate(env.db, { projectId: run.projectId }, run.runId, {
+    ...update, completed_at: now,
+  }, { tokenId: worker.tokenId, dispatchedBy: row.dispatchedBy, now });
+  if (changed === 0) return { ended: false, reason: 'the lease is no longer held' };
+  await retireDispatchCredential(env, row.dispatchedBy, now);
   if (unmet !== null) {
     emit({ kind: 'run_postcondition_unmet', runId: run.runId, projectId: run.projectId, task: row.task, reported: run.status, unmet, tokenId: worker.tokenId });
   }
