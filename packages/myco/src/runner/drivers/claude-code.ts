@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { harnessById } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
-import { RUN_REPOSITORY_DIR } from '@goondocks/myco-shared/repository';
+import { RUN_REPOSITORY_DIR, SOURCE_GIT_READ_COMMANDS } from '@goondocks/myco-shared/repository';
 import { jsonLines, numberOf, recordOf, startHarness, stringOf } from './stream.js';
 
 const STOP: Readonly<Record<string, StopReason>> = {
@@ -46,8 +46,7 @@ function sourceReadTools(scratchDir: string): string[] {
   const root = join(scratchDir, RUN_REPOSITORY_DIR);
   const paths = [...new Set([RUN_REPOSITORY_DIR, root, realpathSync(root)])];
   const prefixes = ['git', ...paths.map((path) => `git -C ${path}`)];
-  const commands = ['log', 'shortlog', 'show', 'diff', 'ls-tree', 'ls-files', 'rev-parse', 'rev-list', 'status'];
-  return ['Read', 'Glob', 'Grep', ...prefixes.flatMap((prefix) => commands.map((command) => `Bash(${prefix} ${command}:*)`))];
+  return ['Read', 'Glob', 'Grep', ...prefixes.flatMap((prefix) => SOURCE_GIT_READ_COMMANDS.map((command) => `Bash(${prefix} ${command}:*)`))];
 }
 
 /** A message's content blocks. */

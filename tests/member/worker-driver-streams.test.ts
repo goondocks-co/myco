@@ -117,6 +117,8 @@ describe('the Claude Code driver', () => {
     const argv = readFileSync(join(dir, 'argv.txt'), 'utf8').split('\n');
     expect(argv).toContain('Bash(git log:*)');
     expect(argv).toContain('Bash(git -C repo rev-list:*)');
+    expect(argv).toContain('Bash(git -C repo grep:*)');
+    expect(argv).toContain('Bash(git -C repo blame:*)');
     expect(argv).toContain(`Bash(git -C ${repo} log:*)`);
     expect(argv).toContain(`Bash(git -C ${realpathSync(repo)} log:*)`);
     expect(argv).not.toContain('Bash');

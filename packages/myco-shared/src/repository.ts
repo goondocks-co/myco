@@ -33,6 +33,8 @@ export interface RepositoryAccess extends RepositoryIdentity {
 export const REPOSITORY_CHECKOUT_CAPABILITY = 'repository-checkout';
 /** Source lives beside the run's own instructions and MCP configuration. */
 export const RUN_REPOSITORY_DIR = 'repo';
+/** Git inspection commands available to unattended source-reading runs. */
+export const SOURCE_GIT_READ_COMMANDS = ['log', 'shortlog', 'show', 'diff', 'diff-tree', 'ls-tree', 'ls-files', 'rev-parse', 'rev-list', 'status', 'grep', 'blame', 'cat-file', 'describe'] as const;
 /** The maximum Git fetch depth for a source-reading run. */
 export const MAX_REPOSITORY_HISTORY_DEPTH = 200;
 
