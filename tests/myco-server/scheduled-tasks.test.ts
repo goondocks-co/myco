@@ -305,9 +305,9 @@ describe('one wake of the clock', () => {
     f.receipt('proj_1', NOW - 3_600_000);
     f.setting('agent.limits.concurrent_runs', 1);
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'busy', ?, 'digest-only', 'running', ?)`, [HARNESS_AGENT_ID, NOW]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'busy', ?, 'extract-curate', 'running', ?)`, [HARNESS_AGENT_ID, NOW]);
     expect(await runScheduledTasks(f.env, 'sleep', NOW, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
-    expect(f.runs('proj_1').map((r) => [r.task, r.status])).toEqual([['digest-only', 'running'], ['container-smoke', 'queued']]);
+    expect(f.runs('proj_1').map((r) => [r.task, r.status])).toEqual([['extract-curate', 'running'], ['container-smoke', 'queued']]);
     expect(f.launches).toHaveLength(0);
   });
 });

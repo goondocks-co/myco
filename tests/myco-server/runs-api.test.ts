@@ -453,7 +453,7 @@ describe('POST /runs/update holds a run to what its task owes at close', () => {
   const sweep = async () => {
     const h = await harness();
     h.sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`).run(Date.now());
-    expect(await h.post('/runs/claim', { id: 'r_sweep', agentId: AGENT, task: 'supersession-sweep', capability: 'vault_evolution' })).toMatchObject({ claimed: true });
+    expect(await h.post('/runs/claim', { id: 'r_sweep', agentId: AGENT, task: 'extract-curate', capability: 'vault_evolution' })).toMatchObject({ claimed: true });
     return h;
   };
   const row = (h: Awaited<ReturnType<typeof harness>>) =>
@@ -472,9 +472,9 @@ describe('POST /runs/update holds a run to what its task owes at close', () => {
     expect(row(h)).toEqual({ status: 'failed', error: 'the run ended without its report' });
   });
 
-  it('closes a sweep that recorded its report, whatever counts the report carries', async () => {
+  it('closes a pass that recorded its skip, whatever counts the report carries', async () => {
     const h = await sweep();
-    await h.post('/runs/report', { runId: 'r_sweep', agentId: AGENT, action: 'supersession', summary: 'nothing to merge', details: JSON.stringify({ reviewed: 9, superseded: 0, consolidated: 0, obsoleted: 0 }) });
+    await h.post('/runs/report', { runId: 'r_sweep', agentId: AGENT, action: 'skip', summary: 'nothing to read', details: JSON.stringify({ prompts: 0 }) });
     expect(await h.post('/runs/update', { runId: 'r_sweep', update: { status: 'completed', completed_at: 44 } }))
       .toEqual({ persisted: true, changed: 1, applied: true });
     expect(row(h)).toEqual({ status: 'completed', error: null });

@@ -14,7 +14,7 @@
  */
 import { listSessions, getSession, overwriteTitle, sessionCounts, writeTitle } from '../../read/sessions.js';
 import { cleanSummary, cleanTitle, sessionMaterial, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsOf } from '../../core/titling.js';
-import { preview } from '../../core/cortex-input.js';
+import { preview } from '../../core/run-material.js';
 import { recordRunWrite } from '../../core/runs.js';
 import { TITLE_WRITE_TOOL } from '../../core/tool-catalogue.js';
 import { emit } from '../../telemetry.js';

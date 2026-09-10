@@ -35,7 +35,7 @@ export const repositories: ParityScenario = {
     await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,bytes_written,lineage_root,lineage_started_at)
       VALUES (${lit(tokenId)},'mem_harness','harness',${lit(await sha256Hex(token))},${now},${now + 3_600_000},0,${lit(tokenId)},${now})`);
     await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,dispatched_by,run_context)
-      VALUES (${lit(target.projectId)},${lit(runId)},'user','skill-generate','running',${now},${lit(tokenId)},'{}')`);
+      VALUES (${lit(target.projectId)},${lit(runId)},'user','vault-seed','running',${now},${lit(tokenId)},'{}')`);
     const asRun = async (body: Record<string, unknown>, credential = token, project = target.projectId) => {
       const result = await fetch(target.url + '/runs/repository', { method: 'POST', headers: memberHeadersFor(credential, project, { 'content-type': 'application/json' }), body: JSON.stringify({ runId, ...body }) });
       expect(result.status).toBe(200);

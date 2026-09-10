@@ -11,6 +11,7 @@
  * until someone decides whether extraction wants it.
  */
 import type { RelationalStore } from '../core/adapters.js';
+import { MATERIAL_EXCERPT_CHARS } from '../constants.js';
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
 import { notTombstonedSql } from '../core/tombstones.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
@@ -36,13 +37,15 @@ export const EXTRACTION_ORIGINS: Readonly<Record<(typeof PROMPT_ORIGINS)[number]
 /** The origins an extraction page carries. */
 export const READ_ORIGINS: readonly string[] = PROMPT_ORIGINS.filter((origin) => EXTRACTION_ORIGINS[origin]);
 
-/** One unprocessed prompt. `text` is present only where the caller asked for it. */
+/** One unprocessed prompt. `text` and `response` are present only where the caller asked for bodies. */
 export interface UnprocessedPrompt {
   promptId: string;
   sessionId: string;
   createdAt: number;
   endedAt: number | null;
   text?: string | null;
+  /** The opening of the agent's first response to this prompt, cut to the material excerpt; null where the Project holds no response to it. */
+  response?: string | null;
 }
 
 export interface UnprocessedOptions {
@@ -76,13 +79,21 @@ export async function listUnprocessedPrompts(
   if (opts.includeActive !== true) conditions.push('s.ended_at IS NOT NULL');
   if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
 
-  const body = opts.includeText === true ? ', p.text AS text' : '';
+  // A body page carries the prompt and the opening of its first response: the
+  // ask and what the agent found, which is the material an observation is read
+  // from. A page without bodies reads neither.
+  const body = opts.includeText === true
+    ? `, p.text AS text, (SELECT substr(r.text, 1, ?) FROM responses r
+         WHERE r.project_id = p.project_id AND r.session_id = p.session_id AND r.prompt_id = p.prompt_id AND r.text IS NOT NULL
+         ORDER BY r.created_at, r.response_id LIMIT 1) AS response`
+    : '';
+  const bodyParams: unknown[] = opts.includeText === true ? [MATERIAL_EXCERPT_CHARS] : [];
   const { results } = await db
     .prepare(`SELECT p.prompt_id AS promptId, p.session_id AS sessionId, p.created_at AS createdAt, p.ended_at AS endedAt${body}
                 FROM prompt_batches p JOIN sessions s ON s.project_id = p.project_id AND s.session_id = p.session_id
                WHERE ${conditions.join(' AND ')}
                ORDER BY p.created_at ASC, p.prompt_id ASC LIMIT ?`)
-    .bind(...params, k.limit + 1)
+    .bind(...bodyParams, ...params, k.limit + 1)
     .all<Record<string, unknown>>();
 
   const rows = results.map((row): UnprocessedPrompt => ({
@@ -90,7 +101,7 @@ export async function listUnprocessedPrompts(
     sessionId: row.sessionId as string,
     createdAt: row.createdAt as number,
     endedAt: (row.endedAt as number | null) ?? null,
-    ...(opts.includeText === true ? { text: (row.text as string | null) ?? null } : {}),
+    ...(opts.includeText === true ? { text: (row.text as string | null) ?? null, response: (row.response as string | null) ?? null } : {}),
   }));
   return page(rows, k.limit, (r) => ({ createdAt: r.createdAt, id: r.promptId }));
 }

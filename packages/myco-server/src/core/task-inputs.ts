@@ -1,44 +1,31 @@
 /**
- * The tasks whose prompt the server builds, and the artifact each one's build is
- * compared against.
+ * The tasks whose prompt the server builds: the three run outcomes.
  *
  * A dispatched run holds no vault. For these tasks the Deployment assembles the
- * material itself, carries it on the run row as the run's instruction, and
- * hashes what went into it. For a task that names the artifact its build is
- * compared against, the hash is the dedup: a dispatch whose build matches what
- * the Project already holds starts no run at all, which is what keeps a daily
- * schedule from spending a model call on unchanged material. A task that names
- * none always runs, and its hash travels only as the record of what its run was
- * handed.
+ * instruction itself, carries it on the run row, and hashes what went into it.
+ * Two texts make one instruction: the ask, which the worker hands the harness as
+ * its prompt, and the standing rules, which the worker writes into the run's
+ * scratch directory as the instructions file a harness reads from its working
+ * directory. The ask says what this pass does; the rules say what a good result
+ * is, and they hold on every turn rather than only in the opening prompt.
  *
  * The build happens at every decision point that could start a run — an owner's
- * ask, the clock's wake, and the drain that launches a queued row — so a run
- * always carries the vault as it stood at the instant it launched.
+ * ask, the clock's wake, and the claim that hands a queued row to a worker — so
+ * a run always carries the instruction as it stands at the instant it launched.
+ * A worker-served task with no builder here cannot be instructed, and its
+ * dispatch is refused before a row exists (`prepareDispatch`, `no_instruction`).
  */
 import type { ServerEnv } from './adapters.js';
-import { buildDigestInput } from './cortex-input.js';
-import { readRecallLeaves } from './recall.js';
-import { TITLING_TASK } from './task-catalogue.js';
+import { buildExtractionInput } from './extraction-input.js';
+import { buildSeedingInput } from './seeding-input.js';
+import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { buildTitlingInput } from './titling-input.js';
 
-/** The task whose run regenerates this Project's digest extracts. */
-export const DIGEST_TASK = 'digest-only';
-
-/** The tasks whose runs read their prompt back over `/runs/instruction`. */
-export const INSTRUCTED_TASKS: readonly string[] = [DIGEST_TASK];
-
-/** The tasks whose runs list this Project's sessions over the run routes. */
-export const SESSION_LIST_TASKS: readonly string[] = [DIGEST_TASK];
-
-/** The tasks whose runs read this Project's digest over the run routes. */
-export const DIGEST_READ_TASKS: readonly string[] = [DIGEST_TASK];
-
-/** The tasks whose runs write this Project's digest over the run routes. */
-export const DIGEST_WRITE_TASKS: readonly string[] = [DIGEST_TASK];
-
-/** What one build answers: the run's prompt, the hash of the material behind it, and what that material counted. */
+/** What one build answers: the run's prompt, the standing rules for its instructions file, the hash of the material behind it, and what that material counted. */
 export interface TaskInput {
   instruction: string;
+  /** The instructions file the worker writes into the run's scratch directory; absent for a task whose whole instruction is the prompt. */
+  instructions?: string;
   inputHash: string;
   counts: Readonly<Record<string, number | boolean>>;
 }
@@ -57,24 +44,18 @@ export interface TaskInputBuilder {
   build(env: ServerEnv, projectId: string, now: number, options: TaskInputOptions): Promise<TaskInput | null>;
   /**
    * The hash on the artifact this task last wrote, or null where it has written
-   * none. A builder that offers none is never deduped: its run judges tier by
-   * tier what is worth rewriting and says so in its own report, so a build that
-   * matched what the Project holds would refuse a pass the run itself would have
-   * skipped for free.
+   * none. A builder that offers none is never deduped. No retained task offers
+   * one: each outcome's pass judges for itself what is worth writing and says so
+   * in its report, so a build that matched what the Project holds would refuse a
+   * pass the run itself would have skipped for free.
    */
   currentHash?(env: ServerEnv, projectId: string): Promise<string | null>;
 }
 
 export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
-  [DIGEST_TASK]: {
-    async build(env, projectId, now, options) {
-      const leaves = await readRecallLeaves(env.db);
-      return buildDigestInput(env.db, { projectId }, { leaves, fresh: options.fresh === true, now });
-    },
-  },
-  [TITLING_TASK]: {
-    build: (_env, _projectId, _now, options) => buildTitlingInput(options.params ?? {}),
-  },
+  [EXTRACTION_TASK]: { build: () => buildExtractionInput() },
+  [SEEDING_TASK]: { build: (env, projectId) => buildSeedingInput(env, projectId) },
+  [TITLING_TASK]: { build: (_env, _projectId, _now, options) => buildTitlingInput(options.params ?? {}) },
 };
 
 /** The builder for this task, or null for a task the server builds no input for. */
@@ -109,7 +90,7 @@ export async function buildTaskInput(
  * A worker hands its harness the instruction the claim answers, and a harness
  * given an empty prompt ends its turn at once, having called nothing; the
  * Deployment then records a run that reports nothing. That run never reaches a
- * worker: a queued run whose task has no builder and whose dispatch carried no
+ * worker: a queued run whose build answers nothing and whose dispatch carried no
  * instruction is ended at the claim, under this error, where the runs page
  * shows it.
  */
@@ -121,4 +102,9 @@ export function uninstructedError(task: string): string {
 export function instructionFor(built: BuiltInput | null, stored: string | null): string | null {
   const instruction = built !== null && !built.unchanged ? built.input.instruction : stored;
   return instruction === null || instruction.trim() === '' ? null : instruction;
+}
+
+/** The instructions file a claimed run is handed beside its prompt, or null for a task whose whole instruction is the prompt. */
+export function instructionsFileFor(built: BuiltInput | null): string | null {
+  return built !== null && !built.unchanged ? built.input.instructions ?? null : null;
 }

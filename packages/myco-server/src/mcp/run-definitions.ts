@@ -30,7 +30,8 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['report', 'state_get', 'state_set'], description: 'report: record what this pass did. state_get: read one key. state_set: move one key, guarded by the version state_get answered.' },
+        op: { type: 'string', enum: ['report', 'state_get', 'state_set', 'agents_block'], description: 'report: record what this pass did. state_get: read one key. state_set: move one key, guarded by the version state_get answered. agents_block: hand the Deployment the managed AGENTS.md block for this Project, whole.' },
+        block: { type: 'string', description: 'For agents_block: the body of the managed block, at most 500 characters, replacing whatever the Project held.' },
         action: { type: 'string', description: 'For report: the action this pass performed, e.g. extract, digest, skip.' },
         summary: { type: 'string', description: 'For report: one line saying what was done.' },
         details: { type: 'string', description: 'For report: structured detail as a JSON object, serialized.' },
@@ -89,7 +90,7 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
         cursor: { type: 'string', description: 'For unprocessed: the next_cursor from the previous page.' },
         limit: { type: 'number', description: 'For unprocessed: page size, clamped to this run\'s window.' },
         include_active: { type: 'boolean', description: 'For unprocessed: include prompts of sessions still in flight. Defaults to false.' },
-        include_text: { type: 'boolean', description: 'For unprocessed: include each prompt\'s body. Defaults to false, which reads no bodies at all.' },
+        include_text: { type: 'boolean', description: 'For unprocessed: include each prompt\'s body and an excerpt of the agent\'s first response. Defaults to false, which reads no bodies at all.' },
         [PROJECT_PIVOT]: project,
       },
       required: ['op'],

@@ -49,11 +49,11 @@ export const dispatchQueue: ParityScenario = {
     // A run already running holds the limit, so the first ask waits behind it
     // by name; with the limit clear the next still waits, held by the worker
     // that has yet to claim it. Both are the same queue in the same order.
-    await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at) VALUES (${lit(target.projectId)}, ${lit(`blocker-${now}`)}, 'myco-agent', 'supersession-sweep', 'running', 0, ${now})`);
-    const a = await dispatch('cortex-prompt-builder');
+    await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at) VALUES (${lit(target.projectId)}, ${lit(`blocker-${now}`)}, 'myco-agent', 'extract-curate', 'running', 0, ${now})`);
+    const a = await dispatch('extract-curate');
     expect(a).toMatchObject({ queued: true, heldBy: 'concurrent_runs' });
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id = ${lit(`blocker-${now}`)}`);
-    const b = await dispatch('cortex-prompt-builder');
+    const b = await dispatch('extract-curate');
     expect(b).toMatchObject({ queued: true, heldBy: 'worker' });
     expect(await rows([a.runId, b.runId].sort()))
       .toEqual([a.runId, b.runId].sort().map((id) => waiting(id, id === a.runId ? 'concurrent_runs' : 'worker')));

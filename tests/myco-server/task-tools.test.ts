@@ -1,16 +1,16 @@
 /**
- * Gate: the tools the server says each task declares are the tools its task
- * file declares.
+ * Gate: the tools the server says each task declares are the tools its run
+ * surface can actually serve, and — for a task that still has a 1.4 task file —
+ * the tools that file declares.
  *
- * A run's MCP surface is built from `TASK_TOOLS` (`core/task-catalogue.ts`),
- * the server's copy of what each task file under
- * `packages/myco/src/agent/definitions/tasks/` declares — `toolOverrides`, or
- * the union of every phase's `tools` and `deferredTools`, and nothing a task
- * inherits from its agent. The YAML is read here directly, not through the
- * generated bundle, so a task file edited without a codegen run still fails
- * this gate. The two are held equal both ways, so neither can widen or narrow
- * a run's surface alone. This gate goes with the task files when #1170 deletes
- * them; the catalogue then stands alone.
+ * A run's MCP surface is built from `TASK_TOOLS` (`core/task-catalogue.ts`).
+ * Every name there maps onto at least one `(tool, op)` in `RUN_TOOL_MAP`, so a
+ * task cannot declare a tool the surface answers as unknown. For a task whose
+ * file still stands under `packages/myco/src/agent/definitions/tasks/`, the
+ * two are held equal both ways — the YAML read directly, not through the
+ * generated bundle — so neither can widen or narrow a run's surface alone. An
+ * outcome task the catalogue alone defines is held to the map. The file half
+ * goes with the task files when #1170 deletes them.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -18,6 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { RETAINED_TASKS, TASK_TOOLS, taskTools } from '@myco-server-worker/core/task-catalogue.js';
+import { RUN_TOOL_MAP } from '@myco-server-worker/mcp/run-surface.js';
 
 const TASKS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'packages', 'myco', 'src', 'agent', 'definitions', 'tasks');
 
@@ -38,20 +39,36 @@ function declaredTools(task: TaskFile): string[] {
   return [...new Set(phased)].sort();
 }
 
+/** The names `RUN_TOOL_MAP` does not map; the Canopy map's source tools are served by the seam and not by MCP. */
+const SEAM_TOOLS = new Set(['code_grep', 'fs_list', 'fs_read', 'fs_tree']);
+
 describe('the task tool table', () => {
   it('names every retained task and no other', () => {
     expect(Object.keys(TASK_TOOLS).sort()).toEqual([...RETAINED_TASKS].sort());
   });
 
-  it('declares for each retained task exactly what its task file declares, and nothing for a task with no file', () => {
+  it('declares no tool twice, and none the run surface cannot serve', () => {
+    for (const task of RETAINED_TASKS) {
+      expect({ task, duplicates: new Set(TASK_TOOLS[task]).size === TASK_TOOLS[task].length }).toEqual({ task, duplicates: true });
+      const unmapped = TASK_TOOLS[task].filter((tool) => !SEAM_TOOLS.has(tool) && (RUN_TOOL_MAP[tool] ?? []).length === 0);
+      expect({ task, unmapped }).toEqual({ task, unmapped: [] });
+    }
+  });
+
+  it('declares for a retained task that still has a file exactly what that file declares', () => {
     const files = taskFiles();
     expect(files.size).toBeGreaterThan(10);
-    for (const task of RETAINED_TASKS) {
-      const file = files.get(task);
-      const expected = file === undefined ? [] : declaredTools(file);
-      expect({ task, tools: [...TASK_TOOLS[task]].sort() }).toEqual({ task, tools: expected });
-      expect({ task, duplicates: new Set(TASK_TOOLS[task]).size === TASK_TOOLS[task].length }).toEqual({ task, duplicates: true });
+    const withFile = RETAINED_TASKS.filter((task) => files.has(task));
+    // The two outcomes the catalogue alone defines have no file; the rest still do.
+    expect(withFile.sort()).toEqual(['canopy-map', 'container-smoke', 'title-summary', 'vault-seed'].sort());
+    for (const task of withFile) {
+      if (task === 'vault-seed') continue;
+      expect({ task, tools: [...TASK_TOOLS[task]].sort() }).toEqual({ task, tools: declaredTools(files.get(task)!) });
     }
+    // The seeding outcome is one prompt over a checkout the harness explores
+    // with its own tools, so its surface is the vault writes alone and not the
+    // phased file's source tools.
+    expect([...TASK_TOOLS['vault-seed']].sort()).toEqual(['vault_agents_block', 'vault_create_spore', 'vault_report', 'vault_search_fts', 'vault_search_semantic', 'vault_spore', 'vault_spores']);
   });
 
   it('answers nothing for a task it does not serve or for no task', () => {

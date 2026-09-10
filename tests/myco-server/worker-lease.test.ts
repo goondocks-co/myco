@@ -153,8 +153,8 @@ describe('the claim queue', () => {
 
 describe('the prompt a claim hands a worker', () => {
   it('is built again at the claim, so a run reads the vault as it stands when it runs', async () => {
-    const f = fixture('digest-only');
-    f.e.sqlite.run(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`, [NOW]);
+    const f = fixture('extract-curate');
+    f.e.sqlite.run(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`, [NOW]);
     f.queue('run_1', NOW);
     // The dispatch left a prompt on the row; the claim replaces it with one
     // built now, and files the hash the server recorded for it.

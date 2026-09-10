@@ -13,9 +13,15 @@
  * the value it read as the guard. Two values sharing a token is possible and
  * bounded by the token's width; what such a collision costs is one write
  * admitted against a value the caller did not read, never a lost write.
+ *
+ * The managed AGENTS.md block is one write of the whole body: the Deployment
+ * holds it per Project under the run's agent, bounded to what a repository
+ * instructions file may carry, and a renderer — a member's `myco update`, or a
+ * worker's checkout — reads it back whole. The run never touches the file.
  */
+import { AGENTS_BLOCK_MAX_CHARS } from '@goondocks/myco-shared/agents-block';
 import { sha256Hex } from '../../hash.js';
-import { getState, mutateState } from '../../core/runs.js';
+import { getState, mutateState, recordRunWrite } from '../../core/runs.js';
 import { recordReport } from '../../core/run-postconditions.js';
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
@@ -24,6 +30,8 @@ const MAX_ACTION_CHARS = 192;
 const MAX_SUMMARY_CHARS = 4_096;
 const MAX_DETAILS_CHARS = 65_536;
 const MAX_KEY_CHARS = 192;
+/** The state key the Project's managed AGENTS.md block is held under. */
+export const AGENTS_BLOCK_STATE_KEY = 'agents_block';
 /**
  * The largest state value this surface accepts, bounding one row against a
  * caller that would grow it without limit. Characters, matching how the tool
@@ -56,6 +64,14 @@ export async function handleRun(input: ToolInput, ctx: ToolContext): Promise<unk
     const recorded = await recordReport(db, scope, { runId: run.runId, agentId: run.agentId, action, summary, details, createdAt: ctx.now });
     if (!recorded.recorded) return failure(recorded.reason === 'unaccepted' ? recorded.error : 'this run is not one this Project holds');
     return { recorded: true, action };
+  }
+
+  if (op === 'agents_block') {
+    const block = typeof input.block === 'string' ? input.block.trim() : '';
+    if (block.length === 0 || block.length > AGENTS_BLOCK_MAX_CHARS) return failure(`block is required for op: agents_block, and is at most ${AGENTS_BLOCK_MAX_CHARS} characters`);
+    const settled = await mutateState(db, scope, run.agentId, AGENTS_BLOCK_STATE_KEY, () => block, ctx.now);
+    if (settled) await recordRunWrite(db, scope, { runId: run.runId, toolName: 'myco_run', op: 'agents_block', recordedAt: ctx.now, detail: { chars: block.length } });
+    return { written: settled, chars: block.length };
   }
 
   const key = str(input.key, MAX_KEY_CHARS);

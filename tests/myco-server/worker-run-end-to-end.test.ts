@@ -9,16 +9,20 @@
  * - a titling run reads its own session's material and writes its title, both
  *   over the run's own credential, which the session and mode on the run's
  *   context are what make possible;
- * - a digest run files its artifact under the hash the SERVER recorded, not
- *   under a hash the harness reports.
+ * - an extraction run reads its page, writes under its own credential, and is
+ *   held to the mark it landed rather than to its report.
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { claimNextRun, endLeasedRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_SKIP_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
-import { RUN_TOOL_EVENT } from '@myco-server-worker/core/runs.js';
+import { claimNextRun, dispatchTask, endLeasedRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { EXTRACTION_REPORT_ACTION, RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_SKIP_ACTION, runCloseRefusal, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
+import { getRun, RUN_TOOL_EVENT } from '@myco-server-worker/core/runs.js';
+import { EXTRACTION_TASK, SEEDING_TASK } from '@myco-server-worker/core/task-catalogue.js';
+import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
+import { AGENTS_BLOCK_STATE_KEY } from '@myco-server-worker/mcp/tools/run.js';
+import { AGENTS_BLOCK_MAX_CHARS } from '@goondocks/myco-shared/agents-block';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
@@ -105,8 +109,8 @@ describe('the context a claimed run carries', () => {
     const r = await rig();
     r.e.sqlite.run(
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-       VALUES ('proj_1', 'run_d', 'myco-agent', 'digest-only', 'queued', ?, 'worker', ?, ?, 'do the digest')`,
-      [NOW, JSON.stringify({ serverUrl: ORIGIN, actor: 'deployment', timeoutSeconds: 1800 }), JSON.stringify({ timeoutSeconds: 1800, input_hash: 'a'.repeat(64), counts: { spores: 1 } })],
+       VALUES ('proj_1', 'run_x', 'myco-agent', ?, 'queued', ?, 'worker', ?, ?, 'read the prompts')`,
+      [EXTRACTION_TASK, NOW, JSON.stringify({ serverUrl: ORIGIN, actor: 'deployment', timeoutSeconds: 900 }), JSON.stringify({ timeoutSeconds: 900, input_hash: 'a'.repeat(64), counts: { page: 20 } })],
     );
     const claimed = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, now: NOW + 1 });
     expect(claimed.claimed).toBe(true);
@@ -114,8 +118,8 @@ describe('the context a claimed run carries', () => {
 
     // What the dispatch decided survives the claim: the run's own budget, and a
     // hash the SERVER filed the ask under rather than one a harness reports.
-    const context = JSON.parse(r.e.sqlite.query(`SELECT run_context AS c FROM agent_runs WHERE id = 'run_d'`).get<{ c: string }>()!.c) as Record<string, unknown>;
-    expect(context.timeoutSeconds).toBe(1800);
+    const context = JSON.parse(r.e.sqlite.query(`SELECT run_context AS c FROM agent_runs WHERE id = 'run_x'`).get<{ c: string }>()!.c) as Record<string, unknown>;
+    expect(context.timeoutSeconds).toBe(900);
     expect(typeof context.input_hash).toBe('string');
     expect((context.input_hash as string).length).toBe(64);
     expect(context.counts).toEqual(expect.any(Object));
@@ -170,20 +174,84 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
   });
 
-  it('completes a task whose product the Deployment cannot see on the worker\'s word', async () => {
+  it('holds an extraction pass to the prompt it marked read: a report alone fails, a mark under its own credential completes', async () => {
     const r = await rig();
-    r.e.sqlite.run(
-      `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-       VALUES ('proj_1', 'run_review', 'myco-agent', 'review-session', 'queued', ?, 'worker', ?, ?, 'review it')`,
-      [NOW, JSON.stringify({ serverUrl: ORIGIN, actor: 'deployment', timeoutSeconds: 120 }), JSON.stringify({ timeoutSeconds: 120 })],
-    );
+    r.e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`, [NOW]);
+    r.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', 's3', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);
+    r.e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's3', 'p3', 'e3', 'why does the runner retry the claim twice', 'user', 'h3', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
+    r.e.sqlite.run(`INSERT INTO responses (project_id, response_id, session_id, prompt_id, event_id, text, content_hash, created_at, token_id, received_at) VALUES ('proj_1', 'resp3', 's3', 'p3', 'e3r', 'The lease renewal re-claims it; wrap only the claim call.', 'hr3', ?, 'tok_1', ?)`, [NOW - 4000, NOW - 4000]);
+    const asked = await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW);
+    expect(asked).toMatchObject({ dispatched: true, queued: true });
     const claimed = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, now: NOW + 1 });
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) return;
-    expect(claimed.run.task).toBe('review-session');
+    const run = claimed.run;
+    expect(run.task).toBe(EXTRACTION_TASK);
+    expect(run.instructions).toContain('Search before every write');
 
-    expect(await r.workerEnds('run_review', 'completed', NOW + 2)).toEqual({ ended: true, status: 'completed' });
-    expect(r.outcome('run_review')).toEqual({ status: 'completed', error: null });
+    // The page carries the prompt and the opening of its response, which is the
+    // material an observation is read from.
+    const page = await r.asRun(run.runToken, 'myco_run_prompts', { op: 'unprocessed', include_text: true, limit: 20 });
+    expect((page.prompts as Array<Record<string, unknown>>)[0]).toMatchObject({ prompt_id: 'p3', text: 'why does the runner retry the claim twice', response: 'The lease renewal re-claims it; wrap only the claim call.' });
+
+    // The report alone is the model's word; the run owed the mark.
+    expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', action: EXTRACTION_REPORT_ACTION, summary: 'read one prompt', details: '{"prompts":1,"created":0}' })).toMatchObject({ recorded: true });
+    expect(await runCloseRefusal(r.e.db, { projectId: 'proj_1' }, (await getRun(r.e.db, { projectId: 'proj_1' }, run.id))!)).toBe(RUN_CLOSE_ARTIFACT_ERROR);
+
+    // A spore written under the run's credential names the run as its author.
+    const line = 'Wrap only the claim call in the retry: the lease renewal re-claims a run another worker holds (runner/loop.ts).';
+    const saved = await r.asRun(run.runToken, 'myco_spores', { op: 'save', type: 'gotcha', content: `${line}\n\nThe renewal path is idempotent on the worker that holds the lease and a re-claim on any other.`, tags: ['runner', 'lease'], agent_line: `  ${line}  ` });
+    expect(saved.id).toEqual(expect.any(String));
+    // The spore names the run as its author, and carries the agent line the run gave it, as one line.
+    expect(r.e.sqlite.query(`SELECT author, agent_line AS agentLine FROM spores WHERE id = ?`).get(saved.id as string)).toEqual({ author: run.id, agentLine: line });
+    // A line past the bound the injection renders is refused whole, and no spore lands.
+    expect(await r.asRun(run.runToken, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', agent_line: 'y'.repeat(AGENT_LINE_MAX_CHARS + 1) })).toMatchObject({ ok: false });
+    expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM spores WHERE author = ?`).get(run.id)).toEqual({ n: 1 });
+
+    // The mark is the landed write the close rule reads, and the cursor moves.
+    expect(await r.asRun(run.runToken, 'myco_run_prompts', { op: 'mark_processed', prompt_id: 'p3' })).toEqual({ prompt_id: 'p3', marked: true });
+    expect((await r.asRun(run.runToken, 'myco_run_prompts', { op: 'unprocessed' })).prompts).toEqual([]);
+    expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
+    expect(r.outcome(run.id)).toEqual({ status: 'completed', error: null });
+  });
+
+  it('hands a seeding run the managed block as one write the Deployment holds, bounded, and holds the run to a spore it authored', async () => {
+    const r = await rig();
+    r.e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`, [NOW]);
+    r.e.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`, [NOW]);
+    r.e.sqlite.run(`INSERT OR REPLACE INTO project_repositories (project_id, revision, url, branch, username, secret_slot, updated_at, updated_by) VALUES ('proj_1', 'rev_1', 'https://github.com/goondocks-co/myco', 'main', NULL, NULL, ?, 'mem_x')`, [NOW]);
+    expect(await dispatchTask(r.e.serverEnv, SEEDING_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW)).toMatchObject({ dispatched: true, queued: true });
+    const claimed = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, now: NOW + 1 });
+    expect(claimed.claimed).toBe(true);
+    if (!claimed.claimed) return;
+    const run = claimed.run;
+    expect(run.repository).toEqual({ url: 'https://github.com/goondocks-co/myco', branch: 'main' });
+    expect(run.instruction).toContain('`myco_run` op "agents_block"');
+
+    // The block lands whole, under the bound, and is recorded as the run's write; past the bound nothing lands.
+    const block = '## Myco\nSearch `myco_search` before a design decision.';
+    expect(await r.asRun(run.runToken, 'myco_run', { op: 'agents_block', block })).toEqual({ written: true, chars: block.length });
+    expect(r.e.sqlite.query(`SELECT value FROM agent_state WHERE project_id = 'proj_1' AND key = ?`).get(AGENTS_BLOCK_STATE_KEY)).toEqual({ value: block });
+    expect(await r.asRun(run.runToken, 'myco_run', { op: 'agents_block', block: 'x'.repeat(AGENTS_BLOCK_MAX_CHARS + 1) })).toMatchObject({ ok: false });
+    expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_run_events WHERE run_id = ? AND event_type = 'run_write'`).get(run.id)).toEqual({ n: 1 });
+
+    // The report alone closes nothing: the run owed a spore of its own.
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: SEEDING_REPORT_ACTION, summary: 'seeded', details: '{"spores":0}' });
+    expect(await runCloseRefusal(r.e.db, { projectId: 'proj_1' }, (await getRun(r.e.db, { projectId: 'proj_1' }, run.id))!)).toBe(RUN_CLOSE_ARTIFACT_ERROR);
+    await r.asRun(run.runToken, 'myco_spores', { op: 'save', type: 'architecture', content: 'One server product, two front doors.', agent_line: 'Both front doors share one core: change core/, never a platform adapter alone.' });
+    expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
+  });
+
+  it('completes an extraction pass that found nothing to read on its skip alone', async () => {
+    const r = await rig();
+    r.e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`, [NOW]);
+    await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW);
+    const claimed = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, now: NOW + 1 });
+    expect(claimed.claimed).toBe(true);
+    if (!claimed.claimed) return;
+    expect((await r.asRun(claimed.run.runToken, 'myco_run_prompts', { op: 'unprocessed', include_text: true })).prompts).toEqual([]);
+    await r.asRun(claimed.run.runToken, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'nothing to read' });
+    expect(await r.workerEnds(claimed.run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
   });
 
   it('keeps a worker\'s own failure as the failure it reported', async () => {

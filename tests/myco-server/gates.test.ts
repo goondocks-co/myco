@@ -604,25 +604,10 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ events: [{ runId: 'nope', eventType: 'phase_start' }] }) }),
       },
-      'POST /runs/instruction': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/instruction', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/instruction', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
       'POST /runs/embedding-step': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
-      'POST /runs/digest': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/digest', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/digest', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
-      'POST /runs/digest-write': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/digest-write', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/digest-write', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', tier: 5000, content: '# digest' }) }),
       },
       'POST /spores/save': {
         shape: 'persisted',
@@ -797,10 +782,12 @@ describe('gates', () => {
       .filter((f) => /deploymentSecretStore\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1));
     // The settings surface, which only ever calls `describe`/`list`/`put`/`delete`;
+    // the repository surface and the claim, which open a Project's repository
+    // read credential to hand it to the one run checking the repository out;
     // and the one dispatcher, which opens a provider credential to hand it to
     // the launched runtime's environment and nothing else. A new file here is
     // the thing to look at.
-    expect(callers.sort()).toEqual([join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts')]);
+    expect(callers.sort()).toEqual([join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'harness.ts'), join('core', 'provider-credentials.ts')]);
     const credentialCallers = files(SRC).filter((f) => /\bopenProviderCredential\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1)).sort();
     expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'harness.ts'), join('core', 'provider-credentials.ts')]);
@@ -1065,13 +1052,10 @@ describe('gates', () => {
       'member POST /members/link-github',
       'member POST /runs/canopy-map',
       'member POST /runs/claim',
-      'member POST /runs/digest',
-      'member POST /runs/digest-write',
       'member POST /runs/embedding-step',
       'member POST /runs/events',
       'member POST /runs/failed',
       'member POST /runs/get',
-      'member POST /runs/instruction',
       'member POST /runs/report',
       'member POST /runs/reports',
       'member POST /runs/repository',

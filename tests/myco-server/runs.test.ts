@@ -244,7 +244,7 @@ describe('provider admission', () => {
 
   it('does not let another task overrides entry admit this one', async () => {
     const { db, sqlite } = store();
-    setLeaf(sqlite, 'agent.tasks', { 'digest-only': { provider: { type: 'openai' } } });
+    setLeaf(sqlite, 'agent.tasks', { 'extract-curate': { provider: { type: 'openai' } } });
     expect(await claimRun(db, SCOPE, run('r1', 'title-summary'), captureGuard, NOW)).toEqual({ claimed: false, noProvider: true });
   });
 

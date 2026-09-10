@@ -28,7 +28,7 @@ async function rig() {
   const harness = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, now);
   /** A `running` row in proj_1 dispatched under the harness credential. */
   const running = async () => {
-    expect(await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_1', agentId: 'myco-agent', task: 'supersession-sweep', provider: 'anthropic', model: null, runContext: JSON.stringify({ timeoutSeconds: 300 }), dispatchedBy: harness.tokenId, startedAt: now })).toBe(true);
+    expect(await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_1', agentId: 'myco-agent', task: 'extract-curate', provider: 'anthropic', model: null, runContext: JSON.stringify({ timeoutSeconds: 300 }), dispatchedBy: harness.tokenId, startedAt: now })).toBe(true);
     e.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE project_id = 'proj_1' AND id = 'run_1'`);
   };
   const mcp = (token: string, extra: Record<string, string> = {}) => fetch(memberPost(token, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), '/mcp', extra));

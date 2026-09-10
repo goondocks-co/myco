@@ -1,16 +1,20 @@
 /**
- * The task catalogue: every retained task names a gate, and the set matches the
- * ledger's KEEP list rather than drifting from it.
+ * The task catalogue: every retained task names a gate, the set matches the
+ * ledger's KEEP list rather than drifting from it, and the three run outcomes
+ * are held to a close rule and an input builder each — no outcome without a
+ * rule, no rule without an outcome.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { admissionForTask, MANUAL_ONLY_TASKS, RETAINED_TASKS, TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
+import { admissionForTask, EXTRACTION_TASK, MANUAL_ONLY_TASKS, OUTCOME_TASKS, RETAINED_TASKS, SEEDING_TASK, TASK_ADMISSION, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
+import { RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/harness.js';
 import { PROJECT_CAPABILITIES } from '@myco-server-worker/core/settings.js';
-import { RUN_CLOSE_NONE, RUN_CLOSE_RULES, RUN_SKIP_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
+import { EXTRACTION_REPORT_ACTION, RUN_CLOSE_RULES, RUN_SKIP_ACTION, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
+import { INPUT_BUILDERS } from '@myco-server-worker/core/task-inputs.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LEDGER = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
@@ -39,13 +43,14 @@ describe('the task catalogue', () => {
 
   it('gates exactly the capture-driven tasks on a provider rather than a capability', () => {
     const providerGated = Object.entries(TASK_ADMISSION).filter(([, g]) => g.kind === 'provider').map(([t]) => t);
-    expect(providerGated).toEqual(['title-summary']);
+    expect(providerGated).toEqual([TITLING_TASK]);
   });
 
   it('answers null for a task this Deployment does not serve, rather than a default gate', () => {
     expect(admissionForTask('canopy-map')).toEqual({ kind: 'capability', capability: 'canopy' });
     expect(admissionForTask('invented-task')).toBeNull();
-    expect(admissionForTask('digest-only')).toEqual({ kind: 'capability', capability: 'cortex' });
+    expect(admissionForTask('digest-only')).toBeNull();
+    expect(admissionForTask(EXTRACTION_TASK)).toEqual({ kind: 'capability', capability: 'vault_evolution' });
   });
 
   it('leaves every manual-only task without a schedule, so none of them reaches the clock', () => {
@@ -56,15 +61,15 @@ describe('the task catalogue', () => {
 });
 
 describe('what the clock runs', () => {
-  it('runs the probe alone: the digest schedule is declared and switched off', () => {
+  it('runs the probe alone: no outcome carries a schedule until its scheduler child declares one', () => {
     expect(scheduledTasks().map((t) => t.task)).toEqual(['container-smoke']);
-    expect(TASK_SCHEDULE['digest-only']).toEqual({ enabled: false, intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 });
+    for (const task of OUTCOME_TASKS) expect({ task, schedule: TASK_SCHEDULE[task] }).toEqual({ task, schedule: null });
   });
 
-  it('makes the declared schedule live when an owner switches it on', () => {
-    const live = scheduledTasks({ 'digest-only': { schedule: { enabled: true } } });
-    expect(live.map((t) => t.task).sort()).toEqual(['container-smoke', 'digest-only']);
-    expect(live.find((t) => t.task === 'digest-only')!.schedule).toMatchObject({ enabled: true, intervalSeconds: 86_400, maxRunsPerDay: 1, overlap: 'skip' });
+  it('makes a declared, switched-off schedule live when an owner switches it on', () => {
+    const live = scheduledTasks({ 'canopy-map': { schedule: { enabled: true } } });
+    expect(live.map((t) => t.task).sort()).toEqual(['canopy-map', 'container-smoke']);
+    expect(live.find((t) => t.task === 'canopy-map')!.schedule).toMatchObject({ enabled: true, intervalSeconds: 21_600, maxRunsPerDay: 4, overlap: 'skip' });
   });
 
   it('takes a switched-off override away from a task the Deployment otherwise runs', () => {
@@ -73,33 +78,58 @@ describe('what the clock runs', () => {
 });
 
 /**
- * Gate: a task closes on evidence the Deployment can see, or on a decision that
- * it cannot.
+ * Gate: a task closes on evidence the Deployment can see.
  *
  * A task with no entry closes on its runtime's word while reading, from the
  * catalogue, as governed like every other. That is the shape of the defect this
  * table answers: a titling run whose harness never called back lands `completed`
- * wherever nothing here names what it owed. So the absence has to be written
- * down as `RUN_CLOSE_NONE` rather than left as a name nobody added.
+ * wherever nothing here names what it owed.
  */
 describe('what each task owes before it closes', () => {
-  it('declares a close rule or an explicit none for every retained task, and for nothing else', () => {
+  it('declares a close rule for every retained task, and for nothing else', () => {
     expect(Object.keys(RUN_CLOSE_RULES).sort()).toEqual([...RETAINED_TASKS].sort());
   });
 
-  it('names the tasks whose product the Deployment cannot yet see', () => {
-    const undeclared = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule === RUN_CLOSE_NONE).map(([task]) => task);
-    expect(undeclared.sort()).toEqual([
-      'cortex-prompt-builder', 'extract-only', 'review-session', 'skill-evolve', 'skill-generate', 'skill-survey', 'vault-evolve', 'vault-seed',
-    ]);
-  });
-
   it('holds a titling run to the row it was dispatched to write, not to its report alone', () => {
-    const rule = RUN_CLOSE_RULES['title-summary'];
-    expect(rule).not.toBe(RUN_CLOSE_NONE);
-    if (rule === RUN_CLOSE_NONE || rule === undefined) return;
+    const rule = RUN_CLOSE_RULES[TITLING_TASK]!;
     // The skip is the pass whose write a standing title refused: nothing owed, nothing to hold it to.
     expect(rule.reports).toEqual([TITLING_REPORT_ACTION, RUN_SKIP_ACTION]);
     expect(typeof rule.artifact).toBe('function');
+  });
+
+  it('holds an extraction pass to the prompt it marked read, and a seeding run to a spore it authored', () => {
+    expect(RUN_CLOSE_RULES[EXTRACTION_TASK]!.reports).toEqual([EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION]);
+    expect(typeof RUN_CLOSE_RULES[EXTRACTION_TASK]!.artifact).toBe('function');
+    expect(RUN_CLOSE_RULES[SEEDING_TASK]!.reports).toEqual([SEEDING_REPORT_ACTION, RUN_SKIP_ACTION]);
+    expect(typeof RUN_CLOSE_RULES[SEEDING_TASK]!.artifact).toBe('function');
+  });
+});
+
+/**
+ * Gate: the three run outcomes, and only the three, are the tasks a worker
+ * serves under a prompt the Deployment builds, and each one's run is held to
+ * the row it owed.
+ *
+ * A worker-served task with no builder would queue rows no claim could hand
+ * out; a builder for a task with no artifact check would close on a report
+ * alone; a rule for a task no builder instructs would govern runs that never
+ * start. The three lists are held to one another here, by name.
+ */
+describe('the three run outcomes', () => {
+  it('are exactly the worker-served tasks, each with a prompt the Deployment builds', () => {
+    const workerServed = RETAINED_TASKS.filter((task) => !RUNTIME_SERVED_TASKS.includes(task)).sort();
+    expect(workerServed).toEqual([...OUTCOME_TASKS].sort());
+    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual([...OUTCOME_TASKS].sort());
+    expect([...OUTCOME_TASKS].sort()).toEqual([EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK].sort());
+  });
+
+  it('each close on a rule that names an artifact the server can see, and accept the skip for a pass with nothing to do', () => {
+    for (const task of OUTCOME_TASKS) {
+      const rule = RUN_CLOSE_RULES[task];
+      expect({ task, artifact: typeof rule?.artifact, skip: rule?.reports.includes(RUN_SKIP_ACTION) }).toEqual({ task, artifact: 'function', skip: true });
+    }
+    // A rule with an artifact check belongs to an outcome or to the map, which is the seam's own code task.
+    const artifactRules = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule.artifact !== undefined).map(([task]) => task).sort();
+    expect(artifactRules).toEqual([...OUTCOME_TASKS, 'canopy-map'].sort());
   });
 });
