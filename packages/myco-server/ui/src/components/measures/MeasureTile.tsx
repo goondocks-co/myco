@@ -1,4 +1,3 @@
-import { type ReactNode } from 'react';
 import { AccentSurface } from '../ui/accent-surface';
 import { Eyebrow } from '../ui/eyebrow';
 import { cn } from '../../lib/cn';
@@ -27,10 +26,9 @@ export interface MeasureTileProps {
   tone?: 'sage' | 'ochre' | 'terra';
   /** True for the measure the page leads with. */
   primary?: boolean;
-  children?: ReactNode;
 }
 
-export function MeasureTile({ label, note, measure, format, unit, noSample, tone = 'sage', primary = false, children }: MeasureTileProps) {
+export function MeasureTile({ label, note, measure, format, unit, noSample, tone = 'sage', primary = false }: MeasureTileProps) {
   const measured = measure.sampleSize > 0 && measure.value !== null;
   const plural = measure.sampleSize === 1 ? unit : `${unit}s`;
   return (
@@ -47,7 +45,6 @@ export function MeasureTile({ label, note, measure, format, unit, noSample, tone
         n = {measure.sampleSize.toLocaleString()} {plural}
       </div>
       <p className="m-0 font-sans text-xs text-on-surface-variant">{note}</p>
-      {children}
     </AccentSurface>
   );
 }
