@@ -92,6 +92,7 @@ The surface each actor touches is fixed:
 - Symbionts do **not** drive admin ops (restart, update, restore, backup). Add no MCP tool that does.
 - The Myco agent does **not** share a tool surface with Symbionts. If a run needs a capability, add it to the run-scoped MCP surface and to the task definition's allowlist, not to the member tool set.
 - "Agent-native parity" is scoped to the agent's editorial work — not a license to mirror every UI button as an MCP tool.
+- Seeding writes spores to Myco, never project rules to `AGENTS.md`. The managed block contains settings-driven mechanical guidance, such as plan-directory gitignore behavior. User-requested rule authoring and maintenance go through the `myco-rules` skill.
 
 Full discussion: [`docs/architecture/actors-and-boundaries.md`](docs/architecture/actors-and-boundaries.md).
 
