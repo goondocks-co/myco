@@ -32,7 +32,7 @@ try {
     throw new Error('The hooks directory is a symlink. Install the fixture check through your hook manager.');
   }
   const destination = path.join(hooksDir, 'pre-commit');
-  const source = readFileSync(path.join(root, 'scripts/hooks/pre-commit'), 'utf8');
+  const source = readFileSync(path.join(root, 'scripts/hooks/pre-commit'), 'utf8').replace(/\r\n/g, '\n');
   const existing = statIfPresent(destination);
   if (existing) {
     if (!existing.isFile() || readFileSync(destination, 'utf8') !== source) {

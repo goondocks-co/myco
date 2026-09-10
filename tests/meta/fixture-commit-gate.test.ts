@@ -63,6 +63,8 @@ afterEach(() => {
 describe('fixture pre-commit gate', () => {
   it('rejects staged credentials despite an unstaged cleanup, without printing their value', () => {
     const root = setup();
+    const sourceHook = path.join(root, 'scripts/hooks/pre-commit');
+    writeFileSync(sourceHook, readFileSync(sourceHook, 'utf8').replace(/\r?\n/g, '\r\n'));
     expect(install(root).status).toBe(0);
     expect(install(root).status).toBe(0);
     fixture(root, `${SAFE}${SECRET}\n`);
@@ -102,13 +104,13 @@ describe('fixture pre-commit gate', () => {
     fixture(root, SAFE);
     git(root, 'add', 'tests');
     expect(commit(root).status).toBe(0);
-    const name = 'renamed recording\n.jsonl';
+    const name = process.platform === 'win32' ? 'renamed recording.jsonl' : 'renamed recording\n.jsonl';
     git(root, 'mv', 'tests/fixtures/recording.jsonl', `tests/fixtures/${name}`);
     fixture(root, SECRET, name);
     git(root, 'add', 'tests');
     const rejected = commit(root);
     expect(rejected.status).not.toBe(0);
-    expect(rejected.output).toContain('renamed recording\\n.jsonl');
+    expect(rejected.output).toContain(JSON.stringify(name).slice(1, -1));
     expect(rejected.output).not.toContain(SECRET);
   });
 
