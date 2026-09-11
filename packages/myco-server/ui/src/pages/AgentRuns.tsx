@@ -1,16 +1,17 @@
 import { heldByWords } from '@goondocks/myco-shared/run-holds';
 import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
 import { PageContainer } from '../components/ui/page-container';
 import { PageHeader } from '../components/ui/page-header';
+import { Panel } from '../components/ui/panel';
 import { PageLoading } from '../components/ui/page-loading';
 import { Panel } from '../components/ui/panel';
 import { Row } from '../components/ui/row';
 import { MetricCard } from '../components/ui/metric-card';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
 import { SubtabPill } from '../components/ui/subtab-pill';
-import { useAgents, useRun, useRuns, type PhaseRow, type ReportRow, type RunDetailRow, type RunListRow, type RunToolCallRow } from '../hooks/use-intelligence';
+import { MEMORY_TASKS, taskRefusalText, useAgents, useDispatchMemoryTask, useRun, useRuns, type PhaseRow, type ReportRow, type RunDetailRow, type RunListRow, type RunToolCallRow } from '../hooks/use-intelligence';
 import { ApiError } from '../lib/api';
 import { formatCost, formatDateTime, formatDuration, formatRelative, formatTokens } from '../lib/format';
 import { NotFound } from './NotFound';
@@ -64,6 +65,7 @@ export function AgentRuns() {
   return (
     <PageContainer>
       <PageHeader title="Agent runs" subtitle="What this project's intelligence tasks did, run by run." />
+      <MemoryTaskAction key={projectId} projectId={projectId} />
       <div className="mb-4">
         <SubtabPill tabs={STATUS_TABS} activeTab={status} onTabChange={setStatus} />
       </div>
@@ -97,6 +99,35 @@ export function AgentRuns() {
         </div>
       </PageLoading>
     </PageContainer>
+  );
+}
+
+function MemoryTaskAction({ projectId }: { projectId: string }) {
+  const [selected, setSelected] = useState<string>(MEMORY_TASKS[0].id);
+  const task = MEMORY_TASKS.find((entry) => entry.id === selected) ?? MEMORY_TASKS[0];
+  const dispatch = useDispatchMemoryTask(projectId);
+  const answer = dispatch.data;
+  return (
+    <Panel className="mb-5"><form aria-label="Run a memory task" onSubmit={(event) => {
+      event.preventDefault();
+      if (!dispatch.isPending) dispatch.mutate(task.id);
+    }}>
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="font-sans text-sm text-on-surface" htmlFor="memory-task">Memory task</label>
+        <select id="memory-task" value={task.id} disabled={dispatch.isPending} onChange={(event) => { setSelected(event.target.value); dispatch.reset(); }} className="rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 font-sans text-sm text-on-surface">
+          {MEMORY_TASKS.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+        </select>
+        <button type="submit" className={button} disabled={dispatch.isPending}>{dispatch.isPending ? 'Requesting…' : 'Run task'}</button>
+      </div>
+      <p className="mt-2 font-sans text-xs text-on-surface-variant">{task.description} An attached worker runs the task under the server's limits.</p>
+      {dispatch.error && <p role="alert" className="mt-2 font-sans text-sm text-tertiary">{taskRefusalText(dispatch.error)}</p>}
+      {answer && <p role="status" className="mt-2 font-sans text-sm text-on-surface">
+        {'outcome' in answer ? 'The source material is unchanged. No run was created.' : <>
+          {answer.queued ? 'Task queued for a worker. ' : 'Task started. '}
+          <Link className="underline" to={`/p/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(answer.runId)}`}>View run</Link>
+        </>}
+      </p>}
+    </form></Panel>
   );
 }
 
