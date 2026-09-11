@@ -1,9 +1,8 @@
 import type { RelationalStore } from '../core/adapters.js';
 
-const UNREADY_TRANSCRIPT_SQL = `t.parsed_offset < t.size OR t.parse_error IS NOT NULL
-  OR (t.fidelity IS NOT NULL AND t.fidelity <> 'full')`;
+const UNREADY_TRANSCRIPT_SQL = `t.parsed_offset < t.size OR t.parse_error IS NOT NULL`;
 
-/** Every known transcript is fully parsed without a recorded failure or fidelity loss. */
+/** Every known transcript has finished parsing without a recorded failure. */
 export const sessionMaterialReadySql = (alias: string): string => `NOT EXISTS (SELECT 1 FROM transcripts t
   WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id AND (${UNREADY_TRANSCRIPT_SQL}))`;
 

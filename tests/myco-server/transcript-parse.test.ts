@@ -23,6 +23,8 @@ import { freeOrphanedBlobs, TOMBSTONE_SWEEP_GRACE_MS, transcriptRetention, trans
 import { listTranscripts } from '@myco-server-worker/read/transcript.js';
 import { listSessions, listSessionSummaries } from '@myco-server-worker/read/sessions.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
+import { sessionMaterial, titleReadySessions } from '@myco-server-worker/core/titling.js';
+import { listUnprocessedPrompts } from '@myco-server-worker/read/prompts.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -105,6 +107,28 @@ async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max
 
 describe('parsing a held transcript', () => {
   const codexMessage = (role: string, text: string) => line({ type: 'response_item', payload: { type: 'message', role, content: [{ type: role === 'assistant' ? 'output_text' : 'input_text', text }] } });
+
+  it('dispatches an ended Codex conversation after parsing without changing its format fidelity', async () => {
+    const text = line({ type: 'session_meta', payload: { source: 'cli' } })
+      + codexMessage('user', 'Read the project rules heading')
+      + codexMessage('assistant', 'Project Rules')
+      + codexMessage('user', 'Wait for the second turn before summarizing')
+      + codexMessage('assistant', 'Both turns must finish parsing first');
+    const { sqlite, env, serverEnv } = await rig(text, 2048, { agent: 'codex' });
+    sqlite.run('UPDATE sessions SET ended_at = ?, titling_requested_at = ?', [NOW, NOW]);
+    const titledEnv = { ...serverEnv, origin: 'https://deployment.example' };
+    expect(await titleReadySessions(titledEnv, NOW)).toBe(0);
+    await drain(env, sqlite);
+    expect(target(sqlite)).toEqual({ parsed_offset: Buffer.byteLength(text), size: Buffer.byteLength(text), parse_error: null, fidelity: 'no_tool_results' });
+    expect(await titleReadySessions(titledEnv, NOW + 1)).toBe(1);
+    expect((await sessionMaterial(serverEnv.db, PROJECT, SESSION)).map((row) => row.prompt)).toEqual([
+      'Read the project rules heading', 'Wait for the second turn before summarizing',
+    ]);
+    expect((await listUnprocessedPrompts(serverEnv.db, { projectId: PROJECT })).rows).toHaveLength(2);
+    expect(await titleReadySessions(titledEnv, NOW + 2)).toBe(0);
+    expect(count(sqlite, 'agent_runs')).toBe(1);
+    expect(target(sqlite).fidelity).toBe('no_tool_results');
+  });
 
   it('persists interactive user text and classified context without a developer response', async () => {
     const text = line({ type: 'session_meta', payload: { source: 'cli' } })
