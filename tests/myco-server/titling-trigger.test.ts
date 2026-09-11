@@ -13,6 +13,43 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 describe('the events route', () => {
+  it('retries a failed automatic title once for later captured material, after parsing and after the prior run closes', async () => {
+    const e = sqliteEnv();
+    const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+    const post = async (over: Record<string, unknown>) => (await worker.fetch(memberPost(t.token, envelope(over)), e.env, e.deferred)).json();
+    await post({ eventId: uuid(1), kind: 'prompt', payload: { promptId: uuid(20), text: 'first turn', origin: 'user' } });
+    e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id)
+      VALUES ('proj_1', 'tx', 'sess_1', 'machine_1', 100, 100, 1, 2, ?)`, [t.tokenId]);
+    await post({ eventId: uuid(2), kind: 'session.end', payload: { endedAt: 5_000 } });
+    await e.deferred.settle();
+    const first = e.sqlite.query(`SELECT id, queued_at FROM agent_runs`).get() as { id: string; queued_at: number };
+    const env = { ...serverEnvFromBindings(e.env), origin: 'https://s' };
+    const later = first.queued_at + 1_000;
+    e.sqlite.run(`UPDATE transcripts SET size = 200, last_received_at = ? WHERE transcript_id = 'tx'`, [later]);
+    expect(await titleReadySessions(env, later + 1)).toBe(0);
+    e.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
+    expect(await titleReadySessions(env, later + 1)).toBe(0);
+    e.sqlite.run(`UPDATE transcripts SET parsed_offset = 100 WHERE transcript_id = 'tx'`);
+    e.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE id = ?`, [later + 2, first.id]);
+    expect(await titleReadySessions(env, later + 3)).toBe(0);
+    e.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
+    e.sqlite.run(`UPDATE transcripts SET imported_at = ? WHERE transcript_id = 'tx'`, [later]);
+    expect(await titleReadySessions(env, later + 3)).toBe(0);
+    e.sqlite.run(`UPDATE transcripts SET imported_at = NULL WHERE transcript_id = 'tx'`);
+    e.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, run_context)
+      SELECT project_id, 'owner-attempt', agent_id, task, 'queued', ?, json_set(run_context, '$.mode', 'owner') FROM agent_runs WHERE id = ?`, [later + 3, first.id]);
+    expect(await titleReadySessions(env, later + 3)).toBe(0);
+    e.sqlite.run(`UPDATE agent_runs SET status = 'failed' WHERE id = 'owner-attempt'`);
+    expect((await Promise.all([titleReadySessions(env, later + 4), titleReadySessions(env, later + 4)])).sort()).toEqual([0, 1]);
+    expect(await titleReadySessions(env, later + 5)).toBe(0);
+    expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE id != 'owner-attempt'`).get()).toEqual({ n: 2 });
+    e.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE status = 'queued'`, [later + 6]);
+    expect(await titleReadySessions(env, later + 7)).toBe(0);
+    e.sqlite.run(`UPDATE transcripts SET last_received_at = ? WHERE transcript_id = 'tx'`, [later + 8]);
+    e.sqlite.run(`UPDATE sessions SET title = 'A title already written', summary = 'Keep this result' WHERE session_id = 'sess_1'`);
+    expect(await titleReadySessions(env, later + 9)).toBe(0);
+  });
+
   it('persists a deferred title with the admitted live end and retries after parsing, while import creates no request', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
