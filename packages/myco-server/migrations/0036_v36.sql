@@ -2,7 +2,7 @@
 
 ALTER TABLE sessions ADD COLUMN titling_requested_at INTEGER;
 
-CREATE INDEX idx_sessions_pending_title ON sessions (titling_requested_at, project_id, session_id)
+CREATE INDEX IF NOT EXISTS idx_sessions_pending_title ON sessions (project_id, titling_requested_at, session_id)
     WHERE titling_requested_at IS NOT NULL AND titled_at IS NULL AND title IS NULL;
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '36');

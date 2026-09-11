@@ -479,7 +479,7 @@ describe('schema v34', () => {
     expect(v34?.statements).toContain('DROP INDEX IF EXISTS idx_sessions_recent');
     const sqlite = planDb();
     expect((sqlite.query(`SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sessions' ORDER BY name`).all() as { name: string }[]).map((r) => r.name))
-      .toEqual(['idx_sessions_occurred', 'idx_sessions_titled', 'sqlite_autoindex_sessions_1']);
+      .toEqual(['idx_sessions_occurred', 'idx_sessions_pending_title', 'idx_sessions_titled', 'sqlite_autoindex_sessions_1']);
   });
 
   it('serves a session list ordered by when the session happened from one index, first page and keyset page alike, with no sort step', () => {

@@ -1315,7 +1315,7 @@ const V35_STATEMENTS: readonly string[] = [
 /** Durable automatic title requests recorded by live session-end admission. */
 const V36_STATEMENTS: readonly string[] = [
   `ALTER TABLE sessions ADD COLUMN titling_requested_at INTEGER`,
-  `CREATE INDEX idx_sessions_pending_title ON sessions (titling_requested_at, project_id, session_id)
+  `CREATE INDEX IF NOT EXISTS idx_sessions_pending_title ON sessions (project_id, titling_requested_at, session_id)
     WHERE titling_requested_at IS NOT NULL AND titled_at IS NULL AND title IS NULL`,
 ];
 

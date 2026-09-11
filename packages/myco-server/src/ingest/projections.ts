@@ -215,14 +215,16 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
 
 const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
   const endedAt = orderingTime(spec, p, 'endedAt', e.createdAt);
+  const requestedAt = e.channel === 'import' ? null : endedAt;
   return {
     identities: [],
     admission: [],
     projections: [
       db.prepare(`UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ? > ended_at THEN ? ELSE ended_at END,
-          titling_requested_at = COALESCE(titling_requested_at, ?)
+          titling_requested_at = CASE WHEN ? IS NULL THEN titling_requested_at
+            ELSE MIN(COALESCE(titling_requested_at, ?), ?) END
         WHERE project_id = ? AND session_id = ? AND ${RAW_ROW_GATE}`)
-        .bind(endedAt, endedAt, e.channel === 'import' ? null : ctx.now, ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
+        .bind(endedAt, endedAt, requestedAt, requestedAt, requestedAt, ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
     ],
     reads: [],
     refusal: () => NOT_STORED,
