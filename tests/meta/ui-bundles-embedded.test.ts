@@ -14,6 +14,7 @@ import { afterAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import { emitBundle, type UiBundle } from '@myco/../scripts/gen-ui-assets.js';
 import { BUNDLED_UI } from '@myco/ui-assets.generated.js';
@@ -67,6 +68,34 @@ describe('the generator that embeds a dashboard', () => {
     outputPath: join(root, 'out.generated.ts'),
     exportName: 'BUNDLED_TEST_UI',
     origin: 'dist/',
+  });
+
+  it('rebuilds the Deployment dashboard from changed source before embedding an incremental build', () => {
+    const root = scratch();
+    const member = join(root, 'packages', 'myco');
+    const server = join(root, 'packages', 'myco-server');
+    const scripts = JSON.parse(readFileSync(new URL('../../packages/myco/package.json', import.meta.url), 'utf8')).scripts;
+    mkdirSync(member, { recursive: true });
+    mkdirSync(join(server, 'dist'), { recursive: true });
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
+    writeFileSync(join(member, 'package.json'), JSON.stringify({ name: '@goondocks/myco', scripts: {
+      'build:ui': scripts['build:ui'], 'build:ui:member': 'node build.cjs',
+    } }));
+    writeFileSync(join(member, 'build.cjs'), '');
+    writeFileSync(join(server, 'package.json'), JSON.stringify({ name: '@goondocks/myco-server', scripts: { 'build:ui': 'node build.cjs' } }));
+    writeFileSync(join(server, 'build.cjs'), "require('node:fs').copyFileSync('source.html', 'dist/index.html');");
+    writeFileSync(join(server, 'source.html'), '<html>updated source</html>');
+    writeFileSync(join(server, 'dist', 'index.html'), '<html>previous build</html>');
+
+    const result = spawnSync('npm', ['run', 'build:ui', '-w', '@goondocks/myco'], {
+      cwd: root, encoding: 'utf8', timeout: 30_000, shell: process.platform === 'win32',
+    });
+    if (result.status !== 0) throw new Error(`UI build failed: ${result.error ?? result.stderr}`);
+    const bundle = bundleAt(server);
+    emitBundle(bundle);
+    const generated = readFileSync(bundle.outputPath, 'utf8');
+    expect(generated).toContain(Buffer.from('<html>updated source</html>').toString('base64'));
+    expect(generated).not.toContain(Buffer.from('<html>previous build</html>').toString('base64'));
   });
 
   it('refuses an absent build instead of writing an empty map', () => {

@@ -38,7 +38,6 @@ jobs:
       # Both dashboards before codegen: the binary embeds each one's build, and
       # codegen refuses an absent build rather than emitting an empty map.
       - run: npm run build:ui -w @goondocks/myco
-      - run: npm run build:ui -w @goondocks/myco-server
       # Codegen runs here so its refusal of an absent dashboard build is a
       # failed build rather than an empty asset map nobody notices.
       - run: npm run codegen -w @goondocks/myco

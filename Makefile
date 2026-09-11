@@ -172,7 +172,7 @@ dev-build:
 	@#   3. codegen (hook-config + agent defs + static + UI assets, templates)
 	@#   4. bun build --compile the host-target entry (embeds the codegen output)
 	bash packages/myco/scripts/build-libsqlite3-target.sh $(HOST_TARGET)
-	cd packages/myco && { test -d ui/node_modules || (cd ui && npm ci); } && cd ui && npx vite build
+	npm run build:ui -w @goondocks/myco
 	cd packages/myco && npm run codegen
 	cd packages/myco && TARGET=$(HOST_TARGET) node scripts/build-single-target.mjs
 	@# After the binary lands in packages/myco-$(HOST_TARGET)/bin/, re-run
@@ -284,7 +284,7 @@ WIN_SSH := -o ControlMaster=auto -o ControlPath=/tmp/myco-win-ssh -o ControlPers
 dev-build-windows:
 	@# UI bundle first (served by the daemon, embedded into the binary) — must
 	@# precede codegen so gen-ui-assets can bundle it. Parity with `dev-build`.
-	cd packages/myco/ui && { test -d node_modules || npm ci; } && npx vite build
+	npm run build:ui -w @goondocks/myco
 	cd packages/myco && npm run codegen
 	@# npm skips foreign-platform optionalDeps; pull the windows-x64 native deps explicitly.
 	npm i --no-save --force sqlite-vec-windows-x64 @vscode/ripgrep-win32-x64
