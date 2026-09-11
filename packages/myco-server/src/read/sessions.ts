@@ -210,7 +210,9 @@ export interface SessionFilters {
 }
 
 /** Every primary and sibling transcript is fully parsed at full fidelity. */
-const FULL_FIDELITY = sessionMaterialReadySql('s');
+const FULL_FIDELITY = `${sessionMaterialReadySql('s')} AND NOT EXISTS (SELECT 1 FROM transcripts t
+  WHERE t.project_id = s.project_id AND t.session_id = s.session_id
+    AND t.fidelity IS NOT NULL AND t.fidelity <> 'full')`;
 
 /** A LIKE pattern matching `text` anywhere, with the pattern's own metacharacters escaped. */
 export function containsPattern(text: string): string {
