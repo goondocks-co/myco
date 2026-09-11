@@ -402,7 +402,7 @@ describe('D1 adapter', () => {
 
 describe('schema v4', () => {
   it('adds a recency index on sessions and stamps the build version', () => {
-    expect(SERVER_SCHEMA_VERSION).toBe(SCHEMA_STEPS.at(-1)?.version);
+    expect(SCHEMA_STEPS.at(-1)).toMatchObject({ version: SERVER_SCHEMA_VERSION });
     const v4 = SCHEMA_STEPS.find((s) => s.version === 4);
     expect(v4?.statements.some((s) => s.includes('idx_sessions_recent'))).toBe(true);
   });
