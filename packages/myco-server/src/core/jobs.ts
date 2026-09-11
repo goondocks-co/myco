@@ -135,6 +135,8 @@ export interface TaskSchedule {
   preCondition?: string;
   accelerator?: { name: string; thresholds: { steady: number; accelerated: number } };
   maxRunsPerDay?: number;
+  /** Daily automatic slots available only when the named condition passes. */
+  reservedRunsPerDay?: { count: number; preCondition: string };
   runWhenCold?: boolean;
   overlap: 'skip' | 'queue';
 }
@@ -150,7 +152,7 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   [MAP_TASK]: { enabled: false, intervalSeconds: 21_600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 4 },
   'embedding-reconcile': null,
   'container-smoke': { intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 },
-  [EXTRACTION_TASK]: { intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12, preCondition: 'has-unprocessed-prompts' },
+  [EXTRACTION_TASK]: { intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12, reservedRunsPerDay: { count: 3, preCondition: 'has-recent-live-prompts' }, preCondition: 'has-unprocessed-prompts' },
   [SEEDING_TASK]: null,
   [TITLING_TASK]: null,
 };

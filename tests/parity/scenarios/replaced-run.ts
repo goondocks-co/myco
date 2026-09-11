@@ -94,12 +94,14 @@ export const replacedRun: ParityScenario = {
       expect(await jsonBody(res)).toEqual({ persisted: true, changed: 1, applied: true });
     };
 
-    // A first ask launches; a second meets the day's ceiling of one.
+    // Ad-hoc requests remain available with an automatic daily ceiling of one.
     const first = await dispatch();
     expect(first.status).toBe(200);
     const firstRunId = String(first.body.runId);
     expect((await row(firstRunId)).status).toBe('pending');
-    expect(await dispatch()).toMatchObject({ status: 409, body: { error: 'max_runs_per_day' } });
+    const manual = await dispatch();
+    expect(manual.status).toBe(200);
+    await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id = ${lit(String(manual.body.runId))}`);
 
     // The run's own runtime names the deploy that ended it. The row carries the
     // word, and one fresh run of the same task stands in for it.

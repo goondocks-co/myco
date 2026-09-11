@@ -13,10 +13,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, DISPATCH_REFUSAL_MESSAGE, dispatchTask, RUNTIME_SERVED_TASKS } from '../core/harness.js';
 import { emit } from '../telemetry.js';
-import { taskEntriesSince } from '../core/runs.js';
-import { declaredScheduleFor } from '../core/jobs.js';
 import { runTimeoutForTask } from '../core/task-catalogue.js';
-import { scheduleFor, scheduleLeaves } from '../core/scheduled-tasks.js';
 import { buildTaskInput } from '../core/task-inputs.js';
 import { badRequest, ok, readJsonObject } from './scope.js';
 
@@ -42,27 +39,11 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   const dryRun = body.dryRun === true;
   const fresh = body.fresh === true;
 
-  // A task whose prompt the server builds is compared against the artifact the
-  // Project already holds. Equal means the ask is answered with an outcome and
-  // no run row at all — reads only, nothing spent — so it is decided ahead of
-  // the day's ceiling: a person asking about a still Project is told it is
-  // still, rather than told they have used up a run they never spent.
+  // Unchanged input returns without dispatching a run.
   const built = await buildTaskInput(env, task, projectId, ctx.now, { fresh });
   if (built !== null && built.unchanged) {
     emit({ kind: 'harness_unchanged', task, projectId, actor: ctx.member.id });
     return ok({ outcome: 'unchanged' });
-  }
-  // A person's ask bypasses the clock's interval, never its per-day ceiling: the
-  // cap is the day's spend, whoever asks. The ceiling is the declared block under
-  // the owner's own override, so a Deployment that lifts the cap for a day —
-  // after a run that spent its money and produced nothing — is answered by the
-  // number it set rather than the one shipped.
-  const declared = declaredScheduleFor(task);
-  const ceiling = declared === null
-    ? undefined
-    : scheduleFor(task, declared, (await scheduleLeaves(env)).overrides).maxRunsPerDay;
-  if (ceiling !== undefined && (await taskEntriesSince(env.db, { projectId }, task, ctx.now - 86_400_000)) >= ceiling) {
-    return Response.json({ error: 'max_runs_per_day', message: `this task has run its ${ceiling} for the day` }, { status: 409 });
   }
   const input = built === null || built.unchanged
     ? {}

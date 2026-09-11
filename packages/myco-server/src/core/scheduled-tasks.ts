@@ -23,7 +23,7 @@ import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js'
 import { declared } from './declared.js';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
 import { listProjects } from '../read/sessions.js';
-import { listUnprocessedPrompts } from '../read/prompts.js';
+import { listUnprocessedPrompts, newestUnprocessedSession } from '../read/prompts.js';
 import { emit } from '../telemetry.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 
@@ -63,7 +63,7 @@ export const COLD_PROJECT_THRESHOLD_DAYS_DEFAULT = 14;
 export const ACTIVE_WINDOW_DAYS_DEFAULT = 14;
 
 /** Why the clock left a task alone this wake; a ceiling met is recorded on a run row, the rest are told. */
-export type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed';
+export type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'reserved_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed';
 
 export interface ScheduleReport {
   /** Dispatches the clock made, launched or queued. */
@@ -134,15 +134,23 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
     ? await accelerator({ db: env.db, projectId, limit: schedule.accelerator.thresholds.accelerated + 1 })
     : null;
   const intervalMs = effectiveIntervalSeconds(schedule.intervalSeconds, count, schedule.accelerator?.thresholds) * 1000;
-  const last = await lastTaskEntryAt(env.db, scope, task);
+  const last = await lastTaskEntryAt(env.db, scope, task, CLOCK_ACTOR);
   if (last !== null && now - last < intervalMs) return 'not_yet';
 
   if (!(schedule.runIn as readonly string[]).includes(state)) return 'not_in_state';
   if (schedule.preCondition !== undefined) {
     const check = declared(PRE_CONDITIONS, schedule.preCondition);
-    if (check === undefined || !(await check({ db: env.db, projectId }))) return 'precondition';
+    if (check === undefined || !(await check({ db: env.db, projectId, now }))) return 'precondition';
   }
-  if (schedule.maxRunsPerDay !== undefined && (await taskEntriesSince(env.db, scope, task, now - DAY_MS)) >= schedule.maxRunsPerDay) return 'max_runs_per_day';
+  if (schedule.maxRunsPerDay !== undefined) {
+    const used = await taskEntriesSince(env.db, scope, task, now - DAY_MS, CLOCK_ACTOR);
+    if (used >= schedule.maxRunsPerDay) return 'max_runs_per_day';
+    const reserve = schedule.reservedRunsPerDay;
+    if (reserve !== undefined && used >= Math.max(0, schedule.maxRunsPerDay - reserve.count)) {
+      const check = declared(PRE_CONDITIONS, reserve.preCondition);
+      if (check === undefined || !(await check({ db: env.db, projectId, now }))) return 'reserved_runs_per_day';
+    }
+  }
   return null;
 }
 
@@ -161,10 +169,10 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
   for (const project of await listProjects(env.db)) {
     for (const { task, schedule } of tasks) {
       const skip = await decideTask(env, project.projectId, project.lastActivityAt, task, schedule, state, leaves, now);
-      if (skip === 'max_runs_per_day') {
+      if (skip === 'max_runs_per_day' || skip === 'reserved_runs_per_day') {
         // The entry that filled the window names the episode; it cannot move while the window stays full.
-        const filledAt = await lastTaskEntryAt(env.db, { projectId: project.projectId }, task);
-        await recordClockSkip(env, project.projectId, task, skip, ceilingSkipId(project.projectId, task, filledAt), now);
+        const filledAt = await lastTaskEntryAt(env.db, { projectId: project.projectId }, task, CLOCK_ACTOR);
+        await recordClockSkip(env, project.projectId, task, skip, ceilingSkipId(project.projectId, task, filledAt) + (skip === 'reserved_runs_per_day' ? '_reserved' : ''), now);
         emit({ kind: 'task_skipped', task, projectId: project.projectId, skip });
         report.skipped += 1;
         continue;
@@ -233,8 +241,12 @@ export async function hasUnprocessedPrompts(db: RelationalStore, projectId: stri
  * inherited member of `Object.prototype` is not a registration, and a schedule
  * naming one is refused like any other unknown name.
  */
-export const PRE_CONDITIONS: Readonly<Record<string, (args: { db: RelationalStore; projectId: string }) => Promise<boolean>>> = {
+export const PRE_CONDITIONS: Readonly<Record<string, (args: { db: RelationalStore; projectId: string; now: number }) => Promise<boolean>>> = {
   'has-unprocessed-prompts': ({ db, projectId }) => hasUnprocessedPrompts(db, projectId),
+  'has-recent-live-prompts': async ({ db, projectId, now }) => {
+    const session = await newestUnprocessedSession(db, { projectId });
+    return session !== null && session.liveCapture === 1 && session.endedAt >= now - DAY_MS && session.endedAt <= now;
+  },
 };
 
 /** Named accelerators: a count of pending work that shortens a task's interval, read over the same store and looked up the same way. */
@@ -280,6 +292,12 @@ export function resolveSchedule(declared: TaskSchedule, override: unknown): Task
     if (typeof a.name !== 'string' || t === undefined || num(t.steady) === undefined || num(t.accelerated) === undefined) return undefined;
     return { name: a.name, thresholds: { steady: num(t.steady)!, accelerated: num(t.accelerated)! } };
   };
+  const reservedRunsPerDay = (v: unknown): TaskSchedule['reservedRunsPerDay'] | undefined => {
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return undefined;
+    const r = v as Record<string, unknown>;
+    return typeof r.count === 'number' && Number.isSafeInteger(r.count) && r.count >= 0 && typeof r.preCondition === 'string'
+      ? { count: r.count, preCondition: r.preCondition } : undefined;
+  };
   return {
     ...(typeof o.enabled === 'boolean' ? { enabled: o.enabled } : declared.enabled === undefined ? {} : { enabled: declared.enabled }),
     intervalSeconds: num(o.intervalSeconds) ?? declared.intervalSeconds,
@@ -287,6 +305,7 @@ export function resolveSchedule(declared: TaskSchedule, override: unknown): Task
     preCondition: typeof o.preCondition === 'string' ? o.preCondition : declared.preCondition,
     accelerator: accelerator(o.accelerator) ?? declared.accelerator,
     maxRunsPerDay: num(o.maxRunsPerDay) ?? declared.maxRunsPerDay,
+    reservedRunsPerDay: reservedRunsPerDay(o.reservedRunsPerDay) ?? declared.reservedRunsPerDay,
     runWhenCold: typeof o.runWhenCold === 'boolean' ? o.runWhenCold : declared.runWhenCold,
     overlap: o.overlap === 'skip' || o.overlap === 'queue' ? o.overlap : declared.overlap,
   };

@@ -27,8 +27,8 @@ import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
 import { emit } from '../telemetry.js';
-import { claimQueuedRun, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, renewRunLease, requeueLapsedLease, type ClaimedRunRow } from './runs.js';
-import { applyRunUpdate, ensureAgent, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
+import { claimQueuedRun, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, renewRunLease, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ClaimedRunRow } from './runs.js';
+import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openProviderCredential } from './provider-credentials.js';
 import { leafValues } from './settings.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
@@ -583,7 +583,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     carried = spec.fromQueue === true ? (await getRun(env.db, scope, runId))?.dispatchedBy ?? null : null;
     recorded = spec.fromQueue === true
       ? await launchQueued(env.db, scope, runId, { task: prepared.task, dispatchedBy: minted.tokenId, startedAt: now, runContext, instruction: spec.instruction ?? null, provider: prepared.providerType, model: prepared.model }, admission)
-      : await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now }, admission);
+      : await recordDispatch(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, runContext, dispatchedBy: minted.tokenId, startedAt: now, dispatchSpec: JSON.stringify(storedSpecOf(spec)) }, admission);
   } catch (error) {
     await retireDispatchCredential(env, minted.tokenId, now);
     throw error;
@@ -783,7 +783,7 @@ export async function requeueReplaced(env: ServerEnv, replaced: ReplacedRun, now
     : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
   const outcome = await dispatchTask(env, run.task, projectId, {
     serverUrl: replaced.serverUrl,
-    actor: replaced.actor,
+    actor: (await getDispatchActor(env.db, scope, run.id)) ?? UNATTRIBUTED_DISPATCH_ACTOR,
     ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
     params: carriedParams(run.runContext),
     ...input,

@@ -63,7 +63,7 @@ describe('the task catalogue', () => {
 describe('what the clock runs', () => {
   it('schedules extraction with its unread-prompt guard and keeps seeding and titling off the clock', () => {
     expect(scheduledTasks().map((t) => t.task)).toEqual(['container-smoke', EXTRACTION_TASK]);
-    expect(TASK_SCHEDULE[EXTRACTION_TASK]).toEqual({ intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12, preCondition: 'has-unprocessed-prompts' });
+    expect(TASK_SCHEDULE[EXTRACTION_TASK]).toEqual({ intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12, reservedRunsPerDay: { count: 3, preCondition: 'has-recent-live-prompts' }, preCondition: 'has-unprocessed-prompts' });
     for (const task of [SEEDING_TASK, TITLING_TASK]) expect({ task, schedule: TASK_SCHEDULE[task] }).toEqual({ task, schedule: null });
   });
 
