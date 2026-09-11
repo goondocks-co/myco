@@ -94,12 +94,10 @@ export class ServerClient {
     return this.record.projectId;
   }
 
-  /** The one authenticated request: bearer, protocol and Project headers, bounded by the budget, answered raw. */
+  /** Authenticated fetch bounded across upload, response headers and response body by the request deadline. */
   async request(method: string, path: string, init: { body?: BodyInit; headers?: Record<string, string>; budget: RequestBudget }): Promise<RawAnswer> {
     const controller = new AbortController();
-    let phase: 'connect' | 'request' = 'connect';
     let timedOut = false;
-    const connectTimer = setTimeout(() => { timedOut = true; controller.abort(); }, init.budget.connectTimeoutMs);
     const requestTimer = setTimeout(() => { timedOut = true; controller.abort(); }, init.budget.requestTimeoutMs);
     try {
       const res = await this.fetchImpl(`${this.base}${path}`, {
@@ -114,14 +112,11 @@ export class ServerClient {
         redirect: 'error',
         signal: controller.signal,
       });
-      clearTimeout(connectTimer);
-      phase = 'request';
       return await rawAnswerOf(res);
     } catch (err) {
-      if (timedOut) return { kind: 'timeout', phase };
+      if (timedOut) return { kind: 'timeout', phase: 'request' };
       return { kind: 'transport', detail: err instanceof Error ? err.message : String(err) };
     } finally {
-      clearTimeout(connectTimer);
       clearTimeout(requestTimer);
     }
   }

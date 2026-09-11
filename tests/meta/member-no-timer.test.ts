@@ -52,7 +52,7 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
     calls: 1, form: 'awaited', bound: "one short re-read of a transcript the IDE writes after the hook fires, inside the hook's own budget",
   },
   'packages/myco/src/member/transport.ts': {
-    calls: 3, form: 'cleared', bound: 'the connect and request budgets that abort one HTTP call',
+    calls: 2, form: 'cleared', bound: 'request deadlines that abort HTTP calls',
   },
   'packages/myco/src/member/join-code.ts': {
     calls: 1, form: 'awaited', bound: 'the sleep between polls of one join code, injectable by a caller',
