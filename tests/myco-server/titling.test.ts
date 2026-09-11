@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import {
-  cleanSummary, cleanTitle, OWNER_TITLING_WINDOW_MS, RUN_OVERRUN_MARGIN_MS, sessionMaterial, titleSession, TITLING_RUN_TIMEOUT_SECONDS, TITLING_TASK, titlingParamsOf,
+  cleanSummary, cleanTitle, OWNER_TITLING_WINDOW_MS, RUN_OVERRUN_MARGIN_MS, sessionMaterial, titleSession, titleReadySessions, TITLING_RUN_TIMEOUT_SECONDS, TITLING_TASK, titlingParamsOf,
 } from '@myco-server-worker/core/titling.js';
 import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MATERIAL_EXCERPT_CHARS } from '@myco-server-worker/constants.js';
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
@@ -75,6 +75,48 @@ const seedAnthropic = async (h: ReturnType<typeof harness>, key = KEY) => {
 const untouched = { title: null, summary: null, titled_at: null, titled_by: null };
 
 describe('titleSession', () => {
+  it('defers a live end until its second turn is parsed, then the wake job claims it once', async () => {
+    const h = harness();
+    h.session('s1');
+    h.prompt('s1', 'p1', 'first turn', NOW - 9_000);
+    h.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset,
+      first_received_at, last_received_at, token_id, fidelity) VALUES ('proj_1','tx1','s1','m',200,100,1,2,'t','full')`);
+    h.sqlite.run(`INSERT INTO events (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+      VALUES ('proj_1','end','s1','t','session.end','cli','{}','h',?,?)`, [NOW, NOW]);
+    h.sqlite.run(`UPDATE sessions SET titling_requested_at = ? WHERE session_id = 's1'`, [NOW]);
+    expect(await h.title('s1')).toEqual({ outcome: 'capture_pending' });
+    expect(h.row('s1').titled_at).toBeNull();
+    await expect(sessionMaterial(h.db, 'proj_1', 's1')).rejects.toThrow('capture is incomplete');
+    const env = { ...h.env, origin: ORIGIN };
+    expect(await titleReadySessions(env, NOW)).toBe(0);
+    expect(h.runRows()).toHaveLength(0);
+    h.prompt('s1', 'p2', 'second turn correction', NOW - 1_000);
+    h.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx1'`);
+    await expect(titleReadySessions({ ...h.env, origin: undefined }, NOW)).rejects.toThrow('Deployment origin');
+    expect(await titleReadySessions(env, NOW + 1)).toBe(1);
+    expect(h.runRows()).toHaveLength(1);
+    expect((await sessionMaterial(h.db, 'proj_1', 's1')).map((p) => p.prompt)).toEqual(['first turn', 'second turn correction']);
+    expect(await titleReadySessions(env, NOW + 2)).toBe(0);
+    expect(h.runRows()).toHaveLength(1);
+  });
+
+  it('does not automatically title imported session ends or sessions with failed parsing', async () => {
+    const h = harness();
+    for (const id of ['imported', 'historical', 'failed']) {
+      h.session(id);
+      h.prompt(id, `p_${id}`, 'material', NOW - 1_000);
+      h.sqlite.run(`INSERT INTO events (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+        VALUES ('proj_1',?,?,'t','session.end',?,'{}','h',?,?)`, [`end_${id}`, id, id === 'imported' ? 'import' : 'cli', NOW, NOW]);
+    }
+    h.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset,
+      first_received_at, last_received_at, token_id, parse_error) VALUES ('proj_1','tx','failed','m',100,100,1,2,'t','bad record')`);
+    h.sqlite.run(`UPDATE sessions SET titling_requested_at = ? WHERE session_id = 'failed'`, [NOW]);
+    expect(await titleReadySessions({ ...h.env, origin: ORIGIN }, NOW)).toBe(0);
+    expect(h.runRows()).toHaveLength(0);
+    expect((await h.ask('failed')).outcome).toBe('capture_pending');
+    expect(h.row('failed').titled_at).toBeNull();
+  });
+
   it('claims the session, queues one titling run carrying the whole dispatch, and skips every later attempt', async () => {
     const h = harness();
     await seedAnthropic(h, OAT);

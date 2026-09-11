@@ -36,6 +36,7 @@ import { entryFor, opOf, TOOL_REGISTRY, type RegistryEntry } from './registry.js
 import { isRunCall, runDefinitions, RUN_TOOL_REGISTRY } from './run-surface.js';
 import { runDefinitionOf } from './run-definitions.js';
 import { normalizeInput, ToolError, unknownTool, validateInput, type ToolInput } from './validate.js';
+import { SessionMaterialPendingError } from '../read/material-readiness.js';
 
 export const SERVER_NAME = 'myco';
 
@@ -243,7 +244,11 @@ export async function callTool(ctx: ToolContext, name: string, args: unknown): P
       ? `${name} op '${op}' is not offered by a Deployment`
       : `${name} op '${op}' is not yet served by this Deployment (${entry.notServed})`);
   }
-  return { tool: name as AnyTool, op, result: await entry.handler(input, ctx) };
+  try { return { tool: name as AnyTool, op, result: await entry.handler(input, ctx) }; }
+  catch (error) {
+    if (error instanceof SessionMaterialPendingError) throw new ToolError('tool_call_failed', error.message);
+    throw error;
+  }
 }
 
 /**

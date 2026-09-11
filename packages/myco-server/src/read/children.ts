@@ -1,4 +1,6 @@
 import type { RelationalStore } from '../core/adapters.js';
+import { assertSessionMaterialReady, sessionMaterialReadySql } from './material-readiness.js';
+import { notTombstonedSql } from '../core/tombstones.js';
 import { progressOf } from './plans.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
 
@@ -137,18 +139,34 @@ export const listAttachments = (db: RelationalStore, scope: ReadScope, sessionId
 
 export interface MaterialRow { prompt: string; response: string | null; promptId: string }
 
+const MATERIAL_PROMPT_SQL = `pb.origin = 'user' AND pb.text IS NOT NULL`;
+
+/** Inline human prompts available to the titling material query. */
+const sessionHasMaterialSql = (alias: string): string => `EXISTS (SELECT 1 FROM prompt_batches pb
+  WHERE pb.project_id = ${alias}.project_id AND pb.session_id = ${alias}.session_id AND ${MATERIAL_PROMPT_SQL})`;
+
+/** Unclaimed automatic title requests whose inline material is ready. */
+export async function listReadyTitleSessions(db: RelationalStore, limit: number): Promise<{ projectId: string; sessionId: string }[]> {
+  const { results } = await db.prepare(`SELECT s.project_id AS projectId, s.session_id AS sessionId FROM sessions s
+    WHERE s.titling_requested_at IS NOT NULL AND s.ended_at IS NOT NULL AND s.titled_at IS NULL AND s.title IS NULL
+      AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')} AND ${sessionHasMaterialSql('s')}
+    ORDER BY s.titling_requested_at, s.project_id, s.session_id LIMIT ?`).bind(limit).all<{ projectId: string; sessionId: string }>();
+  return results;
+}
+
 const MATERIAL_SQL = `SELECT pb.prompt_id, substr(pb.text, 1, ?) AS prompt,
                      (SELECT substr(r.text, 1, ?) FROM responses r
                        WHERE r.project_id = pb.project_id AND r.session_id = pb.session_id AND r.prompt_id = pb.prompt_id AND r.text IS NOT NULL
                        ORDER BY r.created_at, r.response_id LIMIT 1) AS response
                 FROM prompt_batches pb
-               WHERE pb.project_id = ? AND pb.session_id = ? AND pb.origin = 'user' AND pb.text IS NOT NULL`;
+               WHERE pb.project_id = ? AND pb.session_id = ? AND ${MATERIAL_PROMPT_SQL} AND ${sessionMaterialReadySql('pb')}`;
 
 async function materialRows(db: RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }, order: 'ASC' | 'DESC'): Promise<MaterialRow[]> {
   const { results } = await db
     .prepare(`${MATERIAL_SQL} ORDER BY pb.created_at ${order}, pb.prompt_id ${order} LIMIT ?`)
     .bind(opts.excerptChars, opts.excerptChars, projectId, sessionId, opts.limit)
     .all<{ prompt_id: string; prompt: string; response: string | null }>();
+  await assertSessionMaterialReady(db, projectId, sessionId);
   return results.map((r) => ({ promptId: r.prompt_id, prompt: r.prompt, response: r.response ?? null }));
 }
 

@@ -15,6 +15,7 @@ import { MATERIAL_EXCERPT_CHARS } from '../constants.js';
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
 import { notTombstonedSql } from '../core/tombstones.js';
 import { clampLimit, decodeCursor, encodeCursor, keyset, page, type Page, type ReadScope } from './scope.js';
+import { sessionMaterialReadySql } from './material-readiness.js';
 
 /**
  * Whether extraction reads a prompt of each origin.
@@ -68,7 +69,7 @@ async function readUnprocessedPrompts(
   const k = keyset(opts, { order: 'p.created_at', id: 'p.prompt_id', direction: 'ASC' });
   if (k === null) return { rows: [], cursor: null };
 
-  const conditions = ['p.project_id = ?', ELIGIBLE_PROMPT_SQL, notTombstonedSql('s')];
+  const conditions = ['p.project_id = ?', ELIGIBLE_PROMPT_SQL, notTombstonedSql('s'), sessionMaterialReadySql('s')];
   const params: unknown[] = [scope.projectId, ...READ_ORIGINS];
   if (opts.includeActive !== true) conditions.push('s.ended_at IS NOT NULL');
   if (session !== undefined) { conditions.push(`p.session_id ${session.exclude ? '!=' : '='} ?`); params.push(session.id); }
@@ -139,7 +140,7 @@ export async function listUnprocessedPrompts(
     const newest = await db.prepare(`SELECT s.session_id AS id FROM
       (SELECT DISTINCT p.session_id FROM prompt_batches p WHERE p.project_id = ? AND ${ELIGIBLE_PROMPT_SQL}) candidates
       JOIN sessions s ON s.session_id = candidates.session_id
-      WHERE s.project_id = ? AND s.ended_at IS NOT NULL AND ${notTombstonedSql('s')}
+      WHERE s.project_id = ? AND s.ended_at IS NOT NULL AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')}
       ORDER BY s.ended_at DESC, s.session_id DESC LIMIT 1`).bind(scope.projectId, ...READ_ORIGINS, scope.projectId).first<{ id: string }>();
     if (newest === null) return readUnprocessedPrompts(db, scope, opts);
     cursor = [newest.id, null, null];
