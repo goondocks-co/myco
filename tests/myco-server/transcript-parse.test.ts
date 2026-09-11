@@ -108,6 +108,47 @@ async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max
 describe('parsing a held transcript', () => {
   const codexMessage = (role: string, text: string) => line({ type: 'response_item', payload: { type: 'message', role, content: [{ type: role === 'assistant' ? 'output_text' : 'input_text', text }] } });
 
+  it('keeps Codex replies and tools on the human turn across appended context and parse windows', async () => {
+    const opening = line({ type: 'session_meta', payload: { source: 'cli' } })
+      + codexMessage('user', 'Continue checking capture');
+    const context = codexMessage('user', '<environment_context>Current date: 2026-09-11</environment_context>');
+    const ending = line({ type: 'response_item', payload: { type: 'function_call', call_id: 'check', name: 'shell', arguments: '{}' } })
+      + line({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'check', output: 'capture checked' } })
+      + codexMessage('assistant', 'The capture check is complete');
+    const staged = await rig(opening, 2048, { agent: 'codex' });
+    await drain(staged.env, staged.sqlite);
+    let size = Buffer.byteLength(opening);
+    for (const text of [context, ending]) {
+      const bytes = new TextEncoder().encode(text);
+      const key = await sha256HexOf(bytes);
+      await staged.serverEnv.blobs.put(`${PROJECT}/${key}`, new Blob([bytes]).stream());
+      staged.sqlite.run('INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [PROJECT, key, bytes.length, 'text/plain', staged.tokenId, NOW]);
+      staged.sqlite.run('INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [PROJECT, TRANSCRIPT, size, bytes.length, key, `e${size}`, NOW, NOW, staged.tokenId]);
+      size += bytes.length;
+      staged.sqlite.run('UPDATE transcripts SET size = ?', [size]);
+      await drain(staged.env, staged.sqlite);
+    }
+    const whole = await rig(opening + context + ending, 2048, { agent: 'codex' });
+    await drain(whole.env, whole.sqlite);
+    for (const { sqlite, serverEnv } of [whole, staged]) {
+      expect(target(sqlite).parse_error).toBeNull();
+      expect(target(sqlite).parsed_offset).toBe(size);
+      expect(sqlite.query('SELECT text, origin FROM prompt_batches ORDER BY text').all()).toEqual([
+        { text: '<environment_context>Current date: 2026-09-11</environment_context>', origin: 'system' },
+        { text: 'Continue checking capture', origin: 'user' },
+      ]);
+      expect(sqlite.query('SELECT p.text AS prompt, r.text AS response FROM responses r JOIN prompt_batches p ON p.prompt_id = r.prompt_id').all()).toEqual([
+        { prompt: 'Continue checking capture', response: 'The capture check is complete' },
+      ]);
+      expect(sqlite.query('SELECT p.text AS prompt, t.output_preview AS output FROM tool_calls t JOIN prompt_batches p ON p.prompt_id = t.prompt_id').all()).toEqual([
+        { prompt: 'Continue checking capture', output: 'capture checked' },
+      ]);
+      expect((await sessionMaterial(serverEnv.db, PROJECT, SESSION))[0].response).toContain('The capture check is complete');
+    }
+  });
+
   it('dispatches an ended Codex conversation after parsing without changing its format fidelity', async () => {
     const text = line({ type: 'session_meta', payload: { source: 'cli' } })
       + codexMessage('user', 'Read the project rules heading')
@@ -271,7 +312,7 @@ describe('parsing a held transcript', () => {
     expect(orphans.c).toBe(0);
   });
 
-  it('closes the turn only at the end of the file, and holds it open before that', async () => {
+  it('retains the turn at the current upload boundary for later appended bytes', async () => {
     const { sqlite, env } = await rig(singleTurn(30), 96);
     const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
     await parseOnce(env as never, {
@@ -285,7 +326,7 @@ describe('parsing a held transcript', () => {
     await drain(env, sqlite, 400);
     const done = sqlite.query(`SELECT parsed_offset, size, open_prompt_id FROM transcripts`).get() as { parsed_offset: number; size: number; open_prompt_id: string | null };
     expect(done.parsed_offset).toBe(done.size);
-    expect(done.open_prompt_id).toBeNull();
+    expect(done.open_prompt_id).toBe(mid.open_prompt_id);
   });
 
   it('reaches the same rows whether the bytes arrived as one segment or as many', async () => {
@@ -383,12 +424,12 @@ describe('parsing a held transcript', () => {
     expect(wrong.c).toBe(0);
   });
 
-  it('closes the turn at the end of the file, so nothing inherits a stale carry', async () => {
+  it('replaces the carried turn when a new human prompt arrives', async () => {
     const { sqlite, env } = await rig(body(2));
     await drain(env, sqlite);
     expect(target(sqlite).parsed_offset).toBe(target(sqlite).size);
     const row = sqlite.query(`SELECT open_prompt_id FROM transcripts`).get() as { open_prompt_id: string | null };
-    expect(row.open_prompt_id).toBeNull();
+    expect(sqlite.query('SELECT text FROM prompt_batches WHERE prompt_id = ?').get(row.open_prompt_id)).toEqual({ text: 'prompt 1' });
   });
 
   it('re-derives a resumed turn identically, so no row is refused as a conflict against itself', async () => {

@@ -58,6 +58,8 @@ export interface DerivedEvent {
   payload: Payload;
   createdAt: number;
   offset: number;
+  /** False when a captured prompt supplies context without opening an assistant turn. */
+  opensTurn?: boolean;
 }
 
 /**

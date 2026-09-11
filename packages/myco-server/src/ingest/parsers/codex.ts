@@ -99,8 +99,12 @@ export const codexParser: TranscriptParser = {
           await flushReply();
           const decision = evaluatePromptRules(CAPTURE_RULE_BUNDLES, 'codex', { prompt: text, transcriptPath: sessionId, transcriptMeta: metadata, record: value });
           if (decision.action === 'drop') continue;
-          promptId = await promptIdAt(sessionId, offset);
-          events.push({ kind: 'prompt', payload: { promptId, text: decision.prompt, origin: decision.origin === undefined || decision.origin === 'human' ? 'user' : decision.origin, promptKind: 'message' }, createdAt, offset });
+          const opensTurn = decision.origin === undefined || decision.origin === 'human';
+          const capturedPromptId = await promptIdAt(sessionId, offset);
+          if (opensTurn) {
+            promptId = capturedPromptId;
+          }
+          events.push({ kind: 'prompt', payload: { promptId: capturedPromptId, text: decision.prompt, origin: opensTurn ? 'user' : decision.origin, promptKind: 'message' }, createdAt, offset, opensTurn });
           continue;
         }
         if (str(payload.role) !== 'assistant') continue;
