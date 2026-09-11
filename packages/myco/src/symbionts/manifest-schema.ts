@@ -1,73 +1,7 @@
 import { z } from 'zod';
 
-/** Per-symbiont capture rules that filter or rewrite events. Scope and event
- *  keys are documented in docs/symbiont-manifests.md. */
-const CaptureRuleSchema = z.object({
-  event: z.enum(['session_start', 'user_prompt']),
-  scope: z.enum(['this_agent', 'any_agent']).default('this_agent'),
-  when: z.object({
-    prompt_starts_with: z.string().optional(),
-    prompt_contains: z.string().optional(),
-    /** Fires when transcript_path is absent or empty. */
-    transcript_path_missing: z.boolean().optional(),
-    /** Fires when a dot-path field in session_meta exists and is truthy. */
-    transcript_meta_field_exists: z.string().optional(),
-    /** Fires when a dot-path field in session_meta equals a scalar value. */
-    transcript_meta_field_equals: z.object({
-      path: z.string(),
-      value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
-    }).optional(),
-    /**
-     * Fires when a dot-path field on the RAW transcript record equals a
-     * scalar. Mining-path only: live hook events carry no transcript
-     * record, so the predicate never fires there. Used for record-level
-     * structural signals like Claude Code's `isCompactSummary`.
-     */
-    record_field_equals: z.object({
-      path: z.string(),
-      value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
-    }).optional(),
-    /** Fires when the prompt begins with a `<tag …>` open for one of these tag names (attribute-robust). */
-    prompt_envelope_tag_in: z.array(z.string()).optional(),
-    /** Fires when the entire prompt is a single balanced/self-closing XML envelope (fail-safe classifier). */
-    prompt_is_enclosing_envelope: z.boolean().optional(),
-  }),
-  action: z.enum(['drop', 'rewrite_prompt', 'classify']),
-  /** Audit string logged when the rule matches. */
-  reason: z.string().optional(),
-  /** For rewrite_prompt: keep the substring after this marker. */
-  extract_after: z.string().optional(),
-  /**
-   * For rewrite_prompt: strip a single enclosing tag envelope. Fires only
-   * when the prompt starts with `open` AND ends with `close`; the inner
-   * text is kept verbatim (boundary whitespace adjacent to the tags is
-   * consumed as part of the envelope). When only one side is present the
-   * rule falls through to `pass` unchanged — same fail-safe stance as
-   * `extract_after`. Evaluated before `extract_after` when both are set.
-   */
-  strip_envelope: z.object({
-    open: z.string().min(1),
-    close: z.string().min(1),
-  }).optional(),
-  /** For rewrite_prompt: trim whitespace from the extracted substring. */
-  trim: z.boolean().default(true),
-  /**
-   * For `action: 'classify'` (and optionally rewrite_prompt): mark the
-   * resulting batch with a non-default `origin`. Records WHO issued the
-   * prompt — orthogonal to `kind` (initial/steering/interrupt), which
-   * records WHERE the batch sits in conversation flow.
-   *
-   *   human         — user-typed (default; rules don't need to set this)
-   *   system        — transcript-synthesized continuation event
-   *                   (e.g. <task-notification>, <environment_context>,
-   *                   <skill> envelope expansion)
-   *   agent_dispatch— prompts emitted by sub-agents back to the parent
-   *   hook_injected — reserved
-   */
-  set_origin: z.enum(['human', 'system', 'agent_dispatch', 'hook_injected']).optional(),
-});
-
-export type CaptureRule = z.infer<typeof CaptureRuleSchema>;
+import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
+export type { CaptureRule } from '@goondocks/myco-shared/capture-rule-schema';
 
 /** Schema describing where user prompts live in an agent's transcript. */
 const MatchExpressionSchema = z.object({
