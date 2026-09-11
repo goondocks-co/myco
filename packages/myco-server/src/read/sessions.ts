@@ -2,6 +2,7 @@ import type { RelationalStore } from '../core/adapters.js';
 import { inListChunks, keyset, page, type Page, type ReadScope } from './scope.js';
 import { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 import { sessionMaterialReadySql } from './material-readiness.js';
+import { titlingClaimAvailableSql } from './titling.js';
 
 export interface ProjectRow {
   projectId: string;
@@ -454,10 +455,10 @@ export async function latestPromptId(db: RelationalStore, scope: ReadScope, sess
   return row?.prompt_id ?? null;
 }
 
-/** Claims one titling attempt for an ended session: true once, false for a session not ended or already claimed. */
+/** Claims an ended session's first attempt or a retry eligible after new live capture. */
 export async function claimTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number): Promise<boolean> {
   const result = await db
-    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND ended_at IS NOT NULL AND titled_at IS NULL AND ${sessionMaterialReadySql('sessions')}`)
+    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND ended_at IS NOT NULL AND ${titlingClaimAvailableSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
     .bind(nowMs, projectId, sessionId)
     .run();
   return result.meta.changes === 1;
