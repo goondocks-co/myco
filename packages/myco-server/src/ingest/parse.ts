@@ -152,6 +152,7 @@ async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget
  * member-shipped prompt or a subagent sibling can be.
  */
 function turnOf(event: DerivedEvent): string | null {
+  if (event.kind === 'prompt' && event.opensTurn === false) return null;
   // Every kind the parsers derive names its turn in the same field, a prompt
   // included: a prompt's `promptId` is its own.
   const named = event.payload.promptId;
@@ -390,10 +391,8 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     return { derived, calls: calls + 1, nextOffset: null, failure: 'parse' };
   }
 
-  // Reaching the end of the file closes the turn: nothing follows to attribute,
-  // and a stale carry would be handed to whatever arrives next. Short of it the
-  // turn stands, whichever bound ended the pass.
-  const openPrompt = cursor < target.size ? lastTurn : null;
+  // Uploaded bytes may end mid-turn; later segments continue the same prompt.
+  const openPrompt = lastTurn;
 
   await env.db
     .prepare(`UPDATE transcripts SET parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?, fidelity = COALESCE(fidelity, ?), open_prompt_id = ?,
