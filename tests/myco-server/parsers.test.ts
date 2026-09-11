@@ -244,6 +244,46 @@ describe('claude-code parser', () => {
 });
 
 describe('codex parser', () => {
+  it('keeps only the human turn and assistant reply from the recorded interactive context', async () => {
+    const bytes = fs.readFileSync(path.join(FIXTURES, 'codex-context-redacted.jsonl'));
+    const provenance = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'codex-context-provenance.json'), 'utf8')) as { redacted_sha256: string; retained_message_rows: number };
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(provenance.redacted_sha256);
+    const lines = linesOf('codex-context-redacted.jsonl');
+    expect(lines).toHaveLength(provenance.retained_message_rows + 1);
+    const events = await PARSERS.codex.parse({ lines, sessionId: SESSION, now: NOW });
+    expect(events.map(({ kind, payload }) => [kind, payload.text, payload.origin])).toEqual([
+      ['prompt', '[redacted text]', 'user'], ['response', '[redacted text]', undefined],
+    ]);
+  });
+
+  it('does not project developer messages as responses in the native rollout', async () => {
+    const lines = linesOf('codex-0.153.4-redacted.jsonl');
+    const events = await PARSERS.codex.parse({ lines, sessionId: SESSION, now: NOW });
+    expect(only(events, 'response')).toHaveLength(1);
+    const assistantOffsets = lines.filter(({ value }) => {
+      const payload = value.payload as { role?: string };
+      return payload.role === 'assistant';
+    }).map(({ offset }) => offset);
+    expect(only(events, 'response').map(({ offset }) => offset)).toEqual(assistantOffsets.slice(0, 1));
+    expect(only(events, 'response')[0].payload.text).toBe('[redacted text]\n\n[redacted text]');
+  });
+
+  it('applies declared Codex prompt drops, origins and desktop rewriting', async () => {
+    const messages = [
+      '# AGENTS.md instructions for /repo\nProject rules',
+      '<recommended_plugins>\n# AGENTS.md instructions for /repo\nProject rules\n</recommended_plugins>',
+      '<environment_context>cwd: /repo</environment_context>',
+      '<subagent_notification>done</subagent_notification>',
+      '<skills_instructions>Use project skills</skills_instructions>',
+      'Editor context\n## My request for Codex:\nFix capture\n',
+    ];
+    const lines = messages.map((text, offset) => ({ offset, value: { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } } }));
+    const events = await PARSERS.codex.parse({ lines, sessionId: SESSION, now: NOW, transcriptMeta: { source: 'cli' } });
+    expect(only(events, 'prompt').map(({ payload }) => [payload.text, payload.origin])).toEqual([
+      [messages[2], 'system'], [messages[3], 'agent_dispatch'], [messages[4], 'system'], ['Fix capture', 'user'],
+    ]);
+  });
+
   it('pins the redacted recording and the item variants its provenance declares', () => {
     const file = 'codex-0.153.4-redacted.jsonl';
     const provenance = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'codex-0.153.4-provenance.json'), 'utf8')) as {

@@ -49,6 +49,22 @@
     "./worker-usage": {
       "import": "./dist/worker-usage.js",
       "types": "./dist/worker-usage.d.ts"
+    },
+    "./capture-rule-schema": {
+      "import": "./dist/capture-rule-schema.js",
+      "types": "./dist/capture-rule-schema.d.ts"
+    },
+    "./capture-rules": {
+      "import": "./dist/capture-rules.js",
+      "types": "./dist/capture-rules.d.ts"
+    },
+    "./capture-rules-data": {
+      "import": "./dist/capture-rules.generated.js",
+      "types": "./dist/capture-rules.generated.d.ts"
+    },
+    "./dot-path": {
+      "import": "./dist/dot-path.js",
+      "types": "./dist/dot-path.d.ts"
     }
   },
   "files": [

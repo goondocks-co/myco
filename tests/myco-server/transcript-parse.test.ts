@@ -88,13 +88,14 @@ const target = (sqlite: Database) => {
 async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max = 50): Promise<number> {
   let passes = 0;
   while (passes < max && target(sqlite).parsed_offset < target(sqlite).size && target(sqlite).parse_error === null) {
-    const t = sqlite.query(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id FROM transcripts`).get() as Record<string, unknown>;
+    const t = sqlite.query(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context FROM transcripts`).get() as Record<string, unknown>;
     const before = target(sqlite).parsed_offset;
     await parseOnce(env as never, {
       projectId: t.project_id as string, transcriptId: t.transcript_id as string, sessionId: t.session_id as string,
       machineId: t.machine_id as string, tokenId: t.token_id as string, agent: t.agent as string,
       size: t.size as number, parsedOffset: t.parsed_offset as number, fidelity: null,
       openPromptId: (t.open_prompt_id as string | null) ?? null,
+      parserContext: typeof t.parser_context === 'string' ? JSON.parse(t.parser_context) : null,
     }, NOW);
     passes += 1;
     if (target(sqlite).parsed_offset === before) break;
@@ -103,6 +104,63 @@ async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max
 }
 
 describe('parsing a held transcript', () => {
+  const codexMessage = (role: string, text: string) => line({ type: 'response_item', payload: { type: 'message', role, content: [{ type: role === 'assistant' ? 'output_text' : 'input_text', text }] } });
+
+  it('persists interactive user text and classified context without a developer response', async () => {
+    const text = line({ type: 'session_meta', payload: { source: 'cli' } })
+      + codexMessage('developer', 'Injected developer instructions')
+      + codexMessage('user', '# AGENTS.md instructions for /repo\nRules')
+      + codexMessage('user', '<skills_instructions>Use project skills</skills_instructions>')
+      + codexMessage('user', 'Editor context\n## My request for Codex:\nFix capture')
+      + codexMessage('assistant', 'Capture fixed');
+    const { sqlite, env } = await rig(text, 2048, { agent: 'codex' });
+    await drain(env, sqlite);
+    expect(target(sqlite).parse_error).toBeNull();
+    expect(sqlite.query('SELECT text, origin FROM prompt_batches ORDER BY text').all()).toEqual([
+      { text: '<skills_instructions>Use project skills</skills_instructions>', origin: 'system' },
+      { text: 'Fix capture', origin: 'user' },
+    ]);
+    expect(sqlite.query('SELECT text FROM responses').all()).toEqual([{ text: 'Capture fixed' }]);
+  });
+
+  it.each(['exec', { subagent: { thread_spawn: { parent_thread_id: 'parent' } } }])('retains the source rule across Codex read windows: %j', async (source) => {
+    const header = line({ type: 'session_meta', payload: { source } });
+    const text = header + Array.from({ length: 40 }, (_, i) => codexMessage('user', `request ${i} ${'x'.repeat(600)}`)).join('');
+    const { sqlite, env } = await rig(text, 2048, { agent: 'codex' });
+    expect(await drain(env, sqlite)).toBeGreaterThan(1);
+    expect(target(sqlite).parsed_offset).toBe(Buffer.byteLength(text));
+    expect(count(sqlite, 'prompt_batches')).toBe(0);
+    expect(JSON.parse((sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string }).parser_context)).toEqual({ source });
+  });
+
+  it('recovers a header before continuing an existing cursor without rewriting prior rows', async () => {
+    const header = line({ type: 'session_meta', payload: { source: 'exec' } });
+    const prior = codexMessage('user', 'already parsed');
+    const text = header + prior + codexMessage('user', 'new exec request');
+    const { sqlite, serverEnv } = await rig(text, 2048, { agent: 'codex' });
+    const cursor = Buffer.byteLength(header + prior);
+    sqlite.run('UPDATE transcripts SET parsed_offset = ?, parser_version = 1', [cursor]);
+    await parseTranscripts(serverEnv, NOW);
+    expect(target(sqlite).parsed_offset).toBe(cursor);
+    expect(count(sqlite, 'events')).toBe(0);
+    await parseTranscripts(serverEnv, NOW);
+    expect(target(sqlite).parsed_offset).toBe(Buffer.byteLength(text));
+    expect(count(sqlite, 'prompt_batches')).toBe(0);
+    expect((await listTranscripts(serverEnv.db, { projectId: PROJECT }, SESSION))[0]).not.toHaveProperty('parserContext');
+  });
+
+  it('clears an older parse failure on successful progress so later windows remain eligible', async () => {
+    const { sqlite, serverEnv } = await rig(body(100), 2048);
+    sqlite.run("UPDATE transcripts SET parse_error = 'parse', parse_failed_at = 1, parser_version = 1");
+    await parseTranscripts(serverEnv, NOW);
+    expect(target(sqlite).parse_error).toBeNull();
+    expect(target(sqlite).parsed_offset).toBeGreaterThan(0);
+    expect(target(sqlite).parsed_offset).toBeLessThan(target(sqlite).size);
+    await drain(serverEnv, sqlite);
+    expect(target(sqlite).parsed_offset).toBe(target(sqlite).size);
+    expect(count(sqlite, 'prompt_batches')).toBe(100);
+  });
+
   it('stores the custom tool call and array output in the recorded Codex rollout', async () => {
     const text = fs.readFileSync(path.join(FIXTURES, 'codex-0.153.4-redacted.jsonl'), 'utf8');
     const { sqlite, env } = await rig(text, 1 << 20, { agent: 'codex' });
