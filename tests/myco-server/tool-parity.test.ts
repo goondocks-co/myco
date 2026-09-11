@@ -33,7 +33,7 @@ const ADDED: Record<string, readonly string[]> = {
   myco_agent: [PROJECT_PIVOT],
   // #1149: what a grant's write cites in place of the session it has none of.
   // #1152: the agent-line projection, written at extraction; the member side's 1.4 dispatcher is not edited before the sweep.
-  myco_spores: ['provenance_kind', 'provenance_ref', 'agent_line'],
+  myco_spores: ['provenance_kind', 'provenance_ref', 'agent_line', 'prompt_id'],
 };
 
 /**
