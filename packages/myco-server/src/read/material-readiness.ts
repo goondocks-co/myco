@@ -1,4 +1,13 @@
 import type { RelationalStore } from '../core/adapters.js';
+import { failedAutomaticTitleSql } from '../core/runs.js';
+
+/** A first attempt, or a failed automatic attempt followed by newly captured live bytes. */
+export const titlingClaimAvailableSql = (alias: string): string => `(${alias}.titled_at IS NULL OR (
+  ${alias}.title IS NULL
+  AND EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id
+    AND t.last_received_at > ${alias}.titled_at AND t.imported_at IS NULL)
+  AND ${failedAutomaticTitleSql(alias)}
+))`;
 
 const UNREADY_TRANSCRIPT_SQL = `t.parsed_offset < t.size OR t.parse_error IS NOT NULL`;
 
