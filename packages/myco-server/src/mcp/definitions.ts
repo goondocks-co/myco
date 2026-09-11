@@ -515,6 +515,10 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
           "type": "string",
           "description": "Session id the spore belongs to for op: \"save\" and \"consolidate\", or the session acting for op: \"supersede\" and \"obsolete\"; from the Session:: line when known"
         },
+        "prompt_id": {
+          "type": "string",
+          "description": "For save and consolidate: the exact captured prompt supporting this finding. Required for extraction runs; the server derives its source session. Other callers may name a prompt within their permitted session."
+        },
         "tags": {
           "type": "array",
           "items": {

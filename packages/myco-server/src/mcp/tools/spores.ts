@@ -6,9 +6,10 @@
  * spore the built-in `user` agent and the member as author, as it does in 1.4
  * plus the author; a run's its agent and the run as author; an External Agent
  * grant's its own agent row and the grant as author. Every resolution is one
- * atomic write of the status and its event. The session a write names is judged
- * by `sessionOf`: a member's own machine's session, a run's dispatch-named one,
- * and none at all for a grant.
+ * atomic write of the status and its event. New extraction spores name a
+ * captured source prompt in the run's Project. Other writes use `sessionOf`:
+ * a member's own machine's session, a run's dispatch-named one, and no session
+ * for a grant.
  *
  * A write that names no session may cite what produced it instead — a pull
  * request or a commit — which is the only provenance an externally hosted agent
@@ -19,9 +20,12 @@
 import { consolidateSpores, countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore, type ResolutionAction, type SporeProvenance, type SporeRow, type SporeStatus } from '../../core/spores.js';
 import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags } from '../../core/spore-writes.js';
 import { latestPromptId } from '../../read/sessions.js';
+import { extractionSourceSession } from '../../read/prompts.js';
+import { promptInSession } from '../../read/turns.js';
+import { EXTRACTION_TASK } from '../../core/task-catalogue.js';
 import { AGENT_LINE_MAX_CHARS } from '../../core/injection.js';
 import type { ReadScope } from '../../read/scope.js';
-import { failure, scopeOf, sessionOf, writerOf, type ToolContext, type ToolFailure } from '../context.js';
+import { failure, scopeOf, sessionOf, writerOf, SESSION_NOT_FOUND, type ToolContext, type ToolFailure } from '../context.js';
 import { snake } from '../shape.js';
 import type { ToolInput } from '../validate.js';
 
@@ -36,6 +40,23 @@ function visible(ctx: ToolContext, row: SporeRow): Record<string, unknown> {
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
 const int = (v: unknown): number | undefined => (typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined);
+
+/** The captured source of a new spore; extraction names its exact prompt instead of a dispatch session. */
+async function sourceOf(input: ToolInput, ctx: ToolContext, scope: ReadScope): Promise<{ ok: true; sessionId: string | null; promptId: string | null } | ToolFailure> {
+  const promptId = str(input.prompt_id);
+  if (ctx.principal.kind === 'run' && ctx.principal.task === EXTRACTION_TASK) {
+    if (promptId === undefined) return failure('prompt_id is required for extraction spore writes');
+    const sessionId = await extractionSourceSession(ctx.env.db, scope, promptId);
+    if (sessionId === null) return failure('prompt_id not found');
+    const named = str(input.session_id);
+    if ((named !== undefined && named !== sessionId) || (ctx.principal.sessionId !== null && ctx.principal.sessionId !== sessionId)) return failure(SESSION_NOT_FOUND);
+    return { ok: true, sessionId, promptId };
+  }
+  const session = await sessionOf(ctx, scope, input, TOOL);
+  if (!session.ok) return session;
+  if (input.prompt_id !== undefined && (promptId === undefined || session.sessionId === null || !(await promptInSession(ctx.env.db, scope, session.sessionId, promptId)))) return failure('prompt_id not found');
+  return { ...session, promptId: promptId ?? (session.sessionId === null ? null : await latestPromptId(ctx.env.db, scope, session.sessionId)) };
+}
 
 const PROVENANCE_KINDS: ReadonlySet<string> = new Set(['pr', 'commit']);
 /** One refusal for an agent line past the bound the injection renders. */
@@ -105,11 +126,10 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
     if (!cited.ok) return cited;
     const lined = agentLineOf(input);
     if (!lined.ok) return lined;
-    const session = await sessionOf(ctx, scope, input, TOOL);
+    const session = await sourceOf(input, ctx, scope);
     if (!session.ok) return session;
-    const promptId = session.sessionId === null ? null : await latestPromptId(db, scope, session.sessionId);
     const spore = await insertSpore(db, scope, {
-      id: mintSporeId(type), agentId: by.agentId, sessionId: session.sessionId, promptId, observationType: type,
+      id: mintSporeId(type), agentId: by.agentId, sessionId: session.sessionId, promptId: session.promptId, observationType: type,
       content, context: null, filePath: null, tags: sporeTags(input.tags), contentHash: null, properties: null,
       author: by.author, provenance: cited.provenance, agentLine: lined.agentLine, createdAt: ctx.now,
     });
@@ -157,11 +177,10 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
     if (!cited.ok) return cited;
     const lined = agentLineOf(input);
     if (!lined.ok) return lined;
-    const session = await sessionOf(ctx, scope, input, TOOL);
+    const session = await sourceOf(input, ctx, scope);
     if (!session.ok) return session;
-    const promptId = session.sessionId === null ? null : await latestPromptId(db, scope, session.sessionId);
     const { wisdom, consolidated } = await consolidateSpores(db, scope, {
-      id: mintSporeId(plan.observationType), agentId: by.agentId, sessionId: session.sessionId, promptId, observationType: plan.observationType,
+      id: mintSporeId(plan.observationType), agentId: by.agentId, sessionId: session.sessionId, promptId: session.promptId, observationType: plan.observationType,
       content: plan.content, context: null, filePath: null, tags: sporeTags(input.tags), contentHash: null, properties: null,
       author: by.author, provenance: cited.provenance, agentLine: lined.agentLine, createdAt: ctx.now,
     }, plan.sources, { agentId: by.agentId, author: by.author, reason: plan.reason, sessionId: session.sessionId, provenance: cited.provenance, createdAt: ctx.now }, ctx.now);

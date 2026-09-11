@@ -141,9 +141,11 @@ export async function insertSpore(db: RelationalStore, scope: ReadScope, row: Sp
     .first<SporeRow>();
 }
 
-export async function getSpore(db: RelationalStore, scope: ReadScope, id: string): Promise<SporeRow | null> {
-  return db.prepare(`SELECT ${COLUMNS} FROM spores WHERE project_id = ? AND id = ?`)
-    .bind(scope.projectId, id).first<SporeRow>();
+export async function getSpore(db: RelationalStore, scope: ReadScope, id: string): Promise<(SporeRow & { sourceCreatedAt: number | null }) | null> {
+  return db.prepare(`SELECT ${COLUMNS}, (SELECT p.created_at FROM prompt_batches p
+    WHERE p.project_id = spores.project_id AND p.session_id = spores.session_id AND p.prompt_id = spores.prompt_id) AS sourceCreatedAt
+    FROM spores WHERE project_id = ? AND id = ?`)
+    .bind(scope.projectId, id).first<SporeRow & { sourceCreatedAt: number | null }>();
 }
 
 function filters(scope: ReadScope, o: ListSporesOptions): { where: string; params: unknown[] } {
