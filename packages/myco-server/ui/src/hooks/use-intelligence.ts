@@ -1,5 +1,5 @@
-import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
-import { fetchJson } from '../lib/api';
+import { type UseQueryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ApiError, fetchJson, postJson } from '../lib/api';
 import { usePaged } from './use-paged';
 
 export interface RunListRow {
@@ -126,6 +126,40 @@ export interface SporeResponse {
 
 const seg = (value: string) => encodeURIComponent(value);
 const project = (projectId: string) => `/api/projects/${seg(projectId)}`;
+
+export const MEMORY_TASKS = [
+  { id: 'extract-curate', label: 'Extract session knowledge', description: 'Read captured sessions and save useful findings as spores.' },
+  { id: 'vault-seed', label: 'Seed from repository', description: 'Read the connected repository and save project knowledge as spores.' },
+] as const;
+export type MemoryTask = typeof MEMORY_TASKS[number]['id'];
+type DispatchAnswer = { outcome: 'unchanged' } | { runId: string; projectId: string; queued: boolean };
+
+export function taskRefusalText(error: Error): string {
+  if (error instanceof ApiError) {
+    const body = error.body;
+    if (body !== null && typeof body === 'object') {
+      if ('reason' in body && typeof body.reason === 'string') return body.reason;
+      if ('message' in body && typeof body.message === 'string') return body.message;
+    }
+    return `The server refused the task (${error.status}).`;
+  }
+  return error.message;
+}
+
+export function useDispatchMemoryTask(projectId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (task: MemoryTask): Promise<DispatchAnswer> => {
+      const answer = await postJson<DispatchAnswer>('/api/harness/dispatch', { projectId, task });
+      if (answer !== null && typeof answer === 'object') {
+        if ('outcome' in answer && answer.outcome === 'unchanged') return answer;
+        if ('runId' in answer && typeof answer.runId === 'string' && answer.runId.length > 0 && answer.projectId === projectId && typeof answer.queued === 'boolean') return answer;
+      }
+      throw new Error('The server did not return a run or an unchanged outcome. Check the run list before trying again.');
+    },
+    onSuccess: () => client.invalidateQueries({ queryKey: ['runs', projectId] }),
+  });
+}
 
 /** A project's runs, newest first; `status` narrows to one status or, null, none. */
 export function useRuns(projectId: string, status: string | null) {

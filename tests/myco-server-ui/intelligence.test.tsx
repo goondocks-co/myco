@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -49,6 +49,64 @@ function mount(path: string) {
 }
 
 describe('Agent runs', () => {
+  it('queues the selected memory task for this project and opens its actual run', async () => {
+    let request: { method?: string; body: unknown } | undefined;
+    let queued = false;
+    server(base({
+      '/api/projects/x/runs': () => Response.json({ rows: queued ? [run({ id: 'seed_run', task: 'vault-seed', status: 'queued', queuedAt: NOW, heldBy: 'worker', position: 0 })] : [], cursor: null }),
+      '/api/harness/dispatch': (init) => {
+        request = { method: init?.method, body: JSON.parse(String(init?.body)) };
+        queued = true;
+        return Response.json({ runId: 'seed_run', projectId: 'x', queued: true });
+      },
+      '/api/projects/x/runs/seed_run': () => Response.json(detail({ id: 'seed_run', task: 'vault-seed', status: 'queued' })),
+    }));
+    mount('/p/x/runs');
+    fireEvent.change(await screen.findByLabelText('Memory task'), { target: { value: 'vault-seed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run task' }));
+    expect(await screen.findByText(/Task queued for a worker/)).toBeTruthy();
+    expect(request).toEqual({ method: 'POST', body: { projectId: 'x', task: 'vault-seed' } });
+    await screen.findByRole('row');
+    fireEvent.click(screen.getByRole('link', { name: 'View run' }));
+    expect(await screen.findByText('seed_run')).toBeTruthy();
+  });
+
+  it('shows the server refusal and permits a deliberate retry', async () => {
+    let attempts = 0;
+    server(base({
+      '/api/projects/x/runs': () => Response.json({ rows: [], cursor: null }),
+      '/api/harness/dispatch': () => { attempts++; return Response.json({ error: 'bad_request', reason: 'this Project is not admitted to that capability' }, { status: 400 }); },
+    }));
+    mount('/p/x/runs');
+    fireEvent.click(await screen.findByRole('button', { name: 'Run task' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('not admitted');
+    expect(screen.queryByRole('link', { name: 'View run' })).toBeNull();
+    expect(attempts).toBe(1);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run task' }).hasAttribute('disabled')).toBe(false));
+  });
+
+  it('explains an unchanged result without inventing a run', async () => {
+    server(base({
+      '/api/projects/x/runs': () => Response.json({ rows: [], cursor: null }),
+      '/api/harness/dispatch': () => Response.json({ outcome: 'unchanged' }),
+    }));
+    mount('/p/x/runs');
+    fireEvent.click(await screen.findByRole('button', { name: 'Run task' }));
+    expect(await screen.findByText('The source material is unchanged. No run was created.')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'View run' })).toBeNull();
+  });
+
+  it('does not link a run returned for another project', async () => {
+    server(base({
+      '/api/projects/x/runs': () => Response.json({ rows: [], cursor: null }),
+      '/api/harness/dispatch': () => Response.json({ runId: 'wrong_run', projectId: 'other', queued: true }),
+    }));
+    mount('/p/x/runs');
+    fireEvent.click(await screen.findByRole('button', { name: 'Run task' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Check the run list');
+    expect(screen.queryByRole('link', { name: 'View run' })).toBeNull();
+  });
+
   it('shows a project that has run nothing as empty, not missing', async () => {
     server(base({ '/api/projects/x/runs': () => Response.json({ rows: [], cursor: null }) }));
     mount('/p/x/runs');
