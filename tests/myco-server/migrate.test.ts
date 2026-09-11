@@ -43,6 +43,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0026_v26.sql': 'aa6245f705061b2a4ecb006e464dbd0356e8f99fa0a91ea56a7f8aeb2423ba10',  '0027_v27.sql': '34fff0ea1db7f5a27507cbe52ca214c5f0990889971760cac4fc0c9ba1be7ca0',
   '0028_v28.sql': 'd6d08116335be071d2c210311931954109907594650588863bf05a4309877336',  '0029_v29.sql': 'c0ae2712efb51f36fe46ae65e8fc4b6e0429a7cd858822b3304d2278e31683d5',  '0030_v30.sql': '2f4e045992f7b1ab1ba214d90650abb1ef88a6593ffa97252f34cc826fb8142e',  '0031_v31.sql': '341942d604a2826d39f01338c25f2077190357e6b2ecdad87ce49c3c951d0d19',  '0032_v32.sql': 'd7a11dd14977af3b2087e5241cb7e619e2bcf08900e23b76ef14016c36cc3e66',  '0033_v33.sql': '761f86e4c25ebe6e121c08b5fe91c085dfce5b3712adede4a85f74490f0f10e3',  '0034_v34.sql': '81799fcf00e093a022b2c1bc078e786dc81385f576a706f655d46fbe14db849e',
   '0035_v35.sql': '45ceeaff4e2b2552b9243a7d170480648004a6c8b072a4358cf8fa13d49e82c0',
+  '0036_v36.sql': 'fde97c627c9b809ab349f7fc68d84010defe4cc118b74f21ae1b1261b0b4f382',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -77,6 +78,19 @@ function declaredIndexes(steps: readonly SchemaStep[]): Map<string, string> {
 const step = (sqlite: Database, s: SchemaStep): void => { for (const statement of s.statements) sqlite.exec(statement); };
 
 describe('versioned schema steps', () => {
+  it('adds title request tracking without enqueueing or modifying historical sessions', async () => {
+    const sqlite = fresh();
+    try {
+      await applySchemaSteps(sqliteD1(sqlite), SCHEMA_STEPS.filter(({ version }) => version <= 35));
+      sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at, title, summary)
+        VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary')`);
+      const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([36]);
+      expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, titling_requested_at: null });
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+    } finally { sqlite.close(); }
+  });
+
   it('adds parser context to v34 while preserving transcript bytes, cursor and identity', async () => {
     const sqlite = fresh();
     try {
@@ -84,7 +98,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, first_received_at, last_received_at, token_id)
         VALUES ('proj_1', 'tx_1', 's1', 'm1', 'codex', 1000, 500, 1, 2, 't1')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM transcripts').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([35]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([35, 36]);
       expect(sqlite.query('SELECT * FROM transcripts').get()).toEqual({ ...before, parser_context: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally {

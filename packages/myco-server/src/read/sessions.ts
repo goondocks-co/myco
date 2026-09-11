@@ -1,6 +1,7 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { inListChunks, keyset, page, type Page, type ReadScope } from './scope.js';
 import { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
+import { sessionMaterialReadySql } from './material-readiness.js';
 
 export interface ProjectRow {
   projectId: string;
@@ -208,10 +209,8 @@ export interface SessionFilters {
   fidelity?: 'full' | 'any';
 }
 
-/** A session no transcript of which the parser read at reduced fidelity. Every transcript counts, primary and subagent sibling alike, so one degraded sibling disqualifies the session. */
-const FULL_FIDELITY = `NOT EXISTS (SELECT 1 FROM transcripts t
-     WHERE t.project_id = s.project_id AND t.session_id = s.session_id
-       AND t.fidelity IS NOT NULL AND t.fidelity <> 'full')`;
+/** Every primary and sibling transcript is fully parsed at full fidelity. */
+const FULL_FIDELITY = sessionMaterialReadySql('s');
 
 /** A LIKE pattern matching `text` anywhere, with the pattern's own metacharacters escaped. */
 export function containsPattern(text: string): string {
@@ -456,7 +455,7 @@ export async function latestPromptId(db: RelationalStore, scope: ReadScope, sess
 /** Claims one titling attempt for an ended session: true once, false for a session not ended or already claimed. */
 export async function claimTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number): Promise<boolean> {
   const result = await db
-    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND ended_at IS NOT NULL AND titled_at IS NULL`)
+    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND ended_at IS NOT NULL AND titled_at IS NULL AND ${sessionMaterialReadySql('sessions')}`)
     .bind(nowMs, projectId, sessionId)
     .run();
   return result.meta.changes === 1;
@@ -469,7 +468,7 @@ export async function claimOwnerTitling(db: RelationalStore, projectId: string, 
   const row = await db.prepare(`SELECT titled_at FROM sessions WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ titled_at: number | null }>();
   if (row === null) return { claimed: false, previous: null };
   const result = await db
-    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND (titled_at IS NULL OR titled_at < ?)`)
+    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND (titled_at IS NULL OR titled_at < ?) AND ${sessionMaterialReadySql('sessions')}`)
     .bind(nowMs, projectId, sessionId, nowMs - inFlightMs)
     .run();
   return { claimed: result.meta.changes === 1, previous: row.titled_at ?? null };
@@ -486,7 +485,7 @@ export async function restoreTitlingStamp(db: RelationalStore, projectId: string
 /** Stores a session's title and summary over whatever is there, naming the member whose ask produced them; false when no such session sits in the project. */
 export async function overwriteTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, titledBy: string | null): Promise<boolean> {
   const result = await db
-    .prepare(`UPDATE sessions SET title = ?, summary = ?, titled_by = ? WHERE project_id = ? AND session_id = ?`)
+    .prepare(`UPDATE sessions SET title = ?, summary = ?, titled_by = ? WHERE project_id = ? AND session_id = ? AND ${sessionMaterialReadySql('sessions')}`)
     .bind(title, summary, titledBy, projectId, sessionId)
     .run();
   return result.meta.changes > 0;
@@ -504,7 +503,7 @@ export async function sessionCarriesTitle(db: RelationalStore, scope: ReadScope,
 /** Stores a session's title and summary where none exists yet; false when one already does. */
 export async function writeTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string): Promise<boolean> {
   const result = await db
-    .prepare(`UPDATE sessions SET title = ?, summary = ? WHERE project_id = ? AND session_id = ? AND title IS NULL`)
+    .prepare(`UPDATE sessions SET title = ?, summary = ? WHERE project_id = ? AND session_id = ? AND title IS NULL AND ${sessionMaterialReadySql('sessions')}`)
     .bind(title, summary, projectId, sessionId)
     .run();
   return result.meta.changes > 0;

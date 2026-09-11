@@ -219,9 +219,10 @@ const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
     identities: [],
     admission: [],
     projections: [
-      db.prepare(`UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ? > ended_at THEN ? ELSE ended_at END
+      db.prepare(`UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ? > ended_at THEN ? ELSE ended_at END,
+          titling_requested_at = COALESCE(titling_requested_at, ?)
         WHERE project_id = ? AND session_id = ? AND ${RAW_ROW_GATE}`)
-        .bind(endedAt, endedAt, ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
+        .bind(endedAt, endedAt, e.channel === 'import' ? null : ctx.now, ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
     ],
     reads: [],
     refusal: () => NOT_STORED,

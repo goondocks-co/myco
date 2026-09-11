@@ -18,6 +18,7 @@ import { preview } from '../../core/run-material.js';
 import { recordRunWrite } from '../../core/runs.js';
 import { TITLE_WRITE_TOOL } from '../../core/tool-catalogue.js';
 import { emit } from '../../telemetry.js';
+import { assertSessionMaterialReady } from '../../read/material-readiness.js';
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
@@ -76,6 +77,7 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
   const written = params.mode === 'owner'
     ? await overwriteTitle(db, ctx.projectId, sessionId, title, summary, params.by ?? null)
     : await writeTitle(db, ctx.projectId, sessionId, title, summary);
+  if (!written) await assertSessionMaterialReady(db, ctx.projectId, sessionId);
   // A write that took is the run's own record of doing its work, and the only
   // thing keyed to THIS run: the session row carries no run of its own, and a
   // title standing from an earlier run reads the same as one this run wrote.

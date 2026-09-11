@@ -66,6 +66,11 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'idle',
     converges: 'every byte of every held transcript has been read into the rows it contains, or the transcript names the failure that stopped it; a transcript nothing can parse is read to its end and offered no further',
   },
+  {
+    name: 'session-titling',
+    runsThrough: 'idle',
+    converges: 'every unclaimed live session-end request with fully parsed material has a titling run; imported sessions are not automatically titled',
+  },
   // #1151 — worker mode
   {
     name: 'worker-lease-sweep',
