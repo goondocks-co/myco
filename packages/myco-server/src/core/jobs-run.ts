@@ -18,6 +18,7 @@ import { dispatchEmbeddingWork } from './embedding/jobs.js';
 import { reclaimEnrollmentAuthorities } from '../auth/enrollment.js';
 import { parseTranscripts } from '../ingest/parse.js';
 import { transcriptRetention } from '../ingest/retention.js';
+import { titleReadySessions } from './titling.js';
 
 /** The retention window when the leaf is unset, and the bounds the leaf itself declares. */
 export const RUN_RETENTION_DAYS_DEFAULT = 30;
@@ -147,6 +148,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'grant-expiry': grantExpiry,
   // #1147 — transcript-first ingest
   'transcript-parse': (env, now) => parseTranscripts(env, now),
+  'session-titling': titleReadySessions,
   'transcript-retention': transcriptRetention,
   // #1151 — worker mode
   'worker-lease-sweep': (env, now) => expireLeases(env, now),

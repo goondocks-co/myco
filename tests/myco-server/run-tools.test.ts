@@ -496,6 +496,24 @@ describe('the extraction cursor', () => {
 });
 
 describe('a titling run reads and writes its own session', () => {
+  it('refuses incomplete material and title writes on the run MCP path until parsing finishes', async () => {
+    for (const mode of ['claim', 'owner']) {
+      const { harness, dispatch, call, sqlite, prompt } = await setup();
+      prompt('first');
+      await dispatch('run_t', TITLING, { mode });
+      sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, first_received_at, last_received_at, token_id, size, parsed_offset)
+        VALUES ('proj_1', 'tx_pending', 'sess_1', 'm1', ?, ?, 'tok_1', 200, 100)`, [NOW, NOW]);
+      expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).error?.message).toContain('Session capture is incomplete');
+      expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'Premature', summary: 'First turn only' })).error?.message).toContain('Session capture is incomplete');
+      expect(sqlite.query(`SELECT title FROM sessions WHERE session_id = 'sess_1'`).get()).toEqual({ title: null });
+      expect(sqlite.query(`SELECT count(*) AS n FROM agent_run_events WHERE event_type = 'run_write'`).get()).toEqual({ n: 0 });
+      prompt('second');
+      sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx_pending'`);
+      expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result.batches).toHaveLength(2);
+      expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'Both turns', summary: 'Complete material' })).result.written).toBe(true);
+    }
+  });
+
   it('answers material for the dispatch-named session with no argument, and writes the title through the dispatch\'s mode', async () => {
     const { harness, dispatch, call, sqlite } = await setup();
     await dispatch('run_t', TITLING, { mode: 'claim' });

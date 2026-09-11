@@ -17,6 +17,22 @@ function setup() {
 }
 
 describe('extraction prompt selection', () => {
+  it('waits for every known transcript before selecting a completed session', async () => {
+    const e = setup();
+    e.session('old', 100);
+    e.session('fresh', 200);
+    e.prompt('old', 'old', 1);
+    e.prompt('fresh', 'first', 2);
+    e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset,
+      first_received_at, last_received_at, token_id, fidelity) VALUES ('proj_1','tx','fresh','m',200,100,1,2,'t','full')`);
+    expect((await e.read()).rows.map((p) => p.promptId)).toEqual(['old']);
+    e.prompt('fresh', 'second', 3);
+    e.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
+    expect((await e.read()).rows.map((p) => p.promptId)).toEqual(['first', 'second', 'old']);
+    e.sqlite.run(`UPDATE transcripts SET fidelity = 'partial' WHERE transcript_id = 'tx'`);
+    expect((await e.read()).rows.map((p) => p.promptId)).toEqual(['old']);
+  });
+
   it('reads a newly completed session before a large backlog and fills unused space with history', async () => {
     const e = setup();
     e.session('old', 100);

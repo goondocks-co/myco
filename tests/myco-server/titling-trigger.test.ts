@@ -5,13 +5,36 @@
  * with one bound it launches a `title-summary` run for the ended session,
  * calling back to the request's own origin.
  */
-import { TITLING_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/titling.js';
+import { TITLING_RUN_TIMEOUT_SECONDS, titleReadySessions } from '@myco-server-worker/core/titling.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 describe('the events route', () => {
+  it('persists a deferred title with the admitted live end and retries after parsing, while import creates no request', async () => {
+    const e = sqliteEnv();
+    const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+    const post = async (over: Record<string, unknown>) => (await worker.fetch(memberPost(t.token, envelope(over)), e.env, e.deferred)).json() as Promise<Record<string, unknown>>;
+    await post({ eventId: uuid(1), kind: 'prompt', payload: { promptId: uuid(20), text: 'first turn', origin: 'user' } });
+    e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id)
+      VALUES ('proj_1', 'tx', 'sess_1', 'machine_1', 200, 100, 1, 2, ?)`, [t.tokenId]);
+    expect(await post({ eventId: uuid(2), kind: 'session.end', payload: { endedAt: 5_000 } })).toEqual({ persisted: true, projected: true });
+    const pending = () => e.sqlite.query(`SELECT titling_requested_at, titled_at FROM sessions WHERE session_id = 'sess_1'`).get() as { titling_requested_at: number | null; titled_at: number | null };
+    expect(pending().titling_requested_at).not.toBeNull();
+    await e.deferred.settle();
+    expect(pending().titled_at).toBeNull();
+    expect(e.sqlite.query(`SELECT count(*) AS n FROM agent_runs`).get()).toEqual({ n: 0 });
+    await post({ eventId: uuid(3), kind: 'prompt', payload: { promptId: uuid(21), text: 'second turn', origin: 'user' } });
+    e.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
+    expect(await titleReadySessions({ ...serverEnvFromBindings(e.env), origin: 'https://s' }, Date.now())).toBe(1);
+    expect(await titleReadySessions({ ...serverEnvFromBindings(e.env), origin: 'https://s' }, Date.now())).toBe(0);
+    expect(e.sqlite.query(`SELECT count(*) AS n FROM agent_runs`).get()).toEqual({ n: 1 });
+    await post({ eventId: uuid(4), sessionId: 'imported', kind: 'session.end', channel: 'import', payload: { endedAt: 5_000 } });
+    expect(e.sqlite.query(`SELECT titling_requested_at FROM sessions WHERE session_id = 'imported'`).get()).toEqual({ titling_requested_at: null });
+  });
+
   it('defers one titling for a projected session end, and none for a start, a replay, or a conflicting end', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());

@@ -17,10 +17,11 @@
 import { MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS } from '../constants.js';
 import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
-import { sessionMaterialRows, sessionMaterialTailRows, type MaterialRow } from '../read/children.js';
+import { sessionMaterialRows, sessionMaterialTailRows, listReadyTitleSessions, type MaterialRow } from '../read/children.js';
 import { claimOwnerTitling, claimTitling, restoreTitlingStamp } from '../read/sessions.js';
 import { dispatchPrepared, prepareDispatch, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 import { TITLING_TASK } from './task-catalogue.js';
+import { assertSessionMaterialReady, SessionMaterialPendingError } from '../read/material-readiness.js';
 
 export { TITLING_TASK } from './task-catalogue.js';
 import { SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, type TitlingMode, type TitlingParams } from './titling-params.js';
@@ -39,7 +40,7 @@ export const OWNER_TITLING_WINDOW_MS = TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_
  */
 export type TitlingOutcome =
   | 'already' | 'no_material' | 'harness_unavailable' | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider'
-  | 'error' | 'dispatched' | 'queued';
+  | 'error' | 'dispatched' | 'queued' | 'capture_pending';
 
 export type MaterialLine = Pick<MaterialRow, 'prompt' | 'response'>;
 
@@ -134,6 +135,7 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
   const skipped = (outcome: TitlingOutcome): TitlingResult => { emit({ kind: 'session_title_skipped', projectId, sessionId, outcome, mode }); return { outcome }; };
   const failed = (outcome: TitlingOutcome): TitlingResult => { emit({ kind: 'session_title_failed', projectId, sessionId, outcome, mode }); return { outcome }; };
   try {
+    await assertSessionMaterialReady(env.db, projectId, sessionId);
     const prepared = await prepareDispatch(env, TITLING_TASK, projectId);
     if (!prepared.ok) return skipped(REFUSAL_OUTCOME[prepared.refusal]);
 
@@ -141,14 +143,14 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     if (material.length === 0) return skipped('no_material');
 
     // The claim is the last thing before the launch, so a refusal decided above costs nothing.
-    let previous: number | null = null;
-    if (mode === 'owner') {
-      const claim = await claimOwnerTitling(env.db, projectId, sessionId, now, OWNER_TITLING_WINDOW_MS);
-      if (!claim.claimed) return skipped('already');
-      previous = claim.previous;
-    } else if (!(await claimTitling(env.db, projectId, sessionId, now))) {
+    const claim = mode === 'owner'
+      ? await claimOwnerTitling(env.db, projectId, sessionId, now, OWNER_TITLING_WINDOW_MS)
+      : { claimed: await claimTitling(env.db, projectId, sessionId, now), previous: null };
+    if (!claim.claimed) {
+      await assertSessionMaterialReady(env.db, projectId, sessionId);
       return skipped('already');
     }
+    const previous = claim.previous;
 
     const params: TitlingParams = { session_id: sessionId, mode, ...(mode === 'owner' && opts.by !== undefined ? { by: opts.by } : {}) };
     const spec = {
@@ -171,7 +173,24 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
       await restoreTitlingStamp(env.db, projectId, sessionId, now, previous);
       return failed('error');
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof SessionMaterialPendingError) return skipped('capture_pending');
     return failed('error');
   }
+}
+
+/** The most deferred session titles one wake can attempt. */
+export const SESSION_TITLE_BATCH = 20;
+
+/** New live session-end requests wait until parsed material can be claimed. */
+export async function titleReadySessions(env: ServerEnv, now: number): Promise<number> {
+  const requests = await listReadyTitleSessions(env.db, SESSION_TITLE_BATCH);
+  if (requests.length === 0) return 0;
+  if (env.origin === undefined) throw new Error('Deferred titling requires the Deployment origin to be configured.');
+  let dispatched = 0;
+  for (const target of requests) {
+    const result = await titleSession(env, { ...target, now, origin: env.origin });
+    if (result.outcome === 'dispatched' || result.outcome === 'queued') dispatched += 1;
+  }
+  return dispatched;
 }
