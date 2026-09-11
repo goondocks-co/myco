@@ -29,7 +29,9 @@ describe('extraction prompt selection', () => {
     e.prompt('fresh', 'second', 3);
     e.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
     expect((await e.read()).rows.map((p) => p.promptId)).toEqual(['first', 'second', 'old']);
-    e.sqlite.run(`UPDATE transcripts SET fidelity = 'partial' WHERE transcript_id = 'tx'`);
+    e.sqlite.run(`UPDATE transcripts SET fidelity = 'no_tool_results' WHERE transcript_id = 'tx'`);
+    expect((await e.read()).rows.map((p) => p.promptId)).toEqual(['first', 'second', 'old']);
+    e.sqlite.run(`UPDATE transcripts SET parse_error = 'malformed record' WHERE transcript_id = 'tx'`);
     expect((await e.read()).rows.map((p) => p.promptId)).toEqual(['old']);
   });
 

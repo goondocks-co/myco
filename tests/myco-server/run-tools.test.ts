@@ -501,8 +501,8 @@ describe('a titling run reads and writes its own session', () => {
       const { harness, dispatch, call, sqlite, prompt } = await setup();
       prompt('first');
       await dispatch('run_t', TITLING, { mode });
-      sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, first_received_at, last_received_at, token_id, size, parsed_offset)
-        VALUES ('proj_1', 'tx_pending', 'sess_1', 'm1', ?, ?, 'tok_1', 200, 100)`, [NOW, NOW]);
+      sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, first_received_at, last_received_at, token_id, size, parsed_offset, fidelity)
+        VALUES ('proj_1', 'tx_pending', 'sess_1', 'm1', ?, ?, 'tok_1', 200, 100, 'no_tool_results')`, [NOW, NOW]);
       expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).error?.message).toContain('Session capture is incomplete');
       expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'Premature', summary: 'First turn only' })).error?.message).toContain('Session capture is incomplete');
       expect(sqlite.query(`SELECT title FROM sessions WHERE session_id = 'sess_1'`).get()).toEqual({ title: null });
