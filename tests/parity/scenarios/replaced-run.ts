@@ -129,8 +129,7 @@ export const replacedRun: ParityScenario = {
     expect(rows.filter((r) => r.replaced).map((r) => r.id).sort()).toEqual([...chain].sort());
     expect(rows.filter((r) => r.replaces !== null).map((r) => r.replaces).sort()).toEqual(chain.slice(0, -1).sort());
 
-    // Every run of this task today is one a deploy ended, so the day is unspent
-    // and the ceiling of one admits an ask again.
+    // Owner requests remain available after the replacement retry allowance is exhausted.
     const again = await dispatch();
     expect(again.status).toBe(200);
     expect(again.body.runId).toBeDefined();
