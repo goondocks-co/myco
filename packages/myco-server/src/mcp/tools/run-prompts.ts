@@ -1,8 +1,8 @@
 /**
  * `myco_run_prompts`: the extraction cursor.
  *
- * A page walks forward through the prompts extraction has not read, oldest
- * first, and `mark_processed` removes one from the next page. Which origins the
+ * A page shares space between the newest completed session and older work,
+ * and `mark_processed` removes one from the next page. Which origins the
  * page carries is the read layer's decision (`read/prompts.ts`), not an
  * argument: a caller-settable read discipline is one waiting to be turned off.
  *
@@ -16,7 +16,7 @@ import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
 const MAX_ID_CHARS = 192;
-const MAX_CURSOR_CHARS = 256;
+const MAX_CURSOR_CHARS = 1024;
 
 const str = (v: unknown, max: number): string | undefined =>
   (typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined);

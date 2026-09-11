@@ -441,6 +441,20 @@ describe('a run\'s state is a compare-and-set', () => {
 });
 
 describe('the extraction cursor', () => {
+  it('serves fresh completed-session material through the run surface while retaining historical work', async () => {
+    const { harness, dispatch, call, prompt, sqlite } = await setup();
+    await dispatch('run_e', SWEEP);
+    for (let i = 0; i < 30; i++) prompt(`old_${i}`, { createdAt: NOW - 3_000 + i });
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at)
+      VALUES ('proj_1', 'sess_new', 'm1', 'tok_1', ?, ?, ?)`, [NOW, NOW, NOW + 1]);
+    prompt('fresh_1', { session: 'sess_new', createdAt: NOW });
+    prompt('fresh_2', { session: 'sess_new', createdAt: NOW + 1 });
+    const result = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true, limit: 20 }) as any).result;
+    expect(result.prompts.map((p: any) => p.prompt_id)).toEqual(['fresh_1', 'fresh_2', ...Array.from({ length: 18 }, (_, i) => `old_${i}`)]);
+    expect(result.prompts[0].text).toBe('body of fresh_1');
+    expect(sqlite.query(`SELECT count(*) AS n FROM prompt_batches WHERE processed = 1`).get()).toEqual({ n: 0 });
+  });
+
   it('pages forward without repeating, drops a marked prompt, and reads no body unless asked', async () => {
     const { harness, dispatch, call, prompt } = await setup();
     await dispatch('run_e', SWEEP);
