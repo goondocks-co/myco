@@ -78,9 +78,24 @@ describe('ServerClient classification', () => {
 
     const hanging: FetchLike = (_input, init) => new Promise((_resolve, reject) => { init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))); });
     const started = Date.now();
-    expect(await new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, hanging).postEvent(env, { connectTimeoutMs: 50, requestTimeoutMs: 5_000 }))
-      .toEqual({ class: 'retry', detail: 'timeout (connect)' });
+    expect(await new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, hanging).postEvent(env, { connectTimeoutMs: 20, requestTimeoutMs: 100 }))
+      .toEqual({ class: 'retry', detail: 'timeout (request)' });
     expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('allows a blob upload to receive headers within its request budget', async () => {
+    const rig = await memberRig();
+    const delayed: FetchLike = (input, init) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(rig.fetch(input, init)), 80);
+      init?.signal?.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(new Error('aborted'));
+      }, { once: true });
+    });
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, delayed);
+    const bytes = utf8('a transcript segment');
+    expect(await client.postBlob(bytes, await sha256HexOf(bytes), 'text/plain', { connectTimeoutMs: 20, requestTimeoutMs: 500 }))
+      .toMatchObject({ class: 'acked' });
   });
 
   it('429 without the protocol header is retry flagged anonymousLimited; 429 after authentication is plain retry', async () => {

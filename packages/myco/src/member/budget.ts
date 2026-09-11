@@ -11,6 +11,7 @@ import {
 } from './constants.js';
 
 export interface RequestBudget {
+  /** Minimum headroom to admit another request; fetch uses the request deadline. */
   connectTimeoutMs: number;
   requestTimeoutMs: number;
 }
