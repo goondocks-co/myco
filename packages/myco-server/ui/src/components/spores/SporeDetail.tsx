@@ -58,6 +58,12 @@ function Metadata({ projectId, spore }: { projectId: string; spore: SporeRow }) 
             <Link to={`/p/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(spore.sessionId)}`} className={inlineLink}>{spore.sessionId}</Link>
           )}
         </MetaItem>
+        <MetaItem label="Source prompt">
+          {spore.sessionId == null || spore.promptId == null ? '—' : (
+            <Link to={`/p/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(spore.sessionId)}?turn=${encodeURIComponent(spore.promptId)}`} className={inlineLink}>{spore.promptId}</Link>
+          )}
+        </MetaItem>
+        <MetaItem label="Captured">{spore.sourceCreatedAt == null ? '—' : formatDateTime(spore.sourceCreatedAt)}</MetaItem>
       </dl>
     </Surface>
   );

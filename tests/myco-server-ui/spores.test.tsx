@@ -243,6 +243,14 @@ describe('Spore detail', () => {
     expect(within(screen.getByLabelText('Tags')).getByText('paging')).toBeTruthy();
   });
 
+  it('links to the exact source turn and shows its capture date separately from spore creation', async () => {
+    server(routes({ '/api/projects/x/spores/sp9': () => Response.json({ spore: { ...SP, promptId: 'source-prompt', sourceCreatedAt: 1_700_000_000_000 }, supersededBy: [], supersedes: [] }) }));
+    mount('/p/x/spores/sp9');
+    const source = await screen.findByRole('link', { name: 'source-prompt' });
+    expect(source.getAttribute('href')).toBe('/p/x/sessions/s1?turn=source-prompt');
+    expect(screen.getByText('Captured').nextElementSibling?.textContent).toContain('2023');
+  });
+
   it('answers a spore the server does not hold with not found, never forbidden', async () => {
     server(routes({ '/api/projects/x/spores/gone': () => new Response(null, { status: 404 }) }));
     mount('/p/x/spores/gone');
