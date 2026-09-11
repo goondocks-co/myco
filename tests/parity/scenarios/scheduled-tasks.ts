@@ -61,6 +61,14 @@ export const scheduledTasks: ParityScenario = {
     expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 1 });
     expect(await probes(target.projectId)).toEqual(atCeiling);
 
+    // An owner can dispatch while the automatic allowance is exhausted.
+    const manual = await fetch(`${target.url}/api/harness/dispatch`, {
+      method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
+      body: JSON.stringify({ task: 'container-smoke', projectId: target.projectId }),
+    });
+    expect(manual.status).toBe(200);
+    expect(await probes(target.projectId)).toHaveLength(3);
+
     // Off again: the clock leaves both Projects alone.
     await leaf('agent.scheduled_tasks_enabled', false);
     expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 0 });

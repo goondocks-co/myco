@@ -35,6 +35,19 @@ describe('extraction prompt selection', () => {
     expect((await e.read()).rows.map((p) => p.promptId)).toEqual(['old']);
   });
 
+  it('keeps the reserved live session first when a newer import is present', async () => {
+    const e = setup();
+    e.session('live', 100);
+    e.session('imported', 200);
+    e.prompt('live', 'live_prompt', 1);
+    e.prompt('imported', 'imported_prompt', 2);
+    for (const [id, importedAt] of [['live', null], ['imported', 1]] as const) {
+      e.sqlite.run(`INSERT INTO transcripts (project_id,transcript_id,session_id,machine_id,size,parsed_offset,first_received_at,last_received_at,token_id,fidelity,imported_at)
+        VALUES ('proj_1',?,?,'m',100,100,1,2,'t','full',?)`, [id, id, importedAt]);
+    }
+    expect((await e.read()).rows.map((p) => p.promptId)).toEqual(['live_prompt', 'imported_prompt']);
+  });
+
   it('reads a newly completed session before a large backlog and fills unused space with history', async () => {
     const e = setup();
     e.session('old', 100);

@@ -10,6 +10,7 @@ import { HARNESS_AGENT_ID } from '@myco-server-worker/core/harness.js';
 import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, decideTask, effectiveIntervalSeconds, hasUnprocessedPrompts, PRE_CONDITIONS, resolveSchedule, runScheduledTasks, scheduledTasks, scheduleFor, scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
 import { TASK_SCHEDULE, type TaskSchedule } from '@myco-server-worker/core/jobs.js';
 import { TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
+import { lastTaskEntryAt, taskEntriesSince } from '@myco-server-worker/core/runs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv, withHarness } from './helpers/fixtures.js';
@@ -122,7 +123,7 @@ describe('a named precondition reads the Project it is a condition on', () => {
     const f = fixture();
     const check = PRE_CONDITIONS['has-unprocessed-prompts'];
     expect(typeof check).toBe('function');
-    expect(await check!({ db: f.env.db, projectId: 'proj_1' })).toBe(false);
+    expect(await check!({ db: f.env.db, projectId: 'proj_1', now: NOW })).toBe(false);
     const gated: TaskSchedule = { ...SMOKE, preCondition: 'has-unprocessed-prompts' };
     expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} }, NOW)).toBe('precondition');
     seedSession(f, 'proj_1', 's_done', NOW);
@@ -338,5 +339,45 @@ describe('the tick and the clock', () => {
     expect(f.runs('proj_1')[0]).toMatchObject({ task: 'container-smoke', status: 'pending' });
     expect(JSON.parse(f.launches[0]!.envVars.MYCO_TASK_PARAMS!)).toEqual({ timeoutSeconds: 300 });
     void CLOCK_ACTOR;
+  });
+});
+
+describe('automatic extraction reserves capacity for recent live sessions', () => {
+  it('holds history after nine automatic runs, admits ready live capture, and stops all automatic work at twelve', async () => {
+    const f = fixture();
+    f.capability('proj_1', 'vault_evolution', true);
+    f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
+    const entry = (id: string, actor: string, at = NOW - 7_200_000) => f.sqlite.run(`INSERT INTO agent_runs
+      (project_id,id,agent_id,task,status,started_at,dispatch_spec) VALUES ('proj_1',?,?,'extract-curate','completed',?,?)`,
+      [id, HARNESS_AGENT_ID, at, JSON.stringify({ actor })]);
+    for (let i = 0; i < 9; i++) entry(`automatic_${i}`, CLOCK_ACTOR);
+    for (let i = 0; i < 10; i++) entry(`manual_${i}`, 'mem_owner', NOW - 1);
+    f.sqlite.run(`INSERT INTO sessions (project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at)
+      VALUES ('proj_1','recent','m','t',1,?,?)`, [NOW, NOW - 1_000]);
+    f.sqlite.run(`INSERT INTO prompt_batches (project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
+      VALUES ('proj_1','recent','p','e','a durable finding','user','h',1,1,'t',1)`);
+    const schedule = TASK_SCHEDULE['extract-curate']!;
+    const leaves = await scheduleLeaves(f.env);
+    const decide = () => decideTask(f.env, 'proj_1', NOW, 'extract-curate', schedule, 'idle', leaves, NOW);
+    expect(await taskEntriesSince(f.db, { projectId: 'proj_1' }, 'extract-curate', NOW - DAY, CLOCK_ACTOR)).toBe(9);
+    expect(await lastTaskEntryAt(f.db, { projectId: 'proj_1' }, 'extract-curate', CLOCK_ACTOR)).toBe(NOW - 7_200_000);
+    expect(await decide()).toBe('reserved_runs_per_day');
+    f.sqlite.run(`INSERT INTO transcripts (project_id,transcript_id,session_id,machine_id,size,parsed_offset,first_received_at,last_received_at,token_id,fidelity,imported_at)
+      VALUES ('proj_1','tx','recent','m',100,100,1,1,'t','full',1)`);
+    expect(await decide()).toBe('reserved_runs_per_day');
+    f.sqlite.run(`UPDATE transcripts SET imported_at = NULL, parsed_offset = 50 WHERE transcript_id = 'tx'`);
+    expect(await decide()).toBe('precondition');
+    f.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
+    expect(await decide()).toBeNull();
+    f.sqlite.run(`UPDATE sessions SET ended_at = ? WHERE session_id = 'recent'`, [NOW - DAY - 1]);
+    expect(await decide()).toBe('reserved_runs_per_day');
+    f.sqlite.run(`UPDATE sessions SET ended_at = ? WHERE session_id = 'recent'`, [NOW - 1_000]);
+    for (let i = 9; i < 12; i++) entry(`automatic_${i}`, CLOCK_ACTOR);
+    expect(await decide()).toBe('max_runs_per_day');
+    expect(f.sqlite.query(`SELECT processed FROM prompt_batches WHERE prompt_id = 'p'`).get()).toEqual({ processed: 0 });
+    f.sqlite.run(`UPDATE agent_runs SET started_at = ? WHERE id = 'automatic_0'`, [NOW - DAY - 1]);
+    expect(await decide()).toBeNull();
+    expect(resolveSchedule(schedule, { reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } }).reservedRunsPerDay?.count).toBe(0);
+    expect(resolveSchedule(schedule, { reservedRunsPerDay: { count: -1, preCondition: 'has-recent-live-prompts' } }).reservedRunsPerDay?.count).toBe(3);
   });
 });

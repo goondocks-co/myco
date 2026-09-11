@@ -54,6 +54,7 @@ async function dispatched(f: ReturnType<typeof fixture>, id: string, task: strin
   await recordDispatch(f.db, SCOPE, {
     id, agentId: 'myco-agent', task, provider: 'openai-compatible', model: 'm',
     runContext: JSON.stringify(context), dispatchedBy: minted.tokenId, startedAt: at,
+    dispatchSpec: JSON.stringify({ actor: HARNESS_MEMBER_ID }),
   });
 }
 
@@ -110,6 +111,16 @@ describe('the run that stands in for a replaced one', () => {
     expect(f.rows().filter((r) => r.task === 'title-summary')).toHaveLength(2);
   });
 
+  it.each(['clock', null])('keeps automatic accounting for a replacement with original actor %s', async (actor) => {
+    const f = fixture();
+    await dispatched(f, 'scheduled', 'extract-curate', { timeoutSeconds: 900 });
+    f.sqlite.run(`UPDATE agent_runs SET dispatch_spec = ? WHERE id = 'scheduled'`, [actor === null ? null : JSON.stringify({ actor })]);
+    await markRunReplaced(f.db, SCOPE, 'scheduled');
+    const result = await requeueReplaced(f.env, { run: (await getRun(f.db, SCOPE, 'scheduled'))!, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 1);
+    expect(result).toMatchObject({ requeued: true });
+    expect(await taskEntriesSince(f.db, SCOPE, 'extract-curate', NOW - DAY, 'clock')).toBe(1);
+    expect(f.specOf((result as { runId: string }).runId).actor).toBe(actor ?? '');
+  });
 
   it('builds an extraction successor afresh, carrying the bound and the from-scratch ask of the run it stands in for', async () => {
     const f = fixture();

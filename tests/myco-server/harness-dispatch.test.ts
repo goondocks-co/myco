@@ -8,6 +8,7 @@ import worker from '@myco-server-worker/index.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
+import { taskEntriesSince } from '@myco-server-worker/core/runs.js';
 import { dispatchTask } from '@myco-server-worker/core/harness.js';
 import { memberHeaders, sqliteEnv, withHarness } from './helpers/fixtures.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
@@ -43,6 +44,22 @@ describe('POST /api/harness/dispatch', () => {
     seedProvider(sqlite, { 'agent.provider.type': 'anthropic' });
     const unknown = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'no-such-task', projectId: 'proj_1' }), bound);
     expect({ status: unknown.status, reason: ((await unknown.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'the task is not one this deployment serves' });
+  });
+
+  it('admits ad-hoc work with no automatic budget and keeps normal concurrency limits', async () => {
+    const { env, sqlite, db } = setup();
+    seedProvider(sqlite, {
+      'agent.provider.type': 'openai-compatible', 'agent.provider.model': 'm', 'agent.provider.base_url': 'http://models.internal/v1',
+      'agent.tasks': { 'container-smoke': { schedule: { maxRunsPerDay: 0 } } },
+      'agent.limits.concurrent_runs': 1,
+    });
+    const dispatch = async () => worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), { ...env, HARNESS_LAUNCH_MODE: 'record' });
+    expect(await jsonBody(await dispatch())).toMatchObject({ queued: false });
+    const response = await dispatch();
+    expect(response.status).toBe(200);
+    expect(await jsonBody(response)).toMatchObject({ queued: true, heldBy: 'concurrent_runs' });
+    expect(await taskEntriesSince(db, { projectId: 'proj_1' }, 'container-smoke', 0, 'clock')).toBe(0);
+    expect(await taskEntriesSince(db, { projectId: 'proj_1' }, 'container-smoke', 0)).toBe(2);
   });
 
   it('launches with the whole dispatch as environment: a minted member credential that actually claims, the subscription token under its own variable, and the provider config', async () => {
