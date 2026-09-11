@@ -8,15 +8,8 @@
  * touched. The same script answers the agent protocol for `acp`: initialize, a
  * session, one prompt that ends its turn, close.
  *
- * The script is POSIX shell and nothing else. It deliberately does not invoke a
- * runtime: a stub that shells out to `process.execPath` puts the test runner's
- * own binary, a nested process and that runtime's standard-input semantics
- * between the test and the thing under test, and all three differ by platform —
- * a peer that never reads its input neither answers nor closes, which the driver
- * waits on until the per-test timeout with nothing logged. `sh`, `read`,
- * `printf`, `sed` and `sleep` are what the harness stubs in
- * `tests/member/worker-driver-streams.test.ts` already rely on everywhere the
- * suite runs.
+ * The protocol loop uses POSIX shell. Optional MCP verification pipes one
+ * complete request to a separate JavaScript process with closed stdin.
  *
  * PATH is prepended and left that way — the directory holds this one script, and
  * a test that never spawns a harness is unaffected by its presence.
@@ -24,6 +17,7 @@
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { detectHarnesses, locate, type DetectedHarness } from '@myco/runner/detect.js';
 
 /** The harness id a stub binary stands in for. */
@@ -34,6 +28,8 @@ const STUB_BINARY = 'cursor-agent';
 
 /** How many 50 ms ticks a held turn waits to be released before ending anyway, so an abandoned stub is not a wedged one. */
 const HOLD_TICKS = 1_200;
+
+const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
 /**
  * The agent-protocol peer, in POSIX shell.
@@ -52,9 +48,12 @@ const HOLD_TICKS = 1_200;
  * target is a race on another. The hold is bounded so a caller that dies leaves
  * no harness waiting forever.
  */
-function peerScript(turnDelaySeconds: string, holdUntil: string, holdTicks: number): string {
+function peerScript(turnDelaySeconds: string, holdUntil: string, holdTicks: number, options: StubOptions): string {
+  const mcpRead = options.mcpReceipt === undefined ? ''
+    : `printf '%s\\n' "$line" | ${quote(process.execPath)} ${quote(fileURLToPath(new URL('./stub-acp-mcp.mjs', import.meta.url)))} ${quote(options.mcpReceipt)} || exit 1; `;
   return [
     '#!/bin/sh',
+    options.ignoreTermination === true ? "trap '' TERM" : '',
     '# The login probe is answered before anything else: detection asks the binary,',
     '# and a harness that is not logged in is offered by no worker.',
     'for arg in "$@"; do',
@@ -69,16 +68,18 @@ function peerScript(turnDelaySeconds: string, holdUntil: string, holdTicks: numb
     `  id=$(printf '%s\\n' "$line" | sed -n 's/.*"id":[ ]*\\([0-9][0-9]*\\).*/\\1/p')`,
     '  if [ -z "$id" ]; then continue; fi',
     '  case "$line" in',
-    `    *'"session/new"'*) reply "$id" '{"sessionId":"sess_stub"}' ;;`,
+    `    *'"session/new"'*) ${mcpRead}reply "$id" '{"sessionId":"sess_stub"}' ;;`,
     `    *'"session/prompt"'*)`,
+    options.pidFile === undefined ? '' : `      printf '%s\\n' "$$" > ${quote(options.pidFile)}`,
     `      if [ "${turnDelaySeconds}" != "0" ]; then sleep ${turnDelaySeconds}; fi`,
-    `      if [ -n '${holdUntil}' ]; then`,
+    `      if [ -n ${quote(holdUntil)} ]; then`,
     '        waited=0',
-    `        while [ ! -f '${holdUntil}' ] && [ "$waited" -lt ${holdTicks} ]; do`,
+    `        while [ ! -f ${quote(holdUntil)} ] && [ "$waited" -lt ${holdTicks} ]; do`,
     '          sleep 0.05',
     '          waited=$((waited + 1))',
     '        done',
     '      fi',
+    options.ignoreTermination === true ? '      trap - TERM' : '',
     `      reply "$id" '{"stopReason":"end_turn"}' ;;`,
     `    *'"session/close"'*) reply "$id" '{}'; exit 0 ;;`,
     `    *) reply "$id" '{}' ;;`,
@@ -94,6 +95,17 @@ export interface StubHarness {
   detected: DetectedHarness;
   /** Whether the binary detection resolved is this stub rather than a real agent installed on the machine. */
   resolvedIsStub: boolean;
+}
+
+interface StubOptions {
+  turnDelayMs?: number;
+  holdUntil?: string;
+  /** Ignore TERM while a held turn waits for its release file. */
+  ignoreTermination?: boolean;
+  /** Record the child PID so a test can wait for or terminate its own peer. */
+  pidFile?: string;
+  /** Save session material read through the MCP connection supplied by ACP. */
+  mcpReceipt?: string;
 }
 
 /**
@@ -114,11 +126,11 @@ export interface StubHarness {
  * reachable, and a probe that reads a stale environment would go unnoticed
  * everywhere except a machine without the real thing.
  */
-export function stubAcpHarness(options: { turnDelayMs?: number; holdUntil?: string } = {}): StubHarness {
+export function stubAcpHarness(options: StubOptions = {}): StubHarness {
   const delay = options.turnDelayMs ?? 0;
   const dir = mkdtempSync(join(tmpdir(), 'myco-stub-acp-'));
   const binary = join(dir, STUB_BINARY);
-  writeFileSync(binary, peerScript(delay === 0 ? '0' : (delay / 1000).toFixed(2), options.holdUntil ?? '', HOLD_TICKS), { mode: 0o755 });
+  writeFileSync(binary, peerScript(delay === 0 ? '0' : (delay / 1000).toFixed(2), options.holdUntil ?? '', HOLD_TICKS, options), { mode: 0o755 });
   chmodSync(binary, 0o755);
   process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
   return {

@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWorker, type WorkerOutcome } from '@myco/runner/loop.js';
@@ -26,26 +26,26 @@ const PARK_MS = 3_600_000;
  * test is the wire from a claim to an outcome, which runs the same on a machine
  * with three real harnesses.
  *
- * The stub answers `end_turn` without ever calling the Deployment back, which is
- * exactly the harness this Deployment must not believe: the run is a titling run
- * and the session it names is never titled, so the outcome the row carries is
- * `failed` with what the task owed, on both targets. A worker's `completed`
- * report is still accepted — the lease ends and the run credential is retired —
- * for a run that is over whatever it left behind.
+ * The stub reads its session material with the supplied run credential, then
+ * answers `end_turn` without writing a title or report. Both targets must reject
+ * completion while ending the lease and retiring the run credential.
  */
 export const workerWire: ParityScenario = {
   name: 'the worker wire: a claim, a lease and the outcome the Deployment judges, from the shipped worker against a booted Deployment',
   async run(target: ParityTarget) {
     const now = Date.now();
+    await target.sql(`INSERT OR IGNORE INTO projects(project_id, name, created_at) VALUES (${lit(target.projectId)}, 'Worker parity', ${now})`);
     // The turn is held open until this scenario releases it, so the run is still
     // being driven when the row is read BECAUSE it has not been released — not
     // because the read arrived in time. A `wrangler d1 execute` read costs
     // seconds, which no delay in the harness can be sized against.
-    const release = join(mkdtempSync(join(tmpdir(), 'myco-parity-release-')), 'release');
+    const scratch = mkdtempSync(join(tmpdir(), 'myco-parity-release-'));
+    const release = join(scratch, 'release');
+    const receipt = join(scratch, 'mcp-material.json');
     const releaseTurn = (): void => { if (!existsSync(release)) writeFileSync(release, ''); };
     // The offer a claim carries is built from this, so an undetected stub would
     // read as a Deployment with no work rather than as a machine with no harness.
-    expect(stubAcpHarness({ holdUntil: release })).toEqual(STUB_DETECTED);
+    expect(stubAcpHarness({ holdUntil: release, mcpReceipt: receipt })).toEqual(STUB_DETECTED);
 
     // A claim takes the OLDEST queued run the Deployment holds, so this row has
     // to be the one at the front — without ending runs this scenario does not
@@ -122,6 +122,11 @@ export const workerWire: ParityScenario = {
       const minted = running.dispatchedBy ?? '';
       expect(minted).not.toBe('');
 
+      // Only the child receives the run's MCP connection and reads its material.
+      await waitFor(async () => existsSync(receipt) || ended() !== null, Boolean, 20_000);
+      expect(existsSync(receipt)).toBe(true);
+      expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({ session_id: sessionId, prompt_count: 0, batches: [] });
+
       // Everything above was read with the turn still open. Only now does the
       // harness get to finish.
       releaseTurn();
@@ -176,6 +181,7 @@ export const workerWire: ParityScenario = {
       stopping.abort();
       await attached.catch(() => undefined);
       await shiftParked(-PARK_MS);
+      rmSync(scratch, { recursive: true, force: true });
     }
   },
 };
