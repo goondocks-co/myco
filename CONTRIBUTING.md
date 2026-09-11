@@ -38,7 +38,12 @@ ollama pull bge-m3
 git clone https://github.com/goondocks-co/myco.git
 cd myco
 npm install
+npm run hooks:install
 ```
+
+The hook checks every staged file under `tests/fixtures/` for credential and identity patterns before a commit. It reads the Git index, including during partial commits. Redact recordings before staging them, then inspect the staged diff yourself: pattern checks cannot identify every sensitive detail. Failures show the file, line, and rule without printing the matched content. Run `npm run check:fixtures` to check the index manually.
+
+Hook installation preserves other Git hooks and refuses to replace an existing `pre-commit` or modify a custom `core.hooksPath`. If you manage hooks yourself, add `node --import tsx scripts/check-fixture-redaction.ts` to your pre-commit checks and propagate its exit status. Install once per clone; linked worktrees share the hook. Source archives have no Git hooks to install.
 
 ### 2. Initialize the vault
 

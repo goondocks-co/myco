@@ -1,0 +1,2 @@
+#!/bin/sh
+exec node --import tsx scripts/check-fixture-redaction.ts
