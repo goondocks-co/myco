@@ -28,7 +28,7 @@
  *
  * Nothing short of running the command catches that, so this runs it.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -148,7 +148,9 @@ describe('myco host rotate-key (driven)', () => {
     const state = resolveDaemonServiceState(tmp, { env: process.env });
     fs.rmSync(state.statePath, { force: true });
 
-    await run(['rotate-key']);
+    const fetchProbe = spyOn(globalThis, 'fetch').mockRejectedValue(new Error('No daemon is listening in this fixture'));
+    try { await run(['rotate-key']); }
+    finally { fetchProbe.mockRestore(); }
 
     expect(mintCalls).toBe(0);
     expect(exits).toEqual([1]);
