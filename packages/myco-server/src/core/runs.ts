@@ -221,8 +221,8 @@ function admissionParams(scope: ReadScope, task: string | null, runId: string, a
 }
 
 const RECORD_DISPATCH_SQL = `INSERT INTO agent_runs
-    (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, started_at, run_context, dispatched_by)
-  SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?
+    (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, started_at, run_context, dispatched_by, dispatch_spec)
+  SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)${ADMISSION_WHERE}`;
 
 const RUN_REF_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
@@ -248,6 +248,7 @@ export interface DispatchRecord {
   /** The credential the dispatch minted for this run. */
   dispatchedBy: string | null;
   startedAt: number;
+  dispatchSpec?: string;
 }
 
 /**
@@ -260,7 +261,7 @@ export interface DispatchRecord {
 export async function recordDispatch(db: RelationalStore, scope: ReadScope, record: DispatchRecord, admission?: WriteAdmission): Promise<boolean> {
   const result = await db.prepare(RECORD_DISPATCH_SQL).bind(
     scope.projectId, record.id, record.agentId, record.task, record.instruction ?? null, record.provider, record.model,
-    record.dryRun === true ? 1 : 0, record.startedAt, record.runContext, record.dispatchedBy,
+    record.dryRun === true ? 1 : 0, record.startedAt, record.runContext, record.dispatchedBy, record.dispatchSpec ?? null,
     scope.projectId, record.id,
     ...admissionParams(scope, record.task, record.id, admission),
   ).run();
@@ -1289,6 +1290,19 @@ export async function markRecordedLaunch(db: RelationalStore, runId: string): Pr
 // What the clock reads before it schedules a task, per Project
 // ---------------------------------------------------------------------------
 
+/** Unattributed legacy runs count conservatively against an actor's budget. */
+export const UNATTRIBUTED_DISPATCH_ACTOR = '';
+const DISPATCH_ACTOR_SQL = `CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END`;
+const ACTOR_FILTER_SQL = `AND (? IS NULL OR COALESCE(${DISPATCH_ACTOR_SQL}, ?) = ?)`;
+const actorParams = (actor?: string): Array<string | null> => [actor ?? null, actor ?? null, actor ?? null];
+
+/** The dispatch's persisted actor, including after the run leaves the queue. */
+export async function getDispatchActor(db: RelationalStore, scope: ReadScope, runId: string): Promise<string | null> {
+  const row = await db.prepare(`SELECT ${DISPATCH_ACTOR_SQL} AS actor FROM agent_runs WHERE project_id = ? AND id = ?`)
+    .bind(scope.projectId, runId).first<{ actor: string | null }>();
+  return row?.actor ?? null;
+}
+
 /**
  * When this task last entered the Project's run list — launched, queued, or
  * left alone over material that had not moved — or null when it never has.
@@ -1303,11 +1317,11 @@ export async function markRecordedLaunch(db: RelationalStore, runId: string): Pr
  * The per-day ceiling is the opposite reading and keeps excluding every skip:
  * a skip costs nothing, so it spends nothing of the day.
  */
-export async function lastTaskEntryAt(db: RelationalStore, scope: ReadScope, task: string): Promise<number | null> {
+export async function lastTaskEntryAt(db: RelationalStore, scope: ReadScope, task: string, actor?: string): Promise<number | null> {
   const row = await db.prepare(
     `SELECT MAX(COALESCE(queued_at, started_at)) AS at FROM agent_runs
-      WHERE project_id = ? AND task = ? AND (status != 'skipped' OR run_context = ?)`,
-  ).bind(scope.projectId, task, skipContext(INPUT_UNCHANGED)).first<{ at: number | null }>();
+      WHERE project_id = ? AND task = ? AND (status != 'skipped' OR run_context = ?) ${ACTOR_FILTER_SQL}`,
+  ).bind(scope.projectId, task, skipContext(INPUT_UNCHANGED), ...actorParams(actor)).first<{ at: number | null }>();
   return row?.at ?? null;
 }
 
@@ -1331,12 +1345,12 @@ const contextValue = (key: string): string => `CASE WHEN json_valid(run_context)
  * when the task last entered the list — which it did, so the clock does not
  * dispatch it again the same instant.
  */
-export async function taskEntriesSince(db: RelationalStore, scope: ReadScope, task: string, sinceMs: number): Promise<number> {
+export async function taskEntriesSince(db: RelationalStore, scope: ReadScope, task: string, sinceMs: number, actor?: string): Promise<number> {
   const row = await db.prepare(
     `SELECT COUNT(*) AS c FROM agent_runs WHERE project_id = ? AND task = ? AND status != 'skipped'
        AND COALESCE(${contextValue('replaced')}, 0) != 1
-       AND COALESCE(queued_at, started_at) >= ?`,
-  ).bind(scope.projectId, task, sinceMs).first<{ c: number }>();
+       AND COALESCE(queued_at, started_at) >= ? ${ACTOR_FILTER_SQL}`,
+  ).bind(scope.projectId, task, sinceMs, ...actorParams(actor)).first<{ c: number }>();
   return row?.c ?? 0;
 }
 

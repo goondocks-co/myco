@@ -132,8 +132,19 @@ function advancePartition(before: PartitionCursor, result: Page<UnprocessedPromp
   return last === undefined ? before : encodeCursor(last.createdAt, last.promptId);
 }
 
+/** The primary extraction session, preferring completed live capture over imports. */
+export async function newestUnprocessedSession(db: RelationalStore, scope: ReadScope): Promise<{ id: string; endedAt: number; liveCapture: number } | null> {
+  return db.prepare(`SELECT s.session_id AS id, s.ended_at AS endedAt,
+    EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = s.project_id AND t.session_id = s.session_id AND t.imported_at IS NULL) AS liveCapture
+    FROM (SELECT DISTINCT p.session_id FROM prompt_batches p WHERE p.project_id = ? AND ${ELIGIBLE_PROMPT_SQL}) candidates
+    JOIN sessions s ON s.session_id = candidates.session_id
+    WHERE s.project_id = ? AND s.ended_at IS NOT NULL AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')}
+    ORDER BY liveCapture DESC, s.ended_at DESC, s.session_id DESC LIMIT 1`)
+    .bind(scope.projectId, ...READ_ORIGINS, scope.projectId).first<{ id: string; endedAt: number; liveCapture: number }>();
+}
+
 /**
- * The newest completed session gets the first three quarters of a page; older
+ * The primary completed session gets the first three quarters of a page; other
  * sessions get the remainder. Unused space is shared. Each partition stays in
  * prompt order, and a cursor pins the chosen session across subsequent pages.
  */
@@ -146,11 +157,7 @@ export async function listUnprocessedPrompts(
     cursor = extractionCursor(opts.cursor);
     if (cursor === null) throw new Error('Invalid extraction cursor');
   } else {
-    const newest = await db.prepare(`SELECT s.session_id AS id FROM
-      (SELECT DISTINCT p.session_id FROM prompt_batches p WHERE p.project_id = ? AND ${ELIGIBLE_PROMPT_SQL}) candidates
-      JOIN sessions s ON s.session_id = candidates.session_id
-      WHERE s.project_id = ? AND s.ended_at IS NOT NULL AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')}
-      ORDER BY s.ended_at DESC, s.session_id DESC LIMIT 1`).bind(scope.projectId, ...READ_ORIGINS, scope.projectId).first<{ id: string }>();
+    const newest = await newestUnprocessedSession(db, scope);
     if (newest === null) return readUnprocessedPrompts(db, scope, opts);
     cursor = [newest.id, null, null];
   }
