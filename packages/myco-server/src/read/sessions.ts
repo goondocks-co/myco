@@ -1,8 +1,7 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { inListChunks, keyset, page, type Page, type ReadScope } from './scope.js';
 import { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
-import { sessionMaterialReadySql } from './material-readiness.js';
-import { titlingClaimAvailableSql } from './titling.js';
+import { sessionMaterialReadySql, titlingClaimAvailableSql } from './material-readiness.js';
 
 export interface ProjectRow {
   projectId: string;

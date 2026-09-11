@@ -1,6 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
-import { assertSessionMaterialReady, sessionMaterialReadySql } from './material-readiness.js';
-import { titlingClaimAvailableSql } from './titling.js';
+import { assertSessionMaterialReady, sessionMaterialReadySql, titlingClaimAvailableSql } from './material-readiness.js';
 import { notTombstonedSql } from '../core/tombstones.js';
 import { progressOf } from './plans.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
