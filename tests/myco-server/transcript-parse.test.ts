@@ -18,6 +18,7 @@ import { Database } from 'bun:sqlite';
 import {
   parseOnce, parseTranscripts, pendingTranscriptBytes,
   TRANSCRIPT_PARSE_CALLS_PER_PASS, TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT,
+  TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, TRANSCRIPT_PARSE_RECORD_BYTES,
 } from '@myco-server-worker/ingest/parse.js';
 import { freeOrphanedBlobs, TOMBSTONE_SWEEP_GRACE_MS, transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
 import { listTranscripts } from '@myco-server-worker/read/transcript.js';
@@ -107,6 +108,43 @@ async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max
 
 describe('parsing a held transcript', () => {
   const codexMessage = (role: string, text: string) => line({ type: 'response_item', payload: { type: 'message', role, content: [{ type: role === 'assistant' ? 'output_text' : 'input_text', text }] } });
+
+  it('finishes a large record across segments before reading the following human turn', async () => {
+    const text = line({ type: 'session_meta', payload: { source: 'cli' } })
+      + line({ type: 'event_msg', payload: { type: 'item_completed', padding: 'x'.repeat(2 * TRANSCRIPT_PARSE_BYTES_PER_READ) } })
+      + codexMessage('user', 'Allow ad-hoc work regardless of the automatic cap')
+      + codexMessage('assistant', 'Ad-hoc work remains available');
+    const { sqlite, env } = await rig(text, TRANSCRIPT_PARSE_BYTES_PER_READ * 1.5, { agent: 'codex' });
+    await drain(env, sqlite);
+    expect(target(sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(text), parse_error: null });
+    expect(sqlite.query('SELECT text FROM prompt_batches').all()).toEqual([{ text: 'Allow ad-hoc work regardless of the automatic cap' }]);
+    expect(sqlite.query('SELECT r.text FROM responses r JOIN prompt_batches p ON p.prompt_id = r.prompt_id').all()).toEqual([{ text: 'Ad-hoc work remains available' }]);
+  });
+
+  it('keeps a genuinely unfinished native record pending', async () => {
+    const text = codexMessage('user', 'Still being written').trimEnd();
+    const { sqlite, env } = await rig(text, TRANSCRIPT_PARSE_BYTES_PER_READ, { agent: 'codex' });
+    await drain(env, sqlite);
+    expect(target(sqlite)).toMatchObject({ parsed_offset: 0, parse_error: null });
+    expect(count(sqlite, 'prompt_batches')).toBe(0);
+  });
+
+  it('surfaces a record that exceeds the bounded segment lookahead', async () => {
+    const segmentBytes = 128;
+    const text = codexMessage('user', 'x'.repeat(segmentBytes * (TRANSCRIPT_PARSE_SEGMENTS_PER_READ + 1)));
+    const { sqlite, env } = await rig(text, segmentBytes, { agent: 'codex' });
+    await drain(env, sqlite);
+    expect(target(sqlite)).toMatchObject({ parsed_offset: 0, parse_error: 'parse' });
+    expect(count(sqlite, 'prompt_batches')).toBe(0);
+  });
+
+  it('refuses an oversized first record before combining its segments', async () => {
+    const text = codexMessage('user', 'x'.repeat(TRANSCRIPT_PARSE_RECORD_BYTES));
+    const { sqlite, env } = await rig(text, TRANSCRIPT_PARSE_RECORD_BYTES / 2, { agent: 'codex' });
+    await drain(env, sqlite);
+    expect(target(sqlite)).toMatchObject({ parsed_offset: 0, parse_error: 'parse' });
+    expect(count(sqlite, 'prompt_batches')).toBe(0);
+  });
 
   it('keeps Codex replies and tools on the human turn across appended context and parse windows', async () => {
     const opening = line({ type: 'session_meta', payload: { source: 'cli' } })

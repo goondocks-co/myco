@@ -31,16 +31,18 @@ import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import { isBlock, type DerivedEvent } from './parsers/index.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
-import { SERVER_PROTOCOL } from '../constants.js';
+import { MAX_BLOB_BYTES, SERVER_PROTOCOL } from '../constants.js';
 
 /** Derived events collapsed into one database call. */
 export const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 20;
 /** Store and blob calls one pass may spend, well inside the tightest per-invocation cap a target imposes, which the other jobs share. */
 export const TRANSCRIPT_PARSE_CALLS_PER_PASS = 12;
-/** Bytes decoded before deriving, so a pass bounds its memory as well as its calls. */
+/** Normal read floor; an unfinished first record may use the bounded segment lookahead. */
 export const TRANSCRIPT_PARSE_BYTES_PER_READ = 524_288;
 /** Segments read in one pass. Bytes alone do not bound the READS: a transcript shipped in many small segments sits inside the byte budget while costing one read each. */
 export const TRANSCRIPT_PARSE_SEGMENTS_PER_READ = 8;
+/** Maximum bytes retained while completing the first record across segments. */
+export const TRANSCRIPT_PARSE_RECORD_BYTES = MAX_BLOB_BYTES;
 
 /**
  * The parse's own version.
@@ -286,11 +288,14 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
 
   const taken = segmentsToRead(
     segments.map((s) => ({ baseOffset: s.base_offset, length: s.length, blobKey: s.blob_key })),
-    readOffset, TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ,
+    readOffset, Number.POSITIVE_INFINITY, TRANSCRIPT_PARSE_SEGMENTS_PER_READ,
   );
   if (taken.length === 0) return { derived: 0, calls, nextOffset: null, failure: null };
 
   const chunks: Uint8Array[] = [];
+  let unreadBytes = 0;
+  let hasCompleteLine = false;
+  let readEnd = readOffset;
   for (const segment of taken) {
     const bytes = await segmentBytes(env, target.projectId, segment.blobKey);
     calls += 1;
@@ -298,19 +303,27 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       await stop(env.db, target, 'blob_absent', now);
       return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'blob_absent' };
     }
-    chunks.push(bytes);
+    let unread = bytes.subarray(Math.max(0, readOffset - segment.baseOffset));
+    if (unreadBytes >= TRANSCRIPT_PARSE_BYTES_PER_READ && !hasCompleteLine) {
+      const newline = unread.indexOf(0x0a);
+      if (newline >= 0) unread = unread.subarray(0, newline + 1);
+    }
+    unreadBytes += unread.length;
+    if (unreadBytes > TRANSCRIPT_PARSE_RECORD_BYTES) {
+      await stop(env.db, target, 'parse', now);
+      return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'parse' };
+    }
+    chunks.push(unread);
+    hasCompleteLine ||= unread.includes(0x0a);
+    readEnd = segment.baseOffset + segment.length;
+    if (unreadBytes >= TRANSCRIPT_PARSE_BYTES_PER_READ && hasCompleteLine) break;
   }
 
   const joined = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
   let at = 0;
   for (const chunk of chunks) { joined.set(chunk, at); at += chunk.length; }
 
-  // The read starts at the first taken segment's own offset; the cursor may sit
-  // inside it, so the bytes already parsed are dropped before splitting.
-  const readFrom = taken[0].baseOffset;
-  const skip = readOffset - readFrom;
-  const window = joined.subarray(skip > 0 ? skip : 0);
-  const split = splitCompleteLines(window, readOffset);
+  const split = splitCompleteLines(joined, readOffset);
 
   if (split.malformed > TRANSCRIPT_PARSE_MALFORMED_LIMIT) {
     await stop(env.db, target, 'parse', now);
@@ -318,6 +331,10 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   }
   if (split.malformed > 0) emit({ kind: 'transcript_lines_unreadable', projectId: target.projectId, transcriptId: target.transcriptId, lines: split.malformed });
   if (split.lines.length === 0) {
+    if (split.nextOffset === readOffset && chunks.length === TRANSCRIPT_PARSE_SEGMENTS_PER_READ && readEnd < target.size) {
+      await stop(env.db, target, 'parse', now);
+      return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'parse' };
+    }
     // No complete line in the window. A transcript whose tail is one unfinished
     // line waits for the segment that closes it rather than failing.
     return { derived: 0, calls, nextOffset: null, failure: null };
