@@ -242,13 +242,14 @@ describe('launching a runtime', () => {
 
   it('kills a child that outlives its bound and releases the run it held', async () => {
     const s = boot({ overrunMarginMs: 150 });
-    const out = join(s.root, 'overrun.json');
-    expect((await s.launch({ runId: 'run_over', timeoutSeconds: 0, envVars: { STANDIN_OUT: out, STANDIN_IGNORE_SIGTERM: '1' } })).status).toBe(202);
-    await until(() => existsSync(out), 'the child to run');
-    const runDir = handed(out).cwd;
+    const launched = await s.launch({ runId: 'run_over', timeoutSeconds: 0, envVars: { STANDIN_IGNORE_SIGTERM: '1' } });
+    expect(launched.status).toBe(202);
+    const { pid } = await launched.json() as { pid: number };
+    expect(pid).toBeGreaterThan(0);
 
     await until(async () => (await s.probe()).children.length === 0, 'the overrunning child to be killed');
-    expect(existsSync(runDir)).toBe(false);
+    expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);
+    expect(existsSync(join(s.workDir, 'run_over'))).toBe(false);
   });
 
   it('runs two dispatches at once, which is what one shared namespace has to allow', async () => {
