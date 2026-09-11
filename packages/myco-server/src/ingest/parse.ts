@@ -29,7 +29,7 @@ import { uuidv5 } from '../hash.js';
 import { planEventWrite, type EventWrite, type IngestResult } from './events.js';
 import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
-import type { DerivedEvent } from './parsers/index.js';
+import { isBlock, type DerivedEvent } from './parsers/index.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
 import { SERVER_PROTOCOL } from '../constants.js';
 
@@ -51,7 +51,7 @@ export const TRANSCRIPT_PARSE_SEGMENTS_PER_READ = 8;
  * be answered by a deploy — and a failure nothing can clear would mean one bad
  * line silences a transcript permanently, which no later fix could undo.
  */
-export const PARSER_VERSION = 1;
+export const PARSER_VERSION = 2;
 
 /**
  * Unreadable lines ONE WINDOW tolerates before the transcript is stopped.
@@ -101,6 +101,15 @@ interface ParseTarget {
   fidelity: string | null;
   /** The turn open where the cursor stands, recorded by the pass that stopped there. */
   openPromptId: string | null;
+  parserContext?: Record<string, unknown> | null;
+}
+
+function contextFromStored(raw: unknown): Record<string, unknown> | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== 'string') throw new Error('Stored transcript context is not JSON text');
+  const context: unknown = JSON.parse(raw);
+  if (!isBlock(context)) throw new Error('Stored transcript context is not an object');
+  return context;
 }
 
 /** Why a transcript's parse stopped. Each is a stable classifier a dashboard and an operator read; none is a caller's text. */
@@ -109,7 +118,7 @@ export type ParseFailure = Extract<Classifier, 'parse'> | 'blob_absent';
 /** The next transcript with unread bytes and no failure holding it, oldest receipt first. */
 async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget | null> {
   const row = await db
-    .prepare(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id
+    .prepare(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context
                 FROM transcripts
                WHERE ${PENDING_TRANSCRIPTS}
                  AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = transcripts.project_id AND t.session_id = transcripts.session_id)
@@ -128,6 +137,7 @@ async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget
     parsedOffset: (row.parsed_offset as number | null) ?? 0,
     fidelity: (row.fidelity as string | null) ?? null,
     openPromptId: (row.open_prompt_id as string | null) ?? null,
+    parserContext: contextFromStored(row.parser_context),
   };
 }
 
@@ -262,17 +272,20 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
 
   // `calls` counts what THIS pass spends; the caller adds its own selection.
   let calls = 0;
+  const needsHeader = parser.headerContext !== undefined && target.parserContext == null;
+  const recoveringHeader = needsHeader && target.parsedOffset > 0;
+  const readOffset = recoveringHeader ? 0 : target.parsedOffset;
   const { results: segments } = await env.db
     .prepare(`SELECT base_offset, length, blob_key FROM transcript_segments
                WHERE project_id = ? AND transcript_id = ? AND base_offset + length > ?
                ORDER BY base_offset`)
-    .bind(target.projectId, target.transcriptId, target.parsedOffset)
+    .bind(target.projectId, target.transcriptId, readOffset)
     .all<{ base_offset: number; length: number; blob_key: string }>();
   calls += 1;
 
   const taken = segmentsToRead(
     segments.map((s) => ({ baseOffset: s.base_offset, length: s.length, blobKey: s.blob_key })),
-    target.parsedOffset, TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ,
+    readOffset, TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ,
   );
   if (taken.length === 0) return { derived: 0, calls, nextOffset: null, failure: null };
 
@@ -294,9 +307,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // The read starts at the first taken segment's own offset; the cursor may sit
   // inside it, so the bytes already parsed are dropped before splitting.
   const readFrom = taken[0].baseOffset;
-  const skip = target.parsedOffset - readFrom;
+  const skip = readOffset - readFrom;
   const window = joined.subarray(skip > 0 ? skip : 0);
-  const split = splitCompleteLines(window, target.parsedOffset);
+  const split = splitCompleteLines(window, readOffset);
 
   if (split.malformed > TRANSCRIPT_PARSE_MALFORMED_LIMIT) {
     await stop(env.db, target, 'parse', now);
@@ -313,7 +326,13 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // recorded it. With it, an event derived after a break is identical to the
   // same event derived in one uninterrupted read, so a pass may stop anywhere
   // rather than only where a turn begins.
-  const events = await parser.parse({ lines: split.lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined });
+  const transcriptMeta = target.parserContext ?? parser.headerContext?.(split.lines);
+  if (recoveringHeader) {
+    await env.db.prepare('UPDATE transcripts SET parser_context = ? WHERE project_id = ? AND transcript_id = ?')
+      .bind(JSON.stringify(transcriptMeta), target.projectId, target.transcriptId).run();
+    return { derived: 0, calls: calls + 1, nextOffset: null, failure: null };
+  }
+  const events = await parser.parse({ lines: split.lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta });
   const ctx = { projectId: target.projectId, machineId: target.machineId, tokenId: target.tokenId, bodyBytes: 0, now, writeOrigin: 'server' as const };
 
   let derived = 0;
@@ -377,9 +396,10 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const openPrompt = cursor < target.size ? lastTurn : null;
 
   await env.db
-    .prepare(`UPDATE transcripts SET parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?, fidelity = COALESCE(fidelity, ?), open_prompt_id = ?
+    .prepare(`UPDATE transcripts SET parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?, fidelity = COALESCE(fidelity, ?), open_prompt_id = ?,
+                 parser_context = COALESCE(parser_context, ?), parse_error = NULL, parse_failed_at = NULL
                WHERE project_id = ? AND transcript_id = ?`)
-    .bind(cursor, now, PARSER_VERSION, parser.fidelity, openPrompt, target.projectId, target.transcriptId)
+    .bind(cursor, now, PARSER_VERSION, parser.fidelity, openPrompt, transcriptMeta === undefined ? null : JSON.stringify(transcriptMeta), target.projectId, target.transcriptId)
     .run();
   calls += 1;
 

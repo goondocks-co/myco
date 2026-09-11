@@ -1,0 +1,18 @@
+{
+  "source_scope": "native prefix through first assistant message",
+  "source_sha256": "0732c7e46cec294bb1ad5aa22b306e3c0bea8866c6393fa93dca6d3917db4e80",
+  "source_rows": 13,
+  "retained_message_rows": 7,
+  "header_fields": [
+    "source",
+    "cli_version"
+  ],
+  "preserved_text_markers": [
+    "recommended_plugins",
+    "skills_instructions",
+    "environment_context",
+    "INSTRUCTIONS",
+    "# AGENTS.md instructions"
+  ],
+  "redacted_sha256": "6f31b5b8923b1d5a018b18aa5c3fb4006eae4666a8c83e6d3b73a6bda5d268a2"
+}

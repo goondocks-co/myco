@@ -6,17 +6,23 @@
  *   payload.type = 'function_call' or 'custom_tool_call': `call_id` links
  *                  the call to its corresponding output item.
  *
- * `session_meta`, `event_msg`, `turn_context` and `reasoning` records carry no
- * row and are skipped. Codex declares no plan tags, so this parser derives no
- * plans; a Codex plan reaches the server as a plan-file event from the member.
+ * `session_meta` supplies capture-rule context. Developer and system messages
+ * carry no response row. Assistant `proposed_plan` envelopes produce plans.
  */
 import { uuidv5 } from '../../hash.js';
+import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import {
   blocksOf, isBlock, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
-  type DerivedEvent, type ParserInput, type TranscriptParser,
+  type DerivedEvent, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
 const TOOL_NAME_CHARS = 64;
+
+function codexHeaderContext(lines: readonly ParsedLine[]): Record<string, unknown> {
+  const header = lines.find(({ value }) => value.type === 'session_meta')?.value.payload;
+  return isBlock(header) ? header : {};
+}
 
 /** The text of a Codex content array: the block types that carry words. */
 function codexText(content: unknown): string {
@@ -56,13 +62,15 @@ export const codexParser: TranscriptParser = {
   // Other tool-call shapes require the member's PostToolUse capture.
   fidelity: 'no_tool_results',
   planTags: ['proposed_plan'],
+  headerContext: codexHeaderContext,
 
-  async parse({ lines, sessionId, now, openPromptId }: ParserInput): Promise<DerivedEvent[]> {
+  async parse({ lines, sessionId, now, openPromptId, transcriptMeta }: ParserInput): Promise<DerivedEvent[]> {
     const events: DerivedEvent[] = [];
     const pending = new Map<string, PendingCall>();
     let promptId: string | undefined = openPromptId;
     let reply: { text: string[]; offset: number; createdAt: number; promptId?: string } | null = null;
     let planPosition = 0;
+    const metadata = transcriptMeta ?? codexHeaderContext(lines);
 
     const flushReply = async (): Promise<void> => {
       if (reply === null) return;
@@ -89,10 +97,13 @@ export const codexParser: TranscriptParser = {
         if (text.trim() === '') continue;
         if (str(payload.role) === 'user') {
           await flushReply();
+          const decision = evaluatePromptRules(CAPTURE_RULE_BUNDLES, 'codex', { prompt: text, transcriptPath: sessionId, transcriptMeta: metadata, record: value });
+          if (decision.action === 'drop') continue;
           promptId = await promptIdAt(sessionId, offset);
-          events.push({ kind: 'prompt', payload: { promptId, text, origin: 'user', promptKind: 'message' }, createdAt, offset });
+          events.push({ kind: 'prompt', payload: { promptId, text: decision.prompt, origin: decision.origin === undefined || decision.origin === 'human' ? 'user' : decision.origin, promptKind: 'message' }, createdAt, offset });
           continue;
         }
+        if (str(payload.role) !== 'assistant') continue;
         if (reply === null) reply = { text: [], offset, createdAt, promptId };
         reply.text.push(text);
         const plans = await plansInText(text, codexParser.planTags, sessionId, { promptId, offset, createdAt }, planPosition);

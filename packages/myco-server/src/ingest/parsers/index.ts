@@ -22,10 +22,8 @@ import type { Payload } from '../kinds.js';
 /**
  * What a parser can see in its agent's transcript.
  *
- * `no_tool_results` is a property of the FORMAT, not of a file: Cursor's
- * transcript carries no tool results, so no parse of one can produce them, and
- * a session captured from it is structurally incomplete. Extraction excludes
- * such sessions; the dashboard shows them, labelled.
+ * `no_tool_results` labels formats whose tools require supplementary hook
+ * capture. The dashboard exposes this limitation on the transcript.
  */
 export const FIDELITIES = ['full', 'no_tool_results'] as const;
 export type Fidelity = (typeof FIDELITIES)[number];
@@ -51,6 +49,7 @@ export interface ParserInput {
    * an uninterrupted one, which is what lets a pass stop anywhere.
    */
   openPromptId?: string;
+  transcriptMeta?: Record<string, unknown>;
 }
 
 /** A kind and a payload the catalogue admits, named by the byte offset that produced it. */
@@ -82,6 +81,8 @@ export interface TranscriptParser {
   fidelity: Fidelity;
   /** Declared by an agent that continues a conversation under a new id; absent for one that does not. */
   continuation?: Continuation;
+  /** Metadata from the beginning of the recording, retained across parse windows. */
+  headerContext?(lines: readonly ParsedLine[]): Record<string, unknown>;
   /**
    * The assistant-text wrappers a plan arrives in for this agent.
    *

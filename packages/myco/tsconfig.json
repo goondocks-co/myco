@@ -26,7 +26,11 @@
       "@goondocks/myco-shared/harness-providers": ["../myco-shared/src/harness-providers.ts"],
       "@goondocks/myco-shared/skills": ["../myco-shared/src/skills.generated.ts"],
       "@goondocks/myco-shared/skill-candidates": ["../myco-shared/src/skill-candidates.ts"],
-      "@goondocks/myco-shared/agent-config": ["../myco-shared/src/agent-config.ts"]
+      "@goondocks/myco-shared/agent-config": ["../myco-shared/src/agent-config.ts"],
+      "@goondocks/myco-shared/capture-rule-schema": ["../myco-shared/src/capture-rule-schema.ts"],
+      "@goondocks/myco-shared/capture-rules": ["../myco-shared/src/capture-rules.ts"],
+      "@goondocks/myco-shared/capture-rules-data": ["../myco-shared/src/capture-rules.generated.ts"],
+      "@goondocks/myco-shared/dot-path": ["../myco-shared/src/dot-path.ts"]
     }
   },
   "include": ["src/**/*", "plugin/**/*"],
