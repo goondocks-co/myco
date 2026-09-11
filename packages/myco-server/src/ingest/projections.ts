@@ -438,6 +438,9 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
         .bind(ctx.projectId, transcriptId, e.sessionId, ctx.machineId, opt(p.agent), opt(p.originPath), opt(p.role) ?? 'primary', headHash, size, ctx.now, ctx.now, ctx.tokenId,
               e.channel === 'import' ? ctx.now : null,
               ...rawGateParams(ctx, e), ctx.projectId, transcriptId, baseOffset, e.eventId),
+      db.prepare(`UPDATE sessions SET agent = COALESCE(agent, ?) WHERE project_id = ? AND session_id = ?
+          AND ${RAW_ROW_GATE} AND ${segmentWritten}`)
+        .bind(opt(p.agent), ctx.projectId, e.sessionId, ...rawGateParams(ctx, e), ctx.projectId, transcriptId, baseOffset, e.eventId),
     ],
     reads: [
       db.prepare(`SELECT size, segment_count, machine_id, head_hash FROM transcripts WHERE project_id = ? AND transcript_id = ?`).bind(ctx.projectId, transcriptId),

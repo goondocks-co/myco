@@ -65,8 +65,8 @@ async function upload(env: ReturnType<typeof sqliteEnv>, token: string, bytes: U
 }
 
 /** Exact projection-statement totals, pinned per payload shape: a projection that vanishes fails the gate. */
-const FULL_PROJECTION_STATEMENTS = 14;
-const REQUIRED_ONLY_PROJECTION_STATEMENTS = 12;
+const FULL_PROJECTION_STATEMENTS = 15;
+const REQUIRED_ONLY_PROJECTION_STATEMENTS = 13;
 /** Every field carrying the prompt-reference marker across the catalogue. */
 const PROMPT_REFERENCE_MARKERS = 9;
 /** Every blob-key field of the catalogue as `kind.field`, pinned by name; the absent-key admission gate drives each one. */
@@ -76,7 +76,7 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 47;
+const PLANNED_STATEMENTS = 48;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
 const ID_ROLES = { key: 7, prompt: 9, group: 1 };
@@ -392,6 +392,31 @@ describe('kind catalogue', () => {
     expect(count(e.sqlite, 'events')).toBe(2);
     expect(count(e.sqlite, 'transcript_segments')).toBe(2);
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(a.byteLength + b.byteLength + [0, 5].reduce((sum, n) => sum + new TextEncoder().encode(JSON.stringify(envelope({ eventId: uuid(90 + n), kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: n === 0 ? 0 : a.byteLength, length: n === 0 ? a.byteLength : b.byteLength, blob: n === 0 ? ka : kb } }))).byteLength, 0));
+  });
+
+  it('takes missing session agent identity only from an admitted transcript segment', async () => {
+    const e = sqliteEnv();
+    const t = await member(e);
+    const bytes = utf8('{"type":"session_meta"}\n');
+    const blob = await upload(e, t.token, bytes);
+    const transcriptId = `tx_${'d'.repeat(32)}`;
+    const segment = (event: number, baseOffset: number, agent?: string) => envelope({
+      eventId: uuid(event), kind: 'transcript.segment',
+      payload: { transcriptId, baseOffset, length: bytes.byteLength, blob, ...(agent === undefined ? {} : { agent }) },
+    });
+    const facts = () => e.sqlite.query(`SELECT agent, started_at, facts_event_id FROM sessions WHERE project_id = 'proj_1' AND session_id = 'sess_1'`).get();
+
+    await worker.fetch(memberPost(t.token, segment(1300, 0)), e.env);
+    expect(facts()).toEqual({ agent: null, started_at: null, facts_event_id: null });
+    expect((await json(await worker.fetch(memberPost(t.token, segment(1301, bytes.byteLength + 1, 'codex')), e.env))).persisted).toBe(false);
+    expect(facts()).toEqual({ agent: null, started_at: null, facts_event_id: null });
+    await worker.fetch(memberPost(t.token, segment(1302, bytes.byteLength, 'codex')), e.env);
+    expect(facts()).toEqual({ agent: 'codex', started_at: null, facts_event_id: null });
+
+    const startId = uuid(1303);
+    await worker.fetch(memberPost(t.token, envelope({ eventId: startId, kind: 'session.start', payload: { agent: 'claude-code', startedAt: 900 } })), e.env);
+    await worker.fetch(memberPost(t.token, segment(1304, bytes.byteLength * 2, 'codex')), e.env);
+    expect(facts()).toEqual({ agent: 'claude-code', started_at: 900, facts_event_id: startId });
   });
 
   it('refuses a payload whose keys come from the object prototype', async () => {
