@@ -782,15 +782,42 @@ describe('POST /mcp over a run credential', () => {
     expect((await two.list(two.harness.token)).body.error.data.code).toBe('no_run');
   });
 
-  it('attributes every write to the run: its agent, the run id as author, the dispatch-named session and its latest prompt; a member\'s write names the member', async () => {
+  it('requires extraction source prompts and preserves their exact session, prompt and date', async () => {
+    const { harness, member, dispatch, call, sqlite } = await runSetup();
+    await dispatch(harness, 'run_1', SWEEP, { sessionId: null });
+    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+      VALUES ('proj_1', 'sess_1', 'p_later', 'e_later', 'later prompt', 'user', 'later', ?, ?, 'tok_1', ?)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
+    const args = { op: 'save', type: 'gotcha', content: 'A finding from the earlier prompt' };
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+      VALUES ('proj_2', 'foreign-session', 'm1', 'tok_1', ?, ?)`, [RUN_NOW, RUN_NOW]);
+    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+      VALUES ('proj_2', 'foreign-session', 'foreign-prompt', 'foreign-event', 'foreign', 'user', 'foreign', ?, ?, 'tok_1', ?)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
+    expect((await call(harness.token, 'myco_spores', args)).result).toEqual({ ok: false, error: 'prompt_id is required for extraction spore writes' });
+    expect((await call(harness.token, 'myco_spores', { ...args, prompt_id: 'missing' })).result).toEqual({ ok: false, error: 'prompt_id not found' });
+    expect((await call(harness.token, 'myco_spores', { ...args, prompt_id: 'foreign-prompt' })).result).toEqual({ ok: false, error: 'prompt_id not found' });
+    expect((await call(member.token, 'myco_spores', { ...args, session_id: 'sess_1', prompt_id: 'p_1' })).result).toEqual({ ok: false, error: 'session_id not found' });
+    const saved = (await call(harness.token, 'myco_spores', { ...args, prompt_id: 'p_1' })).result;
+    expect(sqlite.query('SELECT author, session_id, prompt_id FROM spores WHERE id = ?').get(saved.id)).toEqual({
+      author: 'run_1', session_id: 'sess_1', prompt_id: 'p_1',
+    });
+    const read = (await call(member.token, 'myco_spores', { op: 'get', id: saved.id })).result;
+    expect(read).toMatchObject({ session_id: 'sess_1', prompt_id: 'p_1', source_created_at: RUN_NOW - 5_000 });
+    expect((await call(harness.token, 'myco_spores', { ...args, prompt_id: 'p_1', session_id: 'another-session' })).result).toEqual({ ok: false, error: 'session_id not found' });
+    const consolidation = { op: 'consolidate', source_spore_ids: [saved.id], consolidated_content: 'Combined observation', observation_type: 'wisdom' };
+    expect((await call(harness.token, 'myco_spores', consolidation)).result).toEqual({ ok: false, error: 'prompt_id is required for extraction spore writes' });
+    const combined = (await call(harness.token, 'myco_spores', { ...consolidation, prompt_id: 'p_1' })).result;
+    expect(sqlite.query('SELECT session_id, prompt_id FROM spores WHERE id = ?').get(combined.new_spore_id)).toEqual({ session_id: 'sess_1', prompt_id: 'p_1' });
+  });
+
+  it('attributes extraction writes to the run and its named source while preserving member authorship', async () => {
     const { harness, member, dispatch, call, sqlite } = await runSetup();
     await dispatch(harness, 'run_1', SWEEP);
-    const saved = (await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'seen by the run' })).result;
+    const saved = (await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'seen by the run', prompt_id: 'p_1' })).result;
     expect(sqlite.query(`SELECT agent_id, author, session_id, prompt_id FROM spores WHERE id = ?`).get(saved.id)).toEqual({ agent_id: 'myco-agent', author: 'run_1', session_id: 'sess_1', prompt_id: 'p_1' });
-    const second = (await call(harness.token, 'myco_spores', { op: 'save', type: 'decision', content: 'the successor' })).result;
+    const second = (await call(harness.token, 'myco_spores', { op: 'save', type: 'decision', content: 'the successor', prompt_id: 'p_1' })).result;
     expect((await call(harness.token, 'myco_spores', { op: 'supersede', old_spore_id: saved.id, new_spore_id: second.id, reason: 'replaced' })).result.status).toBe('superseded');
     expect(sqlite.query(`SELECT agent_id, author, session_id FROM resolution_events WHERE spore_id = ?`).get(saved.id)).toEqual({ agent_id: 'myco-agent', author: 'run_1', session_id: 'sess_1' });
-    expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', session_id: 'sess_other' })).result).toEqual({ ok: false, error: 'session_id not found' });
+    expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', session_id: 'sess_other', prompt_id: 'p_1' })).result).toEqual({ ok: false, error: 'session_id not found' });
     // A run reads a body through its own bounded inventory, not the member tool.
     expect((await call(harness.token, 'myco_run_spores', { op: 'get', id: saved.id })).result.spore.author).toBe('run_1');
 
@@ -798,9 +825,9 @@ describe('POST /mcp over a run credential', () => {
     expect(sqlite.query(`SELECT agent_id, author FROM spores WHERE id = ?`).get(mine.id)).toEqual({ agent_id: 'user', author: 'mem_machine_1' });
   });
 
-  it('writes with no session, still authored by the run, when the dispatch names a session the Project does not hold', async () => {
+  it('keeps a seeding write attributed to its run when its dispatch session is absent', async () => {
     const { harness, dispatch, call, sqlite } = await runSetup();
-    await dispatch(harness, 'run_1', SWEEP, { sessionId: 'sess_missing' });
+    await dispatch(harness, 'run_1', 'vault-seed', { sessionId: 'sess_missing' });
     const saved = (await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'orphaned dispatch' })).result;
     expect(sqlite.query(`SELECT author, session_id FROM spores WHERE id = ?`).get(saved.id)).toEqual({ author: 'run_1', session_id: null });
   });

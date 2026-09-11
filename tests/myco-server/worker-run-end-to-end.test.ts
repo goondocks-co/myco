@@ -208,7 +208,7 @@ describe('what a worker reporting `completed` actually closes', () => {
 
     // A spore written under the run's credential names the run as its author.
     const line = 'Wrap only the claim call in the retry: the lease renewal re-claims a run another worker holds (runner/loop.ts).';
-    const saved = await r.asRun(run.runToken, 'myco_spores', { op: 'save', type: 'gotcha', content: `${line}\n\nThe renewal path is idempotent on the worker that holds the lease and a re-claim on any other.`, tags: ['runner', 'lease'], agent_line: `  ${line}  ` });
+    const saved = await r.asRun(run.runToken, 'myco_spores', { op: 'save', type: 'gotcha', content: `${line}\n\nThe renewal path is idempotent on the worker that holds the lease and a re-claim on any other.`, tags: ['runner', 'lease'], agent_line: `  ${line}  `, prompt_id: 'p3' });
     expect(saved.id).toEqual(expect.any(String));
     // The spore names the run as its author, and carries the agent line the run gave it, as one line.
     expect(r.e.sqlite.query(`SELECT author, agent_line AS agentLine FROM spores WHERE id = ?`).get(saved.id as string)).toEqual({ author: run.id, agentLine: line });

@@ -542,15 +542,16 @@ describe('a titling run reads and writes its own session', () => {
 
 describe('a sweep consolidates through the member op', () => {
   it('records the wisdom spore and moves every active source in one write, and refuses a source already resolved', async () => {
-    const { harness, dispatch, call, spore, sqlite } = await setup();
+    const { harness, dispatch, call, spore, prompt, sqlite } = await setup();
     await dispatch('run_s', SWEEP);
+    prompt('source-prompt');
     spore('sp_a', 'first source');
     spore('sp_b', 'second source');
     spore('sp_gone', 'already resolved');
     sqlite.run(`UPDATE spores SET status = 'superseded' WHERE id = 'sp_gone'`);
 
     const answered = (await call(harness.token, 'myco_spores', {
-      op: 'consolidate', source_spore_ids: ['sp_a', 'sp_b'], consolidated_content: 'the wisdom', observation_type: 'wisdom', project: 'proj_1',
+      op: 'consolidate', source_spore_ids: ['sp_a', 'sp_b'], consolidated_content: 'the wisdom', observation_type: 'wisdom', project: 'proj_1', prompt_id: 'source-prompt',
     }) as any).result;
     expect(answered.sources_consolidated).toBe(2);
     expect(sqlite.query(`SELECT status FROM spores WHERE id IN ('sp_a','sp_b') ORDER BY id`).all())
@@ -560,7 +561,7 @@ describe('a sweep consolidates through the member op', () => {
     // The member op counts only sources that were active, and leaves a
     // resolved one where it stands.
     const second = (await call(harness.token, 'myco_spores', {
-      op: 'consolidate', source_spore_ids: ['sp_gone'], consolidated_content: 'again', observation_type: 'wisdom', project: 'proj_1',
+      op: 'consolidate', source_spore_ids: ['sp_gone'], consolidated_content: 'again', observation_type: 'wisdom', project: 'proj_1', prompt_id: 'source-prompt',
     }) as any).result;
     expect(second.sources_consolidated).toBe(0);
     expect(sqlite.query(`SELECT status FROM spores WHERE id = 'sp_gone'`).get()).toEqual({ status: 'superseded' });

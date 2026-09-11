@@ -38,6 +38,15 @@ export const EXTRACTION_ORIGINS: Readonly<Record<(typeof PROMPT_ORIGINS)[number]
 /** The origins an extraction page carries. */
 export const READ_ORIGINS: readonly string[] = PROMPT_ORIGINS.filter((origin) => EXTRACTION_ORIGINS[origin]);
 
+/** The captured session supporting an extraction finding, within the run's Project. */
+export async function extractionSourceSession(db: RelationalStore, scope: ReadScope, promptId: string): Promise<string | null> {
+  const source = await db.prepare(`SELECT p.session_id AS sessionId FROM prompt_batches p
+    JOIN sessions s ON s.project_id = p.project_id AND s.session_id = p.session_id
+    WHERE p.project_id = ? AND p.prompt_id = ? AND p.origin IN (${READ_ORIGINS.map(() => '?').join(', ')}) AND ${notTombstonedSql('s')}`)
+    .bind(scope.projectId, promptId, ...READ_ORIGINS).first<{ sessionId: string }>();
+  return source?.sessionId ?? null;
+}
+
 const ELIGIBLE_PROMPT_SQL = `p.processed = 0 AND p.origin IN (${READ_ORIGINS.map(() => '?').join(', ')})`;
 
 /** One unprocessed prompt. `text` and `response` are present only where the caller asked for bodies. */
