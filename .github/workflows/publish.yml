@@ -196,15 +196,8 @@ jobs:
           name: libsqlite3-${{ matrix.target }}
           path: packages/myco/vendor-src/libsqlite3/${{ matrix.target }}/
 
-      # Build the dashboard UI bundle BEFORE codegen so gen-ui-assets embeds
-      # it into the binary. build:ui runs its own `npm ci` in ui/ (the root
-      # `npm ci --ignore-scripts` above does not install the ui/ workspace).
+      # Build both dashboards before codegen embeds them in the binary.
       - run: npm run build:ui -w @goondocks/myco
-
-      # The Deployment dashboard is embedded by the same codegen step, from its
-      # own package's build. Codegen refuses an absent build rather than
-      # emitting an empty map, so this runs first.
-      - run: npm run build:ui -w @goondocks/myco-server
 
       - run: npm run codegen -w @goondocks/myco
 
