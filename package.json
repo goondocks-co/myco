@@ -9,6 +9,8 @@
     "packages/*"
   ],
   "scripts": {
+    "hooks:install": "node scripts/install-fixture-hook.mjs",
+    "check:fixtures": "node --import tsx scripts/check-fixture-redaction.ts",
     "build": "npm run build -w @goondocks/myco-shared && npm run build -w @goondocks/myco",
     "build:core": "npm run build:core -w @goondocks/myco",
     "build:ui": "npm run build:ui -w @goondocks/myco",
