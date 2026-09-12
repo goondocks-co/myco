@@ -10,7 +10,7 @@
  * and the driver contract, which need no harness at all.
  *
  * Run it as:
- *   MYCO_SMOKE_SERVER=<url> npm test -- tests/smoke/worker-run.smoke.test.ts
+ *   MYCO_SMOKE_SERVER=<url> MYCO_SMOKE_PROJECT=<id> npm test -- tests/smoke/worker-run.smoke.test.ts
  * against a Deployment this machine holds an administrator membership for.
  */
 import { describe, expect, it } from 'bun:test';
@@ -19,9 +19,14 @@ import { runWorker } from '@myco/runner/loop.js';
 import { readDeploymentMembership } from '@myco/member/registry.js';
 import { resolveMycoHome } from '@myco/paths/home.js';
 import { join } from 'node:path';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { memberHeaders } from '@myco/member/constants.js';
+import { verifyWorkerOutcome } from '../helpers/worker-smoke-evidence.js';
 
 const SERVER = process.env.MYCO_SMOKE_SERVER ?? '';
-const HARNESSES = ['claude-code', 'codex', 'opencode'] as const;
+const PROJECT = process.env.MYCO_SMOKE_PROJECT ?? '';
+const HARNESSES = (process.env.MYCO_SMOKE_HARNESSES ?? 'claude-code,codex,opencode').split(',');
+const SMOKE_TIMEOUT_MS = 420_000;
 
 describe.skipIf(SERVER === '')('a worker drives one run on each harness', () => {
   it('names the machine\'s harnesses before anything is claimed', () => {
@@ -35,28 +40,37 @@ describe.skipIf(SERVER === '')('a worker drives one run on each harness', () => 
     it(`drives one queued run to completion on ${harness}`, async () => {
       const membership = readDeploymentMembership(SERVER);
       expect(membership).not.toBeNull();
+      expect(PROJECT.length).toBeGreaterThan(0);
       const stopping = new AbortController();
+      const timeout = setTimeout(() => stopping.abort(), SMOKE_TIMEOUT_MS);
       const lines: string[] = [];
-      const { driven, refused } = await runWorker({
-        serverUrl: SERVER,
-        token: membership!.token,
-        runRoot: join(resolveMycoHome(), 'worker', 'smoke'),
-        only: [harness],
-        once: true,
-        pollIdleMs: 1_000,
-        log: (line) => { lines.push(line); },
-        signal: stopping.signal,
-      });
-      // The worker's own word is the harness ending its turn; the Deployment's
-      // verdict is whether the run left its artifact behind, and it says so on
-      // the worker's log only when the two disagree.
-      // A run that failed on both sides also agrees, so the log must show the
-      // harness calling a run tool and the worker starting it.
-      const disagreed = lines.filter((l) => l.includes('the Deployment recorded it') || l.includes('failed before its harness started'));
-      const called = lines.filter((l) => /^run \S+ called \S+: ok$/.test(l)).length;
-      expect({ harness, driven, refused, offered: lines.some((l) => l.includes(harness)), disagreed, called: called > 0 })
-        .toEqual({ harness, driven: 1, refused: null, offered: true, disagreed: [], called: true });
-    });
+      const client = new Client({ name: 'myco-worker-smoke', version: '1' });
+      try {
+        const { driven, refused } = await runWorker({
+          serverUrl: SERVER,
+          token: membership!.token,
+          runRoot: join(resolveMycoHome(), 'worker', 'smoke'),
+          only: [harness],
+          once: true,
+          pollIdleMs: 1_000,
+          log: (line) => { lines.push(line); },
+          signal: stopping.signal,
+        });
+        const disagreed = lines.filter((l) => l.includes('the Deployment recorded it') || l.includes('failed before its harness started'));
+        expect({ harness, driven, refused, offered: lines.some((l) => l.includes(harness)), disagreed })
+          .toEqual({ harness, driven: 1, refused: null, offered: true, disagreed: [] });
+        const runId = lines.map((line) => /^claimed (\S+) /.exec(line)?.[1]).find(Boolean);
+        expect(runId).toBeDefined();
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', SERVER), {
+          requestInit: { headers: memberHeaders({ token: membership!.token, projectId: PROJECT }), signal: stopping.signal },
+        }));
+        console.log(JSON.stringify(await verifyWorkerOutcome(client, PROJECT, runId!)));
+      } finally {
+        clearTimeout(timeout);
+        stopping.abort();
+        await client.close();
+      }
+    }, SMOKE_TIMEOUT_MS + 5_000);
   }
 });
 

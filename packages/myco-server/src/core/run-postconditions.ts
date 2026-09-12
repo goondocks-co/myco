@@ -166,17 +166,34 @@ export function acceptedActions(task: string | null): readonly string[] | null {
   return closeRuleFor(task)?.reports ?? null;
 }
 
-/** Why this run may not close as completed, or null when it may. */
-export async function runCloseRefusal(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<string | null> {
+export interface RunCloseEvidence {
+  hasReport: boolean;
+  artifactPresent: boolean | null;
+  skipSupported: boolean | null;
+  targetSessionId: string | null;
+}
+
+/** Current persisted evidence under the task's close rule; null for an ungoverned task. */
+export async function readRunCloseEvidence(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<RunCloseEvidence | null> {
   const rule = closeRuleFor(run.task);
   if (rule === undefined) return null;
   const evidence = (await listReports(db, scope, run.id)).filter((report) => rule.reports.includes(report.action));
-  if (evidence.length === 0) return RUN_CLOSE_ERROR;
-  if (rule.artifact === undefined || run.dryRun === 1) return null;
+  const result: RunCloseEvidence = { hasReport: evidence.length > 0, artifactPresent: null, skipSupported: null, targetSessionId: sessionNamedByRun(run) };
+  if (!result.hasReport || rule.artifact === undefined || run.dryRun === 1) return result;
   if (evidence.every((report) => report.action === RUN_SKIP_ACTION)) {
-    return rule.skipHolds === undefined || (await rule.skipHolds(db, scope, run)) ? null : RUN_CLOSE_ARTIFACT_ERROR;
+    result.skipSupported = rule.skipHolds === undefined || await rule.skipHolds(db, scope, run);
+  } else {
+    result.artifactPresent = await rule.artifact(db, scope, run);
   }
-  return (await rule.artifact(db, scope, run)) ? null : RUN_CLOSE_ARTIFACT_ERROR;
+  return result;
+}
+
+/** Why this run may not close as completed, or null when it may. */
+export async function runCloseRefusal(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<string | null> {
+  const evidence = await readRunCloseEvidence(db, scope, run);
+  if (evidence === null) return null;
+  if (!evidence.hasReport) return RUN_CLOSE_ERROR;
+  return evidence.artifactPresent === false || evidence.skipSupported === false ? RUN_CLOSE_ARTIFACT_ERROR : null;
 }
 
 /** How a report under an action a task's rule cannot hear is refused, on either door a run reports through. */

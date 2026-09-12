@@ -26,6 +26,8 @@ import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { verifyWorkerOutcome } from '../helpers/worker-smoke-evidence.js';
 
 const NOW = 1_800_000_000_000;
 const ORIGIN = 'https://s';
@@ -36,7 +38,18 @@ async function rig() {
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);
   await ensureMember(e.db, 'mem_worker', NOW, 'admin', 'a worker');
-  const workerToken = (await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, NOW)).tokenId;
+  const workerCredential = await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, NOW);
+  const workerToken = workerCredential.tokenId;
+  const verifyOutcome = async (runId: string) => {
+    const client = new Client({ name: 'worker-smoke-test', version: '1' });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(`${ORIGIN}/mcp`), {
+        requestInit: { headers: memberHeaders(workerCredential.token, { [PROJECT_HEADER]: 'proj_1' }) },
+        fetch: (input, init) => worker.fetch(new Request(input, init), e.env),
+      }));
+      return await verifyWorkerOutcome(client, 'proj_1', runId);
+    } finally { await client.close(); }
+  };
   /** A tool call over a run's own credential, as the harness child makes it. */
   const asRun = async (token: string, name: string, input: Record<string, unknown>) => {
     const res = await worker.fetch(new Request(`${ORIGIN}/mcp`, {
@@ -80,7 +93,7 @@ async function rig() {
   /** The worker's own report that the harness ended its turn. */
   const workerEnds = (runId: string, status: 'completed' | 'failed', now: number) =>
     endLeasedRun(e.serverEnv, { tokenId: workerToken, now }, { projectId: 'proj_1', runId, status });
-  return { e, workerToken, asRun, outcome, calls, claimedTitling, claimedRetitle, workerEnds };
+  return { e, workerToken, asRun, outcome, calls, claimedTitling, claimedRetitle, workerEnds, verifyOutcome };
 }
 
 describe('a titling run a worker claimed', () => {
@@ -150,6 +163,9 @@ describe('what a worker reporting `completed` actually closes', () => {
       .toMatchObject({ recorded: true });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'failed' });
     expect(r.outcome(run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
+    await expect(r.verifyOutcome(run.id)).rejects.toThrow();
+    r.e.sqlite.run('UPDATE agent_runs SET status = ? WHERE id = ?', ['completed', run.id]);
+    await expect(r.verifyOutcome(run.id)).rejects.toThrow('The run left no task artifact');
   });
 
   it('completes a titling run that wrote the title under its own credential', async () => {
@@ -160,6 +176,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'titled one session' });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
     expect(r.outcome(run.id)).toEqual({ status: 'completed', error: null });
+    expect(await r.verifyOutcome(run.id)).toMatchObject({ task: 'title-summary', outcome: 'write', title: 'Add a retry to the runner' });
   });
 
   it('refuses a report under an action the task\'s close rule cannot hear, naming the ones it can, and records nothing', async () => {
@@ -180,6 +197,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     const run = await r.claimedRetitle(NOW + 1);
     await r.asRun(run.runToken, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'a title stands' });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
+    expect(await r.verifyOutcome(run.id)).toMatchObject({ outcome: 'skip', title: 'A title an earlier run wrote' });
   });
 
   it('holds an extraction pass to the prompt it marked read: a report alone fails, a mark under its own credential completes', async () => {
@@ -226,6 +244,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect((await r.asRun(run.runToken, 'myco_run_prompts', { op: 'unprocessed' })).prompts).toEqual([]);
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
     expect(r.outcome(run.id)).toEqual({ status: 'completed', error: null });
+    expect(await r.verifyOutcome(run.id)).toMatchObject({ task: 'extract-curate', outcome: 'write', spores: [saved.id] });
   });
 
   it('limits seeding to spores and a report, refusing managed rules writes', async () => {
@@ -270,6 +289,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     await r.asRun(a.run.runToken, 'myco_run', { op: 'report', action: SEEDING_REPORT_ACTION, summary: 'seeded' });
     expect(await r.workerEnds(a.run.id, 'completed', NOW + 2)).toEqual({ ended: true, status: 'completed' });
     expect(r.outcome(a.run.id)).toEqual({ status: 'completed', error: null });
+    expect((await r.verifyOutcome(a.run.id)).spores).toHaveLength(1);
     queue('run_seed_b', NOW + 3);
     const b = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: [REPOSITORY_CHECKOUT_CAPABILITY], now: NOW + 4 });
     if (!b.claimed) throw new Error('not claimed');
@@ -299,6 +319,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect((await r.asRun(claimed.run.runToken, 'myco_run_prompts', { op: 'unprocessed', include_text: true })).prompts).toEqual([]);
     await r.asRun(claimed.run.runToken, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'nothing to read' });
     expect(await r.workerEnds(claimed.run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
+    expect(await r.verifyOutcome(claimed.run.id)).toMatchObject({ task: 'extract-curate', outcome: 'skip', spores: [] });
 
     // A skip over a Project that does hold an unread prompt is the model's word against the server's read.
     r.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', 's4', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);

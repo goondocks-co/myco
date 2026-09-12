@@ -37,6 +37,19 @@ async function rig() {
 }
 
 describe('worker accounting on the Deployment', () => {
+  it('persists selected model and partial evidence without publishing a partial run total', async () => {
+    const r = await rig();
+    const reported = { ...usage, inputTokens: 10206, outputTokens: 9, cachedTokens: 9984, estimatedCostUsd: null,
+      provider: 'openai', model: 'gpt-5.6-sol', tokenScope: 'last_response' };
+    try {
+      expect(await r.end({ usage: reported })).toMatchObject({ ended: true });
+      expect((await r.detail())?.run).toMatchObject({ provider: 'openai', model: 'gpt-5.6-sol', tokensUsed: null, costUsd: null, costSource: 'unavailable' });
+      expect(JSON.parse((await r.detail())!.run.usageData!)).toEqual(reported);
+      expect(await r.end({ usage: { ...reported, model: 'wrong' } })).toMatchObject({ ended: false });
+      expect((await r.detail())?.run.model).toBe('gpt-5.6-sol');
+    } finally { r.e.sqlite.close(); }
+  });
+
   it('persists estimated spend and totals with a failed run, and ignores duplicate completion', async () => {
     const r = await rig();
     try {

@@ -17,6 +17,8 @@ import { readFileSync } from 'node:fs';
 import { harnessById, type Harness } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
+import { AcpEvents } from './acp-events.js';
+import { recordOf, stringOf } from './stream.js';
 
 const STOP: readonly StopReason[] = ['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled'];
 
@@ -96,22 +98,24 @@ export class Connection {
  */
 export async function* turnOver(channel: Channel, id: string, spec: RunSpec, detailOnFailure: () => string): AsyncIterable<RunEvent> {
   const connection = new Connection(channel);
+  let events: AcpEvents | undefined;
+  let sessionId: string | null = null;
+  function* updates(): Iterable<RunEvent> {
+    if (events === undefined || sessionId === null) return;
+    for (const update of connection.updates.splice(0)) yield* events.update(update, sessionId);
+  }
   try {
-    await connection.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    const initialized = await connection.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
     const session = await connection.call('session/new', { cwd: spec.scratchDir, mcpServers: [serverOf(spec)] });
-    const sessionId = ((session.result ?? {}) as Record<string, unknown>).sessionId;
-    yield { kind: 'started', harness: id, sessionId: typeof sessionId === 'string' ? sessionId : null };
+    const info = recordOf(session.result) ?? {};
+    sessionId = stringOf(info.sessionId);
+    events = new AcpEvents(id, stringOf(recordOf(recordOf(initialized.result)?.agentInfo)?.version), info);
+    yield { kind: 'started', harness: id, sessionId };
 
     const answered = await connection.call('session/prompt', { sessionId, prompt: [{ type: 'text', text: spec.prompt }] });
-    for (const update of connection.updates) {
-      const params = (update.params ?? {}) as Record<string, unknown>;
-      const chunk = (params.update ?? {}) as Record<string, unknown>;
-      const said = (chunk.content ?? {}) as Record<string, unknown>;
-      if (typeof said.text === 'string' && said.text.length > 0) {
-        yield { kind: 'message', role: chunk.sessionUpdate === 'agent_thought_chunk' ? 'thought' : 'assistant', text: said.text };
-      }
-    }
-    const result = (answered.result ?? {}) as Record<string, unknown>;
+    yield* updates();
+    const result = recordOf(answered.result) ?? {};
+    yield { kind: 'usage', ...events.usage(result) };
     const reason = typeof result.stopReason === 'string' ? result.stopReason : '';
     const known = STOP.find((s) => s === reason) ?? null;
     yield known === null
@@ -119,6 +123,8 @@ export async function* turnOver(channel: Channel, id: string, spec: RunSpec, det
       : { kind: 'ended', stop: known, detail: null };
     await connection.call('session/close', { sessionId }).catch(() => undefined);
   } catch (error) {
+    yield* updates();
+    if (events !== undefined) yield { kind: 'usage', ...events.usage({}) };
     yield { kind: 'ended', stop: 'error', detail: error instanceof PeerClosed ? `${error.message} ${detailOnFailure()}`.trim() : String(error) };
   }
 }

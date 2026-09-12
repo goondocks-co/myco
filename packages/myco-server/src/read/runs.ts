@@ -1,6 +1,7 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
-import { RUN_TOOL_EVENT } from '../core/runs.js';
+import { getRun, RUN_TOOL_EVENT } from '../core/runs.js';
+import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 
 /** The most calls one run's detail lists; a run that called more is read in the record rather than the page. */
 const MAX_TOOL_CALLS = 200;
@@ -87,6 +88,8 @@ export interface RunDetail {
   phases: PhaseRow[] | null;
   /** Every call this run made back to the Deployment; empty for a run that made none. */
   toolCalls: RunToolCallRow[];
+  /** Current artifact and no-op checks, evaluated under the same rule used at completion. */
+  outcomeEvidence: RunCloseEvidence | null;
 }
 
 export interface RunFilters {
@@ -259,5 +262,9 @@ export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId:
     .bind(scope.projectId, runId)
     .first<Record<string, unknown>>();
   if (row === null) return null;
-  return { run: toDetailRow(row), phases: phasesOf(text(row.checkpoints)), toolCalls: await runToolCalls(db, scope, runId) };
+  const run = await getRun(db, scope, runId);
+  return {
+    run: toDetailRow(row), phases: phasesOf(text(row.checkpoints)), toolCalls: await runToolCalls(db, scope, runId),
+    outcomeEvidence: run === null ? null : await readRunCloseEvidence(db, scope, run),
+  };
 }

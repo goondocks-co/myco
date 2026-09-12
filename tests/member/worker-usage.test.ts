@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'bun:test';
 import { claudeUsage } from '@myco/runner/drivers/usage.js';
 import { parseWorkerUsage } from '@goondocks/myco-shared/worker-usage';
+import { AcpEvents } from '@myco/runner/drivers/acp-events.js';
 
 describe('native harness accounting', () => {
+  it('keeps an unverified ACP version partial and refuses malformed counts before summing', () => {
+    const events = new AcpEvents('opencode', 'unknown', { models: { currentModelId: 'provider/model' } });
+    expect(events.usage({ usage: { inputTokens: 10, outputTokens: 1 } })).toMatchObject({ tokenScope: 'unverified', model: 'model', provider: 'provider', costUsd: null });
+    expect(events.usage({})).not.toHaveProperty('tokenScope');
+    expect(() => events.usage({ usage: { inputTokens: -1, cachedReadTokens: 2 } })).toThrow('Invalid ACP token count');
+  });
+
   it('uses all model totals instead of main-loop usage, including both cache categories', () => {
     expect(claudeUsage({
       total_cost_usd: 0.5,
@@ -26,5 +34,14 @@ describe('native harness accounting', () => {
     }
     expect(parseWorkerUsage({ inputTokens: 0, outputTokens: 0, costUsd: null, estimatedCostUsd: 0 }))
       .toMatchObject({ inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 });
+  });
+
+  it('bounds reported identity and refuses an unknown coverage claim', () => {
+    const base = { inputTokens: 1, outputTokens: 1, costUsd: null };
+    for (const extra of [{ model: '' }, { provider: 'bad\nprovider' }, { model: 'x'.repeat(257) }, { tokenScope: 'total' }]) {
+      expect(() => parseWorkerUsage({ ...base, ...extra })).toThrow();
+    }
+    expect(parseWorkerUsage({ ...base, model: 'openai/model', tokenScope: 'unverified' }))
+      .toMatchObject({ model: 'openai/model', tokenScope: 'unverified' });
   });
 });

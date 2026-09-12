@@ -22,7 +22,11 @@ export async function handleAgent(input: ToolInput, ctx: ToolContext): Promise<u
     if (id === undefined) return { ok: false, op, error: 'id is required for op: run' };
     const detail = await getRunDetail(db, scope, id);
     if (detail === null) return { ok: false, op, error: 'run not found' };
-    return { ok: true, op, data: { run: snake(detail.run), phases: detail.phases === null ? null : snake(detail.phases), reports: snake(await listReports(db, scope, id)) } };
+    return { ok: true, op, data: {
+      run: snake(detail.run), phases: detail.phases === null ? null : snake(detail.phases),
+      reports: snake(await listReports(db, scope, id)),
+      outcome_evidence: detail.outcomeEvidence === null ? null : snake(detail.outcomeEvidence),
+    } };
   }
 
   const page = await listRuns(db, scope, { task: str(input.task), agentId: str(input.agent_id), limit: typeof input.limit === 'number' ? input.limit : 50 });
