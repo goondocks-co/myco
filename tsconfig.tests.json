@@ -21,7 +21,8 @@
     "packages/myco-team/src/**/*",
     "packages/myco-shared/src/**/*",
     "packages/myco-deploy/src/**/*",
-    "tests/**/*.ts"
+    "tests/**/*.ts",
+    "scripts/smoke-worker-run.ts"
   ],
   "files": [
     "tests/agent/repository-checkout.test.ts",
