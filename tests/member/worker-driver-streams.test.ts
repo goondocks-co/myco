@@ -478,6 +478,28 @@ function peer(answer: (method: string, id: number) => string | null): { channel:
 }
 
 describe('the agent-protocol driver', () => {
+  it('preserves recorded OpenCode tool outcomes and last-response usage without inventing an attempt total', async () => {
+    const recording = readFileSync(new URL('../fixtures/opencode-1.18.21-acp-redacted.jsonl', import.meta.url), 'utf8')
+      .trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    const p = peer((method, id) => {
+      if (method === 'session/close') return `${JSON.stringify({ id, result: {} })}\n`;
+      const response = recording.find((row) => row.id === id)!;
+      const notifications = method === 'session/prompt' ? recording.filter((row) => typeof row.method === 'string') : [];
+      return [...notifications, response].map((row) => JSON.stringify(row)).join('\n') + '\n';
+    });
+    const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'fixture', credentialEnv: {} }, () => ''));
+    expect(events.filter((event) => event.kind === 'tool_call')).toEqual([
+      { kind: 'tool_call', name: 'fixture_fixture_receipt', status: 'started' },
+      { kind: 'tool_call', name: 'fixture_fixture_receipt', status: 'ok' },
+    ]);
+    expect(events.find((event) => event.kind === 'usage')).toEqual({
+      kind: 'usage', provider: 'openai', model: 'gpt-5.6-sol', tokenScope: 'last_response',
+      inputTokens: 10206, outputTokens: 9, cachedTokens: 9984, cacheCreationTokens: null,
+      reasoningTokens: null, costUsd: null, estimatedCostUsd: null,
+    });
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+  });
+
   it('opens a session naming the run\'s server, prompts once, and answers the turn\'s stop reason', async () => {
     const spec = { ...runDir(), prompt: 'do it', credentialEnv: {} };
     const p = peer((method, id) => {

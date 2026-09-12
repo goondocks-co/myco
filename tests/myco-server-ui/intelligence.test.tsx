@@ -49,6 +49,17 @@ function mount(path: string) {
 }
 
 describe('Agent runs', () => {
+  it('labels partial ACP token evidence while leaving the run total unavailable', async () => {
+    server(base({
+      '/api/projects/x/runs': () => Response.json({ rows: [run({ tokensUsed: null })], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail({ provider: 'openai', model: 'gpt-5.6-sol', tokensUsed: null,
+        usageData: JSON.stringify({ inputTokens: 10206, outputTokens: 9, costUsd: null, tokenScope: 'last_response' }) })),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByText('Only the last model response reported tokens. The run total is unavailable.')).toBeTruthy();
+    expect(screen.getByText('openai · gpt-5.6-sol')).toBeTruthy();
+  });
+
   it('queues the selected memory task for this project and opens its actual run', async () => {
     let request: { method?: string; body: unknown } | undefined;
     let queued = false;
