@@ -19,11 +19,14 @@ export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEn
   const error = unmet ?? (run.error == null ? null : run.error.slice(0, MAX_RUN_ERROR_CHARS));
   const cost = await resolveCost({
     harness: '', model: '',
-    usage: usage === null ? {} : Object.fromEntries(Object.entries(usage).filter(([, value]) => value !== null)),
+    usage: usage === null ? {} : Object.fromEntries(Object.entries(usage).filter(([key, value]) =>
+      typeof value === 'number' && (usage.tokenScope === undefined || key === 'costUsd' || key === 'estimatedCostUsd'))),
   });
   const accounting: RunUpdate = attemptId === undefined ? {} : {
+    ...(usage?.model === undefined ? {} : { model: usage.model }),
+    ...(usage?.provider === undefined ? {} : { provider: usage.provider }),
     usage_data: usage === null ? null : JSON.stringify(usage),
-    tokens_used: usage?.inputTokens == null || usage.outputTokens == null ? null : usage.inputTokens + usage.outputTokens,
+    tokens_used: usage?.tokenScope !== undefined || usage?.inputTokens == null || usage.outputTokens == null ? null : usage.inputTokens + usage.outputTokens,
     cost_usd: cost.costUsd, actual_cost_usd: cost.actualCostUsd,
     estimated_cost_usd: cost.estimatedCostUsd, cost_source: cost.source,
     cost_data: JSON.stringify(cost),

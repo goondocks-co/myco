@@ -338,6 +338,7 @@ describe('agent runs read the same on both stores', () => {
     expect(outcomes[0]).toEqual({
       listed: { rows: [{ id: 'run_c', agentId: 'agent_c', task: 'digest', status: 'failed', provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null }], cursor: null },
       detail: {
+        outcomeEvidence: null,
         run: { id: 'run_c', agentId: 'agent_c', task: 'digest', status: 'failed', provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null, instruction: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: null, reasoningLevel: null, resumeMode: null, resumeAttempts: 0, error: 'boom', dispatchedBy: null, usageData: null, actionsTaken: null },
         phases: [
           { name: 'prepare', status: 'completed', updatedAt: 5, summary: null, turnsUsed: 2, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: false, semanticCheckBlocked: false, postConditionFailed: false },

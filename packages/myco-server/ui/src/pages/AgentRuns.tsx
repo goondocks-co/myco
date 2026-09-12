@@ -53,6 +53,19 @@ const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-san
 
 const statusTone = (status: string): StatusTone => STATUS_TONE[status] ?? 'outline';
 
+function usageScopeText(raw: string | null): string | null {
+  if (raw === null) return null;
+  try {
+    const usage: unknown = JSON.parse(raw);
+    if (typeof usage !== 'object' || usage === null || !('tokenScope' in usage)) return null;
+    if (usage.tokenScope === 'last_response') return 'Only the last model response reported tokens. The run total is unavailable.';
+    if (usage.tokenScope === 'unverified') return 'The harness reported tokens with unverified coverage. The run total is unavailable.';
+    return 'The token coverage could not be read.';
+  } catch {
+    return 'The usage record could not be read.';
+  }
+}
+
 /** `/p/:projectId/runs` and `/p/:projectId/runs/:runId`: what this project's intelligence tasks did, run by run. */
 export function AgentRuns() {
   const { projectId = '', runId } = useParams();
@@ -213,6 +226,7 @@ function RunBody({ run, phases, reports, toolCalls, agentName }: { run: RunDetai
           <Fact label="Resumable" value={run.resumable ? 'yes' : 'no'} />
           <Fact label="Estimated cost" value={run.estimatedCostUsd === null ? null : formatCost(run.estimatedCostUsd, 'estimated')} />
           <Fact label="Actual cost" value={run.actualCostUsd === null ? null : formatCost(run.actualCostUsd, 'actual')} />
+          {usageScopeText(run.usageData) !== null && <Fact label="Token coverage" value={usageScopeText(run.usageData)} />}
         </dl>
       </Panel>
 
