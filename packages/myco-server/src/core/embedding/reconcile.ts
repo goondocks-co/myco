@@ -7,6 +7,16 @@ import { reconcileHubness } from './hubness.js';
 export interface EmbeddingContext { db: RelationalStore; blobs: BlobStore; vectors: VectorStore; provider: EmbeddingProvider }
 export interface EmbeddingStep { phase: 'missing' | 'stale' | 'orphans' | 'hubness' | 'visibility' | 'settled'; processed: number }
 
+/** Requeue a project's embedding sources when its vector namespace is empty. Source revisions remain intact. */
+export async function resetEmbeddingIndex(db: RelationalStore, projectId: string): Promise<void> {
+  await db.batch([
+    db.prepare('DELETE FROM embedding_receipts WHERE project_id = ?').bind(projectId),
+    db.prepare('DELETE FROM embedding_cursors WHERE project_id = ?').bind(projectId),
+    db.prepare('DELETE FROM embedding_hubness_work WHERE project_id = ?').bind(projectId),
+    db.prepare('UPDATE embedding_versions SET attempted_at = 0 WHERE project_id = ?').bind(projectId),
+  ]);
+}
+
 /** Blob-backed plans use a bounded text prefix for their embedding. Full text remains in the search index. */
 async function sourceText(blobs: BlobStore, source: EmbeddingSource): Promise<string> {
   if (source.blob_key === null) return source.text;

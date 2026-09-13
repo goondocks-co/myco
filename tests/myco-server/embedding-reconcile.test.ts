@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
 import { sqliteVectorStore } from '../../packages/myco-server/src/platform/bun/vectors.js';
-import { reconcileEmbedding } from '../../packages/myco-server/src/core/embedding/reconcile.js';
+import { reconcileEmbedding, resetEmbeddingIndex } from '../../packages/myco-server/src/core/embedding/reconcile.js';
 import { EmbeddingUnavailable, type EmbeddingProvider } from '../../packages/myco-server/src/core/embedding/provider.js';
 import { searchProject } from '../../packages/myco-server/src/read/search.js';
 import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/jobs.js';
@@ -26,6 +26,30 @@ function fixture() {
   const step = (now = 1000) => reconcileEmbedding(context, 'p', now);
   return { ...f, spore, calls, provider, context, search, step, insert };
 }
+
+test('rebuilds a recovered empty index without changing source knowledge or another project', async () => {
+  const f = fixture();
+  f.spore('one', 'durable architecture');
+  f.spore('two', 'unrelated observation');
+  for (let i = 0; i < 6; i++) await f.step();
+  expect(await hasEmbeddingWork(f.db, 'p', f.provider.modelKey, 1000)).toBe(false);
+  const sources = f.sqlite.query('SELECT * FROM spores ORDER BY id').all();
+  const versions = f.sqlite.query('SELECT project_id, type, record_id, revision FROM embedding_versions ORDER BY record_id').all();
+  f.sqlite.run("INSERT INTO embedding_cursors(project_id,hubness_model,hubness_count) VALUES ('proj_1','other-model',4)");
+  f.sqlite.run("DELETE FROM local_vectors WHERE project_id = 'p'");
+  expect((await f.search('architecture')).results).toEqual([]);
+  expect(await f.step()).toEqual({ phase: 'settled', processed: 0 });
+  await resetEmbeddingIndex(f.db, 'p');
+  expect(await hasEmbeddingWork(f.db, 'p', f.provider.modelKey, 2000)).toBe(true);
+  await resetEmbeddingIndex(f.db, 'p');
+  for (let i = 0; i < 6; i++) await f.step(2000);
+  expect(await hasEmbeddingWork(f.db, 'p', f.provider.modelKey, 2000)).toBe(false);
+  expect((await f.search('architecture')).results.map((row) => row.id)).toEqual(['one']);
+  expect(f.sqlite.query('SELECT * FROM spores ORDER BY id').all()).toEqual(sources);
+  expect(f.sqlite.query('SELECT project_id, type, record_id, revision FROM embedding_versions ORDER BY record_id').all()).toEqual(versions);
+  expect(f.sqlite.query("SELECT hubness_model,hubness_count FROM embedding_cursors WHERE project_id='proj_1'").get())
+    .toEqual({ hubness_model: 'other-model', hubness_count: 4 });
+});
 
 test('plan status writes report their own result and invalidate indexed metadata', async () => {
   const f = fixture();

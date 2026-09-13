@@ -39,12 +39,12 @@ import {
   LocalDeploymentAbsent,
   LocalRecordUnreadable,
   assertRecordServable,
-  ensureLocalSecrets,
+  createLocalDeployment,
   localDeploymentPresent,
   readLocalRecord,
   removeLocalDeployment,
   resolveLocalPaths,
-  writeLocalRecord,
+  updateLocalDeployment,
   type LocalDeploymentRecord,
 } from '../server/local.js';
 import { carriedNative, runLocalDeployment } from '../server/local-run.js';
@@ -61,7 +61,6 @@ import {
   stopService,
   uninstallService,
 } from '../server/service.js';
-import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 
 export const SERVER_HELP = `Usage: myco server <command>
 
@@ -254,9 +253,7 @@ export async function run(args: string[]): Promise<void> {
         const existing = localDeploymentPresent(paths) ? readLocalRecord(paths) : DEFAULT_LOCAL_RECORD;
         const record: LocalDeploymentRecord = { ...existing, port };
         assertRecordServable(record);
-        writeLocalRecord(record, paths);
-        const generated = ensureLocalSecrets(paths);
-        const applied = migrateOnly(paths.databasePath, carriedNative());
+        const { generated, applied } = createLocalDeployment(record, carriedNative(), paths);
         console.log('\nDeployment ready.');
         console.log(`  Directory:  ${paths.root}`);
         console.log(`  Address:    http://127.0.0.1:${record.port}`);
@@ -317,7 +314,7 @@ export async function run(args: string[]): Promise<void> {
           console.log('Stopping the Deployment before it migrates.');
           stopService(spec);
         }
-        const applied = migrateOnly(paths.databasePath, carriedNative());
+        const applied = updateLocalDeployment(carriedNative(), paths);
         console.log(applied === 0 ? 'Deployment already current.' : `Deployment updated; ${applied} schema step${applied === 1 ? '' : 's'} applied.`);
         if (running) {
           const restarted = startService(spec);
