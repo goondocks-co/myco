@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createRecoveryBundle, type RecoveryAdapter } from '@myco/server/recovery-bundle.js';
+import { copyRecoveryBundle, createRecoveryBundle, type RecoveryAdapter } from '@myco/server/recovery-bundle.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
 function fixture() {
@@ -48,6 +48,24 @@ function addBackup(f: ReturnType<typeof fixture>, id = 'pinned') {
 }
 
 describe('verified recovery artifacts', () => {
+  it('copies exact snapshot evidence and refuses changed source metadata on a repeat copy', async () => {
+    const f = fixture();
+    try {
+      addBackup(f);
+      const source = await createRecoveryBundle(f.destination, f.adapter);
+      const destination = path.join(f.root, 'recovered');
+      const copied = await copyRecoveryBundle(f.destination, destination);
+      expect(copied.snapshot).toEqual(source.snapshot);
+      expect(copied.format).toBe('myco-recovery/2');
+      expect(fs.readFileSync(path.join(destination, 'myco.sqlite'))).toEqual(fs.readFileSync(path.join(f.destination, 'myco.sqlite')));
+      const changed = f.manifest();
+      changed.snapshot.configuration.port = 9000;
+      fs.writeFileSync(path.join(f.destination, 'recovery.json'), JSON.stringify(changed));
+      await expect(copyRecoveryBundle(f.destination, destination)).rejects.toThrow('different source snapshot');
+      expect(JSON.parse(fs.readFileSync(path.join(destination, 'recovery.json'), 'utf8'))).toEqual(copied);
+    } finally { f.cleanup(); }
+  });
+
   it('resumes catalogued backup copies with persisted digests and verifies them offline', async () => {
     const f = fixture();
     try {

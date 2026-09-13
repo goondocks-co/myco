@@ -37,7 +37,10 @@ it('routes backup and restore flags to the selected retained target without invo
     expect(cloud.text).toContain('No Cloudflare Deployment record');
     const restore = await invoke(['restore', '--target', 'local', '--from', destination, '--yes']);
     expect(restore.code).toBe(1);
-    expect(restore.text).toContain('operator replacement restore is not yet supported');
+    expect(restore.text).toContain('native recovery needs --secrets-from');
+    const existing = await invoke(['restore', '--target', 'local', '--from', destination, '--secrets-from', paths.secretsFile, '--yes']);
+    expect(existing.code).toBe(1);
+    expect(existing.text).toContain('fresh local Deployment directory');
     const bare = await invoke(['backup', '--target', 'local', '--to']);
     expect(bare.code).toBe(1);
     expect(bare.text).toContain('backup needs --to <dir>');

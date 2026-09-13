@@ -7,7 +7,7 @@ import { diskBlobStore, sweepPartialObjects } from '@myco-server-worker/platform
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { BACKUP_KEY_PREFIX } from '@myco-server-worker/core/backup.js';
 import { BLOB_KEY_GRAMMAR, PROJECTED_BLOB_REFERENCES, KINDS, blobFields } from '@myco-server-worker/ingest/kinds.js';
-import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+import { atomicWriteFileSync, syncDirectoryForDurability as syncDirectory } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 
 const MANIFEST_FILE = 'recovery.json';
@@ -87,13 +87,6 @@ function syncFile(file: string): void {
   syncDirectory(path.dirname(file));
 }
 
-function syncDirectory(directory: string): void {
-  if (process.platform !== 'win32') {
-    const fd = fs.openSync(directory, 'r');
-    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-  }
-}
-
 function writeManifest(root: string, manifest: RecoveryManifest): void {
   atomicWriteFileSync(path.join(root, MANIFEST_FILE), JSON.stringify(manifest, null, 2) + '\n', { mode: OWNER_FILE_MODE, durable: true });
 }
@@ -160,8 +153,8 @@ function ensureContentDirectory(directory: string, complete = false): void {
 }
 
 /** One writer owns snapshot publication, content verification and the final completion manifest on both targets. */
-export async function createRecoveryBundle(
-  destination: string, adapter: RecoveryAdapter, report: (line: string) => void = () => {},
+async function writeRecoveryBundle(
+  destination: string, adapter: RecoveryAdapter, report: (line: string) => void, seed?: RecoveryManifest,
 ): Promise<RecoveryManifest> {
   const root = path.resolve(destination);
   assertOwnedDirectory(root);
@@ -174,8 +167,16 @@ export async function createRecoveryBundle(
     if (manifest !== null && (manifest.source.target !== adapter.source.target || manifest.source.locator !== adapter.source.locator)) {
       throw new Error('recovery destination belongs to another Deployment');
     }
+    if (seed !== undefined && manifest?.snapshot !== undefined
+      && (JSON.stringify(manifest.snapshot) !== JSON.stringify(seed.snapshot)
+        || JSON.stringify(manifest.format === 'myco-recovery/2' ? manifest.backupObjects : [])
+          !== JSON.stringify(seed.format === 'myco-recovery/2' ? seed.backupObjects : []))) {
+      throw new Error('recovery copy belongs to a different source snapshot');
+    }
     if (manifest === null) {
-      manifest = { format: 'myco-recovery/2', source: sourceSchema.parse(adapter.source), startedAt: new Date().toISOString(), status: 'snapshot', backupObjects: [] };
+      manifest = { format: 'myco-recovery/2', source: sourceSchema.parse(adapter.source), startedAt: new Date().toISOString(), status: 'snapshot',
+        backupObjects: seed?.format === 'myco-recovery/2' ? [...seed.backupObjects] : [],
+        ...(seed === undefined ? {} : { snapshot: seed.snapshot }) };
       writeManifest(root, manifest);
     }
     const databasePath = path.join(root, DATABASE_FILE);
@@ -189,7 +190,7 @@ export async function createRecoveryBundle(
       const db = openSnapshot(incoming);
       let facts;
       try { facts = snapshotFacts(db); } finally { db.close(); }
-      const snapshot = snapshotSchema.parse({ ...captured, ...facts, database: await fingerprint(incoming), capturedAt: new Date().toISOString() });
+      const snapshot = snapshotSchema.parse({ ...captured, ...facts, database: await fingerprint(incoming), capturedAt: seed?.snapshot?.capturedAt ?? new Date().toISOString() });
       fs.chmodSync(incoming, OWNER_FILE_MODE);
       syncFile(incoming);
       fs.renameSync(incoming, databasePath);
@@ -262,4 +263,45 @@ export async function createRecoveryBundle(
     }
     return manifest;
   } finally { held.lock.release(); }
+}
+
+export async function createRecoveryBundle(
+  destination: string, adapter: RecoveryAdapter, report: (line: string) => void = () => {},
+): Promise<RecoveryManifest> {
+  return writeRecoveryBundle(destination, adapter, report);
+}
+
+/** Verify a completed artifact using its own source identity, without consulting the source Deployment. */
+export async function verifyRecoveryBundle(directory: string, report: (line: string) => void = () => {}): Promise<RecoveryManifest> {
+  const root = path.resolve(directory);
+  const manifest = readManifest(root);
+  if (manifest?.status !== 'complete') throw new Error('recovery requires a completed artifact');
+  const unavailable = async (): Promise<never> => { throw new Error('completed recovery artifact requires unavailable source content'); };
+  return createRecoveryBundle(root, { source: manifest.source, snapshot: unavailable, blob: unavailable }, report);
+}
+
+/** Copy or resume a verified snapshot through the same owner that captures Deployment artifacts. */
+export async function copyRecoveryBundle(source: string, destination: string, report: (line: string) => void = () => {}): Promise<RecoveryManifest> {
+  const manifest = await verifyRecoveryBundle(source, report);
+  const database = path.join(source, DATABASE_FILE);
+  const db = openSnapshot(database);
+  try {
+    if (manifest.format === 'myco-recovery/1' && db.query('SELECT 1 FROM backups LIMIT 1').get() !== null) {
+      throw new Error('legacy artifact lacks catalogued backup coverage; capture a new recovery artifact');
+    }
+  } finally { db.close(); }
+  const blobs = diskBlobStore(path.join(source, 'blobs'));
+  return writeRecoveryBundle(destination, {
+    source: manifest.source,
+    snapshot: async (file) => {
+      fs.copyFileSync(database, file, fs.constants.COPYFILE_EXCL);
+      if (!sameFingerprint(await fingerprint(file), manifest.snapshot!.database)) throw new Error('source recovery database changed during copy');
+      return manifest.snapshot!;
+    },
+    blob: async (object) => {
+      const held = await blobs.get(object.key);
+      if (held === null) throw new Error(`source recovery artifact is missing object ${object.key}`);
+      return held.body;
+    },
+  }, report, manifest);
 }

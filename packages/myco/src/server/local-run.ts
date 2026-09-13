@@ -23,6 +23,7 @@ import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import type { StaticAssets } from '@myco-server-worker/platform/bun/static.js';
 import { getLibsqlitePath, getVec0Path } from '../runtime/native-deps.js';
 import { BUNDLED_SERVER_UI } from '../server-ui-assets.generated.js';
+import { LocalVolume } from './local-volume.js';
 import {
   assertRecordServable,
   readLocalRecord,
@@ -95,10 +96,12 @@ export interface LocalStart extends StartedDeployment {
  * and a binary that replaced itself is exactly the case that leaves one behind.
  */
 export async function runLocalDeployment(paths = resolveLocalPaths()): Promise<LocalStart> {
-  const record = readLocalRecord(paths);
-  const options = optionsFromRecord(record, paths, readLocalSecrets(paths));
-  mkdirSync(paths.blobDir, { recursive: true, mode: 0o700 });
-  migrateOnly(paths.databasePath, options.native);
-  const started = await startDeployment(options);
-  return { ...started, record };
+  return new LocalVolume(paths).serve(async () => {
+    const record = readLocalRecord(paths);
+    const options = optionsFromRecord(record, paths, readLocalSecrets(paths));
+    mkdirSync(paths.blobDir, { recursive: true, mode: 0o700 });
+    migrateOnly(paths.databasePath, options.native);
+    const started = await startDeployment(options);
+    return { ...started, record };
+  });
 }

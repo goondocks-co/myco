@@ -38,18 +38,18 @@ import {
   DEFAULT_LOCAL_RECORD,
   LocalDeploymentAbsent,
   LocalRecordUnreadable,
-  assertRecordServable,
-  ensureLocalSecrets,
+  createLocalDeployment,
   localDeploymentPresent,
   readLocalRecord,
   removeLocalDeployment,
   resolveLocalPaths,
-  writeLocalRecord,
+  updateLocalDeployment,
   type LocalDeploymentRecord,
 } from '../server/local.js';
 import { carriedNative, runLocalDeployment } from '../server/local-run.js';
 import { backupLocalDeployment } from '../server/local-backup.js';
 import { backupCloudflareDeployment } from '../server/cloudflare-backup.js';
+import { restoreLocalDeployment } from '../server/local-recovery.js';
 import {
   ServicePathUnsupported,
   ServicePlatformUnsupported,
@@ -61,7 +61,6 @@ import {
   stopService,
   uninstallService,
 } from '../server/service.js';
-import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 
 export const SERVER_HELP = `Usage: myco server <command>
 
@@ -105,11 +104,16 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Snapshot the database and blobs. Local/Cloudflare backups
                                           resume an incomplete directory and verify every blob.
                                           Credentials require separate secure recovery storage.
-  restore --from <dir> [--no-drain]       Replace the Deployment's data with a backup. Waits for the
+  restore --target compose --from <dir> [--no-drain]
+                                          Replace the Deployment's data with a backup. Waits for the
                                           tasks this Deployment is running or about to start before
                                           it stops. --no-drain skips the wait; the harness is still
                                           stopped first, so live runs finish inside its stop grace
                                           before the server is touched.
+  restore --target local --from <dir> --secrets-from <file> --yes [--port <n>]
+                                          Recover into a fresh native Deployment directory. Verify
+                                          data and independent credentials before publishing it.
+                                          Keeps the source; refuses an existing destination.
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
   adopt                                   Write a bundle for a stack this machine did not provision.
   destroy [--data] [--yes]                Stop and remove the stack, at once — it does not wait for
@@ -253,10 +257,7 @@ export async function run(args: string[]): Promise<void> {
         if (portFlag !== undefined && (portFlag === 'true' || !Number.isInteger(port))) fail('--port needs a whole number.');
         const existing = localDeploymentPresent(paths) ? readLocalRecord(paths) : DEFAULT_LOCAL_RECORD;
         const record: LocalDeploymentRecord = { ...existing, port };
-        assertRecordServable(record);
-        writeLocalRecord(record, paths);
-        const generated = ensureLocalSecrets(paths);
-        const applied = migrateOnly(paths.databasePath, carriedNative());
+        const { generated, applied } = createLocalDeployment(record, carriedNative(), paths);
         console.log('\nDeployment ready.');
         console.log(`  Directory:  ${paths.root}`);
         console.log(`  Address:    http://127.0.0.1:${record.port}`);
@@ -317,7 +318,7 @@ export async function run(args: string[]): Promise<void> {
           console.log('Stopping the Deployment before it migrates.');
           stopService(spec);
         }
-        const applied = migrateOnly(paths.databasePath, carriedNative());
+        const applied = updateLocalDeployment(carriedNative(), paths);
         console.log(applied === 0 ? 'Deployment already current.' : `Deployment updated; ${applied} schema step${applied === 1 ? '' : 's'} applied.`);
         if (running) {
           const restarted = startService(spec);
@@ -480,9 +481,23 @@ export async function run(args: string[]): Promise<void> {
     }
 
     if (command === 'restore') {
-      if (target() !== 'compose') fail('operator replacement restore is not yet supported for this target; no data was changed.');
+      const selected = target();
+      if (selected === 'cloudflare') fail('operator replacement restore is not yet supported for this target; no data was changed.');
       const from = flags.get('from');
       if (from === undefined || from === '') fail('restore needs --from <dir>.');
+      if (selected === 'local') {
+        if (from === 'true') fail('restore needs --from <dir>.');
+        const secretsFile = flags.get('secrets-from');
+        if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('native recovery needs --secrets-from <file> with independently held recovery credentials.');
+        if (!flags.has('yes')) fail('native recovery publishes a new Deployment from the artifact; re-run with --yes to confirm.');
+        const port = flags.get('port');
+        const restored = await restoreLocalDeployment({ source: from!, secretsFile: secretsFile!,
+          ...(port === undefined ? {} : { port: Number(port) }), report: (line) => console.log(line) });
+        console.log(`Native recovery volume ready at schema ${restored.schemaVersion}. Source data was preserved.`);
+        console.log(`Keep MYCO_HOME set to ${resolveMycoHome()} for this recovered Deployment.`);
+        console.log(`Start it with this binary (${process.execPath}) and arguments: server run --target local`);
+        return;
+      }
       if (!flags.has('yes')) {
         fail(`restore replaces this Deployment's database and blobs with ${from}. Re-run with --yes to confirm.`);
       }
