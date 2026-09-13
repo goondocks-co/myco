@@ -12,6 +12,7 @@
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
 import { CommandFailed, jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
@@ -310,14 +311,63 @@ export async function queryCloudflareDatabase(
   return answer[0].results;
 }
 
-/** Download one R2 object through the operator login into an owned intermediate file. */
-export async function downloadCloudflareBlob(
-  options: CloudflareOptions & { bucketName: string; key: string; file: string },
-): Promise<void> {
+const OPERATOR_OBJECT_TIMEOUT_MS = 120_000;
+const OPERATOR_AUTH_TIMEOUT_MS = 30_000;
+export type CloudflareFetch = (url: string, init: RequestInit) => Promise<Response>;
+const headerValue = z.string().min(1).regex(/^[\x21-\x7e]+$/);
+const operatorCredentials = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('oauth'), token: headerValue }),
+  z.object({ type: z.literal('api_token'), token: headerValue }),
+  z.object({ type: z.literal('api_key'), key: headerValue, email: headerValue }),
+]);
+
+/** Stream R2 bytes with one in-memory operator credential; credentials never enter logs or the artifact. */
+export function cloudflareBlobReader(
+  options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch },
+): (key: string) => Promise<ReadableStream> {
   const { runner, env } = resolved(options);
-  await runOrThrow(runner, 'npx',
-    wrangler('r2', 'object', 'get', `${options.bucketName}/${options.key}`, '--remote', '--file', options.file, ...configArgs(options)),
-    { cwd: options.configDir, env });
+  const fetchObject = options.fetch ?? globalThis.fetch;
+  let credentials: Promise<Headers> | undefined;
+  const authenticate = async (): Promise<Headers> => {
+    const result = await runner.run('npx', wrangler('auth', 'token', '--json'), {
+      cwd: options.configDir,
+      timeoutMs: OPERATOR_AUTH_TIMEOUT_MS,
+      env: { ...env, WRANGLER_WRITE_LOGS: 'false', WRANGLER_LOG: 'log', WRANGLER_LOG_SANITIZE: 'true' },
+    });
+    if (result.code !== 0) throw new Error(`Wrangler could not provide operator credentials (exit ${result.code}); check wrangler whoami and support for auth token --json`);
+    const parsed = operatorCredentials.safeParse(wranglerJson<unknown>(result.stdout));
+    if (!parsed.success) throw new Error('Wrangler returned unreadable operator credentials');
+    return parsed.data.type === 'api_key'
+      ? new Headers({ 'X-Auth-Key': parsed.data.key, 'X-Auth-Email': parsed.data.email })
+      : new Headers({ Authorization: `Bearer ${parsed.data.token}` });
+  };
+  return async (key) => {
+    const segment = (value: string): string => {
+      if (value === '' || value === '.' || value === '..') throw new Error('Cloudflare object path has an invalid segment');
+      return encodeURIComponent(value);
+    };
+    const objectPath = key.split('/').map(segment).join('/');
+    const url = `https://api.cloudflare.com/client/v4/accounts/${segment(options.accountId)}/r2/buckets/${segment(options.bucketName)}/objects/${objectPath}`;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      credentials ??= authenticate();
+      const used = credentials;
+      const response = await fetchObject(url, {
+        method: 'GET', headers: new Headers(await used), redirect: 'error',
+        signal: AbortSignal.timeout(OPERATOR_OBJECT_TIMEOUT_MS),
+      });
+      if ((response.status === 401 || response.status === 403) && attempt === 0) {
+        await response.body?.cancel();
+        if (credentials === used) credentials = undefined;
+        continue;
+      }
+      if (response.status !== 200 || response.body === null) {
+        await response.body?.cancel();
+        throw new Error(`Cloudflare object read failed for ${key} (HTTP ${response.status}); retry the backup after resolving the source failure`);
+      }
+      return response.body;
+    }
+    throw new Error('Cloudflare refused the refreshed operator credential');
+  };
 }
 
 /**

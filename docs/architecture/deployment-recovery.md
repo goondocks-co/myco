@@ -1,6 +1,6 @@
 # Deployment recovery artifacts
 
-`myco server backup --target local|cloudflare --to <directory>` captures the selected Deployment without applying migrations. The local target uses SQLite `VACUUM INTO`, including committed WAL data. The Cloudflare target uses the operator's existing Wrangler login and an explicitly bound D1 database; it exports ordinary tables and `sqlite_sequence`, reconstructs the source's indexes, views, triggers and external-content FTS indexes, and refuses schema drift. Cloudflare temporarily pauses database queries during its export.
+`myco server backup --target local|cloudflare --to <directory>` captures the selected Deployment without applying migrations. The local target uses SQLite `VACUUM INTO`, including committed WAL data. The Cloudflare target uses the operator's existing Wrangler login and an explicitly bound D1 database; it exports ordinary tables and `sqlite_sequence`, reconstructs the source's indexes, views, triggers and external-content FTS indexes, and refuses schema drift. Cloudflare temporarily pauses database queries during its export. R2 objects stream through the operator process using an in-memory credential obtained with `wrangler auth token --json`; credential disk logging is disabled, redirects are refused and a rejected credential is refreshed at most once per object.
 
 Both targets use one artifact writer. The directory contains:
 
