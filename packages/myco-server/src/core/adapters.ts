@@ -228,6 +228,8 @@ export interface ServerEnv {
   wrappingKey: SecretWrappingKey;
   /** Launch a harness runtime for one run, its dispatch handed as environment. Present only where a target has one; `core/harness.ts` is its one caller. */
   harnessLaunch?: (spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }) => Promise<void>;
+  /** Tasks this runtime accepts; omitted means every runtime-served task. */
+  harnessTasks?: readonly string[];
   /**
    * Wake the Deployment soon. Requested work — a dispatch, a queued run — calls
    * this so the tick that sweeps and drains follows without waiting for the

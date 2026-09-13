@@ -483,6 +483,11 @@ const parseLeaf = (value: string | undefined): unknown => {
 const str = (value: unknown): string | null => (typeof value === 'string' && value.trim() !== '' ? value.trim() : null);
 const record = (value: unknown): Record<string, unknown> => (value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {});
 
+/** Whether the bound runtime accepts this task. */
+export function hasTaskRuntime(env: ServerEnv, task: string): boolean {
+  return env.harnessLaunch !== undefined && (env.harnessTasks === undefined || env.harnessTasks.includes(task));
+}
+
 /**
  * Whether this Deployment can run `task` for `projectId` now, and with what.
  * Reads settings and, for a credentialed provider, opens the credential; writes
@@ -512,7 +517,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
     return { ok: true, prepared: { task, projectId, servedBy: 'worker', providerType: null, model: null, provider: {}, credentialEnv: {}, admission } };
   }
 
-  if (env.harnessLaunch === undefined) return { ok: false, refusal: 'harness_unavailable' };
+  if (!hasTaskRuntime(env, task)) return { ok: false, refusal: 'harness_unavailable' };
   if (gate.kind === 'embedding') {
     const embedding = await env.embeddingProvider?.();
     if (env.vectors === undefined || embedding == null) return { ok: false, refusal: 'no_provider' };
@@ -554,7 +559,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
  * failed; the caller decides what its own state does then.
  */
 export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { limits?: DispatchLimits; singleFlight?: boolean } = {}): Promise<Launched> {
-  if (env.harnessLaunch === undefined) throw new Error('harness runtime unbound after preparation');
+  if (!hasTaskRuntime(env, prepared.task) || env.harnessLaunch === undefined) throw new Error('harness runtime unbound after preparation');
   const timeoutSeconds = spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS;
   await ensureMember(env.db, HARNESS_MEMBER_ID, now, 'member', 'harness runtime');
   await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now);

@@ -1,5 +1,5 @@
 import type { RelationalStore, ServerEnv } from '../adapters.js';
-import { AlreadyRunning, dispatchPrepared, prepareDispatch } from '../harness.js';
+import { AlreadyRunning, dispatchPrepared, prepareDispatch, hasTaskRuntime } from '../harness.js';
 import { hasLiveTaskRun, lastTaskEntryAt } from '../runs.js';
 import { leafValues } from '../settings.js';
 import { listProjects } from '../../read/sessions.js';
@@ -25,7 +25,7 @@ export async function hasEmbeddingWork(db: RelationalStore, projectId: string, m
 }
 
 export async function embeddingKeepsAwake(env: ServerEnv, now: number): Promise<boolean> {
-  if (env.harnessLaunch === undefined || env.origin === undefined) return false;
+  if (!hasTaskRuntime(env, EMBEDDING_TASK) || env.origin === undefined) return false;
   const leaves = await leafValues(env.db, ['embedding.prevent_deep_sleep']);
   if (leaves.get('embedding.prevent_deep_sleep') === 'false') return false;
   const semantic = await resolveSemanticSearch(env);
@@ -36,7 +36,7 @@ export async function embeddingKeepsAwake(env: ServerEnv, now: number): Promise<
 
 /** Indexing dispatches one held run per project through the shared queue and fleet limits. */
 export async function dispatchEmbeddingWork(env: ServerEnv, now: number): Promise<number> {
-  if (env.harnessLaunch === undefined || env.origin === undefined) return 0;
+  if (!hasTaskRuntime(env, EMBEDDING_TASK) || env.origin === undefined) return 0;
   const semantic = await resolveSemanticSearch(env);
   if (semantic === null) return 0;
   let dispatched = 0;
