@@ -94,8 +94,8 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           recreates on the images this machine already holds, for a
                                           tag built here or loaded from a file.
   update --target cloudflare              Move the Worker to the version this binary carries. It
-                                          waits for nothing: a deploy replaces no runtime, so a
-                                          request in flight finishes on the version that took it.
+                                          preserves attached workers. Bounded embedding work uses
+                                          persisted progress to recover from interruption.
   rollback --target cloudflare [--version <id>] [--message <text>]
                                           Return the Worker to an earlier version. Defaults to the
                                           record's last recorded one — the version a failed update
