@@ -108,6 +108,25 @@ const recordFor = (home: string): void => {
 };
 
 describe('create', () => {
+  it('preserves recorded recovery resources through create and update', async () => {
+    const { home, dir, options } = setup();
+    const resources = { workerName: 'recovery-worker', databaseName: 'recovery-database', bucketName: 'recovery-blobs',
+      vectorIndexName: 'recovery-vectors', wrapKeySecretName: 'recovery-wrap-key', fleet: 3 };
+    writeDeploymentRecord({ accountId: ACCOUNT, ...resources, databaseId: DB_ID, storeId: STORE, versionId: null, deployedAt: 'then' }, home);
+    const selected = runner({
+      'vectorize list --json': { stdout: '[{"name":"recovery-vectors"}]' },
+      'vectorize get recovery-vectors --json': { stdout: '{"config":{"dimensions":1536,"metric":"cosine"}}' },
+    });
+    await createCloudflareDeployment({ ...options, runner: selected });
+    await updateCloudflareDeployment({ ...options, runner: selected });
+    expect(readDeploymentRecord(home)).toMatchObject(resources);
+    const config = Bun.TOML.parse(readFileSync(join(dir, DEPLOY_CONFIG_NAME), 'utf8'));
+    expect(config).toMatchObject({ name: resources.workerName, r2_buckets: [{ binding: 'BUCKET', bucket_name: resources.bucketName }] });
+    expect(calls.filter((c) => c.args.includes('migrations')).every((c) => c.args.includes(resources.databaseName))).toBe(true);
+    expect(calls.some((c) => c.args.includes('recovery-vectors'))).toBe(true);
+    expect(calls.some((c) => c.args.some((arg) => ['myco-server', 'myco-server-blobs', 'myco-server-memory'].includes(arg)))).toBe(false);
+  });
+
   it('provisions, writes the record before deploying, renders the config, migrates before the deploy, and records the version', async () => {
     const { home, dir, options } = setup();
     const result = await createCloudflareDeployment({ ...options, runner: runner() });

@@ -31,14 +31,9 @@ import {
   type DeploymentRecord,
 } from './cloudflare.js';
 import { stageCloudflareDeploy } from './cloudflare-stage.js';
-import { VECTOR_INDEX_NAME } from './vector-config.js';
+import { cloudflareResources } from './cloudflare-resources.js';
 
 export { DEPLOY_CONFIG_NAME } from './cloudflare-stage.js';
-
-const WORKER_NAME = 'myco-server';
-const DATABASE_NAME = 'myco-server';
-const BUCKET_NAME = 'myco-server-blobs';
-const WRAP_KEY_SECRET = 'myco-secret-wrap-key';
 
 export interface LifecycleOptions extends Omit<CloudflareOptions, 'configFile' | 'configDir'> {
   mycoHome?: string;
@@ -100,25 +95,26 @@ export interface CreateResult {
 export async function createCloudflareDeployment(options: LifecycleOptions & { url?: string }): Promise<CreateResult> {
   await preflight(options);
   const existing = readDeploymentRecord(options.mycoHome);
+  const resources = cloudflareResources(existing ?? {});
   const createdResources: string[] = [];
   const bare = bareCommand(options);
-  if ((await ensureVectorIndex(bare)).created) createdResources.push(`vectorize ${VECTOR_INDEX_NAME}`);
+  if ((await ensureVectorIndex({ ...bare, vectorIndexName: resources.vectorIndexName })).created) createdResources.push(`vectorize ${resources.vectorIndexName}`);
 
   const database = existing?.databaseId !== undefined
     ? { databaseId: existing.databaseId, created: false }
-    : await ensureDatabase({ ...bare, databaseName: DATABASE_NAME });
-  if (database.created) createdResources.push(`d1 ${DATABASE_NAME}`);
+    : await ensureDatabase({ ...bare, databaseName: resources.databaseName });
+  if (database.created) createdResources.push(`d1 ${resources.databaseName}`);
 
-  const bucket = await ensureBucket({ ...bare, bucketName: BUCKET_NAME });
-  if (bucket.created) createdResources.push(`r2 ${BUCKET_NAME}`);
+  const bucket = await ensureBucket({ ...bare, bucketName: resources.bucketName });
+  if (bucket.created) createdResources.push(`r2 ${resources.bucketName}`);
 
   const store = existing?.storeId !== undefined
     ? { storeId: existing.storeId, created: false }
     : await ensureSecretsStore(bare);
   if (store.created) {
     createdResources.push('secrets store');
-    await putStoreSecret({ ...bare, storeId: store.storeId, name: WRAP_KEY_SECRET, value: randomBytes(32).toString('base64') });
-    createdResources.push(`store secret ${WRAP_KEY_SECRET}`);
+    await putStoreSecret({ ...bare, storeId: store.storeId, name: resources.wrapKeySecretName, value: randomBytes(32).toString('base64') });
+    createdResources.push(`store secret ${resources.wrapKeySecretName}`);
   }
 
   // The URL the operator named is the Deployment's from the first deploy, so
@@ -127,11 +123,14 @@ export async function createCloudflareDeployment(options: LifecycleOptions & { u
   const url = options.url ?? existing?.url;
   let record: DeploymentRecord = {
     accountId: options.accountId,
-    workerName: WORKER_NAME,
-    databaseName: DATABASE_NAME,
-    bucketName: BUCKET_NAME,
+    workerName: resources.workerName,
+    databaseName: resources.databaseName,
+    bucketName: resources.bucketName,
+    vectorIndexName: resources.vectorIndexName,
+    wrapKeySecretName: resources.wrapKeySecretName,
     versionId: existing?.versionId ?? null,
     deployedAt: existing?.deployedAt ?? new Date().toISOString(),
+    ...(existing?.fleet === undefined ? {} : { fleet: existing.fleet }),
     ...(url === undefined ? {} : { url }),
     databaseId: database.databaseId,
     storeId: store.storeId,
@@ -139,13 +138,13 @@ export async function createCloudflareDeployment(options: LifecycleOptions & { u
   writeDeploymentRecord(record, options.mycoHome);
 
   const withConfig = staged(record, options);
-  await applyMigrations({ ...withConfig, databaseName: DATABASE_NAME });
+  await applyMigrations({ ...withConfig, databaseName: resources.databaseName });
   const deployed = await deployWorker(withConfig);
 
   // After the first deploy: a secret lands on the live Worker; putting one
   // ahead of a Worker that is not there yet is version-dependent behavior.
   if (existing === null) {
-    await putWorkerSecretValue({ ...withConfig, workerName: WORKER_NAME, name: 'SESSION_SECRET', value: randomBytes(32).toString('base64url') });
+    await putWorkerSecretValue({ ...withConfig, workerName: resources.workerName, name: 'SESSION_SECRET', value: randomBytes(32).toString('base64url') });
     createdResources.push('worker secret SESSION_SECRET');
   }
 
@@ -167,7 +166,7 @@ export async function updateCloudflareDeployment(options: LifecycleOptions): Pro
   await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; `myco server create --target cloudflare` provisions one');
-  await ensureVectorIndex(bareCommand(options));
+  await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: cloudflareResources(record).vectorIndexName });
 
   const withConfig = staged(record, options);
   await applyMigrations({ ...withConfig, databaseName: record.databaseName });
@@ -220,6 +219,7 @@ export async function destroyCloudflareDeployment(options: LifecycleOptions): Pr
   await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; nothing to destroy');
+  const resources = cloudflareResources(record);
   await deleteWorker({ ...bareCommand(options), workerName: record.workerName });
-  return { kept: [`d1 ${record.databaseName}`, `r2 ${record.bucketName}`, `vectorize ${VECTOR_INDEX_NAME}`, 'secrets store', 'the deployment record'] };
+  return { kept: [`d1 ${record.databaseName}`, `r2 ${record.bucketName}`, `vectorize ${resources.vectorIndexName}`, 'secrets store', 'the deployment record'] };
 }
