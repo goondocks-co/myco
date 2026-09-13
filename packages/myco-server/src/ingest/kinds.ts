@@ -192,6 +192,14 @@ export function blobFields(spec: KindSpec): string[] {
   return Object.entries(spec.fields).filter(([, f]) => f.bound.type === 'blobKey').map(([field]) => field);
 }
 
+/** The durable blob-reference columns declared by the ingest catalogue. */
+export const PROJECTED_BLOB_REFERENCES = [...new Map(KINDS.flatMap((kind) =>
+  kind.projection === 'raw' ? [] : blobFields(kind).flatMap((field) => {
+    const column = kind.fields[field]!.column;
+    return column === undefined ? [] : [[`${kind.projection}.${column}`, { table: kind.projection, column }] as const];
+  }),
+)).values()];
+
 /** The fields of a kind that name a prompt row, taken from the field's own reference marker. */
 export function promptReferenceFields(spec: KindSpec): string[] {
   return Object.entries(spec.fields).filter(([, f]) => f.references === 'prompt').map(([field]) => field);

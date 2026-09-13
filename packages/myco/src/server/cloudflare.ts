@@ -14,7 +14,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
-import { jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
+import { CommandFailed, jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
 import { BUNDLED_WORKER_WRANGLER } from '../worker-bundle.generated.js';
 import { VECTOR_INDEX_NAME, VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
 
@@ -275,55 +275,49 @@ export async function cloudflareStatus(options: CloudflareOptions & { workerName
   };
 }
 
-/**
- * Export the relational store.
- *
- * This is HALF a Deployment backup and says so. `wrangler d1 export` produces a
- * complete SQL dump; wrangler has no bulk export for R2, so blobs are not
- * covered here and no command in this function pretends to cover them.
- *
- * A Deployment restored from this alone has every row and no attachment, which
- * is a worse outcome than a refused backup, so {@link backupCloudflare} returns
- * what it did and did not capture rather than reporting success.
- */
+/** Export the selected ordinary tables through the operator login. */
 export async function exportDatabase(
-  options: CloudflareOptions & { databaseName: string; destination: string },
+  options: CloudflareOptions & { databaseName: string; destination: string; tables: readonly string[] },
 ): Promise<{ sqlPath: string }> {
   const { runner, env } = resolved(options);
   mkdirSync(options.destination, { recursive: true, mode: 0o700 });
 
   const sqlPath = path.join(options.destination, 'd1.sql');
-  await runOrThrow(runner, 'npx',
-    wrangler('d1', 'export', options.databaseName, '--remote', '--output', sqlPath),
-    { cwd: options.configDir, env });
+  const args = wrangler('d1', 'export', options.databaseName, '--remote', '--output', sqlPath, '--skip-confirmation',
+    ...configArgs(options), ...options.tables.flatMap((table) => ['--table', table]));
+  const result = await runner.run('npx', args,
+    { cwd: options.configDir, env: { ...env, WRANGLER_LOG_PATH: path.join(options.destination, 'wrangler.log') } });
+  if (result.code !== 0) {
+    const redact = (text: string) => text.replace(/https:\/\/\S+/g, '[export URL omitted]');
+    throw new CommandFailed('npx', args, { ...result, stdout: redact(result.stdout), stderr: redact(result.stderr) });
+  }
 
   return { sqlPath };
 }
 
-export interface BackupCoverage {
-  destination: string;
-  captured: readonly string[];
-  /** What a restore from this backup would NOT bring back. */
-  notCaptured: readonly string[];
+/** Read operator metadata from the explicitly bound remote database. */
+export async function queryCloudflareDatabase(
+  options: CloudflareOptions & { databaseName: string; sql: string },
+): Promise<unknown> {
+  const { runner, env } = resolved(options);
+  const result = await runOrThrow(runner, 'npx',
+    wrangler('d1', 'execute', options.databaseName, '--remote', '--json', '--command', options.sql, ...configArgs(options)),
+    { cwd: options.configDir, env });
+  const answer = wranglerJson<Array<{ success: boolean; results: unknown }>>(result.stdout);
+  if (answer?.length !== 1 || answer[0]?.success !== true || !Array.isArray(answer[0].results)) {
+    throw new Error('D1 returned no successful recovery metadata result');
+  }
+  return answer[0].results;
 }
 
-/**
- * Back up what can be backed up today, and name what cannot.
- *
- * Blob coverage needs an object-by-object copy over the S3-compatible API or an
- * external tool; #923 owns Deployment backup and restore and is where that
- * belongs. Reporting partial coverage as success is the failure this shape
- * exists to prevent.
- */
-export async function backupCloudflare(
-  options: CloudflareOptions & { databaseName: string; destination: string },
-): Promise<BackupCoverage> {
-  await exportDatabase(options);
-  return {
-    destination: options.destination,
-    captured: ['relational store (d1.sql)'],
-    notCaptured: ['blob store — wrangler has no bulk R2 export; see #923'],
-  };
+/** Download one R2 object through the operator login into an owned intermediate file. */
+export async function downloadCloudflareBlob(
+  options: CloudflareOptions & { bucketName: string; key: string; file: string },
+): Promise<void> {
+  const { runner, env } = resolved(options);
+  await runOrThrow(runner, 'npx',
+    wrangler('r2', 'object', 'get', `${options.bucketName}/${options.key}`, '--remote', '--file', options.file, ...configArgs(options)),
+    { cwd: options.configDir, env });
 }
 
 /**
