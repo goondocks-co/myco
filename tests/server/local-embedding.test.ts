@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { LocalEmbeddingRuntime } from '@myco/server/local-embedding.js';
 import { startDeployment } from '@myco-server-worker/platform/bun/server-main.js';
 import { prepareDispatch, dispatchPrepared } from '@myco-server-worker/core/harness.js';
@@ -22,6 +23,7 @@ async function fixture() {
   const server = await startDeployment({ databasePath, blobDir: path.join(home, 'blobs'), port: 0,
     sourceFrom: 'socket', transport: 'loopback', harnessTasks: runtime.tasks,
     harnessLaunchFor: (origin) => runtime.launchFor(origin),
+    beforeStop: () => runtime.stop(),
   });
   server.env.origin = `http://127.0.0.1:${server.port}`;
   server.env.embeddingProvider = async () => ({ modelKey: 'fixture-model', embed: async () => [1, 0] });
@@ -35,7 +37,7 @@ async function fixture() {
     throw new Error('native embedding did not settle');
   };
   return { server, runtime, failures, waitForRun,
-    close: async () => { await runtime.stop(); await server.stop(); fs.rmSync(home, { recursive: true, force: true }); },
+    close: async () => { await server.stop(); fs.rmSync(home, { recursive: true, force: true }); },
   };
 }
 
@@ -99,4 +101,40 @@ test('native shutdown cancels the active request and persists its failed ending 
     expect((await f.waitForRun()).status).toBe('failed');
     expect(f.failures).toHaveLength(1);
   } finally { released.resolve(); await f.close(); }
+});
+
+test('a process signal runs attached-runtime shutdown while run control is still listening', async () => {
+  const source = sqliteEnv();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-native-signal-'));
+  const databasePath = path.join(home, 'myco.sqlite');
+  source.sqlite.query('VACUUM INTO ?').run(databasePath);
+  source.sqlite.close();
+  const repo = fileURLToPath(new URL('../../', import.meta.url));
+  const receipt = path.join(home, 'shutdown.json');
+  const script = `
+    import { startDeployment } from ${JSON.stringify(path.join(repo, 'packages/myco-server/src/platform/bun/server-main.ts'))};
+    let server;
+    server = await startDeployment({ databasePath: ${JSON.stringify(databasePath)}, blobDir: ${JSON.stringify(path.join(home, 'blobs'))},
+      port: 0, sourceFrom: 'socket', transport: 'loopback', beforeStop: async () => {
+        const response = await fetch('http://127.0.0.1:' + server.port + '/health');
+        await Bun.write(${JSON.stringify(receipt)}, JSON.stringify({status: response.status}));
+      }
+    });
+    console.log('READY');
+  `;
+  const child = Bun.spawn([process.execPath, '--no-env-file', '--tsconfig-override', path.join(repo, 'tsconfig.json'), '-e', script],
+    { cwd: home, env: { ...process.env, MYCO_HOME: home }, stdout: 'pipe', stderr: 'pipe' });
+  const timeout = setTimeout(() => child.kill('SIGKILL'), 10_000);
+  const reader = child.stdout.getReader();
+  try {
+    let output = '';
+    while (!output.includes('READY\n')) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error('signal fixture exited before binding');
+      output += new TextDecoder().decode(chunk.value);
+    }
+    child.kill('SIGTERM');
+    expect(await child.exited).toBe(0);
+    expect(JSON.parse(fs.readFileSync(receipt, 'utf8'))).toEqual({ status: 200 });
+  } finally { clearTimeout(timeout); reader.releaseLock(); child.kill(); fs.rmSync(home, { recursive: true, force: true }); }
 });

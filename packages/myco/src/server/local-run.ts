@@ -104,7 +104,7 @@ export async function runLocalDeployment(paths = resolveLocalPaths()): Promise<L
     migrateOnly(paths.databasePath, options.native);
     const runtime = new LocalEmbeddingRuntime();
     const started = await startDeployment({ ...options, harnessTasks: runtime.tasks,
-      harnessLaunchFor: (callbackOrigin) => runtime.launchFor(callbackOrigin) });
-    return { ...started, record, stop: async () => { await runtime.stop(); await started.stop(); } };
+      harnessLaunchFor: (callbackOrigin) => runtime.launchFor(callbackOrigin), beforeStop: () => runtime.stop() });
+    return { ...started, record };
   });
 }

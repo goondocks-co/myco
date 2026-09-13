@@ -239,6 +239,8 @@ export interface DeploymentOptions extends TrustedProxyConfig {
    */
   harnessLaunchFor?: (callbackOrigin: () => string) => NonNullable<Parameters<typeof serve>[0]['harnessLaunch']>;
   harnessTasks?: readonly string[];
+  /** Stop attached runtime work while the run-control listener and database remain available. */
+  beforeStop?: () => Promise<void>;
 }
 
 /** What an operator sets a source-identity value under, in the vocabulary of the surface that holds it. */
@@ -329,6 +331,12 @@ export async function startDeployment(options: DeploymentOptions): Promise<Start
   });
   boundPort = started.port;
 
+  let stopping: Promise<void> | undefined;
+  const stop = (): Promise<void> => stopping ??= (async () => {
+    await options.beforeStop?.();
+    await started.stop();
+  })();
+
   // SIGTERM is the orchestrator asking for a drain, and the drain is what is
   // awaited here: exiting on the same tick as the stop call ends the process
   // with in-flight requests still open, which is the thing
@@ -339,11 +347,11 @@ export async function startDeployment(options: DeploymentOptions): Promise<Start
     process.on(signal, () => {
       if (draining) process.exit(0);
       draining = true;
-      void started.stop().then(() => process.exit(0), () => process.exit(1));
+      void stop().then(() => process.exit(0), () => process.exit(1));
     });
   }
 
-  return { port: started.port, stop: started.stop, env: started.env, ...(harnessLaunch === undefined ? {} : { harnessLaunch }) };
+  return { port: started.port, stop, env: started.env, ...(harnessLaunch === undefined ? {} : { harnessLaunch }) };
 }
 
 export async function main(): Promise<StartedDeployment | undefined> {
