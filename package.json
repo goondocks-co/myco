@@ -25,6 +25,7 @@
     "test": "node scripts/run-bun-tests.mjs",
     "test:parity": "MYCO_PARITY=1 bun test tests/parity/parity.test.ts",
     "smoke:worker": "bun --no-env-file scripts/smoke-worker-run.ts",
+    "smoke:worker-service": "bun --no-env-file scripts/smoke-worker-service.ts",
     "test:debug": "node scripts/run-bun-tests.mjs --bail=1 --only-failures",
     "test:fast": "MYCO_TEST_PROFILE=fast node scripts/run-bun-tests.mjs",
     "test:integration": "MYCO_TEST_PROFILE=integration node scripts/run-bun-tests.mjs",

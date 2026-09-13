@@ -50,6 +50,8 @@ export interface LaunchdManagerOptions {
   uid?: number;
   /** Wait between launchd teardown observations. */
   sleep?: (delayMs: number) => Promise<void>;
+  /** Remove stale sibling Myco units when uninstalling this manager's unit. */
+  pruneOnUninstall?: boolean;
 }
 
 const LAUNCHD_TEARDOWN_TIMEOUT_MS = 10_000;
@@ -62,12 +64,14 @@ export class LaunchdServiceManager implements ServiceManager {
   readonly agentsDir: string;
   private readonly uid: number;
   private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly pruneOnUninstall: boolean;
 
   constructor(opts: LaunchdManagerOptions = {}) {
     this.runner = opts.runner ?? new RealLaunchctlRunner();
     this.agentsDir = opts.agentsDir ?? path.join(os.homedir(), 'Library', 'LaunchAgents');
     this.uid = opts.uid ?? process.getuid?.() ?? 501;
     this.sleep = opts.sleep ?? sleep;
+    this.pruneOnUninstall = opts.pruneOnUninstall ?? true;
   }
 
   private plistPath(label: string): string {
@@ -167,7 +171,7 @@ export class LaunchdServiceManager implements ServiceManager {
     if (fs.existsSync(plistPath)) fs.unlinkSync(plistPath);
     // Sweep any sibling plists whose target binary is gone (old version dirs,
     // removed dev-build worktrees) so launchd stops churning on dead units.
-    await this.pruneSupersededUnits(label);
+    if (this.pruneOnUninstall) await this.pruneSupersededUnits(label);
   }
 
   async start(label: string): Promise<void> {
@@ -314,6 +318,7 @@ function isLaunchdJobAbsent(stdout: string): boolean {
   // permitted" as "no job" would report a live service as gone.
   if (/not privileged|operation not permitted|permission denied/i.test(stdout)) return false;
   return /^\[sandbox\] skipped launchctl print /i.test(stdout)
+    || /^Could not print domain: 125: Domain does not support specified action\s*$/i.test(stdout.trim())
     || /(?:could not find|not found|unknown) service/i.test(stdout);
 }
 

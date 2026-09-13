@@ -145,6 +145,30 @@ describe('LaunchdServiceManager', () => {
     expect(result).toEqual({ changed: true, supervisorReloaded: true });
   });
 
+  test('a scoped uninstall preserves stale sibling services', async () => {
+    const owned = spec(home);
+    const sibling = { ...spec(home), label: 'co.goondocks.myco-other', executable: '/missing/other/myco' };
+    const scoped = new LaunchdServiceManager({ runner, agentsDir, uid: 501, pruneOnUninstall: false });
+    await scoped.install(owned);
+    const siblingPath = path.join(agentsDir, `${sibling.label}.plist`);
+    const siblingContent = renderLaunchdPlist(sibling);
+    fs.writeFileSync(siblingPath, siblingContent);
+    await scoped.uninstall(owned.label);
+    expect(fs.existsSync(path.join(agentsDir, `${owned.label}.plist`))).toBe(false);
+    expect(fs.readFileSync(siblingPath, 'utf8')).toBe(siblingContent);
+    expect(runner.calls.some((args) => args.some((arg) => arg.includes(sibling.label)))).toBe(false);
+  });
+
+  test('uninstall removes an unloaded login unit when no GUI domain exists', async () => {
+    const owned = spec(home);
+    await mgr.install(owned);
+    runner.printExitCode = 125;
+    runner.printResponse = 'Could not print domain: 125: Domain does not support specified action';
+    await mgr.uninstall(owned.label);
+    expect(fs.existsSync(path.join(agentsDir, `${owned.label}.plist`))).toBe(false);
+    expect(runner.calls.some((args) => args[0] === 'bootout')).toBe(false);
+  });
+
   test('uninstall runs bootout and removes the plist', async () => {
     const s = spec(home);
     await mgr.install(s);
