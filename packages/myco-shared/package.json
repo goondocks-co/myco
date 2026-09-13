@@ -65,6 +65,14 @@
     "./dot-path": {
       "import": "./dist/dot-path.js",
       "types": "./dist/dot-path.d.ts"
+    },
+    "./member-protocol": {
+      "import": "./dist/member-protocol.js",
+      "types": "./dist/member-protocol.d.ts"
+    },
+    "./run-control": {
+      "import": "./dist/run-control.js",
+      "types": "./dist/run-control.d.ts"
     }
   },
   "files": [

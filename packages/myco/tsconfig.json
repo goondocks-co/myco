@@ -30,7 +30,9 @@
       "@goondocks/myco-shared/capture-rule-schema": ["../myco-shared/src/capture-rule-schema.ts"],
       "@goondocks/myco-shared/capture-rules": ["../myco-shared/src/capture-rules.ts"],
       "@goondocks/myco-shared/capture-rules-data": ["../myco-shared/src/capture-rules.generated.ts"],
-      "@goondocks/myco-shared/dot-path": ["../myco-shared/src/dot-path.ts"]
+      "@goondocks/myco-shared/dot-path": ["../myco-shared/src/dot-path.ts"],
+      "@goondocks/myco-shared/member-protocol": ["../myco-shared/src/member-protocol.ts"],
+      "@goondocks/myco-shared/run-control": ["../myco-shared/src/run-control.ts"]
     }
   },
   "include": ["src/**/*", "plugin/**/*"],

@@ -67,9 +67,12 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
   /** Run the tick now and arm the next alarm from its answer; deep sleep arms none. */
   async wake(): Promise<TickReport> {
     const now = Date.now();
-    const report = await runTick(serverEnvFromBindings(this.env), now);
-    await armNextWake(this.ctx.storage, this.env, now, report.nextWakeMs);
-    return report;
+    const work: Promise<unknown>[] = [];
+    try {
+      const report = await runTick(serverEnvFromBindings(this.env, { waitUntil: (promise) => { work.push(promise); } }), now);
+      await armNextWake(this.ctx.storage, this.env, now, report.nextWakeMs);
+      return report;
+    } finally { await Promise.all(work); }
   }
 
   /** Wake soon, unless an alarm is already set. */

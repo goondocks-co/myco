@@ -56,6 +56,8 @@ const ALLOWLIST: readonly string[] = [
   'packages/myco-shared/src/recall.ts',
   'packages/myco-shared/src/capture-rules.ts',
   'packages/myco-shared/src/dot-path.ts',
+  'packages/myco-shared/src/member-protocol.ts',
+  'packages/myco-shared/src/run-control.ts',
   'capture/buffer.ts',
   'capture/transcript-id.ts',
   // Transcript-derived capture: the prompt walker, session lineage, and plan-tag envelopes.

@@ -1,24 +1,12 @@
 import type { RequestBudget } from './budget.js';
 import type { RawAnswer, ServerClient } from './transport.js';
-
-/** A server answer that is not a 200 the route classified itself. */
-export class RunControlError extends Error {
-  constructor(readonly path: string, detail: string) {
-    super(`run control ${path}: ${detail}`);
-    this.name = 'RunControlError';
-  }
-}
+import { RunControlError, runControlResult } from '@goondocks/myco-shared/run-control';
+export { RunControlError } from '@goondocks/myco-shared/run-control';
 
 function runControlBody(answer: RawAnswer, path: string): Record<string, unknown> {
   if (answer.kind === 'timeout') throw new RunControlError(path, `timed out during ${answer.phase}`);
   if (answer.kind === 'transport') throw new RunControlError(path, answer.detail);
-  if (answer.status !== 200 || answer.json === null) throw new RunControlError(path, `status ${answer.status}`);
-  // A terminal refusal answers 200 with `persisted:false` and a stable code; it
-  // is the caller's own request that is wrong, so it must not be retried.
-  if (answer.json.persisted === false) {
-    throw new RunControlError(path, `${String(answer.json.code ?? 'refused')}: ${String(answer.json.reason ?? '')}`);
-  }
-  return answer.json;
+  return runControlResult(answer.status, answer.json, path);
 }
 
 /** One call over a run-control route, answered as the route's body; a refusal or a transport failure throws. */

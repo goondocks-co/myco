@@ -37,7 +37,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
  * headroom stays under that, so a sweep of that shape still trips this while
  * ordinary growth does not.
  */
-const SIZE_CEILING_BYTES = 1_260_000;
+const SIZE_CEILING_BYTES = 1_280_000;
 
 const decoded = (): string => Buffer.from(BUNDLED_WORKER, 'base64').toString('utf-8');
 

@@ -1,27 +1,4 @@
-/**
- * Meta gate: one composer for a member request's headers.
- *
- * A Deployment refuses a member request that declares no protocol with 409
- * `protocol_version_unsupported`, on every route, for the life of the process.
- * A call site that writes its own `authorization: Bearer …` therefore reaches no
- * Deployment at all while passing every test that stubs one — which is exactly
- * what the worker's claim loop did. The defence is structural: `memberHeaders`
- * in `member/constants.ts` is the only place a member request's headers are
- * composed.
- *
- * So every file under `packages/myco/src` that composes a bearer header must be
- * one of three things, decided from the source rather than from a list of names:
- *
- * - the one member composer;
- * - a call on the HOST protocol, which declares `HOST_PROTOCOL_HEADER` in the
- *   same file (the daemon-to-host surface has its own versioned protocol);
- * - a call to a third-party API that knows nothing of Myco's protocols, named
- *   in `FOREIGN` with what it talks to.
- *
- * A new member call that hand-writes its headers matches none of the three and
- * fails here by name. Comments are stripped by the runtime's own transpiler, so
- * a header shape quoted in prose is not a composition.
- */
+/** Gate: member calls compose protocol and identity headers through the shared owner. */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,7 +8,8 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 
 /** The one module that composes a member request's headers. */
-const MEMBER_COMPOSER = 'member/constants.ts';
+const MEMBER_COMPOSER = 'myco-shared/src/member-protocol.ts';
+const MEMBER_COMPATIBILITY = 'member/constants.ts';
 
 /** The marker a host-protocol call carries: its own versioned protocol header. */
 const HOST_PROTOCOL_MARKER = 'HOST_PROTOCOL_HEADER';
@@ -79,16 +57,16 @@ interface Composer {
 
 /** Every header composer the composer module exports, read from its own source. */
 function composerNames(): string[] {
-  const code = codeOf(path.join(SRC_ROOT, MEMBER_COMPOSER));
+  const code = codeOf(path.resolve(REPO_ROOT, 'packages', MEMBER_COMPOSER));
   return [...code.matchAll(/export function ([A-Za-z][A-Za-z0-9]*Headers)\s*\(/g)].map((m) => m[1]!);
 }
 
 function composers(): Composer[] {
   const out: Composer[] = [];
-  for (const file of listTs(SRC_ROOT)) {
+  for (const file of [...listTs(SRC_ROOT), path.join(REPO_ROOT, 'packages/myco-shared/src/member-protocol.ts')]) {
     const code = codeOf(file);
     if (!COMPOSES_BEARER.test(code)) continue;
-    const module = key(file);
+    const module = file.endsWith('myco-shared/src/member-protocol.ts') ? MEMBER_COMPOSER : key(file);
     out.push({
       module,
       kind: module === MEMBER_COMPOSER ? 'member-composer'
@@ -121,6 +99,7 @@ describe('one composer for a member request\'s headers', () => {
     // and MCP call sites no longer write their own.
     const found = composers();
     expect(found.filter((c) => c.kind === 'member-composer').map((c) => c.module)).toEqual([MEMBER_COMPOSER]);
+    expect(codeOf(path.join(SRC_ROOT, MEMBER_COMPATIBILITY))).toContain('@goondocks/myco-shared/member-protocol');
     for (const module of ['runner/loop.ts', 'runner/mcp-config.ts', 'mcp/deployment-upstream.ts', 'agent/runtime/supervisor.ts', 'member/transport.ts']) {
       expect({ module, composes: found.some((c) => c.module === module) }).toEqual({ module, composes: false });
     }
