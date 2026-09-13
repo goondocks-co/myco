@@ -7,6 +7,8 @@ const MAX_STATEMENT_CHARACTERS = 16 * 1024 * 1024;
 export async function importTableDump(db: Database, file: string): Promise<void> {
   let statement = '';
   let quote = '';
+  let literalStart = -1;
+  let literalHasNul = false;
   let comment: 'line' | 'block' | '' = '';
   let pending = '';
   const input = fs.createReadStream(file, { encoding: 'utf8' });
@@ -20,7 +22,7 @@ export async function importTableDump(db: Database, file: string): Promise<void>
       if (statement.length > MAX_STATEMENT_CHARACTERS) throw new Error('D1 export statement exceeds the recovery import limit');
       if (char === '\0') {
         if (quote !== "'") throw new Error('D1 export contains a NUL outside a text literal');
-        statement = statement.slice(0, -1) + "' || char(0) || '";
+        literalHasNul = true;
         continue;
       }
       if (comment === 'line') { if (char === '\n') comment = ''; continue; }
@@ -31,7 +33,14 @@ export async function importTableDump(db: Database, file: string): Promise<void>
       if (quote !== '') {
         if (char === quote) {
           if (next === quote && quote !== ']') { statement += next; offset += 1; }
-          else quote = '';
+          else {
+            if (quote === "'" && literalHasNul) {
+              const value = statement.slice(literalStart + 1, -1).replaceAll("''", "'");
+              statement = statement.slice(0, literalStart) + `CAST(X'${Buffer.from(value, 'utf8').toString('hex')}' AS TEXT)`;
+              if (statement.length > MAX_STATEMENT_CHARACTERS) throw new Error('D1 export statement exceeds the recovery import limit');
+            }
+            quote = '';
+          }
         }
         continue;
       }
@@ -39,6 +48,7 @@ export async function importTableDump(db: Database, file: string): Promise<void>
         comment = char === '-' ? 'line' : 'block'; statement += next; offset += 1;
       } else if (char === "'" || char === '"' || char === '`' || char === '[') {
         quote = char === '[' ? ']' : char;
+        if (quote === "'") { literalStart = statement.length - 1; literalHasNul = false; }
       } else if (char === ';') {
         db.exec(statement);
         statement = '';

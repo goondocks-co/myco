@@ -9,7 +9,7 @@ it('imports provider NUL text, multiline literals and binary bytes across stream
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-sql-dump-'));
   const file = path.join(root, 'export.sql');
   const db = new Database(':memory:');
-  const body = 'x'.repeat(65531) + "🌱; 'quote'\n-- text /* more */\0tail";
+  const body = 'x'.repeat(65531) + "🌱; 'quote'\n-- text /* more */\0tail".repeat(1200);
   fs.writeFileSync(file, `CREATE TABLE content(id INTEGER PRIMARY KEY, body TEXT, bytes BLOB);\nINSERT INTO content VALUES(71, '${body.replaceAll("'", "''")}', X'00017f80ff');\n`);
   try {
     await importTableDump(db, file);
