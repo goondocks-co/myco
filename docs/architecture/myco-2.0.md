@@ -102,7 +102,7 @@ The Cloudflare Worker and the self-hosted binary implement **one common server c
 
 The `HarnessContainer` Durable Object and the `[[containers]]` block are gone, retired by a `deleted_classes` migration (plan §2.6, §4 D2); `DeploymentClock` stays. Containers are a paid-plan surface, so removing them is what puts the stack on the free tier. Provisioning is one verb over a worker bundle the binary carries — no Docker, no source checkout — with Node and Wrangler an **operator-machine** prerequisite for that verb alone, never on a member or worker host.
 
-Shared behavior belongs in the common core; target-specific infrastructure, storage, wake, TLS/proxy, backup, and observability behavior belongs in adapters. **Neither target may silently lose a feature because the other implemented it first.** A ledger row naming a capability without its per-target mechanism is how one target never gets it.
+Shared behavior belongs in the common core; target-specific infrastructure, storage, wake, TLS/proxy, backup, and observability behavior belongs in adapters. **Neither target may silently lose a feature because the other implemented it first.** A ledger row naming a capability without its per-target mechanism is how one target never gets it. [Deployment recovery artifacts](deployment-recovery.md) defines the operator backup format, completeness checks and remaining replacement-recovery boundary.
 
 Both front doors pass the same ingest parity and eval suites before release (§8).
 

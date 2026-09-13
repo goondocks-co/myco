@@ -14,7 +14,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   AccountNotSelected,
-  backupCloudflare,
   cloudflareStatus,
   deployWorker,
   applyMigrations,
@@ -150,24 +149,6 @@ describe('status', () => {
 
     const legacy = await cloudflareStatus({ ...base(), runner: runner({ stdout: 'Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b' }), workerName: 'myco-server' });
     expect(legacy.versionId).toBe('16a2423e-af96-4310-b61b-4e2b5fd1310b');
-  });
-});
-
-describe('backup coverage is stated, not implied', () => {
-  it('GATE: names the blob store as NOT captured', async () => {
-    const dest = join(mkdtempSync(join(tmpdir(), 'myco-cf-')), 'backup');
-    const coverage = await backupCloudflare({ ...base(), runner: runner(), databaseName: 'myco-server', destination: dest });
-
-    expect(coverage.captured).toContain('relational store (d1.sql)');
-    // A backup reporting plain success would restore every row and no
-    // attachment, which is worse than refusing.
-    expect(coverage.notCaptured.join(' ')).toMatch(/blob store/);
-  });
-
-  it('exports the database remotely', async () => {
-    const dest = join(mkdtempSync(join(tmpdir(), 'myco-cf-')), 'backup');
-    await backupCloudflare({ ...base(), runner: runner(), databaseName: 'myco-server', destination: dest });
-    expect(calls[0]!.args).toEqual(expect.arrayContaining(['d1', 'export', 'myco-server', '--remote']));
   });
 });
 
