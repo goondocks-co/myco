@@ -24,6 +24,7 @@ import type { StaticAssets } from '@myco-server-worker/platform/bun/static.js';
 import { getLibsqlitePath, getVec0Path } from '../runtime/native-deps.js';
 import { BUNDLED_SERVER_UI } from '../server-ui-assets.generated.js';
 import { LocalVolume } from './local-volume.js';
+import { LocalEmbeddingRuntime } from './local-embedding.js';
 import {
   assertRecordServable,
   readLocalRecord,
@@ -101,7 +102,9 @@ export async function runLocalDeployment(paths = resolveLocalPaths()): Promise<L
     const options = optionsFromRecord(record, paths, readLocalSecrets(paths));
     mkdirSync(paths.blobDir, { recursive: true, mode: 0o700 });
     migrateOnly(paths.databasePath, options.native);
-    const started = await startDeployment(options);
-    return { ...started, record };
+    const runtime = new LocalEmbeddingRuntime();
+    const started = await startDeployment({ ...options, harnessTasks: runtime.tasks,
+      harnessLaunchFor: (callbackOrigin) => runtime.launchFor(callbackOrigin) });
+    return { ...started, record, stop: async () => { await runtime.stop(); await started.stop(); } };
   });
 }

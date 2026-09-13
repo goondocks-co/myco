@@ -238,6 +238,7 @@ export interface DeploymentOptions extends TrustedProxyConfig {
    * runtime is available.
    */
   harnessLaunchFor?: (callbackOrigin: () => string) => NonNullable<Parameters<typeof serve>[0]['harnessLaunch']>;
+  harnessTasks?: readonly string[];
 }
 
 /** What an operator sets a source-identity value under, in the vocabulary of the surface that holds it. */
@@ -318,6 +319,7 @@ export async function startDeployment(options: DeploymentOptions): Promise<Start
     ...(options.uiAssets === undefined ? {} : { uiAssets: options.uiAssets }),
     ...(options.native === undefined ? {} : { native: options.native }),
     ...(harnessLaunch === undefined ? {} : { harnessLaunch }),
+    ...(options.harnessTasks === undefined ? {} : { harnessTasks: options.harnessTasks }),
     origin: options.origin,
     ...(options.fleet === undefined ? {} : { fleet: options.fleet }),
     SECRET_WRAP_KEY: options.SECRET_WRAP_KEY,
