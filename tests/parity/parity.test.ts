@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, it, test } from 'bun:test';
 import type { ParityTarget } from './harness.ts';
 import { bootSelfhosted } from './targets/selfhosted.ts';
 import { bootCloudflare } from './targets/cloudflare.ts';
-import { backupRestore } from './scenarios/backup-restore.ts';
+import { backupRestore, restoreContinuation } from './scenarios/backup-restore.ts';
 import { sessionsTitling } from './scenarios/sessions-titling.ts';
 import { sessionTurns } from './scenarios/session-turns.ts';
 import { plans } from './scenarios/plans.ts';
@@ -22,7 +22,7 @@ import { grants } from './scenarios/grants.ts';
 import { workerWire } from './scenarios/worker-wire.ts';
 import { codexRecording } from './scenarios/codex-recording.ts';
 
-const scenarios = [repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, workerWire, codexRecording];
+const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, workerWire, codexRecording];
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

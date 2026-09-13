@@ -237,7 +237,7 @@ Actors follow [`actors-and-boundaries.md`](actors-and-boundaries.md): the **Myco
 | **Maintenance** | — | — | — | — | — |
 | ↳ machine-side | `myco update` / `myco doctor`, on demand (**M**) | — | — | — | — |
 | ↳ server-side | Retention, optimize, integrity, backup (**Core** + **W**/**C**) | — | — | — | — |
-| **Backup/restore** | Backup from dashboard (**UI**) | — | — | Restore is a break-glass operator procedure (**W**/**C**) | — |
+| **Backup/restore** | Backup and additive artifact restore from the owner dashboard (**UI**) | — | — | Full Deployment recovery is a break-glass operator procedure (**W**/**C**) | — |
 | **Project movement** | Project Binding change (**M**) | — | — | Project Reassignment (**Core**) | — |
 | **Update** | `myco update` reconciles managed assets and the managed AGENTS.md block (**M**) | — | — | `myco server update` (**W**/**C**) | — |
 | **Migration** | 1.4 → 2.0 one-time cutover (**M** + **Core**) | — | — | — | — |
@@ -262,7 +262,7 @@ The audit (`64d8f59006e9b912`) predates the Wayfinder decision session. Its per-
 | "migrates one server per Grove or consolidated" | A Deployment contains **many** Projects. "One server holds one Project" was an intermediate design | `wisdom-5b9069b8` |
 | Local service = symbiont health (OPEN-10) | Superseded again on 2026-09-07 (§2.3): there is no resident member service at all. Reconciliation across managed assets and every registered Project is the on-demand `myco update` / `myco doctor` verbs | §3.4 |
 | Owner column names Plans 4b/4c/5/6 | Those plans no longer exist. Owners are GitHub children #906–#927 | #905 |
-| "Restore … BREAK-GLASS rather than a dashboard button" | Unchanged in substance, now expressed as the `myco server restore` Operator path | Glossary "Server Provisioning" |
+| "Restore … BREAK-GLASS rather than a dashboard button" | Full Deployment replacement uses the `myco server restore` Operator path; owner UI additive artifact restore is retained | Glossary "Server Provisioning" |
 
 ### 6.2 The glossary vs. current code
 
@@ -566,6 +566,7 @@ Disposition here is about the **data class**, and separately about **migration**
 | Table | Disposition | Surface | Blk | Reason | Owner |
 |---|---|---|---|---|---|
 | `backups` | KEEP | Core, W, C | Blk | One row per backup artifact — object key, size, row counts, schema version, producer and pin — written by the backup job and read by restore; the artifact itself lands in R2 on W and on the volume on C | #1079 |
+| `backup_restore_progress` | KEEP | Core, W, C | Blk | Destination-local ownership and atomic row cursor for one artifact restoring insertion-ordered history; excluded from portable backups | #1204 |
 | `blob_reservations` | KEEP | Core | Blk | Transient upload state: the key, size and expiry an ingest holds against a credential's byte quota until the bytes land or the reservation lapses | #898 |
 | `blobs` | KEEP | Core, W, C | Blk | Every stored blob's key, size, media type and writing credential; the bytes sit in R2 on W and on the volume on C | #898 |
 | `deployment_secrets` | KEEP | Core | Blk | One row per named Deployment credential, holding ciphertext, IV and wrapping-key version only, written by the settings surface with its actor | #965 |
@@ -614,7 +615,7 @@ Capabilities that are not a single registry token but must still carry a disposi
 | Session lineage (parent/child detection) | KEEP | Core | Blk | Columns carried; populated by the member | shipped |
 | Project admission policy (ignored/archived) | REPLACE | Core | Blk | Server-side `archived` Project state: refuses ingest with a named terminal refusal, hidden from default listings with explicit opt-in, all history and attribution preserved | #918 |
 | Backup | REPLACE | Core, W, C | Blk | Volume snapshot on C; owner-triggered R2 export with lifecycle retention on W (D1's `db.dump()` is alpha-only, so W iterates and streams) | #923 |
-| Restore | REPLACE | W, C | Blk | Break-glass Operator procedure via `myco server restore` on both targets — never a dashboard button | #923 |
+| Restore | REPLACE | UI, Core, W, C | Blk | Owner UI additive artifact restore shares the backup core; full Deployment replacement uses the break-glass `myco server restore` Operator path on both targets | #1204 |
 | Diagnostic export bundle | REPLACE | M, Core | Blk | Local shape from **M**; server-side export from **Core** | #922 |
 | Project movement between Deployments | KEEP | Core | Blk | Project identity and history survive movement | #923 |
 | Project Reassignment | REPLACE | Core | Blk | Server-side correction of duplicate Project identities | #923 |

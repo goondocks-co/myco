@@ -10,6 +10,7 @@
  * live in the bucket already and are not duplicated into it.
  */
 import type { BlobStore, RelationalStore } from './adapters.js';
+import { sha256Hex } from '../hash.js';
 
 export const BACKUP_FORMAT = 'myco-backup/1';
 export const BACKUP_KEY_PREFIX = 'backups/';
@@ -20,7 +21,7 @@ export const MAX_UPLOAD_BODY_BYTES = 80 * 1024 * 1024;
 /** The only shape a restored column name may take; anything else in an artifact is refused before it reaches a statement. */
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Rows per applied batch on restore; one statement per row keeps every statement under the bind-count bound. */
-const RESTORE_CHUNK_ROWS = 50;
+const RESTORE_CHUNK_ROWS = 20;
 
 /**
  * Every data table, in an order that satisfies the schema's foreign keys:
@@ -41,8 +42,8 @@ export const BACKUP_TABLES: readonly string[] = [
 /**
  * Append-only tables whose integer id IS the insertion order. Their ids are
  * per-database, so an additive merge into a populated table would drop rows
- * that collide on id while looking idempotent. They restore only into an
- * empty table; anything else is a NAMED skip in the result.
+ * that collide on id while looking idempotent. A restore claims an empty
+ * table and resumes only the same artifact; unclaimed history is skipped.
  */
 export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
@@ -64,6 +65,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
     .flatMap((table) => ['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `${table}_fts${suffix}`)),
   'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
   'deployment_settings', 'project_capabilities', 'project_repositories', 'deployment_secrets', 'backups',
+  'backup_restore_progress',
   '_v2_guard_project_id_grammar', '_v2_guard_session_machine_id',
   '_v5_guard_credential_backfillable', '_v5_guard_backfill_complete',
 ]);
@@ -90,7 +92,7 @@ export interface BackupIndexRow {
 
 export class BackupApplyError extends Error {
   constructor(readonly table: string, detail: string) {
-    super(`the artifact could not be applied at ${table}: ${detail}; applied tables stand, and a re-run converges`);
+    super(`the artifact could not be applied at ${table}: ${detail}; committed chunks are preserved; retry the same artifact after resolving the error`);
     this.name = 'BackupApplyError';
   }
 }
@@ -222,6 +224,38 @@ export interface RestoreOutcome {
   tables: Record<string, { rows: number; inserted: number; skipped?: string }>;
 }
 
+interface RestoreProgress {
+  artifact_hash: string;
+  next_row: number;
+}
+
+const RESTORE_OWNER = 'table_name = ? AND artifact_hash = ? AND next_row = ?';
+
+function readRestoreProgress(db: RelationalStore, table: string): Promise<RestoreProgress | null> {
+  return db.prepare(`SELECT artifact_hash, next_row FROM backup_restore_progress WHERE table_name = ?`)
+    .bind(table).first<RestoreProgress>();
+}
+
+/** An empty insertion-ordered table admits one artifact; only that artifact may continue its writes. */
+async function claimRestoreTable(db: RelationalStore, table: string, hash: string): Promise<RestoreProgress | null> {
+  await db.prepare(`INSERT INTO backup_restore_progress (table_name, artifact_hash, next_row)
+      SELECT ?, ?, 0 WHERE NOT EXISTS (SELECT 1 FROM ${table})
+      ON CONFLICT (table_name) DO UPDATE SET artifact_hash = excluded.artifact_hash, next_row = 0
+      WHERE NOT EXISTS (SELECT 1 FROM ${table})`).bind(table, hash).run();
+  const progress = await readRestoreProgress(db, table);
+  return progress?.artifact_hash === hash ? progress : null;
+}
+
+/** A receipt advances only when every supplied column agrees with the rows held by the target. */
+function restoredRowsMatch(table: string, rows: readonly Record<string, unknown>[]): string {
+  const columns = [...new Set(rows.flatMap(Object.keys))];
+  const mismatch = columns.map((column) =>
+    `(json_type(expected.value, '$.${column}') IS NOT NULL AND held.${column} IS NOT json_extract(expected.value, '$.${column}'))`);
+  return `NOT EXISTS (SELECT 1 FROM json_each(?) AS expected
+    LEFT JOIN ${table} AS held ON held.id = json_extract(expected.value, '$.id')
+    WHERE held.id IS NULL OR ${mismatch.join(' OR ')})`;
+}
+
 /**
  * Apply one artifact: refusal gates first, then additive `INSERT OR IGNORE`
  * per row in bounded batches. Rows the target already holds stay exactly as
@@ -263,29 +297,64 @@ export async function restoreArtifact(
   }
 
   const outcome: RestoreOutcome = { tables: {} };
+  const hash = await sha256Hex(opts.text);
   for (const table of BACKUP_TABLES) {
     const rows = byTable.get(table) ?? [];
     if (rows.length === 0) continue;
-    if (EMPTY_ONLY_TABLES.has(table) && (await tableCount(db, table)) > 0) {
+    for (const row of rows) {
+      if (!Object.keys(row).every((c) => IDENTIFIER.test(c))) throw new BackupApplyError(table, 'a row carries a column name outside the store grammar');
+    }
+    const ordered = EMPTY_ONLY_TABLES.has(table);
+    if (ordered && (rows.some((row) => !Number.isSafeInteger(row.id)) || new Set(rows.map((row) => row.id)).size !== rows.length)) {
+      throw new BackupApplyError(table, 'insertion-ordered rows require unique safe integer ids');
+    }
+    const progress = ordered ? await claimRestoreTable(db, table, hash) : null;
+    if (ordered && progress === null) {
       outcome.tables[table] = { rows: rows.length, inserted: 0, skipped: 'table already holds rows, and its ids are insertion-ordered; restored only into an empty table' };
       continue;
     }
+    if (progress !== null) {
+      for (let start = 0; start < progress.next_row; start += RESTORE_CHUNK_ROWS) {
+        const committed = rows.slice(start, Math.min(start + RESTORE_CHUNK_ROWS, progress.next_row));
+        const match = await db.prepare(`SELECT ${restoredRowsMatch(table, committed)} AS matches`)
+          .bind(JSON.stringify(committed)).first<{ matches: number }>();
+        if (match?.matches !== 1) throw new BackupApplyError(table, 'previously restored rows changed; use a fresh destination to recover the complete artifact');
+      }
+    }
     let inserted = 0;
-    for (let at = 0; at < rows.length; at += RESTORE_CHUNK_ROWS) {
+    let at = progress?.next_row ?? 0;
+    while (at < rows.length) {
       const chunk = rows.slice(at, at + RESTORE_CHUNK_ROWS);
+      const next = at + chunk.length;
+      const guard = ordered
+        ? ` WHERE EXISTS (SELECT 1 FROM backup_restore_progress WHERE ${RESTORE_OWNER})`
+        : '';
       const statements = chunk.map((row) => {
         const columns = Object.keys(row);
-        if (!columns.every((c) => IDENTIFIER.test(c))) throw new BackupApplyError(table, 'a row carries a column name outside the store grammar');
-        return db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING rowid`)
-          .bind(...columns.map((c) => row[c] ?? null));
+        return db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) SELECT ${columns.map(() => '?').join(', ')}${guard} RETURNING rowid`)
+          .bind(...columns.map((c) => row[c] ?? null), ...(ordered ? [table, hash, at] : []));
       });
+      if (ordered) {
+        statements.push(db.prepare(`UPDATE backup_restore_progress SET next_row = ?, verified = ${restoredRowsMatch(table, chunk)}
+          WHERE ${RESTORE_OWNER} RETURNING next_row`)
+          .bind(next, JSON.stringify(chunk), table, hash, at));
+      }
       let applied;
       try {
         applied = await db.batch(statements);
       } catch (err) {
         throw new BackupApplyError(table, err instanceof Error ? err.message : String(err));
       }
-      for (const result of applied) inserted += result.results.length;
+      for (const result of applied.slice(0, chunk.length)) inserted += result.results.length;
+      if (ordered && applied[chunk.length]!.results.length === 0) {
+        const current = await readRestoreProgress(db, table);
+        if (current?.artifact_hash !== hash || current.next_row <= at) {
+          throw new BackupApplyError(table, 'the restore no longer owns this table');
+        }
+        at = current.next_row;
+      } else {
+        at = next;
+      }
     }
     outcome.tables[table] = { rows: rows.length, inserted };
   }
