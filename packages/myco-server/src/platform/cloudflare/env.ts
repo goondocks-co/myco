@@ -17,6 +17,8 @@ import { markRecordedLaunch } from '../../core/runs.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
 import { cloudflareVectorStore, type VectorIndex } from './vectors.js';
 import { cloudflareEmbeddingProvider, type EmbeddingBinding } from './embedding.js';
+import { cloudflareEmbeddingLaunch } from './embedding-runtime.js';
+import { EMBEDDING_TASK } from '../../core/embedding/jobs.js';
 
 /** The bindings `wrangler.toml` declares, exactly as the Worker receives them. */
 export interface CloudflareBindings extends OwnerBindings {
@@ -67,7 +69,7 @@ export const R2_BAD_DIGEST_CODE = 10037;
 export const classifyR2BlobFailure: BlobFailureClassifier = (message) =>
   message.includes(`(${R2_BAD_DIGEST_CODE})`) || /checksum you specified did not match/i.test(message) ? 'digest' : null;
 
-export function cloudflarePlatform(bindings: CloudflareBindings): PlatformDescriptor {
+export function cloudflarePlatform(bindings: CloudflareBindings, embeddingRuntime = false): PlatformDescriptor {
   const absent = (name: string): boolean =>
     (bindings as unknown as Record<string, unknown>)[name] === undefined;
 
@@ -86,10 +88,8 @@ export function cloudflarePlatform(bindings: CloudflareBindings): PlatformDescri
       },
       {
         capability: 'harness-runtime',
-        label: bindings.HARNESS_LAUNCH_MODE === 'record' ? 'Harness runtime — recording, starts nothing' : 'Harness runtime',
-        // A worker attaches with a member credential, so there is no binding an
-        // operator sets and none that can be reported missing.
-        present: bindings.HARNESS_LAUNCH_MODE === 'record',
+        label: bindings.HARNESS_LAUNCH_MODE === 'record' ? 'Harness runtime — recording, starts nothing' : embeddingRuntime ? 'Embedding runtime' : 'Harness runtime',
+        present: bindings.HARNESS_LAUNCH_MODE === 'record' || embeddingRuntime,
         operatorNames: [],
       },
     ],
@@ -128,10 +128,12 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
   if (bindings.CLOCK_MODE === CLOCK_MANUAL && bindings.HARNESS_LAUNCH_MODE !== 'record') {
     throw new Error('CLOCK_MODE=manual is accepted only beside HARNESS_LAUNCH_MODE=record: a Deployment that serves keeps its own clock');
   }
+  const embeddingRuntime = deferred !== undefined && bindings.MYCO_ORIGIN !== undefined && bindings.MYCO_ORIGIN !== '';
   return {
     ...(bindings.VECTORIZE === undefined ? {} : { vectors: cloudflareVectorStore(bindings.VECTORIZE) }),
     embeddingProvider: async () => bindings.AI === undefined ? null : cloudflareEmbeddingProvider(bindings.AI),
-    ...(bindings.HARNESS_LAUNCH_MODE === 'record' ? { harnessLaunch: recordingLaunch(bindings) } : {}),
+    ...(bindings.HARNESS_LAUNCH_MODE === 'record' ? { harnessLaunch: recordingLaunch(bindings) }
+      : embeddingRuntime ? { harnessLaunch: cloudflareEmbeddingLaunch(bindings.MYCO_ORIGIN!, (work) => deferred!.waitUntil(work)), harnessTasks: [EMBEDDING_TASK] } : {}),
     ...(bindings.MYCO_ORIGIN === undefined || bindings.MYCO_ORIGIN === '' ? {} : { origin: bindings.MYCO_ORIGIN }),
     ...(fleetOf(bindings.MYCO_FLEET) === null ? {} : { fleet: fleetOf(bindings.MYCO_FLEET)! }),
     // The runtime hands every request a deferral, and the work rides it past the
@@ -145,7 +147,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     }),
     afterResponse: deferred === undefined ? () => {} : (work) => deferred.waitUntil(work()),
     outbound: (input, init) => fetch(input, init),
-    platform: cloudflarePlatform(bindings),
+    platform: cloudflarePlatform(bindings, embeddingRuntime),
     db: bindings.MYCO_DB,
     blobs: bindings.BUCKET,
     sourceLimit: bindings.SOURCE_LIMIT,
