@@ -1,16 +1,13 @@
 /**
  * The deploy configuration, derived — never hand-edited.
  *
- * `wrangler.deploy.toml` is the committed configuration plus exactly three
- * facts the repository must not hold: the account, the routes, and the
- * per-account resource ids. All three live in the deployment record, so the
- * config is reproducible from the record and the committed base — a binding
- * added to the committed file reaches production on the next render instead of
- * waiting for someone to notice a hand-maintained copy drifted.
+ * `wrangler.deploy.toml` combines the committed binding declarations with the
+ * account, routes, resource names and resource ids in the deployment record.
  */
 import type { DeploymentRecord } from './cloudflare.js';
 import { WRANGLER_TEMPLATE } from './wrangler-template.js';
 import { VECTOR_BINDINGS } from './vector-config.js';
+import { cloudflareResources } from './cloudflare-resources.js';
 
 /**
  * Every configuration table a rendered deploy config may declare.
@@ -37,6 +34,10 @@ export const FREE_TIER_SURFACES = [
 
 const DATABASE_ID_PLACEHOLDER = '<YOUR_D1_DATABASE_ID>';
 const SOURCE_ENTRY_LINE = 'main = "src/index.ts"';
+const RESOURCE_FIELDS = [
+  ['name', 'workerName'], ['database_name', 'databaseName'],
+  ['bucket_name', 'bucketName'], ['index_name', 'vectorIndexName'],
+] as const;
 
 /**
  * What a staged deploy runs and how wrangler must treat it: the carried bundle
@@ -81,6 +82,7 @@ function routesLine(url: string | undefined): string | null {
 
 /** The deploy config for this record: the committed base with the record's account, routes, database id, and secrets store. */
 export function renderDeployConfig(record: DeploymentRecord): string {
+  const resources = cloudflareResources(record);
   const missing: string[] = [];
   if (record.databaseId === undefined || record.databaseId === '') missing.push('databaseId');
   if (missing.length > 0) throw new DeployConfigIncomplete(missing);
@@ -92,16 +94,22 @@ export function renderDeployConfig(record: DeploymentRecord): string {
   if (!WRANGLER_TEMPLATE.includes(SOURCE_ENTRY_LINE)) {
     throw new Error('the template carries no source entry line to replace; renderDeployConfig and wrangler.toml have drifted');
   }
+  const defaults = cloudflareResources();
   let body = WRANGLER_TEMPLATE
     .replace(SOURCE_ENTRY_LINE, STAGED_ENTRY_LINES)
     .replace(DATABASE_ID_PLACEHOLDER, record.databaseId!) + VECTOR_BINDINGS;
+  for (const [key, field] of RESOURCE_FIELDS) {
+    const declaration = new RegExp(`^${key} = "${defaults[field]}"$`, 'gm');
+    if ([...body.matchAll(declaration)].length !== 1) throw new Error(`the template must declare exactly one default ${key}`);
+    body = body.replace(declaration, `${key} = "${resources[field]}"`);
+  }
   if (record.storeId !== undefined && record.storeId !== '') {
     body += [
       '',
       '[[secrets_store_secrets]]',
       'binding = "SECRET_WRAP_KEY"',
       `store_id = "${record.storeId}"`,
-      'secret_name = "myco-secret-wrap-key"',
+      `secret_name = "${resources.wrapKeySecretName}"`,
       '',
     ].join('\n');
   }

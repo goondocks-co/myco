@@ -27,8 +27,8 @@ const quoteIdentifier = (name: string): string => '"' + name.replaceAll('"', '""
 function configuration(mycoHome?: string) {
   const held = readDeploymentRecord(mycoHome);
   if (held === null) return null;
-  const { accountId, databaseId, databaseName, bucketName, workerName, versionId, deployedAt, storeId, url, fleet } = held;
-  return { accountId, databaseId, databaseName, bucketName, workerName, versionId, deployedAt, storeId, url, fleet };
+  const { accountId, databaseId, databaseName, bucketName, workerName, versionId, deployedAt, storeId, url, fleet, vectorIndexName, wrapKeySecretName } = held;
+  return { accountId, databaseId, databaseName, bucketName, workerName, versionId, deployedAt, storeId, url, fleet, vectorIndexName, wrapKeySecretName };
 }
 
 /** Capture provider SQL and all registered R2 bytes without changing the serving Deployment. */
