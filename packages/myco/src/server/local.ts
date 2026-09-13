@@ -15,10 +15,14 @@
  * (`myco-2.0.md` §3.3.1), and a single-user machine's own file is the idiom
  * this project already holds machine secrets under.
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
+import { LocalVolume } from './local-volume.js';
+import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
+import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 
 /** What a locally-run Deployment is, as its settings file holds it. */
 export interface LocalDeploymentRecord {
@@ -89,9 +93,12 @@ export function readLocalRecord(paths = resolveLocalPaths()): LocalDeploymentRec
 }
 
 export function writeLocalRecord(record: LocalDeploymentRecord, paths = resolveLocalPaths()): void {
+  new LocalVolume(paths).exclusive(() => writeRecord(record, paths));
+}
+
+function writeRecord(record: LocalDeploymentRecord, paths: LocalDeploymentPaths): void {
   mkdirSync(paths.root, { recursive: true, mode: 0o700 });
-  writeFileSync(paths.recordFile, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(paths.recordFile, 0o600);
+  atomicWriteFileSync(paths.recordFile, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600, durable: true });
 }
 
 /**
@@ -149,12 +156,15 @@ export function readLocalSecrets(paths = resolveLocalPaths()): Partial<Record<Lo
 }
 
 export function writeLocalSecrets(values: Partial<Record<LocalSecretName, string>>, paths = resolveLocalPaths()): void {
+  new LocalVolume(paths).exclusive(() => writeSecrets(values, paths));
+}
+
+function writeSecrets(values: Partial<Record<LocalSecretName, string>>, paths: LocalDeploymentPaths): void {
   mkdirSync(paths.root, { recursive: true, mode: 0o700 });
   const lines = LOCAL_SECRET_NAMES
     .filter((name) => (values[name] ?? '') !== '')
     .map((name) => `${name}=${values[name]!}`);
-  writeFileSync(paths.secretsFile, `${lines.join('\n')}\n`, { mode: 0o600 });
-  chmodSync(paths.secretsFile, 0o600);
+  atomicWriteFileSync(paths.secretsFile, `${lines.join('\n')}\n`, { mode: 0o600, durable: true });
 }
 
 /**
@@ -166,16 +176,35 @@ export function writeLocalSecrets(values: Partial<Record<LocalSecretName, string
  * at create makes a fresh Deployment able to hold one from its first minute.
  */
 export function ensureLocalSecrets(paths = resolveLocalPaths()): LocalSecretName[] {
+  return new LocalVolume(paths).exclusive(() => ensureSecrets(paths));
+}
+
+function ensureSecrets(paths: LocalDeploymentPaths): LocalSecretName[] {
   const existing = readLocalSecrets(paths);
   const added = GENERATED.filter((name) => (existing[name] ?? '') === '');
   if (added.length === 0) return [];
   const next = { ...existing };
   for (const name of added) next[name] = base64Random(32);
-  writeLocalSecrets(next, paths);
+  writeSecrets(next, paths);
   return added;
 }
 
 /** Remove the Deployment's directory and everything in it. */
 export function removeLocalDeployment(paths = resolveLocalPaths()): void {
-  rmSync(paths.root, { recursive: true, force: true });
+  new LocalVolume(paths).exclusive(() => rmSync(paths.root, { recursive: true, force: true }));
+}
+
+/** Provision configuration, credentials and schema while the volume is exclusively held. */
+export function createLocalDeployment(record: LocalDeploymentRecord, native: NativeSqlite, paths = resolveLocalPaths()) {
+  return new LocalVolume(paths).exclusive(() => {
+    assertRecordServable(record);
+    writeRecord(record, paths);
+    const generated = ensureSecrets(paths);
+    return { generated, applied: migrateOnly(paths.databasePath, native) };
+  });
+}
+
+/** A serving process must release its volume before an operator applies migrations. */
+export function updateLocalDeployment(native: NativeSqlite, paths = resolveLocalPaths()): number {
+  return new LocalVolume(paths).exclusive(() => migrateOnly(paths.databasePath, native));
 }
