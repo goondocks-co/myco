@@ -48,6 +48,8 @@ import {
   type LocalDeploymentRecord,
 } from '../server/local.js';
 import { carriedNative, runLocalDeployment } from '../server/local-run.js';
+import { backupLocalDeployment } from '../server/local-backup.js';
+import { backupCloudflareDeployment } from '../server/cloudflare-backup.js';
 import {
   ServicePathUnsupported,
   ServicePlatformUnsupported,
@@ -99,7 +101,10 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Return the Worker to an earlier version. Defaults to the
                                           record's last recorded one — the version a failed update
                                           left serving.
-  backup --to <dir>                       Snapshot the database and blobs.
+  backup --to <dir> [--target local|cloudflare|compose]
+                                          Snapshot the database and blobs. Local/Cloudflare backups
+                                          resume an incomplete directory and verify every blob.
+                                          Credentials require separate secure recovery storage.
   restore --from <dir> [--no-drain]       Replace the Deployment's data with a backup. Waits for the
                                           tasks this Deployment is running or about to start before
                                           it stops. --no-drain skips the wait; the harness is still
@@ -456,7 +461,17 @@ export async function run(args: string[]): Promise<void> {
 
     if (command === 'backup') {
       const to = flags.get('to');
-      if (to === undefined || to === '') fail('backup needs --to <dir>.');
+      if (to === undefined || to === '' || to === 'true') fail('backup needs --to <dir>.');
+      const selected = target();
+      if (selected !== 'compose') {
+        const report = (line: string) => { console.log(line); };
+        const done = selected === 'local'
+          ? await backupLocalDeployment({ destination: to!, report })
+          : await backupCloudflareDeployment({ ...cloudflareOptions(), destination: to! });
+        console.log(`Verified data artifact written to ${path.resolve(to!)} (${done.snapshot!.blobCount} blobs)`);
+        console.log(`Keep these credentials separately for recovery: ${done.snapshot!.credentialsRequired.join(', ')}`);
+        return;
+      }
       const done = await backupDeployment({ destination: to! });
       console.log(`Backup written to ${done.destination}`);
       console.log('  myco.sqlite   consistent snapshot, taken with VACUUM INTO');
@@ -465,6 +480,7 @@ export async function run(args: string[]): Promise<void> {
     }
 
     if (command === 'restore') {
+      if (target() !== 'compose') fail('operator replacement restore is not yet supported for this target; no data was changed.');
       const from = flags.get('from');
       if (from === undefined || from === '') fail('restore needs --from <dir>.');
       if (!flags.has('yes')) {
