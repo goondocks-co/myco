@@ -33,6 +33,9 @@ function fixture() {
     VALUES ('proj_1',?,?,'application/octet-stream','mt_fixture',1)`, [digest, bytes.length]);
   source.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,title)
     VALUES ('proj_1','s_backup','m_fixture','mt_fixture',1,1,'Recovered 🌱 title')`);
+  const backupKey = 'backups/lineage__1__bk_pinned.jsonl';
+  const backupBody = '{"format":"myco-backup/1"}\n';
+  source.sqlite.run(`INSERT INTO backups VALUES ('pinned',?,1,?,'{}',13,'fixture',1)`, [backupKey, Buffer.byteLength(backupBody)]);
   source.sqlite.exec('CREATE TABLE recovery_fixture(id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT, bytes BLOB)');
   source.sqlite.run('INSERT INTO recovery_fixture VALUES (71, NULL, NULL)');
   source.sqlite.run('DELETE FROM recovery_fixture');
@@ -71,11 +74,14 @@ function fixture() {
     throw new Error(`unexpected provider command ${args.join(' ')}`);
   } };
   const fetchObject: CloudflareFetch = async (input, init) => {
-    expect(String(input)).toBe(`https://api.cloudflare.com/client/v4/accounts/${record.accountId}/r2/buckets/${record.bucketName}/objects/proj_1/${digest}`);
+    const prefix = `https://api.cloudflare.com/client/v4/accounts/${record.accountId}/r2/buckets/${record.bucketName}/objects/`;
+    expect(String(input).startsWith(prefix)).toBe(true);
+    const key = String(input).slice(prefix.length);
+    expect([`proj_1/${digest}`, backupKey]).toContain(key);
     expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer fixture-operator-token');
-    return downloadFails ? new Response('object unavailable', { status: 503 }) : new Response(bytes);
+    return downloadFails ? new Response('object unavailable', { status: 503 }) : new Response(key === backupKey ? backupBody : bytes);
   };
-  return { source, root, mycoHome, destination, record, runner, calls, body, bytes, digest,
+  return { source, root, mycoHome, destination, record, runner, calls, body, bytes, digest, backupKey, backupBody,
     drift: () => { drift = true; }, downloadFails: (value: boolean) => { downloadFails = value; },
     backup: () => backupCloudflareDeployment({ accountId: record.accountId, mycoHome, destination, runner, fetch: fetchObject }),
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
@@ -95,6 +101,7 @@ it('reconstructs FTS and triggers, preserves sequence high-water and exact value
     expect(f.calls.filter((call) => call.includes('export'))).toHaveLength(1);
     expect(f.calls.find((call) => call.includes('export'))).toContain('sqlite_sequence');
     expect(new Uint8Array(fs.readFileSync(path.join(f.destination, 'blobs', 'proj_1', f.digest)))).toEqual(f.bytes);
+    expect(fs.readFileSync(path.join(f.destination, 'blobs', f.backupKey), 'utf8')).toBe(f.backupBody);
     const recovered = new Database(path.join(f.destination, 'myco.sqlite'));
     try {
       expect(recovered.query('SELECT * FROM recovery_fixture').get()).toEqual({ id: 3, body: f.body, bytes: f.bytes });

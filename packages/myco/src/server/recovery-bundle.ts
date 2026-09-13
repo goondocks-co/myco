@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { Database } from 'bun:sqlite';
 import { diskBlobStore, sweepPartialObjects } from '@myco-server-worker/platform/bun/blobs.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { BACKUP_KEY_PREFIX } from '@myco-server-worker/core/backup.js';
 import { BLOB_KEY_GRAMMAR, PROJECTED_BLOB_REFERENCES, KINDS, blobFields } from '@myco-server-worker/ingest/kinds.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
@@ -20,23 +21,31 @@ const DIGEST = BLOB_KEY_GRAMMAR;
 const fingerprintSchema = z.object({ sha256: z.string().regex(DIGEST), bytes: z.number().int().nonnegative() });
 const sourceSchema = z.object({ target: z.enum(['local', 'cloudflare']), locator: z.string().min(1) });
 const blobSchema = z.object({ key: z.string(), sha256: z.string().regex(DIGEST), bytes: z.number().int().nonnegative() });
+const isBackupKey = (key: string): boolean => key.startsWith(BACKUP_KEY_PREFIX)
+  && /^[A-Za-z0-9_-]+\.jsonl$/.test(key.slice(BACKUP_KEY_PREFIX.length));
+const backupSchema = blobSchema.omit({ sha256: true }).extend({ key: z.string().refine(isBackupKey, 'invalid recovery backup key') });
 const snapshotSchema = z.object({
   deploymentId: z.string().min(1), schemaVersion: z.number().int().positive(),
   database: fingerprintSchema, blobCount: z.number().int().nonnegative(), blobBytes: z.number().int().nonnegative(),
   configuration: z.record(z.string(), z.unknown()),
   credentialsRequired: z.array(z.string()), capturedAt: z.string().datetime(),
 });
-const manifestSchema = z.object({
-  format: z.literal('myco-recovery/1'), source: sourceSchema, startedAt: z.string().datetime(),
+const manifestFields = {
+  source: sourceSchema, startedAt: z.string().datetime(),
   status: z.enum(['snapshot', 'content', 'complete']), snapshot: snapshotSchema.optional(),
   completedAt: z.string().datetime().optional(),
-}).superRefine((value, ctx) => {
+};
+const manifestSchema = z.discriminatedUnion('format', [
+  z.object({ ...manifestFields, format: z.literal('myco-recovery/1') }),
+  z.object({ ...manifestFields, format: z.literal('myco-recovery/2'), backupObjects: z.array(blobSchema) }),
+]).superRefine((value, ctx) => {
   if (value.status !== 'snapshot' && value.snapshot === undefined) ctx.addIssue({ code: 'custom', message: 'recovery snapshot is missing' });
   if (value.status === 'complete' && value.completedAt === undefined) ctx.addIssue({ code: 'custom', message: 'recovery completion time is missing' });
 });
 
 export type RecoverySource = z.infer<typeof sourceSchema>;
 export type RecoveryBlob = z.infer<typeof blobSchema>;
+type RecoveryObject = RecoveryBlob | z.infer<typeof backupSchema>;
 export type RecoverySnapshot = Pick<z.infer<typeof snapshotSchema>, 'configuration' | 'credentialsRequired'>;
 export type RecoveryManifest = z.infer<typeof manifestSchema>;
 
@@ -44,8 +53,8 @@ export interface RecoveryAdapter {
   source: RecoverySource;
   /** Write a closed standalone database at databasePath, using workDir for intermediate files. */
   snapshot(databasePath: string, workDir: string): Promise<RecoverySnapshot>;
-  /** Stream the content-addressed bytes from this source, or throw on absence. */
-  blob(blob: RecoveryBlob, workDir: string): Promise<ReadableStream>;
+  /** Stream a registered blob or catalogued backup from this source, or throw on absence. */
+  blob(object: RecoveryObject, workDir: string): Promise<ReadableStream>;
 }
 
 /** Size and digest from the same bounded-memory read of a regular file. */
@@ -61,10 +70,11 @@ function sameFingerprint(actual: z.infer<typeof fingerprintSchema>, expected: z.
   return actual.sha256 === expected.sha256 && actual.bytes === expected.bytes;
 }
 
-function blobPath(root: string, blob: RecoveryBlob): string {
+function blobPath(root: string, blob: RecoveryObject): string {
   const parts = blob.key.split('/');
   if (parts.length !== 2 || !parts[0] || parts[0] === '.' || parts[0] === '..'
-    || parts[0].includes('\\') || parts[0].includes(':') || parts[1] !== blob.sha256 || !DIGEST.test(blob.sha256)) {
+    || parts[0].includes('\\') || parts[0].includes(':')
+    || (!isBackupKey(blob.key) && (!('sha256' in blob) || parts[1] !== blob.sha256 || !DIGEST.test(blob.sha256)))) {
     throw new Error(`invalid recovery blob key: ${blob.key}`);
   }
   return path.join(root, 'blobs', ...parts);
@@ -165,7 +175,7 @@ export async function createRecoveryBundle(
       throw new Error('recovery destination belongs to another Deployment');
     }
     if (manifest === null) {
-      manifest = { format: 'myco-recovery/1', source: sourceSchema.parse(adapter.source), startedAt: new Date().toISOString(), status: 'snapshot' };
+      manifest = { format: 'myco-recovery/2', source: sourceSchema.parse(adapter.source), startedAt: new Date().toISOString(), status: 'snapshot', backupObjects: [] };
       writeManifest(root, manifest);
     }
     const databasePath = path.join(root, DATABASE_FILE);
@@ -197,24 +207,51 @@ export async function createRecoveryBundle(
       const facts = snapshotFacts(db);
       if (facts.deploymentId !== snapshot.deploymentId || facts.schemaVersion !== snapshot.schemaVersion
         || facts.blobCount !== snapshot.blobCount || facts.blobBytes !== snapshot.blobBytes) throw new Error('recovery manifest does not describe its database');
-      let index = 0;
-      const rows = db.query<RecoveryBlob, []>("SELECT project_id || '/' || key AS key, key AS sha256, size AS bytes FROM blobs ORDER BY project_id, key");
-      for (const row of rows.iterate()) {
-        const blob = blobSchema.parse(row);
+      const complete = manifest.status === 'complete';
+      const copyObject = async (blob: RecoveryObject, progress: string): Promise<RecoveryBlob> => {
         const file = blobPath(root, blob);
-        ensureContentDirectory(path.dirname(file), manifest.status === 'complete');
-        index += 1;
+        ensureContentDirectory(path.dirname(file), complete);
         if (fs.existsSync(file)) {
-          if (sameFingerprint(await fingerprint(file), blob)) continue;
-          if (manifest.status === 'complete') throw new Error(`completed recovery blob no longer matches its manifest: ${blob.key}`);
+          const held = await fingerprint(file);
+          if ('sha256' in blob && sameFingerprint(held, blob)) return { key: blob.key, ...held };
+          if (complete) throw new Error(`completed recovery blob no longer matches its manifest: ${blob.key}`);
           await store.delete(blob.key);
         }
-        if (manifest.status === 'complete') throw new Error(`completed recovery artifact is missing blob ${blob.key}`);
-        report(`Copying blob ${index} of ${snapshot.blobCount}`);
-        const stored = await store.put(blob.key, await adapter.blob(blob, workDir), { sha256: blob.sha256 });
+        if (complete) throw new Error(`completed recovery artifact is missing blob ${blob.key}`);
+        report(progress);
+        const stored = await store.put(blob.key, await adapter.blob(blob, workDir), 'sha256' in blob ? { sha256: blob.sha256 } : undefined);
         if (stored.size !== blob.bytes) { await store.delete(blob.key); throw new Error(`recovery blob has an unexpected size: ${blob.key}`); }
         fs.chmodSync(file, OWNER_FILE_MODE);
         syncFile(file);
+        return { key: blob.key, ...('sha256' in blob ? { sha256: blob.sha256, bytes: blob.bytes } : await fingerprint(file)) };
+      };
+      const backups = db.query<z.infer<typeof backupSchema>, []>('SELECT key, size_bytes AS bytes FROM backups ORDER BY key').all().map((row) => backupSchema.parse(row));
+      const expected = new Map(backups.map((backup) => [backup.key, backup.bytes]));
+      if (expected.size !== backups.length) throw new Error('recovery backup coverage has duplicate catalogued keys');
+      if (manifest.format === 'myco-recovery/2') {
+        const receipts = manifest.backupObjects;
+        if (new Set(receipts.map((receipt) => receipt.key)).size !== receipts.length
+          || receipts.some((receipt) => expected.get(receipt.key) !== receipt.bytes)
+          || (manifest.status === 'complete' && receipts.length !== backups.length)) {
+          throw new Error('recovery backup coverage does not match its database');
+        }
+      } else if (backups.length > 0) {
+        report(`${backups.length} catalogued backup object${backups.length === 1 ? ' is' : 's are'} outside this legacy artifact; create a new artifact for complete object coverage`);
+      }
+      let index = 0;
+      const rows = db.query<RecoveryBlob, []>("SELECT project_id || '/' || key AS key, key AS sha256, size AS bytes FROM blobs ORDER BY project_id, key");
+      for (const row of rows.iterate()) {
+        await copyObject(blobSchema.parse(row), `Copying blob ${++index} of ${snapshot.blobCount}`);
+      }
+      if (manifest.format === 'myco-recovery/2') {
+        for (const [index, backup] of backups.entries()) {
+          const receipt = manifest.backupObjects.find((held) => held.key === backup.key);
+          const copied = await copyObject(receipt ?? backup, `Copying catalogued backup ${index + 1} of ${backups.length}`);
+          if (receipt === undefined) {
+            manifest.backupObjects.push(copied);
+            writeManifest(root, manifest);
+          }
+        }
       }
     } finally { db.close(); }
     fs.rmSync(workDir, { recursive: true, force: true });
