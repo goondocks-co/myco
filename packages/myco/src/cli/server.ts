@@ -494,7 +494,8 @@ export async function run(args: string[]): Promise<void> {
         const restored = await restoreLocalDeployment({ source: from!, secretsFile: secretsFile!,
           ...(port === undefined ? {} : { port: Number(port) }), report: (line) => console.log(line) });
         console.log(`Native recovery volume ready at schema ${restored.schemaVersion}. Source data was preserved.`);
-        console.log('Run `myco server run --target local` to start it and apply any pending migrations.');
+        console.log(`Keep MYCO_HOME set to ${resolveMycoHome()} for this recovered Deployment.`);
+        console.log(`Start it with this binary (${process.execPath}) and arguments: server run --target local`);
         return;
       }
       if (!flags.has('yes')) {
