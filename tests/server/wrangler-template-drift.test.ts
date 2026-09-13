@@ -58,6 +58,24 @@ describe('wrangler template', () => {
 });
 
 describe('renderDeployConfig', () => {
+  it('binds a recovery Deployment to its recorded resources without changing binding names', () => {
+    const config = Bun.TOML.parse(renderDeployConfig(record({
+      workerName: 'recovery-worker', databaseName: 'recovery-database', databaseId: 'recovery-id',
+      bucketName: 'recovery-blobs', vectorIndexName: 'recovery-vectors',
+      storeId: 'recovery-store', wrapKeySecretName: 'recovery-wrap-key',
+    })));
+    expect(config).toMatchObject({
+      name: 'recovery-worker',
+      d1_databases: [{ binding: 'MYCO_DB', database_name: 'recovery-database', database_id: 'recovery-id', migrations_dir: 'migrations' }],
+      r2_buckets: [{ binding: 'BUCKET', bucket_name: 'recovery-blobs' }],
+      vectorize: [{ binding: 'VECTORIZE', index_name: 'recovery-vectors' }],
+      secrets_store_secrets: [{ binding: 'SECRET_WRAP_KEY', store_id: 'recovery-store', secret_name: 'recovery-wrap-key' }],
+      ratelimits: [{ name: 'SOURCE_LIMIT' }, { name: 'TOKEN_LIMIT' }],
+    });
+    expect(config).not.toHaveProperty('routes');
+    expect(() => renderDeployConfig(record({ databaseId: 'recovery-id', bucketName: 'bad"\nname="other' }))).toThrow();
+  });
+
   it('renders the account, custom-domain route, database id, and secrets store from the record', () => {
     const config = renderDeployConfig(record({ url: 'https://myco.example.com', databaseId: 'd1-uuid', storeId: 'store-1' }));
     const lines = config.split('\n');

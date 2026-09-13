@@ -16,8 +16,9 @@ import { z } from 'zod';
 import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
 import { CommandFailed, jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
+import { cloudflareResources } from './cloudflare-resources.js';
 import { BUNDLED_WORKER_WRANGLER } from '../worker-bundle.generated.js';
-import { VECTOR_INDEX_NAME, VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
+import { VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
 
 /** Wrangler refuses to guess between accounts, and guessing is what must not happen. */
 export class AccountNotSelected extends Error {
@@ -170,17 +171,18 @@ export async function ensureBucket(options: CloudflareOptions & { bucketName: st
 }
 
 /** The memory index and its filters must exist before the Worker accepts embedding work. */
-export async function ensureVectorIndex(options: CloudflareOptions): Promise<{ created: boolean }> {
+export async function ensureVectorIndex(options: CloudflareOptions & { vectorIndexName?: string }): Promise<{ created: boolean }> {
+  const { vectorIndexName } = cloudflareResources(options);
   const { runner, env } = resolved(options);
   const command = (...args: string[]) => runOrThrow(runner, 'npx', wrangler('vectorize', ...args), { cwd: options.configDir, env });
   const rows: unknown = jsonDocument((await command('list', '--json')).stdout);
   if (!Array.isArray(rows)) throw new Error('Vectorize index list is unreadable');
-  const created = !rows.some((r) => r?.name === VECTOR_INDEX_NAME);
-  if (created) await command('create', VECTOR_INDEX_NAME, '--dimensions', String(VECTOR_INDEX_DIMENSIONS), '--metric', 'cosine', '--json', '--update-config=false');
-  const held = jsonDocument((await command('get', VECTOR_INDEX_NAME, '--json')).stdout) as { config?: { dimensions?: number; metric?: string } };
+  const created = !rows.some((r) => r?.name === vectorIndexName);
+  if (created) await command('create', vectorIndexName, '--dimensions', String(VECTOR_INDEX_DIMENSIONS), '--metric', 'cosine', '--json', '--update-config=false');
+  const held = jsonDocument((await command('get', vectorIndexName, '--json')).stdout) as { config?: { dimensions?: number; metric?: string } };
   if (held?.config?.dimensions !== VECTOR_INDEX_DIMENSIONS || held.config.metric !== 'cosine') throw new Error('memory vector index has incompatible dimensions or metric');
   const metadata = async (): Promise<Array<{ propertyName: string; indexType: string }>> => {
-    const indexed: unknown = jsonDocument((await command('list-metadata-index', VECTOR_INDEX_NAME, '--json')).stdout);
+    const indexed: unknown = jsonDocument((await command('list-metadata-index', vectorIndexName, '--json')).stdout);
     if (!Array.isArray(indexed) || indexed.some((r) => typeof r?.propertyName !== 'string' || typeof r?.indexType !== 'string')) throw new Error('Vectorize metadata index list is unreadable');
     return indexed;
   };
@@ -194,7 +196,7 @@ export async function ensureVectorIndex(options: CloudflareOptions): Promise<{ c
   for (const field of VECTOR_METADATA_FIELDS) {
     if (compatible(field)) continue;
     const type = field === 'created_at' ? 'number' : 'string';
-    const result = await runner.run('npx', wrangler('vectorize', 'create-metadata-index', VECTOR_INDEX_NAME, '--propertyName', field, '--type', type), { cwd: options.configDir, env });
+    const result = await runner.run('npx', wrangler('vectorize', 'create-metadata-index', vectorIndexName, '--propertyName', field, '--type', type), { cwd: options.configDir, env });
     if (result.code !== 0 && !/metadata index already exists for this name/.test(result.stderr + result.stdout)) throw new Error(`vector metadata creation failed: ${(result.stderr || result.stdout).slice(-500)}`);
   }
   const attempts = 30;
@@ -389,6 +391,10 @@ export interface DeploymentRecord {
   databaseId?: string;
   /** The account's secrets store id; present once the wrapping key is provisioned. */
   storeId?: string;
+  /** The vector index serving this Deployment; omitted records use the default index. */
+  vectorIndexName?: string;
+  /** The wrapping secret in the selected store; omitted records use the default secret. */
+  wrapKeySecretName?: string;
   /** How many runs the Deployment may have in flight at once, set by `myco server config --fleet`; the dispatcher counts against it. */
   fleet?: number;
 }

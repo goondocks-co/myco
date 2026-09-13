@@ -24,6 +24,7 @@ function fixture() {
   const destination = path.join(root, 'archive');
   const record = { accountId: 'fixture-account', databaseId: 'fixture-database', databaseName: 'myco-server',
     bucketName: 'myco-server-blobs', workerName: 'myco-server', storeId: 'fixture-store',
+    vectorIndexName: 'fixture-vectors', wrapKeySecretName: 'fixture-wrap-key',
     versionId: 'fixture-version', deployedAt: '2026-09-13T00:00:00.000Z' };
   writeDeploymentRecord({ ...record, ...{ unexpectedCredential: 'fixture-private-value' } }, mycoHome);
   const bytes = new Uint8Array([0, 1, 127, 128, 255]);
