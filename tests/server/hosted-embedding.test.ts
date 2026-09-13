@@ -102,6 +102,7 @@ test('run control rejects redirects without sending the run credential to the de
   const redirect = Bun.serve({ port: 0, fetch: () => new Response(null, { status: 307, headers: { location: destination.url.href } }) });
   try {
     const control = runControlClient({ origin: redirect.url.href, token: 'synthetic-run-token', projectId: 'proj_1' }, fetch);
+    await expect(control(destination.url.href, {}, AbortSignal.timeout(1000))).rejects.toThrow('cross-origin route refused');
     await expect(control('/runs/claim', {}, AbortSignal.timeout(1000))).rejects.toThrow('status 307');
     expect(forwarded).toBe(0);
   } finally { await redirect.stop(true); await destination.stop(true); }

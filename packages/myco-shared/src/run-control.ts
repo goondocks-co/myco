@@ -28,10 +28,12 @@ export function runControlClient(
 ): RunControl {
   const origin = new URL(record.origin).origin;
   return async (path, payload, signal) => {
+    const url = new URL(path, origin);
+    if (url.origin !== origin) throw new RunControlError(path, 'cross-origin route refused');
     let response: Response;
     let text: string;
     try {
-      response = await fetcher(origin + path, { method: 'POST', redirect: 'manual', signal,
+      response = await fetcher(url.href, { method: 'POST', redirect: 'manual', signal,
         headers: { ...memberHeaders(record), 'content-type': 'application/json' }, body: JSON.stringify(payload) });
       text = await response.text();
     } catch (error) {
