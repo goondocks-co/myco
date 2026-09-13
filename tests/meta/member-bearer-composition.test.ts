@@ -38,6 +38,7 @@ const HOST_PROTOCOL_MARKER = 'HOST_PROTOCOL_HEADER';
 
 /** Calls to APIs outside Myco, with what each talks to. Adding one is a reviewed act. */
 const FOREIGN: Readonly<Record<string, string>> = {
+  'server/cloudflare.ts': 'the Cloudflare R2 object API',
   'release-provenance/github.ts': 'the GitHub REST API',
   'upgrade/release-assets.ts': 'the GitHub release assets API',
   'agent/cost/openrouter.ts': 'the OpenRouter pricing API',

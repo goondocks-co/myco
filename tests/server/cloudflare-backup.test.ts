@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { backupCloudflareDeployment } from '@myco/server/cloudflare-backup.js';
-import { writeDeploymentRecord } from '@myco/server/cloudflare.js';
+import { writeDeploymentRecord, type CloudflareFetch } from '@myco/server/cloudflare.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
@@ -47,6 +47,7 @@ function fixture() {
     expect(args.slice(0, 2)).toEqual(['--no-install', 'wrangler']);
     expect(options?.env?.CLOUDFLARE_ACCOUNT_ID).toBe(record.accountId);
     expect(options?.cwd?.startsWith(mycoHome)).toBe(true);
+    if (args.includes('auth')) return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture-operator-token' }), stderr: '' };
     expect(fs.readFileSync(args[args.indexOf('-c') + 1]!, 'utf8')).toContain(record.databaseId);
     if (args.includes('execute')) {
       if (drift && ++metadataReads === 2) source.sqlite.exec('CREATE TABLE changed_schema(id TEXT)');
@@ -66,16 +67,16 @@ function fixture() {
       fs.writeFileSync(args[args.indexOf('--output') + 1]!, sql.join('\n'));
       return { code: 0, stdout: '', stderr: '' };
     }
-    if (args.includes('get')) {
-      if (downloadFails) return { code: 1, stdout: '', stderr: 'object unavailable' };
-      fs.writeFileSync(args[args.indexOf('--file') + 1]!, bytes);
-      return { code: 0, stdout: '', stderr: '' };
-    }
     throw new Error(`unexpected provider command ${args.join(' ')}`);
   } };
+  const fetchObject: CloudflareFetch = async (input, init) => {
+    expect(String(input)).toBe(`https://api.cloudflare.com/client/v4/accounts/${record.accountId}/r2/buckets/${record.bucketName}/objects/proj_1/${digest}`);
+    expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer fixture-operator-token');
+    return downloadFails ? new Response('object unavailable', { status: 503 }) : new Response(bytes);
+  };
   return { source, root, mycoHome, destination, record, runner, calls, body, bytes, digest,
     drift: () => { drift = true; }, downloadFails: (value: boolean) => { downloadFails = value; },
-    backup: () => backupCloudflareDeployment({ accountId: record.accountId, mycoHome, destination, runner }),
+    backup: () => backupCloudflareDeployment({ accountId: record.accountId, mycoHome, destination, runner, fetch: fetchObject }),
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
@@ -84,7 +85,7 @@ it('reconstructs FTS and triggers, preserves sequence high-water and exact value
   const f = fixture();
   try {
     f.downloadFails(true);
-    await expect(f.backup()).rejects.toThrow('object unavailable');
+    await expect(f.backup()).rejects.toThrow('HTTP 503');
     expect(JSON.parse(fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8')).status).toBe('content');
     f.downloadFails(false);
     const result = await f.backup();

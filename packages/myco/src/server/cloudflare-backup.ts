@@ -3,8 +3,8 @@ import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { z } from 'zod';
 import {
-  downloadCloudflareBlob, ensureCommandDir, exportDatabase, queryCloudflareDatabase,
-  readDeploymentRecord, type CloudflareOptions,
+  cloudflareBlobReader, ensureCommandDir, exportDatabase, queryCloudflareDatabase,
+  readDeploymentRecord, type CloudflareOptions, type CloudflareFetch,
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 import { renderDeployConfig } from './deploy-config.js';
@@ -33,7 +33,7 @@ function configuration(mycoHome?: string) {
 
 /** Capture provider SQL and all registered R2 bytes without changing the serving Deployment. */
 export async function backupCloudflareDeployment(
-  options: LifecycleOptions & { destination: string },
+  options: LifecycleOptions & { destination: string; fetch?: CloudflareFetch },
 ): Promise<RecoveryManifest> {
   const record = configuration(options.mycoHome);
   if (record === null) throw new Error('No Cloudflare Deployment record exists on this machine');
@@ -44,6 +44,7 @@ export async function backupCloudflareDeployment(
   if (bindings.length !== 1) throw new Error('recovery configuration must bind exactly the recorded D1 database');
   const databaseName = bindings[0]!.binding;
   const configDir = ensureCommandDir(options.mycoHome);
+  const readBlob = cloudflareBlobReader({ ...options, configDir, bucketName: record.bucketName });
   const source = { target: 'cloudflare' as const, locator: `${record.accountId}/${record.databaseId}/${record.bucketName}` };
   const bound = (workDir: string): CloudflareOptions => {
     const configFile = path.join(workDir, 'wrangler.recovery.toml');
@@ -89,11 +90,6 @@ export async function backupCloudflareDeployment(
       } finally { db.close(); }
       return { configuration: { ...record }, credentialsRequired: [...LOCAL_SECRET_NAMES] };
     },
-    blob: async (blob, workDir) => {
-      const file = path.join(workDir, 'download.blob');
-      fs.rmSync(file, { force: true });
-      await downloadCloudflareBlob({ ...bound(workDir), bucketName: record.bucketName, key: blob.key, file });
-      return Bun.file(file).stream();
-    },
+    blob: async (blob) => readBlob(blob.key),
   }, options.report);
 }
