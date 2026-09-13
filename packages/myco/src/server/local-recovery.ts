@@ -45,7 +45,7 @@ export async function restoreLocalDeployment(options: {
         if (rebuildEmbeddings) {
           const projects = db.query<{ project_id: string }, []>('SELECT project_id FROM projects').all();
           for (const project of projects) await resetEmbeddingIndex(store, project.project_id);
-          options.report?.('Queued embedding sources for the fresh native vector index');
+          options.report?.('Embedding rebuild required before semantic search is ready');
         }
       } finally { db.close(); }
       writeLocalSecrets(secrets, staging);
