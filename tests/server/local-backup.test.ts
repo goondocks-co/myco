@@ -22,8 +22,12 @@ it('backs up committed WAL data and exact blob bytes without migrating or replac
       VALUES ('proj_1',?,?,'application/octet-stream','mt_fixture',1)`, [digest, bytes.length]);
     fixture.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,title)
       VALUES ('proj_1','s_backup','m_fixture','mt_fixture',1,1,'Initial title')`);
+    const backupKey = 'backups/lineage__1__bk_pinned.jsonl';
+    const backupBody = '{"format":"myco-backup/1"}\n';
+    fixture.sqlite.run(`INSERT INTO backups VALUES ('pinned',?,1,?,'{}',13,'fixture',1)`, [backupKey, Buffer.byteLength(backupBody)]);
     fixture.sqlite.query('VACUUM INTO ?').run(paths.databasePath);
     await diskBlobStore(paths.blobDir).put(`proj_1/${digest}`, new Response(bytes).body, { sha256: digest });
+    await diskBlobStore(paths.blobDir).put(backupKey, new Response(backupBody).body);
     live = new Database(paths.databasePath);
     live.exec('PRAGMA journal_mode=WAL');
     live.run("UPDATE sessions SET title='Committed WAL title' WHERE session_id='s_backup'");
@@ -39,8 +43,11 @@ it('backs up committed WAL data and exact blob bytes without migrating or replac
       expect(restored.query("SELECT title FROM sessions WHERE session_id='s_backup'").get()).toEqual({ title: 'Committed WAL title' });
       expect(restored.query("SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH 'Committed'").all()).toHaveLength(1);
       expect(restored.query('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(restored.query('SELECT pinned, size_bytes FROM backups').get()).toEqual({ pinned: 1, size_bytes: Buffer.byteLength(backupBody) });
     } finally { restored.close(); }
     expect(new Uint8Array(fs.readFileSync(path.join(destination, 'blobs', 'proj_1', digest)))).toEqual(bytes);
+    fs.rmSync(path.join(paths.blobDir, backupKey));
+    expect(await new Response((await diskBlobStore(path.join(destination, 'blobs')).get(backupKey))!.body).text()).toBe(backupBody);
     expect(live.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual(version);
     expect(live.query("SELECT title FROM sessions WHERE session_id='s_backup'").get()).toEqual({ title: 'Committed WAL title' });
   } finally { live?.close(); fixture.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); }

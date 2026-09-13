@@ -6,11 +6,14 @@ Both targets use one artifact writer. The directory contains:
 
 - `myco.sqlite`: a closed database snapshot, checked for integrity, foreign keys and required captured-content references.
 - `blobs/<project>/<sha256>`: every object registered in that snapshot, verified against its size and digest.
+- `blobs/backups/<filename>.jsonl`: every backup catalogued in that snapshot, including pinned backups. The writer checks its catalogued size and records a SHA-256 digest for subsequent resume and offline verification.
 - `recovery.json`: source target and identity, schema version, capture timestamps, database digest, blob totals, the operator's configuration record and required independent credentials.
 
 Cloudflare provisioning and rendered bindings use the record's Worker, database, bucket, vector-index and wrapping-secret names. Existing records that omit `vectorIndexName` or `wrapKeySecretName` retain the default names. A recovery record can name separate resources; the record must also name the recovery destination's URL rather than the original live route. Choosing those resources does not copy data, recover credentials or rebuild their contents.
 
 The manifest advances from `snapshot` to `content` to `complete`. A failed copy stays incomplete. Running the same command against the same source and directory resumes the saved snapshot and verifies existing bytes before reusing them. A completed artifact is verified without refreshing its contents; use a new directory for another recovery point. A different source or an unrelated nonempty directory is refused. One process holds the destination lock at a time.
+
+New artifacts use `myco-recovery/2` and include digests for catalogued backup objects. Existing `myco-recovery/1` artifacts remain readable and retain their original coverage. Verification reports when a legacy artifact's database contains backups whose object bytes are outside that coverage; use a new destination to capture them. It does not silently upgrade or modify a completed legacy artifact. Backup catalog rows alone do not preserve the downloadable artifacts.
 
 `complete` means the data artifact passed verification. It does not establish that independent credentials exist, that an external vector index has been rebuilt, or that a replacement Deployment works. Keep the original wrapping key, session secret and GitHub application credentials in separate secure recovery storage. Wrangler credentials stay on the operator's machine and are not copied into the artifact or Deployment. The database itself contains private project data and encrypted settings; treat the directory as private.
 

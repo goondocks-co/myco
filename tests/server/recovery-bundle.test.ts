@@ -39,7 +39,80 @@ function fixture() {
   };
 }
 
+function addBackup(f: ReturnType<typeof fixture>, id = 'pinned') {
+  const key = `backups/lineage__1__bk_${id}.jsonl`;
+  const body = JSON.stringify({ format: 'myco-backup/1', deployment_id: 'lineage' });
+  f.source.sqlite.run(`INSERT INTO backups VALUES (?,?,1,?,'{}',13,'fixture',1)`, [id, key, Buffer.byteLength(body)]);
+  f.bodies.set(key, body);
+  return { key, body };
+}
+
 describe('verified recovery artifacts', () => {
+  it('resumes catalogued backup copies with persisted digests and verifies them offline', async () => {
+    const f = fixture();
+    try {
+      const first = addBackup(f, 'first');
+      const second = addBackup(f, 'second');
+      await expect(createRecoveryBundle(f.destination, { ...f.adapter, blob: async (blob, workDir) => {
+        if (blob.key === second.key) throw new Error('backup source unavailable');
+        return f.adapter.blob(blob, workDir);
+      } })).rejects.toThrow('backup source unavailable');
+      expect(f.manifest().status).toBe('content');
+      expect(f.manifest().backupObjects).toEqual([{ key: first.key, bytes: Buffer.byteLength(first.body),
+        sha256: createHash('sha256').update(first.body).digest('hex') }]);
+      f.bodies.delete(first.key);
+      const result = await createRecoveryBundle(f.destination, f.adapter);
+      expect(result.format).toBe('myco-recovery/2');
+      expect(result.status).toBe('complete');
+      expect(f.snapshots()).toBe(1);
+      expect(f.reads.filter((key) => key === first.key)).toHaveLength(1);
+      expect(fs.readFileSync(path.join(f.destination, 'blobs', first.key), 'utf8')).toBe(first.body);
+      f.bodies.clear();
+      expect(await createRecoveryBundle(f.destination, f.adapter)).toEqual(result);
+      const file = path.join(f.destination, 'blobs', second.key);
+      fs.writeFileSync(file, second.body.replace('lineage', 'changed'));
+      await expect(createRecoveryBundle(f.destination, f.adapter)).rejects.toThrow('completed recovery blob no longer matches');
+      expect(fs.readFileSync(file, 'utf8')).toContain('changed');
+    } finally { f.cleanup(); }
+  });
+
+  it('does not certify incomplete backup coverage or trust uncatalogued receipt paths', async () => {
+    const f = fixture();
+    try {
+      const backup = addBackup(f);
+      f.bodies.set(backup.key, 'truncated');
+      await expect(createRecoveryBundle(f.destination, f.adapter)).rejects.toThrow('unexpected size');
+      expect(f.manifest().status).toBe('content');
+      expect(f.manifest().backupObjects).toEqual([]);
+      expect(fs.existsSync(path.join(f.destination, 'blobs', backup.key))).toBe(false);
+      f.bodies.set(backup.key, backup.body);
+      await createRecoveryBundle(f.destination, f.adapter);
+      const saved = f.manifest();
+      for (const backupObjects of [[], [{ ...saved.backupObjects[0], key: '../outside' }],
+        [...saved.backupObjects, ...saved.backupObjects]]) {
+        fs.writeFileSync(path.join(f.destination, 'recovery.json'), JSON.stringify({ ...saved, backupObjects }));
+        await expect(createRecoveryBundle(f.destination, f.adapter)).rejects.toThrow('backup coverage');
+      }
+    } finally { f.cleanup(); }
+  });
+
+  it('verifies legacy registered content while explicitly reporting omitted catalogued backups', async () => {
+    const f = fixture();
+    try {
+      const backup = addBackup(f);
+      await createRecoveryBundle(f.destination, f.adapter);
+      const { backupObjects: _backupObjects, ...saved } = f.manifest();
+      const legacy = { ...saved, format: 'myco-recovery/1' };
+      fs.writeFileSync(path.join(f.destination, 'recovery.json'), JSON.stringify(legacy));
+      fs.rmSync(path.join(f.destination, 'blobs', backup.key));
+      f.bodies.clear();
+      const reports: string[] = [];
+      expect(await createRecoveryBundle(f.destination, f.adapter, (line) => reports.push(line))).toEqual(legacy);
+      expect(reports.join('\n')).toContain('1 catalogued backup object is outside this legacy artifact');
+      expect(f.manifest()).toEqual(legacy);
+    } finally { f.cleanup(); }
+  });
+
   it('refuses a redirected content directory without writing outside the artifact', async () => {
     if (process.platform === 'win32') return;
     const f = fixture();
