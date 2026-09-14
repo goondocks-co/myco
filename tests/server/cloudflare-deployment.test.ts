@@ -68,6 +68,11 @@ describe('memory vector provisioning', () => {
     await expect(ensureVectorIndex({ ...base(), runner: vectorRunner({ wrongDimension: true }) })).rejects.toThrow('incompatible dimensions');
     expect(calls.some((c) => c.args.some((arg) => arg.startsWith('create')))).toBe(false);
   });
+  it('refuses an existing index when recovery requires a new resource', async () => {
+    await expect(ensureVectorIndex({ ...base(), runner: vectorRunner(), requireNew: true })).rejects.toThrow('refusing to adopt');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args).toContain('list');
+  });
 });
 
 describe('account selection', () => {
