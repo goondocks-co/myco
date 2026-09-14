@@ -191,6 +191,13 @@ export async function ensureBucket(options: CloudflareOptions & { bucketName: st
 
 /** The memory index and its filters must exist before the Worker accepts embedding work. */
 export async function ensureVectorIndex(options: CloudflareOptions & { vectorIndexName?: string; requireNew?: boolean }): Promise<{ created: boolean }> {
+  const result = await ensureVectorIndexResource(options);
+  await ensureVectorIndexFilters(options);
+  return result;
+}
+
+/** Confirm index creation independently of asynchronous filter readiness. */
+export async function ensureVectorIndexResource(options: CloudflareOptions & { vectorIndexName?: string; requireNew?: boolean }): Promise<{ created: boolean }> {
   const { vectorIndexName } = cloudflareResources(options);
   const { runner, env } = resolved(options);
   const command = (...args: string[]) => runOrThrow(runner, 'npx', wrangler('vectorize', ...args), { cwd: options.configDir, env });
@@ -199,6 +206,14 @@ export async function ensureVectorIndex(options: CloudflareOptions & { vectorInd
   const created = !rows.some((r) => r?.name === vectorIndexName);
   if (!created && options.requireNew) throw new Error('refusing to adopt an existing recovery index');
   if (created) await command('create', vectorIndexName, '--dimensions', String(VECTOR_INDEX_DIMENSIONS), '--metric', 'cosine', '--json', '--update-config=false');
+  return { created };
+}
+
+/** Prepare filters only on an existing index with compatible dimensions and metric. */
+export async function ensureVectorIndexFilters(options: CloudflareOptions & { vectorIndexName?: string }): Promise<void> {
+  const { vectorIndexName } = cloudflareResources(options);
+  const { runner, env } = resolved(options);
+  const command = (...args: string[]) => runOrThrow(runner, 'npx', wrangler('vectorize', ...args), { cwd: options.configDir, env });
   const held = jsonDocument((await command('get', vectorIndexName, '--json')).stdout) as { config?: { dimensions?: number; metric?: string } };
   if (held?.config?.dimensions !== VECTOR_INDEX_DIMENSIONS || held.config.metric !== 'cosine') throw new Error('memory vector index has incompatible dimensions or metric');
   const metadata = async (): Promise<Array<{ propertyName: string; indexType: string }>> => {
@@ -222,11 +237,11 @@ export async function ensureVectorIndex(options: CloudflareOptions & { vectorInd
   const attempts = 30;
   const waitMs = 2000;
   for (let attempt = 0; attempt < attempts; attempt++) {
-    if (VECTOR_METADATA_FIELDS.every(compatible)) return { created };
+    if (VECTOR_METADATA_FIELDS.every(compatible)) return;
     await new Promise((resolve) => setTimeout(resolve, waitMs));
     indexed = await metadata();
   }
-  if (VECTOR_METADATA_FIELDS.every(compatible)) return { created };
+  if (VECTOR_METADATA_FIELDS.every(compatible)) return;
   throw new Error('memory vector filters are still becoming visible; retry the deployment');
 }
 
