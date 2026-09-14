@@ -119,6 +119,10 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Recover into fresh hosted resources under a fresh MYCO_HOME.
                                           Keeps the source and requires independent credentials.
                                           Verify sign-in and search readiness before cutover.
+  restore --target cloudflare ... --new-signin
+                                          Require only the original wrapping key in --secrets-from.
+                                          Create a fresh session secret and configure GitHub sign-in
+                                          afterward with server github-app. Keeps source sign-in intact.
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
   adopt                                   Write a bundle for a stack this machine did not provision.
   destroy [--data] [--yes]                Stop and remove the stack, at once — it does not wait for
@@ -487,6 +491,7 @@ export async function run(args: string[]): Promise<void> {
 
     if (command === 'restore') {
       const selected = target();
+      if (flags.has('new-signin') && selected !== 'cloudflare') fail('--new-signin requires --target cloudflare.');
       const from = flags.get('from');
       if (from === undefined || from === '') fail('restore needs --from <dir>.');
       if (selected === 'cloudflare') {
@@ -494,9 +499,10 @@ export async function run(args: string[]): Promise<void> {
         const secretsFile = flags.get('secrets-from');
         if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('hosted recovery needs --secrets-from <file> with independently held recovery credentials.');
         if (!flags.has('yes')) fail('hosted recovery provisions a new Deployment; re-run with --yes to confirm.');
-        const restored = await restoreCloudflareDeployment({ ...cloudflareOptions(), source: from!, secretsFile: secretsFile! });
+        const restored = await restoreCloudflareDeployment({ ...cloudflareOptions(), source: from!, secretsFile: secretsFile!, newSignIn: flags.has('new-signin') });
         console.log(`Replacement deployed at ${restored.record.url}, schema ${restored.schemaVersion}, Worker ${restored.record.versionId}.`);
         console.log('Source data was preserved. Sign-in, attached workers and embedding readiness still require verification before cutover.');
+        if (flags.has('new-signin')) console.log(`Using the same MYCO_HOME (${resolveMycoHome()}), configure destination sign-in with: myco server github-app --target cloudflare --url ${restored.record.url} --name "Myco Recovery"`);
         return;
       }
       if (selected === 'local') {

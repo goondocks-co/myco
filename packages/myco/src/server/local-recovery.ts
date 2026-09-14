@@ -6,7 +6,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { resetEmbeddingIndex } from '@myco-server-worker/core/embedding/reconcile.js';
 import { syncDirectoryForDurability } from '@myco/utils/atomic-write.js';
 import { copyRecoveryBundle } from './recovery-bundle.js';
-import { readRecoveryCredentials } from './recovery-credentials.js';
+import { prepareRecoveryCredentials } from './recovery-credentials.js';
 import { LocalVolume } from './local-volume.js';
 import {
   DEFAULT_LOCAL_RECORD, resolveLocalPaths,
@@ -22,7 +22,7 @@ export async function restoreLocalDeployment(options: {
   assertRecordServable(record);
   return new LocalVolume(paths).exclusive(async () => {
     if (fs.existsSync(paths.root)) throw new Error('recovery requires a fresh local Deployment directory; existing data was not changed');
-    const { secrets, key } = await readRecoveryCredentials(options.source, options.secretsFile);
+    const { secrets, key } = await prepareRecoveryCredentials(options.source, options.secretsFile);
     const stagingHome = fs.mkdtempSync(path.join(path.dirname(paths.root), '.local-restore-'));
     fs.chmodSync(stagingHome, 0o700);
     try {
