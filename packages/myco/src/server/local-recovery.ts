@@ -15,14 +15,14 @@ import {
 
 /** Publish a complete native volume only after its data and independently supplied wrapping material verify. */
 export async function restoreLocalDeployment(options: {
-  source: string; secretsFile: string; newSignIn?: boolean; port?: number; paths?: LocalDeploymentPaths; report?: (line: string) => void;
+  source: string; secretsFile: string; port?: number; paths?: LocalDeploymentPaths; report?: (line: string) => void;
 }): Promise<{ schemaVersion: number; rebuildEmbeddings: boolean }> {
   const paths = options.paths ?? resolveLocalPaths();
   const record = { ...DEFAULT_LOCAL_RECORD, port: options.port ?? DEFAULT_LOCAL_RECORD.port };
   assertRecordServable(record);
   return new LocalVolume(paths).exclusive(async () => {
     if (fs.existsSync(paths.root)) throw new Error('recovery requires a fresh local Deployment directory; existing data was not changed');
-    const { secrets, key } = await prepareRecoveryCredentials(options.source, options.secretsFile, options.newSignIn);
+    const { secrets, key } = await prepareRecoveryCredentials(options.source, options.secretsFile);
     const stagingHome = fs.mkdtempSync(path.join(path.dirname(paths.root), '.local-restore-'));
     fs.chmodSync(stagingHome, 0o700);
     try {

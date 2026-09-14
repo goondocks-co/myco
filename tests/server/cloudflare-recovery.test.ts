@@ -9,6 +9,9 @@ import { restoreCloudflareDeployment } from '@myco/server/cloudflare-recovery.js
 import { readDeploymentRecord } from '@myco/server/cloudflare.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import type { CommandRunner } from '@myco/server/runner.js';
+import { sqliteRelationalStore } from '../../packages/myco-server/src/platform/bun/sqlite.js';
+import { deploymentSecretStore } from '../../packages/myco-server/src/core/secrets.js';
+import { wrappingKeyFromText } from '../../packages/myco-server/src/platform/wrapping-key.js';
 
 async function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hosted-recovery-'));
@@ -16,6 +19,9 @@ async function fixture() {
   const mycoHome = path.join(root, 'home');
   const secretsFile = path.join(root, 'independent.env');
   const data = seededSqlite();
+  const wrapKey = Buffer.alloc(32, 7).toString('base64');
+  const key = wrappingKeyFromText(async () => wrapKey, 'fixture');
+  await deploymentSecretStore(sqliteRelationalStore(data), key).put('fixture', 'sealed-fixture-value', 'fixture', 1);
   data.exec("INSERT INTO schema_meta(key,value) VALUES('fixture_note','keep this finding')");
   await createRecoveryBundle(source, {
     source: { target: 'cloudflare', locator: 'original' },
@@ -60,7 +66,7 @@ async function fixture() {
     }
     throw new Error(`unexpected ${flat}`);
   } };
-  return { source, secretsFile, mycoHome, destination, deployments, secretCommands, creates: () => creates,
+  return { source, secretsFile, mycoHome, destination, deployments, secretCommands, key, wrapKey, creates: () => creates,
     restore: (newSignIn = false) => restoreCloudflareDeployment({ source, secretsFile, mycoHome, accountId: 'fixture-account', runner, newSignIn }),
     cleanup: () => { destination.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
@@ -92,7 +98,9 @@ it('keeps the explicit sign-in choice across retry and installs no recovered Git
     await expect(f.restore(true)).rejects.toThrow('Cloudflare recovery import did not finish');
     await expect(f.restore(false)).rejects.toThrow('same sign-in choice');
     expect(readDeploymentRecord(f.mycoHome)).toBeNull();
+    fs.writeFileSync(f.secretsFile, `SECRET_WRAP_KEY=${f.wrapKey}\n`, { mode: 0o600 });
     await f.restore(true);
+    expect(await deploymentSecretStore(sqliteRelationalStore(f.destination), f.key).get('fixture')).toBe('sealed-fixture-value');
     expect(f.secretCommands.some(command => command.startsWith('secret put SESSION_SECRET'))).toBe(true);
     expect(f.secretCommands.some(command => command.startsWith('secret bulk'))).toBe(false);
   } finally { f.cleanup(); }

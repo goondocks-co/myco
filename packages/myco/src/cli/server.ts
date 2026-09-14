@@ -119,7 +119,8 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Recover into fresh hosted resources under a fresh MYCO_HOME.
                                           Keeps the source and requires independent credentials.
                                           Verify sign-in and search readiness before cutover.
-  restore ... --new-signin                 Require only the original wrapping key in --secrets-from.
+  restore --target cloudflare ... --new-signin
+                                          Require only the original wrapping key in --secrets-from.
                                           Create a fresh session secret and configure GitHub sign-in
                                           afterward with server github-app. Keeps source sign-in intact.
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
@@ -500,21 +501,21 @@ export async function run(args: string[]): Promise<void> {
         const restored = await restoreCloudflareDeployment({ ...cloudflareOptions(), source: from!, secretsFile: secretsFile!, newSignIn: flags.has('new-signin') });
         console.log(`Replacement deployed at ${restored.record.url}, schema ${restored.schemaVersion}, Worker ${restored.record.versionId}.`);
         console.log('Source data was preserved. Sign-in, attached workers and embedding readiness still require verification before cutover.');
-        if (flags.has('new-signin')) console.log(`Using the same MYCO_HOME (${resolveMycoHome()}), configure destination sign-in with: myco server github-app --target cloudflare --url ${restored.record.url}`);
+        if (flags.has('new-signin')) console.log(`Using the same MYCO_HOME (${resolveMycoHome()}), configure destination sign-in with: myco server github-app --target cloudflare --url ${restored.record.url} --name "Myco Recovery"`);
         return;
       }
       if (selected === 'local') {
+        if (flags.has('new-signin')) fail('--new-signin currently requires --target cloudflare; native recovery requires independently supplied sign-in credentials.');
         if (from === 'true') fail('restore needs --from <dir>.');
         const secretsFile = flags.get('secrets-from');
         if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('native recovery needs --secrets-from <file> with independently held recovery credentials.');
         if (!flags.has('yes')) fail('native recovery publishes a new Deployment from the artifact; re-run with --yes to confirm.');
         const port = flags.get('port');
-        const restored = await restoreLocalDeployment({ source: from!, secretsFile: secretsFile!, newSignIn: flags.has('new-signin'),
+        const restored = await restoreLocalDeployment({ source: from!, secretsFile: secretsFile!,
           ...(port === undefined ? {} : { port: Number(port) }), report: (line) => console.log(line) });
         console.log(`Native recovery volume ready at schema ${restored.schemaVersion}. Source data was preserved.`);
         console.log(`Keep MYCO_HOME set to ${resolveMycoHome()} for this recovered Deployment.`);
         console.log(`Start it with this binary (${process.execPath}) and arguments: server run --target local`);
-        if (flags.has('new-signin')) console.log(`After startup, using the same MYCO_HOME (${resolveMycoHome()}), configure destination sign-in with: myco server github-app --target local --url http://127.0.0.1:${port ?? DEFAULT_LOCAL_RECORD.port}`);
         return;
       }
       if (!flags.has('yes')) {
