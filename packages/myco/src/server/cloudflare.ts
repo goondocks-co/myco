@@ -10,7 +10,7 @@
  * against the operator's own login. The Worker holds bindings, not an API
  * token that could re-provision the account it runs in.
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { resolveMycoHome } from '../paths/home.js';
@@ -19,6 +19,8 @@ import { CommandFailed, jsonDocument, runOrThrow, systemRunner, type CommandRunn
 import { cloudflareResources } from './cloudflare-resources.js';
 import { BUNDLED_WORKER_WRANGLER } from '../worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
+import { withCloudflareOperation } from './cloudflare-operation.js';
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 
 /** Wrangler refuses to guess between accounts, and guessing is what must not happen. */
 export class AccountNotSelected extends Error {
@@ -579,9 +581,11 @@ export function deploymentRecordPath(mycoHome = resolveMycoHome()): string {
 }
 
 export function writeDeploymentRecord(record: DeploymentRecord, mycoHome = resolveMycoHome()): void {
-  const file = deploymentRecordPath(mycoHome);
-  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  withCloudflareOperation(mycoHome, () => {
+    const file = deploymentRecordPath(mycoHome);
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    atomicWriteFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600, durable: true });
+  });
 }
 
 export function readDeploymentRecord(mycoHome = resolveMycoHome()): DeploymentRecord | null {

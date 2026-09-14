@@ -21,6 +21,7 @@ import { BUNDLED_SERVER_UI } from '../server-ui-assets.generated.js';
 import { BUNDLED_WORKER } from '../worker-bundle.generated.js';
 import { renderDeployConfig } from './deploy-config.js';
 import { deploymentRecordPath, type DeploymentRecord } from './cloudflare.js';
+import { withCloudflareOperation } from './cloudflare-operation.js';
 
 export const DEPLOY_CONFIG_NAME = 'wrangler.deploy.toml';
 
@@ -71,6 +72,10 @@ function writeFileUnder(root: string, relative: string, bytes: Uint8Array | stri
  * previous version is served exactly as confidently as a current one.
  */
 export function stageCloudflareDeploy(record: DeploymentRecord, mycoHome?: string): StagedDeploy {
+  return withCloudflareOperation(mycoHome, () => stage(record, mycoHome));
+}
+
+function stage(record: DeploymentRecord, mycoHome?: string): StagedDeploy {
   // Rendered before the directory is touched: a record that cannot address its
   // own database refuses here, with the previous stage still intact.
   const config = renderDeployConfig(record);

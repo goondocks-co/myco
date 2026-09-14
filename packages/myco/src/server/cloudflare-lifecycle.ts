@@ -32,6 +32,7 @@ import {
 } from './cloudflare.js';
 import { stageCloudflareDeploy } from './cloudflare-stage.js';
 import { cloudflareResources } from './cloudflare-resources.js';
+import { cloudflareOperation } from './cloudflare-operation.js';
 
 export { DEPLOY_CONFIG_NAME } from './cloudflare-stage.js';
 
@@ -92,7 +93,7 @@ export interface CreateResult {
  * record's ids are kept, and a re-run converges on the same Deployment —
  * which also makes this the adopt path for resources created by hand.
  */
-export async function createCloudflareDeployment(options: LifecycleOptions & { url?: string }): Promise<CreateResult> {
+export const createCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions & { url?: string }): Promise<CreateResult> => {
   await preflight(options);
   const existing = readDeploymentRecord(options.mycoHome);
   const resources = cloudflareResources(existing ?? {});
@@ -151,7 +152,7 @@ export async function createCloudflareDeployment(options: LifecycleOptions & { u
   record = { ...record, versionId: deployed.versionId, deployedAt: new Date().toISOString(), ...(record.url === undefined && deployed.url !== null ? { url: deployed.url } : {}) };
   writeDeploymentRecord(record, options.mycoHome);
   return { record, createdResources, versionId: deployed.versionId };
-}
+});
 
 /**
  * Migrate then deploy, in the order the fail-closed schema window expects, and
@@ -162,7 +163,7 @@ export async function createCloudflareDeployment(options: LifecycleOptions & { u
  * took it, and a run executes on a worker attached from elsewhere that this
  * command never touches.
  */
-export async function updateCloudflareDeployment(options: LifecycleOptions): Promise<{ versionId: string | null }> {
+export const updateCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions): Promise<{ versionId: string | null }> => {
   await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; `myco server create --target cloudflare` provisions one');
@@ -174,7 +175,7 @@ export async function updateCloudflareDeployment(options: LifecycleOptions): Pro
 
   writeDeploymentRecord({ ...record, versionId: deployed.versionId, deployedAt: new Date().toISOString() }, options.mycoHome);
   return { versionId: deployed.versionId };
-}
+});
 
 /**
  * Return the Worker to an earlier version.
@@ -185,7 +186,7 @@ export async function updateCloudflareDeployment(options: LifecycleOptions): Pro
  * already recorded the bad version, and that caller passes the pre-deploy
  * version it captured.
  */
-export async function rollbackCloudflareDeployment(options: LifecycleOptions & { versionId?: string; message?: string }): Promise<{ versionId: string }> {
+export const rollbackCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions & { versionId?: string; message?: string }): Promise<{ versionId: string }> => {
   await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; nothing to roll back');
@@ -194,7 +195,7 @@ export async function rollbackCloudflareDeployment(options: LifecycleOptions & {
   await rollbackWorker({ ...bareCommand(options), workerName: record.workerName, versionId: target, message: options.message ?? 'myco server rollback' });
   writeDeploymentRecord({ ...record, versionId: target, deployedAt: new Date().toISOString() }, options.mycoHome);
   return { versionId: target };
-}
+});
 
 export interface CloudflareDeploymentStatus {
   record: DeploymentRecord;
@@ -215,11 +216,11 @@ export async function cloudflareDeploymentStatus(options: LifecycleOptions): Pro
  * stand: the Worker is re-creatable from the binary, the data is not, and
  * data removal stays a by-hand act this command refuses to own.
  */
-export async function destroyCloudflareDeployment(options: LifecycleOptions): Promise<{ kept: string[] }> {
+export const destroyCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions): Promise<{ kept: string[] }> => {
   await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; nothing to destroy');
   const resources = cloudflareResources(record);
   await deleteWorker({ ...bareCommand(options), workerName: record.workerName });
   return { kept: [`d1 ${record.databaseName}`, `r2 ${record.bucketName}`, `vectorize ${resources.vectorIndexName}`, 'secrets store', 'the deployment record'] };
-}
+});
