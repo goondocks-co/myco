@@ -323,10 +323,10 @@ const operatorCredentials = z.discriminatedUnion('type', [
   z.object({ type: z.literal('api_key'), key: headerValue, email: headerValue }),
 ]);
 
-/** Stream R2 bytes with one in-memory operator credential; credentials never enter logs or the artifact. */
-export function cloudflareBlobReader(
+/** Stream R2 transfers through one origin and one in-memory operator credential. */
+export function cloudflareObjectStore(
   options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch },
-): (key: string) => Promise<ReadableStream> {
+): { get(key: string): Promise<ReadableStream | null>; put(key: string, body: () => Blob): Promise<void> } {
   const { runner, env } = resolved(options);
   const fetchObject = options.fetch ?? globalThis.fetch;
   let credentials: Promise<Headers> | undefined;
@@ -343,7 +343,7 @@ export function cloudflareBlobReader(
       ? new Headers({ 'X-Auth-Key': parsed.data.key, 'X-Auth-Email': parsed.data.email })
       : new Headers({ Authorization: `Bearer ${parsed.data.token}` });
   };
-  return async (key) => {
+  const request = async (key: string, method: 'GET' | 'PUT', body?: () => Blob): Promise<Response> => {
     const segment = (value: string): string => {
       if (value === '' || value === '.' || value === '..') throw new Error('Cloudflare object path has an invalid segment');
       return encodeURIComponent(value);
@@ -353,8 +353,14 @@ export function cloudflareBlobReader(
     for (let attempt = 0; attempt < 2; attempt += 1) {
       credentials ??= authenticate();
       const used = credentials;
+      const headers = new Headers(await used);
+      const content = body?.();
+      if (content !== undefined) {
+        headers.set('content-type', 'application/octet-stream');
+        headers.set('content-length', String(content.size));
+      }
       const response = await fetchObject(url, {
-        method: 'GET', headers: new Headers(await used), redirect: 'error',
+        method, headers, ...(content === undefined ? {} : { body: content }), redirect: 'error',
         signal: AbortSignal.timeout(OPERATOR_OBJECT_TIMEOUT_MS),
       });
       if ((response.status === 401 || response.status === 403) && attempt === 0) {
@@ -362,13 +368,41 @@ export function cloudflareBlobReader(
         if (credentials === used) credentials = undefined;
         continue;
       }
-      if (response.status !== 200 || response.body === null) {
-        await response.body?.cancel();
-        throw new Error(`Cloudflare object read failed for ${key} (HTTP ${response.status}); retry the backup after resolving the source failure`);
-      }
-      return response.body;
+      return response;
     }
     throw new Error('Cloudflare refused the refreshed operator credential');
+  };
+  return {
+    async get(key) {
+      const response = await request(key, 'GET');
+      if (response.status === 404) { await response.body?.cancel(); return null; }
+      if (response.status !== 200 || response.body === null) {
+        await response.body?.cancel();
+        throw new Error(`Cloudflare object read failed for ${key} (HTTP ${response.status})`);
+      }
+      return response.body;
+    },
+    async put(key, body) {
+      const response = await request(key, 'PUT', body);
+      if (response.status !== 200) {
+        await response.body?.cancel();
+        throw new Error(`Cloudflare object write failed for ${key} (HTTP ${response.status})`);
+      }
+      const result = z.object({ success: z.literal(true) }).safeParse(await response.json());
+      if (!result.success) throw new Error(`Cloudflare did not confirm object write for ${key}`);
+    },
+  };
+}
+
+/** Required backup objects must exist; a missing source is a failed backup. */
+export function cloudflareBlobReader(
+  options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch },
+): (key: string) => Promise<ReadableStream> {
+  const store = cloudflareObjectStore(options);
+  return async (key) => {
+    const body = await store.get(key);
+    if (body === null) throw new Error(`Cloudflare object read failed for ${key} (HTTP 404); retry the backup after resolving the source failure`);
+    return body;
   };
 }
 
