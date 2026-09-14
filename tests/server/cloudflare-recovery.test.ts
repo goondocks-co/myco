@@ -13,7 +13,7 @@ import { sqliteRelationalStore } from '../../packages/myco-server/src/platform/b
 import { deploymentSecretStore } from '../../packages/myco-server/src/core/secrets.js';
 import { wrappingKeyFromText } from '../../packages/myco-server/src/platform/wrapping-key.js';
 
-async function fixture() {
+async function fixture(failVectorRead = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hosted-recovery-'));
   const source = path.join(root, 'artifact');
   const mycoHome = path.join(root, 'home');
@@ -44,7 +44,10 @@ async function fixture() {
     if (flat === 'd1 list --json' || flat === 'vectorize list --json') return answer('[]');
     if (flat.startsWith('d1 create')) { creates++; return answer('11111111-2222-4333-8444-555555555555'); }
     if (flat.startsWith('r2 bucket create') || flat.startsWith('vectorize create ')) { creates++; return answer(); }
-    if (flat.startsWith('vectorize get ')) return answer(JSON.stringify({ config: { dimensions: VECTOR_INDEX_DIMENSIONS, metric: 'cosine' } }));
+    if (flat.startsWith('vectorize get ')) {
+      if (failVectorRead) { failVectorRead = false; return answer('filter preparation unavailable', 1); }
+      return answer(JSON.stringify({ config: { dimensions: VECTOR_INDEX_DIMENSIONS, metric: 'cosine' } }));
+    }
     if (flat.startsWith('vectorize list-metadata-index ')) return answer(JSON.stringify(VECTOR_METADATA_FIELDS.map(propertyName => ({ propertyName, indexType: propertyName === 'created_at' ? 'Number' : 'String' }))));
     if (flat.startsWith('secrets-store store list')) return answer('f'.repeat(32));
     if (flat.startsWith('secrets-store secret create') || flat.startsWith('secret ')) { secretCommands.push(flat); return answer(); }
@@ -78,6 +81,9 @@ it('resumes data transfer on the same fresh resources and publishes only after b
     const original = fs.readFileSync(path.join(f.source, 'myco.sqlite'));
     await expect(f.restore()).rejects.toThrow('Cloudflare recovery import did not finish');
     expect(readDeploymentRecord(f.mycoHome)).toBeNull();
+    const journalFile = path.join(f.mycoHome, 'server', 'cloudflare', 'recovery.json');
+    const { vectorProvisioned: _vectorProvisioned, ...legacyJournal } = JSON.parse(fs.readFileSync(journalFile, 'utf8'));
+    fs.writeFileSync(journalFile, JSON.stringify(legacyJournal));
     const result = await f.restore();
     expect(result.record.fleet).toBe(2);
     expect(result.record.workerName).toMatch(/^myco-recovery-/);
@@ -103,6 +109,23 @@ it('keeps the explicit sign-in choice across retry and installs no recovered Git
     expect(await deploymentSecretStore(sqliteRelationalStore(f.destination), f.key).get('fixture')).toBe('sealed-fixture-value');
     expect(f.secretCommands.some(command => command.startsWith('secret put SESSION_SECRET'))).toBe(true);
     expect(f.secretCommands.some(command => command.startsWith('secret bulk'))).toBe(false);
+  } finally { f.cleanup(); }
+});
+
+it('resumes filter preparation on a confirmed index without adopting or recreating a resource', async () => {
+  const f = await fixture(true);
+  try {
+    await expect(f.restore()).rejects.toThrow('filter preparation unavailable');
+    const file = path.join(f.mycoHome, 'server', 'cloudflare', 'recovery.json');
+    const journal = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(journal.vectorProvisioned).toBe(true);
+    expect(journal.vectorCreated).toBe(false);
+    expect(journal.pending).toBeUndefined();
+    expect(readDeploymentRecord(f.mycoHome)).toBeNull();
+    await expect(f.restore()).rejects.toThrow('Cloudflare recovery import did not finish');
+    await f.restore();
+    expect(f.creates()).toBe(3);
+    expect(readDeploymentRecord(f.mycoHome)?.workerName).toBe(journal.name);
   } finally { f.cleanup(); }
 });
 

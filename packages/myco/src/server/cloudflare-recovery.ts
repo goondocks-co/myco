@@ -14,7 +14,7 @@ import { restoreCloudflareDatabase } from './cloudflare-recovery-database.js';
 import { stageCloudflareDeploy, stageCloudflareRecoveryBootstrap } from './cloudflare-stage.js';
 import {
   assertWranglerReady, ensureCommandDir, readDeploymentRecord, writeDeploymentRecord,
-  ensureDatabase, ensureBucket, ensureVectorIndex, ensureSecretsStore,
+  ensureDatabase, ensureBucket, ensureVectorIndexResource, ensureVectorIndexFilters, ensureSecretsStore,
   cloudflareObjectStore, assertCloudflareWorkerAbsent, putStoreSecret, putWorkerSecretValue, putWorkerSecrets, deployWorker,
   type DeploymentRecord,
 } from './cloudflare.js';
@@ -31,6 +31,7 @@ const journalSchema = z.object({
   versionId: z.string().optional(), deployedAt: z.string().datetime().optional(),
   schemaVersion: z.number().int().positive().optional(), preparedFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   newSignIn: z.boolean().default(false),
+  vectorProvisioned: z.boolean().default(false),
 });
 type Journal = z.infer<typeof journalSchema>;
 
@@ -66,7 +67,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     journal = next;
   };
   if (journal === undefined) write({ format: 'myco-hosted-recovery/1', accountId: options.accountId, fingerprint,
-    name: `myco-recovery-${randomBytes(12).toString('hex')}`, bucketCreated: false, vectorCreated: false, wrapKeyInstalled: false, newSignIn: options.newSignIn ?? false });
+    name: `myco-recovery-${randomBytes(12).toString('hex')}`, bucketCreated: false, vectorCreated: false, vectorProvisioned: false, wrapKeyInstalled: false, newSignIn: options.newSignIn ?? false });
   const held = () => journal!;
   const confirmed = (fields: Partial<Journal>) => {
     const { pending: _pending, ...prior } = held();
@@ -136,7 +137,11 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     ...(options.report === undefined ? {} : { report: options.report }) });
   if (held().databaseId === undefined) await provision(`D1 ${name}`, () => ensureDatabase({ ...bare, databaseName: name }), (result) => ({ databaseId: result.databaseId }));
   if (!held().bucketCreated) await provision(`R2 ${name}`, () => ensureBucket({ ...bare, bucketName: name }), () => ({ bucketCreated: true }));
-  if (!held().vectorCreated) await provision(`Vectorize ${name}`, () => ensureVectorIndex({ ...bare, vectorIndexName: name, requireNew: true }), () => ({ vectorCreated: true }));
+  if (!held().vectorCreated) {
+    if (!held().vectorProvisioned) await provision(`Vectorize ${name}`, () => ensureVectorIndexResource({ ...bare, vectorIndexName: name, requireNew: true }), () => ({ vectorProvisioned: true }));
+    await ensureVectorIndexFilters({ ...bare, vectorIndexName: name });
+    confirmed({ vectorCreated: true });
+  }
   if (held().storeId === undefined) confirmed({ storeId: (await ensureSecretsStore(bare)).storeId });
   if (!held().wrapKeyInstalled) await resource(`wrapping secret ${name}`, () => putStoreSecret({ ...bare,
     storeId: held().storeId!, name, value: secrets.SECRET_WRAP_KEY }), () => ({ wrapKeyInstalled: true }));
