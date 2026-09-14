@@ -69,7 +69,7 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     const now = Date.now();
     const work: Promise<unknown>[] = [];
     try {
-      const report = await runTick(serverEnvFromBindings(this.env, { waitUntil: (promise) => { work.push(promise); } }), now);
+      const report = await runTick(serverEnvFromBindings(this.env, { lifetime: 'clock', waitUntil: (promise) => { work.push(promise); } }), now);
       await armNextWake(this.ctx.storage, this.env, now, report.nextWakeMs);
       return report;
     } finally { await Promise.all(work); }

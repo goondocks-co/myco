@@ -17,7 +17,7 @@ import { markRecordedLaunch } from '../../core/runs.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
 import { cloudflareVectorStore, type VectorIndex } from './vectors.js';
 import { cloudflareEmbeddingProvider, type EmbeddingBinding } from './embedding.js';
-import { cloudflareEmbeddingLaunch } from './embedding-runtime.js';
+import { cloudflareEmbeddingLaunch, type HostedRunLifetime } from './embedding-runtime.js';
 import { EMBEDDING_TASK } from '../../core/embedding/jobs.js';
 
 /** The bindings `wrangler.toml` declares, exactly as the Worker receives them. */
@@ -107,6 +107,7 @@ export function cloudflarePlatform(bindings: CloudflareBindings, embeddingRuntim
  */
 /** What the runtime hands a request for work that outlives its answer. */
 export interface DeferredWork {
+  lifetime?: HostedRunLifetime;
   waitUntil(promise: Promise<unknown>): void;
 }
 
@@ -133,7 +134,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     ...(bindings.VECTORIZE === undefined ? {} : { vectors: cloudflareVectorStore(bindings.VECTORIZE) }),
     embeddingProvider: async () => bindings.AI === undefined ? null : cloudflareEmbeddingProvider(bindings.AI),
     ...(bindings.HARNESS_LAUNCH_MODE === 'record' ? { harnessLaunch: recordingLaunch(bindings) }
-      : embeddingRuntime ? { harnessLaunch: cloudflareEmbeddingLaunch(bindings.MYCO_ORIGIN!, (work) => deferred!.waitUntil(work)), harnessTasks: [EMBEDDING_TASK] } : {}),
+      : embeddingRuntime ? { harnessLaunch: cloudflareEmbeddingLaunch(bindings.MYCO_ORIGIN!, (work) => deferred!.waitUntil(work), { lifetime: deferred!.lifetime }), harnessTasks: [EMBEDDING_TASK] } : {}),
     ...(bindings.MYCO_ORIGIN === undefined || bindings.MYCO_ORIGIN === '' ? {} : { origin: bindings.MYCO_ORIGIN }),
     ...(fleetOf(bindings.MYCO_FLEET) === null ? {} : { fleet: fleetOf(bindings.MYCO_FLEET)! }),
     // The runtime hands every request a deferral, and the work rides it past the
