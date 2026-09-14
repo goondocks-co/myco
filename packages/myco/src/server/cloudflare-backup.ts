@@ -12,17 +12,7 @@ import { LOCAL_SECRET_NAMES } from './local.js';
 import { createRecoveryBundle, type RecoveryManifest } from './recovery-bundle.js';
 import { importTableDump } from './sql-dump.js';
 
-const schemaObject = z.object({
-  type: z.enum(['table', 'index', 'view', 'trigger']), name: z.string().min(1), sql: z.string().min(1),
-  storage: z.enum(['table', 'virtual', 'view']).nullable(),
-});
-const schemaObjects = z.array(schemaObject);
-const SCHEMA_QUERY = `SELECT m.type, m.name, m.sql, t.type AS storage FROM sqlite_master m
-  LEFT JOIN pragma_table_list t ON t.schema = 'main' AND t.name = m.name
-  WHERE m.sql IS NOT NULL AND m.name NOT GLOB 'sqlite_*' AND m.name NOT GLOB '_cf_*'
-    AND m.name NOT GLOB 'd1_*' AND COALESCE(t.type, '') != 'shadow'
-  ORDER BY m.type, m.name`;
-const quoteIdentifier = (name: string): string => '"' + name.replaceAll('"', '""') + '"';
+import { schemaObjects, SCHEMA_QUERY, quoteIdentifier, recoverableVirtualTables } from './recovery-schema.js';
 
 function configuration(mycoHome?: string) {
   const held = readDeploymentRecord(mycoHome);
@@ -58,13 +48,8 @@ export async function backupCloudflareDeployment(
       const before = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY }));
       const tables = before.filter((row) => row.storage === 'table').map((row) => row.name);
       if (before.some((row) => row.storage === 'table' && /\bAUTOINCREMENT\b/i.test(row.sql))) tables.push('sqlite_sequence');
-      const virtual = before.filter((row) => row.storage === 'virtual');
       if (tables.length === 0) throw new Error('D1 holds no ordinary tables to recover');
-      for (const row of virtual) {
-        if (!/\bUSING\s+fts5\s*\(/i.test(row.sql) || !/\bcontent\s*=\s*'[^']+'/i.test(row.sql)) {
-          throw new Error(`recovery cannot reconstruct virtual table ${row.name}`);
-        }
-      }
+      const virtual = recoverableVirtualTables(before);
       options.report?.('Exporting D1; Cloudflare temporarily pauses queries during the snapshot');
       const { sqlPath } = await exportDatabase({ ...provider, destination: workDir, tables });
       const after = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY }));

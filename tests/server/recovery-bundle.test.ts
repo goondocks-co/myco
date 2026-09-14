@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { copyRecoveryBundle, createRecoveryBundle, type RecoveryAdapter } from '@myco/server/recovery-bundle.js';
+import { copyRecoveryBundle, copyRecoveryObjects, createRecoveryBundle, type RecoveryAdapter, type RecoveryObjectDestination } from '@myco/server/recovery-bundle.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
 function fixture() {
@@ -48,6 +48,51 @@ function addBackup(f: ReturnType<typeof fixture>, id = 'pinned') {
 }
 
 describe('verified recovery artifacts', () => {
+  it('resumes verified object transfers after an interrupted upload, including pinned backups', async () => {
+    const f = fixture();
+    try {
+      addBackup(f);
+      await createRecoveryBundle(f.destination, f.adapter);
+      const original = fs.readFileSync(path.join(f.destination, 'myco.sqlite'));
+      const objects = new Map<string, string>();
+      let fail = true;
+      const target: RecoveryObjectDestination = {
+        get: async (key) => objects.has(key) ? new Response(objects.get(key)!).body : null,
+        put: async (key, body) => {
+          if (fail && objects.size === 1) throw new Error('upload interrupted');
+          objects.set(key, await body().text());
+        },
+      };
+      await expect(copyRecoveryObjects(f.destination, target)).rejects.toThrow('upload interrupted');
+      expect(objects.size).toBe(1);
+      fail = false;
+      expect(await copyRecoveryObjects(f.destination, target)).toEqual({ copied: 2, reused: 1 });
+      expect(await copyRecoveryObjects(f.destination, target)).toEqual({ copied: 0, reused: 3 });
+      expect(objects).toEqual(f.bodies);
+      expect(fs.readFileSync(path.join(f.destination, 'myco.sqlite'))).toEqual(original);
+    } finally { f.cleanup(); }
+  });
+
+  it('refuses different destination bytes and detects an acknowledged but corrupt upload', async () => {
+    const f = fixture();
+    try {
+      await createRecoveryBundle(f.destination, f.adapter);
+      let writes = 0;
+      const occupied: RecoveryObjectDestination = {
+        get: async () => new Response('unrelated bytes').body,
+        put: async () => { writes++; },
+      };
+      await expect(copyRecoveryObjects(f.destination, occupied)).rejects.toThrow('different bytes');
+      expect(writes).toBe(0);
+      const corrupt: RecoveryObjectDestination = {
+        get: async () => writes === 0 ? null : new Response('wrong').body,
+        put: async () => { writes++; },
+      };
+      await expect(copyRecoveryObjects(f.destination, corrupt)).rejects.toThrow('persisted verification');
+      expect(writes).toBe(1);
+    } finally { f.cleanup(); }
+  });
+
   it('copies exact snapshot evidence and refuses changed source metadata on a repeat copy', async () => {
     const f = fixture();
     try {

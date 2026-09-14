@@ -50,6 +50,7 @@ import { carriedNative, runLocalDeployment } from '../server/local-run.js';
 import { backupLocalDeployment } from '../server/local-backup.js';
 import { backupCloudflareDeployment } from '../server/cloudflare-backup.js';
 import { restoreLocalDeployment } from '../server/local-recovery.js';
+import { restoreCloudflareDeployment } from '../server/cloudflare-recovery.js';
 import {
   ServicePathUnsupported,
   ServicePlatformUnsupported,
@@ -114,6 +115,10 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Recover into a fresh native Deployment directory. Verify
                                           data and independent credentials before publishing it.
                                           Keeps the source; refuses an existing destination.
+  restore --target cloudflare --from <dir> --secrets-from <file> --account-id <id> --yes
+                                          Recover into fresh hosted resources under a fresh MYCO_HOME.
+                                          Keeps the source and requires independent credentials.
+                                          Verify sign-in and search readiness before cutover.
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
   adopt                                   Write a bundle for a stack this machine did not provision.
   destroy [--data] [--yes]                Stop and remove the stack, at once — it does not wait for
@@ -482,9 +487,18 @@ export async function run(args: string[]): Promise<void> {
 
     if (command === 'restore') {
       const selected = target();
-      if (selected === 'cloudflare') fail('operator replacement restore is not yet supported for this target; no data was changed.');
       const from = flags.get('from');
       if (from === undefined || from === '') fail('restore needs --from <dir>.');
+      if (selected === 'cloudflare') {
+        if (from === 'true') fail('restore needs --from <dir>.');
+        const secretsFile = flags.get('secrets-from');
+        if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('hosted recovery needs --secrets-from <file> with independently held recovery credentials.');
+        if (!flags.has('yes')) fail('hosted recovery provisions a new Deployment; re-run with --yes to confirm.');
+        const restored = await restoreCloudflareDeployment({ ...cloudflareOptions(), source: from!, secretsFile: secretsFile! });
+        console.log(`Replacement deployed at ${restored.record.url}, schema ${restored.schemaVersion}, Worker ${restored.record.versionId}.`);
+        console.log('Source data was preserved. Sign-in, attached workers and embedding readiness still require verification before cutover.');
+        return;
+      }
       if (selected === 'local') {
         if (from === 'true') fail('restore needs --from <dir>.');
         const secretsFile = flags.get('secrets-from');

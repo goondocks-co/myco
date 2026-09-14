@@ -10,7 +10,7 @@
  * against the operator's own login. The Worker holds bindings, not an API
  * token that could re-provision the account it runs in.
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { resolveMycoHome } from '../paths/home.js';
@@ -19,6 +19,8 @@ import { CommandFailed, jsonDocument, runOrThrow, systemRunner, type CommandRunn
 import { cloudflareResources } from './cloudflare-resources.js';
 import { BUNDLED_WORKER_WRANGLER } from '../worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
+import { withCloudflareOperation } from './cloudflare-operation.js';
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 
 /** Wrangler refuses to guess between accounts, and guessing is what must not happen. */
 export class AccountNotSelected extends Error {
@@ -58,6 +60,23 @@ function resolved(options: CloudflareOptions): { runner: CommandRunner; env: Nod
     // this process must not inherit an account selection it never asked for.
     env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: options.accountId },
   };
+}
+
+/** Commands carrying private data suppress provider output and debug files on every failure path. */
+async function privateCommand(options: CloudflareOptions, args: string[], input: string | undefined, operation: string, timeoutMs = 120_000): Promise<void> {
+  const { runner, env } = resolved(options);
+  let code: number;
+  try {
+    const result = await runner.run('npx', wrangler(...args), {
+      cwd: options.configDir,
+      env: { ...env, WRANGLER_WRITE_LOGS: 'false', WRANGLER_LOG: 'log', WRANGLER_LOG_SANITIZE: 'true' },
+      ...(input === undefined ? {} : { input }), timeoutMs,
+    });
+    code = result.code;
+  } catch {
+    throw new Error(`${operation} did not finish; provider output was withheld because it may contain private data`);
+  }
+  if (code !== 0) throw new Error(`${operation} failed (exit ${code}); provider output was withheld because it may contain private data`);
 }
 
 /**
@@ -171,13 +190,14 @@ export async function ensureBucket(options: CloudflareOptions & { bucketName: st
 }
 
 /** The memory index and its filters must exist before the Worker accepts embedding work. */
-export async function ensureVectorIndex(options: CloudflareOptions & { vectorIndexName?: string }): Promise<{ created: boolean }> {
+export async function ensureVectorIndex(options: CloudflareOptions & { vectorIndexName?: string; requireNew?: boolean }): Promise<{ created: boolean }> {
   const { vectorIndexName } = cloudflareResources(options);
   const { runner, env } = resolved(options);
   const command = (...args: string[]) => runOrThrow(runner, 'npx', wrangler('vectorize', ...args), { cwd: options.configDir, env });
   const rows: unknown = jsonDocument((await command('list', '--json')).stdout);
   if (!Array.isArray(rows)) throw new Error('Vectorize index list is unreadable');
   const created = !rows.some((r) => r?.name === vectorIndexName);
+  if (!created && options.requireNew) throw new Error('refusing to adopt an existing recovery index');
   if (created) await command('create', vectorIndexName, '--dimensions', String(VECTOR_INDEX_DIMENSIONS), '--metric', 'cosine', '--json', '--update-config=false');
   const held = jsonDocument((await command('get', vectorIndexName, '--json')).stdout) as { config?: { dimensions?: number; metric?: string } };
   if (held?.config?.dimensions !== VECTOR_INDEX_DIMENSIONS || held.config.metric !== 'cosine') throw new Error('memory vector index has incompatible dimensions or metric');
@@ -228,18 +248,22 @@ export async function ensureSecretsStore(options: CloudflareOptions): Promise<{ 
 
 /** Install the wrapping key in the store, value on stdin, never argv. */
 export async function putStoreSecret(options: CloudflareOptions & { storeId: string; name: string; value: string }): Promise<void> {
-  const { runner, env } = resolved(options);
-  await runOrThrow(runner, 'npx',
-    wrangler('secrets-store', 'secret', 'create', options.storeId, '--name', options.name, '--scopes', 'workers', '--remote'),
-    { cwd: options.configDir, env, input: options.value });
+  await privateCommand(options,
+    ['secrets-store', 'secret', 'create', options.storeId, '--name', options.name, '--scopes', 'workers', '--remote'],
+    options.value, 'Cloudflare wrapping-key installation');
 }
 
 /** Install one Worker secret, value on stdin, never argv. */
 export async function putWorkerSecretValue(options: CloudflareOptions & { workerName: string; name: string; value: string }): Promise<void> {
-  const { runner, env } = resolved(options);
-  await runOrThrow(runner, 'npx',
-    wrangler('secret', 'put', options.name, '--name', options.workerName),
-    { cwd: options.configDir, env, input: options.value });
+  await privateCommand(options, ['secret', 'put', options.name, '--name', options.workerName],
+    options.value, 'Cloudflare Worker secret installation');
+}
+
+/** Import a private SQL file without copying its contents into command diagnostics. */
+export async function importCloudflareDatabase(options: CloudflareOptions & { databaseName: string; file: string }): Promise<void> {
+  await privateCommand(options,
+    ['d1', 'execute', options.databaseName, '--remote', '--yes', '--file', options.file, ...configArgs(options)],
+    undefined, 'Cloudflare recovery import', 30 * 60_000);
 }
 
 /** Remove the Worker. The database, bucket, and store are left standing; data removal is its own explicit act. */
@@ -276,6 +300,16 @@ export async function cloudflareStatus(options: CloudflareOptions & { workerName
     versionId: versions.at(-1)?.[1] ?? null,
     raw: result.stdout,
   };
+}
+
+/** Only the provider's explicit missing-Worker response permits fresh recovery provisioning. */
+export async function assertCloudflareWorkerAbsent(options: CloudflareOptions & { workerName: string }): Promise<void> {
+  const { runner, env } = resolved(options);
+  const args = wrangler('deployments', 'list', '--name', options.workerName);
+  const result = await runner.run('npx', args, { cwd: options.configDir, env });
+  if (result.code === 0) throw new Error('refusing to adopt an existing recovery Worker');
+  if (/\b10007\b/.test(result.stdout + result.stderr)) return;
+  throw new CommandFailed('npx', args, result);
 }
 
 /** Export the selected ordinary tables through the operator login. */
@@ -315,6 +349,7 @@ export async function queryCloudflareDatabase(
 
 const OPERATOR_OBJECT_TIMEOUT_MS = 120_000;
 const OPERATOR_AUTH_TIMEOUT_MS = 30_000;
+const OPERATOR_UPLOAD_MAX_BYTES = 300_000_000;
 export type CloudflareFetch = (url: string, init: RequestInit) => Promise<Response>;
 const headerValue = z.string().min(1).regex(/^[\x21-\x7e]+$/);
 const operatorCredentials = z.discriminatedUnion('type', [
@@ -323,10 +358,10 @@ const operatorCredentials = z.discriminatedUnion('type', [
   z.object({ type: z.literal('api_key'), key: headerValue, email: headerValue }),
 ]);
 
-/** Stream R2 bytes with one in-memory operator credential; credentials never enter logs or the artifact. */
-export function cloudflareBlobReader(
+/** Stream R2 transfers through one origin and one in-memory operator credential. */
+export function cloudflareObjectStore(
   options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch },
-): (key: string) => Promise<ReadableStream> {
+): { get(key: string): Promise<ReadableStream | null>; put(key: string, body: () => Blob): Promise<void> } {
   const { runner, env } = resolved(options);
   const fetchObject = options.fetch ?? globalThis.fetch;
   let credentials: Promise<Headers> | undefined;
@@ -343,7 +378,7 @@ export function cloudflareBlobReader(
       ? new Headers({ 'X-Auth-Key': parsed.data.key, 'X-Auth-Email': parsed.data.email })
       : new Headers({ Authorization: `Bearer ${parsed.data.token}` });
   };
-  return async (key) => {
+  const request = async (key: string, method: 'GET' | 'PUT', body?: () => Blob): Promise<Response> => {
     const segment = (value: string): string => {
       if (value === '' || value === '.' || value === '..') throw new Error('Cloudflare object path has an invalid segment');
       return encodeURIComponent(value);
@@ -353,8 +388,15 @@ export function cloudflareBlobReader(
     for (let attempt = 0; attempt < 2; attempt += 1) {
       credentials ??= authenticate();
       const used = credentials;
+      const headers = new Headers(await used);
+      const content = body?.();
+      if (content !== undefined) {
+        if (content.size > OPERATOR_UPLOAD_MAX_BYTES) throw new Error('Cloudflare operator uploads are limited to 300 MB per object');
+        headers.set('content-type', 'application/octet-stream');
+        headers.set('content-length', String(content.size));
+      }
       const response = await fetchObject(url, {
-        method: 'GET', headers: new Headers(await used), redirect: 'error',
+        method, headers, ...(content === undefined ? {} : { body: content }), redirect: 'error',
         signal: AbortSignal.timeout(OPERATOR_OBJECT_TIMEOUT_MS),
       });
       if ((response.status === 401 || response.status === 403) && attempt === 0) {
@@ -362,13 +404,41 @@ export function cloudflareBlobReader(
         if (credentials === used) credentials = undefined;
         continue;
       }
-      if (response.status !== 200 || response.body === null) {
-        await response.body?.cancel();
-        throw new Error(`Cloudflare object read failed for ${key} (HTTP ${response.status}); retry the backup after resolving the source failure`);
-      }
-      return response.body;
+      return response;
     }
     throw new Error('Cloudflare refused the refreshed operator credential');
+  };
+  return {
+    async get(key) {
+      const response = await request(key, 'GET');
+      if (response.status === 404) { await response.body?.cancel(); return null; }
+      if (response.status !== 200 || response.body === null) {
+        await response.body?.cancel();
+        throw new Error(`Cloudflare object read failed for ${key} (HTTP ${response.status})`);
+      }
+      return response.body;
+    },
+    async put(key, body) {
+      const response = await request(key, 'PUT', body);
+      if (response.status !== 200) {
+        await response.body?.cancel();
+        throw new Error(`Cloudflare object write failed for ${key} (HTTP ${response.status})`);
+      }
+      const result = z.object({ success: z.literal(true) }).safeParse(await response.json().catch(() => undefined));
+      if (!result.success) throw new Error(`Cloudflare did not confirm object write for ${key}`);
+    },
+  };
+}
+
+/** Required backup objects must exist; a missing source is a failed backup. */
+export function cloudflareBlobReader(
+  options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch },
+): (key: string) => Promise<ReadableStream> {
+  const store = cloudflareObjectStore(options);
+  return async (key) => {
+    const body = await store.get(key);
+    if (body === null) throw new Error(`Cloudflare object read failed for ${key} (HTTP 404); retry the backup after resolving the source failure`);
+    return body;
   };
 }
 
@@ -514,13 +584,8 @@ export async function putWorkerSecrets(target: WorkerSecretTarget, secrets: Work
   const runner = target.runner ?? systemRunner();
   const cwd = ensureCommandDir(target.mycoHome);
   await assertWranglerPresent(runner, cwd);
-  // A debug log level makes wrangler print the request it sends — the secrets
-  // with it — and a failed command's output is what the operator reads.
-  await runOrThrow(runner, 'npx', wrangler('secret', 'bulk', '--name', target.workerName), {
-    cwd,
-    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: target.accountId, WRANGLER_LOG: 'log' },
-    input: JSON.stringify(secrets),
-  });
+  await privateCommand({ accountId: target.accountId, runner, configDir: cwd },
+    ['secret', 'bulk', '--name', target.workerName], JSON.stringify(secrets), 'Cloudflare Worker secrets installation');
 }
 
 /**
@@ -545,9 +610,11 @@ export function deploymentRecordPath(mycoHome = resolveMycoHome()): string {
 }
 
 export function writeDeploymentRecord(record: DeploymentRecord, mycoHome = resolveMycoHome()): void {
-  const file = deploymentRecordPath(mycoHome);
-  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  withCloudflareOperation(mycoHome, () => {
+    const file = deploymentRecordPath(mycoHome);
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    atomicWriteFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600, durable: true });
+  });
 }
 
 export function readDeploymentRecord(mycoHome = resolveMycoHome()): DeploymentRecord | null {

@@ -49,6 +49,10 @@ type RecoveryObject = RecoveryBlob | z.infer<typeof backupSchema>;
 export type RecoverySnapshot = Pick<z.infer<typeof snapshotSchema>, 'configuration' | 'credentialsRequired'>;
 export type RecoveryManifest = z.infer<typeof manifestSchema>;
 
+function registeredObjects(db: Database) {
+  return db.query<RecoveryBlob, []>("SELECT project_id || '/' || key AS key, key AS sha256, size AS bytes FROM blobs ORDER BY project_id, key").iterate();
+}
+
 export interface RecoveryAdapter {
   source: RecoverySource;
   /** Write a closed standalone database at databasePath, using workDir for intermediate files. */
@@ -240,8 +244,7 @@ async function writeRecoveryBundle(
         report(`${backups.length} catalogued backup object${backups.length === 1 ? ' is' : 's are'} outside this legacy artifact; create a new artifact for complete object coverage`);
       }
       let index = 0;
-      const rows = db.query<RecoveryBlob, []>("SELECT project_id || '/' || key AS key, key AS sha256, size AS bytes FROM blobs ORDER BY project_id, key");
-      for (const row of rows.iterate()) {
+      for (const row of registeredObjects(db)) {
         await copyObject(blobSchema.parse(row), `Copying blob ${++index} of ${snapshot.blobCount}`);
       }
       if (manifest.format === 'myco-recovery/2') {
@@ -281,7 +284,7 @@ export async function verifyRecoveryBundle(directory: string, report: (line: str
 }
 
 /** Copy or resume a verified snapshot through the same owner that captures Deployment artifacts. */
-export async function copyRecoveryBundle(source: string, destination: string, report: (line: string) => void = () => {}): Promise<RecoveryManifest> {
+async function completeRecoverySource(source: string, report: (line: string) => void): Promise<RecoveryManifest> {
   const manifest = await verifyRecoveryBundle(source, report);
   const database = path.join(source, DATABASE_FILE);
   const db = openSnapshot(database);
@@ -290,6 +293,13 @@ export async function copyRecoveryBundle(source: string, destination: string, re
       throw new Error('legacy artifact lacks catalogued backup coverage; capture a new recovery artifact');
     }
   } finally { db.close(); }
+  return manifest;
+}
+
+/** Copy or resume a verified snapshot through the same owner that captures Deployment artifacts. */
+export async function copyRecoveryBundle(source: string, destination: string, report: (line: string) => void = () => {}): Promise<RecoveryManifest> {
+  const manifest = await completeRecoverySource(source, report);
+  const database = path.join(source, DATABASE_FILE);
   const blobs = diskBlobStore(path.join(source, 'blobs'));
   return writeRecoveryBundle(destination, {
     source: manifest.source,
@@ -304,4 +314,59 @@ export async function copyRecoveryBundle(source: string, destination: string, re
       return held.body;
     },
   }, report, manifest);
+}
+
+export interface RecoveryObjectDestination {
+  get(key: string): Promise<ReadableStream<Uint8Array> | null>;
+  put(key: string, body: () => Blob): Promise<void>;
+}
+
+/** Copy missing objects and verify persisted bytes; existing different content is never overwritten. */
+export async function copyRecoveryObjects(
+  source: string, destination: RecoveryObjectDestination, report: (line: string) => void = () => {},
+): Promise<{ copied: number; reused: number }> {
+  const manifest = await completeRecoverySource(source, report);
+  const result = { copied: 0, reused: 0 };
+  const matches = async (body: ReadableStream<Uint8Array>, object: RecoveryBlob): Promise<boolean> => {
+    const hash = createHash('sha256');
+    let bytes = 0;
+    const reader = body.getReader();
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        bytes += chunk.value.byteLength;
+        if (bytes > object.bytes) { await reader.cancel(); return false; }
+        hash.update(chunk.value);
+      }
+      return sameFingerprint({ bytes, sha256: hash.digest('hex') }, object);
+    } catch (error) {
+      await reader.cancel(error);
+      throw error;
+    } finally { reader.releaseLock(); }
+  };
+  const copy = async (object: RecoveryBlob) => {
+    const existing = await destination.get(object.key);
+    if (existing !== null) {
+      if (!await matches(existing, object)) throw new Error(`recovery destination holds different bytes for ${object.key}`);
+      result.reused++;
+    } else {
+      const file = blobPath(source, object);
+      if (!sameFingerprint(await fingerprint(file), object)) throw new Error('source recovery object changed during transfer');
+      await destination.put(object.key, () => Bun.file(file));
+      const persisted = await destination.get(object.key);
+      if (persisted === null || !await matches(persisted, object)) throw new Error(`recovery object failed persisted verification: ${object.key}`);
+      result.copied++;
+    }
+    report(`Verified recovery object ${result.copied + result.reused}`);
+  };
+  const db = openSnapshot(path.join(source, DATABASE_FILE));
+  try {
+    for (const row of registeredObjects(db)) await copy(blobSchema.parse(row));
+    if (manifest.format === 'myco-recovery/2') for (const object of manifest.backupObjects) await copy(object);
+  } finally { db.close(); }
+  if (!sameFingerprint(await fingerprint(path.join(source, DATABASE_FILE)), manifest.snapshot!.database)) {
+    throw new Error('source recovery database changed during object transfer');
+  }
+  return result;
 }
