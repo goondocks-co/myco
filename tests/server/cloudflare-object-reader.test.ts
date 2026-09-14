@@ -123,3 +123,15 @@ it('distinguishes an absent restore object from refusal and rejects unconfirmed 
   status = 200;
   await expect(store.put('project/key', () => new Blob())).rejects.toThrow('did not confirm');
 });
+
+it('refuses oversized uploads and malformed acknowledgements without exposing response bodies', async () => {
+  let requests = 0;
+  const store = cloudflareObjectStore({ ...options, runner: { async run() {
+    return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture' }), stderr: '' };
+  } }, fetch: async () => { requests++; return new Response('synthetic-private-response'); } });
+  const oversized = new Blob();
+  Object.defineProperty(oversized, 'size', { value: 300_000_001 });
+  await expect(store.put('project/key', () => oversized)).rejects.toThrow('300 MB');
+  expect(requests).toBe(0);
+  await expect(store.put('project/key', () => new Blob())).rejects.toThrow('did not confirm object write');
+});

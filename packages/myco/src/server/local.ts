@@ -141,7 +141,7 @@ const GENERATED: readonly LocalSecretName[] = ['SECRET_WRAP_KEY', 'SESSION_SECRE
 
 const base64Random = (bytes: number): string => Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))).toString('base64');
 
-export function readLocalSecrets(paths = resolveLocalPaths()): Partial<Record<LocalSecretName, string>> {
+export function readLocalSecrets(paths: Pick<LocalDeploymentPaths, 'secretsFile'> = resolveLocalPaths()): Partial<Record<LocalSecretName, string>> {
   if (!existsSync(paths.secretsFile)) return {};
   const out: Partial<Record<LocalSecretName, string>> = {};
   for (const line of readFileSync(paths.secretsFile, 'utf8').split('\n')) {

@@ -22,6 +22,7 @@ import { BUNDLED_WORKER } from '../worker-bundle.generated.js';
 import { renderDeployConfig } from './deploy-config.js';
 import { deploymentRecordPath, type DeploymentRecord } from './cloudflare.js';
 import { withCloudflareOperation } from './cloudflare-operation.js';
+import { WRANGLER_TEMPLATE } from './wrangler-template.js';
 
 export const DEPLOY_CONFIG_NAME = 'wrangler.deploy.toml';
 
@@ -101,4 +102,19 @@ function stage(record: DeploymentRecord, mycoHome?: string): StagedDeploy {
   writeFileSync(path.join(dir, DEPLOY_CONFIG_NAME), config, { mode: 0o600 });
 
   return { dir, configFile: DEPLOY_CONFIG_NAME, migrations: migrations.length };
+}
+
+/** A fresh Worker returns 503 and has no data bindings or scheduled work while credentials are installed. */
+export function stageCloudflareRecoveryBootstrap(record: DeploymentRecord, mycoHome?: string): StagedDeploy {
+  return withCloudflareOperation(mycoHome, () => {
+    const dir = path.join(stagingRoot(mycoHome), 'recovery-bootstrap');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(dir, 'worker.mjs'), "export default {fetch() {return new Response('Recovery preparation in progress',{status:503});}};\n", { mode: 0o600 });
+    const configFile = 'wrangler.jsonc';
+    writeFileSync(path.join(dir, configFile), JSON.stringify({
+      name: record.workerName, account_id: record.accountId, main: 'worker.mjs',
+      compatibility_date: declared(WRANGLER_TEMPLATE, 'compatibility_date'), workers_dev: true,
+    }), { mode: 0o600 });
+    return { dir, configFile, migrations: 0 };
+  });
 }

@@ -2,14 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { resetEmbeddingIndex } from '@myco-server-worker/core/embedding/reconcile.js';
 import { syncDirectoryForDurability } from '@myco/utils/atomic-write.js';
 import { copyRecoveryBundle } from './recovery-bundle.js';
+import { readRecoveryCredentials } from './recovery-credentials.js';
 import { LocalVolume } from './local-volume.js';
 import {
-  DEFAULT_LOCAL_RECORD, LOCAL_SECRET_NAMES, readLocalSecrets, resolveLocalPaths,
+  DEFAULT_LOCAL_RECORD, resolveLocalPaths,
   writeLocalRecord, writeLocalSecrets, assertRecordServable, type LocalDeploymentPaths,
 } from './local.js';
 
@@ -22,13 +22,7 @@ export async function restoreLocalDeployment(options: {
   assertRecordServable(record);
   return new LocalVolume(paths).exclusive(async () => {
     if (fs.existsSync(paths.root)) throw new Error('recovery requires a fresh local Deployment directory; existing data was not changed');
-    const sourceRoot = fs.realpathSync(options.source);
-    const secretPath = fs.realpathSync(options.secretsFile);
-    if (secretPath.startsWith(sourceRoot + path.sep)) throw new Error('recovery credentials must be supplied separately from the data artifact');
-    const secrets = readLocalSecrets({ ...paths, secretsFile: options.secretsFile });
-    for (const name of LOCAL_SECRET_NAMES) if (!secrets[name]) throw new Error(`recovery requires independently supplied ${name}`);
-    const key = wrappingKeyFromText(async () => secrets.SECRET_WRAP_KEY, 'recovery SECRET_WRAP_KEY');
-    await key.material();
+    const { secrets, key } = await readRecoveryCredentials(options.source, options.secretsFile);
     const stagingHome = fs.mkdtempSync(path.join(path.dirname(paths.root), '.local-restore-'));
     fs.chmodSync(stagingHome, 0o700);
     try {

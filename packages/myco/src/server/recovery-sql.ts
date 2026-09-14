@@ -7,6 +7,7 @@ import path from 'node:path';
 const MAX_STATEMENT_BYTES = 90_000;
 const VALUE_CHUNK_BYTES = 16_000;
 const VALUE_TABLE = '__myco_recovery_value';
+export const RECOVERY_FINGERPRINT_KEY = 'recovery_snapshot_sha256';
 
 type SchemaObject = ReturnType<typeof schemaObjects.parse>[number];
 
@@ -26,7 +27,8 @@ function tableOrder(db: Database, schema: SchemaObject[]): SchemaObject[] {
 }
 
 /** Emit a private, bounded D1 import from a closed SQLite recovery snapshot. */
-export function writeRecoverySql(databasePath: string, destination: string): { tables: number; rows: number; statements: number; bytes: number } {
+export function writeRecoverySql(databasePath: string, destination: string, sourceFingerprint?: string): { tables: number; rows: number; statements: number; bytes: number } {
+  if (sourceFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(sourceFingerprint)) throw new Error('invalid recovery source fingerprint');
   if (fs.existsSync(destination)) throw new Error('recovery SQL destination already exists');
   const db = new Database(databasePath, { readonly: true, safeIntegers: true });
   const partial = destination + '.partial';
@@ -108,6 +110,9 @@ export function writeRecoverySql(databasePath: string, destination: string): { t
       for (const row of schema) if (row.type === type && !unique.has(row.name)) emit(row.sql);
     }
     for (const row of virtual) emit(`INSERT INTO ${identifier(row.name)}(${identifier(row.name)}) VALUES('rebuild')`);
+    if (sourceFingerprint !== undefined) {
+      emit(`INSERT OR REPLACE INTO schema_meta(key,value) VALUES('${RECOVERY_FINGERPRINT_KEY}','${sourceFingerprint}')`);
+    }
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fd = undefined;
