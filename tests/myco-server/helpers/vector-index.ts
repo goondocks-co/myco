@@ -14,7 +14,10 @@ export function indexFixture(): VectorIndex {
           && (filter.$lte === undefined || typeof held === 'number' && held <= filter.$lte);
       }))
       .map((v) => ({ id: v.id, score: cosineSimilarity(v.values, values) })).sort((a, b) => b.score - a.score).slice(0, options.topK) }),
-    getByIds: async (ids) => ids.flatMap((id) => rows.has(id) ? [rows.get(id)!] : []),
+    getByIds: async (ids) => {
+      if (ids.length > 20) throw new Error('too many ids in payload; max id count is 20');
+      return ids.flatMap((id) => rows.has(id) ? [rows.get(id)!] : []);
+    },
     deleteByIds: async (ids) => { for (const id of ids) rows.delete(id); },
   };
 }
