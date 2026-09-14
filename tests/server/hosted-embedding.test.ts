@@ -1,9 +1,9 @@
-import { expect, test } from 'bun:test';
+import { expect, spyOn, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { startDeployment } from '@myco-server-worker/platform/bun/server-main.js';
-import { cloudflareEmbeddingLaunch } from '@myco-server-worker/platform/cloudflare/embedding-runtime.js';
+import { cloudflareEmbeddingLaunch, type HostedRunLifetime } from '@myco-server-worker/platform/cloudflare/embedding-runtime.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { dispatchEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
 import { dispatchPrepared, prepareDispatch } from '@myco-server-worker/core/harness.js';
@@ -12,7 +12,7 @@ import { resolveSemanticSearch } from '@myco-server-worker/core/search.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { runControlClient } from '@goondocks/myco-shared/run-control';
 
-async function fixture(timeoutSeconds?: number) {
+async function fixture(timeoutSeconds?: number, lifetime: HostedRunLifetime = 'response') {
   const source = sqliteEnv();
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hosted-embedding-'));
   const databasePath = path.join(home, 'myco.sqlite');
@@ -22,7 +22,7 @@ async function fixture(timeoutSeconds?: number) {
   const work: Promise<void>[] = [];
   const server = await startDeployment({ databasePath, blobDir: path.join(home, 'blobs'), port: 0,
     sourceFrom: 'socket', transport: 'loopback', harnessTasks: ['embedding-reconcile'],
-    harnessLaunchFor: (origin) => (spec) => cloudflareEmbeddingLaunch(origin(), (pending) => { work.push(pending); })({
+    harnessLaunchFor: (origin) => (spec) => cloudflareEmbeddingLaunch(origin(), (pending) => { work.push(pending); }, { lifetime })({
       ...spec, ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
     }),
   });
@@ -48,7 +48,7 @@ test('hosted launch executes automatic and manual embedding through authenticate
     await f.settle();
     expect((await f.server.env.db.prepare('SELECT status FROM agent_runs').all()).results).toEqual([{ status: 'completed' }, { status: 'completed' }]);
     expect((await f.server.env.db.prepare('SELECT summary FROM agent_reports ORDER BY id').all()).results.map((row) => row.summary))
-      .toEqual(['Processed 1 embedding records; settled.', 'Processed 0 embedding records; settled.']);
+      .toEqual(['Processed 1 embedding records; missing.', 'Processed 0 embedding records; settled.']);
   } finally { await f.close(); }
 });
 
@@ -66,6 +66,38 @@ test('hosted provider failure persists a failed run and permits a subsequent aut
     expect((await f.server.env.db.prepare('SELECT ready FROM embedding_receipts').first())?.ready).toBe(1);
     expect((await f.server.env.db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE status='completed'").first())?.n).toBe(1);
   } finally { await f.close(); }
+});
+
+test('hosted response work yields before starting another step without a full request window', async () => {
+  const f = await fixture();
+  let now = Date.now();
+  const clock = spyOn(Date, 'now').mockImplementation(() => now);
+  try {
+    await f.server.env.db.prepare("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES ('proj_1','next-memory','user','Another durable decision','decision',1)").run();
+    f.server.env.embeddingProvider = async () => ({ modelKey: 'fixture-model', embed: async () => { now += 9_000; return [1, 0]; } });
+    expect(await dispatchEmbeddingWork(f.server.env, now)).toBe(1);
+    await f.settle();
+    expect((await f.server.env.db.prepare('SELECT status FROM agent_runs').first())?.status).toBe('completed');
+    expect((await f.server.env.db.prepare('SELECT summary FROM agent_reports').first())?.summary).toBe('Processed 1 embedding records; missing.');
+    expect((await f.server.env.db.prepare('SELECT COUNT(*) AS n FROM embedding_receipts WHERE ready=1').first())?.n).toBe(1);
+  } finally { clock.mockRestore(); await f.close(); }
+});
+
+test('clock-owned hosted work uses its awaited lifetime to finish a batch beyond the response budget', async () => {
+  const f = await fixture(undefined, 'clock');
+  let now = Date.now();
+  const clock = spyOn(Date, 'now').mockImplementation(() => now);
+  try {
+    for (const id of ['next-memory', 'last-memory']) {
+      await f.server.env.db.prepare("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES ('proj_1',?,'user','Another durable decision','decision',1)").bind(id).run();
+    }
+    f.server.env.embeddingProvider = async () => ({ modelKey: 'fixture-model', embed: async () => { now += 9_000; return [1, 0]; } });
+    expect(await dispatchEmbeddingWork(f.server.env, now)).toBe(1);
+    await f.settle();
+    expect((await f.server.env.db.prepare('SELECT status FROM agent_runs').first())?.status).toBe('completed');
+    expect((await f.server.env.db.prepare('SELECT summary FROM agent_reports').first())?.summary).toEndWith('; settled.');
+    expect((await f.server.env.db.prepare('SELECT COUNT(*) AS n FROM embedding_receipts WHERE ready=1').first())?.n).toBe(3);
+  } finally { clock.mockRestore(); await f.close(); }
 });
 
 test('hosted work deadline leaves time to persist failure while a provider response remains held', async () => {
