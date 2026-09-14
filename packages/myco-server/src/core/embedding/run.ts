@@ -17,6 +17,7 @@ export async function runEmbeddingSteps(step: () => Promise<Record<string, unkno
   let phase = 'pending';
   for (let iteration = 0; iteration < EMBEDDING_RUN_STEPS && Date.now() + closeReserveMs < deadline; iteration++) {
     signal.throwIfAborted();
+    if (iteration > 0 && Date.now() + closeReserveMs + CONTROL_TIMEOUT_MS >= deadline) break;
     const result = await step();
     if (result.held !== true) throw new Error('embedding run no longer holds its index');
     if (result.provider_unavailable === true) throw new Error('embedding provider is unavailable');

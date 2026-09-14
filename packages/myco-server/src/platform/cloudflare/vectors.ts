@@ -2,6 +2,7 @@ import { normalizedVector, validateStoredVectors, validateVectorReferences, vali
 import { sha256Hex } from '../../hash.js';
 
 type MetadataFilter = Record<string, { $eq?: string; $gte?: number; $lte?: number }>;
+const VECTOR_READ_BATCH_SIZE = 20;
 
 /** The platform binding carries only the vector operations the adapter consumes. */
 export interface VectorIndex {
@@ -39,7 +40,11 @@ export function cloudflareVectorStore(index: VectorIndex): VectorStore {
     async get(scope, ids) {
       if (ids.length === 0) return [];
       const namespace = await vectorNamespace(scope);
-      return (await index.getByIds(ids)).filter((v) => v.namespace === namespace)
+      const vectors: Awaited<ReturnType<VectorIndex['getByIds']>> = [];
+      for (let offset = 0; offset < ids.length; offset += VECTOR_READ_BATCH_SIZE) {
+        vectors.push(...await index.getByIds(ids.slice(offset, offset + VECTOR_READ_BATCH_SIZE)));
+      }
+      return vectors.filter((v) => v.namespace === namespace)
         .map((v): StoredVector => {
           if (v.metadata === undefined) throw new Error('stored vector has no source metadata');
           return { id: v.id, values: Array.from(v.values), metadata: { ...v.metadata, session_id: v.metadata.session_id_raw } as unknown as VectorMetadata };

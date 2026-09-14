@@ -13,6 +13,27 @@ async function vector(id: string, values: number[], metadata: Partial<VectorMeta
   return { id: await vectorId(partition, meta.type, id, meta.revision), values, metadata: meta };
 }
 
+test('Cloudflare reads a full hubness page and retries a failed later provider read', async () => {
+  const index = indexFixture();
+  const rows = await Promise.all(Array.from({ length: 50 }, (_, i) => vector(`page-${i}`, [1, 0])));
+  const getByIds = index.getByIds;
+  let fail = false;
+  index.getByIds = async (ids) => {
+    if (fail && ids.includes(rows[30].id)) throw new Error('provider unavailable');
+    return getByIds(ids);
+  };
+  const store = cloudflareVectorStore(index);
+  const foreign = await vector('foreign', [1, 0], {}, { ...scope, projectId: 'other' });
+  await store.upsert(scope, rows);
+  await store.upsert({ ...scope, projectId: 'other' }, [foreign]);
+  const ids = [...rows.map((row) => row.id), foreign.id, 'missing'];
+  expect((await store.get(scope, ids)).map((row) => row.id)).toEqual(rows.map((row) => row.id));
+  fail = true;
+  await expect(store.get(scope, ids)).rejects.toThrow('provider unavailable');
+  fail = false;
+  expect((await store.get(scope, ids)).map((row) => row.metadata.record_id)).toEqual(rows.map((row) => row.metadata.record_id));
+});
+
 
 for (const target of ['sqlite-vec', 'vectorize-contract'] as const) {
   describe(target, () => {
