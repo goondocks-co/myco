@@ -491,6 +491,7 @@ export async function run(args: string[]): Promise<void> {
 
     if (command === 'restore') {
       const selected = target();
+      if (flags.has('new-signin') && selected !== 'cloudflare') fail('--new-signin requires --target cloudflare.');
       const from = flags.get('from');
       if (from === undefined || from === '') fail('restore needs --from <dir>.');
       if (selected === 'cloudflare') {
@@ -505,7 +506,6 @@ export async function run(args: string[]): Promise<void> {
         return;
       }
       if (selected === 'local') {
-        if (flags.has('new-signin')) fail('--new-signin currently requires --target cloudflare; native recovery requires independently supplied sign-in credentials.');
         if (from === 'true') fail('restore needs --from <dir>.');
         const secretsFile = flags.get('secrets-from');
         if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('native recovery needs --secrets-from <file> with independently held recovery credentials.');
