@@ -9,7 +9,7 @@ import { resetEmbeddingIndex } from '@myco-server-worker/core/embedding/reconcil
 import { atomicWriteFileSync, syncDirectoryForDurability } from '@myco/utils/atomic-write.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 import { copyRecoveryBundle, copyRecoveryObjects, verifyRecoveryBundle } from './recovery-bundle.js';
-import { readRecoveryCredentials } from './recovery-credentials.js';
+import { prepareRecoveryCredentials } from './recovery-credentials.js';
 import { restoreCloudflareDatabase } from './cloudflare-recovery-database.js';
 import { stageCloudflareDeploy, stageCloudflareRecoveryBootstrap } from './cloudflare-stage.js';
 import {
@@ -30,6 +30,7 @@ const journalSchema = z.object({
   pending: z.string().optional(),
   versionId: z.string().optional(), deployedAt: z.string().datetime().optional(),
   schemaVersion: z.number().int().positive().optional(), preparedFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  newSignIn: z.boolean().default(false),
 });
 type Journal = z.infer<typeof journalSchema>;
 
@@ -42,7 +43,7 @@ async function databaseFingerprint(file: string): Promise<string> {
 
 /** Restore a fresh hosted Deployment; resource receipts survive interruption and no source resources are adopted. */
 export const restoreCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions & {
-  source: string; secretsFile: string;
+  source: string; secretsFile: string; newSignIn?: boolean;
 }): Promise<{ record: DeploymentRecord; schemaVersion: number; rebuildEmbeddings: true }> => {
   if (readDeploymentRecord(options.mycoHome) !== null) throw new Error('hosted recovery requires a fresh MYCO_HOME without a Cloudflare Deployment record');
   const root = ensureCommandDir(options.mycoHome);
@@ -50,9 +51,10 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
   const journalEntry = fs.lstatSync(journalFile, { throwIfNoEntry: false });
   if (journalEntry !== undefined && !journalEntry.isFile()) throw new Error('hosted recovery journal must be a regular file');
   if (journalEntry === undefined && fs.readdirSync(root).length > 0) throw new Error('hosted recovery destination holds unrelated files; choose a fresh MYCO_HOME');
-  const { secrets, key } = await readRecoveryCredentials(options.source, options.secretsFile);
+  const { secrets, key } = await prepareRecoveryCredentials(options.source, options.secretsFile, options.newSignIn);
   let journal = journalEntry === undefined ? undefined : journalSchema.parse(JSON.parse(fs.readFileSync(journalFile, 'utf8')));
   if (journal !== undefined && journal.accountId !== options.accountId) throw new Error('hosted recovery journal belongs to another Cloudflare account');
+  if (journal !== undefined && journal.newSignIn !== (options.newSignIn ?? false)) throw new Error('resume hosted recovery with the same sign-in choice');
   if (journal?.pending !== undefined) throw new Error(`hosted recovery has an unconfirmed ${journal.pending} operation; reconcile the named replacement resource before retrying`);
 
   const artifact = path.join(root, 'recovery-source');
@@ -64,7 +66,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     journal = next;
   };
   if (journal === undefined) write({ format: 'myco-hosted-recovery/1', accountId: options.accountId, fingerprint,
-    name: `myco-recovery-${randomBytes(12).toString('hex')}`, bucketCreated: false, vectorCreated: false, wrapKeyInstalled: false });
+    name: `myco-recovery-${randomBytes(12).toString('hex')}`, bucketCreated: false, vectorCreated: false, wrapKeyInstalled: false, newSignIn: options.newSignIn ?? false });
   const held = () => journal!;
   const confirmed = (fields: Partial<Journal>) => {
     const { pending: _pending, ...prior } = held();
@@ -154,10 +156,12 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
   }
   record = { ...record, url: held().url! };
   await putWorkerSecretValue({ ...bare, workerName: name, name: 'SESSION_SECRET', value: secrets.SESSION_SECRET });
-  await putWorkerSecrets({ accountId: options.accountId, workerName: name,
-    ...(options.mycoHome === undefined ? {} : { mycoHome: options.mycoHome }),
-    ...(options.runner === undefined ? {} : { runner: options.runner }),
-  }, { GITHUB_CLIENT_ID: secrets.GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET: secrets.GITHUB_CLIENT_SECRET });
+  if ('GITHUB_CLIENT_ID' in secrets) {
+    await putWorkerSecrets({ accountId: options.accountId, workerName: name,
+      ...(options.mycoHome === undefined ? {} : { mycoHome: options.mycoHome }),
+      ...(options.runner === undefined ? {} : { runner: options.runner }),
+    }, { GITHUB_CLIENT_ID: secrets.GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET: secrets.GITHUB_CLIENT_SECRET });
+  }
   const final = stageCloudflareDeploy(record, options.mycoHome);
   await resource(`publication of Worker ${name}`, () => deployWorker({ ...bare, configDir: final.dir, configFile: final.configFile }), (deployed) => {
     if (deployed.versionId === null) throw new Error('recovery deployment returned no Worker version; the operator record was not published');

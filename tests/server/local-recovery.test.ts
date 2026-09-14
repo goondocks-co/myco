@@ -45,7 +45,7 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare') {
     blob: async (object) => { const held = await source.bucket.get(object.key); if (held === null) throw new Error('missing fixture object'); return held.body; },
   });
   return { source, root, artifact, secretsFile, paths, secrets, key, provider, backup,
-    restore: () => restoreLocalDeployment({ source: artifact, secretsFile, paths, port: 18901 }),
+    restore: (newSignIn = false) => restoreLocalDeployment({ source: artifact, secretsFile, paths, port: 18901, newSignIn }),
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
@@ -75,6 +75,24 @@ it('recovers hosted data, independently wrapped credentials and pinned artifacts
       expect(search.results.map((row) => row.id)).toEqual(['memory']);
     } finally { db.close(); }
     await expect(f.restore()).rejects.toThrow('fresh local Deployment directory');
+  } finally { f.cleanup(); }
+});
+
+it('explicitly bootstraps destination sign-in with only the original wrapping key and keeps saved credentials readable', async () => {
+  const f = await fixture();
+  try {
+    fs.writeFileSync(f.secretsFile, `SECRET_WRAP_KEY=${f.secrets.SECRET_WRAP_KEY}\n`, { mode: 0o600 });
+    await expect(f.restore()).rejects.toThrow('SESSION_SECRET');
+    expect(fs.existsSync(f.paths.root)).toBe(false);
+    await f.restore(true);
+    const recovered = readLocalSecrets(f.paths);
+    expect(Object.keys(recovered).sort()).toEqual(['SECRET_WRAP_KEY', 'SESSION_SECRET']);
+    expect(recovered.SESSION_SECRET!.length).toBeGreaterThanOrEqual(32);
+    expect(recovered.SESSION_SECRET).not.toBe(f.secrets.SESSION_SECRET);
+    const db = new Database(f.paths.databasePath);
+    try {
+      expect(await deploymentSecretStore(sqliteRelationalStore(db), f.key).get('fixture')).toBe('recovered-secret');
+    } finally { db.close(); }
   } finally { f.cleanup(); }
 });
 

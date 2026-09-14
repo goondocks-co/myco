@@ -28,6 +28,7 @@ async function fixture() {
   let loseImport = true;
   let creates = 0;
   const deployments: string[] = [];
+  const secretCommands: string[] = [];
   const runner: CommandRunner = { async run(_command, args, options) {
     const flat = args.slice(2).join(' ');
     const answer = (stdout = '', code = 0) => ({ code, stdout, stderr: '' });
@@ -40,7 +41,7 @@ async function fixture() {
     if (flat.startsWith('vectorize get ')) return answer(JSON.stringify({ config: { dimensions: VECTOR_INDEX_DIMENSIONS, metric: 'cosine' } }));
     if (flat.startsWith('vectorize list-metadata-index ')) return answer(JSON.stringify(VECTOR_METADATA_FIELDS.map(propertyName => ({ propertyName, indexType: propertyName === 'created_at' ? 'Number' : 'String' }))));
     if (flat.startsWith('secrets-store store list')) return answer('f'.repeat(32));
-    if (flat.startsWith('secrets-store secret create') || flat.startsWith('secret ')) return answer();
+    if (flat.startsWith('secrets-store secret create') || flat.startsWith('secret ')) { secretCommands.push(flat); return answer(); }
     if (flat.startsWith('deployments list')) return answer('Worker not found [code: 10007]', 1);
     if (args.includes('--command')) return answer(JSON.stringify([{ success: true, results: destination.query(args[args.indexOf('--command') + 1]!).all() }]));
     if (args.includes('--file')) {
@@ -59,8 +60,8 @@ async function fixture() {
     }
     throw new Error(`unexpected ${flat}`);
   } };
-  return { source, secretsFile, mycoHome, destination, deployments, creates: () => creates,
-    restore: () => restoreCloudflareDeployment({ source, secretsFile, mycoHome, accountId: 'fixture-account', runner }),
+  return { source, secretsFile, mycoHome, destination, deployments, secretCommands, creates: () => creates,
+    restore: (newSignIn = false) => restoreCloudflareDeployment({ source, secretsFile, mycoHome, accountId: 'fixture-account', runner, newSignIn }),
     cleanup: () => { destination.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
@@ -82,6 +83,18 @@ it('resumes data transfer on the same fresh resources and publishes only after b
     expect(readDeploymentRecord(f.mycoHome)).toEqual(result.record);
     expect(fs.readFileSync(path.join(f.source, 'myco.sqlite'))).toEqual(original);
     await expect(f.restore()).rejects.toThrow('fresh MYCO_HOME');
+  } finally { f.cleanup(); }
+});
+
+it('keeps the explicit sign-in choice across retry and installs no recovered GitHub credentials in new-signin mode', async () => {
+  const f = await fixture();
+  try {
+    await expect(f.restore(true)).rejects.toThrow('Cloudflare recovery import did not finish');
+    await expect(f.restore(false)).rejects.toThrow('same sign-in choice');
+    expect(readDeploymentRecord(f.mycoHome)).toBeNull();
+    await f.restore(true);
+    expect(f.secretCommands.some(command => command.startsWith('secret put SESSION_SECRET'))).toBe(true);
+    expect(f.secretCommands.some(command => command.startsWith('secret bulk'))).toBe(false);
   } finally { f.cleanup(); }
 });
 
