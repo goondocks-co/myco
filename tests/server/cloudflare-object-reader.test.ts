@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { cloudflareBlobReader } from '@myco/server/cloudflare.js';
+import { cloudflareBlobReader, cloudflareObjectStore } from '@myco/server/cloudflare.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 
 const options = { accountId: 'fixture-account', bucketName: 'fixture-bucket', configDir: '/operator' };
@@ -86,4 +86,52 @@ it('refuses path traversal before obtaining any credential', async () => {
   const read = cloudflareBlobReader({ ...options, runner: { async run() { throw new Error('unexpected credential read'); } } });
   await expect(read('../other-account')).rejects.toThrow('invalid segment');
   await expect(read('project/../key')).rejects.toThrow('invalid segment');
+});
+
+it('reopens the upload body after authentication refresh and shares the login with readback', async () => {
+  let logins = 0;
+  let opened = 0;
+  let uploaded = '';
+  const store = cloudflareObjectStore({ ...options, runner: { async run() {
+    return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: `fixture-${++logins}` }), stderr: '' };
+  } }, fetch: async (_url, init) => {
+    expect(init.redirect).toBe('error');
+    const headers = new Headers(init.headers);
+    if (init.method === 'PUT') {
+      expect(headers.get('content-length')).toBe('7');
+      expect(headers.get('content-type')).toBe('application/octet-stream');
+      uploaded = await new Response(init.body).text();
+      if (headers.get('authorization') === 'Bearer fixture-1') return new Response(null, { status: 401 });
+      return Response.json({ success: true });
+    }
+    return new Response(uploaded);
+  } });
+  await store.put('project/key', () => { opened++; return new Blob(['a\0value']); });
+  expect(await new Response(await store.get('project/key')).text()).toBe('a\0value');
+  expect({ logins, opened }).toEqual({ logins: 2, opened: 2 });
+});
+
+it('distinguishes an absent restore object from refusal and rejects unconfirmed writes', async () => {
+  let status = 404;
+  const store = cloudflareObjectStore({ ...options, runner: { async run() {
+    return { code: 0, stdout: JSON.stringify({ type: 'api_token', token: 'fixture-only' }), stderr: '' };
+  } }, fetch: async () => status === 200 ? Response.json({ success: false }) : new Response(null, { status }) });
+  expect(await store.get('project/key')).toBeNull();
+  status = 403;
+  await expect(store.get('project/key')).rejects.toThrow('HTTP 403');
+  await expect(store.put('project/key', () => new Blob())).rejects.toThrow('HTTP 403');
+  status = 200;
+  await expect(store.put('project/key', () => new Blob())).rejects.toThrow('did not confirm');
+});
+
+it('refuses oversized uploads and malformed acknowledgements without exposing response bodies', async () => {
+  let requests = 0;
+  const store = cloudflareObjectStore({ ...options, runner: { async run() {
+    return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture' }), stderr: '' };
+  } }, fetch: async () => { requests++; return new Response('synthetic-private-response'); } });
+  const oversized = new Blob();
+  Object.defineProperty(oversized, 'size', { value: 300_000_001 });
+  await expect(store.put('project/key', () => oversized)).rejects.toThrow('300 MB');
+  expect(requests).toBe(0);
+  await expect(store.put('project/key', () => new Blob())).rejects.toThrow('did not confirm object write');
 });
