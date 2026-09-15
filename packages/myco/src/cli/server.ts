@@ -132,7 +132,10 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           configuration and this machine's deployment record.
                                           --fleet sets how many runtimes the server may start at
                                           once; the next update deploys it.
-  github-app --url <https://…> [--org <name>] [--name <text>] [--target cloudflare|compose]
+  github-app --url <https://…> [--org <name>] [--name <text>] [--target local|cloudflare|compose]
+                                          Native setup requires a stopped server. Stop a foreground run
+                                          with Ctrl-C, or use server uninstall to stop its service.
+                                          Start it again after setup to use the new sign-in credentials.
                                           Register the dashboard's sign-in app on GitHub (one click
                                           there) and install its credentials on the Deployment.
 
@@ -594,6 +597,7 @@ export async function run(args: string[]): Promise<void> {
       console.log(`Callback:    ${result.callbackUrl}`);
       console.log(`Installed:   ${target.kind === 'cloudflare' ? `Worker ${target.record.workerName}` : target.paths.root}`);
       if (result.verified.ok) console.log(`Verified:    ${url} sends sign-in to GitHub and back.`);
+      else if (result.verified.pendingStart) console.log(`Next:        ${result.verified.reason}`);
       else fail(`Installed, but sign-in did not verify: ${result.verified.reason}`);
       return;
     }

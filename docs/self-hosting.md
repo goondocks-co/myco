@@ -10,10 +10,13 @@ There is one exception, and it is on your own computer rather than the server: p
 
 ```bash
 myco server create --target local
+myco server github-app --target local --url http://127.0.0.1:8787 --name "Myco sign-in"
 myco server install --target local
 ```
 
-The first command makes the server's directory, generates the keys it protects your credentials with, and prepares its storage. The second makes it start whenever you log in and come back if it stops.
+The first command prepares your server and generates its storage keys. The second opens GitHub to register an identity-only sign-in app under your account. Confirm the app there, then return to the terminal. The last command starts the server and makes it come back whenever you log in.
+
+Open `http://127.0.0.1:8787` and click **Sign in with GitHub** to check that sign-in works. The setup command installs credentials while the server is stopped; it does not claim sign-in has passed before you start the server.
 
 Your server lives at `http://127.0.0.1:8787` and listens only on your own machine. Nothing outside your laptop can reach it until you choose to expose it.
 
@@ -30,14 +33,19 @@ Pick a different port with `--port` if 8787 is taken. To stop it starting at log
 
 Both of those act on the service. A server you started yourself with `myco server run` keeps running in its own terminal until you stop it there.
 
-> **Adding people, including yourself**
-> Sign-in and invites are not ready yet, so a server created this way has no members. Treat this page as the way to get one running, not yet the way to start capturing.
+### Changing the sign-in app
+
+Stop a foreground server with Ctrl-C and wait for it to exit. For an installed service, run `myco server uninstall --target local`; this keeps your data. Run the `github-app` command again, then restart with `myco server run --target local` or `myco server install --target local`.
+
+Setup refuses while the server is running. During registration, another server cannot start on the same data. Your storage and session keys stay unchanged when you replace the GitHub sign-in pair. If registration expires or GitHub refuses it, rerun the command. Keep the server stopped until setup finishes, then verify sign-in in the dashboard.
+
+Use the server's configured public origin as `--url` when a reverse proxy fronts it. The app's callback must match the address the server uses.
 
 ## On a virtual machine
 
 Anywhere that runs a Linux binary works. A machine with 1 GB of memory and a few gigabytes of disk is enough for a small team.
 
-Copy the binary across, then run the same two commands. The server starts at boot through your user's own service manager, so nothing runs as root.
+Copy the binary across, then provision it, configure sign-in and install its service as above. The server runs through your user's service manager, so nothing runs as root.
 
 **Fly.io** is the least work if you would rather not manage a machine. Its builds happen remotely, so you never need a container runtime on your own computer, and a machine with a small volume attached costs a few dollars a month. Give the volume to `~/.myco/server/local/` and the server keeps its data across restarts.
 

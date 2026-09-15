@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { signExecutable } from './sign-executable.mjs';
 
 function detectHostTarget() {
   if (process.platform === 'darwin') return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
@@ -88,6 +89,7 @@ try {
     { stdio: 'inherit', cwd: pkgRoot, env: process.env },
   );
   status = result.status ?? 1;
+  if (status === 0) signExecutable({ target, outfile });
 } finally {
   // Restore the exact original package.json bytes so the working tree (and any
   // release-stamped version) is never left mutated by a dev build.
