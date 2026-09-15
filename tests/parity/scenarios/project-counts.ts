@@ -18,6 +18,13 @@ export const projectCounts: ParityScenario = {
       expect(row).toBeDefined();
       return row!;
     };
+    // The project row appears with its first ingested event; before that the list has no entry for it.
+    const projectOrEmpty = async () => {
+      const res = await fetch(`${target.url}/api/projects`, { headers: target.ownerHeaders() });
+      expect(res.status).toBe(200);
+      const row = ((await res.json()) as { projects: Array<{ projectId: string; sessionCount: number }> }).projects.find((p) => p.projectId === target.projectId);
+      return row ?? { sessionCount: 0 };
+    };
     const railTotal = async () => {
       const res = await fetch(`${target.url}/api/projects/${target.projectId}/activity`, { headers: target.ownerHeaders() });
       expect(res.status).toBe(200);
@@ -28,7 +35,7 @@ export const projectCounts: ParityScenario = {
       return Number(rows[0]!.n);
     };
 
-    const before = await project();
+    const before = await projectOrEmpty();
     const res = await fetch(`${target.url}/events`, {
       method: 'POST',
       headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
