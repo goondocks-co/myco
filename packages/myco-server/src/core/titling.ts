@@ -17,9 +17,13 @@
 import { MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS } from '../constants.js';
 import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
-import { sessionMaterialRows, sessionMaterialTailRows, listReadyTitleSessions, type MaterialRow } from '../read/children.js';
+import { countBackfillTitleSessions, listBackfillTitleSessions, sessionMaterialRows, sessionMaterialTailRows, listReadyTitleSessions, type MaterialRow } from '../read/children.js';
+import { deploymentLastTaskEntryAt, deploymentTaskEntriesSince, deploymentTaskRunTally } from './runs.js';
+import { TITLING_BACKFILL_SCHEDULE, type ScheduleState } from './jobs.js';
+import type { PowerState } from './power.js';
+import { scheduleFor, scheduleLeaves } from './scheduled-tasks.js';
 import { claimOwnerTitling, claimTitling, restoreTitlingStamp } from '../read/sessions.js';
-import { dispatchPrepared, prepareDispatch, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS } from './harness.js';
+import { CeilingReached, dispatchPrepared, prepareDispatch, type ActorCeiling, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 import { TITLING_TASK } from './task-catalogue.js';
 import { assertSessionMaterialReady, SessionMaterialPendingError } from '../read/material-readiness.js';
 
@@ -40,7 +44,7 @@ export const OWNER_TITLING_WINDOW_MS = TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_
  */
 export type TitlingOutcome =
   | 'already' | 'no_material' | 'harness_unavailable' | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider'
-  | 'error' | 'dispatched' | 'queued' | 'capture_pending';
+  | 'error' | 'dispatched' | 'queued' | 'capture_pending' | 'ceiling';
 
 export type MaterialLine = Pick<MaterialRow, 'prompt' | 'response'>;
 
@@ -129,7 +133,7 @@ const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
  * a bound runtime, a provider and its credential, material to read, the claim,
  * the launch. Resolves with the outcome it emitted; never rejects.
  */
-export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode; by?: string } = {}): Promise<TitlingResult> {
+export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode; by?: string; actor?: string; ceiling?: ActorCeiling } = {}): Promise<TitlingResult> {
   const { projectId, sessionId, now } = target;
   const mode = opts.mode ?? 'claim';
   const skipped = (outcome: TitlingOutcome): TitlingResult => { emit({ kind: 'session_title_skipped', projectId, sessionId, outcome, mode }); return { outcome }; };
@@ -155,23 +159,23 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     const params: TitlingParams = { session_id: sessionId, mode, ...(mode === 'owner' && opts.by !== undefined ? { by: opts.by } : {}) };
     const spec = {
       serverUrl: target.origin,
-      actor: opts.by ?? DEPLOYMENT_ACTOR,
+      actor: opts.actor ?? opts.by ?? DEPLOYMENT_ACTOR,
       timeoutSeconds: TITLING_RUN_TIMEOUT_SECONDS,
       params: { ...params },
     };
     try {
       // A limit holds the run in the queue; the claim stands, and the run's own window opens when it launches.
-      const dispatched = await dispatchPrepared(env, prepared.prepared, spec, now);
+      const dispatched = await dispatchPrepared(env, prepared.prepared, spec, now, opts.ceiling === undefined ? {} : { ceiling: opts.ceiling });
       if (dispatched.queued) {
         emit({ kind: 'session_title_queued', projectId, sessionId, mode, runId: dispatched.runId, heldBy: dispatched.heldBy });
         return { outcome: 'queued', runId: dispatched.runId };
       }
       emit({ kind: 'session_title_dispatched', projectId, sessionId, mode, runId: dispatched.runId });
       return { outcome: 'dispatched', runId: dispatched.runId };
-    } catch {
-      // A launch the runtime refused: the session keeps its own attempt, and an owner may ask again at once.
+    } catch (error) {
+      // A launch the runtime refused, or a write the ceiling refused: the session keeps its own attempt, and an owner may ask again at once.
       await restoreTitlingStamp(env.db, projectId, sessionId, now, previous);
-      return failed('error');
+      return error instanceof CeilingReached ? skipped('ceiling') : failed('error');
     }
   } catch (error) {
     if (error instanceof SessionMaterialPendingError) return skipped('capture_pending');
@@ -193,4 +197,116 @@ export async function titleReadySessions(env: ServerEnv, now: number): Promise<n
     if (result.outcome === 'dispatched' || result.outcome === 'queued') dispatched += 1;
   }
   return dispatched;
+}
+
+/** Who the imported-session backfill is attributed to; the actor its runs carry, and the one its ceiling and interval count. */
+export const TITLING_BACKFILL_ACTOR = 'backfill';
+/** The most imported sessions one wake of the backfill attempts. */
+export const TITLING_BACKFILL_BATCH = 5;
+const DAY_MS = 86_400_000;
+
+export interface TitlingBackfillPolicy {
+  /** Whether the Deployment runs scheduled intelligence at all (`agent.scheduled_tasks_enabled`). */
+  scheduledTasksEnabled: boolean;
+  /** Whether the backfill's own block is on: the declared `enabled` under the owner's `title-summary` override. */
+  backfillEnabled: boolean;
+  /** The daily ceiling across the Deployment, from the block's `maxRunsPerDay`; absent means unbounded. */
+  runsPerDay: number | null;
+  /** The least time between two dispatching wakes, from the block's `intervalSeconds`. */
+  intervalSeconds: number;
+  /** The power states a wake dispatches in, from the block's `runIn`. */
+  runIn: readonly ScheduleState[];
+  /** `skip` holds a wake while a backfill run is in flight; `queue` lets the dispatch limits hold it. */
+  overlap: 'skip' | 'queue';
+  /** Whether a wake may dispatch: scheduling on and the block on. */
+  enabled: boolean;
+}
+
+/** The backfill's policy: the declared block under the owner's `agent.tasks` override, behind the Deployment's scheduling switch. */
+export async function titlingBackfillPolicy(env: ServerEnv): Promise<TitlingBackfillPolicy> {
+  const leaves = await scheduleLeaves(env);
+  const schedule = scheduleFor(TITLING_TASK, TITLING_BACKFILL_SCHEDULE, leaves.overrides);
+  const backfillEnabled = schedule.enabled !== false;
+  return {
+    scheduledTasksEnabled: leaves.enabled,
+    backfillEnabled,
+    runsPerDay: schedule.maxRunsPerDay ?? null,
+    intervalSeconds: schedule.intervalSeconds,
+    runIn: schedule.runIn,
+    overlap: schedule.overlap,
+    enabled: leaves.enabled && backfillEnabled,
+  };
+}
+
+/**
+ * Titles imported sessions nothing else titles: newest first, a bounded page
+ * per wake, in the block's states, inside its interval and daily ceiling, and
+ * under its overlap rule. Each attempt is the same `claim` titling a session's
+ * own end makes, so an imported session is titled once, over its opening
+ * prompts, and never over a title that stands. The ceiling, the interval and
+ * the overlap count this actor's runs across every Project. The ceiling is
+ * held by the run write itself: the count read here sizes the page, and the
+ * statement that records each run refuses past the ceiling, so wakes deciding
+ * at once write at most the ceiling between them and a refused session keeps
+ * its attempt. Idempotent: a session claimed by one wake is no longer a
+ * candidate for the next, and a wake out of state, inside the interval, at
+ * the ceiling or held by overlap dispatches nothing.
+ */
+export async function backfillImportedTitles(env: ServerEnv, now: number, state: PowerState): Promise<number> {
+  const policy = await titlingBackfillPolicy(env);
+  if (!policy.enabled) return 0;
+  if (!(policy.runIn as readonly string[]).includes(state)) return 0;
+  const last = await deploymentLastTaskEntryAt(env.db, TITLING_TASK, TITLING_BACKFILL_ACTOR);
+  if (last !== null && now - last < policy.intervalSeconds * 1000) return 0;
+  const since = now - DAY_MS;
+  if (policy.overlap === 'skip' && (await deploymentTaskRunTally(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR)).inFlight > 0) return 0;
+  let page = TITLING_BACKFILL_BATCH;
+  let ceiling: ActorCeiling | undefined;
+  if (policy.runsPerDay !== null) {
+    const used = await deploymentTaskEntriesSince(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR);
+    if (used >= policy.runsPerDay) {
+      emit({ kind: 'titling_backfill_at_ceiling', runsPerDay: policy.runsPerDay, used });
+      return 0;
+    }
+    page = Math.min(page, policy.runsPerDay - used);
+    ceiling = { actor: TITLING_BACKFILL_ACTOR, task: TITLING_TASK, perDay: policy.runsPerDay, sinceMs: since };
+  }
+  const candidates = await listBackfillTitleSessions(env.db, page);
+  if (candidates.length === 0) return 0;
+  if (env.origin === undefined) throw new Error('The titling backfill requires the Deployment origin to be configured.');
+  let dispatched = 0;
+  for (const target of candidates) {
+    const result = await titleSession(env, { ...target, now, origin: env.origin }, { mode: 'claim', actor: TITLING_BACKFILL_ACTOR, ...(ceiling === undefined ? {} : { ceiling }) });
+    if (result.outcome === 'dispatched' || result.outcome === 'queued') dispatched += 1;
+    if (result.outcome === 'ceiling') {
+      emit({ kind: 'titling_backfill_at_ceiling', runsPerDay: policy.runsPerDay, used: policy.runsPerDay });
+      break;
+    }
+  }
+  return dispatched;
+}
+
+export interface TitlingBackfillProgress extends TitlingBackfillPolicy {
+  /** Imported sessions still untitled and ready for the backfill. */
+  remaining: number;
+  /** Runs this actor dispatched in the trailing day; what the ceiling is measured against. */
+  usedToday: number;
+  /** Runs of the trailing day still queued or running. */
+  inFlight: number;
+  /** Runs of the trailing day that closed with a title written. */
+  completedToday: number;
+  /** Runs of the trailing day that closed without one. */
+  failedToday: number;
+}
+
+/** Where the backfill stands: its policy, what is left, and how the trailing day's runs went. */
+export async function titlingBackfillProgress(env: ServerEnv, now: number): Promise<TitlingBackfillProgress> {
+  const policy = await titlingBackfillPolicy(env);
+  const since = now - DAY_MS;
+  const [remaining, usedToday, tally] = await Promise.all([
+    countBackfillTitleSessions(env.db),
+    deploymentTaskEntriesSince(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR),
+    deploymentTaskRunTally(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR),
+  ]);
+  return { ...policy, remaining, usedToday, inFlight: tally.inFlight, completedToday: tally.completed, failedToday: tally.failed };
 }

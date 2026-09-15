@@ -177,6 +177,39 @@ export const failedAutomaticTitleSql = (session: string): string => `(EXISTS (
 )`;
 
 
+/** The actor a dispatch spec names, and null for a spec that names none. A spec the store did not write is not read as JSON at all. */
+const DISPATCH_ACTOR_SQL = `CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END`;
+/**
+ * One key of a run's context as a value a WHERE clause can compare, and null
+ * where the context holds no such key. A context the store did not write is not
+ * read as JSON at all, so a caller's own string cannot fail the query.
+ */
+const contextValue = (key: string): string => `CASE WHEN json_valid(run_context) THEN json_extract(run_context, '$.${key}') END`;
+
+/** A run row that counts as an actor's entry of a task from an instant on: not skipped, not replaced, dispatched by that actor. Bound as: task, window start, actor. */
+const ACTOR_ENTRY_SQL = `task = ? AND status != 'skipped' AND COALESCE(${contextValue('replaced')}, 0) != 1
+       AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?`;
+
+/**
+ * A ceiling on the entries one actor may make of a task across the whole
+ * Deployment in a window: the write that records the run refuses once the
+ * window holds that many, in the same statement that counts them.
+ */
+export interface ActorCeiling {
+  actor: string;
+  task: string;
+  perDay: number;
+  sinceMs: number;
+}
+
+/** The ceiling check, as part of the write that records a run. Bound as: per-day, task, window start, actor, run, run, per-day. */
+const ACTOR_CEILING_WHERE = `
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${ACTOR_ENTRY_SQL} AND ${NOT_THE_RUN_ADMITTED}) < ?)`;
+
+function actorCeilingParams(runId: string, ceiling: ActorCeiling | undefined): (string | number | null)[] {
+  return ceiling === undefined ? [null, null, null, null, runId, runId, null] : [ceiling.perDay, ceiling.task, ceiling.sinceMs, ceiling.actor, runId, runId, ceiling.perDay];
+}
+
 /**
  * The limit check, as part of the write that launches: each limit is either
  * unset (its parameter NULL) or compared against the count the same statement
@@ -191,18 +224,20 @@ const ADMISSION_WHERE = `
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) < ?)
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ? AND ${NOT_THE_RUN_ADMITTED}) < ?)
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) < ?)
-   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES} AND id != ?))`;
+   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES} AND id != ?))${ACTOR_CEILING_WHERE}`;
 
 /**
  * What a write is admitted against, or none: an unguarded write is a claim the
  * dispatcher already decided elsewhere. `singleFlight` names a task that runs
  * once at a time in a Project: the write refuses while another run of it is
  * live, in the same statement, so two wakes deciding at once write one row.
+ * `ceiling` names an actor's Deployment-wide window the write refuses past.
  */
 export interface WriteAdmission {
   limits: DispatchLimits;
   now: number;
   singleFlight?: boolean;
+  ceiling?: ActorCeiling;
 }
 
 export const NO_LIMITS: DispatchLimits = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
@@ -217,6 +252,7 @@ function admissionParams(scope: ReadScope, task: string | null, runId: string, a
     l.task_concurrent_runs, task, runId, runId, l.task_concurrent_runs,
     l.task_runs_per_hour, task, runId, runId, hourStart, l.task_runs_per_hour,
     single, scope.projectId, task, runId,
+    ...actorCeilingParams(runId, admission?.ceiling),
   ];
 }
 
@@ -957,15 +993,16 @@ const RECORD_QUEUED_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, queued_at, held_by, dispatch_spec, run_context)
   SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
-   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES}))`;
+   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES}))${ACTOR_CEILING_WHERE}`;
 
-/** Record a dispatch the Deployment holds back: a run row in `queued`, with no credential until it launches. A single-flight task is refused while another run of it is live. */
-export async function recordQueued(db: RelationalStore, scope: ReadScope, record: QueuedRecord, options: { singleFlight?: boolean } = {}): Promise<boolean> {
+/** Record a dispatch the Deployment holds back: a run row in `queued`, with no credential until it launches. A single-flight task is refused while another run of it is live, and a write past an actor's ceiling is refused in the same statement. */
+export async function recordQueued(db: RelationalStore, scope: ReadScope, record: QueuedRecord, options: { singleFlight?: boolean; ceiling?: ActorCeiling } = {}): Promise<boolean> {
   const result = await db.prepare(RECORD_QUEUED_SQL).bind(
     scope.projectId, record.id, record.agentId, record.task, record.instruction ?? null, record.provider, record.model,
     record.dryRun === true ? 1 : 0, record.queuedAt, record.heldBy, record.dispatchSpec, record.runContext ?? null,
     scope.projectId, record.id,
     options.singleFlight === true ? record.task : null, scope.projectId, record.task,
+    ...actorCeilingParams(record.id, options.ceiling),
   ).run();
   return result.meta.changes === 1;
 }
@@ -1292,7 +1329,6 @@ export async function markRecordedLaunch(db: RelationalStore, runId: string): Pr
 
 /** Unattributed legacy runs count conservatively against an actor's budget. */
 export const UNATTRIBUTED_DISPATCH_ACTOR = '';
-const DISPATCH_ACTOR_SQL = `CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END`;
 const ACTOR_FILTER_SQL = `AND (? IS NULL OR COALESCE(${DISPATCH_ACTOR_SQL}, ?) = ?)`;
 const actorParams = (actor?: string): Array<string | null> => [actor ?? null, actor ?? null, actor ?? null];
 
@@ -1325,12 +1361,30 @@ export async function lastTaskEntryAt(db: RelationalStore, scope: ReadScope, tas
   return row?.at ?? null;
 }
 
-/**
- * One key of a run's context as a value a WHERE clause can compare, and null
- * where the context holds no such key. A context the store did not write is not
- * read as JSON at all, so a caller's own string cannot fail the query.
- */
-const contextValue = (key: string): string => `CASE WHEN json_valid(run_context) THEN json_extract(run_context, '$.${key}') END`;
+/** Entries of `task` by `actor` from `sinceMs` on, across every Project: the count a Deployment-wide daily ceiling reads. Skipped and replaced rows are not entries. */
+export async function deploymentTaskEntriesSince(db: RelationalStore, task: string, sinceMs: number, actor: string): Promise<number> {
+  const row = await db.prepare(`SELECT COUNT(*) AS c FROM agent_runs WHERE ${ACTOR_ENTRY_SQL}`).bind(task, sinceMs, actor).first<{ c: number }>();
+  return row?.c ?? 0;
+}
+
+/** When `actor` last entered a run of `task` anywhere in the Deployment, or null when it never has. */
+export async function deploymentLastTaskEntryAt(db: RelationalStore, task: string, actor: string): Promise<number | null> {
+  const row = await db.prepare(
+    `SELECT MAX(COALESCE(queued_at, started_at)) AS at FROM agent_runs WHERE task = ? AND status != 'skipped' AND ${DISPATCH_ACTOR_SQL} = ?`,
+  ).bind(task, actor).first<{ at: number | null }>();
+  return row?.at ?? null;
+}
+
+/** How `actor`'s runs of `task` from `sinceMs` on stand across every Project: still in flight, completed, or failed. */
+export async function deploymentTaskRunTally(db: RelationalStore, task: string, sinceMs: number, actor: string): Promise<{ inFlight: number; completed: number; failed: number }> {
+  const row = await db.prepare(
+    `SELECT COALESCE(SUM(CASE WHEN ${IN_FLIGHT_RUN_STATUSES} THEN 1 ELSE 0 END), 0) AS inFlight,
+            COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
+            COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed
+       FROM agent_runs WHERE task = ? AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?`,
+  ).bind(task, sinceMs, actor).first<{ inFlight: number; completed: number; failed: number }>();
+  return row ?? { inFlight: 0, completed: 0, failed: 0 };
+}
 
 /**
  * Runs of this task the Project entered from the instant on, skips excluded.

@@ -154,6 +154,28 @@ export async function listReadyTitleSessions(db: RelationalStore, limit: number)
   return results;
 }
 
+/** A session every transcript of which arrived through the import channel; a session with no transcript, or with a live one, is not imported. */
+const importedSessionSql = (alias: string): string => `EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id)
+  AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id AND t.imported_at IS NULL)`;
+
+/** The imported sessions the backfill may title: ended, never attempted, untitled, every transcript parsed, with inline material; newest first. */
+const BACKFILL_CANDIDATE_SQL = `FROM sessions s
+    WHERE s.ended_at IS NOT NULL AND s.titled_at IS NULL AND s.title IS NULL AND ${importedSessionSql('s')}
+      AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')} AND ${sessionHasMaterialSql('s')}`;
+
+/** Up to `limit` sessions the imported-session backfill may title next, newest first. */
+export async function listBackfillTitleSessions(db: RelationalStore, limit: number): Promise<{ projectId: string; sessionId: string }[]> {
+  const { results } = await db.prepare(`SELECT s.project_id AS projectId, s.session_id AS sessionId ${BACKFILL_CANDIDATE_SQL}
+    ORDER BY s.ended_at DESC, s.project_id, s.session_id LIMIT ?`).bind(limit).all<{ projectId: string; sessionId: string }>();
+  return results;
+}
+
+/** How many imported sessions the backfill has left to title. */
+export async function countBackfillTitleSessions(db: RelationalStore): Promise<number> {
+  const row = await db.prepare(`SELECT COUNT(*) AS c ${BACKFILL_CANDIDATE_SQL}`).first<{ c: number }>();
+  return row?.c ?? 0;
+}
+
 const MATERIAL_SQL = `SELECT pb.prompt_id, substr(pb.text, 1, ?) AS prompt,
                      (SELECT substr(r.text, 1, ?) FROM responses r
                        WHERE r.project_id = pb.project_id AND r.session_id = pb.session_id AND r.prompt_id = pb.prompt_id AND r.text IS NOT NULL
