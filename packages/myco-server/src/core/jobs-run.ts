@@ -7,6 +7,7 @@
  * nothing left to do.
  */
 import type { ServerEnv } from './adapters.js';
+import type { PowerState } from './power.js';
 import { expireGrants } from '../auth/grants.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, endQueuedRun, expireLeases, HARNESS_MEMBER_ID, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 import { emit } from '../telemetry.js';
@@ -29,8 +30,8 @@ const DAY_MS = 86_400_000;
 /** How many rows one pass of a job touches before it yields; the next tick continues. */
 export const JOB_BATCH = 500;
 
-/** A job answers how many rows it changed; the tick reports that per job. */
-export type JobRun = (env: ServerEnv, now: number) => Promise<number>;
+/** A job answers how many rows it changed; the tick reports that per job. It is told the power state the wake resolved, for a job whose block names the states it dispatches in. */
+export type JobRun = (env: ServerEnv, now: number, state: PowerState) => Promise<number>;
 
 /** The retention window in days from the Deployment's leaf, clamped to the leaf's bounds; unset means the default. */
 export async function runRetentionDays(env: ServerEnv): Promise<number> {

@@ -19,10 +19,11 @@ export async function handleTitlingBackfill(env: ServerEnv, ctx: OwnerContext): 
   return ok(await titlingBackfillProgress(env, ctx.now));
 }
 
-const asObject = (value: unknown): Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
-/** `PUT /api/titling-backfill` with `{ enabled }`: sets the backfill block's switch in the owner's task overrides and answers the progress as it then stands. */
+const UNREADABLE = 'the task overrides held by the server cannot be read; correct them under Task overrides in Settings first';
+
+/** `PUT /api/titling-backfill` with `{ enabled }`: sets the backfill block's switch in the owner's task overrides and answers the progress as it then stands. An absent task entry or schedule is created; one that is present and not an object, `null` included, is refused rather than replaced. */
 export async function handleSetTitlingBackfill(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const body = await readJsonObject(ctx.request);
   const enabled = body?.enabled;
@@ -30,11 +31,14 @@ export async function handleSetTitlingBackfill(env: ServerEnv, ctx: OwnerContext
   const raw = (await leafValues(env.db, [OVERRIDES_LEAF])).get(OVERRIDES_LEAF);
   let held: unknown = {};
   if (raw !== undefined) {
-    try { held = JSON.parse(raw); } catch { return badRequest('the task overrides held by the server cannot be read; correct them in Settings first'); }
+    try { held = JSON.parse(raw); } catch { return badRequest(UNREADABLE); }
   }
-  const overrides = asObject(held);
-  const task = asObject(overrides[TITLING_TASK]);
-  const next = { ...overrides, [TITLING_TASK]: { ...task, schedule: { ...asObject(task.schedule), enabled } } };
+  if (!isObject(held)) return badRequest(UNREADABLE);
+  const task = Object.hasOwn(held, TITLING_TASK) ? held[TITLING_TASK] : {};
+  if (!isObject(task)) return badRequest(UNREADABLE);
+  const schedule = Object.hasOwn(task, 'schedule') ? task.schedule : {};
+  if (!isObject(schedule)) return badRequest(UNREADABLE);
+  const next = { ...held, [TITLING_TASK]: { ...task, schedule: { ...schedule, enabled } } };
   const result = await settingsWriter(env.db).setLeaf(OVERRIDES_LEAF, next, ctx.member.id, ctx.now);
   if (!result.applied) return badRequest(`the task overrides could not be written: ${result.refusal.reason}`);
   return ok(await titlingBackfillProgress(env, ctx.now));
