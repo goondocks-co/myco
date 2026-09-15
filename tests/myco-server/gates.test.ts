@@ -425,10 +425,10 @@ describe('gates', () => {
     expect(periods).toEqual([RETRY_AFTER_SECONDS, RETRY_AFTER_SECONDS]);
   });
 
-  it('keeps request stream ownership with the runtime; only the object-store indexer owns its reader', () => {
+  it('keeps request stream ownership with the runtime; only object-store readers own their readers', () => {
     for (const f of files(SRC)) {
       const t = readFileSync(f, 'utf8');
-      if (f.endsWith('/core/search-index.ts') || f.endsWith('/core/embedding/reconcile.ts')) {
+      if (f.endsWith('/core/search-index.ts') || f.endsWith('/core/embedding/reconcile.ts') || f.endsWith('/core/stored-object.ts')) {
         expect(t).not.toMatch(/\bRequest\b|\bRouteContext\b|\bServerEnv\b/);
         continue;
       }
