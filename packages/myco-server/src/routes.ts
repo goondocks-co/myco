@@ -11,6 +11,7 @@ import { handleArchiveProject, handleCreateProject, handleProjects, handleUnarch
 import { handleStatus } from './api/status.js';
 import { handleProjectSearch } from './api/search.js';
 import { handleWake } from './api/wake.js';
+import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-backfill.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
   handleSetSecret, handleSetSetting, handleSettings,
@@ -97,6 +98,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/health', auth: 'public', bodyMode: 'none', handler: health },
   { method: 'POST', path: '/api/harness/dispatch', auth: 'owner', handler: handleHarnessDispatch },
   { method: 'POST', path: '/api/wake', auth: 'owner', handler: handleWake },
+  { method: 'GET', path: '/api/titling-backfill', auth: 'owner', handler: handleTitlingBackfill },
+  { method: 'PUT', path: '/api/titling-backfill', auth: 'owner', handler: handleSetTitlingBackfill },
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
   { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, handler: handleRefresh },

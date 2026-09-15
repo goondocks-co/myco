@@ -27,7 +27,8 @@ import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
 import { emit } from '../telemetry.js';
-import { claimQueuedRun, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, renewRunLease, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ClaimedRunRow } from './runs.js';
+import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, renewRunLease, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
+export type { ActorCeiling } from './runs.js';
 import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openProviderCredential } from './provider-credentials.js';
 import { leafValues } from './settings.js';
@@ -230,6 +231,11 @@ export class LimitReached extends Error {
   constructor() { super('a limit holds this dispatch'); this.name = 'LimitReached'; }
 }
 
+/** A write past an actor's Deployment-wide ceiling: no row is written, and the dispatch is neither launched nor queued. */
+export class CeilingReached extends Error {
+  constructor() { super('the actor\'s ceiling holds this dispatch'); this.name = 'CeilingReached'; }
+}
+
 /** A single-flight task with another run of it live in the Project: the write refused, and the dispatch is skipped rather than queued. */
 export class AlreadyRunning extends Error {
   constructor() { super('another run of this task is live'); this.name = 'AlreadyRunning'; }
@@ -303,7 +309,7 @@ export async function admitDispatch(env: ServerEnv, task: string, now: number, l
  * dispatch that reads the load as free and then loses the race to another is
  * queued rather than launched past the limit.
  */
-export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { singleFlight?: boolean } = {}): Promise<({ queued: false } & Launched) | ({ queued: true } & Queued)> {
+export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { singleFlight?: boolean; ceiling?: ActorCeiling } = {}): Promise<({ queued: false } & Launched) | ({ queued: true } & Queued)> {
   const limits = await readDispatchLimits(env);
   const held = await admitDispatch(env, prepared.task, now, limits);
   // Neither front door runs a harness. A worker-served task waits in the claim
@@ -313,7 +319,7 @@ export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatc
   if (prepared.servedBy === 'worker') return { queued: true, ...(await enqueueDispatch(env, prepared, spec, held ?? 'worker', now, options)) };
   if (held !== null) return { queued: true, ...(await enqueueDispatch(env, prepared, spec, held, now, options)) };
   try {
-    return { queued: false, ...(await launchDispatch(env, prepared, spec, now, { limits, singleFlight: options.singleFlight })) };
+    return { queued: false, ...(await launchDispatch(env, prepared, spec, now, { limits, singleFlight: options.singleFlight, ceiling: options.ceiling })) };
   } catch (err) {
     // The launch already returned the row to the queue; the dispatch waits there rather than being written twice.
     if (err instanceof RuntimeDraining && err.runId !== undefined) {
@@ -330,13 +336,16 @@ export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatc
  * asked of it and the limit that holds it, with no credential until it
  * launches. Wakes the Deployment so the drain follows as capacity returns.
  */
-export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, held: HeldBy, now: number, options: { singleFlight?: boolean } = {}): Promise<Queued> {
+export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, held: HeldBy, now: number, options: { singleFlight?: boolean; ceiling?: ActorCeiling } = {}): Promise<Queued> {
   await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now);
   const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
   const stored = storedSpecOf(spec);
   const scope = { projectId: prepared.projectId };
   if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored), runContext: runContextOf(spec, spec.timeoutSeconds ?? runTimeoutForTask(prepared.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS) }, options))) {
-    if (options.singleFlight === true && (await getRun(env.db, scope, runId)) === null) throw new AlreadyRunning();
+    if ((await getRun(env.db, scope, runId)) === null) {
+      if (await ceilingHolds(env.db, options.ceiling)) throw new CeilingReached();
+      if (options.singleFlight === true) throw new AlreadyRunning();
+    }
     throw new Error('run id already taken');
   }
   emit({ kind: 'harness_queued', runId, task: prepared.task, projectId: prepared.projectId, actor: spec.actor, heldBy: held });
@@ -549,6 +558,11 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType, model, provider, credentialEnv, admission } };
 }
 
+/** Whether an actor's ceiling is full, read after a write refused: the count the write compared against. */
+async function ceilingHolds(db: ServerEnv['db'], ceiling: ActorCeiling | undefined): Promise<boolean> {
+  return ceiling !== undefined && (await deploymentTaskEntriesSince(db, ceiling.task, ceiling.sinceMs, ceiling.actor)) >= ceiling.perDay;
+}
+
 /**
  * Launch a prepared dispatch: the runtime's member and agent rows, a credential
  * minted for this run alone, the run's row written `pending` with the
@@ -558,7 +572,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
  * of it. Rejects when the runtime refuses to start, after marking the row
  * failed; the caller decides what its own state does then.
  */
-export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { limits?: DispatchLimits; singleFlight?: boolean } = {}): Promise<Launched> {
+export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { limits?: DispatchLimits; singleFlight?: boolean; ceiling?: ActorCeiling } = {}): Promise<Launched> {
   if (!hasTaskRuntime(env, prepared.task) || env.harnessLaunch === undefined) throw new Error('harness runtime unbound after preparation');
   const timeoutSeconds = spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS;
   await ensureMember(env.db, HARNESS_MEMBER_ID, now, 'member', 'harness runtime');
@@ -579,7 +593,9 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   // on whether that child is still running.
   // A queued row moves to pending for this credential; any other id is recorded afresh. Either way the row exists before
   // the launch, and the write itself carries the limit check when limits are given.
-  const admission = options.limits === undefined && options.singleFlight !== true ? undefined : { limits: options.limits ?? NO_LIMITS, now, singleFlight: options.singleFlight === true };
+  const admission = options.limits === undefined && options.singleFlight !== true && options.ceiling === undefined
+    ? undefined
+    : { limits: options.limits ?? NO_LIMITS, now, singleFlight: options.singleFlight === true, ...(options.ceiling === undefined ? {} : { ceiling: options.ceiling }) };
   // Nothing names this credential until the write lands, so a store that throws
   // anywhere between the mint and that write retires it on its way out.
   let carried: string | null;
@@ -603,6 +619,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
       throw new LimitReached();
     }
     if (existing !== null) throw new Error('run id already taken');
+    if (await ceilingHolds(env.db, options.ceiling)) throw new CeilingReached();
     if (options.singleFlight === true && (await hasLiveTaskRun(env.db, scope, prepared.task))) throw new AlreadyRunning();
     throw new LimitReached();
   }

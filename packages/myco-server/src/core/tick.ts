@@ -81,7 +81,7 @@ export async function runTick(env: ServerEnv, now: number, options: { serverUrl?
       continue;
     }
     try {
-      const changed = await run(env, now);
+      const changed = await run(env, now, resolved.state);
       emit({ kind: 'job_ran', job: job.name, state: resolved.state, changed });
       jobs.push({ name: job.name, changed, failed: null });
     } catch (err) {

@@ -71,6 +71,11 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'idle',
     converges: 'every unclaimed live session-end request with fully parsed material has a titling run; imported sessions are not automatically titled',
   },
+  {
+    name: 'titling-backfill',
+    runsThrough: 'idle',
+    converges: 'every untitled imported session with fully parsed material has had one titling attempt, newest first, inside the Deployment\'s daily backfill ceiling while scheduled intelligence is on; a live session, and a session already attempted, is never touched here',
+  },
   // #1151 — worker mode
   {
     name: 'worker-lease-sweep',
@@ -156,6 +161,18 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   [SEEDING_TASK]: null,
   [TITLING_TASK]: null,
 };
+
+/**
+ * The block the imported-session backfill runs under, in the same vocabulary
+ * and under the same `agent.tasks` override as every scheduled task. Off until
+ * an operator turns it on: `enabled` decides whether a wake dispatches at all,
+ * `runIn` the power states a wake dispatches in, `maxRunsPerDay` a ceiling
+ * counted across the Deployment by the backfill's actor, `intervalSeconds` the
+ * least time between two wakes that dispatch, and `overlap: 'skip'` holds a
+ * wake while a backfill run is still in flight. The `titling-backfill` job
+ * reads it; the clock's per-Project loop does not.
+ */
+export const TITLING_BACKFILL_SCHEDULE: TaskSchedule = { enabled: false, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', maxRunsPerDay: 24 };
 
 /** The schedule this Deployment declares for a task: the block, or null for a task it schedules nothing for and for a name it does not serve. */
 export function declaredScheduleFor(task: string): TaskSchedule | null {
