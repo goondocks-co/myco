@@ -35,7 +35,7 @@ function fixture() {
     VALUES ('proj_1','s_backup','m_fixture','mt_fixture',1,1,'Recovered 🌱 title')`);
   const backupKey = 'backups/lineage__1__bk_pinned.jsonl';
   const backupBody = '{"format":"myco-backup/1"}\n';
-  source.sqlite.run(`INSERT INTO backups VALUES ('pinned',?,1,?,'{}',13,'fixture',1)`, [backupKey, Buffer.byteLength(backupBody)]);
+  source.sqlite.run(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned) VALUES ('pinned',?,1,?,'{}',13,'fixture',1)`, [backupKey, Buffer.byteLength(backupBody)]);
   source.sqlite.exec('CREATE TABLE recovery_fixture(id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT, bytes BLOB)');
   source.sqlite.run('INSERT INTO recovery_fixture VALUES (71, NULL, NULL)');
   source.sqlite.run('DELETE FROM recovery_fixture');

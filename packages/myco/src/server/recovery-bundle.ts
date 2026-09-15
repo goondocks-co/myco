@@ -25,6 +25,8 @@ const blobSchema = z.object({ key: z.string(), sha256: z.string().regex(DIGEST),
 const isBackupKey = (key: string): boolean => key.startsWith(BACKUP_KEY_PREFIX)
   && /^[A-Za-z0-9_-]+\.jsonl$/.test(key.slice(BACKUP_KEY_PREFIX.length));
 const backupSchema = blobSchema.omit({ sha256: true }).extend({ key: z.string().refine(isBackupKey, 'invalid recovery backup key') });
+/** A catalogued backup as its snapshot records it: the digest written with the row, or null for a row that carries none. */
+const cataloguedBackupSchema = backupSchema.extend({ sha256: z.string().regex(DIGEST).nullable() });
 const snapshotSchema = z.object({
   deploymentId: z.string().min(1), schemaVersion: z.number().int().positive(),
   database: fingerprintSchema, blobCount: z.number().int().nonnegative(), blobBytes: z.number().int().nonnegative(),
@@ -49,6 +51,20 @@ export type RecoveryBlob = z.infer<typeof blobSchema>;
 type RecoveryObject = RecoveryBlob | z.infer<typeof backupSchema>;
 export type RecoverySnapshot = Pick<z.infer<typeof snapshotSchema>, 'configuration' | 'credentialsRequired'>;
 export type RecoveryManifest = z.infer<typeof manifestSchema>;
+
+type CataloguedBackup = z.infer<typeof cataloguedBackupSchema>;
+
+/** Every catalogued backup in a snapshot, ordered by key. A snapshot whose schema predates the digest column answers null digests. */
+function cataloguedBackups(db: Database): CataloguedBackup[] {
+  const recorded = db.query("SELECT 1 FROM pragma_table_info('backups') WHERE name = 'sha256'").get() !== null;
+  return db.query(`SELECT key, size_bytes AS bytes, ${recorded ? 'sha256' : 'NULL AS sha256'} FROM backups ORDER BY key`).all()
+    .map((row) => cataloguedBackupSchema.parse(row));
+}
+
+/** The object a copy verifies: a backup with a recorded digest is checked against it, and one without is checked by size. */
+function expectedBackupObject({ key, bytes, sha256 }: CataloguedBackup): RecoveryObject {
+  return sha256 === null ? { key, bytes } : { key, bytes, sha256 };
+}
 
 function registeredObjects(db: Database) {
   return db.query<RecoveryBlob, []>("SELECT project_id || '/' || key AS key, key AS sha256, size AS bytes FROM blobs ORDER BY project_id, key").iterate();
@@ -219,21 +235,36 @@ async function writeRecoveryBundle(
         }
         if (complete) throw new Error(`completed recovery artifact is missing blob ${blob.key}`);
         report(progress);
-        const stored = await store.put(blob.key, await adapter.blob(blob, workDir), 'sha256' in blob ? { sha256: blob.sha256 } : undefined);
+        const body = await adapter.blob(blob, workDir);
+        let stored;
+        try {
+          stored = await store.put(blob.key, body, 'sha256' in blob ? { sha256: blob.sha256 } : undefined);
+        } catch (error) {
+          throw new Error(`recovery object ${blob.key} was not stored: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+        }
         if (stored.size !== blob.bytes) { await store.delete(blob.key); throw new Error(`recovery blob has an unexpected size: ${blob.key}`); }
         fs.chmodSync(file, OWNER_FILE_MODE);
         syncFile(file);
         return { key: blob.key, ...('sha256' in blob ? { sha256: blob.sha256, bytes: blob.bytes } : await fingerprint(file)) };
       };
-      const backups = db.query<z.infer<typeof backupSchema>, []>('SELECT key, size_bytes AS bytes FROM backups ORDER BY key').all().map((row) => backupSchema.parse(row));
-      const expected = new Map(backups.map((backup) => [backup.key, backup.bytes]));
+      const backups = cataloguedBackups(db);
+      const expected = new Map(backups.map((backup) => [backup.key, backup]));
       if (expected.size !== backups.length) throw new Error('recovery backup coverage has duplicate catalogued keys');
       if (manifest.format === 'myco-recovery/2') {
         const receipts = manifest.backupObjects;
+        const matchesCatalogue = (receipt: RecoveryBlob): boolean => {
+          const catalogued = expected.get(receipt.key);
+          return catalogued !== undefined && catalogued.bytes === receipt.bytes
+            && (catalogued.sha256 === null || catalogued.sha256 === receipt.sha256);
+        };
         if (new Set(receipts.map((receipt) => receipt.key)).size !== receipts.length
-          || receipts.some((receipt) => expected.get(receipt.key) !== receipt.bytes)
+          || !receipts.every(matchesCatalogue)
           || (manifest.status === 'complete' && receipts.length !== backups.length)) {
           throw new Error('recovery backup coverage does not match its database');
+        }
+        const undigested = backups.filter((backup) => backup.sha256 === null).length;
+        if (undigested > 0) {
+          report(`${undigested} catalogued backup object${undigested === 1 ? ' has' : 's have'} no digest recorded at creation; ${undigested === 1 ? 'its copy is' : 'their copies are'} checked by size only`);
         }
       } else if (backups.length > 0) {
         report(`${backups.length} catalogued backup object${backups.length === 1 ? ' is' : 's are'} outside this legacy artifact; create a new artifact for complete object coverage`);
@@ -245,7 +276,7 @@ async function writeRecoveryBundle(
       if (manifest.format === 'myco-recovery/2') {
         for (const [index, backup] of backups.entries()) {
           const receipt = manifest.backupObjects.find((held) => held.key === backup.key);
-          const copied = await copyObject(receipt ?? backup, `Copying catalogued backup ${index + 1} of ${backups.length}`);
+          const copied = await copyObject(receipt ?? expectedBackupObject(backup), `Copying catalogued backup ${index + 1} of ${backups.length}`);
           if (receipt === undefined) {
             manifest.backupObjects.push(copied);
             writeManifest(root, manifest);

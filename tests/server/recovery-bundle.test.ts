@@ -3,7 +3,9 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { copyRecoveryBundle, copyRecoveryObjects, createRecoveryBundle, type RecoveryAdapter, type RecoveryObjectDestination } from '@myco/server/recovery-bundle.js';
+import { Database } from 'bun:sqlite';
+import { createBackup } from '@myco-server-worker/core/backup.js';
+import { copyRecoveryBundle, copyRecoveryObjects, createRecoveryBundle, verifyRecoveryBundle, type RecoveryAdapter, type RecoveryObjectDestination } from '@myco/server/recovery-bundle.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
 function fixture() {
@@ -39,13 +41,20 @@ function fixture() {
   };
 }
 
-function addBackup(f: ReturnType<typeof fixture>, id = 'pinned') {
+const digestOf = (body: string): string => createHash('sha256').update(body).digest('hex');
+
+/** A catalogued backup; `recorded: false` is a row written before backups recorded their digest. */
+function addBackup(f: ReturnType<typeof fixture>, id = 'pinned', { recorded = true } = {}) {
   const key = `backups/lineage__1__bk_${id}.jsonl`;
   const body = JSON.stringify({ format: 'myco-backup/1', deployment_id: 'lineage' });
-  f.source.sqlite.run(`INSERT INTO backups VALUES (?,?,1,?,'{}',13,'fixture',1)`, [id, key, Buffer.byteLength(body)]);
+  f.source.sqlite.run(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned, sha256)
+    VALUES (?,?,1,?,'{}',13,'fixture',1,?)`, [id, key, Buffer.byteLength(body), recorded ? digestOf(body) : null]);
   f.bodies.set(key, body);
-  return { key, body };
+  return { key, body, bytes: Buffer.byteLength(body) };
 }
+
+/** The same number of bytes as `body` with different content. */
+const sameLengthSubstitute = (body: string): string => body.replace('lineage', 'LINEAGE');
 
 describe('verified recovery artifacts', () => {
   it('resumes verified object transfers after an interrupted upload, including pinned backups', async () => {
@@ -142,7 +151,7 @@ describe('verified recovery artifacts', () => {
   it('does not certify incomplete backup coverage or trust uncatalogued receipt paths', async () => {
     const f = fixture();
     try {
-      const backup = addBackup(f);
+      const backup = addBackup(f, 'pinned', { recorded: false });
       f.bodies.set(backup.key, 'truncated');
       await expect(createRecoveryBundle(f.destination, f.adapter)).rejects.toThrow('unexpected size');
       expect(f.manifest().status).toBe('content');
@@ -156,6 +165,98 @@ describe('verified recovery artifacts', () => {
         fs.writeFileSync(path.join(f.destination, 'recovery.json'), JSON.stringify({ ...saved, backupObjects }));
         await expect(createRecoveryBundle(f.destination, f.adapter)).rejects.toThrow('backup coverage');
       }
+    } finally { f.cleanup(); }
+  });
+
+  it('refuses a same-length substitute for a catalogued backup with a recorded digest and keeps the last complete artifact usable', async () => {
+    const f = fixture();
+    try {
+      const backup = addBackup(f);
+      const lastGood = await createRecoveryBundle(f.destination, f.adapter);
+      const substitute = sameLengthSubstitute(backup.body);
+      expect(Buffer.byteLength(substitute)).toBe(backup.bytes);
+      f.bodies.set(backup.key, substitute);
+      const next = path.join(f.root, 'next');
+      await expect(createRecoveryBundle(next, f.adapter)).rejects.toThrow(`recovery object ${backup.key} was not stored: stored bytes do not match the declared sha256 digest`);
+      const attempted = JSON.parse(fs.readFileSync(path.join(next, 'recovery.json'), 'utf8'));
+      expect(attempted.status).toBe('content');
+      expect(attempted.backupObjects).toEqual([]);
+      expect(fs.readdirSync(path.join(next, 'blobs', 'backups'))).toEqual([]);
+      expect(await verifyRecoveryBundle(f.destination)).toEqual(lastGood);
+      expect(fs.readFileSync(path.join(f.destination, 'blobs', backup.key), 'utf8')).toBe(backup.body);
+      f.bodies.set(backup.key, backup.body);
+      expect(await createRecoveryBundle(next, f.adapter)).toMatchObject({
+        status: 'complete', backupObjects: [{ key: backup.key, bytes: backup.bytes, sha256: digestOf(backup.body) }],
+      });
+    } finally { f.cleanup(); }
+  });
+
+  it('refuses a backup copy and receipt that agree with each other but not with the digest recorded at creation', async () => {
+    const f = fixture();
+    try {
+      const backup = addBackup(f);
+      await createRecoveryBundle(f.destination, f.adapter);
+      const substitute = sameLengthSubstitute(backup.body);
+      const file = path.join(f.destination, 'blobs', backup.key);
+      fs.writeFileSync(file, substitute);
+      const saved = f.manifest();
+      saved.backupObjects = [{ key: backup.key, bytes: backup.bytes, sha256: digestOf(substitute) }];
+      fs.writeFileSync(path.join(f.destination, 'recovery.json'), JSON.stringify(saved));
+      f.bodies.clear();
+      await expect(verifyRecoveryBundle(f.destination)).rejects.toThrow('recovery backup coverage does not match its database');
+      await expect(createRecoveryBundle(f.destination, f.adapter)).rejects.toThrow('recovery backup coverage does not match its database');
+      expect(fs.readFileSync(file, 'utf8')).toBe(substitute);
+      expect(f.manifest()).toEqual(saved);
+    } finally { f.cleanup(); }
+  });
+
+  it('carries a backup the server wrote through recovery under the digest recorded at its creation', async () => {
+    const f = fixture();
+    try {
+      const written = await createBackup(f.source.db, f.source.bucket, { producer: 'mem_fixture', now: 2 });
+      const adapter: RecoveryAdapter = { ...f.adapter, blob: async (object, workDir) => {
+        if (object.key !== written.key) return f.adapter.blob(object, workDir);
+        return (await f.source.bucket.get(written.key))!.body;
+      } };
+      const result = await createRecoveryBundle(f.destination, adapter);
+      expect(result).toMatchObject({ status: 'complete', backupObjects: [{ key: written.key, bytes: written.size_bytes, sha256: written.sha256 }] });
+      expect(createHash('sha256').update(fs.readFileSync(path.join(f.destination, 'blobs', written.key))).digest('hex')).toBe(written.sha256!);
+      const copied = await copyRecoveryBundle(f.destination, path.join(f.root, 'copied'));
+      expect(copied).toMatchObject({ status: 'complete', backupObjects: [{ key: written.key, sha256: written.sha256 }] });
+    } finally { f.cleanup(); }
+  });
+
+  it('keeps a catalogued backup with no recorded digest recoverable by size and reports that no creation digest exists', async () => {
+    const f = fixture();
+    try {
+      const backup = addBackup(f, 'legacy', { recorded: false });
+      const reports: string[] = [];
+      const result = await createRecoveryBundle(f.destination, f.adapter, (line) => reports.push(line));
+      expect(result).toMatchObject({ status: 'complete', backupObjects: [{ key: backup.key, bytes: backup.bytes, sha256: digestOf(backup.body) }] });
+      expect(reports).toContain('1 catalogued backup object has no digest recorded at creation; its copy is checked by size only');
+      const snapshot = new Database(path.join(f.destination, 'myco.sqlite'), { readonly: true });
+      try { expect(snapshot.query('SELECT sha256 FROM backups').all()).toEqual([{ sha256: null }]); } finally { snapshot.close(); }
+      expect(f.source.sqlite.query('SELECT sha256 FROM backups').all()).toEqual([{ sha256: null }]);
+      expect(await verifyRecoveryBundle(f.destination)).toEqual(result);
+    } finally { f.cleanup(); }
+  });
+
+  it('reads a snapshot whose schema predates recorded backup digests', async () => {
+    const f = fixture();
+    try {
+      const backup = addBackup(f, 'legacy', { recorded: false });
+      const adapter: RecoveryAdapter = { ...f.adapter, snapshot: async (file, workDir) => {
+        const captured = await f.adapter.snapshot(file, workDir);
+        const older = new Database(file);
+        try {
+          older.exec('ALTER TABLE backups DROP COLUMN sha256');
+          older.exec("UPDATE schema_meta SET value = '40' WHERE key = 'version'");
+        } finally { older.close(); }
+        return captured;
+      } };
+      const result = await createRecoveryBundle(f.destination, adapter);
+      expect(result).toMatchObject({ status: 'complete', snapshot: { schemaVersion: 40 }, backupObjects: [{ key: backup.key, bytes: backup.bytes }] });
+      expect(await verifyRecoveryBundle(f.destination)).toEqual(result);
     } finally { f.cleanup(); }
   });
 
