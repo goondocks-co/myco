@@ -32,7 +32,7 @@ export type IngestResult =
  */
 export type WriteOrigin = 'member' | 'server';
 
-export type IngestContext = Pick<RouteContext, 'projectId' | 'machineId' | 'tokenId' | 'bodyBytes' | 'now'> & { writeOrigin?: WriteOrigin };
+export type IngestContext = Pick<RouteContext, 'projectId' | 'machineId' | 'tokenId' | 'bodyBytes' | 'now'> & { writeOrigin?: WriteOrigin; /** The member acting through a server-origin write, where a projection records who acted; absent for a member's own capture and for derived events. */ actor?: string };
 
 /** A terminal refusal of the caller's own request: 200 `{persisted:false, code, reason}` plus one `ingest_refused` event carrying the refusal's classifier only. */
 export function refused(ctx: Pick<IngestContext, 'projectId' | 'tokenId'>, { reason, classifier }: Refusal): IngestResult {
@@ -95,7 +95,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   if (!payload.ok) return payload;
   const p = payload.value;
 
-  const write: WriteContext = { projectId: ctx.projectId, tokenId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now, nonce: crypto.randomUUID() };
+  const write: WriteContext = { projectId: ctx.projectId, tokenId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now, nonce: crypto.randomUUID(), actor: ctx.actor ?? null };
   const digest = await envelopeHash(e);
   const contentHash = await contentHashOf(spec, p);
   const plan: KindPlan = planKind(spec, { db, ctx: write, e, p, contentHash });

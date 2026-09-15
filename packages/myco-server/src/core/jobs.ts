@@ -96,7 +96,6 @@ export interface DeferredJob extends ServerJob {
 
 /** Declared with #919's engine, not yet given an implementation; a tick never sees these. */
 export const DEFERRED_JOBS: readonly DeferredJob[] = [
-  { name: 'session-maintenance', runsThrough: 'sleep', converges: 'no session is left open past its last receipt', owner: '#919' },
   { name: 'release-provenance-reconcile', runsThrough: 'sleep', converges: 'every release-state row reflects the git state it was checked against', owner: '#919' },
 ];
 

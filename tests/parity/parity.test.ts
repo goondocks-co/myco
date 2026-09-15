@@ -23,8 +23,9 @@ import { workerWire } from './scenarios/worker-wire.ts';
 import { codexRecording } from './scenarios/codex-recording.ts';
 import { toolBlobRetention } from './scenarios/tool-blob-retention.ts';
 import { titlingBackfill } from './scenarios/titling-backfill.ts';
+import { sessionEnd } from './scenarios/session-end.ts';
 
-const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, workerWire, codexRecording, toolBlobRetention, titlingBackfill];
+const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, workerWire, codexRecording, toolBlobRetention, titlingBackfill, sessionEnd];
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

@@ -14,6 +14,8 @@ export interface WriteContext {
   machineId: string;
   now: number;
   nonce: string;
+  /** The member acting through a server-origin write, or null: what an applied end is attributed to. */
+  actor: string | null;
 }
 
 /** A SQL fragment with its bound parameters. */
@@ -213,6 +215,33 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
   };
 };
 
+/**
+ * A session's lifecycle, decided at two projections and nowhere else, from
+ * projected rows alone: the raw event log is not consulted.
+ *
+ * `LATEST_USER_TURN_SQL` is the instant of the session's newest captured human
+ * prompt, on any channel. An end, on any channel, applies only when it is newer
+ * than the standing end and not older than that turn, so an end delivered after
+ * a newer prompt leaves a resumed session open whatever order the two arrive
+ * in. A human prompt's admission reopens the session when the newest stored
+ * human turn is newer than the standing end: the stored row decides, never the
+ * envelope of the event that named it, so a replayed prompt under a fresh event
+ * id and a later instant changes nothing. An applied end records the acting
+ * member, or NULL for an agent's or an import's; a reopen clears it.
+ *
+ * Bound as: end, end (for `endApplies`); none for `reopens` beyond the row and its gate.
+ */
+const LATEST_USER_TURN_SQL = `(SELECT MAX(pb.created_at) FROM prompt_batches pb
+   WHERE pb.project_id = sessions.project_id AND pb.session_id = sessions.session_id AND pb.origin = 'user')`;
+const END_APPLIES_SQL = `((ended_at IS NULL OR ? > ended_at) AND ? >= COALESCE(${LATEST_USER_TURN_SQL}, 0))`;
+const endAppliesParams = (endedAt: number): number[] => [endedAt, endedAt];
+/** A human prompt's admission reopens the session its stored turns say is open; any other prompt leaves it as it is. */
+const reopensSession = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload): PreparedStatement[] => p.origin !== 'user' ? [] : [
+  db.prepare(`UPDATE sessions SET ended_at = NULL, ended_by = NULL
+    WHERE project_id = ? AND session_id = ? AND ended_at IS NOT NULL AND ended_at < COALESCE(${LATEST_USER_TURN_SQL}, 0) AND ${RAW_ROW_GATE}`)
+    .bind(ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
+];
+
 const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
   const endedAt = orderingTime(spec, p, 'endedAt', e.createdAt);
   const requestedAt = e.channel === 'import' ? null : endedAt;
@@ -220,11 +249,12 @@ const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
     identities: [],
     admission: [],
     projections: [
-      db.prepare(`UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ? > ended_at THEN ? ELSE ended_at END,
-          titling_requested_at = CASE WHEN ? IS NULL THEN titling_requested_at
+      db.prepare(`UPDATE sessions SET ended_at = CASE WHEN ${END_APPLIES_SQL} THEN ? ELSE ended_at END,
+          ended_by = CASE WHEN ${END_APPLIES_SQL} THEN ? ELSE ended_by END,
+          titling_requested_at = CASE WHEN ? IS NULL OR NOT ${END_APPLIES_SQL} THEN titling_requested_at
             ELSE MIN(COALESCE(titling_requested_at, ?), ?) END
         WHERE project_id = ? AND session_id = ? AND ${RAW_ROW_GATE}`)
-        .bind(endedAt, endedAt, requestedAt, requestedAt, requestedAt, ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
+        .bind(...endAppliesParams(endedAt), endedAt, ...endAppliesParams(endedAt), ctx.actor, requestedAt, ...endAppliesParams(endedAt), requestedAt, requestedAt, ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
     ],
     reads: [],
     refusal: () => NOT_STORED,
@@ -258,6 +288,7 @@ const prompt = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
         .bind(ctx.projectId, p.promptId, e.sessionId, e.eventId, opt(p.parentPromptId), opt(p.threadId), opt(p.threadLabel), p.origin, opt(p.promptKind),
               opt(p.text), opt(blob), contentHash, e.createdAt, e.createdAt, ctx.projectId, p.promptId, ctx.machineId, ctx.tokenId, ctx.now,
               ...rawGateParams(ctx, e)),
+      ...reopensSession(db, ctx, e, p),
     ],
     reads: [db.prepare(`SELECT content_hash FROM prompt_batches WHERE project_id = ? AND prompt_id = ?`).bind(ctx.projectId, p.promptId)],
     refusal: () => NOT_STORED,

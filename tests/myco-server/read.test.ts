@@ -26,7 +26,7 @@ describe('read/sessions', () => {
       sessionId: 's3', machineId: 'm2', createdByTokenId: 'tok_1', firstReceivedAt: 3, lastReceivedAt: 20,
       agent: 'claude-code', branch: 'main', startedAt: 3, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null,
       memberId: null, memberLabel: null, runtimeLabel: null, runtimeKind: null,
-      title: null, summary: null, titledAt: null, label: 'claude-code',
+      title: null, summary: null, titledAt: null, endedBy: null, endedByLabel: null, label: 'claude-code',
     });
     expect(cursor).toBeNull();
   });

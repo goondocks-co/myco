@@ -65,8 +65,8 @@ async function upload(env: ReturnType<typeof sqliteEnv>, token: string, bytes: U
 }
 
 /** Exact projection-statement totals, pinned per payload shape: a projection that vanishes fails the gate. */
-const FULL_PROJECTION_STATEMENTS = 15;
-const REQUIRED_ONLY_PROJECTION_STATEMENTS = 13;
+const FULL_PROJECTION_STATEMENTS = 16;
+const REQUIRED_ONLY_PROJECTION_STATEMENTS = 14;
 /** Every field carrying the prompt-reference marker across the catalogue. */
 const PROMPT_REFERENCE_MARKERS = 9;
 /** Every blob-key field of the catalogue as `kind.field`, pinned by name; the absent-key admission gate drives each one. */
@@ -76,7 +76,7 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 48;
+const PLANNED_STATEMENTS = 49;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
 const ID_ROLES = { key: 7, prompt: 9, group: 1 };
@@ -460,7 +460,7 @@ describe('kind catalogue', () => {
 
   it('derives an owned identity for every keyed column a kind projects, so a keyed table cannot enter the catalogue without its ownership check — but the named Project-shared projections, which carry none', async () => {
     const recorder = { prepare: (sql: string) => ({ sql, params: [] as unknown[], bind: (...params: unknown[]) => ({ sql, params }) }) } as any;
-    const ctx: WriteContext = { projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', now: 1, nonce: 'nonce-1' };
+    const ctx: WriteContext = { projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', now: 1, nonce: 'nonce-1', actor: null };
     for (const spec of KINDS) {
       const payload = { ...FIXTURES[spec.name].payload, blob: 'a'.repeat(64) };
       const e = { eventId: uuid(1), sessionId: 'sess_1', kind: spec.name, createdAt: 1_000, channel: 'cli', producer: { adapter: 'a', version: '1' }, payload, payloadJson: '{}', payloadBytes: new Uint8Array(0) } as any;
@@ -563,7 +563,7 @@ describe('kind catalogue', () => {
 
   it('conjoins the raw-row gate into every projection statement of every kind, and binds this request\'s nonce to it', () => {
     const recorder = { prepare: (sql: string) => ({ sql, params: [] as unknown[], bind: (...params: unknown[]) => ({ sql, params }) }) } as any;
-    const ctx: WriteContext = { projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', now: 1, nonce: 'nonce-1' };
+    const ctx: WriteContext = { projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', now: 1, nonce: 'nonce-1', actor: null };
     // Both payload shapes are planned: every field present, and only the required ones. A statement a kind builds
     // solely on an optional-field branch is invisible to a gate that plans one shape, so each shape is counted and
     // the totals are pinned exactly — a projection that disappears is a failure, not a smaller number.
@@ -594,7 +594,7 @@ describe('kind catalogue', () => {
     // The catalogue gate keeps today's ordering fields bounded; this keeps the planner from reading an unbounded one
     // at all, so an ordering added later cannot quietly decide a merge from a value the clock rule never reached.
     const recorder = { prepare: (sql: string) => ({ sql, params: [] as unknown[], bind: (...params: unknown[]) => ({ sql, params }) }) } as any;
-    const ctx: WriteContext = { projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', now: 1, nonce: 'nonce-1' };
+    const ctx: WriteContext = { projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', now: 1, nonce: 'nonce-1', actor: null };
     const e = { eventId: uuid(1), sessionId: 'sess_1', kind: 'session.start', createdAt: 1_000, channel: 'cli', producer: { adapter: 'a', version: '1' }, payload: {}, payloadJson: '{}', payloadBytes: new Uint8Array(0) } as any;
     const spec = kindSpec('session.start')!;
     const unbounded = { ...spec, fields: { ...spec.fields, startedAt: { bound: { type: 'int', min: 0, max: MAX_TIME_MS }, column: 'started_at' } } } as typeof spec;

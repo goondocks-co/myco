@@ -1137,6 +1137,7 @@ describe('gates', () => {
       'owner POST /api/projects/{projectId}/grants',
       'owner POST /api/projects/{projectId}/grants/{grantId}/revoke',
       'owner POST /api/projects/{projectId}/grants/{grantId}/rotate',
+      'owner POST /api/projects/{projectId}/sessions/{sessionId}/end',
       'owner POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status',
       'owner POST /api/projects/{projectId}/sessions/{sessionId}/title',
       'owner POST /api/projects/{projectId}/sessions/{sessionId}/tombstone',

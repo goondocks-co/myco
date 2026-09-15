@@ -25,6 +25,9 @@ export interface SessionRow {
   branch: string | null;
   startedAt: number | null;
   endedAt: number | null;
+  /** The member whose End session applied the standing end; null for an end an agent's hook or an import applied. */
+  endedBy: string | null;
+  endedByLabel: string | null;
   originPath: string | null;
   parentSessionId: string | null;
   parentReason: string | null;
@@ -88,14 +91,15 @@ export function sessionLabel(title: string | null, firstPrompt: string | null, a
   return sessionId.slice(0, 8);
 }
 
-/** Both joins land on primary keys, so the row count and the order are those of `sessions` alone. */
+/** All joins land on primary keys, so the row count and the order are those of `sessions` alone. */
 const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
      s.agent, s.branch, s.started_at, s.ended_at, s.origin_path, s.parent_session_id, s.parent_reason,
-     s.title, s.summary, s.titled_at, ${FIRST_PROMPT_SQL} AS first_prompt,
-     c.member_id, c.runtime_label, c.runtime_kind, m.label AS member_label`;
+     s.title, s.summary, s.titled_at, s.ended_by, ${FIRST_PROMPT_SQL} AS first_prompt,
+     c.member_id, c.runtime_label, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label`;
 const SESSION_FROM = `FROM sessions s
      LEFT JOIN member_credentials c ON c.id = s.created_by_token_id
-     LEFT JOIN members m ON m.id = c.member_id`;
+     LEFT JOIN members m ON m.id = c.member_id
+     LEFT JOIN members e ON e.id = s.ended_by`;
 /**
  * A deleted session is absent from every read.
  *
@@ -121,6 +125,8 @@ function toSession(row: Record<string, unknown>): SessionRow {
     branch: text(row.branch),
     startedAt: num(row.started_at),
     endedAt: num(row.ended_at),
+    endedBy: text(row.ended_by),
+    endedByLabel: text(row.ended_by_label),
     originPath: text(row.origin_path),
     parentSessionId: text(row.parent_session_id),
     parentReason: text(row.parent_reason),
