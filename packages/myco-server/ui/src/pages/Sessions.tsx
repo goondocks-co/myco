@@ -61,6 +61,12 @@ export function Sessions() {
     navigate(`${base}/${encodeURIComponent(id)}${search === '' ? '' : `?${search}`}`, options);
   }, [base, navigate, params]);
 
+  const deleted = () => {
+    const remaining = new URLSearchParams(params);
+    for (const key of ['tab', 'turn', 'plan']) remaining.delete(key);
+    navigate(`${base}${remaining.size === 0 ? '' : `?${remaining}`}`, { replace: true });
+  };
+
   // `branch` and `member` ride the URL for a link to carry; the rail has no control for them yet.
   const branch = params.get('branch') ?? undefined;
   const member = params.get('member') ?? undefined;
@@ -89,7 +95,7 @@ export function Sessions() {
           masterAriaLabel="Sessions"
           detailAriaLabel="Session"
           master={<SessionRail projectId={projectId} selectedId={sessionId} filters={filters} filtered={filtered} filterInputRef={filterInputRef} onSelect={select} />}
-          detail={sessionId === undefined ? <p className="font-sans text-sm text-on-surface-variant">Select a session to read it.</p> : <SessionDetail projectId={projectId} sessionId={sessionId} />}
+          detail={sessionId === undefined ? <p className="font-sans text-sm text-on-surface-variant">Select a session to read it.</p> : <SessionDetail key={`${projectId}/${sessionId}`} projectId={projectId} sessionId={sessionId} onDeleted={deleted} />}
         />
       </div>
     </PageContainer>

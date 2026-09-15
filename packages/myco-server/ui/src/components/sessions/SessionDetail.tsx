@@ -24,6 +24,7 @@ import { NotFound } from '../../pages/NotFound';
 import { PlanCard } from './PlanCard';
 import { promptPreview } from './TurnCard';
 import { TurnTimeline } from './TurnTimeline';
+import { DeleteSession } from './DeleteSession';
 
 const TABS = [
   { id: 'conversation', label: 'Conversation' },
@@ -40,7 +41,7 @@ const SESSION_SPORE_LIMIT = 100;
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
 
-export function SessionDetail({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+export function SessionDetail({ projectId, sessionId, onDeleted }: { projectId: string; sessionId: string; onDeleted: () => void }) {
   const detail = useSession(projectId, sessionId);
   const [params, setParams] = useSearchParams();
   const requested = params.get('tab');
@@ -56,6 +57,9 @@ export function SessionDetail({ projectId, sessionId }: { projectId: string; ses
       {detail.data && (
         <div className="flex flex-col gap-5">
           <Header projectId={projectId} session={detail.data.session} />
+          <div className="flex justify-end">
+            <DeleteSession projectId={projectId} session={detail.data.session} counts={detail.data.counts} onDeleted={onDeleted} />
+          </div>
           <div className="grid grid-cols-3 gap-3 xl:grid-cols-5">
             <MetricCard label="Prompts" value={detail.data.counts.prompts.toLocaleString()} tone="sage" />
             <MetricCard label="Tool calls" value={detail.data.counts.toolCalls.toLocaleString()} tone="ochre" />

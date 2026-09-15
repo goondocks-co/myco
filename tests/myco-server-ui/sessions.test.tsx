@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
@@ -38,7 +38,7 @@ const turn = (over: Record<string, unknown> = {}) => ({
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
 
-function server(routes: Record<string, () => Response>): { requested: string[] } {
+function server(routes: Record<string, () => Response | Promise<Response>>): { requested: string[] } {
   const requested: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -298,6 +298,71 @@ describe('Session detail', () => {
     };
     return { transcript: primary, transcripts: [primary], segments };
   };
+
+  it.each([false, true])('names deletion impact, cancels and retries a failure (wide: %s)', async (wide) => {
+    const run = async () => {
+      let attempts = 0;
+      let deleted = false;
+      const { requested } = server(detailRoutes({
+        '/api/projects/x/sessions/s1/tombstone': () => {
+          attempts++;
+          if (attempts === 1) return new Response(null, { status: 503 });
+          deleted = true;
+          return Response.json({ applied: true, removed: 8, blobsFreed: 2, blobsLeft: 0 });
+        },
+        '/api/projects/x/sessions': () => page(deleted ? [] : [session()]),
+      }));
+      mount('/p/x/sessions/s1?state=open&q=claude&tab=plans');
+      fireEvent.click(await screen.findByRole('button', { name: 'Delete session', exact: true }));
+      let dialog = screen.getByRole('dialog', { name: 'Delete this session?' });
+      expect(dialog.textContent).toContain('s1');
+      expect(dialog.textContent).toContain('Saved knowledge and other sessions, including child sessions, remain');
+      expect(dialog.textContent).toContain('New capture and re-import cannot recreate this session');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      expect(requested).not.toContain('/api/projects/x/sessions/s1/tombstone');
+      fireEvent.click(screen.getByRole('button', { name: 'Delete session', exact: true }));
+      dialog = screen.getByRole('dialog', { name: 'Delete this session?' });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete permanently' }));
+      expect((await within(dialog).findByRole('alert')).textContent).toContain('Retry');
+      expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions/s1?state=open&q=claude&tab=plans');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete permanently' }));
+      await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions?state=open&q=claude'));
+      expect(attempts).toBe(2);
+      expect(screen.queryByRole('dialog')).toBeNull();
+      await waitFor(() => expect(screen.queryAllByRole('row')).toHaveLength(0));
+    };
+    if (wide) await onWideScreen(run); else await run();
+  });
+
+  it('keeps a pending deletion bound to its session and does not redirect a newly selected session', async () => {
+    let finish!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => { finish = resolve; });
+    const routes = detailRoutes({
+      '/api/projects/x/sessions': () => page([session(), session({ sessionId: 's2', label: 'Second session' })]),
+      '/api/projects/x/sessions/s2': () => Response.json({ session: session({ sessionId: 's2', label: 'Second session' }), counts, projectId: 'x' }),
+      '/api/projects/x/sessions/s2/turns': () => page([]),
+    });
+    const { requested } = server({ ...routes, '/api/projects/x/sessions/s1/tombstone': () => pending });
+    let navigate!: ReturnType<typeof useNavigate>;
+    function NavigationControl() { navigate = useNavigate(); return null; }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={['/p/x/sessions/s1']}><App /><LocationProbe /><NavigationControl /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete session', exact: true }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete this session?' });
+    const confirm = within(dialog).getByRole('button', { name: 'Delete permanently' });
+    fireEvent.click(confirm);
+    await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(true));
+    fireEvent.click(confirm);
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'Delete this session?' })).toBeTruthy();
+    navigate('/p/x/sessions/s2');
+    await screen.findByRole('heading', { name: 'Second session' });
+    finish(Response.json({ applied: true, removed: 8, blobsFreed: 0, blobsLeft: 0 }));
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions/s2');
+    expect(requested.filter((url) => url.endsWith('/tombstone'))).toEqual(['/api/projects/x/sessions/s1/tombstone']);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
 
   it('renders the turns a person typed, collapsed but the last, and reads a turn\'s body — and its stored text — only when it opens', async () => {
     const { requested } = server(detailRoutes());

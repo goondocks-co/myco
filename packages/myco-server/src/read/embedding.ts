@@ -3,6 +3,7 @@ import type { EmbeddingProvider } from '../core/embedding/provider.js';
 import { VECTOR_QUERY_LIMIT, VECTOR_TYPES, vectorMatches, type VectorFilters, type VectorMetadata, type VectorStore, type VectorType } from '../core/embedding/vectors.js';
 import { inListChunks, type ReadScope } from './scope.js';
 import { SEARCH_PREVIEW_CHARS, type SearchOptions, type SearchResult } from './search-types.js';
+import { notTombstonedSql } from '../core/tombstones.js';
 
 export interface EmbeddingSource extends VectorMetadata {
   project_id: string;
@@ -28,7 +29,8 @@ export async function semanticHits(db: RelationalStore, scope: ReadScope, semant
   for (const ids of inListChunks(hits.map((h) => h.id))) {
     const found = await db.prepare(`SELECT s.*, r.id AS vector_id, r.neighbor_mean, r.neighbor_std FROM embedding_receipts r
       JOIN embedding_sources s ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
-      WHERE r.project_id = ? AND r.model_key = ? AND r.ready = 1 AND r.id IN (${ids.map(() => '?').join(',')})`)
+      WHERE r.project_id = ? AND r.model_key = ? AND r.ready = 1 AND r.id IN (${ids.map(() => '?').join(',')})
+      AND (s.type <> 'session' OR ${notTombstonedSql('s')})`)
       .bind(scope.projectId, partition.modelKey, ...ids).all<Omit<SemanticHit, 'score'>>();
     rows.push(...found.results.map((r) => ({ ...r, score: byId.get(r.vector_id)! })));
   }
