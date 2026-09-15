@@ -342,7 +342,7 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 
 **Not yet proven for the self-hosted binary.** Two claims in §3.3's C column are held by tests that run against source rather than against a released artifact: the compiled binary is built in CI but never executed there, and the carried SQLite library is exercised only where the build has staged it (CI stages it; a fresh checkout does not, and the gate fails rather than skips when `CI` is set). Both close with the release gate in §8, not with the child that added them.
 
-**Planned additions.** None: laptop mode's first member is the one join `myco login` cannot serve — a Deployment created by `myco server create --target local` holds no member until an invite can be minted, and the start path exposes its `ServerEnv` for the first-start bootstrap that mints one (**#1158**, after D1). `myco worker` (**#1151**) and `myco import` (**#1148**) have landed and take their rows above.
+**First administrator.** `myco server setup-owner --target local` holds the stopped native volume and issues an expiring GitHub account-link authority for its first administrator. Its member, setup receipt and link commit together. Retry replaces only the pending link; an existing or linked membership refuses setup. After connecting the account in the dashboard, the administrator invites a runtime through Members and the machine joins with `myco login`. Native first-use acceptance is tracked in **#1307**; Cloudflare first-owner setup remains required-target acceptance under **#1163**. `myco worker` (**#1151**) and `myco import` (**#1148**) take their rows above.
 
 ### 7.2 Dashboard routes — `packages/myco/ui/src/App.tsx`
 

@@ -47,16 +47,19 @@ export interface DashboardMember {
 
 /** Sole minter. Stores the digest against the member; returns the raw key once. */
 export async function issueIdentityLinkAuthority(
-  db: RelationalStore, memberId: string, nowMs: number, options: { ttlMs?: number } = {},
+  db: RelationalStore, memberId: string, nowMs: number, options: { ttlMs?: number; replaceUnspent?: boolean } = {},
 ): Promise<IssuedIdentityLinkAuthority> {
   const key = toBase64Url(crypto.getRandomValues(new Uint8Array(IDENTITY_LINK_KEY_BYTES)));
   const id = `${IDENTITY_LINK_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(IDENTITY_LINK_ID_BYTES)))}`;
   const expiresAt = nowMs + (options.ttlMs ?? IDENTITY_LINK_TTL_MS);
-  await db
+  const insert = db
     .prepare(`INSERT INTO identity_link_authorities (id, key_hash, member_id, created_at, expires_at, used_at, used_by, revoked_at)
               VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)`)
-    .bind(id, await sha256Hex(key), memberId, nowMs, expiresAt)
-    .run();
+    .bind(id, await sha256Hex(key), memberId, nowMs, expiresAt);
+  await db.batch([
+    ...(options.replaceUnspent ? [db.prepare('UPDATE identity_link_authorities SET revoked_at = ? WHERE member_id = ? AND used_at IS NULL AND revoked_at IS NULL').bind(nowMs, memberId)] : []),
+    insert,
+  ]);
   return { key, id, expiresAt };
 }
 
