@@ -130,6 +130,25 @@ describe('read/sessions', () => {
     ]);
   });
 
+  it('counts and orders projects by live sessions only, keeping a project whose sessions are all deleted and an empty one', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedSessions(sqlite);
+    sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_3','Only deleted',3), ('proj_4','Empty',4)`);
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+                VALUES ('proj_1','s9','m1','tok_1',9,200), ('proj_3','gone','m1','tok_1',6,300)`);
+    sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES ('proj_1','s9',NULL,400,'mem_1'), ('proj_3','gone',NULL,400,'mem_1')`);
+    const rows = await listProjects(db);
+    expect(rows.map((p) => [p.projectId, p.sessionCount, p.lastActivityAt])).toEqual([
+      ['proj_2', 1, 99],
+      ['proj_1', 3, 30],
+      ['proj_4', 0, null],
+      ['proj_3', 0, null],
+    ]);
+    const stats = await projectStats(db, { projectId: 'proj_1' }, 1_000);
+    expect([stats.sessions, stats.lastActivityAt]).toEqual([3, 30]);
+    expect((await projectStats(db, { projectId: 'proj_3' }, 1_000)).sessions).toBe(0);
+  });
+
   it('hides an archived project by default, lists it on request with who archived it, and restores it', async () => {
     const { db, sqlite } = sqliteEnv();
     seedSessions(sqlite);
