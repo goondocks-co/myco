@@ -35,9 +35,10 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
  * carrying files it does not belong to, rather than to keep a deploy legal. The
  * staged-directory sweep that carried 31 extra modules cost 65 KiB, and the
  * headroom stays under that, so a sweep of that shape still trips this while
- * ordinary growth does not.
+ * ordinary growth does not. The bundle is about 1,281,000 bytes; the ceiling
+ * leaves under twenty kilobytes of ordinary growth before it trips.
  */
-const SIZE_CEILING_BYTES = 1_280_000;
+const SIZE_CEILING_BYTES = 1_300_000;
 
 const decoded = (): string => Buffer.from(BUNDLED_WORKER, 'base64').toString('utf-8');
 

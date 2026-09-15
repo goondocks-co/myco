@@ -12,6 +12,9 @@ export interface SessionRow {
   branch: string | null;
   startedAt: number | null;
   endedAt: number | null;
+  /** The member whose End session applied the standing end; null for an end the agent or an import applied. */
+  endedBy: string | null;
+  endedByLabel: string | null;
   originPath: string | null;
   parentSessionId: string | null;
   parentReason: string | null;
@@ -326,6 +329,19 @@ export function useTitleSession(projectId: string, sessionId: string) {
     onSuccess: () => Promise.all([
       client.invalidateQueries({ queryKey: ['session', projectId, sessionId] }),
       client.invalidateQueries({ queryKey: ['sessions', projectId] }),
+    ]),
+  });
+}
+
+/** Ends an open session now; on an answer, the session and the project's list are read again. */
+export function useEndSession(projectId: string, sessionId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => postJson<{ outcome: 'ended' | 'already_ended' | 'open'; endedAt: number | null }>(`${project(projectId)}/sessions/${seg(sessionId)}/end`),
+    onSuccess: () => Promise.all([
+      client.invalidateQueries({ queryKey: ['session', projectId, sessionId] }),
+      client.invalidateQueries({ queryKey: ['sessions', projectId] }),
+      client.invalidateQueries({ queryKey: ['activity', projectId] }),
     ]),
   });
 }

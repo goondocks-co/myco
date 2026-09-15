@@ -11,6 +11,7 @@ import { titleSession } from '../core/titling.js';
 import { changePlanStatus } from '../core/plans.js';
 import { PLAN_STATUS_MESSAGE, planInSession, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
 import { tombstoneSession } from '../core/tombstones.js';
+import { endSession } from '../core/session-end.js';
 
 /** Session child collections, each served by the same scoped and paginated handler. */
 const CHILDREN = {
@@ -141,6 +142,16 @@ export async function handleTitleSession(env: ServerEnv, ctx: OwnerContext): Pro
   if (scope === null) return notFound();
   if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
   return ok(await titleSession(env, { projectId: scope.projectId, sessionId, now: ctx.now, origin: ctx.url.origin }, { mode: 'owner', by: ctx.member.id }));
+}
+
+/** `POST …/sessions/{sessionId}/end`: a person ends an open session now. Answers the outcome and the end that stands, or that the session reads open; 404 for a session the Project does not hold or has deleted, decided before anything is written and again after it. */
+export async function handleEndSession(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  const outcome = await endSession(env.db, scope, sessionId, ctx.now, ctx.member.id);
+  return outcome === null ? notFound() : ok(outcome);
 }
 
 /** Sets a plan's status as an administrative edit by the signed-in member; 404 unless the plan sits in the session, 400 for a status outside the writable set. Answers the row as it stands afterwards. */

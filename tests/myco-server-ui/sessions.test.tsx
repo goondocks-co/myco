@@ -22,7 +22,7 @@ const P3 = '00000000-0000-7000-8000-000000000003';
 
 const session = (over: Record<string, unknown> = {}) => ({
   sessionId: 's1', machineId: 'mac-1', createdByTokenId: 'tok_1', firstReceivedAt: NOW - 3_600_000, lastReceivedAt: NOW - 60_000,
-  agent: 'claude-code', branch: 'main', startedAt: NOW - 3_600_000, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null,
+  agent: 'claude-code', branch: 'main', startedAt: NOW - 3_600_000, endedAt: null, endedBy: null, endedByLabel: null, originPath: '/repo', parentSessionId: null, parentReason: null,
   memberId: 'mem_1', memberLabel: 'chris', runtimeLabel: 'laptop', runtimeKind: 'host',
   title: null, summary: null, titledAt: null, label: (over.title as string | undefined) ?? (over.label as string | undefined) ?? (over.agent as string | undefined) ?? 'claude-code',
   promptCount: 2, toolCallCount: 3, activityBuckets: [1, 0, 0, 1, 0, 0, 0, 0], ...over,
@@ -332,6 +332,93 @@ describe('Session detail', () => {
       await waitFor(() => expect(screen.queryAllByRole('row')).toHaveLength(0));
     };
     if (wide) await onWideScreen(run); else await run();
+  });
+
+  it('offers End session only while open, names the session, cancels, retries a failure, and flips the header once ended', async () => {
+    let attempts = 0;
+    let ended: number | null = null;
+    const { requested } = server(detailRoutes({
+      '/api/projects/x/sessions/s1': () => Response.json({ session: session({ endedAt: ended, endedBy: ended === null ? null : 'mem_1', endedByLabel: ended === null ? null : 'chris' }), counts, projectId: 'x' }),
+      '/api/projects/x/sessions/s1/end': () => {
+        attempts++;
+        if (attempts === 1) return new Response(null, { status: 503 });
+        ended = NOW - 1000;
+        return Response.json({ outcome: 'ended', endedAt: ended });
+      },
+    }));
+    mount('/p/x/sessions/s1');
+    expect((await screen.findByText(/Session · open/)).textContent).toContain('open');
+    fireEvent.click(screen.getByRole('button', { name: 'End session', exact: true }));
+    let dialog = screen.getByRole('dialog', { name: 'End this session?' });
+    expect(dialog.textContent).toContain('s1');
+    expect(dialog.textContent).toContain('Capture is not stopped');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(requested).not.toContain('/api/projects/x/sessions/s1/end');
+    fireEvent.click(screen.getByRole('button', { name: 'End session', exact: true }));
+    dialog = screen.getByRole('dialog', { name: 'End this session?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'End session', exact: true }));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('Retry');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'End session', exact: true }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect((await screen.findByText(/Session · ended/)).textContent).toContain('ended');
+    expect((await screen.findByText(/ended by chris/)).textContent).toContain('ended by chris');
+    expect(screen.queryByRole('button', { name: 'End session', exact: true })).toBeNull();
+    expect(attempts).toBe(2);
+  });
+
+  it('says when a newer captured turn kept the session open, and ends it on the next confirm', async () => {
+    let answers = 0;
+    let ended: number | null = null;
+    server(detailRoutes({
+      '/api/projects/x/sessions/s1': () => Response.json({ session: session({ endedAt: ended, endedBy: ended === null ? null : 'mem_1', endedByLabel: ended === null ? null : 'chris' }), counts, projectId: 'x' }),
+      '/api/projects/x/sessions/s1/end': () => {
+        answers++;
+        if (answers === 1) return Response.json({ outcome: 'open', endedAt: null });
+        ended = NOW - 1000;
+        return Response.json({ outcome: 'ended', endedAt: ended });
+      },
+    }));
+    mount('/p/x/sessions/s1');
+    fireEvent.click(await screen.findByRole('button', { name: 'End session', exact: true }));
+    const dialog = screen.getByRole('dialog', { name: 'End this session?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'End session', exact: true }));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('still open');
+    expect(screen.getByRole('dialog', { name: 'End this session?' })).toBeTruthy();
+    expect(screen.getByText(/Session · open/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'End session', exact: true }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(await screen.findByText(/Session · ended/)).toBeTruthy();
+    expect(answers).toBe(2);
+  });
+
+  it('keeps a pending end bound to its session and does not act on a newly selected session', async () => {
+    let finish!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => { finish = resolve; });
+    const routes = detailRoutes({
+      '/api/projects/x/sessions': () => page([session(), session({ sessionId: 's2', label: 'Second session' })]),
+      '/api/projects/x/sessions/s2': () => Response.json({ session: session({ sessionId: 's2', label: 'Second session' }), counts, projectId: 'x' }),
+      '/api/projects/x/sessions/s2/turns': () => page([]),
+    });
+    const { requested } = server({ ...routes, '/api/projects/x/sessions/s1/end': () => pending });
+    let navigate!: ReturnType<typeof useNavigate>;
+    function NavigationControl() { navigate = useNavigate(); return null; }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={['/p/x/sessions/s1']}><App /><LocationProbe /><NavigationControl /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+    fireEvent.click(await screen.findByRole('button', { name: 'End session', exact: true }));
+    const dialog = screen.getByRole('dialog', { name: 'End this session?' });
+    const confirm = within(dialog).getByRole('button', { name: 'End session', exact: true });
+    fireEvent.click(confirm);
+    await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(true));
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'End this session?' })).toBeTruthy();
+    navigate('/p/x/sessions/s2');
+    await screen.findByRole('heading', { name: 'Second session' });
+    finish(Response.json({ outcome: 'ended', endedAt: NOW }));
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions/s2');
+    expect(requested.filter((url) => url.endsWith('/end'))).toEqual(['/api/projects/x/sessions/s1/end']);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(await screen.findByRole('button', { name: 'End session', exact: true })).toBeTruthy();
   });
 
   it('keeps a pending deletion bound to its session and does not redirect a newly selected session', async () => {
