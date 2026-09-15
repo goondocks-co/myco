@@ -4,6 +4,7 @@ import { PageHeader } from '../components/ui/page-header';
 import { Panel } from '../components/ui/panel';
 import { BackupPanel } from '../components/operations/BackupPanel';
 import { WakePanel } from '../components/operations/WakePanel';
+import { TitlingBackfillPanel } from '../components/operations/TitlingBackfillPanel';
 
 /** `/operations`: the operator's page. What this server can do for you today, and what arrives with the backup and observability work. */
 export function Operations() {
@@ -17,6 +18,7 @@ export function Operations() {
           </p>
         </Panel>
         <WakePanel />
+        <TitlingBackfillPanel />
         <BackupPanel />
         <Panel title="Diagnostics" eyebrow="Pending" tone="ochre" data-testid="pending-diagnostics">
           <p className="font-sans text-sm text-on-surface-variant">

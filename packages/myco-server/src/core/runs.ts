@@ -1345,6 +1345,35 @@ const contextValue = (key: string): string => `CASE WHEN json_valid(run_context)
  * when the task last entered the list — which it did, so the clock does not
  * dispatch it again the same instant.
  */
+/** Entries of `task` by `actor` from `sinceMs` on, across every Project: the count a Deployment-wide daily ceiling reads. Skipped and replaced rows are not entries. */
+export async function deploymentTaskEntriesSince(db: RelationalStore, task: string, sinceMs: number, actor: string): Promise<number> {
+  const row = await db.prepare(
+    `SELECT COUNT(*) AS c FROM agent_runs WHERE task = ? AND status != 'skipped'
+       AND COALESCE(${contextValue('replaced')}, 0) != 1
+       AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?`,
+  ).bind(task, sinceMs, actor).first<{ c: number }>();
+  return row?.c ?? 0;
+}
+
+/** When `actor` last entered a run of `task` anywhere in the Deployment, or null when it never has. */
+export async function deploymentLastTaskEntryAt(db: RelationalStore, task: string, actor: string): Promise<number | null> {
+  const row = await db.prepare(
+    `SELECT MAX(COALESCE(queued_at, started_at)) AS at FROM agent_runs WHERE task = ? AND status != 'skipped' AND ${DISPATCH_ACTOR_SQL} = ?`,
+  ).bind(task, actor).first<{ at: number | null }>();
+  return row?.at ?? null;
+}
+
+/** How `actor`'s runs of `task` from `sinceMs` on stand across every Project: still in flight, completed, or failed. */
+export async function deploymentTaskRunTally(db: RelationalStore, task: string, sinceMs: number, actor: string): Promise<{ inFlight: number; completed: number; failed: number }> {
+  const row = await db.prepare(
+    `SELECT COALESCE(SUM(CASE WHEN ${IN_FLIGHT_RUN_STATUSES} THEN 1 ELSE 0 END), 0) AS inFlight,
+            COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
+            COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed
+       FROM agent_runs WHERE task = ? AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?`,
+  ).bind(task, sinceMs, actor).first<{ inFlight: number; completed: number; failed: number }>();
+  return row ?? { inFlight: 0, completed: 0, failed: 0 };
+}
+
 export async function taskEntriesSince(db: RelationalStore, scope: ReadScope, task: string, sinceMs: number, actor?: string): Promise<number> {
   const row = await db.prepare(
     `SELECT COUNT(*) AS c FROM agent_runs WHERE project_id = ? AND task = ? AND status != 'skipped'
